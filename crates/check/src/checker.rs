@@ -297,6 +297,23 @@ impl Checker {
             })
             .copied()
             .collect();
+        let unknown_signatures: Vec<Diagnostic> = self
+            .states
+            .iter()
+            .filter_map(|(key, state)| match state {
+                State::Done(signature) if !prelude.contains(key) => Some((key, signature)),
+                _ => None,
+            })
+            .filter(|(_, signature)| {
+                !signature.returns.is_known() || signature.params.iter().any(|param| !param.ty.is_known())
+            })
+            .filter_map(|(key, _)| self.program.functions.get(key))
+            .map(|entry| {
+                Diagnostic::new(format!("can't work out the types of `{}`", entry.def.name), entry.def.span)
+                    .with_help("write its parameters' types and its return type")
+            })
+            .collect();
+        self.diagnostics.extend(unknown_signatures);
         for (start, end) in innermost {
             self.diagnostics.push(
                 Diagnostic::new("can't work out the type of this", fennec_syntax::Span { start, end })

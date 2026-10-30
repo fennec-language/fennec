@@ -171,6 +171,12 @@ fn every_example_is_fully_typed() {
     assert!(examples.len() > 10, "the examples weren't found");
     for (file, source) in examples {
         let (module, checked) = checked(&source).unwrap();
+        for (name, signature) in checked.signatures.iter() {
+            let types = signature.params.iter().map(|param| &param.ty).chain([&signature.returns]);
+            for ty in types {
+                assert!(ty.is_known(), "{file}: `{name}` has {ty:?} in its signature");
+            }
+        }
         for (key, body) in checked.types.iter() {
             for (span, ty) in body.exprs() {
                 assert!(ty.is_known(), "{file}, {key}: `{}` is {ty:?}", text(&source, span));

@@ -27,13 +27,13 @@ pub(super) fn inline_body(function: &Function<'_>) -> Option<Rc<FnDef>> {
         }
         Ty::Int | Ty::Float | Ty::Bool => !param.is_mut,
         Ty::Cap(_) => true,
-        Ty::Unit | Ty::Obj | Ty::Boxed(_) | Ty::Str => false,
+        Ty::Unit | Ty::Obj | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) => false,
     });
     let mut nodes = 0;
     let simple = function.def.body.iter().all(|stmt| simple_stmt(stmt, &mut nodes));
     (params_fit
         && !function.fallible
-        && !matches!(function.ret, Ty::Obj | Ty::Boxed(_) | Ty::Str)
+        && !matches!(function.ret, Ty::Obj | Ty::Boxed(_) | Ty::Str | Ty::Dict(..))
         && simple
         && nodes <= MAX_NODES)
         .then(|| Rc::new(function.def.clone()))
@@ -128,6 +128,7 @@ impl Lowerer<'_, '_> {
         let (params, ret) = compiled.ok_or_else(|| super::internal("unknown function", span))?;
         self.inlining.push((key.to_owned(), self.scopes.len()));
         let outer_site = self.call_site;
+        let outer_origin = self.enter_origin(key, def);
         if self.call_site.is_none() && !span.in_prelude() {
             self.call_site = Some(span);
         }
@@ -153,6 +154,7 @@ impl Lowerer<'_, '_> {
         let closed = self.close_scope();
         self.inlining.pop();
         self.call_site = outer_site;
+        self.inlined_origin = outer_origin;
         let (value, ty) = lowered?;
         closed?;
         match ret {

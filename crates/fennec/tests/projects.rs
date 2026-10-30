@@ -26,8 +26,9 @@ fn kits(dir: &Path) -> std::io::Result<Vec<String>> {
 }
 
 fn load(dir: &Path, shown_as: &str, entry: Entry) -> Result<Program, String> {
-    let program = fennec_kit::load(dir, shown_as, entry)?;
-    fennec_check::check(&program.module).map_err(|diagnostics| program.sources.render_all(&diagnostics))?;
+    let mut program = fennec_kit::load(dir, shown_as, entry)?;
+    fennec_check::check_and_resolve(&mut program.module)
+        .map_err(|diagnostics| program.sources.render_all(&diagnostics))?;
     Ok(program)
 }
 

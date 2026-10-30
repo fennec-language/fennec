@@ -8,18 +8,19 @@ use fennec_interp::Inputs;
 
 /// Runs the program at `path`, handing `main` the `arguments` and this process's input.
 pub(crate) fn run(path: &str, jit: bool, arguments: &[String]) -> ExitCode {
-    let Some(program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    let module = &program.module;
-    if !check(&program) {
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
+    if !check(&mut program) {
         return ExitCode::FAILURE;
     }
+    let module = &program.module;
     let mut out = BufWriter::new(std::io::stdout().lock());
     let inputs = || Inputs {
         program: path.to_owned(),
         arguments: arguments.to_vec(),
         stdin: Box::new(BufReader::new(std::io::stdin())),
     };
-    let result = if jit { native(module, &mut out, inputs) } else { interpret(module, &mut out, inputs()) };
+    let result =
+        if jit { native(module, path, &mut out, inputs) } else { interpret(module, &mut out, inputs()) };
     let flushed = out.flush();
     match (result, flushed) {
         (Ok(()), Ok(())) => ExitCode::SUCCESS,
@@ -38,10 +39,24 @@ pub(crate) fn run(path: &str, jit: bool, arguments: &[String]) -> ExitCode {
 /// can't compile yet. Nothing runs before the JIT decides, so nothing runs twice.
 fn native(
     module: &fennec_syntax::Module,
+    path: &str,
     out: &mut dyn Write,
     inputs: impl Fn() -> Inputs,
 ) -> Result<(), fennec_syntax::Diagnostic> {
-    match fennec_jit::run_with_inputs(module, out, inputs()) {
+    // Machine code is reused from the cache in `~/.fennec`, unless `FENNEC_NO_CACHE` is set.
+    let cache = fennec_build::fennec_home()
+        .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
+        .map(|home| fennec_build::Cache::new(&home));
+    let ran = match &cache {
+        Some(cache) => {
+            // A program's machine code is kept together, under its absolute path.
+            let program = std::fs::canonicalize(path)
+                .map_or_else(|_| path.to_owned(), |path| path.display().to_string());
+            fennec_jit::run_cached(module, out, inputs(), cache, &program).map(|_| ())
+        }
+        None => fennec_jit::run_with_inputs(module, out, inputs()),
+    };
+    match ran {
         Ok(()) => Ok(()),
         Err(fennec_jit::JitError::Failed(diagnostic)) => Err(diagnostic),
         Err(fennec_jit::JitError::Unsupported(diagnostic)) => {
@@ -61,10 +76,10 @@ fn interpret(
     interp.run_program(module)
 }
 
-/// Type-checks a program before it runs, printing every problem found. Returns whether it
-/// passed.
-pub(crate) fn check(program: &fennec_kit::Program) -> bool {
-    match fennec_check::check(&program.module) {
+/// Type-checks a program before it runs, printing every problem found, and names the enum
+/// of each leading-dot case its expected type decided. Returns whether it passed.
+pub(crate) fn check(program: &mut fennec_kit::Program) -> bool {
+    match fennec_check::check_and_resolve(&mut program.module) {
         Ok(_) => true,
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));

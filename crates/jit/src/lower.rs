@@ -10,8 +10,11 @@
 //! and errors in `flow`, and handing work to the interpreter in `fallback`.
 
 mod boxes;
+mod cached;
 mod call;
 mod codegen;
+mod comprehensions;
+mod dicts;
 mod enums;
 mod expr;
 mod fallback;
@@ -27,6 +30,7 @@ mod objects;
 mod stmt;
 mod strings;
 mod structs;
+mod symbols;
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,14 +38,14 @@ use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::{Block, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{FuncId, Module};
-use fennec_interp::embed::{self, Tables};
+use fennec_interp::embed::Tables;
 use fennec_syntax::{Diagnostic, Span};
 
 use crate::helpers::Helper;
 use crate::layout::Layouts;
 use crate::runtime::Entry;
 use crate::types::{Function, Program, Ty, unsupported};
-use module::{declare_all, define_entry, new_module, returns_changes, signature};
+use module::{declare_all, define_entry, new_module, retrying, returns_changes, signature};
 
 /// The message of the internal diagnostic that asks for a function to be lowered again,
 /// this time with a frame.
@@ -73,6 +77,8 @@ pub(crate) struct Compilation {
     pub(crate) reasons: Vec<Diagnostic>,
     /// Where compiled code isn't native.
     pub(crate) notes: Vec<notes::Note>,
+    /// How many functions' machine code came from the cache.
+    pub(crate) cached: usize,
 }
 
 /// What every function being compiled shares.
@@ -84,6 +90,13 @@ pub(super) struct Shared {
     strings: HashMap<String, i64>,
     /// For an executable: the table of runtime addresses its code reads.
     slots: Option<object::Slots>,
+    /// The data symbols code reads program numbers through, with this run's values.
+    symbols: HashMap<String, (cranelift_module::DataId, i64)>,
+    /// For tests: each function's IR as `canonical_ir` writes it, by its key.
+    captured: Option<Vec<(String, String)>>,
+    /// Where machine code is reused from, and how many functions' code was.
+    cache: Option<cached::CacheUse>,
+    cached: usize,
     /// The compiled methods that take `self`, by method name, with each one's type.
     methods: HashMap<String, Vec<(String, String)>>,
     with_frames: usize,
@@ -109,6 +122,7 @@ pub(crate) fn compile(
     program: &Program<'_>,
     signatures: &fennec_check::Signatures,
     stack_limit: usize,
+    cache: Option<(&fennec_build::Cache, &str)>,
 ) -> Result<(Entry, Tables, Compilation), Diagnostic> {
     let stack_limit = i64::try_from(stack_limit).unwrap_or(i64::MAX);
     let ((entry, shared), skipped) = retrying(|skipped| {
@@ -116,7 +130,10 @@ pub(crate) fn compile(
         let fatal = |diagnostic| ("main".to_owned(), diagnostic);
         let mut module = new_module(span).map_err(fatal)?;
         let mut shared = Shared::new(program, stack_limit);
+        shared.cache = cache
+            .map(|(cache, program)| cached::CacheUse { cache: cache.clone(), program: program.to_owned() });
         let main = compile_functions(&mut module, &mut shared, program, signatures, skipped)?;
+        symbols::define(&mut module, &shared).map_err(fatal)?;
         let mut ctx = module.make_context();
         let mut builder_ctx = FunctionBuilderContext::new();
         let entry =
@@ -132,32 +149,9 @@ pub(crate) fn compile(
         with_frames: shared.with_frames,
         handed_over: shared.handed_over,
         notes: shared.notes,
+        cached: shared.cached,
     };
     Ok((entry, shared.tables, compilation))
-}
-
-/// Tries compiling until it works, each time leaving out the function that failed last,
-/// which then runs in the interpreter. Gives back the result, and the functions left out
-/// with why each was, by name.
-pub(super) fn retrying<T>(
-    mut attempt: impl FnMut(&HashSet<String>) -> Result<T, Failure>,
-) -> Result<(T, Vec<Failure>), Diagnostic> {
-    let mut skipped = HashSet::new();
-    let mut reasons = Vec::new();
-    loop {
-        match attempt(&skipped) {
-            Ok(done) => {
-                reasons.sort_by(|(a, _): &Failure, (b, _): &Failure| a.cmp(b));
-                return Ok((done, reasons));
-            }
-            Err((name, diagnostic)) => {
-                if name == "main" || !skipped.insert(name.clone()) {
-                    return Err(diagnostic);
-                }
-                reasons.push((name, diagnostic));
-            }
-        }
-    }
 }
 
 impl Shared {
@@ -174,6 +168,10 @@ impl Shared {
             names: HashMap::new(),
             strings: HashMap::new(),
             slots: None,
+            symbols: HashMap::new(),
+            captured: None,
+            cache: None,
+            cached: 0,
             methods: HashMap::new(),
             with_frames: 0,
             handed_over: 0,
@@ -214,12 +212,13 @@ pub(super) fn compile_functions(
         };
         lower_function(&mut cx, function).map_err(failed)?;
         let func = std::mem::replace(&mut ctx.func, cranelift_codegen::ir::Function::new());
+        if let Some(texts) = &mut shared.captured {
+            texts.push((function.key.clone(), codegen::canonical_ir(&*module, &func)));
+        }
         lowered.push((id, func, function));
         module.clear_context(&mut ctx);
     }
-    for (id, machine_code) in codegen::compile_all(module.isa(), lowered)? {
-        machine_code.install(module, id)?;
-    }
+    shared.cached = cached::generate(module, lowered, shared.cache.as_ref())?;
     let main = shared.compiled.get("main").ok_or_else(|| fatal(unsupported("this `main`", span)))?;
     if main.params.iter().any(|(_, ty, _)| !matches!(ty, Ty::Cap(_))) {
         return Err(fatal(unsupported("a `main` that takes anything but `stdout`", span)));
@@ -229,7 +228,7 @@ pub(super) fn compile_functions(
 
 fn abi(ty: Ty) -> Option<types::Type> {
     match ty {
-        Ty::Int | Ty::Obj | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str => Some(types::I64),
+        Ty::Int | Ty::Obj | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) => Some(types::I64),
         Ty::Float => Some(types::F64),
         Ty::Bool => Some(types::I8),
         Ty::Unit | Ty::Cap(_) => None,
@@ -315,10 +314,13 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         let table = cx.module.declare_data_in_func(slots.data, b.func);
         b.ins().symbol_value(pointer_ty, table)
     });
-    let failed_flag = match slots_base {
-        Some(base) => b.ins().load(pointer_ty, MemFlagsData::trusted(), base, 0),
-        None => b.ins().iconst(pointer_ty, i64::try_from(embed::failed_flag()).unwrap_or(0)),
+    let failed_flag = if let Some(base) = slots_base {
+        b.ins().load(pointer_ty, MemFlagsData::trusted(), base, 0)
+    } else {
+        symbols::import(&mut b, &mut *cx.module, symbols::FAILED)?
     };
+    let digest = symbols::digest(&function.key);
+    let origin = symbols::origin(&mut b, &mut *cx.module, &mut *cx.shared, function, &digest)?;
     let mut lowerer = Lowerer {
         b,
         module: &mut *cx.module,
@@ -350,6 +352,11 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         slots_base,
         literal_of: HashMap::new(),
         hoisted: Vec::new(),
+        handed: 0,
+        origin,
+        inlined_origin: None,
+        digest,
+        globals: HashMap::new(),
     };
     lowerer.prologue(&params)?;
     let (tail, tail_ty) = lowerer.tail(&function.def.body)?;
@@ -436,6 +443,16 @@ pub(crate) struct Lowerer<'a, 'f> {
     hoisted: Vec<hoist::Hoisted>,
     /// Where the table of runtime addresses is, in an executable.
     slots_base: Option<Value>,
+    /// How many things this function has handed the runtime by number so far.
+    handed: usize,
+    /// Where the function starts, read on entry, and its key's digest, for its symbols.
+    origin: Option<Value>,
+    /// Where the innermost program function being inlined starts, and the position it stands
+    /// for: its failures' positions are relative to it, so moving it leaves this code alone.
+    inlined_origin: Option<(Value, i64)>,
+    digest: String,
+    /// Each data symbol's place in this function's IR, declared once.
+    globals: HashMap<cranelift_module::DataId, cranelift_codegen::ir::GlobalValue>,
     /// The text of each value that's a string literal.
     literal_of: HashMap<Value, String>,
     /// Where the program called the standard library function being inlined, which its
@@ -595,21 +612,6 @@ impl Lowerer<'_, '_> {
 
     fn int(&mut self, n: i64) -> Value {
         self.b.ins().iconst(types::I64, n)
-    }
-
-    fn span_args(&mut self, span: Span) -> [Value; 2] {
-        let span = self.site(span);
-        [self.int(i64::from(span.start)), self.int(i64::from(span.end))]
-    }
-
-    fn name_id(&mut self, name: &str) -> Value {
-        let id = intern(&mut self.shared.names, &mut self.shared.tables.names, name);
-        self.int(id)
-    }
-
-    fn string_id(&mut self, text: &str) -> Value {
-        let id = intern(&mut self.shared.strings, &mut self.shared.tables.strings, text);
-        self.int(id)
     }
 
     /// A name in sight. Inside an inlined body, only the body's own names are.
@@ -775,14 +777,4 @@ impl Lowerer<'_, '_> {
         self.b.switch_to_block(ok);
         self.b.seal_block(ok);
     }
-}
-
-fn intern(map: &mut HashMap<String, i64>, table: &mut Vec<String>, text: &str) -> i64 {
-    if let Some(id) = map.get(text) {
-        return *id;
-    }
-    let id = i64::try_from(table.len()).unwrap_or(0);
-    table.push(text.to_owned());
-    map.insert(text.to_owned(), id);
-    id
 }

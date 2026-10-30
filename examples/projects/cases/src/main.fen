@@ -1,0 +1,7 @@
+from tokens import tokens
+from tree import Expr, literal, show
+
+def main(stdout: Stdout):
+    for tok in tokens("width 40"):
+        expr = Expr(kind=literal(tok))
+        stdout.print(show(expr), expr.kind == .Int(40))

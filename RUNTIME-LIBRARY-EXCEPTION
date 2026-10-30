@@ -1,0 +1,18 @@
+Runtime Library Exception
+
+Fennec is licensed under either the Apache License 2.0 or the MIT license, at your
+option. The following exception applies under either license.
+
+As an exception, if you use this software to compile your source code and portions of
+this software are embedded into, or linked with, the resulting program as a result, you
+may redistribute that program without providing the attribution those portions would
+otherwise require: under the Apache License 2.0, the attribution required by Sections
+4(a), 4(b) and 4(d); under the MIT license, the inclusion of the copyright notice and
+permission notice.
+
+The portions this covers are the runtime library and the standard library: the code the
+Fennec toolchain places into, or links with, the programs it compiles. This exception
+doesn't change the license of the compiler and tools themselves, or of any portion of this
+software distributed on its own rather than as part of a compiled program.
+
+This exception is modeled on the Runtime Library Exception of the Swift project.

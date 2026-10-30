@@ -143,12 +143,19 @@ impl Lowerer<'_, '_> {
                     let (new, new_ty) = self.assigned(target, op, value)?;
                     self.set_local(name, local, new, new_ty, target.span)
                 }
+                _ if self.packed_comprehension(name, value, declare_mut)? => Ok(()),
                 _ => {
-                    let (new, new_ty) = self.expr(value)?;
+                    let (new, new_ty) = match self.literal_for(name, value)? {
+                        Some(made) => made,
+                        None => self.expr(value)?,
+                    };
                     self.declare(name, new, new_ty, declare_mut, value)
                 }
             },
             ExprKind::Tuple(names) => self.unpack(names, value, target.span),
+            ExprKind::Index { object, index } if let Some((var, (key, item))) = self.dict_target(object) => {
+                self.assign_dict((var, key, item), target, index, op, value)
+            }
             ExprKind::Index { object, index } if let Some((name, item)) = self.packed(object) => {
                 let span = target.span.to(value.span);
                 let new = self.assigned(target, op, value)?;
@@ -206,6 +213,11 @@ impl Lowerer<'_, '_> {
         op: Option<BinOp>,
         value: &Expr,
     ) -> Result<super::expr::Lowered, Diagnostic> {
+        if let (None, ExprKind::Name(name)) = (op, &target.kind)
+            && let Some(made) = self.literal_for(name, value)?
+        {
+            return Ok(made);
+        }
         let Some(op) = op else { return self.expr(value) };
         let combined = Expr {
             kind: ExprKind::Binary { op, lhs: Box::new(target.clone()), rhs: Box::new(value.clone()) },
@@ -225,7 +237,7 @@ impl Lowerer<'_, '_> {
     ) -> Result<(), Diagnostic> {
         // An object the checker knows is a plain struct is kept natively from here on.
         let (value, ty) = match (ty, self.checked_ty(name)) {
-            (Ty::Obj, Some(to @ (Ty::Struct(_) | Ty::Boxed(_) | Ty::Str))) => {
+            (Ty::Obj, Some(to @ (Ty::Struct(_) | Ty::Boxed(_) | Ty::Str | Ty::Dict(..)))) => {
                 (Some(self.convert(value, ty, to, source.span)?), to)
             }
             _ => (value, ty),
@@ -451,6 +463,12 @@ impl Lowerer<'_, '_> {
     /// `for item in items`: the runtime lists the items, which a hidden name holds while
     /// the loop counts through them.
     fn for_items(&mut self, names: &[String], iter: &Expr, body: &[Stmt]) -> Result<(), Diagnostic> {
+        if let Some((object, walk)) = self.dict_walk(iter, names) {
+            let (dict, ty) = self.expr(object)?;
+            if let (Some(dict), Ty::Dict(key, value)) = (dict, ty) {
+                return self.for_dict(names, (dict, key, value), walk, iter.span, body);
+            }
+        }
         let (value, ty) = self.expr(iter)?;
         if let (Some(text), Ty::Str, [name]) = (value, ty, names) {
             return self.for_text(name, text, iter.span, body);

@@ -110,14 +110,11 @@ fn list_method(item: &Type, name: &str) -> Option<Method> {
     let item = item.clone();
     Some(match name {
         "append" | "remove" => changes(&[item], Type::Unit),
-        "extend" => changes(&[Type::list(item)], Type::Unit),
         "insert" => changes(&[Type::Int, item], Type::Unit),
-        "clear" | "reverse" => changes(&[], Type::Unit),
+        "clear" => changes(&[], Type::Unit),
         "remove_where" => changes(&[], Type::Unit).receiving(&item).any_args(),
         "sort" => changes(&[], Type::Unit).receiving(&item),
         "pop" => changes(&[Type::Int], item).optional(1),
-        "index" => reads(&[item], Type::optional(Type::Int)),
-        "count" => reads(&[item], Type::Int),
         _ => return None,
     })
 }

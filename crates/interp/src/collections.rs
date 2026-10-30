@@ -80,17 +80,6 @@ impl Interp<'_> {
                     Ok(Value::Err(Rc::new(error)))
                 }
             },
-            Value::List(items) => match (method, args.as_slice()) {
-                ("index", [value]) => items
-                    .iter()
-                    .position(|item| item == value)
-                    .and_then(|at| i64::try_from(at).ok())
-                    .map_or(Ok(Value::None), |at| Ok(Value::Int(at))),
-                ("count", [value]) => Ok(Value::Int(
-                    i64::try_from(items.iter().filter(|item| *item == value).count()).unwrap_or(i64::MAX),
-                )),
-                _ => Err(no_method(receiver, method, span)),
-            },
             Value::Dict(pairs) => match (method, args.as_slice()) {
                 ("get", [key]) => Ok(lookup(pairs, key).unwrap_or(Value::None)),
                 ("get", [key, default]) => Ok(lookup(pairs, key).unwrap_or_else(|| default.clone())),
@@ -233,9 +222,7 @@ impl Interp<'_> {
                 })?;
                 items.insert(at, value.clone());
             }
-            ("extend", [Value::List(more)]) => items.extend(more.iter().cloned()),
             ("clear", []) => items.clear(),
-            ("reverse", []) => items.reverse(),
             ("remove", [value]) => {
                 let at = items.iter().position(|item| item == value).ok_or_else(|| {
                     Diagnostic::new(format!("{} isn't in the list", format::repr(value)), span)

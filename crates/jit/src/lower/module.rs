@@ -11,7 +11,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Compiled, Shared, abi, inline, internal};
+use super::{Compiled, Failure, Shared, abi, inline, internal};
 use crate::helpers::{self, Helper};
 use crate::types::{Function, Program, Ty};
 
@@ -33,6 +33,9 @@ pub(super) fn new_module(span: Span) -> Result<JITModule, Diagnostic> {
     for helper in helpers::ALL {
         builder.symbol(helper.shape().symbol, helper.address());
     }
+    // The failure flag is the run's thread's own, and the program runs on this thread.
+    let failed = std::ptr::with_exposed_provenance::<u8>(fennec_interp::embed::failed_flag());
+    builder.symbol(super::symbols::FAILED, failed);
     Ok(JITModule::new(builder))
 }
 
@@ -151,4 +154,28 @@ pub(super) fn signature(module: &dyn Module, function: &Function<'_>) -> craneli
 /// do; objects and plain structs are changed where the caller holds them.
 pub(super) fn returns_changes(ty: Ty) -> bool {
     !matches!(ty, Ty::Obj | Ty::Struct(_))
+}
+
+/// Tries compiling until it works, each time leaving out the function that failed last,
+/// which then runs in the interpreter. Gives back the result, and the functions left out
+/// with why each was, by name.
+pub(super) fn retrying<T>(
+    mut attempt: impl FnMut(&HashSet<String>) -> Result<T, Failure>,
+) -> Result<(T, Vec<Failure>), Diagnostic> {
+    let mut skipped = HashSet::new();
+    let mut reasons = Vec::new();
+    loop {
+        match attempt(&skipped) {
+            Ok(done) => {
+                reasons.sort_by(|(a, _): &Failure, (b, _): &Failure| a.cmp(b));
+                return Ok((done, reasons));
+            }
+            Err((name, diagnostic)) => {
+                if name == "main" || !skipped.insert(name.clone()) {
+                    return Err(diagnostic);
+                }
+                reasons.push((name, diagnostic));
+            }
+        }
+    }
 }

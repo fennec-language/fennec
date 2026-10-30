@@ -35,12 +35,11 @@ impl FnCx<'_> {
         let Some(entry) = self.checker.program.functions.get(key) else {
             return (signature.clone(), Vec::new());
         };
-        let owner =
-            entry.owner.as_ref().map(|owner| self.checker.program.type_params(owner)).unwrap_or_default();
+        let owner = self.checker.program.owner_params(entry);
         let generics = self.checker.program.generics_of(entry);
         let inherited: Vec<String> = entry.inherited.iter().map(|generic| generic.name.clone()).collect();
         let from_receiver = match receiver {
-            Some(Type::Generic(_, args)) if entry.def.takes_self() => args.clone(),
+            Some(receiver) if entry.def.takes_self() => receiver.type_args(),
             _ => Vec::new(),
         };
         let mut given = Vec::new();

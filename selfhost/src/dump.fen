@@ -120,6 +120,7 @@ struct Tree:
                 self.close()
             case .Extend(extension):
                 self.open(f"extend {extension.name}", extension.span)
+                self.write_generics(extension.generics)
                 for method in extension.methods:
                     self.write_function(method)
                 self.close()

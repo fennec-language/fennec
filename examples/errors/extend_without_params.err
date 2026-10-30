@@ -1,0 +1,7 @@
+error: `Pair` is generic, so its extension names its type parameters
+ --> examples/errors/extend_without_params.fen:5:1
+  |
+5 | extend Pair:
+  | ^^^^^^^^^^^
+  |
+  = help: write `extend Pair[T]:`

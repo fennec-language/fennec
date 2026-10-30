@@ -31,7 +31,9 @@ impl Lowerer<'_, '_> {
                     let place = self.local_place(local).ok_or_else(|| unsupported("this struct", span))?;
                     Ok((Some(self.read_place(&place)), local.ty))
                 }
-                Some(local @ super::Local { ty: Ty::Boxed(_) | Ty::Str, var: Some(var), .. }) => {
+                Some(
+                    local @ super::Local { ty: Ty::Boxed(_) | Ty::Str | Ty::Dict(..), var: Some(var), .. },
+                ) => {
                     let value = self.b.use_var(var);
                     Ok((Some(self.borrow(value)), local.ty))
                 }
@@ -113,6 +115,7 @@ impl Lowerer<'_, '_> {
                 let [start, end] = self.span_args(span);
                 return self.help(Helper::StrFromValue, &[handle, start, end]);
             }
+            Ty::Dict(key, value) => return self.handle_to_dict(handle, key, value, span),
             Ty::Unit | Ty::Cap(_) => {
                 return Err(unsupported(&format!("using a value as {}", to.name()), span));
             }
@@ -142,7 +145,7 @@ impl Lowerer<'_, '_> {
                 let address = value.ok_or_else(|| unsupported("this value", span))?;
                 return self.box_to_handle(address, id);
             }
-            Ty::Str => {
+            Ty::Str | Ty::Dict(..) => {
                 let address = value.ok_or_else(|| unsupported("this value", span))?;
                 return self.box_to_handle(address, 0);
             }
@@ -224,6 +227,9 @@ impl Lowerer<'_, '_> {
         if let Some(result) = self.string_binary(op, left, right)? {
             return Ok(result);
         }
+        if let Some(result) = self.dict_binary(op, left, right, span)? {
+            return Ok(result);
+        }
         match self.struct_equality(op, left, right)? {
             Some(result) => Ok(result),
             None => self.object_binary(op, left, right, span),
@@ -287,6 +293,14 @@ impl Lowerer<'_, '_> {
 
     /// `//` and `%` on ints, rounding toward negative infinity like Python.
     fn floor_div_mod(&mut self, op: BinOp, a: Value, b: Value, span: Span) -> Value {
+        // By a positive power of two, flooring is a shift and the remainder a mask.
+        if let Some(divisor) = self.constant(b).filter(|divisor| *divisor > 0 && divisor.count_ones() == 1) {
+            return if op == BinOp::FloorDiv {
+                self.b.ins().sshr_imm_s(a, i64::from(divisor.trailing_zeros()))
+            } else {
+                self.b.ins().band_imm_s(a, divisor - 1)
+            };
+        }
         let zero = self.b.ins().icmp_imm_s(IntCC::Equal, b, 0);
         self.fail_if(zero, runtime::DIVISION_BY_ZERO, span);
         let minus_one = self.b.ins().icmp_imm_s(IntCC::Equal, b, -1);

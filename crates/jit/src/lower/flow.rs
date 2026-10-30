@@ -132,7 +132,7 @@ impl Lowerer<'_, '_> {
         for arm in arms {
             let id = i64::try_from(self.shared.tables.patterns.len()).unwrap_or(0);
             self.shared.tables.patterns.push(arm.pattern.clone());
-            let id = self.int(id);
+            let id = self.handed_number("pattern", id);
             let [start, end] = self.span_args(arm.span);
             let matched = self.help(Helper::Matches, &[subject, id, start, end])?;
             let then = self.b.create_block();

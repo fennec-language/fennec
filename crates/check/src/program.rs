@@ -38,6 +38,9 @@ pub(crate) struct FnEntry {
     pub(crate) prelude: bool,
     /// The type parameters of the functions around a nested function, which it can use.
     pub(crate) inherited: Vec<Generic>,
+    /// For a method from an extension of a generic type, the type's parameters as the
+    /// extension names them, with any bounds that make it conditional.
+    pub(crate) extension: Vec<Generic>,
 }
 
 /// Every declaration in a program, keyed the way the signature table is: `name` for a
@@ -72,7 +75,13 @@ impl Program {
         for item in &module.items {
             match item {
                 Item::Function(def) => {
-                    let entry = FnEntry { def: def.clone(), owner: None, prelude, inherited: Vec::new() };
+                    let entry = FnEntry {
+                        def: def.clone(),
+                        owner: None,
+                        prelude,
+                        inherited: Vec::new(),
+                        extension: Vec::new(),
+                    };
                     self.functions.insert(def.name.clone(), entry);
                 }
                 Item::Struct(def) => self.add_type(def, TypeKind::Struct, prelude),
@@ -128,7 +137,7 @@ impl Program {
 
     fn add_type(&mut self, def: &TypeDef, kind: TypeKind, prelude: bool) {
         for method in &def.methods {
-            self.add_method(&def.name, method, prelude);
+            self.add_method(&def.name, method, prelude, &[]);
         }
         self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone(), prelude });
     }
@@ -291,6 +300,22 @@ impl Program {
         }
     }
 
+    /// The names a method's owner gives its type parameters, in order.
+    pub(crate) fn owner_params(&self, entry: &FnEntry) -> Vec<String> {
+        if entry.extension.is_empty() {
+            return entry.owner.as_ref().map(|owner| self.type_params(owner)).unwrap_or_default();
+        }
+        entry.extension.iter().map(|generic| generic.name.clone()).collect()
+    }
+
+    /// The type of `self` in a method: a built-in generic type with its extension's
+    /// parameters, like `list[T]`, or the owner's own type.
+    pub(crate) fn method_self_type(&self, entry: &FnEntry, owner: &str) -> Type {
+        let params: Vec<Type> =
+            entry.extension.iter().map(|generic| Type::Param(generic.name.clone())).collect();
+        Type::built_in_generic(owner, &params).unwrap_or_else(|| self.self_type(owner))
+    }
+
     /// The type of `self` in a type's methods: `Deque[T]` for a `Deque`.
     pub(crate) fn self_type(&self, name: &str) -> Type {
         if let Some(built_in) = Type::built_in(name) {
@@ -306,7 +331,17 @@ impl Program {
     /// The type parameters in scope in a function: its type's, then its own.
     pub(crate) fn generics_of(&self, entry: &FnEntry) -> Vec<Generic> {
         let owner = entry.owner.as_ref().and_then(|owner| self.types.get(owner));
-        let owner = owner.map(|info| info.def.generics.clone()).unwrap_or_default();
+        let declared = owner.map(|info| info.def.generics.clone()).unwrap_or_default();
+        // An extension's parameters keep the bounds the declaration gives them, and add its own.
+        let owner = if entry.extension.is_empty() {
+            declared
+        } else {
+            let mut generics = entry.extension.clone();
+            for (generic, declared) in generics.iter_mut().zip(declared) {
+                generic.bounds.extend(declared.bounds);
+            }
+            generics
+        };
         owner
             .into_iter()
             .chain(entry.inherited.iter().cloned())

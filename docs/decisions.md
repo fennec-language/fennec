@@ -692,6 +692,13 @@ The order:
 Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compiler can run on the Cranelift JIT, since the interpreter is too slow to run a compiler.
 *Why:* Every language change after the compiler is self-hosted has to be made in two compilers.
 
+## License
+
+**The compiler and tools are `MIT OR Apache-2.0`, and the runtime library and standard library add a runtime library exception,** modeled on Swift's. A program compiled with Fennec owes no attribution for the runtime and standard library code built into it. The exception is in `RUNTIME-LIBRARY-EXCEPTION`.
+*Why:* Every compiled program carries pieces of the runtime and standard library. Without the exception, every game or tool shipped would have to include Fennec's license notice for code its author never chose to use. Swift and GCC have the same kind of exception for the same reason. The compiler and tools themselves keep the usual dual license, which most open-source compiler tooling uses, so code can move between projects in either direction.
+
+**Contributions are dual licensed the same way,** unless the contributor explicitly says otherwise. The README states it.
+
 ## Still open
 
 - How a type marks that its finishing method must be called.

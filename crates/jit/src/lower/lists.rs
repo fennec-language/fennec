@@ -44,15 +44,15 @@ impl Lowerer<'_, '_> {
     }
 
     /// The runtime's number for a kind of item, registering it the first time.
-    fn element(&mut self, item: Ty) -> Result<Value, Diagnostic> {
-        if let Some(id) = self.elements.get(&item) {
-            return Ok(self.int(*id));
+    pub(super) fn element(&mut self, item: Ty) -> Result<Value, Diagnostic> {
+        if let Some(&id) = self.elements.get(&item) {
+            return Ok(self.handed_number("element", id));
         }
         let described = std::rc::Rc::new(self.describe(item)?);
         let id = i64::try_from(self.shared.tables.elements.len()).unwrap_or(0);
         self.shared.tables.elements.push(described);
         self.elements.insert(item, id);
-        Ok(self.int(id))
+        Ok(self.handed_number("element", id))
     }
 
     fn describe(&self, item: Ty) -> Result<Element, Diagnostic> {
@@ -142,15 +142,19 @@ impl Lowerer<'_, '_> {
         let (at, at_ty) = self.expr(index)?;
         let at = self.convert(at, at_ty, Ty::Int, index.span)?;
         let len = self.list_length(name, item)?;
-        let negative = self.b.ins().icmp_imm_s(IntCC::SignedLessThan, at, 0);
-        let from_end = self.b.ins().iadd(at, len);
-        let resolved = self.b.ins().select(negative, from_end, at);
-        // Unsigned, a negative position is huge, so one comparison checks both ends.
-        let outside = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, resolved, len);
-        let fail = self.b.create_block();
-        let ok = self.b.create_block();
+        // Unsigned, a negative position is huge, so one comparison checks a position from
+        // the start. One from the end is the rare case, checked apart.
+        let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, at, len);
+        let [from_end, fail, ok] = [(); 3].map(|()| self.b.create_block());
+        self.b.set_cold_block(from_end);
         self.b.set_cold_block(fail);
-        self.b.ins().brif(outside, fail, &[], ok, &[]);
+        self.b.append_block_param(ok, types::I64);
+        self.b.ins().brif(inside, ok, &[at.into()], from_end, &[]);
+        self.b.switch_to_block(from_end);
+        self.b.seal_block(from_end);
+        let back = self.b.ins().iadd(at, len);
+        let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, back, len);
+        self.b.ins().brif(inside, ok, &[back.into()], fail, &[]);
         self.b.switch_to_block(fail);
         self.b.seal_block(fail);
         let [start, end] = self.span_args(span);
@@ -158,6 +162,8 @@ impl Lowerer<'_, '_> {
         self.b.ins().jump(self.bail, &[]);
         self.b.switch_to_block(ok);
         self.b.seal_block(ok);
+        let resolved =
+            self.b.block_params(ok).first().copied().ok_or_else(|| internal("lost a position", span))?;
         let items = self.items_at(name, item, write)?;
         let stride = self.stride(item)?;
         let offset = self.b.ins().imul_imm_s(resolved, stride);

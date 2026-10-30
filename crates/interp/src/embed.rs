@@ -19,6 +19,7 @@ use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
 pub mod aot;
 pub mod checks;
 pub mod codec;
+pub mod dicts;
 pub mod heap;
 pub mod lists;
 pub mod objects;

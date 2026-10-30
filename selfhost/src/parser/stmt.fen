@@ -1,0 +1,188 @@
+## Statements and blocks. Mirrors `crates/syntax/src/parser/stmt.rs`.
+
+from span import Span, Diagnostic
+from token import Tok, is_reserved
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from parser import Parser, is_name
+
+extend Parser:
+    ## The body after a `:`: an indented block, or one simple statement on the same line.
+    def block(mut self) -> list[Stmt]:
+        if not self.at(.Newline):
+            return [self.simple_stmt()?]
+        self.expect_block_start()?
+        mut stmts = []
+        while not self.eat(.Dedent) and not self.at(.Eof):
+            stmts.append(self.stmt()?)
+        stmts
+
+    def stmt(mut self) -> Stmt:
+        if self.at_keyword("if"):
+            return self.if_stmt()?
+        if self.at_keyword("while"):
+            return self.while_stmt()?
+        if self.at_keyword("for"):
+            return self.for_stmt()?
+        if self.at_keyword("with"):
+            return self.with_stmt()?
+        if self.at_keyword("def"):
+            function = self.function()?
+            return Stmt(kind=.Def(function), span=function.span)
+        self.simple_stmt()
+
+    def simple_stmt(mut self) -> Stmt:
+        start = self.span()
+        kind = match self.peek():
+            case .Keyword(word): self.keyword_stmt(word)?
+            case .Name(word):
+                if self.is_python_only(word):
+                    fail python_only(word, start)
+                self.expr_or_assign()?
+            case _: self.expr_or_assign()?
+        span = start.to(self.prev_span())
+        self.end_line()?
+        Stmt(kind=kind, span=span)
+
+    ## A simple statement that starts with the keyword `word`.
+    def keyword_stmt(mut self, word: str) -> StmtKind:
+        if word == "mut":
+            return self.mut_declaration()?
+        if word not in ["return", "fail", "yield", "assert", "break", "continue", "pass"]:
+            return self.expr_or_assign()?
+        self.advance()
+        match word:
+            case "return":
+                if self.at(.Newline) or self.at(.Eof) or self.at(.Dedent):
+                    return .Return(None)
+                .Return(self.expr()?)
+            case "fail": .Fail(self.expr()?)
+            case "yield": .Yield(self.expr()?)
+            case "assert": .Assert(self.expr()?)
+            case "break": .Break
+            case "continue": .Continue
+            case _: .Pass
+
+    ## `raise x`, `try:` and `except x:` at the start of a statement: Python habits Fennec
+    ## catches with a pointer to what to write instead.
+    def is_python_only(self, word: str) -> bool:
+        word in ["raise", "try", "except", "finally"] and not (
+            self.peek_at(1) in [.Punct("="), .Punct("."), .Punct("("), .Punct("[")]
+        )
+
+    def mut_declaration(mut self) -> StmtKind:
+        self.advance()
+        target = self.expr()?
+        if not is_name_expr(target):
+            fail Diagnostic(message="`mut` declares a new name, like `mut count = 0`", span=target.span)
+        mut ty: TypeExpr? = None
+        if self.eat_punct(":"):
+            ty = self.type_expr()?
+        self.expect_punct("=")?
+        value = self.expr()?
+        .Assign(target, None, value, True, ty)
+
+    ## An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
+    def expr_or_assign(mut self) -> StmtKind:
+        mut target = self.expr()?
+        if is_name_expr(target) and self.eat_punct(":"):
+            ty = self.type_expr()?
+            self.expect_punct("=")?
+            value = self.expr()?
+            return .Assign(target, None, value, False, ty)
+        if self.at_punct(","):
+            mut items = [target]
+            while self.eat_punct(","):
+                items.append(self.expr()?)
+            mut span = self.prev_span()
+            for item in items:
+                span = span.to(item.span)
+            target = Expr(kind=ExprKind.Tuple(items), span=span)
+        if self.peek() not in [.Punct("="), .Punct("+="), .Punct("-="), .Punct("*="), .Punct("/=")]:
+            return StmtKind.Expr(target)
+        op = assignment_op(self.advance().tok)
+        if not is_assignable(target, op is None):
+            fail Diagnostic(message="this can't be assigned to", span=target.span)
+        value = self.expr()?
+        .Assign(target, op, value, False, None)
+
+    def if_stmt(mut self) -> Stmt:
+        start = self.advance().span
+        mut branches = [self.condition_and_block()?]
+        mut otherwise = None
+        while True:
+            if self.eat_keyword("elif"):
+                branches.append(self.condition_and_block()?)
+            elif self.eat_keyword("else"):
+                self.expect_punct(":")?
+                otherwise = self.block()?
+                break
+            else:
+                break
+        Stmt(kind=.If(branches, otherwise), span=start.to(self.prev_span()))
+
+    def condition_and_block(mut self) -> (Expr, list[Stmt]):
+        cond = self.expr()?
+        self.expect_punct(":")?
+        (cond, self.block()?)
+
+    def while_stmt(mut self) -> Stmt:
+        start = self.advance().span
+        cond, body = self.condition_and_block()?
+        Stmt(kind=.While(cond, body), span=start.to(self.prev_span()))
+
+    def for_stmt(mut self) -> Stmt:
+        start = self.advance().span
+        is_mut = self.eat_keyword("mut")
+        names = self.loop_names()?
+        iter, body = self.condition_and_block()?
+        Stmt(kind=.For(names, is_mut, iter, body), span=start.to(self.prev_span()))
+
+    ## `name` or `a, b`, then `in`.
+    def loop_names(mut self) -> list[str]:
+        mut names = [self.name("a loop variable")?]
+        while self.eat_punct(","):
+            names.append(self.name("a loop variable")?)
+        if not self.eat_keyword("in"):
+            fail self.unexpected("`in`")
+        names
+
+    def with_stmt(mut self) -> Stmt:
+        start = self.advance().span
+        value = self.expr()?
+        mut name = None
+        mut is_mut = False
+        if self.eat_keyword("as"):
+            is_mut = self.eat_keyword("mut")
+            name = self.name("a name after `as`")?
+        self.expect_punct(":")?
+        body = self.block()?
+        Stmt(kind=.With(value, name, is_mut, body), span=start.to(self.prev_span()))
+
+def is_name_expr(expr: Expr) -> bool:
+    match expr.kind:
+        case .Name(_): True
+        case _: False
+
+## Whether `target` can go on the left of `=`, or of `+=` and the rest when not `plain`.
+def is_assignable(target: Expr, plain: bool) -> bool:
+    match target.kind:
+        case .Name(_): True
+        case .Index(_, _): True
+        case .Attr(_, _, optional): not optional
+        case .Tuple(items): plain and all(is_name_expr(item) for item in items)
+        case _: False
+
+## The operator `+=` and the rest apply, or None for a plain `=`.
+def assignment_op(tok: Tok) -> BinOp?:
+    match tok:
+        case .Punct("+="): .Add
+        case .Punct("-="): .Sub
+        case .Punct("*="): .Mul
+        case .Punct("/="): .Div
+        case _: None
+
+def python_only(word: str, span: Span) -> Diagnostic:
+    mut help = "Fennec has no exceptions: pass errors up with `?`, give a default with `else`, or handle them with `match`"
+    if word == "raise":
+        help = "Fennec has no exceptions: write `fail SomeError(...)`, which returns the error"
+    Diagnostic(message=f"Fennec doesn't have `{word}`", span=span, help=help)

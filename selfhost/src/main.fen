@@ -7,6 +7,11 @@
 
 from ast import Module
 from parser import parse
+# Statements, expressions and patterns extend `Parser` from these files, which a kit loads
+# only when something imports them.
+import parser.stmt
+import parser.expr
+import parser.pattern
 from dump import dump_tokens, dump_tree, dump_check
 
 ## Reads its work from standard input: one `tokens <path>`, `tree <path>` or `check <path>`

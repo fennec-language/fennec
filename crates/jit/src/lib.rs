@@ -7,6 +7,7 @@
 mod helpers;
 mod layout;
 mod lower;
+mod reach;
 mod runtime;
 mod types;
 
@@ -92,6 +93,7 @@ fn compile_and_run(module: &Module) -> Result<(Vec<u8>, Result<Report, JitError>
         fennec_syntax::PRELUDE.iter().filter_map(|source| fennec_syntax::parse(source).ok()).collect();
     let program =
         types::Program::from_module(module, &prelude, &signatures).map_err(JitError::Unsupported)?;
+
     let (entry, tables, compilation) =
         lower::compile(&program, &signatures, stack_limit).map_err(JitError::Unsupported)?;
     let result = runtime::execute(&entry, module, tables).map_err(JitError::Failed)?;

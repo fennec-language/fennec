@@ -10,6 +10,7 @@
 //! and errors in `flow`, and handing work to the interpreter in `fallback`.
 
 mod call;
+mod codegen;
 mod expr;
 mod fallback;
 mod flow;
@@ -66,6 +67,8 @@ struct Shared {
     tables: Tables,
     names: HashMap<String, i64>,
     strings: HashMap<String, i64>,
+    /// The compiled methods that take `self`, by method name, with each one's type.
+    methods: HashMap<String, Vec<(String, String)>>,
     with_frames: usize,
     handed_over: usize,
     stack_limit: i64,
@@ -107,6 +110,10 @@ fn new_module(span: Span) -> Result<JITModule, Diagnostic> {
     // The stack limit lives in a register of its own for the whole run, so checking it
     // before a call is one comparison. The register is one compiled Rust code preserves.
     flags.set("enable_pinned_reg", "true").map_err(|err| internal(err, span))?;
+    // Cranelift's own checks of the code the JIT gives it find bugs in the JIT, not in the
+    // program, so only test builds pay for them.
+    let verify = if cfg!(debug_assertions) { "true" } else { "false" };
+    flags.set("enable_verifier", verify).map_err(|err| internal(err, span))?;
     let isa = cranelift_native::builder()
         .map_err(|err| internal(err, span))?
         .finish(settings::Flags::new(flags))
@@ -137,6 +144,7 @@ fn attempt(
         tables: Tables::default(),
         names: HashMap::new(),
         strings: HashMap::new(),
+        methods: HashMap::new(),
         with_frames: 0,
         handed_over: 0,
         stack_limit,
@@ -144,6 +152,7 @@ fn attempt(
     declare_all(&mut module, &mut shared, program, skipped).map_err(fatal)?;
     let mut ctx = module.make_context();
     let mut builder_ctx = FunctionBuilderContext::new();
+    let mut lowered = Vec::new();
     for function in program.functions.iter().filter(|function| !skipped.contains(&function.key)) {
         let failed = |diagnostic| (function.key.clone(), diagnostic);
         let id = shared.compiled.get(&function.key).map(|compiled| compiled.id);
@@ -157,8 +166,12 @@ fn attempt(
             shared: &mut shared,
         };
         lower_function(&mut cx, function).map_err(failed)?;
-        module.define_function(id, &mut ctx).map_err(|err| failed(internal(err, function.def.span)))?;
+        let func = std::mem::replace(&mut ctx.func, cranelift_codegen::ir::Function::new());
+        lowered.push((id, func, function));
         module.clear_context(&mut ctx);
+    }
+    for (id, machine_code) in codegen::compile_all(module.isa(), lowered)? {
+        machine_code.install(&mut module, id)?;
     }
     let main = shared.compiled.get("main").ok_or_else(|| fatal(unsupported("this `main`", span)))?;
     if main.params.iter().any(|(_, ty, _)| !matches!(ty, Ty::Stdout | Ty::Fs)) {
@@ -240,6 +253,13 @@ fn declare_all(
             function.params.iter().map(|param| (param.name.clone(), param.ty, param.is_mut)).collect();
         let takes_self = function.def.params.first().is_some_and(|param| param.is_self);
         let inline = inline::inline_body(function);
+        if takes_self && let Some((owner, method)) = function.key.rsplit_once('.') {
+            shared
+                .methods
+                .entry(method.to_owned())
+                .or_default()
+                .push((owner.to_owned(), function.key.clone()));
+        }
         shared
             .compiled
             .insert(function.key.clone(), Compiled { id, params, ret: function.ret, takes_self, inline });
@@ -301,8 +321,6 @@ struct Cx<'a> {
 
 /// Lowers a function, first without a frame, then with one if it turns out to need it.
 fn lower_function(cx: &mut Cx<'_>, function: &Function<'_>) -> Result<(), Diagnostic> {
-    let names = cx.shared.names.clone();
-    let strings = cx.shared.strings.clone();
     let tables = &cx.shared.tables;
     let lengths = [
         tables.names.len(),
@@ -316,12 +334,16 @@ fn lower_function(cx: &mut Cx<'_>, function: &Function<'_>) -> Result<(), Diagno
             cx.ctx.clear();
             *cx.builder_ctx = FunctionBuilderContext::new();
             cx.ctx.func.signature = signature(cx.module, function);
-            cx.shared.names = names;
-            cx.shared.strings = strings;
+            // Forget what the first try added, by removing the end of each table.
             let [names, strings, exprs, stmts, patterns] = lengths;
-            let tables = &mut cx.shared.tables;
-            tables.names.truncate(names);
-            tables.strings.truncate(strings);
+            let shared = &mut *cx.shared;
+            for name in shared.tables.names.drain(names..) {
+                shared.names.remove(&name);
+            }
+            for text in shared.tables.strings.drain(strings..) {
+                shared.strings.remove(&text);
+            }
+            let tables = &mut shared.tables;
             tables.exprs.truncate(exprs);
             tables.stmts.truncate(stmts);
             tables.patterns.truncate(patterns);

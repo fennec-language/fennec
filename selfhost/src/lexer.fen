@@ -78,6 +78,8 @@ struct Lexer:
                 self.string(start)?
             elif c == "f" and self.peek(1) == "\"":
                 self.fstring(start)?
+            elif c == "r" and self.peek(1) == "\"":
+                self.raw_string(start)?
             elif is_digit(c):
                 self.number(start)?
             elif is_letter(c) or c == "_":
@@ -251,6 +253,19 @@ struct Lexer:
         self.pos += 1
         self.push(Tok.Str(text), start)
 
+    ## `r"..."`: backslashes are kept as written, for patterns like `r"\d+"`.
+    def raw_string(mut self, start: int):
+        self.pos += 2
+        mut text = ""
+        while self.peek(0) != "\"":
+            c = self.peek(0)
+            if c == "" or c == "\n":
+                fail self.unterminated(start)
+            text += c
+            self.pos += 1
+        self.pos += 1
+        self.push(Tok.Str(text), start)
+
     def unterminated(self, start: int) -> Diagnostic:
         Diagnostic(
             message="this string never ends",
@@ -278,7 +293,7 @@ struct Lexer:
                 fail Diagnostic(
                     message=f"`\\{c}` isn't an escape Fennec knows",
                     span=self.span(at),
-                    help="the escapes are \\n, \\t, \\r, \\0, \\\\ and \\\"",
+                    help="the escapes are \\n, \\t, \\r, \\0, \\\\ and \\\"; to keep backslashes as written, use a raw string like r\"\\d+\"",
                 )
         self.pos += 1
         replacement

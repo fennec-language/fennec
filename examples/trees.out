@@ -4,5 +4,5 @@ Expr.Let(slot=0, value=Expr.Add(left=Expr.Num(value=2), right=Expr.Var(slot=1)),
 True False True
 1 0 1 0
 True False
-49995000 5
-9999 9998
+499500 5
+999 998

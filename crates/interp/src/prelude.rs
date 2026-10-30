@@ -1,10 +1,7 @@
-//! The standard library so far. Most of it is written in Fennec itself (in `fennec_syntax::PRELUDE`,
-//! which the type checker reads too); the rest is builtins.
+//! Imports of the standard library. Most of it is written in Fennec itself (in
+//! `fennec_syntax::prelude()`, which the type checker reads too); the rest is builtins.
 
 use fennec_syntax::{Diagnostic, Import, Imported};
-
-/// Fennec source loaded before every program.
-pub(crate) const SOURCES: [&str; fennec_syntax::PRELUDE.len()] = fennec_syntax::PRELUDE;
 
 /// What an import brings in: modules by the name they're used under, like `json`, and
 /// module functions by the name they're imported under, like `loads` for `json.loads`. Types

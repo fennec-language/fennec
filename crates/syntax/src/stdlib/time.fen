@@ -1,0 +1,46 @@
+## A length of time, to the nanosecond. Made with `Duration.seconds(0.5)`,
+## `Duration.millis(16)` or `Duration(nanos=...)`.
+struct Duration:
+    nanos = 0
+
+    def seconds(seconds: float) -> Duration:
+        Duration(nanos=round(seconds * 1_000_000_000.0))
+
+    def millis(millis: int) -> Duration:
+        Duration(nanos=millis * 1_000_000)
+
+    def micros(micros: int) -> Duration:
+        Duration(nanos=micros * 1_000)
+
+    ## The duration in seconds, for moving things by `speed * dt.as_seconds()`.
+    def as_seconds(self) -> float:
+        float(self.nanos) / 1_000_000_000.0
+
+    def as_millis(self) -> float:
+        float(self.nanos) / 1_000_000.0
+
+    def +(self, other: Duration) -> Duration:
+        Duration(nanos=self.nanos + other.nanos)
+
+    def -(self, other: Duration) -> Duration:
+        Duration(nanos=self.nanos - other.nanos)
+
+    def *(self, times: int) -> Duration:
+        Duration(nanos=self.nanos * times)
+
+    def <(self, other: Duration) -> bool:
+        self.nanos < other.nanos
+
+## A moment, read from a `Clock`. Subtract two to get the `Duration` between them.
+struct Instant:
+    ## Nanoseconds since the clock started.
+    nanos = 0
+
+    def -(self, earlier: Instant) -> Duration:
+        Duration(nanos=self.nanos - earlier.nanos)
+
+    def +(self, later: Duration) -> Instant:
+        Instant(nanos=self.nanos + later.nanos)
+
+    def <(self, other: Instant) -> bool:
+        self.nanos < other.nanos

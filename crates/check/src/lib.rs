@@ -21,6 +21,7 @@ mod messages;
 mod pattern;
 mod place;
 mod program;
+mod stdlib;
 mod stmt;
 mod types;
 

@@ -6,11 +6,37 @@ use std::rc::Rc;
 use fennec_re::{Anchor, Captures, Regex};
 use fennec_syntax::{Diagnostic, Span};
 
+use super::{Module, no_constants};
 use crate::call::CallArg;
-use crate::collections::split_key;
+use crate::collections::{plain, split_key};
 use crate::interp::Interp;
 use crate::methods::no_method;
 use crate::value::{Instance, Value};
+
+pub(crate) const MODULE: Module = Module {
+    functions: &["re.is_regex"],
+    call,
+    constant: no_constants,
+    methods: &[("Regex", method)],
+};
+
+fn method(
+    interp: &mut Interp<'_>,
+    regex: &Instance,
+    name: &str,
+    args: Vec<CallArg>,
+    span: Span,
+) -> Result<Value, Diagnostic> {
+    interp.regex_method(regex, name, args, span)
+}
+
+/// `re.is_regex(pattern)`: whether a pattern is valid.
+fn call(interp: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
+    match plain(args, name, span)?.as_slice() {
+        [Value::Str(pattern)] => Ok(Value::Bool(interp.regex(pattern).is_ok())),
+        _ => Err(Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span)),
+    }
+}
 
 /// Part of a replacement: text as written, or what a group caught.
 enum Part {

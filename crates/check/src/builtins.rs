@@ -6,11 +6,12 @@ use fennec_syntax::{Arg, Diagnostic, Expr, Span};
 
 use crate::function::FnCx;
 use crate::messages::{mismatch, needless_mut, no_method, wrong_args};
+use crate::stdlib;
 use crate::types::{Type, accepts, article, join, join_all};
 
-/// Each builtin, and how many plain arguments it takes (at least, at most).
-/// Names with a dot belong to a module, like `json.loads`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 36] = [
+/// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
+/// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
+const BUILTINS: [(&str, usize, usize); 23] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("abs", 1, 1),
@@ -20,23 +21,12 @@ const BUILTINS: [(&str, usize, usize); 36] = [
     ("float", 1, 1),
     ("ignore", 2, 2),
     ("int", 1, 1),
-    ("json.dumps", 1, 1),
-    ("json.loads", 1, 1),
     ("len", 1, 1),
     ("list", 1, 1),
-    ("math.ceil", 1, 1),
-    ("math.cos", 1, 1),
-    ("math.floor", 1, 1),
-    ("math.sin", 1, 1),
-    ("math.sqrt", 1, 1),
     ("max", 1, usize::MAX),
     ("min", 1, usize::MAX),
     ("parallel", 1, 1),
-    ("random.random_choice", 3, 3),
-    ("random.random_float", 2, 2),
-    ("random.random_int", 4, 4),
     ("range", 1, 3),
-    ("re.is_regex", 1, 1),
     ("replace", 1, usize::MAX),
     ("reversed", 1, 1),
     ("round", 1, 2),
@@ -44,38 +34,20 @@ const BUILTINS: [(&str, usize, usize); 36] = [
     ("sorted", 1, 1),
     ("str", 1, 1),
     ("sum", 1, 1),
-    ("toml.dumps", 1, 1),
-    ("toml.loads", 1, 1),
     ("zip", 2, 2),
 ];
 
 /// Builtins whose arguments have to be plain values, not results or optionals.
-const NEEDS_VALUES: [&str; 14] = [
-    "abs",
-    "float",
-    "int",
-    "len",
-    "math.ceil",
-    "math.cos",
-    "math.floor",
-    "math.sin",
-    "math.sqrt",
-    "random.random_choice",
-    "random.random_float",
-    "random.random_int",
-    "range",
-    "round",
-];
+const NEEDS_VALUES: [&str; 6] = ["abs", "float", "int", "len", "range", "round"];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
-    BUILTINS.iter().any(|(builtin, ..)| *builtin == name)
+    BUILTINS.iter().any(|(builtin, ..)| *builtin == name) || stdlib::function(name).is_some()
 }
 
 /// The modules with a function of this name, like `json` and `toml` for `loads`.
 pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
-    BUILTINS
-        .iter()
-        .filter_map(|(builtin, ..)| builtin.split_once('.').filter(|(_, function)| *function == name))
+    stdlib::functions()
+        .filter_map(|builtin| builtin.split_once('.').filter(|(_, function)| *function == name))
         .map(|(module, _)| module)
         .chain(fennec_syntax::importable_type(name))
         .collect()
@@ -83,7 +55,7 @@ pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
 
 /// A method of a built-in value: whether it changes the value, what it gives back, and how
 /// many arguments it takes.
-struct Method {
+pub(crate) struct Method {
     changes: bool,
     returns: Type,
     arity: (usize, usize),
@@ -91,7 +63,7 @@ struct Method {
     receives: Vec<Type>,
 }
 
-fn reads(returns: Type, low: usize, high: usize) -> Method {
+pub(crate) fn reads(returns: Type, low: usize, high: usize) -> Method {
     Method { changes: false, returns, arity: (low, high), receives: Vec::new() }
 }
 
@@ -158,7 +130,6 @@ fn str_method(name: &str) -> Option<Method> {
 
 /// Methods of capabilities, and of standard library types that are written in Rust.
 fn named_method(type_name: &str, name: &str) -> Option<Method> {
-    let found = || Type::named("Match");
     match (type_name, name) {
         ("Stdout", "print" | "write") => Some(reads(Type::Unit, 0, usize::MAX)),
         ("Fs", "exists") => Some(reads(Type::Bool, 1, 1)),
@@ -166,11 +137,7 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
         ("Fs", "write_text") => Some(reads(Type::result(Type::Unit, Type::named("IoError")), 2, 2)),
         ("Clock", "now") => Some(reads(Type::named("Instant"), 0, 0)),
         ("Clock", "sleep") => Some(reads(Type::Unit, 1, 1)),
-        ("Regex", "match" | "fullmatch" | "search") => Some(reads(Type::optional(found()), 1, 1)),
-        ("Regex", "find_all") => Some(reads(Type::list(found()), 1, 1)),
-        ("Regex", "replace") => Some(reads(Type::Str, 2, 2)),
-        ("Regex", "split") => Some(reads(Type::list(Type::Str), 1, 1)),
-        _ => None,
+        _ => stdlib::method(type_name, name),
     }
 }
 
@@ -250,16 +217,19 @@ impl FnCx<'_> {
             .find(|arg| arg.name.is_none())
             .map_or(Type::Unknown, |arg| self.peek_type(&arg.value));
         let item = peek_item(&first);
-        let named: &[&str] = match name {
-            "min" | "max" | "sorted" => &["key"],
-            "json.dumps" => &["indent"],
+        let named: &[&str] = match (name, stdlib::function(name)) {
+            ("min" | "max" | "sorted", _) => &["key"],
+            (_, Some((_, function))) => function.named,
             _ => &[],
         };
         let plain = self.builtin_args(name, args, named, std::slice::from_ref(&item), span);
-        let (low, high) = BUILTINS
-            .iter()
-            .find(|(builtin, ..)| *builtin == name)
-            .map_or((0, 0), |(_, low, high)| (*low, *high));
+        let (low, high) = match stdlib::function(name) {
+            Some((_, function)) => function.arity,
+            None => BUILTINS
+                .iter()
+                .find(|(builtin, ..)| *builtin == name)
+                .map_or((0, 0), |(_, low, high)| (*low, *high)),
+        };
         if plain.len() < low || plain.len() > high {
             self.error(wrong_args(name, span));
             return Type::Unknown;
@@ -268,11 +238,16 @@ impl FnCx<'_> {
     }
 
     fn builtin_result(&mut self, name: &str, plain: &[(Type, Span)], span: Span) -> Type {
-        let types: Vec<Type> = plain.iter().map(|(ty, _)| ty.clone()).collect();
-        let (first, at) = plain.first().cloned().unwrap_or((Type::Unknown, span));
-        if NEEDS_VALUES.contains(&name) && !plain.iter().all(|(ty, at)| self.usable(ty, *at)) {
+        let needs_values =
+            stdlib::function(name).map_or(NEEDS_VALUES.contains(&name), |(_, f)| f.needs_values);
+        if needs_values && !plain.iter().all(|(ty, at)| self.usable(ty, *at)) {
             return Type::Unknown;
         }
+        if let Some((module, _)) = stdlib::function(name) {
+            return (module.result)(self, name, plain, span);
+        }
+        let types: Vec<Type> = plain.iter().map(|(ty, _)| ty.clone()).collect();
+        let (first, at) = plain.first().cloned().unwrap_or((Type::Unknown, span));
         let items = |cx: &mut Self| cx.item_type(&first, at);
         match name {
             "Ok" => Type::result(first, Type::Unknown),
@@ -294,23 +269,10 @@ impl FnCx<'_> {
                 }
                 Type::list(Type::Int)
             }
-            "random.random_int" | "random.random_float" => {
-                if types.iter().any(|ty| !matches!(ty, Type::Int | Type::Unknown)) {
-                    self.error(Diagnostic::new(format!("`{name}` takes ints"), span));
-                }
-                let value = if name == "random.random_int" { Type::Int } else { Type::Float };
-                Type::Tuple(vec![value, Type::Int])
-            }
-            "random.random_choice" => {
-                let item = plain.get(2).map_or(Type::Unknown, |(ty, at)| self.item_type(ty, *at));
-                Type::Tuple(vec![item, Type::Int])
-            }
-            "json.loads" | "toml.loads" | "json.dumps" | "toml.dumps" => self.format_result(name, &first, at),
             "str" => Type::Str,
-            "re.is_regex" => Type::Bool,
             "round" if types.len() == 2 => Type::Float,
-            "int" | "math.floor" | "math.ceil" | "round" => Type::Int,
-            "float" | "math.sqrt" | "math.sin" | "math.cos" => Type::Float,
+            "int" | "round" => Type::Int,
+            "float" => Type::Float,
             "abs" => first,
             "ignore" => Type::Unit,
             "min" | "max" if types.len() > 1 => join_all(&types),
@@ -341,41 +303,6 @@ impl FnCx<'_> {
             }
             _ => Type::Unknown,
         }
-    }
-
-    /// `std.json` and `std.toml`. Read text gives values of any type, so its type is unknown,
-    /// except that a TOML document is always a table.
-    fn format_result(&mut self, name: &str, first: &Type, at: Span) -> Type {
-        let (format, function) = name.split_once('.').unwrap_or_default();
-        if function == "loads" {
-            if !accepts(&Type::Str, first) {
-                self.error(mismatch("the text to read", &Type::Str, first, at));
-            }
-            let read = if format == "toml" {
-                Type::Dict(Box::new(Type::Str), Box::new(Type::Unknown))
-            } else {
-                Type::Unknown
-            };
-            return Type::result(read, Type::named("ParseError"));
-        }
-        let format = format.to_uppercase();
-        let is_table = matches!(first, Type::Dict(..) | Type::Unknown)
-            || self.checker.program.kind_of(first) == Some(crate::program::TypeKind::Struct);
-        if format == "TOML" && !is_table {
-            self.error(Diagnostic::new(
-                format!(
-                    "a TOML document is a table, so `toml.dumps` needs a dict or a struct, not {}",
-                    article(&first.kind())
-                ),
-                at,
-            ));
-        } else if matches!(
-            first,
-            Type::Set(_) | Type::Function(_) | Type::Id(_) | Type::IdMap(_) | Type::Result(..)
-        ) {
-            self.error(mismatch_holds(&format, first, at));
-        }
-        Type::Str
     }
 
     /// `replace(value, field=new, ...)`: a copy with some fields changed.
@@ -426,11 +353,4 @@ fn peek_item(ty: &Type) -> Type {
         Type::Str => Type::Str,
         _ => Type::Unknown,
     }
-}
-
-fn mismatch_holds(format: &str, ty: &Type, span: Span) -> Diagnostic {
-    if matches!(ty, Type::Result(..)) {
-        return crate::messages::unhandled_result(span);
-    }
-    Diagnostic::new(format!("{format} can't hold {}", article(&ty.kind())), span)
 }

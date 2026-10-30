@@ -55,6 +55,8 @@ pub(crate) struct Param {
 
 pub(crate) struct Function<'m> {
     pub(crate) def: &'m FnDef,
+    /// Its name in the signature table: `name`, or `Type.name` for a method.
+    pub(crate) key: String,
     pub(crate) params: Vec<Param>,
     pub(crate) ret: Ty,
     /// Whether it gives back a result: it contains `fail` or `?`.
@@ -72,19 +74,30 @@ pub(crate) fn unsupported(what: &str, span: Span) -> Diagnostic {
 }
 
 impl<'m> Program<'m> {
-    /// The program's top-level functions the JIT could compile. The rest, and every
-    /// method, run in the interpreter when native code calls them.
-    pub(crate) fn from_module(module: &'m Module, signatures: &Signatures) -> Result<Self, Diagnostic> {
+    /// The functions and methods the JIT could compile, the standard library's included.
+    /// The rest run in the interpreter when native code calls them.
+    pub(crate) fn from_module(
+        module: &'m Module,
+        prelude: &'m [Module],
+        signatures: &Signatures,
+    ) -> Result<Self, Diagnostic> {
         let mut functions = Vec::new();
         let mut main_span = None;
-        for item in &module.items {
+        for item in prelude.iter().chain(std::iter::once(module)).flat_map(|module| &module.items) {
             match item {
                 Item::Function(def) => {
                     if def.name == "main" {
                         main_span = Some(def.span);
                     }
-                    if let Some(function) = function(def, signatures) {
-                        functions.push(function);
+                    functions.extend(function(def, def.name.clone(), signatures));
+                }
+                Item::Struct(ty) | Item::Enum(ty) | Item::Error(ty) => {
+                    for method in &ty.methods {
+                        functions.extend(function(
+                            method,
+                            format!("{}.{}", ty.name, method.name),
+                            signatures,
+                        ));
                     }
                 }
                 Item::Stmt(stmt) => return Err(unsupported("top-level statements", stmt.span)),
@@ -100,18 +113,18 @@ impl<'m> Program<'m> {
     }
 }
 
-fn function<'m>(def: &'m FnDef, signatures: &Signatures) -> Option<Function<'m>> {
-    let signature = signatures.get(&def.name)?;
+fn function<'m>(def: &'m FnDef, key: String, signatures: &Signatures) -> Option<Function<'m>> {
+    let signature = signatures.get(&key)?;
     if signature.generator || def.body.iter().any(|stmt| matches!(stmt.kind, StmtKind::Def(_))) {
         return None;
     }
     let mut params = Vec::with_capacity(def.params.len());
     for param in &def.params {
-        let ty = param_ty(param.ty.as_ref()?);
+        let ty = if param.is_self { Ty::Obj } else { param_ty(param.ty.as_ref()?) };
         params.push(Param { name: param.name.clone(), ty, is_mut: param.is_mut });
     }
     let ret = if signature.can_fail { Ty::Obj } else { Ty::of(&signature.returns) };
-    Some(Function { def, params, ret, fallible: signature.can_fail })
+    Some(Function { def, key, params, ret, fallible: signature.can_fail })
 }
 
 /// How a parameter of a written type is held.

@@ -148,6 +148,9 @@ This replaces the earlier rules that return types are inferred, and that recursi
 **No global function serves only one type.** A builtin has to work across types, through an interface, or be a type's constructor, like `int(...)`, `float(...)` and `range(...)`. An operation on one type is a method. So a character's code is `"A".code()`, not Python's `ord("A")`, and `ord(c)` is an error whose fix writes `c.code()`.
 *Why:* Global functions that only fit one type crowd the namespace, can't be extended by other types, and hide where an operation lives.
 
+**The standard library uses only what any program can.** Its types get no powers user types lack: `str`'s `*` is a `def *` written in Fennec, like any user type's operator, and its methods are ordinary methods. Where something can be written in Fennec, it is.
+*Why:* The language's features are tested by the language's own heaviest user, and nothing in the standard library behaves in a way programs can't copy.
+
 **A type is said by calling it with its type arguments:** `counts = dict[str, int]()`, `mut queue = Deque[Job]()`. There are no annotations on local names. An empty `{}` or `[]` takes its type from how it's used later.
 *Why:* It needs no new syntax, it's one line, and Python 3.9 and later accept the same thing.
 
@@ -368,6 +371,24 @@ if entry is not None:
 **Doc comments are `##`, above what they document.** A `##` comment documents the function, struct, field or enum case that follows it, or the module when it's at the top of the file. Examples go in Markdown code fences and check results with `assert`. `fennec test` runs them. There are no `"""` docstrings: strings are never documentation.
 *Why:* One form that works on everything, including fields and enum cases. Fences render properly in `fennec doc`. Nim uses `##` for doc comments too.
 
+**`case` takes or-patterns and guards, as in Python.**
+```fennec
+match tok:
+    case .Int(_) | .Float(_): "a number"
+    case .Name(word) if is_declaration(word): self.declaration()
+    case .Name(word): self.expression()
+```
+- Every alternative of an or-pattern binds the same names, with the same types.
+- A guard is read-only: it can't take `mut` arguments, so it can never change anything.
+- A guarded arm never counts toward covering every case, so the exhaustiveness check stays sound: a `match` still needs an unguarded arm for each case, or it doesn't compile. Arms are tried in order.
+
+*Why:* An or-pattern says once what several arms would repeat, and a guard keeps a condition in the arm it belongs to. Neither costs anything at run time.
+
+**`"  " * depth` repeats a string.** It's `str`'s own `def *`.
+
+**Keywords can't be names, including field names.** A field holding a function is `function`, not `def`.
+*Why:* Python doesn't allow it either, and a name that's sometimes a keyword is harder to read.
+
 **f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay.
 *Why:* `{x=}` is what people want when debugging; `!r` has no meaning without Python's `repr`.
 
@@ -444,14 +465,41 @@ These are default lints, and the Den requires them.
 **Shown, not required:** test coverage, mutation score and benchmarks, as scores on the kit's page.
 *Why:* A required coverage percentage gets gamed with tests that check nothing. A visible mutation score exposes that.
 
-**The Den checks for itself.** Publishing goes through OIDC trusted publishing, so the CI run that ran the checks is attested. The Den re-runs formatting and lints in wasm, which is safe and fast because kits have no build scripts.
+**A publish is a signed statement, not an upload.** "Kit `owner/name` version 1.2.0 is commit `H` at this URL", signed with the author's passkey or through Sigstore. The Den fetches that commit from whatever git host it's on, checks that it matches `H`, and stores the source in R2, keyed by its BLAKE3 hash. Nothing else is accepted: no uploaded archives and no prebuilt binaries. This replaces OIDC trusted publishing, which assumed GitHub Actions.
+*Why:* What anyone reads in the repository is exactly what runs. The xz backdoor hid in a release archive that didn't match its source. And the Den doesn't depend on any one git host.
 
-**Breaking dependents is caught before release.** Before a new version is published, the Den runs the tests of every kit that depends on it against that version and reports which ones break.
+**The Den keeps every kit's source permanently.** Installing never touches the git host. Versions are immutable: a bad one can be yanked, never deleted or replaced. Because everything is keyed by its hash, anyone can mirror the Den, and the hashes in `kit.lock` prove a mirror served the real thing.
+
+**The Den checks for itself.** It re-runs formatting and lints, and runs the kit's tests, in the interpreter compiled to wasm, with fake capabilities and a limit on how much work a run may do. Kits have no build scripts, so nothing else ever runs. Native kits, which only first-party and verified authors can publish, also run in real CI under sanitizers.
+
+**Each version has a size cap,** around 10 MB of source, and publishing is rate-limited.
+
+**Breaking dependents is caught before release.** Before a new version is published, the Den runs the tests of the kits that depend on it directly against that version, within a compute budget, and reports which ones break.
 *Why:* An author learns "this release breaks 14 kits" before releasing it, not from bug reports.
 
 **The Den can be searched by type,** through `fennec search` and its website.
 
 **Lints are pinned to the kit's Fennec version.** A lint added in Fennec 0.5 never blocks a patch release of a kit written for 0.4.
+
+## Supply chain
+
+**Anything that could run code you didn't read is either impossible or sandboxed.** Every rule below follows from that.
+
+**Installing a kit never runs anything.** There are no install or build scripts.
+
+**An update that asks for more capabilities stops until you approve it.** `kit.lock` records the capabilities each dependency receives. A logging kit that starts asking for `Net` doesn't install until you say so. The same goes for an update that adds `unsafe` code.
+*Why:* A trusted package turning malicious in an update is the attack that hit event-stream and ua-parser-js.
+
+**Capabilities can be narrowed:** `fs.only("saves/")`, `net.only("api.example.com")`. A kit gets only the part it needs.
+
+**Every kit has an owner's namespace,** `owner/kit`. The Den rejects names a small edit away from popular ones. There's one public registry, and private kits live in their own namespace.
+*Why:* That stops typosquatting and dependency confusion.
+
+**Accounts use passkeys, and every release is signed** with Sigstore.
+
+**`fennec audit` is built in.** It checks every dependency against the advisory database, and CI fails on a known vulnerability.
+
+**New versions wait a week** before `fennec update` picks them up (already decided), and versions are chosen by minimal version selection.
 
 ## Engines
 
@@ -486,6 +534,69 @@ The JIT, release builds and the language server all share one build engine and c
 2. A hash of each function's syntax tree that leaves out positions and comments. Reformatting, editing comments and moving code around recompile nothing. Positions are kept separately for error messages.
 
 BLAKE3 is written in-house rather than taken as a dependency, and checked against the official test vectors.
+
+## Native code
+
+**If it can be Fennec, it is Fennec.** Libraries are ported to Fennec wherever possible. C is called only for what can't be ported: the operating system's own APIs, GPU drivers, and closed platform or console SDKs.
+- **A port is tested against the original:** the C library is the oracle, giving the same outputs for the same inputs, and fuzz tests compare them continuously.
+- **A port is benchmarked against the original:** CI fails if it's more than 3% slower.
+- **Only permissively licensed code is ported:** MIT, BSD, Apache, zlib or public domain. Anything under the GPL or LGPL is written from scratch without reading the original.
+
+*Why:* Ported code is memory-safe, bound by capabilities, and runs in wasm and the playground. A C binding is none of those.
+
+**C is declared in an `extern "C":` block.** A file with one is an extern module, the only kind of file where pointers and `unsafe` may appear.
+```fennec
+extern "C":
+    struct Sqlite3:
+        _opaque: u8
+
+    def sqlite3_open(path: ptr[u8], db: ptr[owned ptr[Sqlite3]?]) -> i32
+    def sqlite3_close(db: owned ptr[Sqlite3]) -> i32
+
+pub struct Database:
+    handle: owned ptr[Sqlite3]
+
+    def del(self):
+        unsafe("handle came from sqlite3_open and is closed only here"):
+            sqlite3_close(self.handle)
+```
+
+**Every call into C is inside `unsafe("reason")`.** The reason is required and says which rule the code relies on.
+
+**A small, fixed set of types crosses the boundary:** numbers with explicit widths (`i8` to `i64`, `u8` to `u64`, `f32`, `f64`), `bool`, `extern` structs (in C's layout exactly), `ptr[T]` and `CString`, which owns its bytes and ends them with the zero byte C expects. Fennec's `str`, `list` and other structs are converted explicitly. Passing Fennec functions to C as callbacks comes later.
+
+**Pointers are as safe as the compiler can make them.**
+- `ptr[T]` is never null. Anything C may return as null is `ptr[T]?`, and the checker makes you handle `None`.
+- An `owned ptr` must be used up exactly once, either moved into a struct whose `def del` releases it or passed to a C function that takes `owned`. Dropping one, copying one or losing one on any path is a compile error naming the path.
+- A pointer into a Fennec value, such as a `CString`'s, is usable only inside the `unsafe` block where it was taken.
+- Reading, writing or offsetting through a pointer happens only inside `unsafe`.
+- `pub` signatures never contain pointers, so other files and kits see only a safe API.
+
+**Declarations are checked against the real headers.** When building, every `extern` struct's size and field offsets, and every function's signature, are compared with the C headers, and a mismatch fails the build. `fennec bindgen header.h` writes the `extern` block from the headers in the first place, and the generated file is checked in.
+*Why:* A wrong signature corrupts memory silently, and it's the mistake AI-written bindings make most.
+
+**Native code is caught misbehaving early.** Debug builds track every owned pointer and stop on a double free or a use after free. Native kits run their tests under AddressSanitizer, UndefinedBehaviorSanitizer and LeakSanitizer, and the Den fuzzes every `extern` wrapper.
+
+**When the program stops itself,** as on overflow, `def del` still runs for every value holding an `owned ptr`, so C resources are closed. Only a crash inside C skips it.
+
+**No C is called inside `parallel` bodies.**
+*Why:* Most C libraries aren't safe to call from several threads at once.
+
+**`fennec audit --unsafe` lists every `unsafe` block in the dependency tree,** with its reason, and the Den shows each kit's count.
+
+**Libraries are named in `kit.toml`:**
+```toml
+[native]
+libraries = ["sqlite3"]
+```
+The JIT loads them when the program runs, and release builds link them. The C standard library is always available.
+
+**Raw C is allowed only in the standard library's OS layer, first-party `fennec/` kits, verified kits and your own app.** A community kit's C is compiled to wasm and runs sandboxed, where capabilities still bind it. It runs about 10 to 30% slower, more for heavy SIMD. A `Buffer` allocated inside the sandbox lets Fennec pass data without copying. A community kit that needs native speed can apply to be audited and verified.
+*Why:* No community kit can get around capabilities, which is the guarantee that matters. The native code games depend on, for graphics, audio, windows and physics, is first-party or verified, so it runs at full speed.
+
+**An app allows each native kit by name:** `sqlite = { version = "1.2", native = true }`. A native kit's API still takes the capabilities it uses, `sqlite.open(fs, path)`, so its signatures stay honest.
+
+**The interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox, compile-time evaluation and the REPL can't run native kits; the error points to `fennec run`, which uses the JIT. Community kits' C compiled to wasm does run there, sandboxed. Native kits' differential tests compare the JIT with release builds. A REPL that switches to the JIT when a native kit is imported can come later.
 
 ## Sandboxing
 
@@ -527,7 +638,5 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 - Whether files of a kit may reuse a top-level name, reached through `import` by their module's name.
 - These security proposals:
   - `Net`, `Env` and `Process` as capabilities.
-  - Narrowed capabilities like `fs.only("saves/")`.
-  - Each kit's capabilities recorded in `kit.lock`, with any increase needing approval.
   - Types that make injection impossible: `sql"..."` templates, `Path`, argument lists for commands, escaping HTML templates.
   - `Secret[str]`, which can't be printed or logged.

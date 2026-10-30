@@ -487,22 +487,27 @@ noalloc def update(mut particles: SoaList[Particle], dt: f32):
 
 ## C and unsafe code
 
-Fennec is safe by default. Calling C is the one place unsafe code is allowed, and it's fenced in:
+Fennec is safe by default, and libraries are written in Fennec wherever possible. Calling C is for what can't be: the operating system, GPU drivers and platform SDKs. It's the one place unsafe code is allowed, and it's fenced in:
 
 ```fennec
 extern "C":
-    def sqlite3_open(path: ptr[u8], db: ptr[ptr[Sqlite3]]) -> i32
-    def sqlite3_close(db: ptr[Sqlite3]) -> i32
+    struct Sqlite3:
+        _opaque: u8
 
-export struct Database:
-    handle: ptr[Sqlite3]
+    def sqlite3_open(path: ptr[u8], db: ptr[owned ptr[Sqlite3]?]) -> i32
+    def sqlite3_close(db: owned ptr[Sqlite3]) -> i32
+
+pub struct Database:
+    handle: owned ptr[Sqlite3]
 
     def del(self):
-        unsafe("handle came from sqlite3_open and is closed exactly once"):
+        unsafe("handle came from sqlite3_open and is closed only here"):
             sqlite3_close(self.handle)
 ```
 
-- Pointers (`ptr[...]`) and `unsafe` blocks are only allowed in modules that declare `extern` functions, and each `unsafe` block states its reason.
-- Exported functions can't expose pointers, so callers only ever see a safe API.
+- Pointers (`ptr[...]`) and `unsafe` blocks are only allowed in files with an `extern` block, and every call into C states its reason.
+- A pointer is never null unless its type says so (`ptr[T]?`). An `owned ptr` must be released exactly once, or the program doesn't compile.
+- `extern` declarations are checked against the real C headers when building, and `fennec bindgen` writes them from the headers.
+- `pub` functions can't expose pointers, so callers only ever see a safe API.
 - A type with `def del` is cleaned up exactly once, when it's no longer used, and can't be duplicated.
-- A package that uses `unsafe` is marked, and you have to allow it by name before your project can depend on it.
+- A kit that uses C is marked native, and you allow it by name before your project can depend on it. Kits from the community can only bring C compiled to WebAssembly, which runs sandboxed.

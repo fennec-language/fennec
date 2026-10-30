@@ -25,6 +25,31 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **Handles are `Id[T]`.** An `Id[Enemy]` is an index plus a generation, made by an `IdMap[Enemy]`. It can't index a map of another type. When its enemy is removed, looking it up fails with `TargetGone` rather than finding whatever reuses the slot. `type EnemyId = Id[Enemy]` is an optional alias, not something the compiler makes for each struct.
 *Why:* With no references, handles are how one value points at another. Game engines, compilers, graph libraries and servers use the same generational-handle pattern. Handles are two ints, so they're cheap to copy and can be saved or sent anywhere.
 
+## Collections
+
+**Collections are values.** Assigning or passing a `list`, `dict`, `set` or `str` gives an independent copy, like every other value.
+
+**They're a small header over a shared buffer.** The header holds a pointer, a length and a capacity, 24 bytes, and lives inline wherever the collection is stored. The elements sit together in one reference-counted block on the heap. Copying bumps the count. The buffer is copied only on the first write while it's shared, which last-use moves make rare. Elements are stored inline too, so a `list[Vec3]` is one contiguous run of floats.
+
+**Fixed-size arrays live entirely inline.** `array[float, 16]` has no heap block and no reference count. It's for math types like `Mat4` and small buffers inside structs.
+
+**Short strings live in the header.** A `str` of up to 23 bytes is stored in its 24-byte header with no allocation.
+*Why:* Most names, keys and identifiers fit.
+
+## Layout
+
+**Structs inside structs are stored inline.** There are no hidden pointers or boxes. `player.transform.pos.x += 1.0` is one write to memory.
+
+**Fields always have names.** There's no embedding that quietly gives the outer struct an inner struct's methods.
+*Why:* What a value can do is always visible where its type is declared.
+
+**Recursive types need no annotation.** For `next: Node?`, the compiler adds the indirection itself.
+
+**The compiler chooses the layout.** It can reorder fields, pack enums, and in a hot loop store a list of structs as one array per field. None of this can change what a program does, because nothing can observe where a value sits in memory. The debugger and `{x=}` always show the struct as written.
+
+**Structs in `extern` modules use C's layout exactly.**
+*Why:* C interop must be predictable.
+
 ## Allocation
 
 **The runtime owns allocation.** The default allocator is mimalloc, vendored (it's MIT-licensed) and later ported to Fennec. It keeps per-thread lists of free blocks for each size, so allocating and freeing take a few instructions.
@@ -56,12 +81,30 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 ## Speed
 
-**The target is enforced.** Every program in the benchmark suite also exists as idiomatic Rust. CI fails if a benchmark runs more than 3% slower than its Rust twin, or slower than the previous run. The fix for a failure goes into the compiler, never into tricks in the benchmark.
+**The target is enforced.** Every program in the benchmark suite also exists as idiomatic code in the fastest established systems language. CI fails if a benchmark runs more than 3% slower than that twin, or slower than the previous run. The fix for a failure goes into the compiler, never into tricks in the benchmark.
+
+### Matching the fastest languages
+
+**Proven single owners cost nothing.** When ownership proves a value has one owner, its reference counting and copy-on-write checks are deleted entirely, and the machine code is what a language with manual memory would produce. Most hot code is like this.
+
+**Range analysis removes provably safe checks.** Overflow checks on loop counters, indices and bounded math, and bounds checks on indexing that can't go out of range, are removed. That brings checked overflow's cost close to zero.
+
+### Going further
+
+**Release builds optimize the whole program, guided by profiles.** Link-time optimization is on by default, and so is profile-guided optimization with `fennec build --release --profile`. Kits build from source and every call is static, so the optimizer sees everything.
+*Why:* Together they're often worth 10–20%, and most projects in other languages never turn them on.
+
+**Layout is free to change.** As described under Layout, the compiler can reorder fields, pack enums and split lists of structs into one array per field, because no reference can depend on where a value lives. Languages with references can't change layouts behind the programmer's back.
+
+**Functions without capabilities have no side effects.** A function that isn't passed a capability can't do I/O, so the compiler can merge repeated calls, move them out of loops and vectorize loops more aggressively.
+*Why:* In most languages the compiler has to assume any call might do anything.
+
+**There's no unwinding.** Errors are values, and a runtime failure such as overflow ends the program. With no unwinding machinery, code is smaller and inlines better.
 
 **Math types are 32-bit.** `Vec3` and the other math types use 32-bit floats, and `float` stays 64-bit.
 *Why:* Twice the SIMD throughput for game math, while `float` stays accurate everywhere else.
 
-**The compiler tells LLVM that names don't alias.** Exclusive `mut` access proves no two names point at the same memory, so every function gets that guarantee for free, as in Rust and Fortran.
+**The compiler tells LLVM that names don't alias.** Exclusive `mut` access proves no two names point at the same memory, so every function gets that guarantee for free. Fortran's speed comes from the same guarantee.
 
 **Integer overflow is checked in release builds too.** Wrapping is opt-in: `x.wrapping_add(y)`.
 *Why:* A program that compiles should do what it says. The check costs about 1–2%, and the benchmark suite measures it.
@@ -137,16 +180,42 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 
 **Lints are pinned to the kit's Fennec version.** A lint added in Fennec 0.5 never blocks a patch release of a kit written for 0.4.
 
+## Engines
+
+**Development runs use the Cranelift JIT, with no tiering.** Each function is compiled on its first call, so only code that runs gets compiled. There's no bytecode interpreter that promotes hot functions to the JIT.
+*Why:* Lazy compilation takes microseconds per function and the cache makes reruns instant, so a second fast engine would buy almost nothing. Tiering means two engines that must always agree, plus falling back from compiled code to the interpreter, which is the hardest part of the runtimes that do it.
+
+**The tree-walking interpreter stays simple and correct, not fast.** It runs the REPL, the playground, compile-time evaluation and the sandbox, and it's the reference the JIT is tested against: every example must give the same output on both.
+
+**One cache, shared per machine, keyed by content.**
+- Each compiled function is stored under a hash of its body and the signatures of what it calls. A change inside a function that leaves its signature alone doesn't recompile its callers.
+- Entries are written to a temporary file and renamed into place, so readers never see half an entry and the normal path takes no locks. A lock is taken only while old entries are being cleaned up.
+- The JIT, release builds and the language server share the cache through the query-based compiler.
+
+## Sandboxing
+
+**Capabilities are the sandbox's policy in every engine.** A script can do only what the capabilities passed to its `main` allow, and sandboxed code can't use `extern` or `unsafe`. A host can show what a script asks for before running it: "this script wants `Net` and read access to `data/`".
+*Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
+
+**The interpreter runs untrusted scripts, with limits.** It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground, the REPL and AI-written scripts, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
+
+**Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
+*Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.
+
+**The native engines are for trusted code.** The Cranelift JIT and LLVM release builds run your own programs, not untrusted ones.
+
+**On servers, sandboxed code also runs in its own process,** under seccomp on Linux or the App Sandbox on macOS, as an outer wall.
+
 ## Writing Fennec in Fennec
 
-The compiler in Rust stays as stage 0 until a Fennec compiler built by Fennec produces identical output when it builds itself again.
+The current compiler stays as stage 0 until a Fennec compiler built by Fennec produces identical output when it builds itself again.
 
 The order:
 
 1. The tools: the formatter, the linter and the Den CLI. They can be written while the language is still changing.
 2. The front end: lexer, parser and type checker.
 3. The release backend, written to emit LLVM's text format (`.ll`) for `llc`. This needs no calls into C.
-4. The development backend, calling Cranelift through a small Rust wrapper with a C interface, from an `extern` module.
+4. The development backend, calling Cranelift through a small wrapper with a C interface, from an `extern` module.
 5. A backend of our own: only if Cranelift stops being enough.
 
 Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compiler can run on the Cranelift JIT, since the interpreter is too slow to run a compiler.

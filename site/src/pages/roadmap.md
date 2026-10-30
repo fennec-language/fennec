@@ -35,8 +35,7 @@ The next milestone moves Fennec's checks from runtime to compile time.
 
 ## v0.2: native speed
 
-- The typed bytecode interpreter.
-- The fast compiler for development builds, with hot functions promoted from the interpreter.
+- The fast compiler for development builds, compiling each function on its first call.
 - The optimizing compiler for release builds.
 - The shared build cache.
 - The benchmark suite and the performance check on every change.

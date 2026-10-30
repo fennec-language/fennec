@@ -1,0 +1,22 @@
+# Files and folders go through the `Fs` capability that `main` receives, so code can only
+# touch the disk when it's handed `fs`. A method that can fail gives an `IoError`.
+from std.fs import Metadata
+
+def describe(found: Metadata) -> str:
+    if found.is_dir:
+        return "a folder"
+    "a file" if found.is_file else "something else"
+
+def main(stdout: Stdout, fs: Fs):
+    stdout.print("the root is", describe(fs.metadata("/")?))
+
+    # These paths don't exist, so each call fails without changing anything.
+    match fs.list_dir("no/such/folder"):
+        case Ok(paths): stdout.print(len(paths), "paths")
+        case IoError(_): stdout.print("there's no folder to list")
+    match fs.remove("no/such/folder/save.txt"):
+        case Ok(_): stdout.print("removed it")
+        case IoError(_): stdout.print("there's nothing to remove")
+    match fs.metadata("no/such/folder/save.txt"):
+        case Ok(found): stdout.print(found.size)
+        case IoError(_): stdout.print("there's nothing to look at")

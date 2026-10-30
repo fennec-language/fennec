@@ -33,6 +33,7 @@ macro_rules! modules {
 }
 
 modules! {
+    fs,
     hash,
     json,
     math,
@@ -62,6 +63,11 @@ pub(crate) fn methods_of(type_name: &str) -> Option<Method> {
         .flat_map(|module| module.methods)
         .find(|(name, _)| *name == type_name)
         .map(|(_, call)| *call)
+}
+
+/// For a module with no functions, which is never called.
+fn no_functions(_: &mut Interp<'_>, name: &str, _: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
+    Err(Diagnostic::new(format!("`{name}` doesn't exist"), span))
 }
 
 /// For a module with no constants.

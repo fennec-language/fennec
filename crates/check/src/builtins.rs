@@ -175,13 +175,8 @@ fn str_method(name: &str) -> Option<Method> {
 
 /// Methods of capabilities, and of standard library types that are written in Rust.
 fn named_method(type_name: &str, name: &str) -> Option<Method> {
-    let io = |value: Type| Type::result(value, Type::named("IoError"));
-    let text = || Type::Str;
     Some(match (type_name, name) {
         ("Stdout", "print" | "write") => reads(&[], Type::Unit).any_args(),
-        ("Fs", "exists") => reads(&[text()], Type::Bool),
-        ("Fs", "read_text") => reads(&[text()], io(text())),
-        ("Fs", "write_text") => reads(&[text(), text()], io(Type::Unit)),
         ("Clock", "now") => reads(&[], Type::named("Instant")),
         ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),
         _ => return stdlib::method(type_name, name),

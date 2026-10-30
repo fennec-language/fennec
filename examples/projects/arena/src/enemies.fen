@@ -1,0 +1,20 @@
+## Enemies and where they come from.
+
+from std.math import Vec3
+
+struct Enemy:
+    name: str
+    position: Vec3
+    health = 100
+
+    def describe(self) -> str:
+        f"{self.name} at {self.position.x} with {self.health} health"
+
+def spawn(name: str, position: Vec3, health: int) -> Enemy:
+    Enemy(name=name, position=position, health=health)
+
+def wave(size: int) -> list[Enemy]:
+    [spawn(f"grunt {at + 1}", Vec3(x=float(at)), 100) for at in range(size)]
+
+test "a wave has as many enemies as asked":
+    assert len(wave(4)) == 4

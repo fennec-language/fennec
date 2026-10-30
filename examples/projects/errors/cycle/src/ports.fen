@@ -1,0 +1,7 @@
+from ships import Ship
+
+struct Port:
+    name: str
+
+def docked(port: Port) -> list[Ship]:
+    []

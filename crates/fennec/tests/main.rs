@@ -2,3 +2,4 @@
 
 mod cli;
 mod examples;
+mod projects;

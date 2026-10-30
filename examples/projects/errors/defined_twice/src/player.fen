@@ -1,0 +1,5 @@
+struct Player:
+    x = 0.0
+
+def update(dt: float) -> float:
+    dt * 2.0

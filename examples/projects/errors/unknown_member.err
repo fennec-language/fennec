@@ -1,0 +1,7 @@
+error: `physics` has nothing called `gravity`
+ --> examples/projects/errors/unknown_member/src/main.fen:4:18
+  |
+4 |     stdout.print(physics.gravity())
+  |                  ^^^^^^^^^^^^^^^
+  |
+  = help: examples/projects/errors/unknown_member/src/physics.fen defines drag

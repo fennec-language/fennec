@@ -5,6 +5,7 @@ mod diagnostic;
 mod lexer;
 mod parser;
 mod prelude;
+mod sources;
 mod span;
 mod token;
 
@@ -13,6 +14,7 @@ pub use ast::{
     Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
 };
 pub use diagnostic::Diagnostic;
-pub use parser::{parse, parse_repl};
+pub use parser::{parse, parse_at, parse_repl};
 pub use prelude::PRELUDE;
+pub use sources::Sources;
 pub use span::Span;

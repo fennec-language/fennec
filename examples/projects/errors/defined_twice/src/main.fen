@@ -1,0 +1,7 @@
+from player import Player
+
+def update(dt: float) -> float:
+    dt
+
+def main(stdout: Stdout):
+    stdout.print(update(0.5), Player())

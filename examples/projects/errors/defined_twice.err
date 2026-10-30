@@ -1,0 +1,7 @@
+error: `update` is already defined in examples/projects/errors/defined_twice/src/main.fen
+ --> examples/projects/errors/defined_twice/src/player.fen:4:1
+  |
+4 | def update(dt: float) -> float:
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: the files of a kit share one set of top-level names, so rename one of them

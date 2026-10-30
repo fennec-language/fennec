@@ -1,0 +1,4 @@
+from ships import Ship
+
+def main(stdout: Stdout):
+    stdout.print(Ship(name="Kestrel"))

@@ -57,13 +57,21 @@ cargo run -q -p fennec -- test examples/testing.fen
 cargo run -q -p fennec -- repl
 ```
 
-Every program in [`examples/`](examples) is a test: it must print exactly its `.out` file and pass its own `test` blocks, and every program in [`examples/errors/`](examples/errors) must fail with exactly its `.err` message.
+A program can span several files as a kit: a folder with a `kit.toml` and its code under `src`. `fennec new my_game` starts one, and `fennec run` and `fennec test` with no file run the kit around the current folder.
+
+```bash
+cargo run -q -p fennec -- run examples/projects/arena
+```
+
+Every program in [`examples/`](examples) is a test: it must print exactly its `.out` file and pass its own `test` blocks, and every program in [`examples/errors/`](examples/errors) must fail with exactly its `.err` message. The kits in [`examples/projects/`](examples/projects) work the same way.
 
 ## Repository layout
 
 - `crates/syntax`: the lexer (with Python-style indentation), parser and syntax tree.
 - `crates/check`: the type checker, which also infers every function's signature.
 - `crates/interp`: the interpreter.
+- `crates/jit`: the native compiler, built on Cranelift.
+- `crates/kit`: kits: `kit.toml`, and loading a kit's files as one program.
 - `crates/fennec`: the `fennec` command.
 - `examples/`: example programs, which double as the test suite.
 - `site/`: the website, built with [Astro](https://astro.build) and deployed to GitHub Pages on every push to `main`.

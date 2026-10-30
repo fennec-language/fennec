@@ -1,0 +1,4 @@
+import physics
+
+def main(stdout: Stdout):
+    stdout.print(physics.gravity())

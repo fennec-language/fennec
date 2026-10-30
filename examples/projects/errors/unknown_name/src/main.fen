@@ -1,0 +1,4 @@
+from enemies import Enemy, spwan
+
+def main(stdout: Stdout):
+    stdout.print(spwan())

@@ -1,0 +1,7 @@
+error: there's no module called `enemis`
+ --> examples/projects/errors/missing_module/src/main.fen:1:1
+  |
+1 | from enemis import Enemy
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: it would be the file examples/projects/errors/missing_module/src/enemis.fen

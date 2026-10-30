@@ -2,7 +2,7 @@
 //! it, keeping the build engine's state in memory between commands. It's never needed for
 //! correctness: when it can't be reached or started, a command does the work itself.
 //!
-//! A command connects to `~/.fennec/daemon/<version>.sock` (see `socket_path`), sends `fennec <version>` and its
+//! A command connects to `~/.fennec/daemon/<version>.sock` (see `unix::socket_path`), sends `fennec <version>` and its
 //! request one line each, and reads back its exit code and what to print. The socket is named
 //! by version, so a command never talks to a daemon from another version.
 //!
@@ -10,9 +10,10 @@
 //! minutes with nothing to do; `FENNEC_DAEMON_IDLE` sets that in seconds. `FENNEC_NO_DAEMON`
 //! makes commands do their work in-process.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
+#[cfg(unix)]
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What a command prints, and how it exits.
@@ -35,10 +36,12 @@ impl Outcome {
     }
 
     /// The outcome as the daemon sends it: the code, the two lengths, then the two texts.
+    #[cfg(unix)]
     fn encode(&self) -> String {
         format!("{}\n{} {}\n{}{}", self.code, self.stdout.len(), self.stderr.len(), self.stdout, self.stderr)
     }
 
+    #[cfg(unix)]
     fn decode(text: &str) -> Option<Outcome> {
         let (code, rest) = text.split_once('\n')?;
         let (lengths, rest) = rest.split_once('\n')?;
@@ -48,19 +51,6 @@ impl Outcome {
         let stderr = rest.get(stdout_len..stdout_len + stderr_len)?;
         Some(Outcome { stdout: stdout.to_owned(), stderr: stderr.to_owned(), code: code.parse().ok()? })
     }
-}
-
-/// Where the daemon listens: in Fennec's folder, unless that path is too long for a socket
-/// (about 100 bytes on macOS), in which case the user's runtime folder or the temp folder,
-/// named by a hash of Fennec's folder.
-fn socket_path(home: &Path) -> PathBuf {
-    let preferred = home.join("daemon").join(format!("{VERSION}.sock"));
-    if preferred.as_os_str().len() < 100 {
-        return preferred;
-    }
-    let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
-    let folder = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-    folder.join(format!("fennec-{}-{VERSION}.sock", hash.get(..16).unwrap_or(&hash)))
 }
 
 /// `fennec daemon status`, `stop` and `serve`.
@@ -113,8 +103,21 @@ mod unix {
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::{Duration, Instant};
 
-    use super::{Outcome, VERSION, socket_path};
+    use super::{Outcome, VERSION};
     use crate::changes::Snapshots;
+
+    /// Where the daemon listens: in Fennec's folder, unless that path is too long for a socket
+    /// (about 100 bytes on macOS), in which case the user's runtime folder or the temp folder,
+    /// named by a hash of Fennec's folder.
+    fn socket_path(home: &Path) -> PathBuf {
+        let preferred = home.join("daemon").join(format!("{VERSION}.sock"));
+        if preferred.as_os_str().len() < 100 {
+            return preferred;
+        }
+        let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
+        let folder = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+        folder.join(format!("fennec-{}-{VERSION}.sock", hash.get(..16).unwrap_or(&hash)))
+    }
 
     /// How long the daemon waits with nothing to do before it exits.
     fn idle_limit() -> Duration {

@@ -8,16 +8,32 @@ pub struct Diagnostic {
     pub message: String,
     pub span: Span,
     pub help: Option<String>,
+    /// Changes to the source that fix the problem, which `fennec fix` makes.
+    pub fixes: Vec<Edit>,
+}
+
+/// One change to a source: the text at `span` becomes `text`. An empty span inserts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Edit {
+    pub span: Span,
+    pub text: String,
 }
 
 impl Diagnostic {
     pub fn new(message: impl Into<String>, span: Span) -> Self {
-        Diagnostic { message: message.into(), span, help: None }
+        Diagnostic { message: message.into(), span, help: None, fixes: Vec::new() }
     }
 
     #[must_use]
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
+        self
+    }
+
+    /// Adds a change to the source that fixes the problem.
+    #[must_use]
+    pub fn with_fix(mut self, span: Span, text: impl Into<String>) -> Self {
+        self.fixes.push(Edit { span, text: text.into() });
         self
     }
 
@@ -50,4 +66,35 @@ impl Diagnostic {
             carets = "^".repeat(width),
         )
     }
+}
+
+/// A source with the fixes of `diagnostics` made, for a file whose spans start at `base`.
+/// Fixes outside the file, or overlapping an earlier one, are left out. `None` when there's
+/// nothing to change.
+pub fn apply_fixes(source: &str, base: u32, diagnostics: &[Diagnostic]) -> Option<String> {
+    let end = base.saturating_add(u32::try_from(source.len()).unwrap_or(u32::MAX));
+    let mut edits: Vec<&Edit> = diagnostics
+        .iter()
+        .flat_map(|diagnostic| &diagnostic.fixes)
+        .filter(|edit| base <= edit.span.start && edit.span.start <= edit.span.end && edit.span.end <= end)
+        .collect();
+    if edits.is_empty() {
+        return None;
+    }
+    edits.sort_by_key(|edit| (edit.span.start, edit.span.end));
+    edits.dedup();
+    let mut fixed = String::with_capacity(source.len());
+    let mut at = 0;
+    for edit in edits {
+        let start = usize::try_from(edit.span.start - base).unwrap_or(usize::MAX);
+        let stop = usize::try_from(edit.span.end - base).unwrap_or(usize::MAX);
+        if start < at {
+            continue;
+        }
+        fixed.push_str(source.get(at..start)?);
+        fixed.push_str(&edit.text);
+        at = stop;
+    }
+    fixed.push_str(source.get(at..)?);
+    Some(fixed)
 }

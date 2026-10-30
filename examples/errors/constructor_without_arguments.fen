@@ -2,7 +2,7 @@ struct Point:
     x: int
     y: int
 
-    def on_diagonal(at: int):
+    def on_diagonal(at: int) -> Point:
         Point(x=at, y=at)
 
 def main(stdout: Stdout):

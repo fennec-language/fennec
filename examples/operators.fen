@@ -1,17 +1,17 @@
 struct Money:
     cents: int
 
-    def +(self, other: Money):
+    def +(self, other: Money) -> Money:
         Money(cents=self.cents + other.cents)
 
-    def <(self, other: Money):
+    def <(self, other: Money) -> bool:
         self.cents < other.cents
 
 struct Grid:
     width: int
     cells: list[int]
 
-    def [](self, at: (int, int)):
+    def [](self, at: (int, int)) -> int:
         x, y = at
         self.cells[y * self.width + x]
 
@@ -19,7 +19,7 @@ struct Grid:
         x, y = at
         self.cells[y * self.width + x] = value
 
-    def iter(self):
+    def iter(self) -> Iterator[int]:
         for cell in self.cells:
             yield cell
 

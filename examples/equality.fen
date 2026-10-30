@@ -8,10 +8,10 @@ enum Coin:
     Heads
     Tails
 
-def square(n: int):
+def square(n: int) -> int:
     n * n
 
-def cube(n: int):
+def cube(n: int) -> int:
     n * n * n
 
 def main(stdout: Stdout):

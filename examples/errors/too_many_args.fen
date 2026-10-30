@@ -1,4 +1,4 @@
-def area(width: float, height: float):
+def area(width: float, height: float) -> float:
     width * height
 
 def main(stdout: Stdout):

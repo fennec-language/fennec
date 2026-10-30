@@ -32,7 +32,7 @@ fn conditions_need_bools() {
             "`or` needs a bool, but this is a float @ 2.5",
             "`not` needs a bool, but this is a None @ not None",
             "`if` needs a bool, but this is an int @ n",
-            "`and` needs a bool, but this is a nothing @ nothing()",
+            "`and` needs a bool, but this is nothing @ nothing()",
         ]
     );
 }

@@ -26,7 +26,7 @@ macro_rules! fields {
 }
 
 fields!(Module { items });
-fields!(FnDef { name, generics, params, ret, body, span });
+fields!(FnDef { name, generics, params, ret, arrow, body, span });
 fields!(Generic { name, bounds, span });
 fields!(Param { name, ty, is_mut, is_self, span });
 fields!(TypeExpr { name, args, optional, span });

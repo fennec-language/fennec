@@ -3,7 +3,7 @@ enum Shape:
     Rect(width: float, height: float)
     Point
 
-def name_int(n: int):
+def name_int(n: int) -> str:
     match n:
         case 0:
             "zero"
@@ -12,7 +12,7 @@ def name_int(n: int):
         case _:
             "something else"
 
-def name_float(x: float):
+def name_float(x: float) -> str:
     match x:
         case 0.5:
             "a half"
@@ -21,28 +21,28 @@ def name_float(x: float):
         case _:
             "something else"
 
-def name_str(text: str):
+def name_str(text: str) -> str:
     match text:
         case "fox":
             "a fox"
         case _:
             "not a fox"
 
-def name_bool(b: bool):
+def name_bool(b: bool) -> str:
     match b:
         case True:
             "yes"
         case False:
             "no"
 
-def name_maybe(n: int?):
+def name_maybe(n: int?) -> str:
     match n:
         case None:
             "nothing"
         case _:
             "something"
 
-def outcome(result: Result[int, str]):
+def outcome(result: Result[int, str]) -> str:
     match result:
         case Ok(0):
             "nothing"
@@ -51,7 +51,7 @@ def outcome(result: Result[int, str]):
         case Err():
             "failed"
 
-def width(shape: Shape):
+def width(shape: Shape) -> str:
     match shape:
         # A pattern can name fewer fields than the case has.
         case .Rect(width):

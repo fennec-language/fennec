@@ -1,6 +1,6 @@
 [package]
 name = "fennec-check"
-description = "Fennec's type checker: finds mistakes before a program runs, and infers every function's signature"
+description = "Fennec's type checker: finds mistakes before a program runs, and works out every function's signature"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

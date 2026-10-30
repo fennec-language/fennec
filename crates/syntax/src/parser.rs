@@ -427,8 +427,9 @@ impl Parser {
             }
         }
         self.expect_p(Punct::RParen)?;
-        let ret = if self.eat_p(Punct::Arrow) { Some(self.type_expr()?) } else { None };
-        Ok(FnDef { name, generics, params, ret, body: Vec::new(), span: start.to(self.prev_span()) })
+        let arrow = self.eat_p(Punct::Arrow).then(|| self.prev_span());
+        let ret = if arrow.is_some() { Some(self.type_expr()?) } else { None };
+        Ok(FnDef { name, generics, params, ret, arrow, body: Vec::new(), span: start.to(self.prev_span()) })
     }
 
     fn param(&mut self) -> Result<Param, Diagnostic> {

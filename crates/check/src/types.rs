@@ -181,6 +181,30 @@ impl Type {
         })
     }
 
+    /// The type as it's written in source, like `list[int]` or `Enemy?`. `None` for a type
+    /// that has no written form, like one of several errors, or nothing at all.
+    pub(crate) fn source(&self) -> Option<String> {
+        let all = |items: &[Type]| {
+            items.iter().map(Type::source).collect::<Option<Vec<_>>>().map(|items| items.join(", "))
+        };
+        Some(match self {
+            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes => self.kind(),
+            Type::None => "None".to_owned(),
+            Type::List(item) => format!("list[{}]", item.source()?),
+            Type::Set(item) => format!("set[{}]", item.source()?),
+            Type::Dict(key, value) => format!("dict[{}, {}]", key.source()?, value.source()?),
+            Type::Tuple(items) => format!("({})", all(items)?),
+            Type::Optional(inner) => format!("{}?", inner.source()?),
+            Type::Result(value, error) => format!("Result[{}, {}]", value.source()?, error.source()?),
+            Type::Named(name) | Type::Param(name) => name.clone(),
+            Type::Generic(name, args) => format!("{name}[{}]", all(args)?),
+            Type::Id(item) => format!("Id[{}]", item.source()?),
+            Type::IdMap(item) => format!("IdMap[{}]", item.source()?),
+            Type::Arrow(params, ret) => format!("({}) -> {}", all(params)?, ret.source()?),
+            Type::Unknown | Type::Unit | Type::Function(_) | Type::Errors(_) | Type::Var(_) => return None,
+        })
+    }
+
     /// Whether `var` appears anywhere in this type.
     pub(crate) fn mentions(&self, var: u32) -> bool {
         *self == Type::Var(var) || self.children().iter().any(|child| child.mentions(var))
@@ -225,8 +249,9 @@ pub(crate) fn a(ty: &Type) -> String {
 }
 
 pub(crate) fn article(name: &str) -> String {
-    // A plural type name reads best on its own: "this is bytes".
-    if name == "bytes" {
+    // A plural type name reads best on its own: "this is bytes". What a function gives back
+    // when it gives back nothing has no type name to show.
+    if name == "bytes" || name == "nothing" {
         return name.to_owned();
     }
     if name.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U']) {

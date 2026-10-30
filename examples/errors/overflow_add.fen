@@ -1,4 +1,4 @@
-def next_id(last: int):
+def next_id(last: int) -> int:
     last + 1
 
 def main(stdout: Stdout):

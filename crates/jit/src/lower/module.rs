@@ -39,7 +39,7 @@ pub(super) fn new_module(span: Span) -> Result<JITModule, Diagnostic> {
 /// The entry point: calls `main`, and fails the way the interpreter does if `main` gives
 /// back a failure.
 pub(super) fn define_entry(
-    module: &mut JITModule,
+    module: &mut dyn Module,
     ctx: &mut cranelift_codegen::Context,
     builder_ctx: &mut FunctionBuilderContext,
     shared: &Shared,
@@ -78,7 +78,7 @@ pub(super) fn define_entry(
 
 /// Declares the runtime helpers and every function being compiled.
 pub(super) fn declare_all(
-    module: &mut JITModule,
+    module: &mut dyn Module,
     shared: &mut Shared,
     program: &Program<'_>,
     skipped: &HashSet<String>,
@@ -123,7 +123,7 @@ pub(super) fn declare_all(
 /// where to put it; each parameter's value (the address of a struct, and for a `mut`
 /// object, also the caller's name for it); then the result and each `mut` number's final
 /// value.
-pub(super) fn signature(module: &JITModule, function: &Function<'_>) -> cranelift_codegen::ir::Signature {
+pub(super) fn signature(module: &dyn Module, function: &Function<'_>) -> cranelift_codegen::ir::Signature {
     let mut sig = module.make_signature();
     if matches!(function.ret, Ty::Struct(_)) {
         sig.params.push(AbiParam::new(types::I64));

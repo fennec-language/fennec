@@ -20,6 +20,7 @@ mod inline;
 mod lists;
 mod matching;
 mod module;
+pub(crate) mod object;
 mod objects;
 mod stmt;
 mod strings;
@@ -30,7 +31,6 @@ use std::collections::{HashMap, HashSet};
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::{Block, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module};
 use fennec_interp::embed::{self, Tables};
 use fennec_syntax::{Diagnostic, Span};
@@ -70,14 +70,14 @@ pub(crate) struct Compilation {
 }
 
 /// What every function being compiled shares.
-struct Shared {
+pub(super) struct Shared {
     compiled: HashMap<String, Compiled>,
     helpers: HashMap<Helper, FuncId>,
     tables: Tables,
     names: HashMap<String, i64>,
     strings: HashMap<String, i64>,
-    /// The text of each string literal, by its block's address.
-    literal_texts: HashMap<i64, String>,
+    /// For an executable: the table of runtime addresses its code reads.
+    slots: Option<object::Slots>,
     /// The compiled methods that take `self`, by method name, with each one's type.
     methods: HashMap<String, Vec<(String, String)>>,
     with_frames: usize,
@@ -92,6 +92,9 @@ fn internal(err: impl std::fmt::Debug, span: Span) -> Diagnostic {
         .with_help("this is a bug in Fennec; run without `--jit` and please report it")
 }
 
+/// What went wrong compiling a function: its name, and why.
+pub(super) type Failure = (String, Diagnostic);
+
 /// Compiles every function the JIT can. A function it can't compile runs in the
 /// interpreter instead, so this retries without each one that fails until all compile.
 pub(crate) fn compile(
@@ -100,13 +103,37 @@ pub(crate) fn compile(
     stack_limit: usize,
 ) -> Result<(Entry, Tables, Compilation), Diagnostic> {
     let stack_limit = i64::try_from(stack_limit).unwrap_or(i64::MAX);
+    let ((entry, shared), interpreted) = retrying(|skipped| {
+        let span = program.main_span;
+        let fatal = |diagnostic| ("main".to_owned(), diagnostic);
+        let mut module = new_module(span).map_err(fatal)?;
+        let mut shared = Shared::new(program, stack_limit);
+        let main = compile_functions(&mut module, &mut shared, program, signatures, skipped)?;
+        let mut ctx = module.make_context();
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let entry =
+            define_entry(&mut module, &mut ctx, &mut builder_ctx, &shared, main, span).map_err(fatal)?;
+        module.finalize_definitions().map_err(|err| fatal(internal(err, span)))?;
+        let code = module.get_finalized_function(entry);
+        Ok((Entry { code, _module: module }, shared))
+    })?;
+    let compilation =
+        Compilation { interpreted, with_frames: shared.with_frames, handed_over: shared.handed_over };
+    Ok((entry, shared.tables, compilation))
+}
+
+/// Tries compiling until it works, each time leaving out the function that failed last,
+/// which then runs in the interpreter. Gives back the result and the functions left out.
+pub(super) fn retrying<T>(
+    mut attempt: impl FnMut(&HashSet<String>) -> Result<T, Failure>,
+) -> Result<(T, Vec<String>), Diagnostic> {
     let mut skipped = HashSet::new();
     loop {
-        match attempt(program, signatures, stack_limit, &skipped) {
-            Ok((entry, tables, (with_frames, handed_over))) => {
+        match attempt(&skipped) {
+            Ok(done) => {
                 let mut interpreted: Vec<String> = skipped.into_iter().collect();
                 interpreted.sort();
-                return Ok((entry, tables, Compilation { interpreted, with_frames, handed_over }));
+                return Ok((done, interpreted));
             }
             Err((name, diagnostic)) => {
                 if name == "main" || !skipped.insert(name) {
@@ -117,35 +144,42 @@ pub(crate) fn compile(
     }
 }
 
-type Attempt = Result<(Entry, Tables, (usize, usize)), (String, Diagnostic)>;
+impl Shared {
+    pub(super) fn new(program: &Program<'_>, stack_limit: i64) -> Shared {
+        let tables = Tables {
+            shapes: boxes::shapes(&program.layouts),
+            str_shape: u64::try_from(program.layouts.len()).unwrap_or(0),
+            ..Tables::default()
+        };
+        Shared {
+            compiled: HashMap::new(),
+            helpers: HashMap::new(),
+            tables,
+            names: HashMap::new(),
+            strings: HashMap::new(),
+            slots: None,
+            methods: HashMap::new(),
+            with_frames: 0,
+            handed_over: 0,
+            stack_limit,
+            modules: program.modules.clone(),
+        }
+    }
+}
 
-/// One try at compiling the program, skipping some functions. On failure, the name of the
+/// Declares, lowers and generates machine code for every function not skipped, into
+/// `module`. Gives back `main`'s id and what it returns. On failure, the name of the
 /// function that couldn't be compiled.
-fn attempt(
+pub(super) fn compile_functions(
+    module: &mut dyn Module,
+    shared: &mut Shared,
     program: &Program<'_>,
     signatures: &fennec_check::Signatures,
-    stack_limit: i64,
     skipped: &HashSet<String>,
-) -> Attempt {
+) -> Result<(FuncId, Ty), Failure> {
     let span = program.main_span;
     let fatal = |diagnostic| ("main".to_owned(), diagnostic);
-    let mut module = new_module(span).map_err(fatal)?;
-    let mut shared = Shared {
-        compiled: HashMap::new(),
-        helpers: HashMap::new(),
-        tables: Tables::default(),
-        names: HashMap::new(),
-        strings: HashMap::new(),
-        literal_texts: HashMap::new(),
-        methods: HashMap::new(),
-        with_frames: 0,
-        handed_over: 0,
-        stack_limit,
-        modules: program.modules.clone(),
-    };
-    shared.tables.shapes = boxes::shapes(&program.layouts);
-    shared.tables.str_shape = u64::try_from(program.layouts.len()).unwrap_or(0);
-    declare_all(&mut module, &mut shared, program, skipped).map_err(fatal)?;
+    declare_all(module, shared, program, skipped).map_err(fatal)?;
     let mut ctx = module.make_context();
     let mut builder_ctx = FunctionBuilderContext::new();
     let mut lowered = Vec::new();
@@ -156,10 +190,10 @@ fn attempt(
         let mut cx = Cx {
             layouts: &program.layouts,
             signatures,
-            module: &mut module,
+            module: &mut *module,
             ctx: &mut ctx,
             builder_ctx: &mut builder_ctx,
-            shared: &mut shared,
+            shared: &mut *shared,
         };
         lower_function(&mut cx, function).map_err(failed)?;
         let func = std::mem::replace(&mut ctx.func, cranelift_codegen::ir::Function::new());
@@ -167,18 +201,13 @@ fn attempt(
         module.clear_context(&mut ctx);
     }
     for (id, machine_code) in codegen::compile_all(module.isa(), lowered)? {
-        machine_code.install(&mut module, id)?;
+        machine_code.install(module, id)?;
     }
     let main = shared.compiled.get("main").ok_or_else(|| fatal(unsupported("this `main`", span)))?;
     if main.params.iter().any(|(_, ty, _)| !matches!(ty, Ty::Cap(_))) {
         return Err(fatal(unsupported("a `main` that takes anything but `stdout`", span)));
     }
-    let (main_id, main_ret) = (main.id, main.ret);
-    let entry = define_entry(&mut module, &mut ctx, &mut builder_ctx, &shared, (main_id, main_ret), span)
-        .map_err(fatal)?;
-    module.finalize_definitions().map_err(|err| fatal(internal(err, span)))?;
-    let code = module.get_finalized_function(entry);
-    Ok((Entry { code, _module: module }, shared.tables, (shared.with_frames, shared.handed_over)))
+    Ok((main.id, main.ret))
 }
 
 fn abi(ty: Ty) -> Option<types::Type> {
@@ -193,7 +222,7 @@ fn abi(ty: Ty) -> Option<types::Type> {
 struct Cx<'a> {
     layouts: &'a Layouts,
     signatures: &'a fennec_check::Signatures,
-    module: &'a mut JITModule,
+    module: &'a mut dyn Module,
     ctx: &'a mut cranelift_codegen::Context,
     builder_ctx: &'a mut FunctionBuilderContext,
     shared: &'a mut Shared,
@@ -261,7 +290,16 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
     b.set_cold_block(bail);
     let pointer_ty = pointer;
     let limit = b.ins().get_pinned_reg(pointer_ty);
-    let failed_flag = b.ins().iconst(pointer_ty, i64::try_from(embed::failed_flag()).unwrap_or(0));
+    // Compiled to run here, the runtime's addresses are known; in an executable, they're
+    // read from a table filled in when it starts.
+    let slots_base = cx.shared.slots.as_ref().map(|slots| {
+        let table = cx.module.declare_data_in_func(slots.data, b.func);
+        b.ins().symbol_value(pointer_ty, table)
+    });
+    let failed_flag = match slots_base {
+        Some(base) => b.ins().load(pointer_ty, MemFlagsData::trusted(), base, 0),
+        None => b.ins().iconst(pointer_ty, i64::try_from(embed::failed_flag()).unwrap_or(0)),
+    };
     let mut lowerer = Lowerer {
         b,
         module: &mut *cx.module,
@@ -290,6 +328,8 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         leaf_vars: HashMap::new(),
         borrowed: HashSet::new(),
         borrowed_names: HashSet::new(),
+        slots_base,
+        literal_of: HashMap::new(),
     };
     lowerer.prologue(&params)?;
     let (tail, tail_ty) = lowerer.tail(&function.def.body)?;
@@ -327,7 +367,7 @@ struct Loop {
 
 pub(crate) struct Lowerer<'a, 'f> {
     b: FunctionBuilder<'f>,
-    module: &'a mut JITModule,
+    module: &'a mut dyn Module,
     shared: &'a mut Shared,
     function: &'a Function<'a>,
     scopes: Vec<Scope>,
@@ -372,6 +412,10 @@ pub(crate) struct Lowerer<'a, 'f> {
     borrowed: HashSet<Value>,
     /// The variables of names holding boxed values they don't own, by index.
     borrowed_names: HashSet<usize>,
+    /// Where the table of runtime addresses is, in an executable.
+    slots_base: Option<Value>,
+    /// The text of each value that's a string literal.
+    literal_of: HashMap<Value, String>,
     /// Where the program called the standard library function being inlined, which its
     /// failures are reported at.
     call_site: Option<Span>,

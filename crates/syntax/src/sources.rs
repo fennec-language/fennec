@@ -44,6 +44,11 @@ impl Sources {
         Diagnostic { span: local, ..diagnostic.clone() }.render(&file.path, &file.text)
     }
 
+    /// Every file, as its path and text, in the order they were added.
+    pub fn files(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.files.iter().map(|file| (file.path.as_str(), file.text.as_str()))
+    }
+
     /// Renders several diagnostics, a blank line between each.
     pub fn render_all(&self, diagnostics: &[Diagnostic]) -> String {
         let rendered: Vec<String> = diagnostics.iter().map(|diagnostic| self.render(diagnostic)).collect();

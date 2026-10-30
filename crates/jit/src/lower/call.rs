@@ -2,7 +2,6 @@
 //! `stdout.print`. Calls to methods, types and other builtins run in the interpreter.
 
 use cranelift_codegen::ir::{InstBuilder, Value, types};
-use cranelift_module::Module;
 use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, FStrPart, Span};
 
 use super::Lowerer;

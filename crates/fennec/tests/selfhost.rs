@@ -207,10 +207,9 @@ fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
     let mut paths = sources_in(&repo().join("examples"))?;
     paths.extend(sources_in(&repo().join("examples/errors"))?);
     paths.extend(sources_in(&repo().join("selfhost/src"))?);
-    let generated = fennec_syntax::PRELUDE
-        .iter()
+    let generated = fennec_syntax::prelude()
         .enumerate()
-        .map(|(at, source)| (format!("prelude_{at}"), *source))
+        .map(|(at, source)| (format!("prelude_{at}"), source))
         .chain(LEX_CASES.iter().map(|(name, source)| (format!("lex_{name}"), *source)))
         .chain(PARSE_CASES.iter().map(|(name, source)| (format!("parse_{name}"), *source)));
     for (name, source) in generated {

@@ -341,3 +341,16 @@ impl Lexer<'_> {
         Ok(FPart::Expr { source, offset, spec })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::lex;
+    use crate::token::Tok;
+
+    #[test]
+    fn blocks_still_open_at_the_end_are_closed() {
+        let tokens: Vec<Tok> =
+            lex("if x:\n    if y:\n        z\n", 0).unwrap().into_iter().map(|t| t.tok).collect();
+        assert!(tokens.ends_with(&[Tok::Dedent, Tok::Dedent, Tok::Eof]), "{tokens:?}");
+    }
+}

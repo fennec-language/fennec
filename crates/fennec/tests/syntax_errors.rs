@@ -32,6 +32,8 @@ fn syntax_errors_say_what_was_expected_and_found() {
 fn lexer_errors_point_at_one_character() {
     let cases = [
         ("x =\t1", 3, "tabs aren't allowed"),
+        // A tab is reported even when the spaces before it don't line up with any block.
+        ("def f():\n    x = 1\n  \tx = 2", 21, "tabs aren't allowed"),
         ("x = \"open", 4, "this string never ends"),
         ("x = f\"{}\"", 7, "this f-string has an empty `{}`"),
     ];

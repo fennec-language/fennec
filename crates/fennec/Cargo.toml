@@ -15,6 +15,7 @@ name = "fennec"
 path = "tests/main.rs"
 
 [dependencies]
+fennec-build.workspace = true
 fennec-check.workspace = true
 fennec-fmt.workspace = true
 fennec-interp.workspace = true

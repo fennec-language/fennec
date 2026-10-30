@@ -24,6 +24,20 @@ def both(xs: list[int], mut ys: list[int]) -> int:
     ys[0] = 7
     return xs.len() * 10 + xs[0]
 
+def spread(
+    mut a: list[int],
+    mut b: list[float],
+    mut c: list[int],
+    mut d: list[bool],
+    n: int,
+) -> float:
+    for i in range(n):
+        a.append(i)
+        b.append(float(i) / 2.0)
+        c[0] += i
+        d.append(i % 2 == 0)
+    return b[-1] * 2.0
+
 def main(stdout: Stdout):
     mut xs = [1, 2, 3]
     copy = xs
@@ -66,3 +80,16 @@ def main(stdout: Stdout):
     # Passed both ways, the argument without `mut` keeps its items.
     mut twice = [1, 2]
     stdout.print(both(twice, mut twice), twice)
+
+    # A call can give back more than fits in a machine's return registers.
+    mut ints = [1]
+    mut floats = [0.5]
+    mut counts = [10]
+    mut flags = [False]
+    stdout.print(
+        spread(mut ints, mut floats, mut counts, mut flags, 100),
+        ints.len(),
+        floats[50],
+        counts,
+        flags[-1],
+    )

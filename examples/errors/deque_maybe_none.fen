@@ -1,0 +1,10 @@
+from std.collections import Deque
+
+struct Event:
+    name: str
+
+def main(stdout: Stdout):
+    mut events = Deque()
+    events.append(Event(name="spawn"))
+    stdout.print(events.popleft().name)
+    stdout.print(events.popleft().name)

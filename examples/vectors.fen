@@ -1,6 +1,6 @@
 # Plain structs, made only of numbers, bools and other plain structs, are values: copying
 # one copies it, and only a `mut` name or `mut self` changes one in place.
-from std.math import Vec3
+from std.math import Vec3, sqrt, floor, ceil, sin, cos
 
 struct Body:
     position = Vec3.zero

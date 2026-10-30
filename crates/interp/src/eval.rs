@@ -109,18 +109,25 @@ impl Interp<'_> {
     }
 
     /// For `json.loads` where `json` is an imported module, the name it means: a module
-    /// function like `json.loads`, or a name like `Path` that's available everywhere.
+    /// function like `json.loads`, or a type like `Path`.
     pub(crate) fn module_member(
         &self,
         object: &Expr,
         name: &str,
         span: Span,
     ) -> Option<Result<String, Diagnostic>> {
-        let ExprKind::Name(alias) = &object.kind else { return None };
-        if self.frame.get(alias).is_some() {
+        let alias = fennec_syntax::dotted(object)?;
+        let first = alias.split('.').next().unwrap_or_default();
+        if self.frame.get(first).is_some() {
             return None;
         }
-        let module = self.modules.get(alias)?;
+        let Some(module) = self.modules.get(&alias) else {
+            // `std.toml` after `import std.json`, which binds `std` but not `std.toml`.
+            let path = format!("{alias}.{name}");
+            let is_package = self.modules.keys().any(|bound| package_of(bound) == Some(alias.as_str()));
+            let module = self.modules.get(&path).copied();
+            return is_package.then(|| Err(fennec_syntax::package_member(&path, module, span)));
+        };
         Some(fennec_syntax::std_member(module, name, span).map(|()| {
             let qualified = format!("{module}.{name}");
             if builtins::named(&qualified).is_some() { qualified } else { name.to_owned() }
@@ -137,11 +144,18 @@ impl Interp<'_> {
         if self.types.contains_key(name) || builtins::is_type(name) {
             return Ok(Value::Type(Rc::from(name)));
         }
-        if let Some(builtin) = self.imports.get(name) {
+        let prelude = span.in_prelude().then(|| self.prelude_imports.get(name)).flatten();
+        if let Some(builtin) = self.imports.get(name).or(prelude) {
             return Ok(Value::Builtin(builtin));
         }
         if let Some(module) = self.modules.get(name) {
             return Err(fennec_syntax::module_as_value(name, module, span));
+        }
+        if let Some((path, module)) = self.modules.iter().find(|(path, _)| package_of(path) == Some(name)) {
+            return Err(fennec_syntax::module_as_value(path, module, span));
+        }
+        if self.modules.contains_key(&format!("std.{name}")) {
+            return Err(fennec_syntax::short_module(name, span));
         }
         if let Some(constant) = builtins::constant(name) {
             return Ok(constant);
@@ -317,6 +331,11 @@ fn insert_pair(pairs: &mut Vec<(Value, Value)>, key: Value, value: Value) {
 }
 
 /// An unknown name, with a pointer to the Fennec spelling when it's a habit from elsewhere.
+/// The package a module path is in: `std` for `std.json`.
+pub(crate) fn package_of(path: &str) -> Option<&str> {
+    path.split_once('.').map(|(package, _)| package)
+}
+
 pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("`{name}` doesn't exist"), span);
     match name {

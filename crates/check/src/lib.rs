@@ -16,6 +16,7 @@ mod checker;
 mod effects;
 mod expr;
 mod function;
+mod imports;
 mod messages;
 mod pattern;
 mod place;

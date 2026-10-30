@@ -1,0 +1,6 @@
+from std.random import Random
+
+def main(stdout: Stdout):
+    mut rng = Random(seed=7)
+    low = 6
+    stdout.print(rng.randint(low, 1))

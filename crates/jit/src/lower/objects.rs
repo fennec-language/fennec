@@ -296,7 +296,7 @@ impl Lowerer<'_, '_> {
                 (None, _) => values.push(receiver),
             }
             for ((value, from), (_, to, _)) in lowered.iter().zip(params.iter().skip(1)) {
-                if !matches!(to, Ty::Stdout | Ty::Fs) {
+                if !matches!(to, Ty::Cap(_)) {
                     values.push(self.convert(*value, *from, *to, expr.span)?);
                 }
             }

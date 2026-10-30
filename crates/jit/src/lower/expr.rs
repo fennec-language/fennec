@@ -106,7 +106,7 @@ impl Lowerer<'_, '_> {
             Ty::Obj => return Ok(handle),
             Ty::Struct(id) => return self.unbox_struct(handle, id, span),
             Ty::Boxed(id) => return self.handle_to_box(handle, id, span),
-            Ty::Unit | Ty::Stdout | Ty::Fs => {
+            Ty::Unit | Ty::Cap(_) => {
                 return Err(unsupported(&format!("using a value as {}", to.name()), span));
             }
         };
@@ -135,7 +135,7 @@ impl Lowerer<'_, '_> {
                 let address = value.ok_or_else(|| unsupported("this value", span))?;
                 return self.box_to_handle(address, id);
             }
-            Ty::Stdout | Ty::Fs => {
+            Ty::Cap(_) => {
                 return Err(unsupported(&format!("using {} as a value", ty.name()), span));
             }
         };

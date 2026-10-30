@@ -1,0 +1,6 @@
+# A kit whose modules sit in a folder, imported the three ways Python allows.
+name = "packages"
+version = "0.1.0"
+fennec = "0.0.1"
+
+[dependencies]

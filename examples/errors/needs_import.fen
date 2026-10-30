@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    mut queue = Deque()
+    queue.append("spawn")
+    stdout.print(queue.popleft())

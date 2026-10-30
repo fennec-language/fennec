@@ -76,8 +76,11 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **Parallel reductions combine in a fixed order.** How `sum(... for e in parallel(xs))` splits and combines its work depends on the data's size, never the thread count.
 *Why:* Float results don't drift between runs or machines.
 
-**`Clock` and `Random` are capabilities,** passed in like `Stdout` and `Fs`.
-*Why:* Pass a fixed clock and a seeded `Random` and a game or test runs the same way every time.
+**`Clock` is a capability,** passed to `main` like `Stdout` and `Fs`. `clock.now()` reads a monotonic clock. A fixed clock for tests is still to come.
+*Why:* Code that reads the time says so in its parameters, and can be handed a fixed clock instead.
+
+**`Random` is a seeded value.** `Random(seed=42)` draws the same numbers in the same order on every machine. It's SplitMix64, done in integer math, and `random_int(seed, n, low, high)`, imported from `std.random`, gives the `n`th number of a seed's sequence without keeping a generator. Seeding from the OS will be a capability `main` receives; it isn't built yet.
+*Why:* A seed is all a replay or a lockstep peer needs to see the same numbers. Drawing by position also suits procedural generation, where each chunk of a world takes numbers from its own index.
 
 **Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit, in the debugger, with `fennec replay`.
 *Why:* A player's crash report becomes a replay file you can step through. The determinism rules above make it almost free.
@@ -185,10 +188,16 @@ with db.transaction() as mut tx:
 
 ## Standard library
 
-**A module is imported whole or by name.** `import std.json` and `from std import json` both make `json.loads(...)` work. `from std.json import loads` makes plain `loads(...)` work. There's no `import *`.
-*Why:* These are Python's forms, so people and AI already write them, and every name in a file can be traced to an import.
+**Names live in their modules.** A standard library module provides nothing until it's imported: `from std.math import Vec3, sqrt`, or `from std import math` and then `math.Vec3` and `math.sqrt(x)`. That's every module so far: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`. Using a name without its import is reported with the import to add.
+*Why:* A file's imports show everything it uses from the standard library, as in Python.
 
-**Some modules' functions exist only once imported.** Without an import, `loads` doesn't exist, and the error says which modules have it. Other standard library names, like `Path` and `sqrt`, work everywhere for now.
+**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs` and `Clock`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the Python builtins, like `len`, `range` and `abs`.
+*Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
+
+**Imports bind names exactly as in Python.** `import std.json` binds `std`, and the call is `std.json.loads(...)`. `from std import json` binds `json`, for `json.loads(...)`. `from std.json import loads` binds `loads`. A kit's own modules follow the same rule: `import game.physics` binds `game`, and `from game import physics` binds `physics`. Writing `json.loads` after `import std.json` is an error whose help suggests `from std import json`. There's no `import *`, and no `import ... as` yet.
+*Why:* It's one rule that Python developers and AI models already know, and an import never binds a name behind your back. Earlier, `import std.json` also bound `json`, which Python doesn't do.
+
+**Two modules can have functions with the same name.** Without an import, `loads` doesn't exist, and the error says which modules have it.
 *Why:* `std.json` and `std.toml` both have `loads` and `dumps`, as in Python, so the name alone can't say which format is meant.
 
 **JSON and TOML read into plain values.** Objects and tables become dicts in the order written, arrays become lists, and TOML's dates and times stay strings as written. The checker doesn't know the shape of text it hasn't seen, so the values' types are unknown and checked as they're used. Writing takes dicts, lists, tuples and structs. Typed reading, `loads[Settings](text)`, comes later.
@@ -221,7 +230,7 @@ A big app that wants walls between its own parts splits into local kits in one w
 **A kit is a folder with a `kit.toml` and its code under `src`.** `src/main.fen` holds `main`, and the module `enemies.ai` is the file `src/enemies/ai.fen`. `kit.toml` has `name`, `version` and `fennec`, the toolchain the kit is built with (see Toolchain). Until the launcher exists, a kit asking for a newer Fennec than the one running is an error. Its `[dependencies]` table is reserved for kits from the Den. `fennec run` and `fennec test` with no file run the kit around the current folder; `fennec test` runs the tests in every file under `src`.
 *Why:* One layout means no configuration, and finding a module's file needs no search.
 
-**A file uses another file's names only after importing them.** `from enemies import spawn` brings in names, and `import physics` brings in the module, used as `physics.step`. A file's own names need no import.
+**A file uses another file's names only after importing them.** `from enemies import spawn` brings in names, and `import physics` brings in the module, used as `physics.step`. For a module in a folder, `import world.physics` is used as `world.physics.step`, and `from world import physics` as `physics.step`. A file's own names need no import.
 *Why:* Where every name comes from is visible in the file that uses it, for people and for AI.
 
 **A kit's files share one set of top-level names.** Two files of a kit can't both define `update`; the error names both files.
@@ -257,11 +266,25 @@ Scoped tasks with `with`, channels, locks and overlapping I/O come in later slic
 
 ## Syntax
 
+**Raw strings are `r"..."`.** Backslashes stay as written, so a pattern reads `r"\d+"`. A raw string can't contain `"`.
+*Why:* Regular expressions are unreadable with every backslash doubled. Python has the same strings, so people and AI already write them.
+
 **Doc comments are `##`, above what they document.** A `##` comment documents the function, struct, field or enum case that follows it, or the module when it's at the top of the file. Examples go in Markdown code fences and check results with `assert`. `fennec test` runs them. There are no `"""` docstrings: strings are never documentation.
 *Why:* One form that works on everything, including fields and enum cases. Fences render properly in `fennec doc`. Nim uses `##` for doc comments too.
 
 **f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay.
 *Why:* `{x=}` is what people want when debugging; `!r` has no meaning without Python's `repr`.
+
+## Standard library
+
+**Failures inside the standard library point at the program's call.** When a standard library function written in Fennec fails, the error shows the line in the program that called it, in both engines.
+*Why:* The library's own source isn't something the reader can fix, or even see.
+
+**Taking from an empty `Deque`, `Heap` or `PriorityQueue` gives `None`.** `pop`, `popleft` and `peek` return optionals, so the checker makes the empty case visible. `list.pop` keeps Python's behavior and fails on an empty list.
+*Why:* Draining a queue until it's empty is the normal way to use one, so the empty case is expected, not a mistake.
+
+**Regular expressions take linear time.** `std.re` runs patterns on a Pike VM, which follows every way a pattern could match at once, so no pattern can make matching blow up. There are no backreferences or lookarounds, which need backtracking. A pattern written in the program is checked before it runs; `Regex(text)` with a pattern built while it runs gives a result, like any struct with a `where` rule.
+*Why:* A pattern from a mod, a config file or a player can't hang a game or a server.
 
 ## Toolchain
 

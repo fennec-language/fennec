@@ -26,7 +26,7 @@ pub(super) fn inline_body(function: &Function<'_>) -> Option<Rc<FnDef>> {
             !param.is_mut || (at == 0 && function.def.params.first().is_some_and(|first| first.is_self))
         }
         Ty::Int | Ty::Float | Ty::Bool => !param.is_mut,
-        Ty::Stdout | Ty::Fs => true,
+        Ty::Cap(_) => true,
         Ty::Unit | Ty::Obj | Ty::Boxed(_) => false,
     });
     let mut nodes = 0;
@@ -104,6 +104,15 @@ impl Lowerer<'_, '_> {
         self.shared.compiled.get(key)?.inline.clone()
     }
 
+    /// Where a failure at `span` is reported: inside an inlined standard library function,
+    /// at the program's call to it.
+    pub(super) fn site(&self, span: Span) -> Span {
+        match self.call_site {
+            Some(site) if span.in_prelude() => site,
+            _ => span,
+        }
+    }
+
     /// Lowers a call to `key` by lowering its body here, with its parameters bound to
     /// `values`, which are in the order a real call would pass them. For a method that
     /// changes `self`, `self_place` is where the caller holds the struct.
@@ -118,12 +127,16 @@ impl Lowerer<'_, '_> {
         let compiled = self.shared.compiled.get(key).map(|compiled| (compiled.params.clone(), compiled.ret));
         let (params, ret) = compiled.ok_or_else(|| super::internal("unknown function", span))?;
         self.inlining.push((key.to_owned(), self.scopes.len()));
+        let outer_site = self.call_site;
+        if self.call_site.is_none() && !span.in_prelude() {
+            self.call_site = Some(span);
+        }
         self.open_scope();
         let mut values = values.into_iter();
         let mut self_place = self_place;
         let mut bound = Ok(());
         for (name, ty, is_mut) in &params {
-            let value = if matches!(ty, Ty::Stdout | Ty::Fs) { None } else { values.next() };
+            let value = if matches!(ty, Ty::Cap(_)) { None } else { values.next() };
             bound = bound.and_then(|()| match (ty, value, self_place.take()) {
                 (Ty::Struct(id), _, Some(place)) => {
                     self.bind_place(name, place, *id, true);
@@ -139,10 +152,11 @@ impl Lowerer<'_, '_> {
         let lowered = bound.and_then(|()| self.tail(&def.body));
         let closed = self.close_scope();
         self.inlining.pop();
+        self.call_site = outer_site;
         let (value, ty) = lowered?;
         closed?;
         match ret {
-            Ty::Unit | Ty::Stdout | Ty::Fs => Ok((None, Ty::Unit)),
+            Ty::Unit | Ty::Cap(_) => Ok((None, Ty::Unit)),
             Ty::Struct(id) => {
                 let value = self.convert(value, ty, ret, span)?;
                 // A body that ends by naming a struct, like `self`, gives back a copy of it.

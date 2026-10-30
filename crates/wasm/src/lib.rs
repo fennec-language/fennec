@@ -156,6 +156,7 @@ fn interp(out: &mut dyn Write, steps: u64) -> Result<Interp<'_>, Diagnostic> {
     interp.limit_steps(steps);
     interp.limit_depth(DEPTH_LIMIT);
     interp.deny_files();
+    interp.deny_clock();
     Ok(interp)
 }
 

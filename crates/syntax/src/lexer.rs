@@ -290,6 +290,9 @@ impl Lexer<'_> {
             Some('r') => '\r',
             Some('0') => '\0',
             Some(c @ ('\\' | '"' | '{' | '}')) => c,
+            Some('x') => return self.code_escape(2, at),
+            Some('u') => return self.code_escape(4, at),
+            Some('U') => return self.code_escape(8, at),
             None | Some('\n') => return Err(self.unterminated(start)),
             Some(other) => {
                 return Err(Diagnostic::new(
@@ -297,12 +300,39 @@ impl Lexer<'_> {
                     self.span(at),
                 )
                 .with_help(
-                    "the escapes are \\n, \\t, \\r, \\0, \\\\ and \\\"; to keep backslashes as written, use a raw string like r\"\\d+\"",
+                    "the escapes are \\n, \\t, \\r, \\0, \\\\, \\\", \\xhh, \\uhhhh and \\Uhhhhhhhh; to keep backslashes as written, use a raw string like r\"\\d+\"",
                 ));
             }
         };
         self.pos += 1;
         Ok(c)
+    }
+
+    /// `\x41`, `\u00e9` or `\U0001f98a`: a character written as its code in hex, with
+    /// exactly `digits` digits. `at` is where the backslash is.
+    fn code_escape(&mut self, digits: u32, at: usize) -> Result<char, Diagnostic> {
+        let letter = self.peek(0).unwrap_or('x');
+        self.pos += 1;
+        let mut code: u32 = 0;
+        for _ in 0..digits {
+            let Some(digit) = self.peek(0).and_then(|c| c.to_digit(16)) else {
+                let example = match letter {
+                    'x' => "\\x41",
+                    'u' => "\\u00e9",
+                    _ => "\\U0001f98a",
+                };
+                return Err(Diagnostic::new(
+                    format!("`\\{letter}` needs {digits} hex digits, like `{example}`"),
+                    self.span(at),
+                ));
+            };
+            code = code * 16 + digit;
+            self.pos += 1;
+        }
+        char::from_u32(code).ok_or_else(|| {
+            let written = self.source.get(at..self.offset()).unwrap_or_default();
+            Diagnostic::new(format!("`{written}` isn't the code of a character"), self.span(at))
+        })
     }
 
     fn fstring(&mut self, start: usize) -> Result<(), Diagnostic> {

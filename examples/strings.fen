@@ -18,3 +18,14 @@ def main(stdout: Stdout):
         initials += word[0]
     stdout.print(initials)
     stdout.print(str(3.0), str(2.5), 7 / 2, 7 // 2, -7 // 2, -7 % 3, 2 ** 10)
+
+    # A character's code, and back. Text is UTF-8, so its bytes can outnumber its characters.
+    stdout.print(
+        "A".code(),
+        "é".code(),
+        "Fox".codes(),
+        str.from_code(97),
+        str.from_code(-1) else "?",
+    )
+    stdout.print(len("héllo"), len("héllo".encode()), "héllo"[1])
+    stdout.print("\x41\u00e9\U0001f98a", "tab\there")

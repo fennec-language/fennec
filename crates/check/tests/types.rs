@@ -247,7 +247,8 @@ fn builtins_give_back_the_right_types() {
     let cases = [
         ("len([1]) + 1.0", "can't mix int and float in `+` @ len([1]) + 1.0"),
         ("str(1) + 1", "can't use `+` on a str and an int @ str(1) + 1"),
-        ("int('1') + 1.0", "can't mix int and float in `+` @ int(\"1\") + 1.0"),
+        ("int(1.5) + 1.0", "can't mix int and float in `+` @ int(1.5) + 1.0"),
+        ("int('1') + 1", "this is the result of something that can fail @ int(\"1\") + 1"),
         ("floor(1.5) + 1.0", "can't mix int and float in `+` @ floor(1.5) + 1.0"),
         ("round(1.5) + 1.0", "can't mix int and float in `+` @ round(1.5) + 1.0"),
         ("round(1.5, 1) + 1", "can't mix int and float in `+` @ round(1.5, 1) + 1"),

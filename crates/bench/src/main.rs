@@ -1,7 +1,8 @@
 //! `fennec-bench`: the benchmark suite. Each kernel in `bench/kernels/` is a Fennec program
 //! with a Rust twin that does the same work. Both run on the same machine, taking turns, and
 //! must print the same thing. The table shows Fennec's speed against Rust and against the
-//! previous commit's `fennec`, and the run fails if a kernel got slower than before.
+//! previous commit's `fennec`, and the run fails if a kernel got slower than before: by its
+//! median time and, where `perf` counts them, by its instructions too.
 //!
 //! ```text
 //! fennec-bench [--fennec PATH] [--previous PATH] [--runs N] [--kernels DIR]
@@ -15,7 +16,7 @@ mod report;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use measure::{Program, build_twin, time_together};
+use measure::{Program, build_twin, perf_report, time_together};
 use report::Result;
 
 struct Options {
@@ -64,7 +65,7 @@ fn options(mut args: impl Iterator<Item = String>) -> std::result::Result<Option
     let mut options = Options {
         fennec: PathBuf::from("target/release/fennec"),
         previous: None,
-        runs: 5,
+        runs: 7,
         kernels: PathBuf::from("bench/kernels"),
     };
     while let Some(flag) = args.next() {
@@ -93,12 +94,28 @@ fn suite(options: &Options) -> std::result::Result<(Vec<Result>, Vec<String>), S
         .filter(|path| path.extension().is_some_and(|ext| ext == "fen"))
         .collect();
     kernels.sort();
+    let count = perf_report(&out_dir);
+    if count.is_some() {
+        eprintln!("counting instructions with perf");
+    } else {
+        eprintln!("perf can't count instructions here, so slowdowns are measured again before they fail");
+    }
     let mut results = Vec::new();
     let mut failures = Vec::new();
     for kernel in kernels {
         let name = kernel.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
         eprintln!("running {name}");
-        match run_kernel(&kernel, &out_dir, options) {
+        let mut result = run_kernel(&kernel, &out_dir, options.runs, options, count.as_deref());
+        // Without instruction counts, a slowdown is measured again, three times as long,
+        // before it fails, so one busy moment on the machine doesn't fail the suite.
+        if let Ok(slower) = &result
+            && slower.failure().is_some()
+            && slower.instructions.is_none()
+        {
+            eprintln!("measuring {name} again");
+            result = run_kernel(&kernel, &out_dir, options.runs * 3, options, count.as_deref());
+        }
+        match result {
             Ok(result) => {
                 failures.extend(result.failure());
                 results.push(result);
@@ -111,7 +128,13 @@ fn suite(options: &Options) -> std::result::Result<(Vec<Result>, Vec<String>), S
 
 /// Times one kernel against its twin, and against the previous `fennec` if there's one that
 /// can still run it.
-fn run_kernel(kernel: &Path, out_dir: &Path, options: &Options) -> std::result::Result<Result, String> {
+fn run_kernel(
+    kernel: &Path,
+    out_dir: &Path,
+    runs: usize,
+    options: &Options,
+    count: Option<&Path>,
+) -> std::result::Result<Result, String> {
     let name = kernel.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     let twin = build_twin(&kernel.with_extension("rs"), out_dir)?;
     let fennec = |command: &Path| Program {
@@ -121,22 +144,23 @@ fn run_kernel(kernel: &Path, out_dir: &Path, options: &Options) -> std::result::
     let mut programs = vec![Program { command: twin, args: Vec::new() }, fennec(&options.fennec)];
     if let Some(previous) = &options.previous {
         // A previous `fennec` that can't run a new kernel just isn't compared on it.
-        if time_together(&[fennec(previous)], 1).is_ok() {
+        if time_together(&[fennec(previous)], 1, None).is_ok() {
             programs.push(fennec(previous));
         }
     }
-    let timings = time_together(&programs, options.runs)?;
+    let timings = time_together(&programs, runs, count)?;
     let [twin, ours, others @ ..] = timings.as_slice() else { return Err("nothing was timed".to_owned()) };
     if ours.output != twin.output {
         return Err(format!("Fennec printed\n{}but Rust printed\n{}", ours.output, twin.output));
     }
-    let previous =
-        others.first().filter(|previous| previous.output == twin.output).map(|previous| previous.best);
+    let previous = others.first().filter(|previous| previous.output == twin.output);
     Ok(Result {
         kernel: name,
-        rust: twin.best,
-        fennec: ours.best,
-        previous,
+        rust: twin.median,
+        fennec: ours.median,
+        previous: previous.map(|previous| previous.median),
+        instructions: ours.instructions,
+        previous_instructions: previous.and_then(|previous| previous.instructions),
         fell_back: ours.notes.contains("using the interpreter"),
     })
 }

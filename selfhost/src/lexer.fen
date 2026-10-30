@@ -9,21 +9,13 @@ def is_digit(c: str) -> bool:
 def is_letter(c: str) -> bool:
     (c >= "a" and c <= "z") or (c >= "A" and c <= "Z")
 
-## How many bytes `c` takes in UTF-8. Fennec has no `ord` yet, so this compares against the
-## first character of each width: `ࠀ` is U+0800 and `𐀀` is U+10000.
+## How many bytes `c` takes in UTF-8.
 def utf8_width(c: str) -> int:
-    if c <= "~":
-        1
-    elif c < "ࠀ":
-        2
-    elif c < "𐀀":
-        3
-    else:
-        4
+    len(c.encode())
 
 ## How many bytes `text` takes in UTF-8.
 def byte_length(text: str) -> int:
-    sum(utf8_width(c) for c in text)
+    len(text.encode())
 
 ## The byte offset of each character, plus one past the end. Spans count bytes, but Fennec
 ## strings index by character.
@@ -184,38 +176,29 @@ struct Lexer:
             is_float = True
             self.pos += 1
             self.digits()
-        mut exponent_digits = True
         if self.peek(0) == "e" or self.peek(0) == "E":
             is_float = True
             self.pos += 1
             if self.peek(0) == "+" or self.peek(0) == "-":
                 self.pos += 1
-            exponent_start = self.pos
             self.digits()
-            exponent_digits = self.text(exponent_start, self.pos).replace("_", "") != ""
         text = self.text(start, self.pos).replace("_", "")
-        if not is_float:
-            self.push(Tok.Int(self.int_value(text, start)?), start)
-        elif exponent_digits:
-            self.push(Tok.Float(float(text)), start)
+        if is_float:
+            match float(text):
+                case Ok(value):
+                    self.push(Tok.Float(value), start)
+                case Err(_):
+                    fail Diagnostic(message="this isn't a valid number", span=self.span(start))
         else:
-            fail Diagnostic(message="this isn't a valid number", span=self.span(start))
-
-    ## The value of a run of digits. `int()` stops the program when a number doesn't fit,
-    ## so this checks for overflow itself.
-    def int_value(self, digits: str, start: int) -> int:
-        largest = 9_223_372_036_854_775_807
-        mut value = 0
-        for digit in digits:
-            n = int(digit)
-            if value > (largest - n) // 10:
-                fail Diagnostic(
-                    message="this number is too big for an int",
-                    span=self.span(start),
-                    help="ints are 64-bit: the largest is 9_223_372_036_854_775_807",
-                )
-            value = value * 10 + n
-        value
+            match int(text):
+                case Ok(value):
+                    self.push(Tok.Int(value), start)
+                case Err(_):
+                    fail Diagnostic(
+                        message="this number is too big for an int",
+                        span=self.span(start),
+                        help="ints are 64-bit: the largest is 9_223_372_036_854_775_807",
+                    )
 
     def digits(mut self):
         while is_digit(self.peek(0)) or self.peek(0) == "_":
@@ -280,6 +263,8 @@ struct Lexer:
         c = self.peek(0)
         if c == "" or c == "\n":
             fail self.unterminated(start)
+        if c == "x" or c == "u" or c == "U":
+            return self.code_escape(c, at)?
         replacement = match c:
             case "n": "\n"
             case "t": "\t"
@@ -293,10 +278,39 @@ struct Lexer:
                 fail Diagnostic(
                     message=f"`\\{c}` isn't an escape Fennec knows",
                     span=self.span(at),
-                    help="the escapes are \\n, \\t, \\r, \\0, \\\\ and \\\"; to keep backslashes as written, use a raw string like r\"\\d+\"",
+                    help="the escapes are \\n, \\t, \\r, \\0, \\\\, \\\", \\xhh, \\uhhhh and \\Uhhhhhhhh; to keep backslashes as written, use a raw string like r\"\\d+\"",
                 )
         self.pos += 1
         replacement
+
+    ## `\x41`, `\u00e9` or `\U0001f98a`: a character written as its code in hex, with two,
+    ## four or eight digits. `at` is where the backslash is.
+    def code_escape(mut self, letter: str, at: int) -> str:
+        digits = 2 if letter == "x" else (4 if letter == "u" else 8)
+        self.pos += 1
+        mut code = 0
+        for _ in range(digits):
+            c = self.peek(0).lower()
+            value = "0123456789abcdef".find(c)
+            if c == "" or value is None:
+                example = match letter:
+                    case "x": "\\x41"
+                    case "u": "\\u00e9"
+                    case _: "\\U0001f98a"
+                fail Diagnostic(
+                    message=f"`\\{letter}` needs {digits} hex digits, like `{example}`",
+                    span=self.span(at),
+                )
+            code = code * 16 + value
+            self.pos += 1
+        match str.from_code(code):
+            case Ok(character):
+                character
+            case Err(_):
+                fail Diagnostic(
+                    message=f"`{self.text(at, self.pos)}` isn't the code of a character",
+                    span=self.span(at),
+                )
 
     def fstring(mut self, start: int):
         self.pos += 2

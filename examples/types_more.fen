@@ -45,7 +45,7 @@ def find(name: str) -> Player?:
 
 def parse(text: str):
     if not text.isdigit(): return Err(f"{text} isn't a number")
-    Ok(int(text))
+    Ok(int(text) else 0)
 
 def call(make: () -> int) -> int:
     make()

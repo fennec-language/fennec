@@ -268,7 +268,7 @@ fn field_types_come_from_their_types_or_defaults() {
 }
 
 #[test]
-fn recursive_functions_write_their_return_type() {
+fn recursive_functions_that_give_back_a_value_write_their_return_type() {
     let program = "
         def fib(n: int):
             if n < 2:
@@ -299,8 +299,6 @@ fn recursive_functions_write_their_return_type() {
         [
             "`fib` calls itself, so its return type has to be written @ def fib(n: int)",
             "`ping` calls itself, so its return type has to be written @ def ping(n: int)",
-            "`walk` calls itself, so its return type has to be written @ def walk(mut items: list[int], label: str?)",
-            "`inner` calls itself, so its return type has to be written @ def inner(n: int)",
         ]
     );
     assert_eq!(
@@ -308,11 +306,21 @@ fn recursive_functions_write_their_return_type() {
         [
             "write it after the parameters: `def fib(n: int) -> int:`",
             "write it after the parameters: `def ping(n: int) -> str:`",
-            "write the type it returns after the parameters: `def walk(mut items: list[int], label: str?) -> <type>:`",
-            "write the type it returns after the parameters: `def inner(n: int) -> <type>:`",
         ]
     );
     assert_eq!(returns(program, "fact"), Err(problems(program)));
+    // No arrow means it gives back nothing, which needs nothing written.
+    let program = "
+        def walk(mut items: list[int], label: str?):
+            walk(mut items, label)
+
+        def outer():
+            def inner(n: int):
+                inner(n)
+            inner(1)
+    ";
+    assert_eq!(returns(program, "walk"), Ok(Type::Unit));
+    assert_eq!(returns(program, "outer.inner"), Ok(Type::Unit));
 }
 
 #[test]

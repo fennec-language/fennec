@@ -153,6 +153,13 @@ jobs:
             git worktree add --detach ../previous "$BASE"
             cargo build --release --locked -p fennec --manifest-path ../previous/Cargo.toml --target-dir target/previous
           fi
+      # Instruction counts back up timings: a kernel fails only when both say it got slower.
+      # If perf can't be installed, the suite measures a slowdown again before failing it.
+      - name: Let perf count instructions
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)" || echo "perf isn't available"
+          sudo sysctl -w kernel.perf_event_paranoid=1 || true
       - name: Time each kernel against Rust and the previous commit
         run: |
           previous=()

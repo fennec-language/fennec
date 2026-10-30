@@ -33,6 +33,9 @@ pub(crate) struct TypeInfo {
     pub(crate) methods: HashMap<String, Rc<Callable>>,
 }
 
+/// The built-in types the standard library's code may give methods to with `extend`.
+const BUILT_IN_OWNERS: [&str; 8] = ["str", "bytes", "int", "float", "bool", "list", "set", "dict"];
+
 /// A running Fennec program: its declarations, the current call's names, and its output.
 pub struct Interp<'out> {
     pub(crate) functions: HashMap<String, Rc<Callable>>,
@@ -63,6 +66,8 @@ pub struct Interp<'out> {
     clock: bool,
     /// The command-line arguments and standard input `main` can receive.
     pub(crate) given: crate::inputs::Given,
+    /// The methods the standard library gives built-in types, like `str`'s `def *`, by type.
+    pub(crate) built_in_methods: HashMap<String, HashMap<String, Rc<Callable>>>,
 }
 
 /// Runs `module`'s `main`, writing what it prints to `out`.
@@ -97,6 +102,7 @@ impl<'out> Interp<'out> {
             files: true,
             clock: true,
             given: crate::inputs::Inputs::default().into(),
+            built_in_methods: HashMap::new(),
         };
         for source in fennec_syntax::prelude() {
             let module = fennec_syntax::parse_prelude(source)?;
@@ -183,6 +189,13 @@ impl<'out> Interp<'out> {
 
     /// Adds an extension's methods to its type, as if they were written in its declaration.
     fn extend_type(&mut self, extension: &Extension) -> Result<(), Diagnostic> {
+        if BUILT_IN_OWNERS.contains(&extension.name.as_str()) {
+            let methods = self.built_in_methods.entry(extension.name.clone()).or_default();
+            for method in &extension.methods {
+                methods.insert(method.name.clone(), Rc::new(callable(method, Vec::new())));
+            }
+            return Ok(());
+        }
         let info = self
             .types
             .get(&extension.name)
@@ -194,6 +207,22 @@ impl<'out> Interp<'out> {
         let extended = TypeInfo { def: info.def.clone(), kind: info.kind, methods };
         self.types.insert(extension.name.clone(), Rc::new(extended));
         Ok(())
+    }
+
+    /// A method the standard library gives a built-in value's type, like `str`'s `def *`.
+    pub(crate) fn built_in_method(&self, value: &Value, method: &str) -> Option<Rc<Callable>> {
+        let owner = match value {
+            Value::Str(_) => "str",
+            Value::Bytes(_) => "bytes",
+            Value::Int(_) => "int",
+            Value::Float(_) => "float",
+            Value::Bool(_) => "bool",
+            Value::List(_) | Value::Packed(_) => "list",
+            Value::Set(_) => "set",
+            Value::Dict(_) => "dict",
+            _ => return None,
+        };
+        self.built_in_methods.get(owner)?.get(method).cloned()
     }
 
     fn register_type(&mut self, def: &TypeDef, kind: TypeKind) {

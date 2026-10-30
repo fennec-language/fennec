@@ -19,6 +19,11 @@ def main(stdout: Stdout):
     stdout.print(initials)
     stdout.print(str(3.0), str(2.5), 7 / 2, 7 // 2, -7 // 2, -7 % 3, 2 ** 10)
 
+    # `*` repeats text. It's `str`'s own `def *`, written in Fennec in the standard library.
+    for depth in range(3):
+        stdout.print("  " * depth + "- level", depth)
+    stdout.print("=" * 12, "ab" * 0 == "")
+
     # A character's code, and back. Text is UTF-8, so its bytes can outnumber its characters.
     stdout.print(
         "A".code(),

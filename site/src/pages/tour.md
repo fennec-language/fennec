@@ -58,7 +58,7 @@ def area(radius: float):
 def label(enemy: Enemy):
     f"{enemy.name} ({enemy.health} HP)"   # returns str
 
-def factorial(n: int) -> int:             # recursive functions state their return type
+def factorial(n: int):                    # recursive functions are inferred too
     1 if n <= 1 else n * factorial(n - 1)
 ```
 

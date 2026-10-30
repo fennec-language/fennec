@@ -117,6 +117,23 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 ## Functions and types
 
+**Return types are never required, including on recursive and nested functions.** Functions that call each other, or themselves, are inferred together: each one's return type starts unknown, and the paths that return a value settle it.
+```fennec
+def fib(n: int):
+    if n < 2:
+        return n                 # settles it: int
+    fib(n - 1) + fib(n - 2)      # int + int, which agrees
+```
+- When two paths disagree, the error names both: "`fib` returns `int` on line 3 but `float` on line 4".
+- Errors are inferred the same way: a recursive group's errors grow until nothing new turns up.
+- Nothing depends on the order functions are checked in, so renaming a function never moves an error to another one.
+- A function whose every path calls itself again never returns, which is a warning.
+- The one exception is a generic function that calls itself with a different type argument (polymorphic recursion), which can't be inferred in general. It needs its return type written.
+
+*Why:* OCaml, F# and Haskell have inferred recursive functions for decades. Writing a type only because a function happens to be recursive is ceremony, and annotations that depend on checking order are fragile.
+
+**`-> None` means a function returns nothing,** as in Python's type hints. It's needed only where a written return type is wanted.
+
 **Builtins work on anything; methods belong to a type.** Builtins work on any value that fits an interface and never change it: `len`, `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`. Methods are specific to a type or change the value: `xs.append(x)`, `d.keys()`, `s.split(",")`, `mut xs.sort()`. A type supports a builtin by having the method, such as `def len(self)`. The language server offers the builtins that apply after `xs.`.
 *Why:* Builtins read well with comprehensions (`sum(e.health for e in enemies)`), and Python users and AI already write them. Python mostly follows this split; Fennec always does.
 

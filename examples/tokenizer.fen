@@ -86,7 +86,15 @@ def main(stdout: Stdout):
 
     word = "naïve"
     stdout.print(len(word), word[2], word[-1], word[1:4], word + "!", "ï" in word, "x" not in word)
-    stdout.print("abc" < "abd", "b" > "abc", "" < "a", "Z" < "a", "é" > "z", word == "naïve", word != "naive")
+    stdout.print(
+        "abc" < "abd",
+        "b" > "abc",
+        "" < "a",
+        "Z" < "a",
+        "é" > "z",
+        word == "naïve",
+        word != "naive",
+    )
     copy = word
     joined = copy + copy
     stdout.print(joined, len(joined), joined[5:], copy == word)

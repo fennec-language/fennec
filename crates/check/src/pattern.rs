@@ -6,10 +6,10 @@ use fennec_syntax::{Diagnostic, Expr, MatchArm, Pattern, Span};
 
 use crate::function::FnCx;
 use crate::program::TypeKind;
-use crate::types::{Type, join_all};
+use crate::types::{Type, a};
 
 impl FnCx<'_> {
-    pub(crate) fn match_expr(&mut self, subject: &Expr, arms: &[MatchArm]) -> Type {
+    pub(crate) fn match_expr(&mut self, subject: &Expr, arms: &[MatchArm], span: Span) -> Type {
         let ty = self.expr(subject);
         let before = self.snapshot();
         let mut paths = Vec::new();
@@ -27,17 +27,28 @@ impl FnCx<'_> {
         }
         self.merge(&paths);
         self.check_cases(&ty, arms, subject.span);
-        join_all(&values)
+        if values.is_empty() {
+            return Type::Unit;
+        }
+        self.join_or_report(&values, span, "the cases of this `match` give")
     }
 
     fn bind_pattern(&mut self, pattern: &Pattern, subject: &Type, span: Span) {
+        let subject = &self.checker.settled(subject);
         let (value, error) = match subject {
             Type::Result(value, error) => (value.as_ref().clone(), error.as_ref().clone()),
             other => (other.clone(), Type::Unknown),
         };
         match pattern {
-            Pattern::Wildcard | Pattern::Literal(_) => {}
-            Pattern::Bind(name) => self.declare(name, value, false),
+            Pattern::Wildcard => {}
+            Pattern::Literal(literal) => {
+                let ty = self.expr(literal);
+                if !self.checker.fits(&value, &ty) && !self.checker.fits(&ty, &value) {
+                    let message = format!("this case can't match: the value is {}, and this is {}", a(&value), a(&ty));
+                    self.error(Diagnostic::new(message, literal.span));
+                }
+            }
+            Pattern::Bind(name) => self.declare(name, value, false, span),
             Pattern::Tuple(patterns) => {
                 let items = match value {
                     Type::Tuple(items) if items.len() == patterns.len() => items,
@@ -48,6 +59,10 @@ impl FnCx<'_> {
                 }
             }
             Pattern::Variant { name, dotted: false, args } if name == "Ok" || name == "Err" => {
+                if !matches!(subject, Type::Result(..) | Type::Unknown) {
+                    let message = format!("this is {}, not a result, so it has no `{name}` case", a(subject));
+                    self.error(Diagnostic::new(message, span));
+                }
                 let inner = if name == "Ok" { value } else { error };
                 for arg in args {
                     self.bind_pattern(arg, &inner, span);

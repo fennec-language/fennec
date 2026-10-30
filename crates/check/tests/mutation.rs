@@ -27,7 +27,7 @@ fn names_change_only_when_mut() {
     assert_eq!(in_main("name = 'Ash'\nname = 'Vex'"), ["`name` isn't mut @ name"]);
     assert_eq!(in_main("count = 1\ncount += 1"), ["`count` isn't mut @ count"]);
     assert_eq!(in_main("mut count = 1\ncount += 1\ncount = 5"), Vec::<String>::new());
-    assert_eq!(in_main("a, b = (1, 2)\na, c = (3, 4)"), ["`a` isn't mut @ a, c"]);
+    assert_eq!(in_main("a, b = (1, 2)\na, c = (3, 4)"), ["`a` isn't mut @ a"]);
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn functions_cannot_change_the_names_around_them() {
     );
     let program = "
         def f(items: list[int]):
-            mut seen = []
+            mut seen: list[int] = []
             def g(n: int):
                 mut inner = [n]
                 inner.append(n)

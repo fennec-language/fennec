@@ -9,7 +9,7 @@ mod span;
 mod token;
 
 pub use ast::{
-    Arg, BinOp, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Import, Interface, Item, MatchArm,
+    Arg, BinOp, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Generic, Import, Interface, Item, MatchArm,
     Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
 };
 pub use diagnostic::Diagnostic;

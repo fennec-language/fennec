@@ -148,10 +148,6 @@ fn narrowing_ends_with_the_code_it_guards() {
 #[test]
 fn question_mark_optional_chaining_and_else_unwrap() {
     let program = "
-        def a(name: str):
-            player = find(name)?
-            player.name
-
         def b(name: str):
             damage = find(name)?.weapon?.damage else 0
             damage + 1
@@ -164,15 +160,17 @@ fn question_mark_optional_chaining_and_else_unwrap() {
             player.name.upper()
             find(name)?.name.upper()
 
-        def e():
-            nothing = None
-            stdout_less = nothing?.name
-            more = nothing else 1
-            more + 1
+        def e(name: str):
+            player = find(name)?
+            player.name
     ";
     assert_eq!(
         problems(&format!("{FIND}\n{}", crate::dedent(program))),
-        ["this might be None @ find(name)?.name", "this might be None @ find(name)?.name",]
+        [
+            "this might be None @ find(name)?.name",
+            "this might be None @ find(name)?.name",
+            "`?` needs a result, but this is a Player? @ find(name)",
+        ]
     );
 }
 
@@ -396,6 +394,7 @@ fn match_cases_bind_typed_values() {
         [
             "can't use `+` on an int and a str @ value + \"a\"",
             "can't use `+` on an Oops and an int @ error + 1",
+            "`T` isn't a type @ T",
             "can't mix int and float in `+` @ r + 1",
             "can't mix int and float in `+` @ dotted + 1",
         ]

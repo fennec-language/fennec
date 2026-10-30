@@ -153,7 +153,7 @@ fn indexing_fits_what_is_indexed() {
             items = [1]
             pair = (1, 'a')
             table = {'a': 1}
-            stdout.print(items[0] + 1, 'abc'[0] + 'd', pair[0] + 1, pair[1] + 'b', pair[5], table['a'] + 1)
+            stdout.print(items[0] + 1, 'abc'[0] + 'd', pair[0] + 1, pair[1] + 'b', table['a'] + 1)
             stdout.print(items['a'], 'abc'[1.5], Plain()[0], 5[0], {1}[0])
     ";
     assert_eq!(

@@ -7,8 +7,10 @@
 //! A function whose return type isn't written is checked the first time something needs its
 //! signature, so every body is checked exactly once, in whatever order calls require.
 //!
-//! When the checker can't tell a type, it treats it as unknown and says nothing, so anything
-//! it reports is a real mistake. The interpreter still checks the rest as the program runs.
+//! Every type in a program that checks is known. Where the checker can't tell a type from
+//! the code, like the items of an empty list nothing is added to, it says what to write. So
+//! besides the signatures, a check gives the type of every expression and every name: the
+//! typed tree a compiler builds on. See [`Types`].
 
 mod builtins;
 mod call;
@@ -16,6 +18,7 @@ mod checker;
 mod effects;
 mod expr;
 mod function;
+mod infer;
 mod messages;
 mod pattern;
 mod place;
@@ -25,14 +28,103 @@ mod types;
 
 use std::collections::BTreeMap;
 
-use fennec_syntax::{Diagnostic, Module};
+use fennec_syntax::{Diagnostic, Module, Span};
 
 pub use types::Type;
 
 /// Checks a parsed module. Returns the signature of every function and method, or every
 /// problem found, in source order.
 pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
+    check_typed(module).map(|checked| checked.signatures)
+}
+
+/// Checks a parsed module. Returns the signatures and the type of every expression and
+/// name, or every problem found, in source order.
+pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
     checker::Checker::new(module).run()
+}
+
+/// Everything a check works out about a program that has no mistakes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Checked {
+    pub signatures: Signatures,
+    pub types: Types,
+}
+
+/// The typed tree: the type of every expression and every declared name in a program,
+/// the standard library's included, grouped by the code they're in.
+///
+/// Each group is keyed like [`Signatures`]: `name` for a function, `Type.name` for a method,
+/// `outer.inner` for a nested function. Field defaults and `where` rules are under
+/// `fields of Type`, and each `test` block under `test "its name"`.
+///
+/// Within a group, an expression is found by its span, which is unique: no two
+/// expressions in one file cover the same bytes. A name is found by the span of what
+/// declares it and its name:
+/// - an assignment that makes it: the name's own span (each name's, in `a, b = pair`);
+/// - a parameter: the parameter's span;
+/// - a `for` loop or comprehension: the span of the whole `for` statement or comprehension;
+/// - a `with ... as name`: the `with` statement's span;
+/// - a `match` case: the case's span;
+/// - an arrow function's parameter: the arrow function's span;
+/// - a nested function's name: the nested `def`'s span.
+///
+/// Every value has a type here, nothing in it is `Type::Unknown` or `Type::Var`, and a
+/// function called with a type parameter has its call typed with the parameter filled in.
+/// Some expressions aren't values and have no type: a type's name used to reach a
+/// constructor or enum case (`Vec3` in `Vec3.zero()`), a module's name, and the
+/// `object.method` part of a method call (the call itself has a type).
+///
+/// Inside a generic function, types mention its parameters as `Type::Param`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Types {
+    functions: BTreeMap<String, Body>,
+}
+
+impl Types {
+    /// The types in one function, method, test or type's fields.
+    pub fn body(&self, key: &str) -> Option<&Body> {
+        self.functions.get(key)
+    }
+
+    /// Every group of types, by key in alphabetical order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Body)> {
+        self.functions.iter().map(|(key, body)| (key.as_str(), body))
+    }
+}
+
+/// The types of the expressions and names in one function, method, test or type's fields.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Body {
+    pub(crate) exprs: BTreeMap<(u32, u32), Type>,
+    pub(crate) names: BTreeMap<((u32, u32), String), Type>,
+}
+
+impl Body {
+    /// The type of the expression at `span`.
+    pub fn expr(&self, span: Span) -> Option<&Type> {
+        self.exprs.get(&(span.start, span.end))
+    }
+
+    /// The type a name is declared with, by the span of what declares it. This is the type
+    /// every value given to it has to fit, like `Enemy?`; what it holds at one point can be
+    /// narrower, like `Enemy` after a check for None, and that's the type of the expression
+    /// reading it there.
+    pub fn name(&self, declared_at: Span, name: &str) -> Option<&Type> {
+        self.names.get(&((declared_at.start, declared_at.end), name.to_owned()))
+    }
+
+    /// Every expression's span and type, in source order.
+    pub fn exprs(&self) -> impl Iterator<Item = (Span, &Type)> {
+        self.exprs.iter().map(|((start, end), ty)| (Span { start: *start, end: *end }, ty))
+    }
+
+    /// Every declared name, with the span of what declares it and its type, in source order.
+    pub fn names(&self) -> impl Iterator<Item = (Span, &str, &Type)> {
+        self.names
+            .iter()
+            .map(|(((start, end), name), ty)| (Span { start: *start, end: *end }, name.as_str(), ty))
+    }
 }
 
 /// The signature of every function, method and nested function in a program, including the
@@ -68,10 +160,10 @@ impl Signatures {
         self.structs.keys().map(String::as_str)
     }
 
-    /// The type a name holds in a function (`name`, `Type.name` or `outer.inner`), when it
-    /// holds the same type everywhere in it.
+    /// The type a name holds in a function (`name`, `Type.name` or `outer.inner`), when it's
+    /// declared with the same type everywhere in it. [`Types`] has each declaration's type.
     pub fn local(&self, function: &str, name: &str) -> Option<&Type> {
-        self.locals.get(&format!("{function}/{name}")).filter(|ty| **ty != Type::Unknown)
+        self.locals.get(&format!("{function}/{name}")).filter(|ty| ty.is_known())
     }
 
     /// Every signature, by name in alphabetical order.

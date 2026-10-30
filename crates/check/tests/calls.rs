@@ -347,7 +347,15 @@ fn values_held_in_names_can_be_called() {
             add = (a, b) => a + b
             stdout.print(add(1, 2, 3))
     ";
-    assert_eq!(problems(program), ["`double` takes 1 argument(s) @ 2"]);
+    assert_eq!(
+        problems(program),
+        [
+            "`double` takes 1 argument(s) @ 2",
+            "can't tell the type of `a` @ (a, b) => a + b",
+            "can't tell the type of `b` @ (a, b) => a + b",
+            "`this function` takes 2 argument(s) @ 3",
+        ]
+    );
 }
 
 #[test]
@@ -383,7 +391,7 @@ fn collections_and_tuples_match_their_types_item_by_item() {
 
         def main(stdout: Stdout):
             f({'a': 1}, (1, 'a'), 'x')
-            f({}, (1, len), None)
+            f({}, (1, 'b'), None)
             f({1: 1}, (1, 2), [1].index(1))
             f({'a': 'b'}, (1,), None)
     ";
@@ -400,7 +408,7 @@ fn collections_and_tuples_match_their_types_item_by_item() {
 }
 
 #[test]
-fn types_and_builtins_can_be_used_as_values() {
+fn types_and_builtins_are_not_values() {
     let program = "
         struct Enemy:
             health = 100
@@ -415,6 +423,11 @@ fn types_and_builtins_can_be_used_as_values() {
     ";
     assert_eq!(
         problems(program),
-        ["`mystery` doesn't exist @ mystery", "`Shape` has nothing called `Hexagon` @ Shape.Hexagon",]
+        [
+            "`len` can only be called @ len",
+            "`Enemy` is a type, not a value @ Enemy",
+            "`mystery` doesn't exist @ mystery",
+            "`Shape` has nothing called `Hexagon` @ Shape.Hexagon",
+        ]
     );
 }

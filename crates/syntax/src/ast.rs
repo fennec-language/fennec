@@ -29,6 +29,8 @@ pub enum Item {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FnDef {
     pub name: String,
+    /// Type parameters, like `T` in `def first[T](items: list[T]) -> T`.
+    pub generics: Vec<Generic>,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
     pub body: Vec<Stmt>,
@@ -40,6 +42,14 @@ impl FnDef {
     pub fn takes_self(&self) -> bool {
         self.params.first().is_some_and(|param| param.is_self)
     }
+}
+
+/// A type parameter, with the interface its types have to fit: `T` or `T: Shape`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Generic {
+    pub name: String,
+    pub bound: Option<TypeExpr>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -120,12 +130,14 @@ pub struct Stmt {
 #[derive(Clone, Debug, PartialEq)]
 pub enum StmtKind {
     Expr(Expr),
-    /// `name = value`, `mut name = value`, `a, b = pair`, `target op= value`.
+    /// `name = value`, `mut name = value`, `a, b = pair`, `target op= value`, and
+    /// `name: type = value`, which declares a name with its type written.
     Assign {
         target: Expr,
         op: Option<BinOp>,
         value: Expr,
         declare_mut: bool,
+        ty: Option<TypeExpr>,
     },
     If {
         branches: Vec<(Expr, Vec<Stmt>)>,

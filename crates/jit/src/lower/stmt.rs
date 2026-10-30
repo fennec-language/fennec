@@ -69,7 +69,7 @@ impl Lowerer<'_, '_> {
     pub(super) fn stmt(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
         match &stmt.kind {
             StmtKind::Expr(expr) => self.expr(expr).map(|_| ()),
-            StmtKind::Assign { target, op, value, declare_mut } => {
+            StmtKind::Assign { target, op, value, declare_mut, .. } => {
                 self.assign(target, *op, value, *declare_mut)
             }
             StmtKind::If { branches, otherwise } => self.if_stmt(branches, otherwise.as_deref()),

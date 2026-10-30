@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use fennec_syntax::{FnDef, Item, Module, TestDef, TypeDef, TypeExpr};
+use fennec_syntax::{Diagnostic, FnDef, Interface, Item, Module, TestDef, TypeDef, TypeExpr};
 
 use crate::types::Type;
 
@@ -35,6 +35,7 @@ pub(crate) struct Program {
     pub(crate) types: BTreeMap<String, TypeInfo>,
     pub(crate) functions: BTreeMap<String, FnEntry>,
     pub(crate) tests: Vec<TestDef>,
+    pub(crate) interfaces: BTreeMap<String, Interface>,
     aliases: BTreeMap<String, TypeExpr>,
 }
 
@@ -56,7 +57,10 @@ impl Program {
                     self.aliases.insert(name.clone(), ty.clone());
                 }
                 Item::Test(test) => self.tests.push(test.clone()),
-                Item::Interface(_) | Item::Import(_) | Item::Stmt(_) => {}
+                Item::Interface(interface) => {
+                    self.interfaces.insert(interface.name.clone(), interface.clone());
+                }
+                Item::Import(_) | Item::Stmt(_) => {}
             }
         }
     }
@@ -100,35 +104,101 @@ impl Program {
             .collect()
     }
 
-    /// The type a written type means. Names the checker doesn't know, like a generic `T`,
-    /// are `Unknown`.
-    pub(crate) fn resolve(&self, written: &TypeExpr) -> Type {
-        self.resolve_within(written, ALIAS_DEPTH)
+    /// The type a written type means, outside any generic function.
+    pub(crate) fn resolve(&self, written: &TypeExpr) -> Result<Type, Diagnostic> {
+        self.resolve_in(written, &[])
     }
 
-    fn resolve_within(&self, written: &TypeExpr, depth: usize) -> Type {
-        let arg =
-            |at: usize| written.args.get(at).map_or(Type::Unknown, |arg| self.resolve_within(arg, depth));
-        let ty = match written.name.as_str() {
+    /// The type a written type means, with these type parameters in scope. An interface
+    /// stands for a type parameter of its own, so `list[Shape]` is a list of any one type
+    /// that fits `Shape`.
+    pub(crate) fn resolve_in(&self, written: &TypeExpr, generics: &[String]) -> Result<Type, Diagnostic> {
+        self.resolve_within(written, generics, ALIAS_DEPTH)
+    }
+
+    fn resolve_within(&self, written: &TypeExpr, generics: &[String], depth: usize) -> Result<Type, Diagnostic> {
+        let name = written.name.as_str();
+        let builtin = matches!(
+            name,
+            "int" | "float" | "bool" | "str" | "Path" | "None" | "list" | "SoaList" | "set" | "dict" | "tuple"
+                | "Id" | "IdMap" | "Stdout" | "Fs"
+        );
+        let declared = generics.iter().any(|generic| generic == name)
+            || self.interfaces.contains_key(name)
+            || self.types.contains_key(name)
+            || self.aliases.contains_key(name);
+        if !builtin && !declared {
+            return Err(unknown_type(name, written.span));
+        }
+        let wanted = match name {
+            "list" | "set" | "SoaList" | "Id" | "IdMap" => 1,
+            "dict" => 2,
+            "tuple" => written.args.len(),
+            _ => 0,
+        };
+        if written.args.len() != wanted {
+            return Err(wrong_type_args(written, wanted));
+        }
+        let mut args = Vec::new();
+        for arg in &written.args {
+            args.push(self.resolve_within(arg, generics, depth)?);
+        }
+        let mut args = args.into_iter();
+        let mut arg = || Box::new(args.next().unwrap_or(Type::Unknown));
+        let ty = match name {
             "int" => Type::Int,
             "float" => Type::Float,
             "bool" => Type::Bool,
             "str" | "Path" => Type::Str,
             "None" => Type::None,
-            "list" | "SoaList" => Type::list(arg(0)),
-            "set" => Type::Set(Box::new(arg(0))),
-            "dict" => Type::Dict(Box::new(arg(0)), Box::new(arg(1))),
-            "tuple" => Type::Tuple(written.args.iter().map(|arg| self.resolve_within(arg, depth)).collect()),
-            "Id" => Type::Id(Box::new(arg(0))),
-            "IdMap" => Type::IdMap(Box::new(arg(0))),
-            "Stdout" | "Fs" => Type::named(&written.name),
+            "list" | "SoaList" => Type::List(arg()),
+            "set" => Type::Set(arg()),
+            "dict" => Type::Dict(arg(), arg()),
+            "tuple" => Type::Tuple(written.args.iter().map(|_| *arg()).collect()),
+            "Id" => Type::Id(arg()),
+            "IdMap" => Type::IdMap(arg()),
+            "Stdout" | "Fs" => Type::named(name),
+            name if generics.iter().any(|generic| generic == name) || self.interfaces.contains_key(name) => {
+                Type::Param(name.to_owned())
+            }
             name if self.types.contains_key(name) => Type::named(name),
             name => match (self.aliases.get(name), depth.checked_sub(1)) {
-                (Some(alias), Some(depth)) => self.resolve_within(alias, depth),
-                _ => Type::Unknown,
+                (Some(alias), Some(depth)) => self.resolve_within(alias, generics, depth)?,
+                _ => {
+                    return Err(Diagnostic::new(format!("the type alias `{name}` refers to itself"), written.span));
+                }
             },
         };
-        if written.optional { Type::optional(ty) } else { ty }
+        Ok(if written.optional { Type::optional(ty) } else { ty })
+    }
+}
+
+fn wrong_type_args(written: &TypeExpr, wanted: usize) -> Diagnostic {
+    let name = &written.name;
+    let example = match name.as_str() {
+        "dict" => "dict[str, int]".to_owned(),
+        "list" | "set" | "SoaList" => format!("{name}[int]"),
+        "Id" | "IdMap" => format!("{name}[Enemy]"),
+        _ => name.clone(),
+    };
+    let message = if wanted == 0 {
+        format!("`{name}` doesn't take types in brackets")
+    } else {
+        format!("`{name}` needs {wanted} type{} in brackets", if wanted == 1 { "" } else { "s" })
+    };
+    Diagnostic::new(message, written.span).with_help(format!("write it like `{example}`"))
+}
+
+fn unknown_type(name: &str, span: fennec_syntax::Span) -> Diagnostic {
+    let diagnostic = Diagnostic::new(format!("`{name}` isn't a type"), span);
+    match name {
+        "f32" | "f64" | "double" => diagnostic.with_help("write `float`"),
+        "i32" | "i64" | "usize" | "long" => diagnostic.with_help("write `int`"),
+        "string" | "String" => diagnostic.with_help("write `str`"),
+        "boolean" | "Bool" => diagnostic.with_help("write `bool`"),
+        "List" | "Dict" | "Set" => diagnostic.with_help(format!("write `{}`", name.to_lowercase())),
+        "Optional" => diagnostic.with_help("write `?` after the type, like `Enemy?`"),
+        _ => diagnostic.with_help(format!("declare it, like `struct {name}:`, or check the spelling")),
     }
 }
 

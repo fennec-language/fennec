@@ -5,7 +5,7 @@ mod expr;
 mod pattern;
 mod stmt;
 
-use crate::ast::{Case, Field, FnDef, Import, Interface, Item, Module, Param, TestDef, TypeDef, TypeExpr};
+use crate::ast::{Case, Field, FnDef, Generic, Import, Interface, Item, Module, Param, TestDef, TypeDef, TypeExpr};
 use crate::diagnostic::Diagnostic;
 use crate::lexer::lex;
 use crate::span::Span;
@@ -215,7 +215,10 @@ impl Parser {
 
     fn type_def(&mut self, start: Span, is_enum: bool) -> Result<TypeDef, Diagnostic> {
         let name = self.name("a type name")?;
-        self.generic_params()?;
+        if let Some(generic) = self.generic_params()?.first() {
+            return Err(Diagnostic::new(format!("`{name}` can't have type parameters yet"), generic.span)
+                .with_help("write a separate type for each kind of value it holds, or an enum of them"));
+        }
         let span = start.to(self.prev_span());
         self.expect_p(Punct::Colon)?;
         self.expect_block_start()?;
@@ -332,21 +335,22 @@ impl Parser {
 
     /// `[T, U: Shape]` after a function or type name. Generic parameters are checked by the
     /// type checker, so the interpreter only needs to skip them.
-    fn generic_params(&mut self) -> Result<(), Diagnostic> {
+    fn generic_params(&mut self) -> Result<Vec<Generic>, Diagnostic> {
+        let mut generics = Vec::new();
         if !self.eat_p(Punct::LBracket) {
-            return Ok(());
+            return Ok(generics);
         }
         loop {
-            self.name("a type parameter")?;
-            if self.eat_p(Punct::Colon) {
-                self.type_expr()?;
-            }
+            let start = self.span();
+            let name = self.name("a type parameter")?;
+            let bound = if self.eat_p(Punct::Colon) { Some(self.type_expr()?) } else { None };
+            generics.push(Generic { name, bound, span: start.to(self.prev_span()) });
             if !self.eat_p(Punct::Comma) {
                 break;
             }
         }
         self.expect_p(Punct::RBracket)?;
-        Ok(())
+        Ok(generics)
     }
 
     pub(crate) fn def(&mut self) -> Result<FnDef, Diagnostic> {
@@ -384,7 +388,7 @@ impl Parser {
             }
             _ => return Err(self.unexpected("a function name")),
         };
-        self.generic_params()?;
+        let generics = self.generic_params()?;
         self.expect_p(Punct::LParen)?;
         let mut params = Vec::new();
         while !self.at_p(Punct::RParen) {
@@ -395,7 +399,7 @@ impl Parser {
         }
         self.expect_p(Punct::RParen)?;
         let ret = if self.eat_p(Punct::Arrow) { Some(self.type_expr()?) } else { None };
-        Ok(FnDef { name, params, ret, body: Vec::new(), span: start.to(self.prev_span()) })
+        Ok(FnDef { name, generics, params, ret, body: Vec::new(), span: start.to(self.prev_span()) })
     }
 
     fn param(&mut self) -> Result<Param, Diagnostic> {
@@ -413,7 +417,7 @@ impl Parser {
         Ok(Param { name, ty: Some(ty), is_mut, is_self: false, span: start.to(self.prev_span()) })
     }
 
-    fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
+    pub(crate) fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
         let start = self.span();
         let mut args = Vec::new();
         let name = if self.eat_kw(Kw::None) {

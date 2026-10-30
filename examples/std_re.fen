@@ -11,7 +11,11 @@ def parse_command(line: str) -> Command?:
     if found is None:
         return None
     count = found[2]
-    Command(verb=found[1] else "", target=found[3] else "", count=int(count) if count is not None else 1)
+    Command(
+        verb=found[1] else "",
+        target=found[3] else "",
+        count=int(count) if count is not None else 1,
+    )
 
 test "names with letters only are found whole" for word: str:
     names = Regex(r"[a-z]+").find_all(word)
@@ -36,7 +40,8 @@ def main(stdout: Stdout):
     # might not be valid, so making it gives a result.
     for pattern in ["[0-9]+", "[0-9+"]:
         match Regex(pattern):
-            case Ok(regex): stdout.print(pattern, "finds", [m.text for m in regex.find_all("a1b22")])
+            case Ok(regex):
+                stdout.print(pattern, "finds", [m.text for m in regex.find_all("a1b22")])
             case Err(error): stdout.print(pattern, "->", error.message)
 
     # Matching never backtracks, so this takes time in proportion to the text.

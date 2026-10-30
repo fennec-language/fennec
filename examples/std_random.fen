@@ -29,7 +29,11 @@ def main(stdout: Stdout):
     stdout.print([rng.randint(1, 6) for _ in range(10)])
     stdout.print(roll(mut rng, 3, 6), rng.random(), rng.uniform(-1.0, 1.0))
 
-    enemies = [Enemy(name="goblin", health=7), Enemy(name="orc", health=15), Enemy(name="troll", health=30)]
+    enemies = [
+        Enemy(name="goblin", health=7),
+        Enemy(name="orc", health=15),
+        Enemy(name="troll", health=30),
+    ]
     stdout.print(rng.choice(enemies).name)
 
     mut deck = ["ace", "king", "queen", "jack", "ten"]

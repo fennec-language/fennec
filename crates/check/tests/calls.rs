@@ -383,6 +383,7 @@ fn collections_and_tuples_match_their_types_item_by_item() {
 
         def main(stdout: Stdout):
             f({'a': 1}, (1, 'a'), 'x')
+            f({}, (1, len), None)
             f({1: 1}, (1, 2), [1].index(1))
             f({'a': 'b'}, (1,), None)
     ";

@@ -1,0 +1,125 @@
+## The checker's passes over a program. Mirrors `crates/check/src/checker.rs`, starting with
+## the declarations: every written type in a signature, field, test input or typed name has
+## to mean something, and every type parameter's bounds have to be interfaces.
+
+from span import Diagnostic
+from ast import Module, FnDef, Generic, Field, TypeExpr, Stmt, StmtKind, Expr, ExprKind
+from check.program import Program, FnEntry, TypeKind
+
+## Checks a module against the standard library's modules. Returns every problem found,
+## in source order.
+def check(module: Module, library: list[Module]) -> list[Diagnostic]:
+    mut checker = Checker()
+    for source in library:
+        checker.program.add(source, True)
+    checker.program.add(module, False)
+    checker.check_all()
+    sorted_diagnostics(checker.diagnostics)
+
+struct Checker:
+    program: Program = Program()
+    diagnostics: list[Diagnostic] = []
+
+    def check_all(mut self):
+        self.check_declarations()
+        for key, entry in self.program.functions.items():
+            if not entry.prelude:
+                self.check_function(entry.function, self.program.generics_of(entry))
+        for test in self.program.tests:
+            for input in test.inputs:
+                self.check_written(input.ty, [])
+            self.check_body(test.body, [])
+        for name, info in self.program.types.items():
+            if info.kind == .StructKind or not info.prelude:
+                self.check_fields(info.type_def.fields, self.program.type_params(name))
+
+    ## Reports types written in signatures and interfaces that don't mean anything, and
+    ## type parameters bound to something that isn't an interface.
+    def check_declarations(mut self):
+        for key, entry in self.program.functions.items():
+            if entry.prelude:
+                continue
+            function = entry.function
+            names = generic_names(self.program.generics_of(entry))
+            for param in function.params:
+                self.check_written(param.ty, names)
+            self.check_written(function.ret, names)
+            self.check_bounds(function.generics)
+        for name, interface in self.program.interfaces.items():
+            for method in interface.methods:
+                for param in method.params:
+                    self.check_written(param.ty, [])
+                self.check_written(method.ret, [])
+        for name, info in self.program.types.items():
+            if not info.prelude:
+                self.check_bounds(info.type_def.generics)
+
+    ## Bounds that aren't interfaces, as in `T: Enemy`.
+    def check_bounds(mut self, generics: list[Generic]):
+        for generic in generics:
+            for bound in generic.bounds:
+                if not self.program.is_interface(bound.name):
+                    self.diagnostics.append(
+                        Diagnostic(
+                            message=f"`{bound.name}` isn't an interface",
+                            span=bound.span,
+                            help="a type parameter can be bound to an interface, like `T: Ordered` or `T: Shape`",
+                        ),
+                    )
+
+    ## A function's return type, and every type written in its body. A function defined
+    ## inside another sees that one's type parameters, and has its return type checked but
+    ## not its parameters' types, as the Rust checker does.
+    def check_function(mut self, function: FnDef, generics: list[Generic]) -> nothing:
+        self.check_written(function.ret, generic_names(generics))
+        self.check_body(function.body, generics)
+
+    def check_fields(mut self, fields: list[Field], generics: list[str]):
+        for field in fields:
+            self.check_written(field.ty, generics)
+
+    def check_written(mut self, written: TypeExpr?, generics: list[str]):
+        if written is None:
+            return
+        match self.program.resolve_in(written, generics):
+            case Ok(_): pass
+            case Err(problem): self.diagnostics.append(problem)
+
+    ## The types written inside a body: typed names, and the bodies of nested functions.
+    def check_body(mut self, stmts: list[Stmt], generics: list[Generic]) -> nothing:
+        names = generic_names(generics)
+        for stmt in stmts:
+            match stmt.kind:
+                case .Expr(expr): self.check_arms(expr, generics)
+                case .Assign(_, _, value, _, ty):
+                    self.check_written(ty, names)
+                    self.check_arms(value, generics)
+                case .If(branches, otherwise):
+                    for _, body in branches:
+                        self.check_body(body, generics)
+                    if otherwise is not None:
+                        self.check_body(otherwise, generics)
+                case .While(_, body): self.check_body(body, generics)
+                case .For(_, _, _, body): self.check_body(body, generics)
+                case .With(_, _, _, body): self.check_body(body, generics)
+                case .Def(function): self.check_function(function, generics + function.generics)
+                case _: pass
+
+    ## The bodies of a `match`'s arms, when `expr` is one.
+    def check_arms(mut self, expr: Expr, generics: list[Generic]):
+        match expr.kind:
+            case .Match(_, arms):
+                for arm in arms:
+                    self.check_body(arm.body, generics)
+            case _: pass
+
+def generic_names(generics: list[Generic]) -> list[str]:
+    [generic.name for generic in generics]
+
+## Diagnostics in source order, then by message, with exact repeats dropped.
+def sorted_diagnostics(diagnostics: list[Diagnostic]) -> list[Diagnostic]:
+    mut unique = []
+    for diagnostic in sorted(diagnostics, key=d => (d.span.start, d.message)):
+        if len(unique) == 0 or unique[-1] != diagnostic:
+            unique.append(diagnostic)
+    unique

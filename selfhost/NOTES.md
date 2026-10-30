@@ -50,7 +50,8 @@ code does instead, and links the issue where it's being decided or fixed.
   `Set`, `Dict`, `Tuple` and `Variant`, so those are written `ExprKind.Int(value)`,
   `Tok.Name(word)` and so on. Patterns don't have this problem: `case .Int(value):` works.
   The search covers the whole kit, not just what a file imports: `lexer.fen` never sees the
-  syntax tree, but adding `ast.fen` to the kit made its `.Name(word)` ambiguous. (#62)
+  syntax tree, but adding `ast.fen` to the kit made its `.Name(word)` ambiguous. Adding the
+  checker's `Type` enum did the same to the parser's `.Function(...)` and `.Bool(...)`. (#62)
 - **A case can't be called `None`**, so the `None` literal in the syntax tree is
   `ExprKind.Nothing`.
 - **Keywords can't be field names**, so a case holding a function is `Function(function)`,
@@ -58,12 +59,11 @@ code does instead, and links the issue where it's being decided or fixed.
 
 ## Functions
 
-- **A recursive function must write its return type, and there's no way to write "returns
-  nothing".** The checker suggests `-> nothing`, which isn't a type it knows: it passes only
-  because unknown types aren't checked. `-> None` fails as soon as the body ends in a call.
-  The tree dump's recursive methods say `-> nothing` for now. Which method of a recursive
-  group needs it depends on the order they're checked in, so renaming a method can move the
-  error to another one. This one feels like the checker being wrong. (#63)
+- **A recursive function that returns nothing has to say `-> nothing`.** The checker wants
+  a return type on every recursive function, and rejects `-> None` when the body ends in a
+  call. #27 made `nothing` a real type, so the tree writer's and the checker's recursive
+  methods say `-> nothing`. #71 decided that a `def` with no arrow returns nothing; once
+  that's built, these lose their arrows. (#63)
 - **A type's methods must all sit in its declaration.** Rust spreads `impl Parser` over
   `parser.rs` and `parser/{stmt,expr,pattern}.rs`; here the parser is one ~1,000-line
   `struct Parser`, with comments marking where each Rust file's part begins. Something like
@@ -89,7 +89,8 @@ program so far.
   `expr` and others on both `Parser` and `Tree`, `--jit` called the wrong one and failed with
   "a nothing has no field `name`". The interpreter was right. The tree dump's methods are
   named `write_expr` and so on to avoid it. Small programs with the same shape don't trigger
-  it. (#60)
+  it. It came back when the checker added `Checker.run` beside `Lexer.run`, so that one is
+  `check_all`. (#60)
 - **Calling a `mut self` method copied the receiver's lists.** Each call to a method that
   appends to a field copied the whole list, so lexing and parsing were quadratic in the size
   of the file. The interpreter now moves arguments into the callee's frame. The JIT still

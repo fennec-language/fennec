@@ -502,6 +502,7 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 
 ## Still open
 
+- `extend`, adding methods to a kit's own type from another file: deferred. What a value can do stays visible where its type is declared, which also gives agents one place to look, so a large type stays one file with marked sections. Revisit only if a real type gets painful in one file, around a couple of thousand lines. Adding it later breaks no code.
 - How a type marks that its finishing method must be called.
 - Decorators. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.
 - Whether independent writes, not just reads, should overlap automatically.

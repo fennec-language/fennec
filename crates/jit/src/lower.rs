@@ -12,6 +12,7 @@
 mod boxes;
 mod call;
 mod codegen;
+mod comprehensions;
 mod dicts;
 mod enums;
 mod expr;

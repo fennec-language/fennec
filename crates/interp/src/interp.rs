@@ -92,7 +92,7 @@ impl<'out> Interp<'out> {
             files: true,
             clock: true,
         };
-        for source in prelude::SOURCES {
+        for source in fennec_syntax::prelude() {
             let module = fennec_syntax::parse_prelude(source)?;
             interp.load(&module)?;
         }

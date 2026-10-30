@@ -117,6 +117,28 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 ## Functions and types
 
+**Every `def` writes its return type. Arrow functions never do. No `->` means the function returns nothing.**
+```fennec
+def visible(world: World) -> list[Enemy]:
+    def in_view(enemy: Enemy) -> bool:
+        enemy.distance_to(world.camera) < world.view_range
+    [e for e in world.enemies if in_view(e)]
+
+enemies.sort(key=e => e.health)          # an arrow's type comes from where it's passed
+
+def main(stdout: Stdout):                # no arrow: returns nothing
+    stdout.print("hi")
+```
+- Nested `def`s follow the same rule as top-level ones. There's one rule: `def` has an arrow when it returns a value, and `=>` never has one.
+- A `def` that returns a value without an arrow is an error whose fix writes the inferred type in. `fennec fix` does it for a whole kit.
+- `-> None` has a fix that removes it, since no arrow already means the function returns nothing.
+- Everything inside a body is still inferred: locals, empty collections (`dict[str, int]()` when a type must be said), closures, comprehensions and type arguments at calls. Errors are still inferred too, and `fails` stays optional.
+- Recursion needs nothing special: every named function already has its type written, and an arrow can't call itself.
+
+*Why:* When AI writes most code, writing costs little and reading is what matters, for people reviewing it and for agents reading other files. A complete signature summarizes a function without its body. A mistake in a body is reported inside that function ("returns `float`, but the signature says `int`") instead of at a caller in another file, where an agent tends to "fix" the wrong place. Rust, Swift, Kotlin and well-kept TypeScript settled on the same line: explicit where a function meets the rest of the program, inferred inside. Annotating locals is left out because it's what makes bodies tiring to read. It's cheap to reverse: `fennec fix` can strip written return types again if measurement shows they don't help.
+
+This replaces the earlier rules that return types are inferred, and that recursive functions must declare theirs.
+
 **Builtins work on anything; methods belong to a type.** Builtins work on any value that fits an interface and never change it: `len`, `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`. Methods are specific to a type or change the value: `xs.append(x)`, `d.keys()`, `s.split(",")`, `mut xs.sort()`. A type supports a builtin by having the method, such as `def len(self)`. The language server offers the builtins that apply after `xs.`.
 *Why:* Builtins read well with comprehensions (`sum(e.health for e in enemies)`), and Python users and AI already write them. Python mostly follows this split; Fennec always does.
 
@@ -128,9 +150,9 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 **Type parameters are written the way Python 3.12 writes them.** The bound says what the type must be able to do:
 ```fennec
-def total_area[T: Shape](shapes: list[T]):
+def total_area[T: Shape](shapes: list[T]) -> f32:
 def largest[T: Ordered](xs: list[T]) -> T:
-def merge[T: Ordered & Hashable](a: list[T], b: list[T]):
+def merge[T: Ordered & Hashable](a: list[T], b: list[T]) -> list[T]:
 struct Pool[T]:
 interface Container[T]:
 ```
@@ -152,7 +174,7 @@ Type arguments are inferred at calls; `largest[int](xs)` is allowed when they ca
 
 **A nested `def` that's only called directly can change the enclosing function's `mut` names.**
 ```fennec
-def collect_leaves(tree: Tree):
+def collect_leaves(tree: Tree) -> list[Tree]:
     mut leaves = []
     def visit(node: Tree):
         if len(node.children) == 0:
@@ -231,10 +253,10 @@ import game.world.physics as physics
 - A `pub` signature can't mention anything that isn't `pub`.
 - A lint flags `pub` items that no other kit can reach.
 
-**Return types and errors are inferred, even on `pub` functions.** A kit's API is checked against its last published version instead, cached from the Den. When a change would break other kits, `fennec check` says so at once, in the editor: "`load` can now also fail with `ParseError` (since v1.2.0). This is a breaking change: handle or wrap it, or release v2.0." `fennec publish` refuses a version number that undersells the change. Adding an error is a breaking change; removing one isn't.
+**Errors are inferred, even on `pub` functions.** A kit's API is checked against its last published version instead, cached from the Den. When a change would break other kits, `fennec check` says so at once, in the editor: "`load` can now also fail with `ParseError` (since v1.2.0). This is a breaking change: handle or wrap it, or release v2.0." `fennec publish` refuses a version number that undersells the change. Adding an error is a breaking change; removing one isn't.
 
 **Declaring errors is optional,** written with `fails` after the return type and checked like a declared return type: `def load(fs: Fs, path: Path) -> Config fails NotFound, ConfigUnreadable:`. `type LoadError = NotFound | ConfigUnreadable` names a set of errors.
-*Why:* The same protection as required declarations, with nothing to write. This replaces the earlier rule that `pub` functions must declare their return and error types.
+*Why:* The same protection as required declarations, with nothing to write. Return types are written on every `def` (see Functions and types), so the API check matters most for errors.
 
 A big app that wants walls between its own parts splits into local kits in one workspace.
 *Why:* `pub` appears only where API stability matters, and never in apps. Making every field of a `pub struct` public would make every internal field part of the API, so renaming one would need a major version. Go's capitalization rule would clash with lowercase built-ins and capitalized user types.

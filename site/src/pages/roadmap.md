@@ -11,6 +11,7 @@ description: Where Fennec is today, what gets built first, and the design questi
 ## Now: the interpreter runs most of the language
 
 - `fennec run`, `fennec test` (including property tests that shrink failures), `fennec new` and `fennec repl`.
+- `fennec fmt`: one style with no options, and `fennec fmt --check` for CI. It keeps every comment and checks that the syntax tree is unchanged before it writes.
 - Programs over several files: a kit is a folder with a `kit.toml`, and its files import from each other.
 - Names and `mut`, functions with inferred returns, nested functions, arrow functions.
 - Structs with defaults, methods, named constructors and `where` rules; enums and `match`; operators with `def +` and `def []`.
@@ -27,10 +28,10 @@ description: Where Fennec is today, what gets built first, and the design questi
 The next milestone moves Fennec's checks from runtime to compile time.
 
 - The type checker: inferred types, exhaustive `match`, and errors and `None` that can't be ignored.
-- The formatter and the language's lints.
+- The language's lints.
 - The intermediate representation, designed for native code from the start.
 - The interpreter.
-- Names and `mut`, `def` with inferred return types, structs with defaults, named constructors and `where`, `enum` and `match`.
+- Names and `mut`, `def` with written return types, structs with defaults, named constructors and `where`, `enum` and `match`.
 - Errors with `error`, `fail`, `?`, `else`, `match` and `from`, and optional types with `None` and `?.`.
 - Implicit interfaces and generics.
 - Values without references: automatic moves, sharing until changed, and the check that `mut` access is exclusive.

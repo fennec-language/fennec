@@ -9,13 +9,16 @@
 //! Statements are in `stmt`, expressions in `expr`, calls and printing in `call`, `match`
 //! and errors in `flow`, and handing work to the interpreter in `fallback`.
 
+mod boxes;
 mod call;
 mod codegen;
+mod enums;
 mod expr;
 mod fallback;
 mod flow;
 mod inline;
 mod lists;
+mod matching;
 mod module;
 mod objects;
 mod stmt;
@@ -23,6 +26,7 @@ mod structs;
 
 use std::collections::{HashMap, HashSet};
 
+use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::{Block, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::JITModule;
@@ -135,6 +139,7 @@ fn attempt(
         stack_limit,
         modules: program.modules.clone(),
     };
+    shared.tables.shapes = boxes::shapes(&program.layouts);
     declare_all(&mut module, &mut shared, program, skipped).map_err(fatal)?;
     let mut ctx = module.make_context();
     let mut builder_ctx = FunctionBuilderContext::new();
@@ -173,7 +178,7 @@ fn attempt(
 
 fn abi(ty: Ty) -> Option<types::Type> {
     match ty {
-        Ty::Int | Ty::Obj | Ty::Struct(_) => Some(types::I64),
+        Ty::Int | Ty::Obj | Ty::Struct(_) | Ty::Boxed(_) => Some(types::I64),
         Ty::Float => Some(types::F64),
         Ty::Bool => Some(types::I8),
         Ty::Unit | Ty::Cap(_) => None,
@@ -278,6 +283,8 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         leaves_of: HashMap::new(),
         elements: HashMap::new(),
         leaf_vars: HashMap::new(),
+        borrowed: HashSet::new(),
+        borrowed_names: HashSet::new(),
     };
     lowerer.prologue(&params)?;
     let (tail, tail_ty) = lowerer.tail(&function.def.body)?;
@@ -356,6 +363,10 @@ pub(crate) struct Lowerer<'a, 'f> {
     /// The functions being inlined, innermost last, each with the number of scopes open
     /// outside it, which its body can't see.
     inlining: Vec<(String, usize)>,
+    /// Boxed values something else keeps alive, which aren't released when used.
+    borrowed: HashSet<Value>,
+    /// The variables of names holding boxed values they don't own, by index.
+    borrowed_names: HashSet<usize>,
     /// Where the program called the standard library function being inlined, which its
     /// failures are reported at.
     call_site: Option<Span>,
@@ -402,6 +413,10 @@ impl Lowerer<'_, '_> {
                 }
             } else {
                 self.bind_native(&param.name, param.ty, value, param.is_mut);
+                // A parameter can't change, and the caller keeps its value alive.
+                if let (Ty::Boxed(_), Some(local)) = (param.ty, self.local(&param.name)) {
+                    self.borrowed_names.extend(local.var.map(EntityRef::index));
+                }
             }
         }
         self.dirty = false;
@@ -580,6 +595,11 @@ impl Lowerer<'_, '_> {
     /// Ends a block's scope, and its scope in the runtime's frame if it started one.
     fn close_scope(&mut self) -> Result<(), Diagnostic> {
         let scope = self.scopes.pop();
+        if let Some(scope) = &scope
+            && !self.is_dead()
+        {
+            self.release_scope(scope)?;
+        }
         if scope.is_some_and(|scope| scope.pushed) && !self.is_dead() {
             self.call_helper(Helper::PopScope, &[])?;
         }
@@ -588,6 +608,7 @@ impl Lowerer<'_, '_> {
 
     /// Ends the runtime scopes of every block deeper than `depth`, before jumping out.
     fn unwind_scopes(&mut self, depth: usize) -> Result<(), Diagnostic> {
+        self.release_scopes(depth)?;
         let pushed = self.scopes.iter().skip(depth).filter(|scope| scope.pushed).count();
         for _ in 0..pushed {
             self.call_helper(Helper::PopScope, &[])?;
@@ -609,6 +630,9 @@ impl Lowerer<'_, '_> {
     /// Leaves the function from here with a value.
     fn ret(&mut self, value: Option<Value>, ty: Ty, span: Span) -> Result<(), Diagnostic> {
         self.put_back_all()?;
+        // What's given back outlives every name, so it needs an owner of its own.
+        let value = value.map(|value| self.own(value, ty));
+        self.release_scopes(0)?;
         let function = self.function;
         let value = if function.fallible {
             let handle = self.handle_of(value, ty, span)?;
@@ -633,6 +657,7 @@ impl Lowerer<'_, '_> {
     /// `?` passes up.
     fn pass_up(&mut self, handle: Value) -> Result<(), Diagnostic> {
         self.put_back_all()?;
+        self.release_scopes(0)?;
         let value = abi(self.function.ret).map(|_| handle);
         self.jump_exit(value);
         Ok(())

@@ -1,0 +1,39 @@
+from std.random import random_int, random_float, random_choice
+
+## A seeded random number generator. The same seed gives the same numbers in the same order
+## on every machine, so games replay and tests repeat exactly. It's SplitMix64: fast, and
+## good enough for games, but not for secrets.
+struct Random:
+    seed: int
+    ## How many numbers it has drawn so far.
+    drawn = 0
+
+    ## A whole number from `low` to `high`, both included.
+    def randint(mut self, low: int, high: int) -> int:
+        value, drawn = random_int(self.seed, self.drawn, low, high)
+        self.drawn = drawn
+        value
+
+    ## A float from 0.0 up to, but not including, 1.0.
+    def random(mut self) -> float:
+        value, drawn = random_float(self.seed, self.drawn)
+        self.drawn = drawn
+        value
+
+    ## A float from `low` up to, but not including, `high`.
+    def uniform(mut self, low: float, high: float) -> float:
+        low + (high - low) * self.random()
+
+    ## One of `items`, picked at random.
+    def choice[T](mut self, items: list[T]) -> T:
+        item, drawn = random_choice(self.seed, self.drawn, items)
+        self.drawn = drawn
+        item
+
+    ## Puts `items` in a random order.
+    def shuffle[T](mut self, mut items: list[T]):
+        for at in range(len(items) - 1, 0, -1):
+            other = self.randint(0, at)
+            item = items[at]
+            items[at] = items[other]
+            items[other] = item

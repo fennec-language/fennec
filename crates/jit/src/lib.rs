@@ -37,6 +37,8 @@ pub struct Report {
     pub leftover_temps: usize,
     /// Frames left in the runtime at the end: none, when the run succeeds.
     pub leftover_frames: usize,
+    /// Boxed values' blocks no one released: none, when the run succeeds.
+    pub leftover_boxes: usize,
 }
 
 /// Compiles `module` to native code and runs its `main`, writing what it prints to `out`.
@@ -89,10 +91,8 @@ fn compile_and_run(module: &Module) -> Result<(Vec<u8>, Result<Report, JitError>
             diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default())),
         )
     })?;
-    let prelude: Vec<Module> = fennec_syntax::PRELUDE
-        .iter()
-        .filter_map(|source| fennec_syntax::parse_prelude(source).ok())
-        .collect();
+    let prelude: Vec<Module> =
+        fennec_syntax::prelude().filter_map(|source| fennec_syntax::parse_prelude(source).ok()).collect();
     let program =
         types::Program::from_module(module, &prelude, &signatures).map_err(JitError::Unsupported)?;
 
@@ -112,6 +112,7 @@ fn compile_and_run(module: &Module) -> Result<(Vec<u8>, Result<Report, JitError>
             with_frames: compilation.with_frames,
             leftover_temps: result.leftovers.temps,
             leftover_frames: result.leftovers.frames,
+            leftover_boxes: result.leftovers.boxes,
         }),
     };
     Ok((result.output, report))

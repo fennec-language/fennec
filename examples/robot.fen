@@ -1,0 +1,63 @@
+# A robot that follows moves: enums and structs held in registers, taken apart by `match`.
+# It all compiles to plain machine code.
+
+struct Cell:
+    row: int
+    col: int
+
+enum Dir:
+    North
+    East
+    South
+    West
+
+enum Move:
+    Step(dir: Dir, count: int)
+    Jump(to: Cell)
+    Turn
+    Wait(turns: int)
+
+struct Robot:
+    at: Cell
+    facing: Dir
+    waited: int
+
+def turn(dir: Dir) -> Dir:
+    match dir:
+        case .North: .East
+        case .East: .South
+        case .South: .West
+        case .West: .North
+
+def step(at: Cell, dir: Dir, count: int) -> Cell:
+    match dir:
+        case .North: Cell(row=at.row - count, col=at.col)
+        case .South: Cell(row=at.row + count, col=at.col)
+        case .East: Cell(row=at.row, col=at.col + count)
+        case .West: Cell(row=at.row, col=at.col - count)
+
+def next_move(i: int, facing: Dir) -> Move:
+    match i % 7:
+        case 0: .Turn
+        case 1: .Step(facing, i % 5)
+        case 2: .Jump(Cell(row=i % 13, col=i % 11))
+        case 3: .Wait(i % 3)
+        case _: .Step(turn(facing), 1)
+
+def apply(robot: Robot, move: Move) -> Robot:
+    match move:
+        case .Step(dir, 0): Robot(at=robot.at, facing=dir, waited=robot.waited + 1)
+        case .Step(dir, count):
+            Robot(at=step(robot.at, dir, count), facing=dir, waited=robot.waited)
+        case .Jump(to): Robot(at=to, facing=robot.facing, waited=robot.waited)
+        case .Turn: Robot(at=robot.at, facing=turn(robot.facing), waited=robot.waited)
+        case .Wait(turns): Robot(at=robot.at, facing=robot.facing, waited=robot.waited + turns)
+
+def main(stdout: Stdout):
+    mut robot = Robot(at=Cell(row=0, col=0), facing=.North, waited=0)
+    mut checksum = 0
+    for i in range(1000):
+        move = next_move(i, robot.facing)
+        robot = apply(robot, move)
+        checksum += robot.at.row * 3 + robot.at.col
+    stdout.print(robot.at.row, robot.at.col, robot.waited, checksum)

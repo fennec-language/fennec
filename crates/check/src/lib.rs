@@ -17,7 +17,6 @@ mod call;
 mod checker;
 mod effects;
 mod expr;
-mod formats;
 mod function;
 mod generic;
 mod imports;
@@ -27,6 +26,7 @@ mod messages;
 mod pattern;
 mod place;
 mod program;
+mod stdlib;
 mod stmt;
 mod types;
 

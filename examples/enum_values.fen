@@ -1,0 +1,125 @@
+# Enums whose cases hold numbers, bools and plain structs are values like any other: a
+# copy never changes when the original does, and `match` takes them apart by case and by
+# what's inside.
+
+struct Cell:
+    row: int
+    col: int
+
+enum Dir:
+    North
+    East
+    South
+    West
+
+enum Move:
+    Step(dir: Dir, count: int)
+    Jump(to: Cell)
+    Wait(turns = 1)
+    Quit
+
+enum Token:
+    Number(value: int)
+    Decimal(value: float)
+    Flag(on: bool)
+    Plus
+    Minus
+    End
+
+struct Robot:
+    at: Cell
+    facing: Dir
+    last: Move
+
+def turn(dir: Dir) -> Dir:
+    match dir:
+        case .North: .East
+        case .East: .South
+        case .South: .West
+        case .West: .North
+
+def step(at: Cell, dir: Dir, count: int) -> Cell:
+    match dir:
+        case .North: Cell(row=at.row - count, col=at.col)
+        case .South: Cell(row=at.row + count, col=at.col)
+        case .East: Cell(row=at.row, col=at.col + count)
+        case .West: Cell(row=at.row, col=at.col - count)
+
+def apply(robot: Robot, move: Move) -> Robot:
+    match move:
+        case .Step(dir, count): Robot(at=step(robot.at, dir, count), facing=dir, last=move)
+        case .Jump(Cell(row, col)): Robot(at=Cell(row=row, col=col), facing=robot.facing, last=move)
+        case _: Robot(at=robot.at, facing=turn(robot.facing), last=move)
+
+def describe(move: Move) -> str:
+    match move:
+        case .Step(.North, 1): "one step north"
+        case .Step(.North, count): f"{count} steps north"
+        case .Step(_, 0): "standing still"
+        case .Step(dir, count): f"{count} steps {dir}"
+        case .Jump(Cell(0, 0)): "back home"
+        case .Jump(to): f"jump to {to.row},{to.col}"
+        case .Wait(turns): f"wait {turns}"
+        case .Quit: "quit"
+
+def score(tokens: list[Token]) -> int:
+    mut total = 0
+    mut sign = 1
+    for token in tokens:
+        match token:
+            case .Number(value): total += sign * value
+            case .Decimal(value): total += sign * int(value * 10.0)
+            case .Flag(True): total *= 2
+            case .Flag(_): pass
+            case .Plus: sign = 1
+            case .Minus: sign = -1
+            case .End: break
+    total
+
+def main(stdout: Stdout):
+    moves = [
+        .Step(.North, 1),
+        .Step(.North, 3),
+        Move.Step(dir=.East, count=0),
+        .Step(.West, 2),
+        .Jump(Cell(0, 0)),
+        .Jump(to=Cell(row=4, col=-1)),
+        .Wait(),
+        .Wait(turns=3),
+        Move.Quit,
+    ]
+    for move in moves:
+        stdout.print(describe(move))
+
+    mut robot = Robot(at=Cell(row=0, col=0), facing=.North, last=.Quit)
+    start = robot
+    for move in moves:
+        robot = apply(robot, move)
+    stdout.print(robot)
+    stdout.print(start)
+
+    # Copies are independent, and `==` compares case and contents.
+    mut a = Move.Step(.South, 2)
+    b = a
+    a = .Step(.South, 3)
+    stdout.print(a == b, a != b, b == .Step(.South, 2), b == Move.Quit, Move.Wait() == .Wait(1))
+    stdout.print(Token.Decimal(0.0) == .Decimal(-0.0), Token.Decimal(1.5) == .Decimal(1.5))
+
+    tokens = [
+        .Number(4),
+        .Plus,
+        .Decimal(2.5),
+        .Flag(True),
+        .Minus,
+        .Number(3),
+        .Flag(False),
+        .End,
+        .Number(100),
+    ]
+    stdout.print(score(tokens), len(tokens), tokens[2], tokens[-1])
+
+    mut path = [Dir.North]
+    for i in range(6):
+        path.append(turn(path[-1]))
+    stdout.print(path)
+    stdout.print(path[0] == path[4], path[1] == path[2])

@@ -77,17 +77,42 @@ def main(stdout: Stdout):
     stdout.print("outside")
 
     # `?.` skips a method call on None.
-    stdout.print(find("Vex")?.greet(), find("Kit")?.greet(), find("Kit") is not None, find("Vex") is not None)
+    stdout.print(
+        find("Vex")?.greet(),
+        find("Kit")?.greet(),
+        find("Kit") is not None,
+        find("Vex") is not None,
+    )
 
     # Arrow functions can take no arguments, or several, when passed for a parameter with a
     # function type.
-    stdout.print(call(() => 42), combine((a, b) => a + b, 2, 3), combine((
-        first,
-        second,
-    ) => second, 1, 2))
+    stdout.print(
+        call(() => 42),
+        combine((a, b) => a + b, 2, 3),
+        combine(
+            (
+                first,
+                second,
+            ) => second,
+            1,
+            2,
+        ),
+    )
 
     # Collections can end with a comma.
-    stdout.print({"a": 1,}, {1, 2,}, [1,], (1,))
+    stdout.print(
+        {
+            "a": 1,
+        },
+        {
+            1,
+            2,
+        },
+        [
+            1,
+        ],
+        (1,),
+    )
 
     # A function can return a result it made itself.
     stdout.print(parse("12"), parse("twelve"))

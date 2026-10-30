@@ -4,7 +4,22 @@
 
 use fennec_syntax::{Diagnostic, Span};
 
+use super::{Module, no_constants};
+use crate::call::CallArg;
+use crate::collections::plain;
+use crate::interp::Interp;
 use crate::value::Value;
+
+pub(crate) const MODULE: Module = Module {
+    functions: &["random.random_choice", "random.random_float", "random.random_int"],
+    call,
+    constant: no_constants,
+    methods: &[],
+};
+
+fn call(_: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
+    draw(name, &plain(args, name, span)?, span)
+}
 
 /// The `n`th 64-bit number of `seed`'s sequence.
 fn splitmix(seed: i64, n: i64) -> u64 {
@@ -37,7 +52,7 @@ fn below(seed: i64, mut drawn: i64, count: u64) -> (u64, i64) {
 
 /// `random_int(seed, drawn, low, high)`, `random_float(seed, drawn)` and
 /// `random_choice(seed, drawn, items)`: a number or item, and how many numbers were drawn.
-pub(crate) fn draw(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
+fn draw(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let pair = |value: Value, drawn: i64| Value::tuple(vec![value, Value::Int(drawn)]);
     match (name, values) {
         ("random.random_int", [Value::Int(seed), Value::Int(drawn), Value::Int(low), Value::Int(high)]) => {

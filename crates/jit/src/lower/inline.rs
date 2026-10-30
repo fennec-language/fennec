@@ -27,11 +27,15 @@ pub(super) fn inline_body(function: &Function<'_>) -> Option<Rc<FnDef>> {
         }
         Ty::Int | Ty::Float | Ty::Bool => !param.is_mut,
         Ty::Cap(_) => true,
-        Ty::Unit | Ty::Obj => false,
+        Ty::Unit | Ty::Obj | Ty::Boxed(_) => false,
     });
     let mut nodes = 0;
     let simple = function.def.body.iter().all(|stmt| simple_stmt(stmt, &mut nodes));
-    (params_fit && !function.fallible && function.ret != Ty::Obj && simple && nodes <= MAX_NODES)
+    (params_fit
+        && !function.fallible
+        && !matches!(function.ret, Ty::Obj | Ty::Boxed(_))
+        && simple
+        && nodes <= MAX_NODES)
         .then(|| Rc::new(function.def.clone()))
 }
 
@@ -58,7 +62,11 @@ fn simple_stmt(stmt: &Stmt, nodes: &mut usize) -> bool {
 fn simple_expr(expr: &Expr, nodes: &mut usize) -> bool {
     *nodes += 1;
     match &expr.kind {
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Name(_) => true,
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Name(_)
+        | ExprKind::Variant(_) => true,
         ExprKind::Unary { expr, .. } | ExprKind::Attr { object: expr, optional: false, .. } => {
             simple_expr(expr, nodes)
         }
@@ -67,9 +75,18 @@ fn simple_expr(expr: &Expr, nodes: &mut usize) -> bool {
             simple_expr(then, nodes) && simple_expr(cond, nodes) && simple_expr(otherwise, nodes)
         }
         ExprKind::Call { callee, args } => {
-            matches!(callee.kind, ExprKind::Name(_) | ExprKind::Attr { optional: false, .. })
-                && simple_expr(callee, nodes)
+            matches!(
+                callee.kind,
+                ExprKind::Name(_) | ExprKind::Attr { optional: false, .. } | ExprKind::Variant(_)
+            ) && simple_expr(callee, nodes)
                 && args.iter().all(|arg| !arg.is_mut && simple_expr(&arg.value, nodes))
+        }
+        ExprKind::Match { subject, arms } => {
+            simple_expr(subject, nodes)
+                && arms.iter().all(|arm| {
+                    *nodes += 1;
+                    arm.body.iter().all(|stmt| simple_stmt(stmt, nodes))
+                })
         }
         _ => false,
     }

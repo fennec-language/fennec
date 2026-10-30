@@ -207,3 +207,47 @@ pub extern "C" fn make_instance(type_name: i64, count: i64, start: i64, end: i64
         Ok(state.push(Value::Instance(std::rc::Rc::new(instance))))
     })
 }
+
+/// An enum case made from field values native code computed: the last `count` inputs
+/// handed over, in the order the case's fields are written.
+pub extern "C" fn make_variant(type_name: i64, case: i64, count: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let type_name = State::name_ref(&state.tables, type_name).to_owned();
+        let case = State::name_ref(&state.tables, case).to_owned();
+        let lost =
+            || Diagnostic::new(format!("the JIT lost the case `{type_name}.{case}`"), span(start, end));
+        let info = state.interp.type_info(&type_name).ok_or_else(lost)?;
+        let written = info.def.cases.iter().find(|written| written.name == case).ok_or_else(lost)?;
+        let count = usize::try_from(count).unwrap_or(0);
+        let values = state.inputs.split_off(state.inputs.len().saturating_sub(count));
+        let fields =
+            written.fields.iter().map(|field| std::rc::Rc::from(field.name.as_str())).zip(values).collect();
+        let instance = crate::value::Instance {
+            type_name: std::rc::Rc::from(type_name.as_str()),
+            case: Some(std::rc::Rc::from(case.as_str())),
+            fields,
+            is_error: false,
+            cause: None,
+        };
+        Ok(state.push(Value::Instance(std::rc::Rc::new(instance))))
+    })
+}
+
+/// Which case of an enum a value is, by its position in the enum's definition, failing
+/// when it isn't a value of that enum.
+pub extern "C" fn case_of(value: i64, type_name: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let type_name = State::name_ref(&state.tables, type_name);
+        let found = match state.temp(value) {
+            Value::Instance(instance) if instance.type_name.as_ref() == type_name => {
+                instance.case.as_ref().and_then(|case| {
+                    let info = state.interp.type_info(type_name)?;
+                    info.def.cases.iter().position(|written| written.name == case.as_ref())
+                })
+            }
+            _ => None,
+        };
+        let found = found.and_then(|at| i64::try_from(at).ok());
+        found.ok_or_else(|| Diagnostic::new(format!("expected a `{type_name}` here"), span(start, end)))
+    })
+}

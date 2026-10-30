@@ -425,26 +425,11 @@ impl FnCx<'_> {
         };
         let literal = self.build(&Target { name: type_name, case: None, given }, &fields, args, span);
         self.check_bounds(chosen, span);
-        if type_name == "Regex" {
-            self.check_pattern(args);
-        }
+        crate::stdlib::construct(self, type_name, args);
         if fields.iter().any(|field| field.rule.is_some()) && !literal {
             return Type::result(built, Type::named("InvalidValue"));
         }
         built
-    }
-
-    /// A `Regex` written with a literal pattern: a pattern that isn't valid is a mistake in
-    /// the program, so it's reported now rather than when it runs.
-    fn check_pattern(&mut self, args: &[Arg]) {
-        let Some(arg) = args.first() else { return };
-        let ExprKind::Str(pattern) = &arg.value.kind else { return };
-        if let Err(error) = fennec_re::Regex::new(pattern) {
-            self.error(
-                Diagnostic::new(format!("this pattern isn't valid: {}", error.message), arg.value.span)
-                    .with_help(format!("the problem is at character {} of the pattern", error.at)),
-            );
-        }
     }
 
     /// `IdMap[Enemy]()` and `SoaList[Particle]()`.

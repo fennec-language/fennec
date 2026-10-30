@@ -56,7 +56,7 @@ const REVISITS: usize = 16;
 impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
         let mut program = Program::default();
-        for source in fennec_syntax::PRELUDE {
+        for source in fennec_syntax::prelude() {
             if let Ok(prelude) = fennec_syntax::parse_prelude(source) {
                 program.add(&prelude, true);
             }

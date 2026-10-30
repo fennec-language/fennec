@@ -62,6 +62,11 @@ impl Lowerer<'_, '_> {
         if let ExprKind::Name(object) = &object.kind
             && self.local(object).is_none()
         {
+            if let Some((id, at)) = self.named_case(expr)
+                && let Some(made) = self.make_case(id, at, &[], expr.span)?
+            {
+                return Ok(made);
+            }
             return self.fallback(expr);
         }
         if !optional && let Some((root, fields)) = self.field_path(expr) {
@@ -74,6 +79,12 @@ impl Lowerer<'_, '_> {
             && let Some(field) = self.struct_field(id, name)?
         {
             return self.load_field(address, id, field);
+        }
+        if let (Ty::Boxed(id), Some(address)) = (ty, value)
+            && self.layout(id)?.cases.is_none()
+            && let Some(field) = self.struct_field(id, name)?
+        {
+            return self.boxed_field((address, id), field);
         }
         let handle = self.handle_of(value, ty, object.span)?;
         let name = self.name_id(name);
@@ -168,14 +179,14 @@ impl Lowerer<'_, '_> {
                     .map_or(Ty::Obj, |param| param.1);
                 let a_param = self.convert(Some(a), Ty::Obj, self_ty, span)?;
                 let (value, ty) = self.call_key(&key, vec![a_param, b_param], span)?;
-                arms.extend(self.arm_end(value, ty));
+                arms.extend(self.arm_end(value, ty)?);
                 self.otherwise_type();
             }
         }
         let code = self.int(code);
         let [start, end] = self.span_args(span);
         let value = self.help(Helper::Binary, &[code, a, b, start, end])?;
-        arms.extend(self.arm_end(Some(value), Ty::Obj));
+        arms.extend(self.arm_end(Some(value), Ty::Obj)?);
         self.join(arms, span)
     }
 
@@ -257,7 +268,12 @@ impl Lowerer<'_, '_> {
         }
         let mut lowered = Vec::with_capacity(args.len());
         for arg in args {
-            lowered.push(self.expr(&arg.value)?);
+            // Each type's arm uses the arguments, so a boxed one becomes an object once.
+            let (value, ty) = self.expr(&arg.value)?;
+            lowered.push(match ty {
+                Ty::Boxed(_) => (Some(self.handle_of(value, ty, arg.value.span)?), Ty::Obj),
+                _ => (value, ty),
+            });
         }
         let (value, ty) = self.expr(object)?;
         let receiver = self.handle_of(value, ty, object.span)?;
@@ -285,11 +301,11 @@ impl Lowerer<'_, '_> {
                 }
             }
             let (value, ty) = self.call_key(&key, values, expr.span)?;
-            arms.extend(self.arm_end(value, ty));
+            arms.extend(self.arm_end(value, ty)?);
             self.otherwise_type();
         }
         let (value, ty) = self.interpret_method(expr, object, receiver, method, &lowered)?;
-        arms.extend(self.arm_end(value, ty));
+        arms.extend(self.arm_end(value, ty)?);
         self.join(arms, expr.span).map(Some)
     }
 
@@ -303,21 +319,7 @@ impl Lowerer<'_, '_> {
         op: Option<BinOp>,
         value: &Expr,
     ) -> Result<(), Diagnostic> {
-        let span = target.span.to(value.span);
-        let (new, ty) = match op {
-            Some(op) => {
-                let combined = Expr {
-                    kind: ExprKind::Binary {
-                        op,
-                        lhs: Box::new(target.clone()),
-                        rhs: Box::new(value.clone()),
-                    },
-                    span,
-                };
-                self.expr(&combined)?
-            }
-            None => self.expr(value)?,
-        };
+        let (new, ty) = self.assigned(target, op, value)?;
         let handle = self.handle_of(new, ty, value.span)?;
         self.start_path(root, fields)?;
         let [start, end] = self.span_args(target.span);

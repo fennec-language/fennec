@@ -1,23 +1,10 @@
-//! The standard library's modules and the names each one provides. The checker and the
-//! interpreter both read imports through here, so they agree on what an import brings in.
+//! Imports of the standard library's modules, which are listed in `stdlib`. The checker and
+//! the interpreter both read imports through here, so they agree on what an import brings in.
 
 use crate::ast::{Expr, ExprKind, Import};
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
-
-/// The modules under `std` so far, and the names each one provides.
-const MODULES: [(&str, &[&str]); 10] = [
-    ("math", &["Vec3", "PI", "sqrt", "floor", "ceil", "sin", "cos"]),
-    ("game", &["Id", "IdMap"]),
-    ("layout", &["SoaList"]),
-    ("json", &["loads", "dumps", "ParseError"]),
-    ("toml", &["loads", "dumps", "ParseError"]),
-    ("path", &["Path"]),
-    ("collections", &["Deque", "Heap", "PriorityQueue", "Counter"]),
-    ("random", &["Random", "random_int", "random_float", "random_choice"]),
-    ("time", &["Clock", "Duration", "Instant"]),
-    ("re", &["Regex", "Match", "is_regex"]),
-];
+use crate::stdlib::MODULES;
 
 /// Names that a module provides but that are available everywhere too. `Clock` is a
 /// capability, which `main` names like `Stdout` and `Fs`. `ParseError` is an error, like
@@ -30,7 +17,7 @@ pub fn importable_type(name: &str) -> Option<&'static str> {
     if EVERYWHERE.contains(&name) || !name.starts_with(|c: char| c.is_ascii_uppercase()) {
         return None;
     }
-    MODULES.iter().find(|(_, names)| names.contains(&name)).map(|(module, _)| *module)
+    MODULES.iter().find(|module| module.names.contains(&name)).map(|module| module.name)
 }
 
 /// What an import brings in.
@@ -125,15 +112,15 @@ pub fn short_module(name: &str, span: Span) -> Diagnostic {
 }
 
 fn names(module: &str) -> &'static [&'static str] {
-    MODULES.iter().find(|(known, _)| *known == module).map_or(&[], |(_, names)| *names)
+    MODULES.iter().find(|known| known.name == module).map_or(&[], |known| known.names)
 }
 
 fn module(name: &str) -> Option<&'static str> {
-    MODULES.iter().map(|(module, _)| *module).find(|module| *module == name)
+    MODULES.iter().map(|module| module.name).find(|module| *module == name)
 }
 
 fn no_module(name: &str, span: Span) -> Diagnostic {
-    let modules: Vec<String> = MODULES.iter().map(|(module, _)| format!("std.{module}")).collect();
+    let modules: Vec<String> = MODULES.iter().map(|module| format!("std.{}", module.name)).collect();
     Diagnostic::new(format!("there's no module called `{name}`"), span)
         .with_help(format!("the standard library so far has {}", modules.join(", ")))
 }

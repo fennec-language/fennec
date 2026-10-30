@@ -28,6 +28,8 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --check
+      - name: Check the Fennec code is formatted
+        run: cargo run --locked --quiet -p fennec -- fmt --check examples crates/syntax/src/stdlib
       - run: cargo clippy --all-targets --locked -- -D warnings
       - name: Clippy for the playground's WebAssembly module
         run: cargo clippy --target wasm32-unknown-unknown -p fennec-wasm --locked -- -D warnings

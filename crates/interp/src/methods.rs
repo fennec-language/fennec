@@ -39,9 +39,9 @@ impl Interp<'_> {
                         drop(receiver);
                         self.call_method(object, &function, args, span)
                     }
-                    None if instance.type_name.as_ref() == "Regex" => {
+                    None if let Some(call) = crate::stdlib::methods_of(&instance.type_name) => {
                         let args = self.eval_args(args)?;
-                        self.regex_method(instance, method, args, span)
+                        call(self, instance, method, args, span)
                     }
                     None => Err(no_method(&receiver, method, span)),
                 };

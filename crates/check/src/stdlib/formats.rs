@@ -1,5 +1,5 @@
-//! `std.json` and `std.toml`. Reading text needs the type to read it as, written in
-//! brackets: `json.loads[Settings](text)`. Every type made of numbers, text, bools, lists,
+//! What `std.json` and `std.toml` share. Reading text needs the type to read it as, written
+//! in brackets: `json.loads[Settings](text)`. Every type made of numbers, text, bools, lists,
 //! dicts with text keys, tuples, optionals and structs of those can be read and written.
 
 use fennec_syntax::{Arg, Diagnostic, Expr, Span};
@@ -142,4 +142,10 @@ fn mentions_none(ty: &Type, program: &crate::program::Program) -> bool {
         }
     }
     false
+}
+
+/// `json.dumps(value)`, `toml.dumps(value)`, and `loads` called without a type.
+pub(super) fn result(cx: &mut FnCx<'_>, name: &str, plain: &[(Type, Span)], span: Span) -> Type {
+    let (first, at) = plain.first().cloned().unwrap_or((Type::Unknown, span));
+    cx.format_result(name, &first, (at, span))
 }

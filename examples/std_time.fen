@@ -32,7 +32,12 @@ def main(stdout: Stdout, clock: Clock):
     stdout.print(Duration.millis(16) < step, step * 60, Duration.micros(1_500).as_millis())
 
     # Frame times as a real loop would read them, here made up so the run repeats.
-    frames = [Instant(nanos=0), Instant(nanos=20_000_000), Instant(nanos=31_000_000), Instant(nanos=70_000_000)]
+    frames = [
+        Instant(nanos=0),
+        Instant(nanos=20_000_000),
+        Instant(nanos=31_000_000),
+        Instant(nanos=70_000_000),
+    ]
     mut ball = Ball()
     mut carried = Duration()
     for at in range(1, len(frames)):

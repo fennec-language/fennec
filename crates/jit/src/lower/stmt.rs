@@ -24,7 +24,11 @@ impl Lowerer<'_, '_> {
             return Ok((None, Ty::Unit));
         }
         match &last.kind {
-            StmtKind::Expr(expr) => self.expr(expr),
+            StmtKind::Expr(expr) => {
+                // The block's names may go before its value does.
+                let (value, ty) = self.expr(expr)?;
+                Ok((value.map(|value| self.own(value, ty)), ty))
+            }
             StmtKind::If { branches, otherwise: Some(otherwise) } => self.tail_if(branches, otherwise),
             _ => {
                 self.stmt(last)?;
@@ -58,17 +62,20 @@ impl Lowerer<'_, '_> {
             self.b.ins().brif(test, then, &[], next, &[]);
             self.b.switch_to_block(then);
             let (value, ty) = self.block_tail(body)?;
-            arms.extend(self.arm_end(value, ty));
+            arms.extend(self.arm_end(value, ty)?);
             self.b.switch_to_block(next);
         }
         let (value, ty) = self.block_tail(otherwise)?;
-        arms.extend(self.arm_end(value, ty));
+        arms.extend(self.arm_end(value, ty)?);
         self.join(arms, otherwise.last().map_or(Span::default(), |stmt| stmt.span))
     }
 
     pub(super) fn stmt(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
         match &stmt.kind {
-            StmtKind::Expr(expr) => self.expr(expr).map(|_| ()),
+            StmtKind::Expr(expr) => {
+                let (value, ty) = self.expr(expr)?;
+                self.consume(value, ty)
+            }
             StmtKind::Assign { target, op, value, declare_mut, .. } => {
                 self.assign(target, *op, value, *declare_mut)
             }
@@ -125,20 +132,7 @@ impl Lowerer<'_, '_> {
         match &target.kind {
             ExprKind::Name(name) => match self.local(name) {
                 Some(local) if !declare_mut => {
-                    let (new, new_ty) = match op {
-                        Some(op) => {
-                            let combined = Expr {
-                                kind: ExprKind::Binary {
-                                    op,
-                                    lhs: Box::new(target.clone()),
-                                    rhs: Box::new(value.clone()),
-                                },
-                                span: target.span.to(value.span),
-                            };
-                            self.expr(&combined)?
-                        }
-                        None => self.expr(value)?,
-                    };
+                    let (new, new_ty) = self.assigned(target, op, value)?;
                     self.set_local(name, local, new, new_ty, target.span)
                 }
                 _ => {
@@ -149,39 +143,20 @@ impl Lowerer<'_, '_> {
             ExprKind::Tuple(names) => self.unpack(names, value, target.span),
             ExprKind::Index { object, index } if let Some((name, item)) = self.packed(object) => {
                 let span = target.span.to(value.span);
-                let new = match op {
-                    Some(op) => {
-                        let combined = Expr {
-                            kind: ExprKind::Binary {
-                                op,
-                                lhs: Box::new(target.clone()),
-                                rhs: Box::new(value.clone()),
-                            },
-                            span,
-                        };
-                        self.expr(&combined)?
-                    }
-                    None => self.expr(value)?,
-                };
+                let new = self.assigned(target, op, value)?;
                 let address = self.item_address(&name, item, index, true, target.span)?;
                 self.store_item(address, item, new, span)
             }
+            ExprKind::Attr { object, name, optional: false }
+                if let Some((var, field)) = self.boxed_target(object, name)? =>
+            {
+                let span = target.span.to(value.span);
+                let new = self.assigned(target, op, value)?;
+                self.write_boxed_field(var, field, new, span)
+            }
             _ if let Some((place, id, field)) = self.struct_target(target)? => {
                 let span = target.span.to(value.span);
-                let new = match op {
-                    Some(op) => {
-                        let combined = Expr {
-                            kind: ExprKind::Binary {
-                                op,
-                                lhs: Box::new(target.clone()),
-                                rhs: Box::new(value.clone()),
-                            },
-                            span,
-                        };
-                        self.expr(&combined)?
-                    }
-                    None => self.expr(value)?,
-                };
+                let new = self.assigned(target, op, value)?;
                 self.write_field(&place, id, field, new, span)
             }
             _ => match self.field_path(target) {
@@ -191,6 +166,21 @@ impl Lowerer<'_, '_> {
                 _ => self.interpret_assign(target, op, value, declare_mut, target.span),
             },
         }
+    }
+
+    /// The value an assignment stores: `value`, or `target op value` for `+=` and the like.
+    pub(super) fn assigned(
+        &mut self,
+        target: &Expr,
+        op: Option<BinOp>,
+        value: &Expr,
+    ) -> Result<super::expr::Lowered, Diagnostic> {
+        let Some(op) = op else { return self.expr(value) };
+        let combined = Expr {
+            kind: ExprKind::Binary { op, lhs: Box::new(target.clone()), rhs: Box::new(value.clone()) },
+            span: target.span.to(value.span),
+        };
+        self.expr(&combined)
     }
 
     /// Creates a name. A name copied from another object name gets its own copy.
@@ -204,8 +194,8 @@ impl Lowerer<'_, '_> {
     ) -> Result<(), Diagnostic> {
         // An object the checker knows is a plain struct is kept natively from here on.
         let (value, ty) = match (ty, self.checked_ty(name)) {
-            (Ty::Obj, Some(Ty::Struct(id))) => {
-                (Some(self.convert(value, ty, Ty::Struct(id), source.span)?), Ty::Struct(id))
+            (Ty::Obj, Some(to @ (Ty::Struct(_) | Ty::Boxed(_)))) => {
+                (Some(self.convert(value, ty, to, source.span)?), to)
             }
             _ => (value, ty),
         };
@@ -223,6 +213,7 @@ impl Lowerer<'_, '_> {
                 self.declare_struct(name, from, id, is_mut)
             }
             _ => {
+                let value = value.map(|value| self.own(value, ty));
                 self.bind_native(name, ty, value, is_mut);
                 Ok(())
             }
@@ -254,6 +245,13 @@ impl Lowerer<'_, '_> {
                 let converted = self.convert(value, ty, Ty::Struct(id), span)?;
                 let place = self.local_place(local).ok_or_else(|| unsupported("this struct", span))?;
                 self.write_place(&place, converted, id)
+            }
+            (Some(var), local_ty @ Ty::Boxed(_)) => {
+                let converted = self.convert(value, ty, local_ty, span)?;
+                let new = self.own(converted, local_ty);
+                let old = self.b.use_var(var);
+                self.b.def_var(var, new);
+                self.release(old)
             }
             (Some(var), local_ty) => {
                 let converted = self.convert(value, ty, local_ty, span)?;

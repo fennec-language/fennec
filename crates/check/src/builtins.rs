@@ -7,11 +7,12 @@ use fennec_syntax::{Arg, Diagnostic, Expr, Span};
 use crate::function::FnCx;
 use crate::infer::Hole;
 use crate::messages::{mismatch, needless_mut, no_method, wrong_args};
+use crate::stdlib;
 use crate::types::{Type, a, article};
 
-/// Each builtin, and how many plain arguments it takes (at least, at most).
-/// Names with a dot belong to a module, like `json.loads`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 36] = [
+/// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
+/// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
+const BUILTINS: [(&str, usize, usize); 23] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("abs", 1, 1),
@@ -21,23 +22,12 @@ const BUILTINS: [(&str, usize, usize); 36] = [
     ("float", 1, 1),
     ("ignore", 2, 2),
     ("int", 1, 1),
-    ("json.dumps", 1, 1),
-    ("json.loads", 1, 1),
     ("len", 1, 1),
     ("list", 1, 1),
-    ("math.ceil", 1, 1),
-    ("math.cos", 1, 1),
-    ("math.floor", 1, 1),
-    ("math.sin", 1, 1),
-    ("math.sqrt", 1, 1),
     ("max", 1, usize::MAX),
     ("min", 1, usize::MAX),
     ("parallel", 1, 1),
-    ("random.random_choice", 3, 3),
-    ("random.random_float", 2, 2),
-    ("random.random_int", 4, 4),
     ("range", 1, 3),
-    ("re.is_regex", 1, 1),
     ("replace", 1, usize::MAX),
     ("reversed", 1, 1),
     ("round", 1, 2),
@@ -45,38 +35,20 @@ const BUILTINS: [(&str, usize, usize); 36] = [
     ("sorted", 1, 1),
     ("str", 1, 1),
     ("sum", 1, 1),
-    ("toml.dumps", 1, 1),
-    ("toml.loads", 1, 1),
     ("zip", 2, 2),
 ];
 
 /// Builtins whose arguments have to be plain values, not results or optionals.
-const NEEDS_VALUES: [&str; 14] = [
-    "abs",
-    "float",
-    "int",
-    "len",
-    "math.ceil",
-    "math.cos",
-    "math.floor",
-    "math.sin",
-    "math.sqrt",
-    "random.random_choice",
-    "random.random_float",
-    "random.random_int",
-    "range",
-    "round",
-];
+const NEEDS_VALUES: [&str; 6] = ["abs", "float", "int", "len", "range", "round"];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
-    BUILTINS.iter().any(|(builtin, ..)| *builtin == name)
+    BUILTINS.iter().any(|(builtin, ..)| *builtin == name) || stdlib::function(name).is_some()
 }
 
 /// The modules with a function of this name, like `json` and `toml` for `loads`.
 pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
-    BUILTINS
-        .iter()
-        .filter_map(|(builtin, ..)| builtin.split_once('.').filter(|(_, function)| *function == name))
+    stdlib::functions()
+        .filter_map(|builtin| builtin.split_once('.').filter(|(_, function)| *function == name))
         .map(|(module, _)| module)
         .chain(fennec_syntax::importable_type(name))
         .collect()
@@ -84,7 +56,7 @@ pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
 
 /// A method of a built-in value: whether it changes the value, what it takes and gives
 /// back, and how many arguments it takes.
-struct Method {
+pub(crate) struct Method {
     changes: bool,
     /// The types of its arguments, in order. Arguments past these can be anything.
     params: Vec<Type>,
@@ -94,7 +66,7 @@ struct Method {
     receives: Vec<Type>,
 }
 
-fn reads(params: &[Type], returns: Type) -> Method {
+pub(crate) fn reads(params: &[Type], returns: Type) -> Method {
     let count = params.len();
     Method { changes: false, params: params.to_vec(), returns, arity: (count, count), receives: Vec::new() }
 }
@@ -204,7 +176,6 @@ fn str_method(name: &str) -> Option<Method> {
 /// Methods of capabilities, and of standard library types that are written in Rust.
 fn named_method(type_name: &str, name: &str) -> Option<Method> {
     let io = |value: Type| Type::result(value, Type::named("IoError"));
-    let found = || Type::named("Match");
     let text = || Type::Str;
     Some(match (type_name, name) {
         ("Stdout", "print" | "write") => reads(&[], Type::Unit).any_args(),
@@ -213,11 +184,7 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
         ("Fs", "write_text") => reads(&[text(), text()], io(Type::Unit)),
         ("Clock", "now") => reads(&[], Type::named("Instant")),
         ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),
-        ("Regex", "match" | "fullmatch" | "search") => reads(&[text()], Type::optional(found())),
-        ("Regex", "find_all") => reads(&[text()], Type::list(found())),
-        ("Regex", "replace") => reads(&[text(), text()], text()),
-        ("Regex", "split") => reads(&[text()], Type::list(text())),
-        _ => return None,
+        _ => return stdlib::method(type_name, name),
     })
 }
 
@@ -313,16 +280,19 @@ impl FnCx<'_> {
             .find(|arg| arg.name.is_none())
             .map_or(Type::Unknown, |arg| self.peek_type(&arg.value));
         let item = peek_item(&first);
-        let named: &[&str] = match name {
-            "min" | "max" | "sorted" => &["key"],
-            "json.dumps" => &["indent"],
+        let named: &[&str] = match (name, stdlib::function(name)) {
+            ("min" | "max" | "sorted", _) => &["key"],
+            (_, Some((_, function))) => function.named,
             _ => &[],
         };
         let plain = self.builtin_args(name, args, named, std::slice::from_ref(&item), span);
-        let (low, high) = BUILTINS
-            .iter()
-            .find(|(builtin, ..)| *builtin == name)
-            .map_or((0, 0), |(_, low, high)| (*low, *high));
+        let (low, high) = match stdlib::function(name) {
+            Some((_, function)) => function.arity,
+            None => BUILTINS
+                .iter()
+                .find(|(builtin, ..)| *builtin == name)
+                .map_or((0, 0), |(_, low, high)| (*low, *high)),
+        };
         if plain.len() < low || plain.len() > high {
             self.error(wrong_args(name, span));
             return Type::Unknown;
@@ -331,11 +301,16 @@ impl FnCx<'_> {
     }
 
     fn builtin_result(&mut self, name: &str, plain: &[(Type, Span)], span: Span) -> Type {
-        let types: Vec<Type> = plain.iter().map(|(ty, _)| ty.clone()).collect();
-        let (first, at) = plain.first().cloned().unwrap_or((Type::Unit, span));
-        if NEEDS_VALUES.contains(&name) && !plain.iter().all(|(ty, at)| self.usable(ty, *at)) {
+        let needs_values =
+            stdlib::function(name).map_or(NEEDS_VALUES.contains(&name), |(_, f)| f.needs_values);
+        if needs_values && !plain.iter().all(|(ty, at)| self.usable(ty, *at)) {
             return Type::Unknown;
         }
+        if let Some((module, _)) = stdlib::function(name) {
+            return (module.result)(self, name, plain, span);
+        }
+        let types: Vec<Type> = plain.iter().map(|(ty, _)| ty.clone()).collect();
+        let (first, at) = plain.first().cloned().unwrap_or((Type::Unit, span));
         match name {
             "Ok" => Type::result(first, self.checker.fresh(span, Hole::OkError)),
             "Err" => Type::result(self.checker.fresh(span, Hole::ErrValue), first),
@@ -355,14 +330,7 @@ impl FnCx<'_> {
                 }
                 Type::list(Type::Int)
             }
-            "json.loads" | "toml.loads" | "json.dumps" | "toml.dumps" => {
-                self.format_result(name, &first, (at, span))
-            }
             "str" => Type::Str,
-            "re.is_regex" => Type::Bool,
-            "random.random_int" | "random.random_float" | "random.random_choice" => {
-                self.random(name, plain, span)
-            }
             "ignore" => {
                 if !plain.get(1).is_some_and(|(reason, _)| self.checker.fits(&Type::Str, reason)) {
                     self.error(wrong_args(name, span));
@@ -376,40 +344,13 @@ impl FnCx<'_> {
                 }
                 if name == "int" { Type::Int } else { Type::Float }
             }
-            "round" | "abs" | "math.floor" | "math.ceil" | "math.sqrt" | "math.sin" | "math.cos" => {
-                self.math(name, &types, span)
-            }
+            "round" | "abs" => self.math(name, &types, span),
             _ => self.collection_builtin(name, plain, span),
         }
     }
 
-    /// `std.random`'s builtins, which its `Random` is written with. Each takes the seed and
-    /// how many numbers were drawn, and gives back a value and the new count.
-    fn random(&mut self, name: &str, plain: &[(Type, Span)], span: Span) -> Type {
-        // `random_int` also takes the range; the others take only the seed and count.
-        let ints = if name == "random.random_int" { 4 } else { 2 };
-        let all_ints = plain.iter().take(ints).all(|(ty, _)| self.checker.fits(&Type::Int, ty));
-        if !all_ints {
-            self.error(Diagnostic::new(format!("`{name}` takes ints"), span));
-        }
-        let value = match name {
-            "random.random_int" => Type::Int,
-            "random.random_float" => Type::Float,
-            _ => match plain.get(2) {
-                Some((Type::List(item), _)) => item.as_ref().clone(),
-                Some((other, at)) => {
-                    let message = format!("`{name}` picks from a list, but this is {}", a(other));
-                    self.error(Diagnostic::new(message, *at));
-                    Type::Unknown
-                }
-                None => Type::Unknown,
-            },
-        };
-        Type::Tuple(vec![value, Type::Int])
-    }
-
-    /// The math builtins, which take numbers.
-    fn math(&mut self, name: &str, types: &[Type], span: Span) -> Type {
+    /// `round`, `abs` and `std.math`'s functions, which take numbers.
+    pub(crate) fn math(&mut self, name: &str, types: &[Type], span: Span) -> Type {
         let first = types.first().cloned().unwrap_or(Type::Unknown);
         let number = matches!(first, Type::Int | Type::Float | Type::Unknown);
         let digits = types.get(1).is_none_or(|digits| self.checker.fits(&Type::Int, digits));

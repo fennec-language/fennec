@@ -1,11 +1,16 @@
-//! Lists packed into flat memory: lists of ints, floats or bools, or of structs made only of
-//! those, stored one machine word per number, a struct's fields one after another. Native
+//! Lists packed into flat memory: lists of ints, floats or bools, or of structs and enums
+//! made only of those, stored one machine word per number, a struct's fields one after
+//! another. An enum is its case's number, then that case's fields, then zeros up to the
+//! size of its biggest case. Native
 //! code reads and changes them in place. To the interpreter they're ordinary lists: it
 //! unpacks one whenever it uses it.
 
 use std::rc::Rc;
 
 use crate::value::{Instance, Value};
+
+/// A struct's or case's fields, in the order they're written.
+pub type Fields = Vec<(Rc<str>, Element)>;
 
 /// What a packed list's items are.
 #[derive(Clone, Debug, PartialEq)]
@@ -16,7 +21,17 @@ pub enum Element {
     /// A struct, with its fields in the order they're written.
     Struct {
         name: Rc<str>,
-        fields: Vec<(Rc<str>, Element)>,
+        fields: Fields,
+    },
+    /// A boxed value inside another, by the address of its block, with the number of
+    /// the block's shape. Packed lists never hold these.
+    Boxed(usize),
+    /// An enum, with each case's fields in the order they're written, taking `words`
+    /// words.
+    Enum {
+        name: Rc<str>,
+        cases: Vec<(Rc<str>, Fields)>,
+        words: usize,
     },
 }
 
@@ -25,6 +40,7 @@ impl Element {
     pub fn words(&self) -> usize {
         match self {
             Element::Struct { fields, .. } => fields.iter().map(|(_, field)| field.words()).sum(),
+            Element::Enum { words, .. } => *words,
             _ => 1,
         }
     }
@@ -72,17 +88,33 @@ fn pack_item(element: &Element, item: &Value, words: &mut Vec<u64>) -> Option<()
                 pack_item(element, instance.field(field)?, words)?;
             }
         }
+        (Element::Enum { name, cases, words: size }, Value::Instance(instance))
+            if instance.type_name == *name && !instance.is_error =>
+        {
+            let case = instance.case.as_ref()?;
+            let at = cases.iter().position(|(written, _)| written == case)?;
+            let start = words.len();
+            words.push(u64::try_from(at).ok()?);
+            for (field, element) in &cases.get(at)?.1 {
+                pack_item(element, instance.field(field)?, words)?;
+            }
+            words.resize(start + size, 0);
+        }
         _ => return None,
     }
     Some(())
 }
 
-fn unpack_item<'w>(element: &Element, words: &mut impl Iterator<Item = &'w u64>) -> Value {
+fn unpack_item<'w>(element: &Element, words: &mut dyn Iterator<Item = &'w u64>) -> Value {
     let word = |words: &mut dyn Iterator<Item = &'w u64>| words.next().copied().unwrap_or(0);
     match element {
         Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
         Element::Float => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
+        Element::Boxed(_) => {
+            word(words);
+            Value::None
+        }
         Element::Struct { name, fields } => {
             let fields = fields
                 .iter()
@@ -95,6 +127,25 @@ fn unpack_item<'w>(element: &Element, words: &mut impl Iterator<Item = &'w u64>)
                 is_error: false,
                 cause: None,
             }))
+        }
+        Element::Enum { name, cases, words: size } => {
+            let mut mine = (&mut *words).take(*size);
+            let at = usize::try_from(word(&mut mine)).unwrap_or(0);
+            let (case, fields) = cases.get(at).or_else(|| cases.first()).cloned().unwrap_or_default();
+            let fields = fields
+                .iter()
+                .map(|(field, element)| (Rc::clone(field), unpack_item(element, &mut mine)))
+                .collect();
+            let item = Value::Instance(Rc::new(Instance {
+                type_name: Rc::clone(name),
+                case: Some(case),
+                fields,
+                is_error: false,
+                cause: None,
+            }));
+            // Skip the words a smaller case leaves zero.
+            mine.for_each(drop);
+            item
         }
     }
 }

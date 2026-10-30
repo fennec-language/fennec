@@ -18,6 +18,16 @@ cargo run -q -p fennec -- run examples/game.fen
 
 Every program in `examples/` is a test: it must print exactly its `.out` file and pass its own `test` blocks. Every program in `examples/errors/` must fail with exactly its `.err` message. When you add a feature, add an example that uses it; when you add a guardrail, add an error example that shows its message.
 
+## Adding a standard library module
+
+Each module under `std` has its own files, so modules added in parallel don't touch the same lines:
+
+- `crates/syntax/src/stdlib/`: the names it provides, in `<module>.rs`, and any code written in Fennec, in `<module>.fen`.
+- `crates/interp/src/stdlib/`: its functions and methods written in Rust, if it has any.
+- `crates/check/src/stdlib/`: their signatures.
+
+Then add the module's name to the `modules!` list in each crate's `stdlib.rs`, one line each.
+
 ## The bar a change has to clear
 
 CI runs all of this on every pull request, and a change merges only when it all passes:

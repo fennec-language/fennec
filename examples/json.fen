@@ -52,5 +52,6 @@ def main(stdout: Stdout):
     stdout.print(describe("\"never ends"))
     stdout.print(describe("tru"))
     match json.loads[list[int]]("[\n  1,\n  oops\n]"):
-        case ParseError(_, line, column): stdout.print(f"the problem is on line {line}, column {column}")
+        case ParseError(_, line, column):
+            stdout.print(f"the problem is on line {line}, column {column}")
         case Ok(value): stdout.print(value)

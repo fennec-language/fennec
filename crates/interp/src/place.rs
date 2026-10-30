@@ -63,6 +63,7 @@ impl Interp<'_> {
             .frame
             .get_mut(&place.root)
             .ok_or_else(|| Diagnostic::new(format!("`{}` doesn't exist", place.root), place.span))?;
+        unpack_in_place(&mut binding.value);
         take_in(&mut binding.value, &place.steps, place.span)
     }
 
@@ -71,7 +72,15 @@ impl Interp<'_> {
             .frame
             .get_mut(&place.root)
             .ok_or_else(|| Diagnostic::new(format!("`{}` doesn't exist", place.root), place.span))?;
+        unpack_in_place(&mut binding.value);
         put_in(&mut binding.value, &place.steps, value, place.span)
+    }
+}
+
+/// Changing part of a packed list goes through the interpreter's own kind of list.
+fn unpack_in_place(value: &mut Value) {
+    if let Value::Packed(packed) = value {
+        *value = packed.unpack();
     }
 }
 

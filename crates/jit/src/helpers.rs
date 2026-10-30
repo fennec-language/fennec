@@ -2,7 +2,7 @@
 //! where they are. Each takes and returns only plain numbers.
 
 use cranelift_codegen::ir::types::{F64, I8, I64, Type};
-use fennec_interp::embed::{eval, io, names, objects, temps};
+use fennec_interp::embed::{eval, io, lists, names, objects, temps};
 
 use crate::runtime;
 
@@ -74,9 +74,14 @@ pub(crate) enum Helper {
     MakeInstance,
     Sin,
     Cos,
+    Pack,
+    Address,
+    Length,
+    Push,
+    OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 66] = [
+pub(crate) const ALL: [Helper; 71] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -143,6 +148,11 @@ pub(crate) const ALL: [Helper; 66] = [
     Helper::MakeInstance,
     Helper::Sin,
     Helper::Cos,
+    Helper::Pack,
+    Helper::Address,
+    Helper::Length,
+    Helper::Push,
+    Helper::OutOfRange,
 ];
 
 /// A helper's symbol, parameters and results.
@@ -225,6 +235,11 @@ impl Helper {
             Helper::MakeInstance => shape("fennec_make_instance", &[I64, I64, I64, I64], &[I64]),
             Helper::Sin => shape("fennec_sin", &[F64], &[F64]),
             Helper::Cos => shape("fennec_cos", &[F64], &[F64]),
+            Helper::Pack => shape("fennec_pack", &[I64, I64], &[I8]),
+            Helper::Address => shape("fennec_address", &[I64, I64, I8], &[I64]),
+            Helper::Length => shape("fennec_length", &[I64, I64], &[I64]),
+            Helper::Push => shape("fennec_push", &[I64, I64], &[I64]),
+            Helper::OutOfRange => shape("fennec_out_of_range", &[I64, I64, I64, I64], &[]),
         }
     }
 
@@ -243,6 +258,22 @@ impl Helper {
         )
     }
 
+    /// Whether it gives back a temporary, which the statement must drop when it's done.
+    /// Others give back plain numbers: a count, an address, an unboxed int.
+    pub(crate) fn makes_temporary(self) -> bool {
+        self.shape().results == [I64]
+            && !matches!(
+                self,
+                Helper::Mark
+                    | Helper::Count
+                    | Helper::TypeOf
+                    | Helper::ToInt
+                    | Helper::Address
+                    | Helper::Length
+                    | Helper::Push
+            )
+    }
+
     /// Whether it can fail, so native code must check the failure flag after calling it.
     pub(crate) fn can_fail(self) -> bool {
         matches!(
@@ -257,6 +288,10 @@ impl Helper {
                 | Helper::PutItem
                 | Helper::Entries
                 | Helper::MakeInstance
+                | Helper::Address
+                | Helper::Length
+                | Helper::Push
+                | Helper::OutOfRange
                 | Helper::MainResult
                 | Helper::Unpack
                 | Helper::ToFloat
@@ -340,6 +375,11 @@ impl Helper {
             Helper::MakeInstance => objects::make_instance as *const u8,
             Helper::Sin => runtime::sin as *const u8,
             Helper::Cos => runtime::cos as *const u8,
+            Helper::Pack => lists::pack as *const u8,
+            Helper::Address => lists::address as *const u8,
+            Helper::Length => lists::length as *const u8,
+            Helper::Push => lists::push as *const u8,
+            Helper::OutOfRange => lists::out_of_range as *const u8,
         }
     }
 }

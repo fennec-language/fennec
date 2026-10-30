@@ -97,7 +97,7 @@ impl Interp<'_> {
 
     fn lookup(&self, name: &str, span: Span) -> Result<Value, Diagnostic> {
         if let Some(binding) = self.frame.get(name) {
-            return Ok(binding.value.clone());
+            return Ok(binding.value.clone().unpacked());
         }
         if let Some(function) = self.functions.get(name) {
             return Ok(Value::Function(Rc::clone(function)));

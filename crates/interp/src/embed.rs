@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
 
+pub mod lists;
 pub mod objects;
 
 use std::collections::HashMap;
@@ -35,6 +36,8 @@ pub struct Tables {
     pub exprs: Vec<Expr>,
     pub stmts: Vec<Stmt>,
     pub patterns: Vec<Pattern>,
+    /// The kinds of items in the lists native code packs.
+    pub elements: Vec<Rc<crate::packed::Element>>,
 }
 
 /// Collects what the program prints.
@@ -171,12 +174,19 @@ impl State {
         handle(self.temps.len() - 1)
     }
 
+    /// A copy of a temporary, unpacked for the interpreter.
     fn temp(&self, at: i64) -> Value {
-        usize::try_from(at).ok().and_then(|at| self.temps.get(at)).cloned().unwrap_or(Value::Unit)
+        usize::try_from(at).ok().and_then(|at| self.temps.get(at)).cloned().unwrap_or(Value::Unit).unpacked()
     }
 
-    /// Moves a temporary out, leaving nothing behind, so changing it can't copy it.
+    /// Moves a temporary out, leaving nothing behind, so changing it can't copy it. It's
+    /// unpacked for the interpreter.
     fn take(&mut self, at: i64) -> Value {
+        self.take_raw(at).unpacked()
+    }
+
+    /// Moves a temporary out as it is, packed or not, for a name to hold.
+    fn take_raw(&mut self, at: i64) -> Value {
         usize::try_from(at)
             .ok()
             .and_then(|at| self.temps.get_mut(at))
@@ -224,7 +234,7 @@ pub mod names {
     /// Creates a name holding a temporary's value.
     pub extern "C" fn declare(name: i64, value: i64, is_mut: i8) {
         with(|state| {
-            let value = state.take(value);
+            let value = state.take_raw(value);
             let name = State::name_ref(&state.tables, name);
             state.interp.frame.declare(name, value, is_mut != 0);
         });
@@ -233,7 +243,7 @@ pub mod names {
     /// Changes what a name holds.
     pub extern "C" fn assign(name: i64, value: i64) {
         with(|state| {
-            let value = state.take(value);
+            let value = state.take_raw(value);
             let name = State::name_ref(&state.tables, name);
             if let Some(binding) = state.interp.frame.get_mut(name) {
                 binding.value = value;
@@ -312,7 +322,7 @@ pub mod temps {
     /// Drops a returning function's temporaries except the value it returns.
     pub extern "C" fn keep(mark: i64, value: i64) -> i64 {
         with(|state| {
-            let value = if value >= mark { state.take(value) } else { state.temp(value) };
+            let value = if value >= mark { state.take_raw(value) } else { state.temp(value) };
             state.temps.truncate(usize::try_from(mark).unwrap_or(0));
             state.push(value)
         })

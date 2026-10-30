@@ -14,6 +14,7 @@ mod interp;
 mod matching;
 mod methods;
 mod ops;
+pub mod packed;
 mod place;
 mod prelude;
 mod random;

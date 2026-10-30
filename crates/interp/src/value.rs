@@ -15,6 +15,8 @@ pub(crate) enum Value {
     Float(f64),
     Str(Rc<str>),
     List(Rc<Vec<Value>>),
+    /// A list native code packed into flat memory. The interpreter unpacks it to use it.
+    Packed(Rc<crate::packed::Packed>),
     Tuple(Rc<Vec<Value>>),
     /// A dict keeps insertion order.
     Dict(Rc<Vec<(Value, Value)>>),
@@ -151,6 +153,14 @@ impl Value {
         Value::Tuple(Rc::new(items))
     }
 
+    /// The value as the interpreter uses it: a packed list unpacked, anything else as it is.
+    pub(crate) fn unpacked(self) -> Value {
+        match self {
+            Value::Packed(packed) => packed.unpack(),
+            other => other,
+        }
+    }
+
     pub(crate) fn is_failure(&self) -> bool {
         matches!(self, Value::Err(_))
     }
@@ -163,7 +173,7 @@ impl Value {
             Value::Int(_) => "int".to_owned(),
             Value::Float(_) => "float".to_owned(),
             Value::Str(_) => "str".to_owned(),
-            Value::List(_) => "list".to_owned(),
+            Value::List(_) | Value::Packed(_) => "list".to_owned(),
             Value::Tuple(_) => "tuple".to_owned(),
             Value::Dict(_) => "dict".to_owned(),
             Value::Set(_) => "set".to_owned(),

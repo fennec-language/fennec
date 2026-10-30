@@ -375,7 +375,7 @@ impl Lowerer<'_, '_> {
 }
 
 /// Every name an expression mentions.
-pub(crate) fn expr_names(expr: &Expr, names: &mut Vec<String>) {
+pub(super) fn expr_names(expr: &Expr, names: &mut Vec<String>) {
     let mut each = |expr: &Expr| expr_names(expr, names);
     match &expr.kind {
         ExprKind::Name(name) => names.push(name.clone()),
@@ -459,7 +459,7 @@ fn arm_names(arm: &MatchArm, names: &mut Vec<String>) {
 }
 
 /// Every name a statement mentions.
-pub(crate) fn stmt_names(stmt: &Stmt, names: &mut Vec<String>) {
+pub(super) fn stmt_names(stmt: &Stmt, names: &mut Vec<String>) {
     match &stmt.kind {
         StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
             expr_names(expr, names);

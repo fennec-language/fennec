@@ -13,6 +13,7 @@ mod call;
 mod expr;
 mod fallback;
 mod flow;
+mod inline;
 mod objects;
 mod stmt;
 mod structs;
@@ -43,6 +44,8 @@ struct Compiled {
     ret: Ty,
     /// Whether it's a method called on a value, rather than a function or named constructor.
     takes_self: bool,
+    /// Its body, when it's small enough to lower right where it's called.
+    inline: Option<std::rc::Rc<fennec_syntax::FnDef>>,
 }
 
 /// How a program compiled.
@@ -65,6 +68,7 @@ struct Shared {
     strings: HashMap<String, i64>,
     with_frames: usize,
     handed_over: usize,
+    stack_limit: i64,
 }
 
 fn internal(err: impl std::fmt::Debug, span: Span) -> Diagnostic {
@@ -77,10 +81,12 @@ fn internal(err: impl std::fmt::Debug, span: Span) -> Diagnostic {
 pub(crate) fn compile(
     program: &Program<'_>,
     signatures: &fennec_check::Signatures,
+    stack_limit: usize,
 ) -> Result<(Entry, Tables, Compilation), Diagnostic> {
+    let stack_limit = i64::try_from(stack_limit).unwrap_or(i64::MAX);
     let mut skipped = HashSet::new();
     loop {
-        match attempt(program, signatures, &skipped) {
+        match attempt(program, signatures, stack_limit, &skipped) {
             Ok((entry, tables, (with_frames, handed_over))) => {
                 let mut interpreted: Vec<String> = skipped.into_iter().collect();
                 interpreted.sort();
@@ -98,6 +104,9 @@ pub(crate) fn compile(
 fn new_module(span: Span) -> Result<JITModule, Diagnostic> {
     let mut flags = settings::builder();
     flags.set("opt_level", "speed").map_err(|err| internal(err, span))?;
+    // The stack limit lives in a register of its own for the whole run, so checking it
+    // before a call is one comparison. The register is one compiled Rust code preserves.
+    flags.set("enable_pinned_reg", "true").map_err(|err| internal(err, span))?;
     let isa = cranelift_native::builder()
         .map_err(|err| internal(err, span))?
         .finish(settings::Flags::new(flags))
@@ -116,6 +125,7 @@ type Attempt = Result<(Entry, Tables, (usize, usize)), (String, Diagnostic)>;
 fn attempt(
     program: &Program<'_>,
     signatures: &fennec_check::Signatures,
+    stack_limit: i64,
     skipped: &HashSet<String>,
 ) -> Attempt {
     let span = program.main_span;
@@ -129,6 +139,7 @@ fn attempt(
         strings: HashMap::new(),
         with_frames: 0,
         handed_over: 0,
+        stack_limit,
     };
     declare_all(&mut module, &mut shared, program, skipped).map_err(fatal)?;
     let mut ctx = module.make_context();
@@ -180,8 +191,11 @@ fn define_entry(
     b.switch_to_block(block);
     b.seal_block(block);
     let callee = module.declare_func_in_func(main, b.func);
-    let depth = b.ins().iconst(types::I64, 1);
-    let call = b.ins().call(callee, &[depth]);
+    // The pinned register belongs to whoever called this; keep its value to put back.
+    let saved = b.ins().get_pinned_reg(types::I64);
+    let limit = b.ins().iconst(types::I64, shared.stack_limit);
+    b.ins().set_pinned_reg(limit);
+    let call = b.ins().call(callee, &[]);
     let result = b.inst_results(call).first().copied();
     if let (Ty::Obj, Some(result), Some(check)) = (ret, result, shared.helpers.get(&Helper::MainResult)) {
         let check = module.declare_func_in_func(*check, b.func);
@@ -189,6 +203,7 @@ fn define_entry(
         let end = b.ins().iconst(types::I64, i64::from(span.end));
         b.ins().call(check, &[result, start, end]);
     }
+    b.ins().set_pinned_reg(saved);
     b.ins().return_(&[]);
     let config = module.target_config();
     b.finalize(config);
@@ -224,7 +239,10 @@ fn declare_all(
         let params =
             function.params.iter().map(|param| (param.name.clone(), param.ty, param.is_mut)).collect();
         let takes_self = function.def.params.first().is_some_and(|param| param.is_self);
-        shared.compiled.insert(function.key.clone(), Compiled { id, params, ret: function.ret, takes_self });
+        let inline = inline::inline_body(function);
+        shared
+            .compiled
+            .insert(function.key.clone(), Compiled { id, params, ret: function.ret, takes_self, inline });
     }
     Ok(())
 }
@@ -238,13 +256,12 @@ fn abi(ty: Ty) -> Option<types::Type> {
     }
 }
 
-/// A compiled function's machine signature: how deeply calls are nested; for a function
-/// giving back a plain struct, where to put it; each parameter's value (the address of a
-/// struct, and for a `mut` object, also the caller's name for it); then the result and each
-/// `mut` number's final value. The depth travels in a register, so counting it is cheap.
+/// A compiled function's machine signature: for a function giving back a plain struct,
+/// where to put it; each parameter's value (the address of a struct, and for a `mut`
+/// object, also the caller's name for it); then the result and each `mut` number's final
+/// value.
 fn signature(module: &JITModule, function: &Function<'_>) -> cranelift_codegen::ir::Signature {
     let mut sig = module.make_signature();
-    sig.params.push(AbiParam::new(types::I64));
     if matches!(function.ret, Ty::Struct(_)) {
         sig.params.push(AbiParam::new(types::I64));
     }
@@ -262,6 +279,8 @@ fn signature(module: &JITModule, function: &Function<'_>) -> cranelift_codegen::
             sig.returns.extend(abi(param.ty).map(AbiParam::new));
         }
     }
+    // Last, whether it failed: a register the caller tests, cheaper than loading the flag.
+    sig.returns.push(AbiParam::new(types::I8));
     sig
 }
 
@@ -338,6 +357,9 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
     }
     let bail = b.create_block();
     b.set_cold_block(bail);
+    let pointer_ty = pointer;
+    let limit = b.ins().get_pinned_reg(pointer_ty);
+    let failed_flag = b.ins().iconst(pointer_ty, i64::try_from(embed::failed_flag()).unwrap_or(0));
     let mut lowerer = Lowerer {
         b,
         module: &mut *cx.module,
@@ -345,6 +367,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         layouts: cx.layouts,
         signatures: cx.signatures,
         dest: None,
+        inlining: Vec::new(),
         function,
         scopes: vec![Scope::default()],
         loops: Vec::new(),
@@ -356,8 +379,11 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         entry,
         pointer,
         mut_names: Vec::new(),
-        depth: None,
+        limit,
+        failed_flag,
         pending: Vec::new(),
+        leaves_of: HashMap::new(),
+        leaf_vars: HashMap::new(),
     };
     lowerer.prologue(&params)?;
     let (tail, tail_ty) = lowerer.tail(&function.def.body)?;
@@ -414,8 +440,10 @@ pub(crate) struct Lowerer<'a, 'f> {
     /// For each `mut` object parameter: its name, and the variable holding the caller's
     /// name for it.
     mut_names: Vec<(String, Variable)>,
-    /// How deeply this call is nested: 1 for `main`.
-    depth: Option<Value>,
+    /// The lowest the stack may grow to before a call fails as nested too deeply.
+    /// The stack limit and the failure flag's address, computed once on entry.
+    limit: Value,
+    failed_flag: Value,
     /// The blocks for "the receiver is some other type", while calls on each compiled
     /// type are being lowered.
     pending: Vec<Block>,
@@ -423,14 +451,20 @@ pub(crate) struct Lowerer<'a, 'f> {
     signatures: &'a fennec_check::Signatures,
     /// Where a function giving back a plain struct puts it.
     dest: Option<Value>,
+    /// The leaves of each struct value kept in registers.
+    leaves_of: HashMap<Value, Vec<Value>>,
+    /// The leaf variables of each struct name kept in registers, by the name's variable.
+    leaf_vars: HashMap<usize, Vec<Variable>>,
+    /// The functions being inlined, innermost last, each with the number of scopes open
+    /// outside it, which its body can't see.
+    inlining: Vec<(String, usize)>,
 }
 
 impl Lowerer<'_, '_> {
     /// Counts the call, starts the frame and binds the parameters.
     fn prologue(&mut self, params: &[Value]) -> Result<(), Diagnostic> {
         let span = self.function.def.span;
-        let (depth, mut params) = params.split_first().ok_or_else(|| internal("missing depth", span))?;
-        self.depth = Some(*depth);
+        let mut params = params;
         if matches!(self.function.ret, Ty::Struct(_)) {
             let (dest, rest) = params.split_first().ok_or_else(|| internal("missing destination", span))?;
             self.dest = Some(*dest);
@@ -453,6 +487,14 @@ impl Lowerer<'_, '_> {
                     let var = self.b.declare_var(types::I64);
                     self.b.def_var(var, caller);
                     self.mut_names.push((param.name.clone(), var));
+                }
+            } else if let (Ty::Struct(id), Some(address)) = (param.ty, value) {
+                // A `mut` struct is changed where the caller holds it; any other is read
+                // into variables of its own.
+                if param.is_mut {
+                    self.bind_place(&param.name, structs::Place::Memory(address), id, true);
+                } else {
+                    self.declare_struct(&param.name, address, id, false)?;
                 }
             } else {
                 self.bind_native(&param.name, param.ty, value, param.is_mut);
@@ -489,10 +531,14 @@ impl Lowerer<'_, '_> {
                 results.extend(local.var.map(|var| self.b.use_var(var)));
             }
         }
+        results.push(self.b.ins().iconst(types::I8, 0));
         self.b.ins().return_(&results);
         self.b.switch_to_block(self.bail);
         let returns: Vec<_> = self.b.func.signature.returns.iter().map(|param| param.value_type).collect();
-        let zeros: Vec<Value> = returns.into_iter().map(|ty| self.zero_of(ty)).collect();
+        let mut zeros: Vec<Value> = returns.into_iter().map(|ty| self.zero_of(ty)).collect();
+        if let Some(failed) = zeros.last_mut() {
+            *failed = self.b.ins().iconst(types::I8, 1);
+        }
         self.b.ins().return_(&zeros);
         self.b.seal_all_blocks();
         let config = self.module.target_config();
@@ -574,8 +620,15 @@ impl Lowerer<'_, '_> {
         self.int(id)
     }
 
+    /// A name in sight. Inside an inlined body, only the body's own names are.
     fn local(&self, name: &str) -> Option<Local> {
-        self.scopes.iter().rev().find_map(|scope| scope.locals.get(name)).copied()
+        let floor = self.inlining.last().map_or(0, |(_, floor)| *floor);
+        self.scopes.iter().skip(floor).rev().find_map(|scope| scope.locals.get(name)).copied()
+    }
+
+    /// The key of the function whose code is being lowered: an inlined one, or this one.
+    fn current_key(&self) -> &str {
+        self.inlining.last().map_or(self.function.key.as_str(), |(key, _)| key.as_str())
     }
 
     fn bind_native(&mut self, name: &str, ty: Ty, value: Option<Value>, is_mut: bool) {
@@ -708,9 +761,13 @@ impl Lowerer<'_, '_> {
 
     /// Leaves the function if the program has failed.
     fn check_failed(&mut self) {
-        let address = i64::try_from(embed::failed_flag()).unwrap_or(0);
-        let address = self.b.ins().iconst(self.pointer, address);
+        let address = self.failed_flag;
         let failed = self.b.ins().load(types::I8, MemFlagsData::trusted(), address, 0);
+        self.leave_if(failed);
+    }
+
+    /// Leaves the function if `failed` is set.
+    fn leave_if(&mut self, failed: Value) {
         let ok = self.b.create_block();
         self.b.ins().brif(failed, self.bail, &[], ok, &[]);
         self.b.switch_to_block(ok);

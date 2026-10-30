@@ -1,4 +1,4 @@
-error: calls nested more than 1000 deep
+error: calls nested too deeply
  --> examples/errors/too_deep.fen:2:12
   |
 2 |     return down(n + 1)

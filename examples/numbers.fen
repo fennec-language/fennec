@@ -55,3 +55,8 @@ def main(stdout: Stdout):
             continue
         total += i
     stdout.print(f"multiples of 3 up to 20 add up to {total}")
+
+    # Right up to the limits of a 64-bit int, without going over.
+    biggest = 9223372036854775806 + 1
+    smallest = -biggest - 1
+    stdout.print(biggest, smallest, biggest - 1, smallest + 1, smallest - -5)

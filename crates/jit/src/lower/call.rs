@@ -115,6 +115,7 @@ impl Lowerer<'_, '_> {
         }
         let mut values = Vec::new();
         let mut mut_natives = Vec::new();
+        let mut reloads = Vec::new();
         for ((arg, (_, ty, is_mut)), lowered) in arranged.iter().zip(&params).zip(lowered) {
             match (lowered, is_mut, &arg.value.kind) {
                 (Some((value, from)), _, _) => {
@@ -127,11 +128,13 @@ impl Lowerer<'_, '_> {
                     if *ty == Ty::Obj {
                         values.push(self.help(Helper::Take, &[id])?);
                         values.push(id);
-                    } else if let (Ty::Struct(_), Some(var)) =
-                        (ty, self.local(local).and_then(|local| local.var))
+                    } else if let (Ty::Struct(id), Some(place)) =
+                        (ty, self.local(local).and_then(|local| self.local_place(local)))
                     {
-                        // The callee changes the caller's struct where it lives.
-                        values.push(self.b.use_var(var));
+                        // The callee changes the caller's struct through its address.
+                        let (address, vars) = self.place_address(&place, *id)?;
+                        values.push(address);
+                        reloads.push((address, vars, *id));
                     } else if let Some(var) = self.local(local).and_then(|local| local.var) {
                         values.push(self.b.use_var(var));
                         mut_natives.push(var);
@@ -140,9 +143,13 @@ impl Lowerer<'_, '_> {
                 _ => {}
             }
         }
+        if let Some(body) = self.inlinable(name) {
+            return self.inline_call(name, &body, values, None, span).map(Some);
+        }
+        let mut values = self.addresses_for(&params, values)?;
         let dest = self.dest_for(ret)?;
         values.splice(0..0, dest);
-        let mut results = self.raw_call(id, values, span)?.into_iter();
+        let mut results = self.raw_call(id, &values, span).into_iter();
         let value = if let Some(dest) = dest {
             Some(dest)
         } else if super::abi(ret).is_some() {
@@ -152,6 +159,9 @@ impl Lowerer<'_, '_> {
         };
         for (var, result) in mut_natives.into_iter().zip(results) {
             self.b.def_var(var, result);
+        }
+        for (address, vars, id) in reloads {
+            self.reload_place(address, vars, id)?;
         }
         if ret == Ty::Obj {
             self.dirty = true;
@@ -169,10 +179,15 @@ impl Lowerer<'_, '_> {
     ) -> Result<Lowered, Diagnostic> {
         let compiled = self.shared.compiled.get(key).map(|compiled| (compiled.id, compiled.ret));
         let (id, ret) = compiled.ok_or_else(|| super::internal("unknown function", span))?;
+        if let Some(body) = self.inlinable(key) {
+            return self.inline_call(key, &body, values, None, span);
+        }
+        let params =
+            self.shared.compiled.get(key).map(|compiled| compiled.params.clone()).unwrap_or_default();
         let dest = self.dest_for(ret)?;
-        let mut values = values;
+        let mut values = self.addresses_for(&params, values)?;
         values.splice(0..0, dest);
-        let results = self.raw_call(id, values, span)?;
+        let results = self.raw_call(id, &values, span);
         let value = if dest.is_some() {
             dest
         } else if super::abi(ret).is_some() {
@@ -186,29 +201,47 @@ impl Lowerer<'_, '_> {
         Ok((value, ret))
     }
 
-    /// Calls a compiled function, after checking calls aren't nested too deep: like the
-    /// interpreter, more than 1000 deep fails, at the call.
-    fn raw_call(
-        &mut self,
-        id: cranelift_module::FuncId,
-        values: Vec<Value>,
-        span: Span,
-    ) -> Result<Vec<Value>, Diagnostic> {
-        let depth = self.depth.ok_or_else(|| super::internal("no depth", span))?;
-        let too_deep = self.b.ins().icmp_imm_s(
-            cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThanOrEqual,
-            depth,
-            fennec_interp::embed::MAX_DEPTH,
-        );
+    /// Calls a compiled function, after checking the stack has room for it: calls nested
+    /// too deeply fail at the call, like the interpreter's, instead of crashing.
+    fn raw_call(&mut self, id: cranelift_module::FuncId, values: &[Value], span: Span) -> Vec<Value> {
+        // Fail cleanly, at the call, before the stack runs out.
+        let stack = self.b.ins().get_stack_pointer(self.pointer);
+        let too_deep =
+            self.b.ins().icmp(cranelift_codegen::ir::condcodes::IntCC::UnsignedLessThan, stack, self.limit);
         self.fail_if(too_deep, runtime::TOO_DEEP, span);
-        let deeper = self.b.ins().iadd_imm_s(depth, 1);
-        let mut args = vec![deeper];
-        args.extend(values);
         let callee = self.module.declare_func_in_func(id, self.b.func);
-        let call = self.b.ins().call(callee, &args);
-        let results = self.b.inst_results(call).to_vec();
-        self.check_failed();
-        Ok(results)
+        let call = self.b.ins().call(callee, values);
+        let mut results = self.b.inst_results(call).to_vec();
+        if let Some(failed) = results.pop() {
+            self.leave_if(failed);
+        }
+        results
+    }
+
+    /// Struct arguments in memory, as a real call takes them. Values are in the order the
+    /// call passes them, with nothing for `Stdout` and `Fs`, and a caller's name after a
+    /// `mut` object.
+    fn addresses_for(
+        &mut self,
+        params: &[(String, Ty, bool)],
+        values: Vec<Value>,
+    ) -> Result<Vec<Value>, Diagnostic> {
+        let mut kinds = Vec::new();
+        for (_, ty, is_mut) in params {
+            match ty {
+                Ty::Stdout | Ty::Fs => {}
+                Ty::Obj if *is_mut => kinds.extend([Ty::Obj, Ty::Int]),
+                ty => kinds.push(*ty),
+            }
+        }
+        let mut converted = Vec::with_capacity(values.len());
+        for (at, value) in values.into_iter().enumerate() {
+            converted.push(match kinds.get(at) {
+                Some(Ty::Struct(id)) => self.address_of(value, *id)?,
+                _ => value,
+            });
+        }
+        Ok(converted)
     }
 
     /// Memory for the plain struct a function gives back, when it gives one.
@@ -239,8 +272,10 @@ impl Lowerer<'_, '_> {
         {
             return Ok(None);
         }
-        let receiver = if let Some((address, _)) = self.struct_place(object)? {
-            address
+        let changes_self = params.first().is_some_and(|(_, _, is_mut)| *is_mut);
+        let place = self.struct_place(object)?;
+        let receiver = if let Some((place, _)) = &place {
+            self.read_place(place)
         } else {
             let (value, ty) = self.expr(object)?;
             self.convert(value, ty, Ty::Struct(id), object.span)?
@@ -252,7 +287,26 @@ impl Lowerer<'_, '_> {
                 values.push(self.convert(value, from, *to, arg.value.span)?);
             }
         }
-        self.call_key(&key, values, expr.span).map(Some)
+        let self_place = place.filter(|_| changes_self).map(|(place, _)| place);
+        if let Some(body) = self.inlinable(&key) {
+            return self.inline_call(&key, &body, values, self_place, expr.span).map(Some);
+        }
+        // A real call changes `self` through its address, then the name reads it back.
+        let reload = match &self_place {
+            Some(place) => {
+                let (address, vars) = self.place_address(place, id)?;
+                if let Some(first) = values.first_mut() {
+                    *first = address;
+                }
+                Some((address, vars))
+            }
+            None => None,
+        };
+        let result = self.call_key(&key, values, expr.span)?;
+        if let Some((address, vars)) = reload {
+            self.reload_place(address, vars, id)?;
+        }
+        Ok(Some(result))
     }
 
     /// Builtins on numbers that compile to a few instructions.

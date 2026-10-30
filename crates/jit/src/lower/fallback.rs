@@ -327,7 +327,10 @@ impl Lowerer<'_, '_> {
                 self.call_helper(Helper::DeclareCapability, &[id, kind])?;
                 continue;
             }
-            let value = local.var.map(|var| self.b.use_var(var));
+            let value = match self.local_place(local).filter(|_| matches!(local.ty, Ty::Struct(_))) {
+                Some(place) => Some(self.read_place(&place)),
+                None => local.var.map(|var| self.b.use_var(var)),
+            };
             let handle = self.handle_of(value, local.ty, Span::default())?;
             let is_mut = self.b.ins().iconst(cranelift_codegen::ir::types::I8, i64::from(local.is_mut));
             self.call_helper(Helper::Declare, &[id, handle, is_mut])?;
@@ -347,9 +350,8 @@ impl Lowerer<'_, '_> {
             let id = self.name_id(&name);
             let handle = self.help(Helper::Get, &[id])?;
             let value = self.convert(Some(handle), Ty::Obj, local.ty, span)?;
-            if let Ty::Struct(id) = local.ty {
-                let own = self.b.use_var(var);
-                self.copy_struct(own, value, id)?;
+            if let (Ty::Struct(id), Some(place)) = (local.ty, self.local_place(local)) {
+                self.write_place(&place, value, id)?;
             } else {
                 self.b.def_var(var, value);
             }

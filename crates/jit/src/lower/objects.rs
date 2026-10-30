@@ -73,7 +73,7 @@ impl Lowerer<'_, '_> {
         if let (Ty::Struct(id), Some(address)) = (ty, value)
             && let Some(field) = self.struct_field(id, name)?
         {
-            return Ok(self.load_field(address, field));
+            return self.load_field(address, id, field);
         }
         let handle = self.handle_of(value, ty, object.span)?;
         let name = self.name_id(name);
@@ -334,8 +334,9 @@ impl Lowerer<'_, '_> {
         self.declare_object(&key, none, true)?;
         // An item the checker knows is a plain struct lives natively for its turn.
         if let Some(Ty::Struct(id)) = self.checked_ty(name) {
-            let own = self.new_struct(id)?;
-            self.bind_native(name, Ty::Struct(id), Some(own), true);
+            let zeros = self.leaf_types(id)?.into_iter().map(|(_, ty)| self.zero_leaf(ty)).collect();
+            let empty = self.struct_of_leaves(zeros);
+            self.declare_struct(name, empty, id, true)?;
         } else {
             let none = self.help(Helper::None, &[])?;
             self.declare_object(name, none, true)?;
@@ -406,11 +407,12 @@ impl Lowerer<'_, '_> {
         self.start_path(&put_back.root, &put_back.fields)?;
         let key = self.name_id(&put_back.key);
         let key = self.help(Helper::Get, &[key])?;
-        let item = if let Some(super::Local { var: Some(var), ty: ty @ Ty::Struct(_), .. }) =
+        let item = if let Some(local @ super::Local { ty: ty @ Ty::Struct(_), .. }) =
             self.local(&put_back.item)
+            && let Some(place) = self.local_place(local)
         {
-            let address = self.b.use_var(var);
-            self.handle_of(Some(address), ty, put_back.span)?
+            let value = self.read_place(&place);
+            self.handle_of(Some(value), ty, put_back.span)?
         } else {
             let item = self.name_id(&put_back.item);
             self.help(Helper::Get, &[item])?

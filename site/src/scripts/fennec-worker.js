@@ -22,10 +22,11 @@ async function compile(url) {
 // Each run gets a fresh instance, so nothing one program does can leak into the next.
 function call(action, source) {
   const { exports } = new WebAssembly.Instance(compiled, {});
+  const entry = action === 'test' ? exports.fennec_test : exports.fennec_run;
   const bytes = new TextEncoder().encode(source);
   const at = exports.fennec_input(bytes.length);
   new Uint8Array(exports.memory.buffer, at, bytes.length).set(bytes);
-  const len = exports[`fennec_${action}`]();
+  const len = entry();
   const result = new Uint8Array(exports.memory.buffer, exports.fennec_output(), len);
   return JSON.parse(new TextDecoder().decode(result));
 }

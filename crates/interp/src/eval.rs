@@ -12,6 +12,7 @@ use crate::{builtins, format, ops};
 impl Interp<'_> {
     pub(crate) fn eval(&mut self, expr: &Expr) -> Result<Value, Diagnostic> {
         let span = expr.span;
+        self.step(span)?;
         match &expr.kind {
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Float(x) => Ok(Value::Float(*x)),

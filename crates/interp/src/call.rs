@@ -6,7 +6,7 @@ use std::rc::Rc;
 use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Param, Span};
 
 use crate::exec::Flow;
-use crate::interp::{Interp, MAX_DEPTH};
+use crate::interp::Interp;
 use crate::place::Place;
 use crate::scope::Frame;
 use crate::value::{Callable, Lambda, Value};
@@ -104,7 +104,7 @@ impl Interp<'_> {
     }
 
     fn enter(&mut self, span: Span) -> Result<Frame, Diagnostic> {
-        if self.depth >= MAX_DEPTH {
+        if self.depth >= self.max_depth {
             return Err(Diagnostic::new("calls nested too deeply", span)
                 .with_help("check for recursion that never stops"));
         }

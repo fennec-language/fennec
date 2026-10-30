@@ -303,6 +303,18 @@ fn reading_numbers_from_text_can_fail_and_characters_have_codes() {
             "the code should be an int, but this is a str @ \"A\"",
         ]
     );
+    // A type's own `from_code` is its own; only `str.from_code` makes a character.
+    let program = "
+        struct Glyph:
+            code: int
+
+            def from_code(code: int) -> Glyph:
+                Glyph(code=code)
+
+        def main(stdout: Stdout):
+            stdout.print(Glyph.from_code(65).code + 1)
+    ";
+    assert_eq!(problems(program), Vec::<String>::new());
     assert_eq!(
         helps("def main(stdout: Stdout):\n    stdout.print(ord('A'), chr(65))"),
         [

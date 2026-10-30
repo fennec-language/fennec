@@ -224,8 +224,10 @@ fn repl_says_which_module_to_import_from() {
 
 #[test]
 fn repl_says_how_to_write_ord_and_chr() {
-    let output = fennec(&["repl"], "ord(\"A\")\nchr(65)\n\"A\".code()\nexit\n").unwrap();
+    let output = fennec(&["repl"], "ord(\"A\")\nchr(65)\n\"A\".code()\nstr.lower(\"A\")\nexit\n").unwrap();
     let errors = text(&output.stderr);
+    // Only `from_code` is called on `str` itself.
+    assert!(errors.contains("a function has no method `lower`"), "{errors}");
     assert!(errors.contains("a character's code is a method: write `c.code()`"), "{errors}");
     assert!(errors.contains("make a character from its code with `str.from_code(n)`"), "{errors}");
     assert!(text(&output.stdout).contains("65\n"));

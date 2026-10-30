@@ -1,0 +1,5 @@
+from enemies import Enemy
+
+def main(stdout: Stdout):
+    enemy = Enemy()
+    stdout.print(strongest([enemy]))

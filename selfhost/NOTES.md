@@ -49,6 +49,8 @@ code does instead.
   syntax-tree enums share `Int`, `Float`, `Str`, `FStr`, `Name`, `Text`, `Code`, `List`,
   `Set`, `Dict`, `Tuple` and `Variant`, so those are written `ExprKind.Int(value)`,
   `Tok.Name(word)` and so on. Patterns don't have this problem: `case .Int(value):` works.
+  The search covers the whole kit, not just what a file imports: `lexer.fen` never sees the
+  syntax tree, but adding `ast.fen` to the kit made its `.Name(word)` ambiguous.
 - **A case can't be called `None`**, so the `None` literal in the syntax tree is
   `ExprKind.Nothing`.
 - **Keywords can't be field names**, so a case holding a function is `Function(function)`,
@@ -62,6 +64,11 @@ code does instead.
   The tree dump's recursive methods say `-> nothing` for now. Which method of a recursive
   group needs it depends on the order they're checked in, so renaming a method can move the
   error to another one. This one feels like the checker being wrong.
+- **A type's methods must all sit in its declaration.** Rust spreads `impl Parser` over
+  `parser.rs` and `parser/{stmt,expr,pattern}.rs`; here the parser is one ~1,000-line
+  `struct Parser`, with comments marking where each Rust file's part begins. Something like
+  Swift's extensions, or letting a later file add methods to a kit's own type, would let
+  it split the same way.
 - **There's no `while let`.** Loops that run while a lookup succeeds are `while True:`, a
   lookup, and `if op is None: break`.
 

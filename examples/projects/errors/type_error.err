@@ -1,0 +1,5 @@
+error: can't use `+` on an int and a str
+ --> examples/projects/errors/type_error/src/scores.fen:2:5
+  |
+2 |     sum(scores) + "points"
+  |     ^^^^^^^^^^^^^^^^^^^^^^

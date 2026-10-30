@@ -224,7 +224,7 @@ fn selfhost(work: &Path, mode: &str, corpus: &[PathBuf], engine: &[&str]) -> Res
     let output = Command::new(env!("CARGO_BIN_EXE_fennec"))
         .arg("run")
         .args(engine)
-        .arg(repo().join("selfhost/src/main.fen"))
+        .arg(repo().join("selfhost"))
         .current_dir(work)
         .output()
         .map_err(|err| err.to_string())?;

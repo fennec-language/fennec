@@ -1,0 +1,4 @@
+from enemis import Enemy
+
+def main(stdout: Stdout):
+    stdout.print(Enemy())

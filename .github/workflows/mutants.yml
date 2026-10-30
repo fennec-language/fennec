@@ -16,6 +16,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Tests check this to sample their slowest corpora: every mutant runs every test.
+  FENNEC_UNDER_MUTANTS: "1"
 
 jobs:
   changed-code:
@@ -38,7 +40,10 @@ jobs:
       - name: Mutate
         run: |
           status=0
-          cargo mutants --in-diff changes.diff --no-shuffle --timeout 120 --jobs 2 || status=$?
+          # Each mutant runs the whole workspace's tests, which take about a minute here with
+          # FENNEC_UNDER_MUTANTS set; a hung mutant stops after three. (The baseline only tests
+          # the changed packages, so a timeout scaled from it would be too short.)
+          cargo mutants --in-diff changes.diff --no-shuffle --timeout 180 --jobs 2 || status=$?
           # 3 means some mutations made the tests hang, which still counts as noticing them.
           # It wins over 2 (missed), so check for misses separately.
           if [ "$status" -eq 3 ] && [ ! -s mutants.out/missed.txt ]; then status=0; fi
@@ -71,7 +76,7 @@ jobs:
           SHARD: ${{ matrix.shard }}
         run: |
           status=0
-          cargo mutants --shard "$SHARD/8" --baseline=skip --timeout 120 --jobs 2 || status=$?
+          cargo mutants --shard "$SHARD/8" --baseline=skip --timeout 180 --jobs 2 || status=$?
           # As above: hangs count as noticed, misses don't.
           if [ "$status" -eq 3 ] && [ ! -s mutants.out/missed.txt ]; then status=0; fi
           exit "$status"

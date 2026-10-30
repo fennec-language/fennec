@@ -258,6 +258,9 @@ fn sources_under(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// Under mutation testing, one in this many of the repository's files is compared.
+const MUTANTS_SAMPLE: usize = 8;
+
 /// Every file the two front ends are compared on. Sources that don't live in files, like the
 /// standard library's, are written into `work`.
 fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
@@ -265,6 +268,11 @@ fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
     paths.extend(sources_in(&repo().join("examples/errors"))?);
     paths.extend(sources_under(&repo().join("examples/projects"))?);
     paths.extend(sources_under(&repo().join("selfhost/src"))?);
+    // Mutation testing runs every test for every mutant: a sample of the files keeps the
+    // whole run inside its time limit. The small cases below are always all compared.
+    if std::env::var_os("FENNEC_UNDER_MUTANTS").is_some() {
+        paths = paths.into_iter().step_by(MUTANTS_SAMPLE).collect();
+    }
     let generated = fennec_syntax::prelude()
         .enumerate()
         .map(|(at, source)| (format!("prelude_{at}"), source))

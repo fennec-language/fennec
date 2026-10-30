@@ -23,7 +23,6 @@ const BUILTINS: [(&str, usize, usize); 36] = [
     ("floor", 1, 1),
     ("ignore", 2, 2),
     ("int", 1, 1),
-    ("is_regex", 1, 1),
     ("json.dumps", 1, 1),
     ("json.loads", 1, 1),
     ("len", 1, 1),
@@ -31,10 +30,11 @@ const BUILTINS: [(&str, usize, usize); 36] = [
     ("max", 1, usize::MAX),
     ("min", 1, usize::MAX),
     ("parallel", 1, 1),
-    ("random_choice", 3, 3),
-    ("random_float", 2, 2),
-    ("random_int", 4, 4),
+    ("random.random_choice", 3, 3),
+    ("random.random_float", 2, 2),
+    ("random.random_int", 4, 4),
     ("range", 1, 3),
+    ("re.is_regex", 1, 1),
     ("replace", 1, usize::MAX),
     ("reversed", 1, 1),
     ("round", 1, 2),
@@ -58,9 +58,9 @@ const NEEDS_VALUES: [&str; 14] = [
     "floor",
     "int",
     "len",
-    "random_choice",
-    "random_float",
-    "random_int",
+    "random.random_choice",
+    "random.random_float",
+    "random.random_int",
     "range",
     "round",
     "sin",
@@ -77,6 +77,7 @@ pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
         .iter()
         .filter_map(|(builtin, ..)| builtin.split_once('.').filter(|(_, function)| *function == name))
         .map(|(module, _)| module)
+        .chain(fennec_syntax::importable_type(name))
         .collect()
 }
 
@@ -293,20 +294,20 @@ impl FnCx<'_> {
                 }
                 Type::list(Type::Int)
             }
-            "random_int" | "random_float" => {
+            "random.random_int" | "random.random_float" => {
                 if types.iter().any(|ty| !matches!(ty, Type::Int | Type::Unknown)) {
                     self.error(Diagnostic::new(format!("`{name}` takes ints"), span));
                 }
-                let value = if name == "random_int" { Type::Int } else { Type::Float };
+                let value = if name == "random.random_int" { Type::Int } else { Type::Float };
                 Type::Tuple(vec![value, Type::Int])
             }
-            "random_choice" => {
+            "random.random_choice" => {
                 let item = plain.get(2).map_or(Type::Unknown, |(ty, at)| self.item_type(ty, *at));
                 Type::Tuple(vec![item, Type::Int])
             }
             "json.loads" | "toml.loads" | "json.dumps" | "toml.dumps" => self.format_result(name, &first, at),
             "str" => Type::Str,
-            "is_regex" => Type::Bool,
+            "re.is_regex" => Type::Bool,
             "round" if types.len() == 2 => Type::Float,
             "int" | "floor" | "ceil" | "round" => Type::Int,
             "float" | "sqrt" | "sin" | "cos" => Type::Float,

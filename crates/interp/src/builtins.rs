@@ -26,7 +26,6 @@ const NAMES: [&str; 35] = [
     "floor",
     "ignore",
     "int",
-    "is_regex",
     "json.dumps",
     "json.loads",
     "len",
@@ -34,10 +33,11 @@ const NAMES: [&str; 35] = [
     "max",
     "min",
     "parallel",
-    "random_choice",
-    "random_float",
-    "random_int",
+    "random.random_choice",
+    "random.random_float",
+    "random.random_int",
     "range",
+    "re.is_regex",
     "replace",
     "reversed",
     "round",
@@ -124,9 +124,11 @@ impl Interp<'_> {
             ("ignore", _) => Err(Diagnostic::new("`ignore` needs a reason the result doesn't matter", span)
                 .with_help("like `ignore(save(fs, game), \"autosave is best effort\")`")),
             ("len", [value]) => length(value, span),
-            ("is_regex", [Value::Str(pattern)]) => Ok(Value::Bool(self.regex(pattern).is_ok())),
+            ("re.is_regex", [Value::Str(pattern)]) => Ok(Value::Bool(self.regex(pattern).is_ok())),
             ("range", _) => range(&values, span),
-            ("random_int" | "random_float" | "random_choice", _) => random::draw(name, &values, span),
+            ("random.random_int" | "random.random_float" | "random.random_choice", _) => {
+                random::draw(name, &values, span)
+            }
             ("str", [value]) => Ok(Value::str(&format::display(value))),
             ("int", [value]) => to_int(value, span),
             ("float", [value]) => to_float(value, span),

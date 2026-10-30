@@ -137,7 +137,8 @@ impl Interp<'_> {
         if self.types.contains_key(name) || builtins::is_type(name) {
             return Ok(Value::Type(Rc::from(name)));
         }
-        if let Some(builtin) = self.imports.get(name) {
+        let prelude = span.in_prelude().then(|| self.prelude_imports.get(name)).flatten();
+        if let Some(builtin) = self.imports.get(name).or(prelude) {
             return Ok(Value::Builtin(builtin));
         }
         if let Some(module) = self.modules.get(name) {

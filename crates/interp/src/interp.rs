@@ -39,6 +39,8 @@ pub struct Interp<'out> {
     pub(crate) types: HashMap<String, Rc<TypeInfo>>,
     /// Builtins that exist only once imported, by the name they're imported under.
     pub(crate) imports: HashMap<String, &'static str>,
+    /// What the standard library's own code imports, which only that code sees.
+    pub(crate) prelude_imports: HashMap<String, &'static str>,
     /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
     pub(crate) modules: HashMap<String, &'static str>,
     pub(crate) tests: Vec<TestDef>,
@@ -75,6 +77,7 @@ impl<'out> Interp<'out> {
             functions: HashMap::new(),
             types: HashMap::new(),
             imports: HashMap::new(),
+            prelude_imports: HashMap::new(),
             modules: HashMap::new(),
             tests: Vec::new(),
             frame: Frame::new(),
@@ -93,6 +96,7 @@ impl<'out> Interp<'out> {
             let module = fennec_syntax::parse_prelude(source)?;
             interp.load(&module)?;
         }
+        interp.prelude_imports = std::mem::take(&mut interp.imports);
         Ok(interp)
     }
 

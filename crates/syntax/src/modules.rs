@@ -19,6 +19,22 @@ const MODULES: [(&str, &[&str]); 10] = [
     ("re", &["Regex", "Match", "is_regex"]),
 ];
 
+/// Modules whose types, like `Deque`, exist only once imported. The older modules' names
+/// are still available everywhere.
+const IMPORTED_ONLY: [&str; 4] = ["collections", "random", "time", "re"];
+
+/// The module a type that has to be imported comes from, like `collections` for `Deque`.
+/// `Clock` is left out: it's a capability, which `main` names like `Stdout` and `Fs`.
+pub fn importable_type(name: &str) -> Option<&'static str> {
+    if name == "Clock" || !name.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return None;
+    }
+    MODULES
+        .iter()
+        .find(|(module, names)| IMPORTED_ONLY.contains(module) && names.contains(&name))
+        .map(|(module, _)| *module)
+}
+
 /// What an import brings in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Imported {

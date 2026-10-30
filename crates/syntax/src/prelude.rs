@@ -351,6 +351,8 @@ struct Counter[T]:
 ";
 
 const RANDOM: &str = r"
+from std.random import random_int, random_float, random_choice
+
 ## A seeded random number generator. The same seed gives the same numbers in the same order
 ## on every machine, so games replay and tests repeat exactly. It's SplitMix64: fast, and
 ## good enough for games, but not for secrets.
@@ -440,6 +442,8 @@ struct Instant:
 ";
 
 const RE: &str = r#"
+from std.re import is_regex
+
 ## A regular expression. Matching takes time in proportion to the text's length whatever the
 ## pattern, since nothing backtracks. Patterns follow Python's `re`: `.`, classes like `[a-z]`
 ## and `\d`, anchors `^ $ \b`, repeats `* + ? {m,n}` (lazy with a `?` after), groups,

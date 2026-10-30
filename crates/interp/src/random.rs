@@ -40,7 +40,7 @@ fn below(seed: i64, mut drawn: i64, count: u64) -> (u64, i64) {
 pub(crate) fn draw(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let pair = |value: Value, drawn: i64| Value::tuple(vec![value, Value::Int(drawn)]);
     match (name, values) {
-        ("random_int", [Value::Int(seed), Value::Int(drawn), Value::Int(low), Value::Int(high)]) => {
+        ("random.random_int", [Value::Int(seed), Value::Int(drawn), Value::Int(low), Value::Int(high)]) => {
             if low > high {
                 return Err(Diagnostic::new(
                     format!("can't pick a number from {low} to {high}: `low` is bigger than `high`"),
@@ -52,13 +52,13 @@ pub(crate) fn draw(name: &str, values: &[Value], span: Span) -> Result<Value, Di
             let (offset, drawn) = below(*seed, *drawn, count);
             Ok(pair(Value::Int(low.wrapping_add(offset.cast_signed())), drawn))
         }
-        ("random_float", [Value::Int(seed), Value::Int(drawn)]) => {
+        ("random.random_float", [Value::Int(seed), Value::Int(drawn)]) => {
             let bits = splitmix(*seed, *drawn) >> 11;
             #[expect(clippy::cast_precision_loss, reason = "53 bits fit a float exactly")]
             let fraction = bits as f64 / (1_u64 << 53) as f64;
             Ok(pair(Value::Float(fraction), drawn.saturating_add(1)))
         }
-        ("random_choice", [Value::Int(seed), Value::Int(drawn), Value::List(items)]) => {
+        ("random.random_choice", [Value::Int(seed), Value::Int(drawn), Value::List(items)]) => {
             let count = u64::try_from(items.len()).unwrap_or(0);
             if count == 0 {
                 return Err(Diagnostic::new("can't choose from an empty list", span));

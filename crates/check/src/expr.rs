@@ -119,7 +119,7 @@ impl FnCx<'_> {
             self.error(fennec_syntax::module_as_value(name, module, span));
             return Type::Unknown;
         }
-        let imported = self.checker.program.imports.contains_key(name);
+        let imported = self.checker.program.imported(name, span).is_some();
         if !self.checker.program.is_type_name(name) && !builtins::is_builtin(name) && !imported {
             self.error(unknown_name(name, span));
         }

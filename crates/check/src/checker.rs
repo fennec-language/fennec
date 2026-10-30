@@ -41,8 +41,10 @@ impl Checker {
                 program.add(&prelude, true);
             }
         }
+        program.prelude_imports = std::mem::take(&mut program.imports);
         program.add(module, false);
-        let diagnostics = std::mem::take(&mut program.import_problems);
+        let mut diagnostics = std::mem::take(&mut program.import_problems);
+        diagnostics.extend(crate::imports::unimported(module, &program));
         Checker {
             program,
             states: BTreeMap::new(),

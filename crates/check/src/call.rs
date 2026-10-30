@@ -51,7 +51,7 @@ impl FnCx<'_> {
                 if self.checker.program.is_type_name(name) {
                     return self.construct(name, args, span);
                 }
-                if let Some(builtin) = self.checker.program.imports.get(name).cloned() {
+                if let Some(builtin) = self.checker.program.imported(name, callee.span).cloned() {
                     return self.call_builtin(&builtin, args, span);
                 }
                 if builtins::is_builtin(name) {

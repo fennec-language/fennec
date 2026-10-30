@@ -79,7 +79,7 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **`Clock` is a capability,** passed to `main` like `Stdout` and `Fs`. `clock.now()` reads a monotonic clock. A fixed clock for tests is still to come.
 *Why:* Code that reads the time says so in its parameters, and can be handed a fixed clock instead.
 
-**`Random` is a seeded value.** `Random(seed=42)` draws the same numbers in the same order on every machine. It's SplitMix64, done in integer math, and `random_int(seed, n, low, high)` gives the `n`th number of a seed's sequence without keeping a generator. Seeding from the OS will be a capability `main` receives; it isn't built yet.
+**`Random` is a seeded value.** `Random(seed=42)` draws the same numbers in the same order on every machine. It's SplitMix64, done in integer math, and `random_int(seed, n, low, high)`, imported from `std.random`, gives the `n`th number of a seed's sequence without keeping a generator. Seeding from the OS will be a capability `main` receives; it isn't built yet.
 *Why:* A seed is all a replay or a lockstep peer needs to see the same numbers. Drawing by position also suits procedural generation, where each chunk of a world takes numbers from its own index.
 
 **Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit, in the debugger, with `fennec replay`.
@@ -133,6 +133,9 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 *Why:* Capturing by value costs one reference-count bump. Capturing a `mut` in a closure that doesn't escape costs a pointer and needs no lifetimes.
 
 ## Standard library
+
+**Names live in their modules.** `std.collections`, `std.random`, `std.time` and `std.re` provide nothing until they're imported: `from std.random import Random`, or `import std.random` and then `random.Random(seed=42)`. Using a name without its import is reported with the import to add. `Clock` is the exception: it's a capability, which `main` names like `Stdout` and `Fs`. The other modules' types, like `Vec3`, `IdMap` and `Path`, are still available everywhere until they move over too.
+*Why:* A file's imports show everything it uses from the standard library, as in Python.
 
 **A module is imported whole or by name.** `import std.json` and `from std import json` both make `json.loads(...)` work. `from std.json import loads` makes plain `loads(...)` work. There's no `import *`.
 *Why:* These are Python's forms, so people and AI already write them, and every name in a file can be traced to an import.

@@ -462,6 +462,8 @@ const CHECK_KINDS: &[&str] = &[
     "isn't a type",
     "can't be extended",
     "already has a method called",
+    "so its extension names its type parameters",
+    "so its extension takes no type parameters",
     "type in brackets",
     "types in brackets",
     "refers to itself",

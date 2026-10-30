@@ -24,6 +24,9 @@ struct FnEntry:
     prelude: bool
     ## The type parameters of the functions a nested function is defined in.
     inherited: list[Generic] = []
+    ## For a method from an extension of a generic type, the type's parameters as the
+    ## extension names them.
+    extension: list[Generic] = []
 
 ## How deeply type aliases may refer to each other, which also stops an alias naming itself.
 def alias_depth() -> int:
@@ -106,7 +109,7 @@ struct Program:
 
     def add_type(mut self, type_def: TypeDef, kind: TypeKind, prelude: bool):
         for method in type_def.methods:
-            self.add_method(type_def.name, method, prelude)
+            self.add_method(type_def.name, method, prelude, [])
         self.types[type_def.name] = TypeInfo(kind=kind, type_def=type_def, prelude=prelude)
 
     ## Adds an extension's methods to its type, once every type is known. Mirrors
@@ -120,7 +123,7 @@ struct Program:
         elif name in built_in_types() and not prelude:
             self.problems.append(not_own(name, "is built in", extension))
             return
-        elif name == "str":
+        elif name == "str" or name == "list":
             # The standard library gives built-in types methods, like `str`'s `def *`.
             pass
         elif self.is_interface(name):
@@ -135,11 +138,53 @@ struct Program:
         else:
             self.problems.append(unknown_type(name, extension.span))
             return
+        problem = self.wrong_params(extension)
+        if problem is not None:
+            self.problems.append(problem)
+            # A user type's extension still adds its methods, with the declaration's parameters.
+            if name in self.types:
+                for method in extension.methods:
+                    self.add_method(name, method, prelude, [])
+            return
+        for generic in extension.generics:
+            for bound in generic.bounds:
+                if not self.is_interface(bound.name):
+                    self.problems.append(
+                        Diagnostic(
+                            message=f"`{bound.name}` isn't an interface",
+                            span=bound.span,
+                            help="a type parameter can be bound to an interface, like `T: Ordered` or `T: Shape`",
+                        ),
+                    )
         for method in extension.methods:
-            self.add_method(name, method, prelude)
+            self.add_method(name, method, prelude, extension.generics)
+
+    ## An extension that doesn't name its type's parameters as the type declares them.
+    def wrong_params(self, extension: Extension) -> Diagnostic?:
+        name = extension.name
+        written = [generic.name for generic in extension.generics]
+        mut declared = self.type_params(name)
+        if name == "list":
+            if len(written) == 1:
+                return None
+            declared = ["T"]
+        if written == declared:
+            return None
+        if len(declared) == 0:
+            return Diagnostic(
+                message=f"`{name}` isn't generic, so its extension takes no type parameters",
+                span=extension.span,
+                help=f"write `extend {name}:`",
+            )
+        params = ", ".join(declared)
+        Diagnostic(
+            message=f"`{name}` is generic, so its extension names its type parameters",
+            span=extension.span,
+            help=f"write `extend {name}[{params}]:`",
+        )
 
     ## Adds one method to a type, unless the type already has a method of that name.
-    def add_method(mut self, type_name: str, method: FnDef, prelude: bool):
+    def add_method(mut self, type_name: str, method: FnDef, prelude: bool, extension: list[Generic]):
         key = f"{type_name}.{method.name}"
         if key in self.functions:
             self.problems.append(
@@ -150,7 +195,7 @@ struct Program:
                 ),
             )
             return
-        self.functions[key] = FnEntry(function=method, owner=type_name, prelude=prelude)
+        self.functions[key] = FnEntry(function=method, owner=type_name, prelude=prelude, extension=extension)
 
     ## Whether a name is an interface: one the program declares, or a built-in one.
     def is_interface(self, name: str) -> bool:
@@ -167,7 +212,9 @@ struct Program:
     def generics_of(self, entry: FnEntry) -> list[Generic]:
         mut generics = []
         owner = entry.owner
-        if owner is not None and owner in self.types:
+        if len(entry.extension) > 0:
+            generics += entry.extension
+        elif owner is not None and owner in self.types:
             generics += self.types[owner].type_def.generics
         generics + entry.inherited + entry.function.generics
 

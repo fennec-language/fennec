@@ -34,7 +34,7 @@ fields!(TypeDef { name, generics, fields, cases, methods, span });
 fields!(Field { name, ty, default, rule, span });
 fields!(Case { name, fields, span });
 fields!(Interface { name, methods, span });
-fields!(Extension { name, methods, span });
+fields!(Extension { name, generics, methods, span });
 fields!(Import { module, names, span });
 fields!(TestDef { name, inputs, body, span });
 fields!(Stmt { kind, span });

@@ -228,7 +228,7 @@ impl Checker {
                 name: param.name.clone(),
                 ty: match (&param.ty, &entry.owner) {
                     (Some(ty), _) => self.program.resolve_in(ty, &generics).unwrap_or(Type::Unknown),
-                    (None, Some(owner)) => self.program.self_type(owner),
+                    (None, Some(owner)) => self.program.method_self_type(entry, owner),
                     (None, None) => Type::Unknown,
                 },
                 is_mut: param.is_mut,
@@ -254,7 +254,7 @@ impl Checker {
         if let Some(State::Done(signature)) = self.states.get(key) {
             self.previous.insert(key.to_owned(), known_errors(signature.clone()));
         }
-        let entry = FnEntry { def: def.clone(), owner: None, prelude, inherited };
+        let entry = FnEntry { def: def.clone(), owner: None, prelude, inherited, extension: Vec::new() };
         self.program.functions.insert(key.to_owned(), entry);
         self.check_with(key, captured);
     }

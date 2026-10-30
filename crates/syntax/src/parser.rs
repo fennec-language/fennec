@@ -320,6 +320,7 @@ impl Parser {
     /// `extend Name:` and its methods. A field is an error: an extension adds methods only.
     fn extension(&mut self, start: Span) -> Result<Item, Diagnostic> {
         let name = self.name("a type name")?;
+        let generics = self.generic_params()?;
         let span = start.to(self.prev_span());
         self.expect_p(Punct::Colon)?;
         self.expect_block_start()?;
@@ -335,7 +336,7 @@ impl Parser {
                     .with_help(format!("declare fields where `{name}` is declared")));
             }
         }
-        Ok(Item::Extend(Extension { name, methods, span }))
+        Ok(Item::Extend(Extension { name, generics, methods, span }))
     }
 
     fn test(&mut self, start: Span) -> Result<Item, Diagnostic> {

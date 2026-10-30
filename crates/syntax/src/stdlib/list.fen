@@ -1,0 +1,34 @@
+## `list`'s methods written in Fennec. Growing, shrinking and reading a slot are machine
+## operations the engines provide.
+extend list[T]:
+    ## Adds every item of `more` to the end, in order.
+    def extend(mut self, more: list[T]):
+        for item in more:
+            self.append(item)
+
+    ## Reverses the items in place.
+    def reverse(mut self):
+        mut low = 0
+        mut high = len(self) - 1
+        while low < high:
+            held = self[low]
+            self[low] = self[high]
+            self[high] = held
+            low += 1
+            high -= 1
+
+## Methods for lists whose items can be compared with `==`.
+extend list[T: Eq]:
+    ## How many items equal `item`.
+    def count(self, item: T) -> int:
+        mut found = 0
+        for each in self:
+            if each == item:
+                found += 1
+        found
+
+    ## Where `item` first is, or None when it isn't there.
+    def index(self, item: T) -> int?:
+        for at, each in enumerate(self):
+            if each == item: return at
+        None

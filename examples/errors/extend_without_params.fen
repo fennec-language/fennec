@@ -1,0 +1,10 @@
+struct Pair[T]:
+    left: T
+    right: T
+
+extend Pair:
+    def swapped(self) -> Pair[T]:
+        Pair(left=self.right, right=self.left)
+
+def main(stdout: Stdout):
+    stdout.print(Pair(left=1, right=2).swapped())

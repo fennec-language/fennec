@@ -113,10 +113,13 @@ pub struct Interface {
     pub span: Span,
 }
 
-/// Methods added to a type outside its declaration. `span` covers `extend Name`.
+/// Methods added to a type outside its declaration. `span` covers `extend Name[T]`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Extension {
     pub name: String,
+    /// A generic type's parameters, like `T` in `extend list[T: Eq]:`. A bound makes the
+    /// methods conditional: they exist only where the type's arguments fit it.
+    pub generics: Vec<Generic>,
     pub methods: Vec<FnDef>,
     pub span: Span,
 }

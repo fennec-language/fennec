@@ -353,6 +353,10 @@ impl FnCx<'_> {
     fn call_method(&mut self, call: &MethodCall<'_>, receiver: &Type, method_key: (&str, bool)) -> Type {
         let MethodCall { object, method, args, span } = *call;
         let (key, takes_self) = method_key;
+        if !self.extension_fits(receiver, key, method, span) {
+            self.ignore_args(args);
+            return Type::Unknown;
+        }
         let Some(signature) = self.method_signature(receiver, key) else {
             self.ignore_args(args);
             return Type::Unknown;
@@ -365,6 +369,37 @@ impl FnCx<'_> {
         }
         self.bind_args(method, params, args, span);
         signature.returns
+    }
+
+    /// Whether a method from a conditional extension, like `count` from
+    /// `extend list[T: Eq]:`, exists for this receiver: its type's arguments have to fit the
+    /// extension's bounds. Reports it when they don't.
+    fn extension_fits(&mut self, receiver: &Type, key: &str, method: &str, span: Span) -> bool {
+        let Some(entry) = self.checker.program.functions.get(key) else { return true };
+        let wanted: Vec<(String, Vec<String>)> = entry
+            .extension
+            .iter()
+            .map(|generic| {
+                (generic.name.clone(), generic.bounds.iter().map(|bound| bound.name.clone()).collect())
+            })
+            .collect();
+        for ((param, bounds), arg) in wanted.into_iter().zip(receiver.type_args()) {
+            let arg = self.checker.settled(&arg);
+            if !arg.is_known() {
+                continue;
+            }
+            for bound in bounds {
+                if let Err((_, fix)) = self.fits_bound(&arg, &bound) {
+                    let message = format!(
+                        "`{method}` needs `{param}` to fit `{bound}`, but here `{param}` is {}",
+                        crate::generic::show(&arg)
+                    );
+                    self.error(Diagnostic::new(message, span).with_help(fix));
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// `Type.name(...)`: an enum case, or a named constructor.

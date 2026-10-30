@@ -1,0 +1,7 @@
+error: `count` needs `T` to fit `Eq`, but here `T` is a () -> int
+ --> examples/errors/count_needs_eq.fen:3:18
+  |
+3 |     stdout.print(steps.count(steps[0]))
+  |                  ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: use a type made of numbers, text, bools, tuples and structs of those

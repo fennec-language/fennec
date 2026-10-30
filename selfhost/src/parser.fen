@@ -265,6 +265,7 @@ struct Parser:
     ## `extend Name:` and its methods. A field is an error: an extension adds methods only.
     def extension(mut self, start: Span) -> Item:
         name = self.name("a type name")?
+        generics = self.generic_params()?
         span = start.to(self.prev_span())
         self.expect_punct(":")?
         self.expect_block_start()?
@@ -281,7 +282,7 @@ struct Parser:
                     span=self.span(),
                     help=f"declare fields where `{name}` is declared",
                 )
-        .Extend(Extension(name=name, methods=methods, span=span))
+        .Extend(Extension(name=name, generics=generics, methods=methods, span=span))
 
     def test(mut self, start: Span) -> Item:
         mut name = ""

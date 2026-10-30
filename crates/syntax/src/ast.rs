@@ -15,6 +15,8 @@ pub enum Item {
     Enum(TypeDef),
     Error(TypeDef),
     Interface(Interface),
+    /// `extend Parser:`: methods for a type declared elsewhere in the kit.
+    Extend(Extension),
     TypeAlias {
         name: String,
         ty: TypeExpr,
@@ -104,6 +106,14 @@ pub struct Case {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Interface {
+    pub name: String,
+    pub methods: Vec<FnDef>,
+    pub span: Span,
+}
+
+/// Methods added to a type outside its declaration. `span` covers `extend Name`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Extension {
     pub name: String,
     pub methods: Vec<FnDef>,
     pub span: Span,

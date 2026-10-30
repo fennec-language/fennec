@@ -1,0 +1,19 @@
+# `extend` adds methods to a type outside its declaration, usually from another file of the
+# same kit. The methods are the type's own: they're called, and checked, like any other.
+
+struct Money:
+    cents: int
+
+    def show(self) -> str:
+        f"${self.cents / 100:.2f}"
+
+extend Money:
+    def +(self, other: Money) -> Money:
+        Money(cents=self.cents + other.cents)
+
+    def split(self, ways: int) -> list[Money]:
+        [Money(cents=self.cents // ways) for _ in range(ways)]
+
+def main(stdout: Stdout):
+    total = Money(cents=1250) + Money(cents=375)
+    stdout.print(total.show(), [part.show() for part in total.split(3)])

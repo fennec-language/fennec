@@ -300,7 +300,7 @@ fn opened_kind(toks: &[Tok<'_>]) -> BlockKind {
     if let (Some(first), Some(second)) = (words.next(), words.next())
         && first.kind == TokenKind::Name
         && second.kind == TokenKind::Name
-        && matches!(first.text, "struct" | "enum" | "error" | "interface")
+        && matches!(first.text, "struct" | "enum" | "error" | "interface" | "extend")
     {
         return BlockKind::TypeBody;
     }

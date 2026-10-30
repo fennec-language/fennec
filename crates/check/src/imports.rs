@@ -39,6 +39,11 @@ pub(crate) fn unimported(module: &Module, program: &Program) -> Vec<Diagnostic> 
                 }
                 uses.stmts(&test.body);
             }
+            Item::Extend(extension) => {
+                for method in &extension.methods {
+                    uses.function(method);
+                }
+            }
             Item::Stmt(stmt) => uses.stmt(stmt),
             Item::Interface(_) | Item::Import(_) => {}
         }

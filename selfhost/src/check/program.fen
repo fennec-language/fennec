@@ -3,7 +3,7 @@
 ## Mirrors `crates/check/src/program.rs`.
 
 from span import Span, Diagnostic
-from ast import Module, Item, FnDef, Generic, TypeDef, TypeExpr, Interface, Import, TestDef
+from ast import Module, Item, FnDef, Generic, TypeDef, TypeExpr, Interface, Extension, Import, TestDef
 from check.types import Type, optional_type
 
 enum TypeKind:
@@ -67,6 +67,8 @@ struct Program:
     ## `from std import json`, `std.json` after `import std.json`.
     modules: list[str] = []
     aliases: dict[str, TypeExpr] = {}
+    ## Problems found while adding declarations, like methods that can't be added.
+    problems: list[Diagnostic] = []
 
     def add(mut self, module: Module, prelude: bool):
         for item in module.items:
@@ -86,6 +88,12 @@ struct Program:
                 case .Import(imported):
                     if not prelude:
                         self.add_import(imported)
+                case .Extend(_): pass
+        # Extensions come last, so the type they extend is known wherever it's declared.
+        for item in module.items:
+            match item:
+                case .Extend(extension): self.add_extension(extension, prelude)
+                case _: pass
 
     def add_import(mut self, imported: Import):
         if len(imported.module) == 1 and imported.module[0] == "std":
@@ -95,9 +103,48 @@ struct Program:
 
     def add_type(mut self, type_def: TypeDef, kind: TypeKind, prelude: bool):
         for method in type_def.methods:
-            entry = FnEntry(function=method, owner=type_def.name, prelude=prelude)
-            self.functions[f"{type_def.name}.{method.name}"] = entry
+            self.add_method(type_def.name, method, prelude)
         self.types[type_def.name] = TypeInfo(kind=kind, type_def=type_def, prelude=prelude)
+
+    ## Adds an extension's methods to its type, once every type is known. Mirrors
+    ## `crates/check/src/extend.rs`.
+    def add_extension(mut self, extension: Extension, prelude: bool):
+        name = extension.name
+        if name in self.types:
+            if self.types[name].prelude and not prelude:
+                self.problems.append(not_own(name, "is from the standard library", extension))
+                return
+        elif name in built_in_types():
+            self.problems.append(not_own(name, "is built in", extension))
+            return
+        elif self.is_interface(name):
+            self.problems.append(
+                Diagnostic(
+                    message=f"`{name}` is an interface, so it can't be extended",
+                    span=extension.span,
+                    help=f"declare its methods in `interface {name}:`",
+                ),
+            )
+            return
+        else:
+            self.problems.append(unknown_type(name, extension.span))
+            return
+        for method in extension.methods:
+            self.add_method(name, method, prelude)
+
+    ## Adds one method to a type, unless the type already has a method of that name.
+    def add_method(mut self, type_name: str, method: FnDef, prelude: bool):
+        key = f"{type_name}.{method.name}"
+        if key in self.functions:
+            self.problems.append(
+                Diagnostic(
+                    message=f"`{type_name}` already has a method called `{method.name}`",
+                    span=method.span,
+                    help="rename one of them",
+                ),
+            )
+            return
+        self.functions[key] = FnEntry(function=method, owner=type_name, prelude=prelude)
 
     ## Whether a name is an interface: one the program declares, or a built-in one.
     def is_interface(self, name: str) -> bool:
@@ -238,3 +285,11 @@ def unknown_type(name: str, span: Span) -> Diagnostic:
     elif name == "Optional":
         help = "write `?` after the type, like `Enemy?`"
     Diagnostic(message=f"`{name}` isn't a type", span=span, help=help)
+
+## An extension of a type that isn't one of the program's own.
+def not_own(name: str, why: str, extension: Extension) -> Diagnostic:
+    Diagnostic(
+        message=f"`{name}` {why}, so it can't be extended",
+        span=extension.span,
+        help=f"an extension adds methods to one of this kit's own types; write a function that takes a `{name}` instead",
+    )

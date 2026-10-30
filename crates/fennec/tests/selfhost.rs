@@ -441,6 +441,8 @@ fn mirror_hint(mode: &str) -> &'static str {
 /// their message. It grows until it covers everything the Rust checker says.
 const CHECK_KINDS: &[&str] = &[
     "isn't a type",
+    "can't be extended",
+    "already has a method called",
     "type in brackets",
     "types in brackets",
     "refers to itself",

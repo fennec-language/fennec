@@ -97,7 +97,7 @@ fn declares_type(toks: &[Tok<'_>]) -> bool {
     matches!(
         (words.next(), words.next()),
         (Some(first), Some(second))
-            if matches!(first.text, "struct" | "enum" | "error" | "interface") && second.kind == TokenKind::Name
+            if matches!(first.text, "struct" | "enum" | "error" | "interface" | "extend") && second.kind == TokenKind::Name
     )
 }
 

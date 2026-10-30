@@ -63,7 +63,7 @@ impl Checker {
         }
         program.prelude_imports = std::mem::take(&mut program.imports);
         program.add(module, false);
-        let mut diagnostics = std::mem::take(&mut program.import_problems);
+        let mut diagnostics = std::mem::take(&mut program.problems);
         diagnostics.extend(crate::imports::unimported(module, &program));
         Checker {
             program,

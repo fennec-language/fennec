@@ -12,6 +12,8 @@ enum Item:
     Enum(type_def: TypeDef)
     Error(type_def: TypeDef)
     Interface(interface: Interface)
+    ## `extend Parser:`: methods for a type declared elsewhere in the kit.
+    Extend(extension: Extension)
     TypeAlias(name: str, ty: TypeExpr, span: Span)
     Import(imported: Import)
     Test(test: TestDef)
@@ -70,6 +72,12 @@ struct Case:
     span: Span
 
 struct Interface:
+    name: str
+    methods: list[FnDef]
+    span: Span
+
+## Methods added to a type outside its declaration. `span` covers `extend Name`.
+struct Extension:
     name: str
     methods: list[FnDef]
     span: Span

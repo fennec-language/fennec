@@ -32,18 +32,24 @@ fn names_change_only_when_mut() {
 
 #[test]
 fn the_fix_for_a_name_depends_on_where_it_came_from() {
-    assert_eq!(helps("def main(stdout: Stdout):\n    x = 1\n    x = 2\n"), [
-        "declare it with `mut x = ...` if it needs to change"
-    ]);
-    assert_eq!(helps("def heal(health: int):\n    health += 1\n"), [
-        "parameters are read-only: to change it, write `mut health` in `heal`'s parameters, and pass it with `mut` at each call"
-    ]);
-    assert_eq!(helps("struct A:\n    n = 1\n\n    def bump(self):\n        self.n = 2\n"), [
-        "to change `self`, write `mut self` in `bump`'s parameters"
-    ]);
-    assert_eq!(helps("def f(items: list[int]):\n    for item in items:\n        item += 1\n"), [
-        "loop with `for mut item in ...` to change each item"
-    ]);
+    assert_eq!(
+        helps("def main(stdout: Stdout):\n    x = 1\n    x = 2\n"),
+        ["declare it with `mut x = ...` if it needs to change"]
+    );
+    assert_eq!(
+        helps("def heal(health: int):\n    health += 1\n"),
+        [
+            "parameters are read-only: to change it, write `mut health` in `heal`'s parameters, and pass it with `mut` at each call"
+        ]
+    );
+    assert_eq!(
+        helps("struct A:\n    n = 1\n\n    def bump(self):\n        self.n = 2\n"),
+        ["to change `self`, write `mut self` in `bump`'s parameters"]
+    );
+    assert_eq!(
+        helps("def f(items: list[int]):\n    for item in items:\n        item += 1\n"),
+        ["loop with `for mut item in ...` to change each item"]
+    );
 }
 
 #[test]
@@ -55,10 +61,13 @@ fn functions_cannot_change_the_names_around_them() {
             total += n
         stdout.print(sorted([1], key=n => seen.append(n)))
     ";
-    assert_eq!(in_main(program), [
-        "a nested function can't change `total`, which is defined outside it @ total",
-        "an arrow function can't change `seen`, which is defined outside it @ seen",
-    ]);
+    assert_eq!(
+        in_main(program),
+        [
+            "a nested function can't change `total`, which is defined outside it @ total",
+            "an arrow function can't change `seen`, which is defined outside it @ seen",
+        ]
+    );
     let program = "
         def f(items: list[int]):
             mut seen = []
@@ -84,9 +93,10 @@ fn arrow_function_parameters_can_change() {
 #[test]
 fn declaring_a_name_twice_is_a_mistake() {
     assert_eq!(in_main("x = 1\nmut x = 2"), ["`x` already exists @ x"]);
-    assert_eq!(helps("def main(stdout: Stdout):\n    mut x = 1\n    mut x = 2\n"), [
-        "to change it, write `x = ...` without `mut`"
-    ]);
+    assert_eq!(
+        helps("def main(stdout: Stdout):\n    mut x = 1\n    mut x = 2\n"),
+        ["to change it, write `x = ...` without `mut`"]
+    );
     assert_eq!(in_main("total += 1"), ["`total` doesn't exist yet @ total"]);
 }
 
@@ -118,11 +128,14 @@ fn methods_that_change_their_value_need_a_mut_place() {
         enemy[0] = 5
         hero[0] = 5
     ";
-    assert_eq!(with_enemy(program), [
-        "`enemy` isn't mut @ enemy",
-        "`take_damage` changes its value, so call it on something held in a mut name @ Enemy()",
-        "`enemy` isn't mut @ enemy",
-    ]);
+    assert_eq!(
+        with_enemy(program),
+        [
+            "`enemy` isn't mut @ enemy",
+            "`take_damage` changes its value, so call it on something held in a mut name @ Enemy()",
+            "`enemy` isn't mut @ enemy",
+        ]
+    );
 }
 
 #[test]
@@ -153,9 +166,12 @@ fn builtin_methods_that_change_a_value_need_a_mut_place() {
     }
     let reading = "items = [1]\nstdout.print(items.index(1), items.count(1), 'a'.upper())";
     assert_eq!(in_main(reading), Vec::<String>::new());
-    assert_eq!(in_main("[1, 2].append(3)"), [
-        "`append` changes it, so call it on something held in a mut name, like `items.append(...)` @ [1, 2]"
-    ]);
+    assert_eq!(
+        in_main("[1, 2].append(3)"),
+        [
+            "`append` changes it, so call it on something held in a mut name, like `items.append(...)` @ [1, 2]"
+        ]
+    );
 }
 
 #[test]
@@ -173,15 +189,19 @@ fn mut_arguments_match_mut_parameters() {
             heal(mut fixed, 1)
             heal(mut 3, 1)
     ";
-    assert_eq!(problems(program), [
-        "`heal` changes `health`, so it has to be passed with `mut` @ health",
-        "`heal` doesn't change `amount`, so it shouldn't be passed with `mut` @ health",
-        "`fixed` isn't mut @ fixed",
-        "only a name, or a field or item of one, can be passed with `mut` @ 3",
-    ]);
-    assert_eq!(helps("def f(mut n: int):\n    n += 1\n\ndef g():\n    mut n = 1\n    f(n)\n"), [
-        "write `mut` before the argument, so readers can see it changes"
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "`heal` changes `health`, so it has to be passed with `mut` @ health",
+            "`heal` doesn't change `amount`, so it shouldn't be passed with `mut` @ health",
+            "`fixed` isn't mut @ fixed",
+            "only a name, or a field or item of one, can be passed with `mut` @ 3",
+        ]
+    );
+    assert_eq!(
+        helps("def f(mut n: int):\n    n += 1\n\ndef g():\n    mut n = 1\n    f(n)\n"),
+        ["write `mut` before the argument, so readers can see it changes"]
+    );
 }
 
 #[test]
@@ -197,11 +217,14 @@ fn for_mut_needs_a_mut_place() {
             for score in scores:
                 score += 1
     ";
-    assert_eq!(problems(program), [
-        "`fixed` isn't mut @ fixed",
-        "`for mut` changes each item, so loop over something held in a mut name @ [1, 2]",
-        "`score` isn't mut @ score",
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "`fixed` isn't mut @ fixed",
+            "`for mut` changes each item, so loop over something held in a mut name @ [1, 2]",
+            "`score` isn't mut @ score",
+        ]
+    );
 }
 
 #[test]
@@ -222,13 +245,16 @@ fn values_and_builtins_do_not_take_mut() {
         mut s = 'a'
         stdout.print(len(mut s), Enemy(mut n), 'a'.startswith(mut s), replace(Enemy(), mut n))
     ";
-    assert_eq!(with_enemy(program), [
-        "`len` doesn't change its arguments, so don't pass `mut` @ len(mut s)",
-        "building a value doesn't change its arguments, so don't pass `mut` @ n",
-        "`startswith` doesn't change its arguments, so don't pass `mut` @ \"a\".startswith(mut s)",
-        "`replace` doesn't change its arguments, so don't pass `mut` @ replace(Enemy(), mut n)",
-        "name the field to change, like `health=50` @ n",
-    ]);
+    assert_eq!(
+        with_enemy(program),
+        [
+            "`len` doesn't change its arguments, so don't pass `mut` @ len(mut s)",
+            "building a value doesn't change its arguments, so don't pass `mut` @ n",
+            "`startswith` doesn't change its arguments, so don't pass `mut` @ \"a\".startswith(mut s)",
+            "`replace` doesn't change its arguments, so don't pass `mut` @ replace(Enemy(), mut n)",
+            "name the field to change, like `health=50` @ n",
+        ]
+    );
 }
 
 #[test]

@@ -44,13 +44,16 @@ fn arguments_match_parameters() {
             area(1.0, width=2.0)
             area(1.0, deep=2.0)
     ";
-    assert_eq!(problems(program), [
-        "`area` takes 2 argument(s) @ 3.0",
-        "`area` is missing its `height` argument @ area(1.0)",
-        "`area` is missing its `height` argument @ area(1.0, width=2.0)",
-        "`width` is given twice @ 2.0",
-        "`area` has no parameter called `deep` @ 2.0",
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "`area` takes 2 argument(s) @ 3.0",
+            "`area` is missing its `height` argument @ area(1.0)",
+            "`area` is missing its `height` argument @ area(1.0, width=2.0)",
+            "`width` is given twice @ 2.0",
+            "`area` has no parameter called `deep` @ 2.0",
+        ]
+    );
     assert_eq!(helps("def f():\n    1\n\ndef g():\n    f(1)\n"), ["`f` takes no arguments"]);
     assert_eq!(helps("def f(a: int, b: int):\n    a\n\ndef g():\n    f(c=1)\n"), ["`f` takes `a`, `b`"]);
 }
@@ -67,15 +70,23 @@ fn arguments_have_the_parameters_types() {
             scale(1.0, [], 3)
             scale(speed=1.0, items=[1], name=None)
     ";
-    assert_eq!(problems(program), [
-        "`speed` should be a float, but this is an int @ 1",
-        "`items` should be a list[int], but this is a list[str] @ ['a']".replace('\'', "\"").as_str(),
-        "`name` should be a str?, but this is an int @ 3",
-    ]);
-    assert_eq!(helps("def f(n: int):\n    n\n\ndef g():\n    f(1.5)\n"), [
-        "convert it with int(...), round(...) or floor(...)"
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "`speed` should be a float, but this is an int @ 1",
+            "`items` should be a list[int], but this is a list[str] @ ['a']".replace('\'', "\"").as_str(),
+            "`name` should be a str?, but this is an int @ 3",
+        ]
+    );
+    assert_eq!(
+        helps("def f(n: int):\n    n\n\ndef g():\n    f(1.5)\n"),
+        ["convert it with int(...), round(...) or floor(...)"]
+    );
     assert_eq!(helps("def f(n: str):\n    n\n\ndef g():\n    f(1.5)\n"), [""]);
+    assert_eq!(
+        helps("def f(n: float):\n    n\n\ndef g():\n    f(1)\n"),
+        ["write it with a decimal point, like `1.0`, or convert it with float(...)"]
+    );
 }
 
 #[test]
@@ -89,13 +100,16 @@ fn structs_get_every_field_without_a_default() {
         Enemy('Ash', name='Kit')
         Enemy(name=5)
     ";
-    assert_eq!(with_types(program), [
-        "`Enemy` needs a value for `name` @ Enemy(health=5)",
-        "`Enemy` has no field called `hp` @ 5",
-        "`Enemy` takes 2 value(s) @ 3",
-        "this field is given twice @ 'Kit'".replace('\'', "\"").as_str(),
-        "`name` should be a str, but this is an int @ 5",
-    ]);
+    assert_eq!(
+        with_types(program),
+        [
+            "`Enemy` needs a value for `name` @ Enemy(health=5)",
+            "`Enemy` has no field called `hp` @ 5",
+            "`Enemy` takes 2 value(s) @ 3",
+            "this field is given twice @ 'Kit'".replace('\'', "\"").as_str(),
+            "`name` should be a str, but this is an int @ 5",
+        ]
+    );
     assert_eq!(helps("struct A:\n    n: int\n\ndef f():\n    A()\n"), ["pass it, like `A(n=...)`"]);
     assert_eq!(helps("struct A:\n    n: int\n\ndef f():\n    A(m=1)\n"), ["`A` takes `n`"]);
 }
@@ -110,16 +124,25 @@ fn enum_cases_are_built_by_name() {
         Shape.Hexagon(1)
         .Circle(radius=1)
     ";
-    assert_eq!(with_types(program), [
-        "`Shape.Rect` needs a value for `height` @ .Rect(width=1.0)",
-        "`Shape` is an enum, so pick one of its cases @ Shape()",
-        "no enum has a case called `Triangle` @ .Triangle",
-        "more than one enum has a case called `Point` @ .Point",
-        "`Shape` has nothing called `Hexagon` @ Shape.Hexagon(1)",
-        "`radius` should be a float, but this is an int @ 1",
-    ]);
+    assert_eq!(
+        with_types(program),
+        [
+            "`Shape.Rect` needs a value for `height` @ .Rect(width=1.0)",
+            "`Shape` is an enum, so pick one of its cases @ Shape()",
+            "no enum has a case called `Triangle` @ .Triangle",
+            "more than one enum has a case called `Point` @ .Point",
+            "`Shape` has nothing called `Hexagon` @ Shape.Hexagon(1)",
+            "`radius` should be a float, but this is an int @ 1",
+        ]
+    );
     let help = helps(&format!("{TYPES}\ndef f():\n    Shape()\n    .Point\n"));
-    assert_eq!(help, ["write one of Shape.Circle, Shape.Rect, Shape.Point", "say which one: `Shape.Point` or `Team.Point`"]);
+    assert_eq!(
+        help,
+        [
+            "write one of Shape.Circle, Shape.Rect, Shape.Point",
+            "say which one: `Shape.Point` or `Team.Point`"
+        ]
+    );
 }
 
 #[test]
@@ -135,13 +158,16 @@ fn named_constructors_and_methods_exist() {
         a.heal()
         a.heal(1, 2)
     ";
-    assert_eq!(with_types(program), [
-        "`Enemy` has no method `explode` @ a.explode()",
-        "`heal` needs a `Enemy` to call it on @ Enemy.heal(1)",
-        "`Enemy` has nothing called `at` @ Enemy.at",
-        "`heal` is missing its `amount` argument @ a.heal()",
-        "`heal` takes 1 argument(s) @ 2",
-    ]);
+    assert_eq!(
+        with_types(program),
+        [
+            "`Enemy` has no method `explode` @ a.explode()",
+            "`heal` needs a `Enemy` to call it on @ Enemy.heal(1)",
+            "`Enemy` has nothing called `at` @ Enemy.at",
+            "`heal` is missing its `amount` argument @ a.heal()",
+            "`heal` takes 1 argument(s) @ 2",
+        ]
+    );
 }
 
 #[test]
@@ -158,13 +184,16 @@ fn fields_exist_on_structs_and_errors() {
             one = 1
             stdout.print(stdout.name, one.real, Box().size.real)
     ";
-    assert_eq!(problems(program), [
-        "`Box` has no field `weight` @ Box().weight",
-        "`Missing` has no field `file` @ Missing('x').file".replace('\'', "\"").as_str(),
-        "`Stdout` has no field `name` @ stdout.name",
-        "an int has no field `real` @ one.real",
-        "an int has no field `real` @ Box().size.real",
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "`Box` has no field `weight` @ Box().weight",
+            "`Missing` has no field `file` @ Missing('x').file".replace('\'', "\"").as_str(),
+            "`Stdout` has no field `name` @ stdout.name",
+            "an int has no field `real` @ one.real",
+            "an int has no field `real` @ Box().size.real",
+        ]
+    );
 }
 
 #[test]
@@ -180,27 +209,35 @@ fn builtin_values_have_their_methods() {
         queue.size()
         (1, 2).first()
     ";
-    assert_eq!(in_main(program), [
-        "a list has no method `push` @ queue.push('b')".replace('\'', "\"").as_str(),
-        "a str has no method `trim` @ 'text'.trim()".replace('\'', "\"").as_str(),
-        "a str has no method `to_uppercase` @ 'text'.to_uppercase()".replace('\'', "\"").as_str(),
-        "a str has no method `toLowerCase` @ 'text'.toLowerCase()".replace('\'', "\"").as_str(),
-        "`Stdout` has no method `log` @ stdout.log(1)",
-        "a list has no method `copy` @ queue.copy()",
-        "a list has no method `size` @ queue.size()",
-        "a tuple has no method `first` @ (1, 2).first()",
-    ]);
-    let hints = helps("def main(stdout: Stdout):\n    mut q = [1]\n    q.push(1)\n    'a'.trim()\n    'a'.to_uppercase()\n    'a'.toLowerCase()\n    stdout.log(1)\n    q.copy()\n    q.size()\n    q.first()\n");
-    assert_eq!(hints, [
-        "use `append`",
-        "use `strip()`",
-        "use `upper()`",
-        "use `lower()`",
-        "use `stdout.print(...)`",
-        "values are copied automatically when assigned: `b = a`",
-        "use `len(x)`",
-        "",
-    ]);
+    assert_eq!(
+        in_main(program),
+        [
+            "a list has no method `push` @ queue.push('b')".replace('\'', "\"").as_str(),
+            "a str has no method `trim` @ 'text'.trim()".replace('\'', "\"").as_str(),
+            "a str has no method `to_uppercase` @ 'text'.to_uppercase()".replace('\'', "\"").as_str(),
+            "a str has no method `toLowerCase` @ 'text'.toLowerCase()".replace('\'', "\"").as_str(),
+            "`Stdout` has no method `log` @ stdout.log(1)",
+            "a list has no method `copy` @ queue.copy()",
+            "a list has no method `size` @ queue.size()",
+            "a tuple has no method `first` @ (1, 2).first()",
+        ]
+    );
+    let hints = helps(
+        "def main(stdout: Stdout):\n    mut q = [1]\n    q.push(1)\n    'a'.trim()\n    'a'.to_uppercase()\n    'a'.toLowerCase()\n    stdout.log(1)\n    q.copy()\n    q.size()\n    q.first()\n",
+    );
+    assert_eq!(
+        hints,
+        [
+            "use `append`",
+            "use `strip()`",
+            "use `upper()`",
+            "use `lower()`",
+            "use `stdout.print(...)`",
+            "values are copied automatically when assigned: `b = a`",
+            "use `len(x)`",
+            "",
+        ]
+    );
 }
 
 #[test]
@@ -215,14 +252,17 @@ fn builtin_methods_take_the_right_arguments() {
         'a b'.split(' ', 1)
         stdout.print(1, 2, 3)
     ";
-    assert_eq!(in_main(program), [
-        "`append` was called with the wrong arguments @ items.append(1, 2)",
-        "`insert` was called with the wrong arguments @ items.insert(1)",
-        "`pop` doesn't take `key` @ items.pop(key=1)",
-        "`count` was called with the wrong arguments @ items.count(by=1)",
-        "`count` has no parameter called `by` @ 1",
-        "`split` was called with the wrong arguments @ 'a b'.split(' ', 1)".replace('\'', "\"").as_str(),
-    ]);
+    assert_eq!(
+        in_main(program),
+        [
+            "`append` was called with the wrong arguments @ items.append(1, 2)",
+            "`insert` was called with the wrong arguments @ items.insert(1)",
+            "`pop` doesn't take `key` @ items.pop(key=1)",
+            "`count` was called with the wrong arguments @ items.count(by=1)",
+            "`count` has no parameter called `by` @ 1",
+            "`split` was called with the wrong arguments @ 'a b'.split(' ', 1)".replace('\'', "\"").as_str(),
+        ]
+    );
 }
 
 #[test]
@@ -240,17 +280,20 @@ fn builtins_take_the_right_arguments() {
         any([1])
         ignore(1)
     ";
-    assert_eq!(in_main(program), [
-        "`len` was called with the wrong arguments @ len([1], [2])",
-        "`sorted` has no parameter called `reverse` @ True",
-        "`sum` doesn't take `key` @ sum([1], key=n => n)",
-        "`range` was called with the wrong arguments @ range(1, 2, 3, 4)",
-        "`range` takes one to three ints @ range('a')".replace('\'', "\"").as_str(),
-        "an int has no length @ len(5)",
-        "`zip` was called with the wrong arguments @ zip([1])",
-        "`any` needs bools, but got an int @ any([1])",
-        "`ignore` was called with the wrong arguments @ ignore(1)",
-    ]);
+    assert_eq!(
+        in_main(program),
+        [
+            "`len` was called with the wrong arguments @ len([1], [2])",
+            "`sorted` has no parameter called `reverse` @ True",
+            "`sum` doesn't take `key` @ sum([1], key=n => n)",
+            "`range` was called with the wrong arguments @ range(1, 2, 3, 4)",
+            "`range` takes one to three ints @ range('a')".replace('\'', "\"").as_str(),
+            "an int has no length @ len(5)",
+            "`zip` was called with the wrong arguments @ zip([1])",
+            "`any` needs bools, but got an int @ any([1])",
+            "`ignore` was called with the wrong arguments @ ignore(1)",
+        ]
+    );
 }
 
 #[test]
@@ -262,11 +305,14 @@ fn replace_changes_fields_that_exist() {
         replace(enemy, health='x')
         replace()
     ";
-    assert_eq!(with_types(program), [
-        "`Enemy` has no field called `hp` @ 5",
-        "`health` should be an int, but this is a str @ 'x'".replace('\'', "\"").as_str(),
-        "`replace` takes a struct value, then the fields to change @ replace()",
-    ]);
+    assert_eq!(
+        with_types(program),
+        [
+            "`Enemy` has no field called `hp` @ 5",
+            "`health` should be an int, but this is a str @ 'x'".replace('\'', "\"").as_str(),
+            "`replace` takes a struct value, then the fields to change @ replace()",
+        ]
+    );
 }
 
 #[test]
@@ -279,11 +325,14 @@ fn builtin_types_are_built_the_right_way() {
         e = Path(1)
         f = Id()
     ";
-    assert_eq!(with_types(program), [
-        "`IdMap` was called with the wrong arguments @ IdMap(1)",
-        "`Path` was called with the wrong arguments @ Path(1)",
-        "`Id` was called with the wrong arguments @ Id()",
-    ]);
+    assert_eq!(
+        with_types(program),
+        [
+            "`IdMap` was called with the wrong arguments @ IdMap(1)",
+            "`Path` was called with the wrong arguments @ Path(1)",
+            "`Id` was called with the wrong arguments @ Id()",
+        ]
+    );
 }
 
 #[test]
@@ -317,8 +366,54 @@ fn result_expect_needs_a_reason() {
             risky(1).expect()
             risky(1).expect(5)
     ";
-    assert_eq!(problems(program), [
-        "`expect` needs a reason this can't fail @ risky(1).expect()",
-        "`expect` needs a reason this can't fail @ risky(1).expect(5)",
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "`expect` needs a reason this can't fail @ risky(1).expect()",
+            "`expect` needs a reason this can't fail @ risky(1).expect(5)",
+        ]
+    );
+}
+
+#[test]
+fn collections_and_tuples_match_their_types_item_by_item() {
+    let program = "
+        def f(table: dict[str, int], pair: (int, str), maybe: str?):
+            pass
+
+        def main(stdout: Stdout):
+            f({'a': 1}, (1, 'a'), 'x')
+            f({1: 1}, (1, 2), [1].index(1))
+            f({'a': 'b'}, (1,), None)
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "`table` should be a dict[str, int], but this is a dict[int, int] @ {1: 1}",
+            "`pair` should be a (int, str), but this is a (int, int) @ (1, 2)",
+            "`maybe` should be a str?, but this is an int? @ [1].index(1)",
+            "`table` should be a dict[str, int], but this is a dict[str, str] @ {\"a\": \"b\"}",
+            "`pair` should be a (int, str), but this is a (int) @ (1,)",
+        ]
+    );
+}
+
+#[test]
+fn types_and_builtins_can_be_used_as_values() {
+    let program = "
+        struct Enemy:
+            health = 100
+
+        enum Shape:
+            Point
+
+        def main(stdout: Stdout):
+            measure = len
+            kind = Enemy
+            stdout.print(mystery.field, Shape.Hexagon)
+    ";
+    assert_eq!(
+        problems(program),
+        ["`mystery` doesn't exist @ mystery", "`Shape` has nothing called `Hexagon` @ Shape.Hexagon",]
+    );
 }

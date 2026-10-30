@@ -48,11 +48,14 @@ fn fail_needs_an_error() {
                 fail 'text'
             fail mystery
     ";
-    assert_eq!(problems(program), [
-        "`fail` needs an error, but this is a NotAnError @ NotAnError('x')".replace('\'', "\"").as_str(),
-        "`fail` needs an error, but this is a str @ 'text'".replace('\'', "\"").as_str(),
-        "`mystery` doesn't exist @ mystery",
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "`fail` needs an error, but this is a NotAnError @ NotAnError('x')".replace('\'', "\"").as_str(),
+            "`fail` needs an error, but this is a str @ 'text'".replace('\'', "\"").as_str(),
+            "`mystery` doesn't exist @ mystery",
+        ]
+    );
     assert_eq!(helps("def f():\n    fail 1\n"), ["declare error types with `error`, like `error NotFound:`"]);
 }
 
@@ -65,16 +68,19 @@ fn results_are_dealt_with_before_use() {
             pass
         stdout.print(risky(1) == risky(2), risky(1) != Err(Oops('x')))
     ";
-    assert_eq!(with_risky(program), [
-        "this is the result of something that can fail @ risky(1) + 1",
-        "this is the result of something that can fail @ 1 + risky(1)",
-        "this is the result of something that can fail @ risky(1) < 2",
-        "this is the result of something that can fail @ risky(1)",
-        "this is the result of something that can fail @ player('a').name".replace('\'', "\"").as_str(),
-        "this is the result of something that can fail @ player('a').name".replace('\'', "\"").as_str(),
-        "this is the result of something that can fail @ names()[0]",
-        "this is the result of something that can fail @ names()",
-    ]);
+    assert_eq!(
+        with_risky(program),
+        [
+            "this is the result of something that can fail @ risky(1) + 1",
+            "this is the result of something that can fail @ 1 + risky(1)",
+            "this is the result of something that can fail @ risky(1) < 2",
+            "this is the result of something that can fail @ risky(1)",
+            "this is the result of something that can fail @ player('a').name".replace('\'', "\"").as_str(),
+            "this is the result of something that can fail @ player('a').name".replace('\'', "\"").as_str(),
+            "this is the result of something that can fail @ names()[0]",
+            "this is the result of something that can fail @ names()",
+        ]
+    );
 }
 
 #[test]
@@ -105,11 +111,14 @@ fn ignored_results_are_mistakes() {
         ignore(risky(3), 'best effort')
         stdout.print('done')
     ";
-    assert_eq!(with_risky(program), [
-        "this can fail, but nothing handles it @ risky(3)",
-        "this can fail, but nothing handles it @ risky(3)",
-        "this can fail, but nothing handles it @ risky(n)",
-    ]);
+    assert_eq!(
+        with_risky(program),
+        [
+            "this can fail, but nothing handles it @ risky(3)",
+            "this can fail, but nothing handles it @ risky(3)",
+            "this can fail, but nothing handles it @ risky(n)",
+        ]
+    );
     let help = helps(&format!("{RISKY}\ndef f():\n    risky(3)\n    1\n"));
     assert_eq!(help, ["pass the error up with `?`, give a default with `else`, or handle it with `match`"]);
 }
@@ -133,9 +142,10 @@ fn passing_a_result_where_a_value_is_wanted_is_a_mistake() {
             double(risky(1))
             stdout.print(risky(1))
     ";
-    assert_eq!(problems(&format!("{RISKY}\n{}", crate::dedent(program))), [
-        "this is the result of something that can fail @ risky(1)"
-    ]);
+    assert_eq!(
+        problems(&format!("{RISKY}\n{}", crate::dedent(program))),
+        ["this is the result of something that can fail @ risky(1)"]
+    );
 }
 
 #[test]
@@ -166,5 +176,19 @@ fn files_can_fail_to_read() {
         def main(stdout: Stdout, fs: Fs):
             stdout.print(fs.read_text('x').upper(), read(fs, 'x') else '')
     ";
-    assert_eq!(problems(program), ["this is the result of something that can fail @ fs.read_text('x')".replace('\'', "\"")]);
+    assert_eq!(
+        problems(program),
+        ["this is the result of something that can fail @ fs.read_text('x')".replace('\'', "\"")]
+    );
+}
+
+#[test]
+fn builtins_need_values_not_results() {
+    assert_eq!(
+        with_risky("stdout.print(len(names()), abs(risky(1)))"),
+        [
+            "this is the result of something that can fail @ names()",
+            "this is the result of something that can fail @ risky(1)",
+        ]
+    );
 }

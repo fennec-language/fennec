@@ -60,7 +60,6 @@ impl FnCx<'_> {
     }
 
     fn assign_name(&mut self, name: &str, span: Span, op: Option<BinOp>, ty: Type, declare_mut: bool) {
-        self.forget_fields(name);
         let existing = self.lookup(name);
         match (existing, op) {
             (Some(_), _) if declare_mut => self.error(
@@ -76,6 +75,7 @@ impl FnCx<'_> {
             }
             (Some(_), None) => self.set_type(name, ty),
         }
+        self.forget_fields(name);
     }
 
     /// Whether `object[...] = value` calls the object's own `def []=`.

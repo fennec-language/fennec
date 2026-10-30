@@ -33,17 +33,20 @@ fn optionals_are_checked_before_use() {
         nothing = None
         stdout.print(nothing.name, nothing[0])
     ";
-    assert_eq!(with_find(program), [
-        "this might be None @ player.name",
-        "this might be None @ player.weapon",
-        "this might be None @ find(\"b\").name",
-        "this might be None @ player",
-        "this might be None @ player",
-        "this might be None @ find('c')".replace('\'', "\"").as_str(),
-        "`if` needs a bool, but this is a Player? @ player",
-        "this might be None @ nothing.name",
-        "this might be None @ nothing[0]",
-    ]);
+    assert_eq!(
+        with_find(program),
+        [
+            "this might be None @ player.name",
+            "this might be None @ player.weapon",
+            "this might be None @ find(\"b\").name",
+            "this might be None @ player",
+            "this might be None @ player",
+            "this might be None @ find('c')".replace('\'', "\"").as_str(),
+            "`if` needs a bool, but this is a Player? @ player",
+            "this might be None @ nothing.name",
+            "this might be None @ nothing[0]",
+        ]
+    );
     let help = helps(&format!("{FIND}\ndef f():\n    find('a').name\n"));
     assert_eq!(help, ["check with `if x is None:` first, use `?.`, or give a default with `else`"]);
 }
@@ -84,7 +87,10 @@ fn leaving_early_when_none_narrows_the_rest() {
                 stdout_less = 1
             player.name
     ";
-    assert_eq!(problems(&format!("{FIND}\n{}", crate::dedent(program))), ["this might be None @ player.name"]);
+    assert_eq!(
+        problems(&format!("{FIND}\n{}", crate::dedent(program))),
+        ["this might be None @ player.name"]
+    );
 }
 
 #[test]
@@ -111,7 +117,10 @@ fn checks_narrow_the_code_they_guard() {
             names = [p.name for p in [player] if p is not None]
             player.name
     ";
-    assert_eq!(problems(&format!("{FIND}\n{}", crate::dedent(program))), ["this might be None @ player.name"]);
+    assert_eq!(
+        problems(&format!("{FIND}\n{}", crate::dedent(program))),
+        ["this might be None @ player.name"]
+    );
 }
 
 #[test]
@@ -126,11 +135,14 @@ fn narrowing_ends_with_the_code_it_guards() {
             again = player.name
             either = player.name if True else ''
     ";
-    assert_eq!(problems(&format!("{FIND}\n{}", crate::dedent(program))), [
-        "this might be None @ player.name",
-        "this might be None @ player.name",
-        "this might be None @ player.name",
-    ]);
+    assert_eq!(
+        problems(&format!("{FIND}\n{}", crate::dedent(program))),
+        [
+            "this might be None @ player.name",
+            "this might be None @ player.name",
+            "this might be None @ player.name",
+        ]
+    );
 }
 
 #[test]
@@ -158,10 +170,10 @@ fn question_mark_optional_chaining_and_else_unwrap() {
             more = nothing else 1
             more + 1
     ";
-    assert_eq!(problems(&format!("{FIND}\n{}", crate::dedent(program))), [
-        "this might be None @ find(name)?.name",
-        "this might be None @ find(name)?.name",
-    ]);
+    assert_eq!(
+        problems(&format!("{FIND}\n{}", crate::dedent(program))),
+        ["this might be None @ find(name)?.name", "this might be None @ find(name)?.name",]
+    );
 }
 
 #[test]
@@ -187,10 +199,10 @@ fn assigning_a_value_counts_as_checking() {
             last = None
             last.name
     ";
-    assert_eq!(problems(&format!("{FIND}\n{}", crate::dedent(program))), [
-        "this might be None @ best.name",
-        "this might be None @ last.name",
-    ]);
+    assert_eq!(
+        problems(&format!("{FIND}\n{}", crate::dedent(program))),
+        ["this might be None @ best.name", "this might be None @ last.name",]
+    );
 }
 
 #[test]
@@ -233,11 +245,14 @@ fn match_over_an_enum_covers_every_case() {
                 case Red: 2
                 case _: 3
     ";
-    assert_eq!(problems(program), [
-        "this `match` doesn't handle `Light.Green` or `Light.Blue` @ light",
-        "this `match` doesn't handle `Light.Blue` @ light",
-        "`Light` has no case called `Purple` @ case .Purple: 1\n",
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "this `match` doesn't handle `Light.Green` or `Light.Blue` @ light",
+            "this `match` doesn't handle `Light.Blue` @ light",
+            "`Light` has no case called `Purple` @ case .Purple: 1\n",
+        ]
+    );
     let help = helps("enum L:\n    A\n    B\n    C\n\ndef f(l: L):\n    match l:\n        case .A: 1\n");
     assert_eq!(help, ["add `case .B:` and `case .C:`, or `case _:` for everything else"]);
 }
@@ -270,12 +285,15 @@ fn match_binds_the_fields_of_each_case() {
                 case Missing(name): name + 1
                 case value: value + 1.5
     ";
-    assert_eq!(problems(program), [
-        "can't use `+` on a str and an int @ label + count",
-        "this pattern has 2 parts, but the value has 1 fields @ case .Circle(radius, extra): 1\n",
-        "can't use `+` on a str and an int @ name + 1",
-        "can't mix int and float in `+` @ value + 1.5",
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "can't use `+` on a str and an int @ label + count",
+            "this pattern has 2 parts, but the value has 1 fields @ case .Circle(radius, extra): 1\n",
+            "can't use `+` on a str and an int @ name + 1",
+            "can't mix int and float in `+` @ value + 1.5",
+        ]
+    );
 }
 
 #[test]
@@ -296,4 +314,87 @@ fn match_arms_make_a_value() {
             text + 1
     ";
     assert_eq!(problems(program), ["can't use `+` on a str and an int @ text + 1"]);
+}
+
+#[test]
+fn or_conditions_narrow_when_they_are_false() {
+    let program = "
+        def a(x: str, y: str):
+            first = find(x)
+            second = find(y)
+            if first is None or second is None:
+                first.name
+                return
+            first.name + second.name
+    ";
+    assert_eq!(problems(&format!("{FIND}\n{}", crate::dedent(program))), ["this might be None @ first.name"]);
+}
+
+#[test]
+fn checked_fields_are_forgotten_when_their_value_changes() {
+    let program = "
+        def a(name: str):
+            mut player = Player(name=name)
+            if player.weapon is not None:
+                stdout_less = player.weapon.damage
+                player = Player(name='other')
+                again = player.weapon.damage
+            if player.weapon is not None:
+                player.weapon = None
+                more = player.weapon.damage
+
+        def b(ghost_free: int):
+            if ghost is None:
+                pass
+    ";
+    assert_eq!(
+        problems(&format!("{FIND}\n{}", crate::dedent(program))),
+        [
+            "this might be None @ player.weapon.damage",
+            "this might be None @ player.weapon.damage",
+            "`ghost` doesn't exist @ ghost",
+        ]
+    );
+}
+
+#[test]
+fn match_cases_bind_typed_values() {
+    let program = "
+        enum Shape:
+            Circle(radius: float)
+
+        error Oops:
+            why: str
+
+        def risky(n: int):
+            if n > 1:
+                fail Oops('x')
+            n
+
+        def a(n: int):
+            match risky(n):
+                case Ok(value): value + 'a'
+                case Err(error): error + 1
+
+        def b(shape: Shape, other: T):
+            match shape:
+                case Circle(r): r + 1
+            match other:
+                case .Circle(r): r + 1
+                case Circle(r): r + 1
+                case _: 0
+            match 3:
+                case .Circle(r): r + 1
+                case (a, b, c): c
+                case _: 0
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "can't use `+` on an int and a str @ value + \"a\"",
+            "can't use `+` on an Oops and an int @ error + 1",
+            "can't mix int and float in `+` @ r + 1",
+            "can't mix int and float in `+` @ r + 1",
+        ]
+    );
 }

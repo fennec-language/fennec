@@ -1,6 +1,7 @@
 //! The type checker's tests, as one program. Each test checks a small Fennec program and
 //! compares what the checker reports, message by message, with the code each one points at.
 
+mod builtins;
 mod calls;
 mod errors;
 mod mutation;
@@ -28,7 +29,8 @@ fn dedent(text: &str) -> String {
 /// Checks a program, returning its signatures or every problem as `message @ code`.
 fn check(text: &str) -> Result<Signatures, Vec<String>> {
     let source = dedent(text);
-    let module = fennec_syntax::parse(&source).map_err(|diagnostic| vec![format!("parse: {}", diagnostic.message)])?;
+    let module =
+        fennec_syntax::parse(&source).map_err(|diagnostic| vec![format!("parse: {}", diagnostic.message)])?;
     fennec_check::check(&module).map_err(|diagnostics| {
         diagnostics
             .iter()
@@ -52,7 +54,9 @@ fn helps(text: &str) -> Vec<String> {
     let Ok(module) = fennec_syntax::parse(&source) else { return vec!["parse error".to_owned()] };
     match fennec_check::check(&module) {
         Ok(_) => Vec::new(),
-        Err(diagnostics) => diagnostics.into_iter().map(|diagnostic| diagnostic.help.unwrap_or_default()).collect(),
+        Err(diagnostics) => {
+            diagnostics.into_iter().map(|diagnostic| diagnostic.help.unwrap_or_default()).collect()
+        }
     }
 }
 
@@ -70,7 +74,10 @@ fn in_main_after(declarations: &str, body: &str) -> Vec<String> {
 /// The return type inferred for a function, or the problems that stopped the check.
 fn returns(text: &str, function: &str) -> Result<Type, Vec<String>> {
     let signatures = check(text)?;
-    signatures.get(function).map(|signature| signature.returns.clone()).ok_or_else(|| vec![format!("no {function}")])
+    signatures
+        .get(function)
+        .map(|signature| signature.returns.clone())
+        .ok_or_else(|| vec![format!("no {function}")])
 }
 
 fn list(item: Type) -> Type {

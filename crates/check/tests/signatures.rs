@@ -33,9 +33,15 @@ fn return_types_come_from_the_last_expression_and_returns() {
         ("def f(n: int):\n    'x' if n > 0 else None\n", optional(Type::Str)),
         ("def f(n: int):\n    x = [1].index(n)\n    x else 0\n", Type::Int),
         ("def f(n: int):\n    [[n], [n]]\n", list(list(Type::Int))),
-        ("def f(n: int):\n    [(n, 'a'), (n, None)]\n", list(Type::Tuple(vec![Type::Int, optional(Type::Str)]))),
+        (
+            "def f(n: int):\n    [(n, 'a'), (n, None)]\n",
+            list(Type::Tuple(vec![Type::Int, optional(Type::Str)])),
+        ),
         ("def f(n: int):\n    [{n}, {n}]\n", list(Type::Set(Box::new(Type::Int)))),
-        ("def f(n: int):\n    [{n: n}, {n: n}]\n", list(Type::Dict(Box::new(Type::Int), Box::new(Type::Int)))),
+        (
+            "def f(n: int):\n    [{n: n}, {n: n}]\n",
+            list(Type::Dict(Box::new(Type::Int), Box::new(Type::Int))),
+        ),
         ("def f(n: int):\n    [(n, n), (n,)]\n", list(Type::Unknown)),
         ("def f(n: int):\n    [None, None]\n", list(Type::None)),
         ("def f(n: int):\n    [[1].index(n), [1].index(n), None]\n", list(optional(Type::Int))),
@@ -83,7 +89,7 @@ fn functions_that_can_fail_return_results() {
     assert_eq!(returns(program, "b"), Ok(result(Type::Int, Type::Unknown)));
     assert_eq!(returns(program, "c"), Ok(result(Type::Int, oops.clone())));
     assert_eq!(returns(program, "d"), Ok(result(Type::Int, oops.clone())));
-    assert_eq!(returns(program, "e"), Ok(result(Type::Int, Type::Unknown)));
+    assert_eq!(returns(program, "e"), Ok(result(Type::Int, oops.clone())));
     assert_eq!(returns(program, "g"), Ok(result(Type::Unknown, oops)));
     let signatures = check(program).unwrap();
     assert!(signatures.get("a").unwrap().can_fail);
@@ -112,10 +118,13 @@ fn signatures_cover_methods_nested_functions_and_the_standard_library() {
     ";
     let signatures = check(program).unwrap();
     let take_damage = signatures.get("Enemy.take_damage").unwrap();
-    assert_eq!(take_damage.params, [
-        ParamType { name: "self".to_owned(), ty: named("Enemy"), is_mut: true },
-        ParamType { name: "amount".to_owned(), ty: Type::Int, is_mut: false },
-    ]);
+    assert_eq!(
+        take_damage.params,
+        [
+            ParamType { name: "self".to_owned(), ty: named("Enemy"), is_mut: true },
+            ParamType { name: "amount".to_owned(), ty: Type::Int, is_mut: false },
+        ]
+    );
     assert_eq!(take_damage.returns, Type::Unit);
     assert_eq!(signatures.get("Enemy.at").unwrap().returns, named("Enemy"));
     assert_eq!(signatures.get("outer.inner").unwrap().returns, Type::Int);
@@ -145,25 +154,28 @@ fn written_types_resolve() {
     ";
     let signatures = check(program).unwrap();
     let types: Vec<Type> = signatures.get("f").unwrap().params.iter().map(|param| param.ty.clone()).collect();
-    assert_eq!(types, [
-        optional(Type::Int),
-        list(Type::Str),
-        Type::Set(Box::new(Type::Int)),
-        Type::Dict(Box::new(Type::Str), Box::new(Type::Int)),
-        Type::Tuple(vec![Type::Int, Type::Str]),
-        Type::Id(Box::new(named("Thing"))),
-        Type::IdMap(Box::new(named("Thing"))),
-        Type::Str,
-        list(named("Thing")),
-        Type::Unknown,
-        Type::Unknown,
-        list(named("Thing")),
-        Type::None,
-        Type::Bool,
-        Type::Float,
-        named("Fs"),
-        list(Type::Unknown),
-    ]);
+    assert_eq!(
+        types,
+        [
+            optional(Type::Int),
+            list(Type::Str),
+            Type::Set(Box::new(Type::Int)),
+            Type::Dict(Box::new(Type::Str), Box::new(Type::Int)),
+            Type::Tuple(vec![Type::Int, Type::Str]),
+            Type::Id(Box::new(named("Thing"))),
+            Type::IdMap(Box::new(named("Thing"))),
+            Type::Str,
+            list(named("Thing")),
+            Type::Unknown,
+            Type::Unknown,
+            list(named("Thing")),
+            Type::None,
+            Type::Bool,
+            Type::Float,
+            named("Fs"),
+            list(Type::Unknown),
+        ]
+    );
 }
 
 #[test]
@@ -184,12 +196,15 @@ fn field_types_come_from_their_types_or_defaults() {
             c = Config()
             stdout.print(c.volume + 1, c.fullscreen + 1, c.levels[0] + 1, c.weapon + 1, c.later.volume + 1.0)
     ";
-    assert_eq!(problems(program), [
-        "`count` should be an int, but this is a str @ 'wrong'".replace('\'', "\"").as_str(),
-        "can't mix int and float in `+` @ c.volume + 1",
-        "can't use `+` on a bool and an int @ c.fullscreen + 1",
-        "can't use `+` on a str and an int @ c.levels[0] + 1",
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "`count` should be an int, but this is a str @ 'wrong'".replace('\'', "\"").as_str(),
+            "can't mix int and float in `+` @ c.volume + 1",
+            "can't use `+` on a bool and an int @ c.fullscreen + 1",
+            "can't use `+` on a str and an int @ c.levels[0] + 1",
+        ]
+    );
 }
 
 #[test]
@@ -219,18 +234,24 @@ fn recursive_functions_write_their_return_type() {
                 inner(n)
             inner(1)
     ";
-    assert_eq!(problems(program), [
-        "`fib` calls itself, so its return type has to be written @ def fib(n: int)",
-        "`ping` calls itself, so its return type has to be written @ def ping(n: int)",
-        "`walk` calls itself, so its return type has to be written @ def walk(mut items: list[int], label: str?)",
-        "`inner` calls itself, so its return type has to be written @ def inner(n: int)",
-    ]);
-    assert_eq!(helps(program), [
-        "write it after the parameters: `def fib(n: int) -> int:`",
-        "write the type it returns after the parameters: `def ping(n: int) -> <type>:`",
-        "write the type it returns after the parameters: `def walk(mut items: list[int], label: str?) -> <type>:`",
-        "write the type it returns after the parameters: `def inner(n: int) -> <type>:`",
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "`fib` calls itself, so its return type has to be written @ def fib(n: int)",
+            "`ping` calls itself, so its return type has to be written @ def ping(n: int)",
+            "`walk` calls itself, so its return type has to be written @ def walk(mut items: list[int], label: str?)",
+            "`inner` calls itself, so its return type has to be written @ def inner(n: int)",
+        ]
+    );
+    assert_eq!(
+        helps(program),
+        [
+            "write it after the parameters: `def fib(n: int) -> int:`",
+            "write the type it returns after the parameters: `def ping(n: int) -> <type>:`",
+            "write the type it returns after the parameters: `def walk(mut items: list[int], label: str?) -> <type>:`",
+            "write the type it returns after the parameters: `def inner(n: int) -> <type>:`",
+        ]
+    );
     assert_eq!(returns(program, "fact"), Err(problems(program)));
 }
 
@@ -260,10 +281,10 @@ fn written_return_types_are_checked() {
             for i in [n]:
                 yield 'x'
     ";
-    assert_eq!(problems(program), [
-        "`a` returns a str, but this is an int @ n",
-        "this might be None @ [1].index(n)",
-    ]);
+    assert_eq!(
+        problems(program),
+        ["`a` returns a str, but this is an int @ n", "this might be None @ [1].index(n)",]
+    );
     assert_eq!(helps("def a(n: int) -> str:\n    n\n"), ["return a str, or change the return type"]);
 }
 
@@ -277,4 +298,110 @@ fn a_clean_program_has_no_problems() {
             stdout.print(Enemy().health)
     ";
     assert!(check(program).is_ok());
+}
+
+#[test]
+fn values_from_several_places_combine() {
+    let cases = [
+        ("def f(n: int):\n    [[n], [None]]\n", list(list(optional(Type::Int)))),
+        ("def f(n: int):\n    [{n}, {None}]\n", list(Type::Set(Box::new(optional(Type::Int))))),
+        (
+            "def f(n: int):\n    [{n: n}, {None: n}]\n",
+            list(Type::Dict(Box::new(optional(Type::Int)), Box::new(Type::Int))),
+        ),
+        ("def f(n: int):\n    [[n], 'a']\n", list(Type::Unknown)),
+    ];
+    for (program, expected) in cases {
+        assert_eq!(returns(program, "f"), Ok(expected), "{program}");
+    }
+    let program = "
+        error Oops:
+            why: str
+
+        error Other:
+            why: str
+
+        def a(n: int):
+            if n > 1:
+                fail Oops('x')
+            n
+
+        def b(n: int):
+            if n > 1:
+                fail Other('x')
+            [1].index(n)
+
+        def c(n: int):
+            if n > 0:
+                return a(n)
+            b(n)
+
+        def d(n: int) -> int:
+            if n > 1:
+                fail Oops('x')
+            a(n)
+    ";
+    assert_eq!(returns(program, "c"), Ok(result(optional(Type::Int), Type::Unknown)));
+    assert_eq!(returns(program, "d"), Ok(result(Type::Int, named("Oops"))));
+}
+
+#[test]
+fn failing_inside_a_match_or_with_context_counts() {
+    let program = "
+        error Oops:
+            why: str
+
+        error Unreadable:
+            path: str
+
+        def a(n: int):
+            match n:
+                case 1: fail Oops('one')
+                case _: n
+
+        def b(fs: Fs, path: str):
+            fs.read_text(path)? from Unreadable(path)
+    ";
+    assert_eq!(returns(program, "a"), Ok(result(Type::Int, named("Oops"))));
+    assert_eq!(returns(program, "b"), Ok(result(Type::Str, named("Unreadable"))));
+}
+
+#[test]
+fn loops_that_break_out_of_blocks_still_end() {
+    let cases = [
+        "def f(n: int):\n    while True:\n        with n as held:\n            break\n    'done'\n",
+        "def f(n: int):\n    while True:\n        match n:\n            case _: break\n    'done'\n",
+    ];
+    for program in cases {
+        assert_eq!(returns(program, "f"), Ok(Type::Str), "{program}");
+    }
+}
+
+#[test]
+fn only_the_value_a_function_ends_with_is_checked_against_its_return_type() {
+    let program = "
+        error Oops:
+            why: str
+
+        def risky(n: int):
+            if n > 1:
+                fail Oops('x')
+            n
+
+        def a() -> int:
+            return 1
+            'never reached'
+
+        def b(n: int) -> str:
+            yield n
+            return n
+
+        def c(n: int) -> int:
+            risky(n)
+
+        def d(n: int) -> int:
+            x = risky(n)?
+            risky(x)
+    ";
+    assert_eq!(problems(program), ["this is the result of something that can fail @ risky(n)"]);
 }

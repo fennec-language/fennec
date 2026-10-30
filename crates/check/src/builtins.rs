@@ -41,7 +41,8 @@ const BUILTINS: [(&str, usize, usize); 28] = [
 ];
 
 /// Builtins whose arguments have to be plain values, not results or optionals.
-const NEEDS_VALUES: [&str; 11] = ["abs", "ceil", "cos", "float", "floor", "int", "len", "range", "round", "sin", "sqrt"];
+const NEEDS_VALUES: [&str; 11] =
+    ["abs", "ceil", "cos", "float", "floor", "int", "len", "range", "round", "sin", "sqrt"];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name)
@@ -263,7 +264,6 @@ impl FnCx<'_> {
             }
             "reversed" if first == Type::Str => Type::Str,
             "sorted" | "list" | "parallel" | "reversed" => Type::list(items(self)),
-            "set" if plain.is_empty() => Type::Set(Box::new(Type::Unknown)),
             "set" => Type::Set(Box::new(items(self))),
             "enumerate" => Type::list(Type::Tuple(vec![Type::Int, items(self)])),
             "zip" => {

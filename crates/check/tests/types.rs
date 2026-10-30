@@ -21,17 +21,20 @@ fn conditions_need_bools() {
             if True and 1 > 0 or not False:
                 pass
     ";
-    assert_eq!(problems(program), [
-        "`if` needs a bool, but this is a list @ items",
-        "`while` needs a bool, but this is a str @ 'text'".replace('\'', "\"").as_str(),
-        "`assert` needs a bool, but this is a set @ {1}",
-        "`if` needs a bool, but this is a dict @ {}",
-        "`and` needs a bool, but this is a tuple @ (1, 2)",
-        "`or` needs a bool, but this is a float @ 2.5",
-        "`not` needs a bool, but this is a None @ not None",
-        "`if` needs a bool, but this is an int @ n",
-        "`and` needs a bool, but this is a nothing @ nothing()",
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "`if` needs a bool, but this is a list @ items",
+            "`while` needs a bool, but this is a str @ 'text'".replace('\'', "\"").as_str(),
+            "`assert` needs a bool, but this is a set @ {1}",
+            "`if` needs a bool, but this is a dict @ {}",
+            "`and` needs a bool, but this is a tuple @ (1, 2)",
+            "`or` needs a bool, but this is a float @ 2.5",
+            "`not` needs a bool, but this is a None @ not None",
+            "`if` needs a bool, but this is an int @ n",
+            "`and` needs a bool, but this is a nothing @ nothing()",
+        ]
+    );
 }
 
 #[test]
@@ -47,12 +50,15 @@ fn truthiness_hints_say_what_to_write() {
                 pass
             stdout.print(not 3)
     ";
-    assert_eq!(helps(program), [
-        "Fennec has no truthiness: write `len(x) > 0`",
-        "Fennec has no truthiness: write `x is None` or `x is not None`",
-        "Fennec has no truthiness: compare explicitly, like `count > 0`",
-        "Fennec has no truthiness: compare explicitly, like `len(items) == 0`",
-    ]);
+    assert_eq!(
+        helps(program),
+        [
+            "Fennec has no truthiness: write `len(x) > 0`",
+            "Fennec has no truthiness: write `x is None` or `x is not None`",
+            "Fennec has no truthiness: compare explicitly, like `count > 0`",
+            "Fennec has no truthiness: compare explicitly, like `len(items) == 0`",
+        ]
+    );
 }
 
 #[test]
@@ -73,11 +79,14 @@ fn ints_and_floats_do_not_mix() {
         mut total = 0
         total += 1.5
     ";
-    assert_eq!(in_main(program), [
-        "can't mix int and float in `+` @ count + 2.5",
-        "can't mix int and float in `*` @ 2.5 * count",
-        "can't mix int and float in `+` @ total",
-    ]);
+    assert_eq!(
+        in_main(program),
+        [
+            "can't mix int and float in `+` @ count + 2.5",
+            "can't mix int and float in `*` @ 2.5 * count",
+            "can't mix int and float in `+` @ total",
+        ]
+    );
     let program = "
         half = 7 / 2
         stdout.print(half + 1.0, half + 1)
@@ -88,16 +97,20 @@ fn ints_and_floats_do_not_mix() {
 #[test]
 fn operators_work_on_the_types_they_are_defined_for() {
     let program = "
-        stdout.print('a' + 'b', [1] + [2], 'a' + 1, [1] - [2], True + True, 'a' * 2, -'a', -True)
+        stdout.print('a' + 'b', [1] + [2], 'a' + 1, [1] - [2], True + True, 'a' * 2, -'a', -True, 'a' - 'b')
     ";
-    assert_eq!(in_main(program), [
-        "can't use `+` on a str and an int @ \"a\" + 1",
-        "can't use `-` on a list and a list @ [1] - [2]",
-        "can't use `+` on a bool and a bool @ True + True",
-        "can't use `*` on a str and an int @ \"a\" * 2",
-        "can't negate a str @ -\"a\"",
-        "can't negate a bool @ -True",
-    ]);
+    assert_eq!(
+        in_main(program),
+        [
+            "can't use `+` on a str and an int @ \"a\" + 1",
+            "can't use `-` on a list and a list @ [1] - [2]",
+            "can't use `+` on a bool and a bool @ True + True",
+            "can't use `*` on a str and an int @ \"a\" * 2",
+            "can't negate a str @ -\"a\"",
+            "can't negate a bool @ -True",
+            "can't use `-` on a str and a str @ \"a\" - \"b\"",
+        ]
+    );
 }
 
 #[test]
@@ -120,11 +133,14 @@ fn types_define_their_own_operators() {
             stdout.print(total.cents + 1, total > Money(cents=1), total[0] + 1)
             stdout.print(total + 5, total - total, total['x'])
     ";
-    assert_eq!(problems(program), [
-        "`other` should be a Money, but this is an int @ 5",
-        "can't use `-` on a Money and a Money @ total - total",
-        "`at` should be an int, but this is a str @ 'x'".replace('\'', "\"").as_str(),
-    ]);
+    assert_eq!(
+        problems(program),
+        [
+            "`other` should be a Money, but this is an int @ 5",
+            "can't use `-` on a Money and a Money @ total - total",
+            "`at` should be an int, but this is a str @ 'x'".replace('\'', "\"").as_str(),
+        ]
+    );
 }
 
 #[test]
@@ -140,14 +156,20 @@ fn indexing_fits_what_is_indexed() {
             stdout.print(items[0] + 1, 'abc'[0] + 'd', pair[0] + 1, pair[1] + 'b', pair[5], table['a'] + 1)
             stdout.print(items['a'], 'abc'[1.5], Plain()[0], 5[0], {1}[0])
     ";
-    assert_eq!(problems(&program.replace('\'', "\"")), [
-        "an index must be an int, not a str @ \"a\"",
-        "an index must be an int, not a float @ 1.5",
-        "`Plain` can't be indexed @ Plain()[0]",
-        "an int can't be indexed @ 5[0]",
-        "a set can't be indexed @ {1}[0]",
-    ]);
-    assert_eq!(helps("struct P:\n    n = 1\n\ndef f():\n    P()[0]\n"), ["define `def [](self, index: ...)` to index it"]);
+    assert_eq!(
+        problems(&program.replace('\'', "\"")),
+        [
+            "an index must be an int, not a str @ \"a\"",
+            "an index must be an int, not a float @ 1.5",
+            "`Plain` can't be indexed @ Plain()[0]",
+            "an int can't be indexed @ 5[0]",
+            "a set can't be indexed @ {1}[0]",
+        ]
+    );
+    assert_eq!(
+        helps("struct P:\n    n = 1\n\ndef f():\n    P()[0]\n"),
+        ["define `def [](self, index: ...)` to index it"]
+    );
 }
 
 #[test]
@@ -155,10 +177,10 @@ fn slicing_fits_what_is_sliced() {
     let program = "
         stdout.print([1, 2][1:], 'abc'[:2] + 'd', (1, 2)[1:], [1]['a':], 5[1:])
     ";
-    assert_eq!(in_main(&program.replace('\'', "\"")), [
-        "a slice position must be an int, not a str @ \"a\"",
-        "an int can't be sliced @ 5[1:]",
-    ]);
+    assert_eq!(
+        in_main(&program.replace('\'', "\"")),
+        ["a slice position must be an int, not a str @ \"a\"", "an int can't be sliced @ 5[1:]",]
+    );
 }
 
 #[test]
@@ -176,7 +198,7 @@ fn loops_go_over_collections() {
 
         def main(stdout: Stdout):
             for n in Bag():
-                stdout.print(n + 1)
+                stdout.print(n + 'x')
             for key in {'a': 1}:
                 stdout.print(key + 'b')
             for letter in 'abc':
@@ -188,10 +210,14 @@ fn loops_go_over_collections() {
             for n in 5:
                 pass
     ";
-    assert_eq!(problems(&program.replace('\'', "\"")), [
-        "can't loop over a `Plain` @ Plain()",
-        "can't loop over an int @ 5",
-    ]);
+    assert_eq!(
+        problems(&program.replace('\'', "\"")),
+        [
+            "can't use `+` on an int and a str @ n + \"x\"",
+            "can't loop over a `Plain` @ Plain()",
+            "can't loop over an int @ 5",
+        ]
+    );
     let help = helps("struct P:\n    n = 1\n\ndef f():\n    for x in P():\n        pass\n");
     assert_eq!(help, ["define `def iter(self)` that yields its items"]);
 }
@@ -206,11 +232,14 @@ fn unpacking_needs_the_right_number_of_values() {
         e, f = (1, 'a')
         stdout.print(e + 1, f + 'b')
     ";
-    assert_eq!(in_main(&program.replace('\'', "\"")), [
-        "can't unpack 3 values into 2 names @ (1, 2, 3)",
-        "can't unpack an int into 2 names @ 5",
-        "can't unpack 3 values into 2 names @ [(1, 2, 3)]",
-    ]);
+    assert_eq!(
+        in_main(&program.replace('\'', "\"")),
+        [
+            "can't unpack 3 values into 2 names @ (1, 2, 3)",
+            "can't unpack an int into 2 names @ 5",
+            "can't unpack 3 values into 2 names @ [(1, 2, 3)]",
+        ]
+    );
 }
 
 #[test]
@@ -248,21 +277,20 @@ fn builtins_give_back_the_right_types() {
         ("IdMap[str]().values()[0] + 1", "can't use `+` on a str and an int @ IdMap[str]().values()[0] + 1"),
     ];
     for (expression, expected) in cases {
-        let program = format!("def main(stdout: Stdout):\n    mut xs = [1]\n    stdout.print({expression})\n");
+        let program =
+            format!("def main(stdout: Stdout):\n    mut xs = [1]\n    stdout.print({expression})\n");
         assert_eq!(problems(&program), [expected.to_owned()], "{expression}");
     }
 }
 
 #[test]
 fn optional_results_of_builtins_might_be_none() {
-    let cases = [
-        "[1].index(1) + 1",
-        "'abc'.find('b') + 1",
-        "{'a': 1}.get('a') + 1",
-        "pool.get(pool.insert(1)) + 1",
-    ];
+    let cases =
+        ["[1].index(1) + 1", "'abc'.find('b') + 1", "{'a': 1}.get('a') + 1", "pool.get(pool.insert(1)) + 1"];
     for expression in cases {
-        let program = format!("def main(stdout: Stdout):\n    mut pool = IdMap[int]()\n    stdout.print({expression})\n");
+        let program = format!(
+            "def main(stdout: Stdout):\n    mut pool = IdMap[int]()\n    stdout.print({expression})\n"
+        );
         let expression = expression.replace('\'', "\"");
         let operand = expression.rsplit_once(" + ").map_or("", |(left, _)| left);
         assert_eq!(problems(&program), [format!("this might be None @ {operand}")], "{expression}");

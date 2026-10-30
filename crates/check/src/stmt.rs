@@ -232,7 +232,7 @@ impl FnCx<'_> {
             is_mut: false,
             origin: Origin::Captured,
         });
-        let report = self.report();
+        let report = self.report;
         self.checker.check_nested(&key, def, captured, !report);
         self.declare(&def.name, Type::Function(key), false);
     }
@@ -270,7 +270,9 @@ pub(crate) fn not_none(cond: &Expr, when: bool) -> Vec<String> {
 pub(crate) fn path(expr: &Expr) -> Option<String> {
     match &expr.kind {
         ExprKind::Name(name) => Some(name.clone()),
-        ExprKind::Attr { object, name, optional: false } => path(object).map(|object| format!("{object}.{name}")),
+        ExprKind::Attr { object, name, optional: false } => {
+            path(object).map(|object| format!("{object}.{name}"))
+        }
         _ => None,
     }
 }

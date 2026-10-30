@@ -1,7 +1,8 @@
-//! The signature table and the order functions are checked in. A function with a written
-//! return type has its signature from the start; one without is checked the first time a
-//! caller needs its signature. A function that's still being checked when it's needed again
-//! calls itself, directly or through others, so it has to have its return type written.
+//! The signature table and the order functions are checked in. A function is checked the
+//! first time a caller needs its signature, or after that in name order, so each body is
+//! checked once. A function that's still being checked when it's needed again calls itself,
+//! directly or through others, so it has to have its return type written; until it's done,
+//! its written signature stands in.
 
 use std::collections::BTreeMap;
 
@@ -88,7 +89,6 @@ impl Checker {
                 *recursive |= !has_return_type;
                 return self.declared(key);
             }
-            None if has_return_type => return self.declared(key),
             None => self.check_function(key),
         }
         match self.states.get(key) {
@@ -144,9 +144,8 @@ impl Checker {
         self.states.insert(key.to_owned(), State::Checking { recursive: false });
         let effects = effects::of_body(&def.body);
         let body = FnCx::check_function(self, key, &def, &signature.params, captured, !prelude);
-        if def.ret.is_none() {
-            signature.returns = wrap(body.value, body.error, effects);
-        }
+        let value = def.ret.as_ref().map_or(body.value, |ret| self.program.resolve(ret));
+        signature.returns = wrap(value, body.error, effects);
         if let Some(State::Checking { recursive: true }) = self.states.get(key)
             && def.ret.is_none()
             && !prelude
@@ -196,7 +195,8 @@ fn wrap(value: Type, error: Type, effects: Effects) -> Type {
         return value;
     }
     match value {
-        Type::Result(..) if effects.fails => value,
+        // A function that can fail passes a result it gives back through unchanged.
+        Type::Result(..) => value,
         value if effects.fails => Type::result(value, error),
         value => value,
     }

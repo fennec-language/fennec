@@ -11,8 +11,14 @@ fn unknown_names_are_reported_where_they_are_used() {
 #[test]
 fn habits_from_other_languages_get_a_hint() {
     let hints = [
-        ("print(1)", "there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`"),
-        ("console", "there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`"),
+        (
+            "print(1)",
+            "there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`",
+        ),
+        (
+            "console",
+            "there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`",
+        ),
         ("x = true", "write `True` or `False`"),
         ("x = false", "write `True` or `False`"),
         ("x = null", "write `None`"),
@@ -65,8 +71,10 @@ fn names_belong_to_the_block_they_are_made_in() {
             pass
         stdout.print(n, seen, looped, held)
     ";
-    let missing: Vec<String> =
-        ["n", "seen", "looped", "held"].iter().map(|name| format!("`{name}` doesn't exist @ {name}")).collect();
+    let missing: Vec<String> = ["n", "seen", "looped", "held"]
+        .iter()
+        .map(|name| format!("`{name}` doesn't exist @ {name}"))
+        .collect();
     assert_eq!(in_main(program), missing);
 }
 
@@ -143,7 +151,9 @@ fn f_strings_and_collections_are_checked_inside() {
     let program = "
         stdout.print(f\"{a}\", [b], (c, 1), {d}, {e: 1}, {1: g})
     ";
-    let missing: Vec<String> =
-        ["a", "b", "c", "d", "e", "g"].iter().map(|name| format!("`{name}` doesn't exist @ {name}")).collect();
+    let missing: Vec<String> = ["a", "b", "c", "d", "e", "g"]
+        .iter()
+        .map(|name| format!("`{name}` doesn't exist @ {name}"))
+        .collect();
     assert_eq!(in_main(program), missing);
 }

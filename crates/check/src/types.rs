@@ -101,9 +101,7 @@ impl Type {
 pub(crate) fn join(a: &Type, b: &Type) -> Type {
     match (a, b) {
         _ if a == b => a.clone(),
-        (Type::Unknown, _) | (_, Type::Unknown) => Type::Unknown,
         (Type::None, other) | (other, Type::None) => Type::optional(other.clone()),
-        (Type::Optional(a), Type::Optional(b)) => Type::optional(join(a, b)),
         (Type::Optional(a), other) | (other, Type::Optional(a)) => Type::optional(join(a, other)),
         (Type::List(a), Type::List(b)) => Type::list(join(a, b)),
         (Type::Set(a), Type::Set(b)) => Type::Set(Box::new(join(a, b))),

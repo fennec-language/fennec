@@ -54,10 +54,14 @@ pub(crate) struct FnCx<'c> {
     /// The function's own name, for messages.
     pub(crate) name: String,
     scopes: Vec<Scope>,
-    report: bool,
+    /// Whether to report problems: not for the standard library, or for a field default
+    /// looked at only for its type.
+    pub(crate) report: bool,
     /// The return type written in the signature, if any.
     pub(crate) declared: Option<Type>,
     pub(crate) generator: bool,
+    /// Whether it can fail, so it can give back a result it gets unhandled.
+    pub(crate) fallible: bool,
     pub(crate) returns: Vec<Type>,
     pub(crate) errors: Vec<Type>,
     pub(crate) yields: Vec<Type>,
@@ -73,6 +77,7 @@ impl<'c> FnCx<'c> {
             report,
             declared: None,
             generator: false,
+            fallible: false,
             returns: Vec::new(),
             errors: Vec::new(),
             yields: Vec::new(),
@@ -89,7 +94,8 @@ impl<'c> FnCx<'c> {
     ) -> BodyType {
         let mut cx = FnCx::new(checker, key, &def.name, report);
         cx.declared = def.ret.as_ref().map(|ret| cx.checker.program.resolve(ret));
-        cx.generator = effects::of_body(&def.body).yields;
+        let effects = effects::of_body(&def.body);
+        (cx.generator, cx.fallible) = (effects.yields, effects.fails);
         for binding in captured {
             cx.declare_as(&binding.name, binding.ty, false, Origin::Captured);
         }
@@ -121,22 +127,18 @@ impl<'c> FnCx<'c> {
 
     /// Checks a value returned from a function whose return type is written.
     pub(crate) fn check_return(&mut self, declared: &Type, actual: &Type, span: Span) {
-        if self.generator || matches!(actual, Type::Result(..)) || accepts(declared, actual) {
+        let passed_through = self.fallible && matches!(actual, Type::Result(..));
+        if self.generator || passed_through || accepts(declared, actual) {
             return;
         }
         let diagnostic = if actual.maybe_none() && !declared.maybe_none() {
             crate::messages::might_be_none(span)
+        } else if matches!(actual, Type::Result(..)) {
+            crate::messages::unhandled_result(span)
         } else {
-            Diagnostic::new(
-                format!(
-                    "`{}` returns {}, but this is {}",
-                    self.name,
-                    crate::types::a(declared),
-                    crate::types::a(actual)
-                ),
-                span,
-            )
-            .with_help(format!("return {}, or change the return type", crate::types::a(declared)))
+            let (declared, actual) = (crate::types::a(declared), crate::types::a(actual));
+            Diagnostic::new(format!("`{}` returns {declared}, but this is {actual}", self.name), span)
+                .with_help(format!("return {declared}, or change the return type"))
         };
         self.error(diagnostic);
     }
@@ -190,10 +192,6 @@ impl<'c> FnCx<'c> {
         if self.report {
             self.checker.diagnostics.push(diagnostic);
         }
-    }
-
-    pub(crate) fn report(&self) -> bool {
-        self.report
     }
 
     /// An expression's type, without reporting anything about it.
@@ -336,13 +334,15 @@ impl<'c> FnCx<'c> {
         ty
     }
 
-    /// Forgets what was learned about a name's fields, because it's changing.
+    /// Forgets what was learned about a name's fields, because it's changing: each one holds
+    /// its field's type again.
     pub(crate) fn forget_fields(&mut self, root: &str) {
         let prefix = format!("{root}.");
-        for binding in self.scopes.iter_mut().flat_map(|scope| scope.bindings.iter_mut()) {
-            if binding.name.starts_with(&prefix) {
-                binding.ty = Type::Unknown;
-            }
+        let paths: Vec<String> =
+            self.visible().into_iter().map(|b| b.name).filter(|name| name.starts_with(&prefix)).collect();
+        for path in paths {
+            let ty = self.path_type(&path);
+            self.set_type(&path, ty);
         }
     }
 

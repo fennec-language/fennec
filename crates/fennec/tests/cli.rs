@@ -74,7 +74,7 @@ fn test_fails_when_a_test_fails() {
 fn run_reports_every_problem_the_checker_finds_before_running() {
     let output = fennec(&["run", "examples/errors/several.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
+    assert_eq!(text(&output.stdout), "");
     let stderr = text(&output.stderr);
     assert_eq!(stderr.matches("error: ").count(), 3, "{stderr}");
     assert!(stderr.contains("\n\nerror: can't mix int and float"), "{stderr}");
@@ -84,7 +84,7 @@ fn run_reports_every_problem_the_checker_finds_before_running() {
 fn test_checks_the_program_before_running_its_tests() {
     let output = fennec(&["test", "examples/errors/mut_self.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
+    assert_eq!(text(&output.stdout), "");
     assert!(text(&output.stderr).starts_with("error: `self` isn't mut"));
 }
 

@@ -283,6 +283,7 @@ impl FnCx<'_> {
             (Type::Int, Type::Int) => Type::Int,
             (Type::Float, Type::Float) => Type::Float,
             (Type::Str, Type::Str) if op == BinOp::Add => Type::Str,
+            (Type::Bytes, Type::Bytes) if op == BinOp::Add => Type::Bytes,
             (Type::List(a), Type::List(b)) if op == BinOp::Add => {
                 let item = self.join_or_report(&[*a.clone(), *b.clone()], span, "these lists hold");
                 Type::list(item)
@@ -355,6 +356,7 @@ impl FnCx<'_> {
             Type::List(held) | Type::Set(held) | Type::Dict(held, _) => held.as_ref().clone(),
             Type::IdMap(held) => Type::Id(held.clone()),
             Type::Str => Type::Str,
+            Type::Bytes => Type::Int,
             Type::Unknown | Type::Var(_) => return,
             other => {
                 let message = format!("`in` looks inside a collection, but this is {}", a(other));
@@ -560,6 +562,7 @@ impl FnCx<'_> {
                 Type::Unknown
             }
             Type::Str => Type::Str,
+            Type::Bytes => Type::Int,
             Type::Unknown | Type::Var(_) => Type::Unknown,
             Type::Result(..) => {
                 self.error(unhandled_result(span));

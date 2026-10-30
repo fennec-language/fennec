@@ -1,0 +1,25 @@
+# `bytes` is binary data: a run of ints from 0 to 255. Text becomes bytes with `encode`,
+# as UTF-8, and comes back with `decode`, which fails on bytes that aren't text.
+
+def checksum(data: bytes) -> int:
+    sum(byte for byte in data) % 256
+
+def main(stdout: Stdout):
+    data = "héllo".encode()
+    stdout.print(data, len(data), "bytes, but", len("héllo"), "characters")
+    stdout.print(data[0], data[-1], data[1:3], 104 in data)
+    stdout.print(checksum(data), [byte for byte in data[:2]])
+
+    header = bytes([137, 80, 78, 71])
+    stdout.print(header + bytes([13, 10]), header == bytes([137, 80, 78, 71]), bytes() < header)
+
+    match data.decode():
+        case Ok(text):
+            stdout.print("decoded", text)
+        case InvalidValue(message):
+            stdout.print(message)
+    match header.decode():
+        case Ok(text):
+            stdout.print("decoded", text)
+        case InvalidValue(_):
+            stdout.print("the header isn't text")

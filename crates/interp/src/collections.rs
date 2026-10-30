@@ -66,6 +66,15 @@ impl Interp<'_> {
             Value::Capability(Capability::Fs) => self.fs_method(method, &args, span),
             Value::Capability(Capability::Clock) => self.clock_method(method, &args, span),
             Value::Str(text) => str_method(text, method, &args, span),
+            Value::Bytes(data) if method == "decode" && args.is_empty() => match std::str::from_utf8(data) {
+                Ok(text) => Ok(Value::Ok(Rc::new(Value::str(text)))),
+                Err(error) => {
+                    let message = format!("these bytes aren't UTF-8 text: {error}");
+                    let error =
+                        self.make_value("InvalidValue", vec![("message", Value::str(&message))], span)?;
+                    Ok(Value::Err(Rc::new(error)))
+                }
+            },
             Value::List(items) => match (method, args.as_slice()) {
                 ("index", [value]) => items
                     .iter()
@@ -329,6 +338,7 @@ fn lookup(pairs: &[(Value, Value)], key: &Value) -> Option<Value> {
 fn str_method(text: &str, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let words = |parts: Vec<&str>| Value::list(parts.into_iter().map(Value::str).collect());
     Ok(match (method, args) {
+        ("encode", []) => Value::Bytes(Rc::from(text.as_bytes())),
         ("upper", []) => Value::str(&text.to_uppercase()),
         ("lower", []) => Value::str(&text.to_lowercase()),
         ("strip", []) => Value::str(text.trim()),

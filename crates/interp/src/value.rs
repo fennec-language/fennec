@@ -14,6 +14,8 @@ pub(crate) enum Value {
     Int(i64),
     Float(f64),
     Str(Rc<str>),
+    /// Binary data, each byte from 0 to 255.
+    Bytes(Rc<[u8]>),
     List(Rc<Vec<Value>>),
     /// A list native code packed into flat memory. The interpreter unpacks it to use it.
     Packed(Rc<crate::packed::Packed>),
@@ -173,6 +175,7 @@ impl Value {
             Value::Int(_) => "int".to_owned(),
             Value::Float(_) => "float".to_owned(),
             Value::Str(_) => "str".to_owned(),
+            Value::Bytes(_) => "bytes".to_owned(),
             Value::List(_) | Value::Packed(_) => "list".to_owned(),
             Value::Tuple(_) => "tuple".to_owned(),
             Value::Dict(_) => "dict".to_owned(),
@@ -199,6 +202,7 @@ impl PartialEq for Value {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a.total_cmp(b).is_eq(),
             (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::List(a), Value::List(b)) | (Value::Tuple(a), Value::Tuple(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a.len() == b.len() && a.iter().all(|item| b.contains(item)),
             (Value::Dict(a), Value::Dict(b)) => a.len() == b.len() && a.iter().all(|pair| b.contains(pair)),

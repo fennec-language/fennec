@@ -1,0 +1,6 @@
+bytes([104, 195, 169, 108, 108, 111]) 6 bytes, but 5 characters
+104 111 bytes([195, 169]) True
+27 [104, 195]
+bytes([137, 80, 78, 71, 13, 10]) True True
+decoded héllo
+the header isn't text

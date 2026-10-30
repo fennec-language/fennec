@@ -302,6 +302,29 @@ fn fs_makes_lists_and_removes_files_and_folders() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+#[test]
+fn fs_reads_and_writes_bytes() {
+    let dir = scratch("fs-bytes").unwrap();
+    let program = r#"
+def main(stdout: Stdout, fs: Fs):
+    fs.write_bytes("save.bin", bytes([0, 1, 254, 255]))?
+    stdout.print(fs.read_bytes("save.bin")?, fs.read_text("save.bin") else "not text")
+    fs.write_text("note.txt", "hé")?
+    stdout.print(fs.read_bytes("note.txt")?, fs.read_bytes("missing.bin") else bytes())
+"#;
+    std::fs::write(dir.join("main.fen"), program).unwrap();
+    for engine in [&["run", "main.fen"][..], &["run", "--jit", "main.fen"]] {
+        let output = fennec_in(&dir, engine, "").unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert_eq!(
+            text(&output.stdout),
+            "bytes([0, 1, 254, 255]) not text\nbytes([104, 195, 169]) bytes([])\n"
+        );
+    }
+    assert_eq!(std::fs::read(dir.join("save.bin")).unwrap(), [0, 1, 254, 255]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A program that changes files, which runs in a folder of its own.
 const PROGRAM_WITH_FILES: &str = r#"from std.path import Path
 

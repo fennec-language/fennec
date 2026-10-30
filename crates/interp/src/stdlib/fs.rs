@@ -21,6 +21,10 @@ impl Interp<'_> {
             ("write_text", [Value::Str(path), Value::Str(text)]) => {
                 std::fs::write(path.as_ref(), text.as_bytes()).map(|()| Value::Unit)
             }
+            ("read_bytes", [Value::Str(path)]) => std::fs::read(path.as_ref()).map(|data| Value::Bytes(Rc::from(data))),
+            ("write_bytes", [Value::Str(path), Value::Bytes(data)]) => {
+                std::fs::write(path.as_ref(), data).map(|()| Value::Unit)
+            }
             ("list_dir", [Value::Str(path)]) => return self.list_dir(path, span),
             ("make_dir", [Value::Str(path)]) => std::fs::create_dir_all(path.as_ref()).map(|()| Value::Unit),
             ("remove", [Value::Str(path)]) => remove(path).map(|()| Value::Unit),
@@ -36,7 +40,7 @@ impl Interp<'_> {
                 }
                 Err(err) => Err(err),
             },
-            ("exists" | "read_text" | "write_text" | "list_dir" | "make_dir" | "remove" | "metadata", _) => {
+            ("exists" | "read_text" | "write_text" | "read_bytes" | "write_bytes" | "list_dir" | "make_dir" | "remove" | "metadata", _) => {
                 return Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span));
             }
             _ => return Err(no_method(&Value::Capability(Capability::Fs), method, span)),

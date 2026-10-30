@@ -107,7 +107,7 @@ def main(stdout: Stdout):
     stdout.print(program.runs, saved.runs, eval(program.body, env), eval(saved.body, env))
     stdout.print(saved.body == small, program.body == small)
 
-    chain = count_down(10000)
+    chain = count_down(1000)
     stdout.print(total(chain), total(.Link(5, chain)) - total(chain))
     match chain:
         case .Link(first, .Link(second, _)): stdout.print(first, second)

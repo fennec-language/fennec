@@ -468,3 +468,50 @@ fn fmt_with_no_path_formats_the_kit_around_the_current_folder() {
     assert_eq!(text(&plain.stdout).replace('\\', "/"), "outside.fen\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Runs `fennec dev changes` in `dir`, keeping its snapshots under `home`.
+fn changes_in(dir: &Path, home: &Path) -> std::io::Result<Output> {
+    Command::new(env!("CARGO_BIN_EXE_fennec"))
+        .args(["dev", "changes"])
+        .current_dir(dir)
+        .env("FENNEC_HOME", home)
+        .output()
+}
+
+#[test]
+fn dev_changes_reports_what_changed_since_the_last_run() {
+    let dir = scratch("changes").unwrap();
+    let home = dir.join("home");
+    let kit = dir.join("kit");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::write(kit.join("kit.toml"), "name = \"demo\"\n").unwrap();
+    std::fs::write(kit.join("src/main.fen"), "def main(stdout: Stdout):\n    stdout.print(1)\n").unwrap();
+    std::fs::write(kit.join("src/other.fen"), "def other() -> int:\n    1\n").unwrap();
+
+    let first = changes_in(&kit.join("src"), &home).unwrap();
+    assert_eq!(text(&first.stdout), "first run: hashed 2 files and 2 definitions\n");
+    let again = changes_in(&kit, &home).unwrap();
+    assert_eq!(text(&again.stdout), "0 files parsed, 2 unchanged and not parsed again\nnothing changed\n");
+
+    std::fs::write(kit.join("src/main.fen"), "# hi\ndef main(stdout: Stdout):\n    stdout.print( 1 )\n")
+        .unwrap();
+    std::fs::write(kit.join("src/other.fen"), "def other() -> int:\n    2\n\ndef more() -> int:\n    3\n")
+        .unwrap();
+    let edited = changes_in(&kit, &home).unwrap();
+    assert_eq!(
+        text(&edited.stdout),
+        "2 files parsed, 0 unchanged and not parsed again\n\
+         src/main.fen: only its layout or comments changed\n\
+         src/other.fen\n  added    def more\n  changed  def other\n"
+    );
+
+    std::fs::write(kit.join("src/other.fen"), "def other( -> int:\n").unwrap();
+    let broken = changes_in(&kit, &home).unwrap();
+    assert_eq!(broken.status.code(), Some(1));
+    assert!(
+        text(&broken.stderr).contains("src/other.fen doesn't parse (1:12: expected a parameter name"),
+        "{}",
+        text(&broken.stderr)
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

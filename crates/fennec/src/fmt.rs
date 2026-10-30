@@ -108,7 +108,7 @@ fn format_file(path: &Path, check: bool) -> Result<bool, ()> {
 }
 
 /// The one-based line and column of a byte offset.
-fn position(source: &str, offset: u32) -> (usize, usize) {
+pub(crate) fn position(source: &str, offset: u32) -> (usize, usize) {
     let offset = usize::try_from(offset).unwrap_or(0).min(source.len());
     let before = source.get(..offset).unwrap_or("");
     let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);

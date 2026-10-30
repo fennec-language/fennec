@@ -2,6 +2,7 @@
 #![expect(clippy::print_stdout, reason = "the command line prints its results")]
 #![expect(clippy::print_stderr, reason = "the command line reports errors")]
 
+mod changes;
 mod fmt;
 mod repl;
 mod run;
@@ -39,6 +40,8 @@ fn main() -> ExitCode {
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["dev", "check", path] => dev(check_dump, path),
+        ["dev", "changes"] => changes::changes("."),
+        ["dev", "changes", path] => changes::changes(path),
         ["--version" | "-V"] => {
             println!("🦊 fennec {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

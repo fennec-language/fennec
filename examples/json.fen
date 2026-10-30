@@ -13,7 +13,7 @@ struct Player:
     pet: str?
     alive: bool
 
-def describe(text: str):
+def describe(text: str) -> str:
     match json.loads[list[float]](text):
         case Ok(numbers):
             f"read {json.dumps(numbers)}"

@@ -47,8 +47,6 @@ struct Scope {
 pub(crate) struct BodyType {
     pub(crate) value: Type,
     pub(crate) error: Type,
-    /// The return type to suggest writing, from everything that's known.
-    pub(crate) suggestion: Type,
 }
 
 pub(crate) struct FnCx<'c> {
@@ -157,7 +155,7 @@ impl<'c> FnCx<'c> {
         let mut cx = FnCx::new(checker, key, &def.name, report);
         let entry = cx.checker.program.functions.get(key);
         cx.generics = entry.map(|entry| cx.checker.program.generics_of(entry)).unwrap_or_default();
-        cx.declared = def.ret.as_ref().map(|ret| cx.resolve(ret));
+        cx.declared = crate::program::written_ret(def).map(|ret| cx.resolve(ret));
         let effects = effects::of_body(&def.body);
         (cx.generator, cx.fallible) = (effects.yields, effects.fails);
         for binding in captured {
@@ -187,14 +185,12 @@ impl<'c> FnCx<'c> {
         } else if !flow.exits {
             values.push(flow.ty);
         }
-        let known: Vec<Type> = values.iter().filter(|ty| **ty != Type::Unknown).cloned().collect();
-        let suggestion = cx.checker.join_all(&known).unwrap_or(Type::Unknown);
-        let value = if cx.generator {
+        let value = if let Some(declared) = &cx.declared {
+            // Each value given back, or yielded, was checked against it already.
+            declared.clone()
+        } else if cx.generator {
             let yields = cx.yields.clone();
             Type::list(cx.joined(&yields, def.span, "yields"))
-        } else if let Some(declared) = &cx.declared {
-            // Each value given back was checked against it already.
-            declared.clone()
         } else if values.is_empty() {
             // A body that never finishes, like `while True:` with no `break`, gives nothing.
             Type::Unit
@@ -206,7 +202,7 @@ impl<'c> FnCx<'c> {
             if errors.is_empty() { Type::Unknown } else { cx.joined(&errors, def.span, "fails with") };
         let (value, error) = (cx.checker.settled(&value), cx.checker.settled(&error));
         cx.finish(&[value.clone(), error.clone()]);
-        BodyType { value, error, suggestion }
+        BodyType { value, error }
     }
 
     /// Joins what a function gives back from several places, reporting values that don't

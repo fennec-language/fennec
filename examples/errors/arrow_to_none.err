@@ -1,0 +1,7 @@
+error: `greet` gives back nothing, so it has no arrow
+ --> examples/errors/arrow_to_none.fen:1:38
+  |
+1 | def greet(stdout: Stdout, name: str) -> None:
+  |                                      ^^^^^^^
+  |
+  = help: a `def` with no `->` gives back nothing: remove the arrow and what follows it

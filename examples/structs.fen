@@ -5,10 +5,10 @@ struct Enemy:
     position = Vec3.zero
     health = 100
 
-    def at(name: str, position: Vec3):
+    def at(name: str, position: Vec3) -> Enemy:
         Enemy(name=name, position=position)
 
-    def is_alive(self):
+    def is_alive(self) -> bool:
         self.health > 0
 
     def take_damage(mut self, amount: int):

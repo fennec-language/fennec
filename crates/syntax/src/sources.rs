@@ -68,6 +68,17 @@ impl Sources {
         Some((file.path.as_str(), line, column, file.text.get(line_start..line_end)?))
     }
 
+    /// Each file the fixes of `diagnostics` change, with its new text.
+    pub fn fixed(&self, diagnostics: &[Diagnostic]) -> Vec<(String, String)> {
+        self.files
+            .iter()
+            .filter_map(|file| {
+                let text = crate::diagnostic::apply_fixes(&file.text, file.base, diagnostics)?;
+                Some((file.path.clone(), text))
+            })
+            .collect()
+    }
+
     fn file(&self, span: Span) -> Option<&File> {
         self.files.iter().rev().find(|file| file.base <= span.start && span.start <= file.end())
     }

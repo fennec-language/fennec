@@ -1,4 +1,4 @@
-error: `fibonacci` calls itself, so its return type has to be written
+error: `fibonacci` gives back an int, so its return type has to be written
  --> examples/errors/recursive.fen:1:1
   |
 1 | def fibonacci(n: int):

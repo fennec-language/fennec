@@ -10,22 +10,22 @@ interface Marker:
 struct Circle:
     radius: float
 
-    def area(self):
+    def area(self) -> float:
         PI * self.radius * self.radius  # Circle is a Shape because it has area() and name()
 
-    def name(self):
+    def name(self) -> str:
         "circle"
 
 struct Square:
     side: float
 
-    def area(self):
+    def area(self) -> float:
         self.side * self.side
 
-    def name(self):
+    def name(self) -> str:
         "square"
 
-def total_area[T: Shape](shapes: list[T]):
+def total_area[T: Shape](shapes: list[T]) -> float:
     sum(shape.area() for shape in shapes)
 
 def first[T, U](pairs: list[(T, U)]) -> T:

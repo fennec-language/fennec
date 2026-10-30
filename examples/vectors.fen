@@ -12,14 +12,14 @@ struct Body:
         self.velocity = self.velocity + push * (1.0 / self.mass)
         self.asleep = False
 
-    def moved(self, dt: float):
+    def moved(self, dt: float) -> Body:
         Body(position=self.position + self.velocity * dt, velocity=self.velocity, mass=self.mass)
 
 def settle(mut body: Body):
     body.velocity = Vec3.zero()
     body.asleep = True
 
-def heaviest(a: Body, b: Body):
+def heaviest(a: Body, b: Body) -> Body:
     a if a.mass >= b.mass else b
 
 def main(stdout: Stdout):

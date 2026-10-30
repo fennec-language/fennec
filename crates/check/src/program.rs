@@ -166,6 +166,13 @@ impl Program {
             "IdMap" => Type::IdMap(Box::new(arg(0))),
             "Stdout" | "Fs" | "Clock" => Type::named(&written.name),
             name if self.types.contains_key(name) => Type::named(name),
+            // `std.collections.Deque` or `collections.Deque`, through an imported module.
+            name if let Some((path, member)) = name.rsplit_once('.')
+                && self.modules.contains_key(path)
+                && self.types.contains_key(member) =>
+            {
+                Type::named(member)
+            }
             name => match (self.aliases.get(name), depth.checked_sub(1)) {
                 (Some(alias), Some(depth)) => self.resolve_within(alias, depth),
                 _ => Type::Unknown,

@@ -1,4 +1,4 @@
-import std.json
+from std import json
 
 struct Settings:
     volume = 0.8

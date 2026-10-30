@@ -134,11 +134,11 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 ## Standard library
 
-**Names live in their modules.** `std.collections`, `std.random`, `std.time` and `std.re` provide nothing until they're imported: `from std.random import Random`, or `import std.random` and then `random.Random(seed=42)`. Using a name without its import is reported with the import to add. `Clock` is the exception: it's a capability, which `main` names like `Stdout` and `Fs`. The other modules' types, like `Vec3`, `IdMap` and `Path`, are still available everywhere until they move over too.
+**Names live in their modules.** `std.collections`, `std.random`, `std.time` and `std.re` provide nothing until they're imported: `from std.random import Random`, or `from std import random` and then `random.Random(seed=42)`. Using a name without its import is reported with the import to add. `Clock` is the exception: it's a capability, which `main` names like `Stdout` and `Fs`. The other modules' types, like `Vec3`, `IdMap` and `Path`, are still available everywhere until they move over too.
 *Why:* A file's imports show everything it uses from the standard library, as in Python.
 
-**A module is imported whole or by name.** `import std.json` and `from std import json` both make `json.loads(...)` work. `from std.json import loads` makes plain `loads(...)` work. There's no `import *`.
-*Why:* These are Python's forms, so people and AI already write them, and every name in a file can be traced to an import.
+**Imports bind names exactly as in Python.** `import std.json` binds `std`, and the call is `std.json.loads(...)`. `from std import json` binds `json`, for `json.loads(...)`. `from std.json import loads` binds `loads`. A kit's own modules follow the same rule: `import game.physics` binds `game`, and `from game import physics` binds `physics`. Writing `json.loads` after `import std.json` is an error whose help suggests `from std import json`. There's no `import *`, and no `import ... as` yet.
+*Why:* It's one rule that Python developers and AI models already know, and an import never binds a name behind your back. Earlier, `import std.json` also bound `json`, which Python doesn't do.
 
 **Some modules' functions exist only once imported.** Without an import, `loads` doesn't exist, and the error says which modules have it. Other standard library names, like `Path` and `sqrt`, work everywhere for now.
 *Why:* `std.json` and `std.toml` both have `loads` and `dumps`, as in Python, so the name alone can't say which format is meant.
@@ -169,7 +169,7 @@ A big app that wants walls between its own parts splits into local kits in one w
 **A kit is a folder with a `kit.toml` and its code under `src`.** `src/main.fen` holds `main`, and the module `enemies.ai` is the file `src/enemies/ai.fen`. `kit.toml` has `name`, `version` and `fennec`, the toolchain the kit is built with (see Toolchain). Until the launcher exists, a kit asking for a newer Fennec than the one running is an error. Its `[dependencies]` table is reserved for kits from the Den. `fennec run` and `fennec test` with no file run the kit around the current folder; `fennec test` runs the tests in every file under `src`.
 *Why:* One layout means no configuration, and finding a module's file needs no search.
 
-**A file uses another file's names only after importing them.** `from enemies import spawn` brings in names, and `import physics` brings in the module, used as `physics.step`. A file's own names need no import.
+**A file uses another file's names only after importing them.** `from enemies import spawn` brings in names, and `import physics` brings in the module, used as `physics.step`. For a module in a folder, `import world.physics` is used as `world.physics.step`, and `from world import physics` as `physics.step`. A file's own names need no import.
 *Why:* Where every name comes from is visible in the file that uses it, for people and for AI.
 
 **A kit's files share one set of top-level names.** Two files of a kit can't both define `update`; the error names both files.

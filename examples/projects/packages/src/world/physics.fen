@@ -1,0 +1,11 @@
+## How things fall.
+
+def gravity() -> float:
+    9.8
+
+## How far something falls from rest in `seconds`.
+def fall(seconds: float) -> float:
+    gravity() * seconds * seconds / 2.0
+
+test "falling twice as long goes four times as far":
+    assert fall(2.0) == fall(1.0) * 4.0

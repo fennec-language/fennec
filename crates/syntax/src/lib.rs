@@ -15,7 +15,10 @@ pub use ast::{
     Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
 };
 pub use diagnostic::Diagnostic;
-pub use modules::{Imported, importable_type, member as std_member, module_as_value, std_import};
+pub use modules::{
+    Imported, dotted, importable_type, member as std_member, module_as_value, package_member, short_module,
+    std_import,
+};
 pub use parser::{parse, parse_at, parse_prelude, parse_repl};
 pub use prelude::PRELUDE;
 pub use sources::Sources;

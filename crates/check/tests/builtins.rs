@@ -165,7 +165,7 @@ fn the_newer_modules_names_have_to_be_imported() {
     // A module imported whole gives its names through it; `Clock` is a capability, which
     // `main` names without importing, like `Stdout`.
     let program = "
-        import std.random
+        from std import random
 
         def main(stdout: Stdout, clock: Clock):
             mut rng = random.Random(seed=1)

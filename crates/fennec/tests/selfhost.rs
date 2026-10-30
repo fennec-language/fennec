@@ -186,6 +186,32 @@ test \"any list\" for items: list[int], n: int:
     ),
 ];
 
+/// Small programs that reach the checker's errors about written types, and the places
+/// types are written.
+const CHECK_CASES: &[(&str, &str)] = &[
+    (
+        "unknown_types",
+        "def f(a: lsit[int], b: String, c: f64, d: i32, e: boolean, g: List[int], h: Optional) -> Strng:\n    pass\n",
+    ),
+    (
+        "bracket_counts",
+        "def f(a: dict[int], b: int[str], c: Result[int], d: list, e: (int, str) -> bool):\n    pass\n",
+    ),
+    ("alias_loop", "type Loop = Loop\ntype Pair = (int, Loop)\n\ndef f(p: Pair):\n    pass\n"),
+    (
+        "bounds",
+        "interface Shape:\n    def area(self) -> float\n\nstruct Enemy:\n    hp = 1\n\nstruct Bag[T: Enemy]:\n    items: list[T]\n\ndef f[T: Shape & Eq, U: Enemy](a: T, b: U, c: list[Shape]) -> T:\n    a\n",
+    ),
+    (
+        "generic_scopes",
+        "struct Box[T]:\n    item: T\n    other: U\n\n    def get(self) -> T:\n        self.item\n\ndef outer[T](x: T) -> T:\n    def inner(y: Nope) -> T:\n        y\n    names: list[T] = []\n    x\n",
+    ),
+    (
+        "written_places",
+        "from std import collections\nimport std.json\n\nerror Oops:\n    why: Reason\n\nstruct S:\n    q: collections.Deque[int]\n    r: collections.Nope\n\ndef main(stdout: Stdout):\n    a: Mystery = 1\n    match a:\n        case _:\n            b: Unknown2 = 2\n    if True:\n        c: Gone = 3\n\ntest \"t\" for n: Nada:\n    d: Nothing2 = 4\n",
+    ),
+];
+
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -202,18 +228,35 @@ fn sources_in(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// Every `.fen` file under `dir`, in folders too, like the files of the kits in
+/// `examples/projects`.
+fn sources_under(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut paths = sources_in(dir)?;
+    let mut folders: Vec<PathBuf> = fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    folders.sort();
+    for folder in folders {
+        paths.extend(sources_under(&folder)?);
+    }
+    Ok(paths)
+}
+
 /// Every file the two front ends are compared on. Sources that don't live in files, like the
 /// standard library's, are written into `work`.
 fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
     let mut paths = sources_in(&repo().join("examples"))?;
     paths.extend(sources_in(&repo().join("examples/errors"))?);
-    paths.extend(sources_in(&repo().join("selfhost/src"))?);
-    paths.extend(sources_in(&repo().join("selfhost/src/check"))?);
+    paths.extend(sources_under(&repo().join("examples/projects"))?);
+    paths.extend(sources_under(&repo().join("selfhost/src"))?);
     let generated = fennec_syntax::prelude()
         .enumerate()
         .map(|(at, source)| (format!("prelude_{at}"), source))
         .chain(LEX_CASES.iter().map(|(name, source)| (format!("lex_{name}"), *source)))
-        .chain(PARSE_CASES.iter().map(|(name, source)| (format!("parse_{name}"), *source)));
+        .chain(PARSE_CASES.iter().map(|(name, source)| (format!("parse_{name}"), *source)))
+        .chain(CHECK_CASES.iter().map(|(name, source)| (format!("check_{name}"), *source)));
     for (name, source) in generated {
         let path = work.join(format!("{name}.fen"));
         fs::write(&path, source)?;
@@ -297,8 +340,14 @@ fn compare(mode: &str, rust_dump: fn(&str) -> String) -> Result<(), String> {
 
 /// The kinds of checker diagnostics the self-hosted checker reports so far, by a part of
 /// their message. It grows until it covers everything the Rust checker says.
-const CHECK_KINDS: &[&str] =
-    &["isn't a type", "type in brackets", "types in brackets", "refers to itself", "isn't an interface"];
+const CHECK_KINDS: &[&str] = &[
+    "isn't a type",
+    "type in brackets",
+    "types in brackets",
+    "refers to itself",
+    "isn't an interface",
+    "is an interface, not a type",
+];
 
 /// The Rust checker's diagnostics of the kinds in `CHECK_KINDS`, as `fennec dev check`
 /// prints them, or the parse error that stopped it.

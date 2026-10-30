@@ -22,6 +22,8 @@ enum Type:
     Result(value: Type, error: Type)
     ## A struct, enum or error, or a capability like `Stdout`.
     Named(name: str)
+    ## A generic struct with its type arguments: `Deque[int]`.
+    Generic(name: str, args: list[Type])
     ## An `Id` from an `IdMap` of the given type.
     Id(item: Type)
     IdMap(item: Type)

@@ -13,12 +13,12 @@ description: A walk through Fennec's proposed syntax and semantics, from values 
 ## Hello
 
 ```fennec
-fn main(console: Console) {
-  console.print("Hello, Fennec")
+fn main(stdout: Stdout) {
+  stdout.print("Hello, Fennec")
 }
 ```
 
-`main` receives what the program is allowed to touch, here a console. More on that in [capabilities](#capabilities).
+`main` receives what the program is allowed to touch, here standard output. There's no global `print` or `console.log`: code can only write output if it's given somewhere to write it. More on that in [capabilities](#capabilities).
 
 ## Bindings
 

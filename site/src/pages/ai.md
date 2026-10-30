@@ -30,6 +30,7 @@ When a model reaches for something from another language, the compiler recognize
 | `x === y` | There's only `==`, and it never converts types. |
 | `class Boss extends Enemy` | There's no inheritance. Use an `enum` case or an interface. |
 | `var count = 0` | Use `let` for values that change and `const` for values that don't. |
+| `console.log(value)` | There's no `console`. Write output through the `Stdout` that `main` receives; to inspect a value, use a test or the debugger. |
 
 ## Guardrails for the mistakes models actually make
 

@@ -1,0 +1,7 @@
+error: `code` needs one character, but this has 2
+ --> examples/errors/code_of_many.fen:3:18
+  |
+3 |     stdout.print(letter.code())
+  |                  ^^^^^^^^^^^^^
+  |
+  = help: use `codes()` for the code of every character

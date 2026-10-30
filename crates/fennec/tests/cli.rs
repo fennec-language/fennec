@@ -223,6 +223,15 @@ fn repl_says_which_module_to_import_from() {
 }
 
 #[test]
+fn repl_says_how_to_write_ord_and_chr() {
+    let output = fennec(&["repl"], "ord(\"A\")\nchr(65)\n\"A\".code()\nexit\n").unwrap();
+    let errors = text(&output.stderr);
+    assert!(errors.contains("a character's code is a method: write `c.code()`"), "{errors}");
+    assert!(errors.contains("make a character from its code with `str.from_code(n)`"), "{errors}");
+    assert!(text(&output.stdout).contains("65\n"));
+}
+
+#[test]
 fn repl_continues_open_brackets_past_blank_lines() {
     let output = fennec(&["repl"], "[1,\n\n2]\n\nexit\n").unwrap();
     assert!(output.status.success());

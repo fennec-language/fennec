@@ -123,7 +123,10 @@ fn is_type_name(expr: &Expr) -> bool {
         "layout",
     ];
     match &expr.kind {
-        ExprKind::Name(name) => name.starts_with(char::is_uppercase) || MODULES.contains(&name.as_str()),
+        // `str` in `str.from_code(65)` is the type, not a value.
+        ExprKind::Name(name) => {
+            name.starts_with(char::is_uppercase) || name == "str" || MODULES.contains(&name.as_str())
+        }
         ExprKind::Attr { object, .. } => is_type_name(object),
         _ => false,
     }

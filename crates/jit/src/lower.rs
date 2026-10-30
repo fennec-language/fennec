@@ -16,6 +16,7 @@ mod enums;
 mod expr;
 mod fallback;
 mod flow;
+mod hoist;
 mod inline;
 mod lists;
 mod matching;
@@ -348,6 +349,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         borrowed_names: HashSet::new(),
         slots_base,
         literal_of: HashMap::new(),
+        hoisted: Vec::new(),
     };
     lowerer.prologue(&params)?;
     let (tail, tail_ty) = lowerer.tail(&function.def.body)?;
@@ -430,6 +432,8 @@ pub(crate) struct Lowerer<'a, 'f> {
     borrowed: HashSet<Value>,
     /// The variables of names holding boxed values they don't own, by index.
     borrowed_names: HashSet<usize>,
+    /// The packed lists the loops being lowered looked up once, innermost last.
+    hoisted: Vec<hoist::Hoisted>,
     /// Where the table of runtime addresses is, in an executable.
     slots_base: Option<Value>,
     /// The text of each value that's a string literal.

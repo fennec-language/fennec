@@ -104,7 +104,10 @@ impl Lowerer<'_, '_> {
     }
 
     /// Where a packed list's items start, for reading or for changing them.
-    fn items_at(&mut self, name: &str, item: Ty, write: bool) -> Result<Value, Diagnostic> {
+    pub(super) fn items_at(&mut self, name: &str, item: Ty, write: bool) -> Result<Value, Diagnostic> {
+        if let Some(hoisted) = self.hoisted(name).filter(|hoisted| hoisted.writable || !write) {
+            return Ok(hoisted.items);
+        }
         let id = self.name_id(name);
         let element = self.element(item)?;
         let write = self.b.ins().iconst(types::I8, i64::from(write));
@@ -112,6 +115,9 @@ impl Lowerer<'_, '_> {
     }
 
     pub(super) fn list_length(&mut self, name: &str, item: Ty) -> Result<Value, Diagnostic> {
+        if let Some(hoisted) = self.hoisted(name) {
+            return Ok(hoisted.length);
+        }
         let id = self.name_id(name);
         let element = self.element(item)?;
         self.help(Helper::Length, &[id, element])
@@ -127,10 +133,12 @@ impl Lowerer<'_, '_> {
         write: bool,
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        self.note(
-            span,
-            format!("the runtime looks up the packed list `{name}` by name, twice, for each access"),
-        );
+        if self.hoisted(name).is_none() {
+            self.note(
+                span,
+                format!("the runtime looks up the packed list `{name}` by name, twice, for each access"),
+            );
+        }
         let (at, at_ty) = self.expr(index)?;
         let at = self.convert(at, at_ty, Ty::Int, index.span)?;
         let len = self.list_length(name, item)?;
@@ -245,6 +253,7 @@ impl Lowerer<'_, '_> {
         let zero = self.int(0);
         self.b.def_var(counter, zero);
         let [header, inside, advance, exit] = [(); 4].map(|()| self.b.create_block());
+        let hoisted = self.hoist_lists(&[name.clone(), list_name.clone()], None, body)?;
         self.b.ins().jump(header, &[]);
         self.b.switch_to_block(header);
         let at = self.b.use_var(counter);
@@ -270,6 +279,7 @@ impl Lowerer<'_, '_> {
         self.loops.push(super::Loop { next: advance, done: exit, depth, put_back: None });
         let lowered = self.tail(body);
         self.loops.pop();
+        self.unhoist(hoisted);
         lowered?;
         self.close_scope()?;
         if !self.is_dead() {

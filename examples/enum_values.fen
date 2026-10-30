@@ -77,7 +77,17 @@ def score(tokens: list[Token]) -> int:
     total
 
 def main(stdout: Stdout):
-    moves = [.Step(.North, 1), .Step(.North, 3), Move.Step(dir=.East, count=0), .Step(.West, 2), .Jump(Cell(0, 0)), .Jump(to=Cell(row=4, col=-1)), .Wait(), .Wait(turns=3), Move.Quit]
+    moves = [
+        .Step(.North, 1),
+        .Step(.North, 3),
+        Move.Step(dir=.East, count=0),
+        .Step(.West, 2),
+        .Jump(Cell(0, 0)),
+        .Jump(to=Cell(row=4, col=-1)),
+        .Wait(),
+        .Wait(turns=3),
+        Move.Quit,
+    ]
     for move in moves:
         stdout.print(describe(move))
 
@@ -95,7 +105,17 @@ def main(stdout: Stdout):
     stdout.print(a == b, a != b, b == .Step(.South, 2), b == Move.Quit, Move.Wait() == .Wait(1))
     stdout.print(Token.Decimal(0.0) == .Decimal(-0.0), Token.Decimal(1.5) == .Decimal(1.5))
 
-    tokens = [.Number(4), .Plus, .Decimal(2.5), .Flag(True), .Minus, .Number(3), .Flag(False), .End, .Number(100)]
+    tokens = [
+        .Number(4),
+        .Plus,
+        .Decimal(2.5),
+        .Flag(True),
+        .Minus,
+        .Number(3),
+        .Flag(False),
+        .End,
+        .Number(100),
+    ]
     stdout.print(score(tokens), len(tokens), tokens[2], tokens[-1])
 
     mut path = [Dir.North]

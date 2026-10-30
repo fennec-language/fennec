@@ -71,7 +71,12 @@ def main(stdout: Stdout):
     stdout.print("outside")
 
     # `?.` skips a method call on None.
-    stdout.print(find("Vex")?.greet(), find("Kit")?.greet(), find("Kit") is not None, find("Vex") is not None)
+    stdout.print(
+        find("Vex")?.greet(),
+        find("Kit")?.greet(),
+        find("Kit") is not None,
+        find("Vex") is not None,
+    )
 
     # Arrow functions can take no arguments, or several.
     answer = () => 42
@@ -83,7 +88,19 @@ def main(stdout: Stdout):
     stdout.print(answer(), add(2, 3), pick(1, 2))
 
     # Collections can end with a comma.
-    stdout.print({"a": 1,}, {1, 2,}, [1,], (1,))
+    stdout.print(
+        {
+            "a": 1,
+        },
+        {
+            1,
+            2,
+        },
+        [
+            1,
+        ],
+        (1,),
+    )
 
     # A function can return a result it made itself.
     stdout.print(parse("12"), parse("twelve"))

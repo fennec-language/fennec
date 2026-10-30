@@ -2,7 +2,9 @@ def main(stdout: Stdout):
     scores = [12, 7, 31, 18]
     stdout.print([score * 2 for score in scores])
     stdout.print([score for score in scores if score > 10])
-    stdout.print(f"total {sum(scores)}, best {max(scores)}, worst {min(scores)}, count {len(scores)}")
+    stdout.print(
+        f"total {sum(scores)}, best {max(scores)}, worst {min(scores)}, count {len(scores)}",
+    )
     stdout.print(sum(score * score for score in scores))
     stdout.print(any(score > 30 for score in scores), all(score > 5 for score in scores))
 

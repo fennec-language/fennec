@@ -1,0 +1,21 @@
+[package]
+name = "fennec-fmt"
+description = "Fennec's formatter: one style, no options"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+# The tests are one binary, tests/main.rs, not one per file.
+autotests = false
+
+[[test]]
+name = "fmt"
+path = "tests/main.rs"
+
+[dependencies]
+fennec-syntax.workspace = true
+
+[lints]
+workspace = true

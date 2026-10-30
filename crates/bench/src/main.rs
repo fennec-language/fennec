@@ -5,7 +5,7 @@
 //! median time and, where `perf` counts them, by its instructions too.
 //!
 //! ```text
-//! fennec-bench [--fennec PATH] [--previous PATH] [--runs N] [--kernels DIR]
+//! fennec-bench [--fennec PATH] [--previous PATH] [--runs N] [--kernels DIR] [--report-only]
 //! ```
 #![expect(clippy::print_stdout, reason = "the suite prints its table")]
 #![expect(clippy::print_stderr, reason = "the suite reports failures")]
@@ -16,7 +16,7 @@ mod report;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use measure::{Program, build_twin, perf_report, time_together};
+use measure::{Program, build_twin, count_with_valgrind, perf_report, time_together, valgrind_available};
 use report::Result;
 
 struct Options {
@@ -24,6 +24,16 @@ struct Options {
     previous: Option<PathBuf>,
     runs: usize,
     kernels: PathBuf,
+    /// Slowdowns are warnings, not failures, until the signal is proven stable on CI.
+    report_only: bool,
+}
+
+/// What a run found: every kernel's result, the kernels that got slower, and the errors,
+/// like a kernel whose Fennec and Rust versions print different things.
+struct Found {
+    results: Vec<Result>,
+    slowdowns: Vec<String>,
+    errors: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -35,19 +45,32 @@ fn main() -> ExitCode {
         }
     };
     match suite(&options) {
-        Ok((results, mut failures)) => {
-            let table = report::table(&results);
+        Ok(mut found) => {
+            let table = report::table(&found.results);
             print!("{table}");
             if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
                 let text = format!("## Benchmarks\n\n{table}");
                 if let Err(err) = append(Path::new(&summary), &text) {
-                    failures.push(format!("couldn't write the summary: {err}"));
+                    found.errors.push(format!("couldn't write the summary: {err}"));
                 }
             }
-            for failure in &failures {
-                eprintln!("error: {failure}");
+            let on_github = std::env::var_os("GITHUB_ACTIONS").is_some();
+            for slowdown in &found.slowdowns {
+                if options.report_only {
+                    // A warning annotation shows on the pull request without failing it.
+                    if on_github {
+                        println!("::warning title=Benchmark slowdown::{slowdown}");
+                    }
+                    eprintln!("warning: {slowdown}");
+                } else {
+                    eprintln!("error: {slowdown}");
+                }
             }
-            if failures.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+            for error in &found.errors {
+                eprintln!("error: {error}");
+            }
+            let failed = !found.errors.is_empty() || !options.report_only && !found.slowdowns.is_empty();
+            if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
         }
         Err(message) => {
             eprintln!("error: {message}");
@@ -67,8 +90,13 @@ fn options(mut args: impl Iterator<Item = String>) -> std::result::Result<Option
         previous: None,
         runs: 7,
         kernels: PathBuf::from("bench/kernels"),
+        report_only: false,
     };
     while let Some(flag) = args.next() {
+        if flag == "--report-only" {
+            options.report_only = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("`{flag}` needs a value"))?;
         match flag.as_str() {
             "--fennec" => options.fennec = PathBuf::from(value),
@@ -84,8 +112,8 @@ fn options(mut args: impl Iterator<Item = String>) -> std::result::Result<Option
     Ok(options)
 }
 
-/// Runs every kernel. Returns each one's result and every failure.
-fn suite(options: &Options) -> std::result::Result<(Vec<Result>, Vec<String>), String> {
+/// Runs every kernel.
+fn suite(options: &Options) -> std::result::Result<Found, String> {
     let out_dir = PathBuf::from("target/bench");
     std::fs::create_dir_all(&out_dir).map_err(|err| format!("couldn't make {}: {err}", out_dir.display()))?;
     let mut kernels: Vec<PathBuf> = std::fs::read_dir(&options.kernels)
@@ -95,35 +123,49 @@ fn suite(options: &Options) -> std::result::Result<(Vec<Result>, Vec<String>), S
         .collect();
     kernels.sort();
     let count = perf_report(&out_dir);
-    if count.is_some() {
-        eprintln!("counting instructions with perf");
-    } else {
-        eprintln!("perf can't count instructions here, so slowdowns are measured again before they fail");
-    }
-    let mut results = Vec::new();
-    let mut failures = Vec::new();
+    let valgrind = count.is_none() && valgrind_available();
+    eprintln!(
+        "{}",
+        match (&count, valgrind) {
+            (Some(_), _) => "counting instructions with perf",
+            (None, true) => "counting instructions with Valgrind to confirm slowdowns",
+            (None, false) =>
+                "nothing can count instructions here, so slowdowns are measured again before they fail",
+        }
+    );
+    let mut found = Found { results: Vec::new(), slowdowns: Vec::new(), errors: Vec::new() };
     for kernel in kernels {
         let name = kernel.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
         eprintln!("running {name}");
         let mut result = run_kernel(&kernel, &out_dir, options.runs, options, count.as_deref());
-        // Without instruction counts, a slowdown is measured again, three times as long,
-        // before it fails, so one busy moment on the machine doesn't fail the suite.
-        if let Ok(slower) = &result
+        if let Ok(slower) = &mut result
             && slower.failure().is_some()
             && slower.instructions.is_none()
         {
-            eprintln!("measuring {name} again");
-            result = run_kernel(&kernel, &out_dir, options.runs * 3, options, count.as_deref());
+            if valgrind {
+                // A slowdown with no instruction count is confirmed by counting both
+                // versions' instructions, once each: the count doesn't wobble like time does.
+                eprintln!("counting {name}'s instructions");
+                let fennec =
+                    |command: &Path| Program { command: command.to_path_buf(), args: kernel_args(&kernel) };
+                slower.instructions = count_with_valgrind(&fennec(&options.fennec));
+                slower.previous_instructions =
+                    options.previous.as_deref().and_then(|previous| count_with_valgrind(&fennec(previous)));
+            } else {
+                // Otherwise it's measured again, three times as long, before it fails.
+                eprintln!("measuring {name} again");
+                result = run_kernel(&kernel, &out_dir, options.runs * 3, options, count.as_deref());
+            }
         }
         match result {
             Ok(result) => {
-                failures.extend(result.failure());
-                results.push(result);
+                found.slowdowns.extend(result.failure());
+                found.results.push(result);
             }
-            Err(message) => failures.push(format!("{name}: {message}")),
+            Err(message) => found.errors.push(format!("{name}: {message}")),
         }
     }
-    Ok((results, failures))
+    Ok(found)
 }
 
 /// Times one kernel against its twin, and against the previous `fennec` if there's one that
@@ -137,10 +179,7 @@ fn run_kernel(
 ) -> std::result::Result<Result, String> {
     let name = kernel.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     let twin = build_twin(&kernel.with_extension("rs"), out_dir)?;
-    let fennec = |command: &Path| Program {
-        command: command.to_path_buf(),
-        args: vec!["run".to_owned(), "--jit".to_owned(), kernel.to_string_lossy().into_owned()],
-    };
+    let fennec = |command: &Path| Program { command: command.to_path_buf(), args: kernel_args(kernel) };
     let mut programs = vec![Program { command: twin, args: Vec::new() }, fennec(&options.fennec)];
     if let Some(previous) = &options.previous {
         // A previous `fennec` that can't run a new kernel just isn't compared on it.
@@ -163,4 +202,9 @@ fn run_kernel(
         previous_instructions: previous.and_then(|previous| previous.instructions),
         fell_back: ours.notes.contains("using the interpreter"),
     })
+}
+
+/// How `fennec` runs a kernel: natively, with the JIT.
+fn kernel_args(kernel: &Path) -> Vec<String> {
+    vec!["run".to_owned(), "--jit".to_owned(), kernel.to_string_lossy().into_owned()]
 }

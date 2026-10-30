@@ -2,7 +2,7 @@
 
 Each kernel in `kernels/` is a Fennec program and a Rust twin that does the same work, the
 idiomatic way. `fennec-bench` builds the twin with `rustc -C opt-level=3 -C target-cpu=native`,
-runs both on the same machine, taking turns, and keeps each one's fastest of 5 runs. They must
+runs both on the same machine, taking turns, 7 times each, and compares medians. They must
 print the same thing.
 
 ```bash
@@ -11,9 +11,12 @@ cargo build --release -p fennec -p fennec-bench
 ```
 
 To compare against another build of `fennec`, like the previous commit's, pass
-`--previous path/to/fennec`. CI does that on every pull request, merge and push to `main`, and
-fails if a kernel runs more than 10% slower than before. 10% is the noise of a shared CI
-machine, even taking the best of several runs.
+`--previous path/to/fennec`. CI does that on every pull request, merge and push to `main`.
+A kernel fails when its median time is more than 10% slower than before and, on Linux where
+`perf stat` counts each run's instructions, it also runs more than 3% more instructions. Time
+on a shared CI machine can jump by 10% or more when a neighbour is busy; instruction counts
+don't. Where `perf` isn't available, a slowdown is measured again with three times the runs
+before it fails.
 
 ## Targets
 

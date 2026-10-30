@@ -65,6 +65,7 @@ impl Interp<'_> {
             Value::Capability(Capability::Stdout) => self.stdout_method(method, &args, span),
             Value::Capability(Capability::Fs) => self.fs_method(method, &args, span),
             Value::Capability(Capability::Clock) => self.clock_method(method, &args, span),
+            Value::Capability(Capability::Stdin) => self.stdin_method(method, &args, span),
             // The bytes share the string's memory: nothing is copied.
             Value::Str(text) if method == "encode" && args.is_empty() => {
                 Ok(Value::Bytes(Rc::from(Rc::clone(text))))

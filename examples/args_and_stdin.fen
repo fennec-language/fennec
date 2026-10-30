@@ -1,0 +1,15 @@
+# `main` names `args` to read its command-line arguments and `stdin` to read its input. A
+# program that doesn't name them can't see them. Try
+# `printf "one\ntwo\n" | fennec run examples/args_and_stdin.fen fire ice`.
+
+def shout(words: list[str]) -> str:
+    " ".join([word.upper() for word in words])
+
+def main(stdout: Stdout, args: Args, stdin: Stdin):
+    stdout.print(len(args), "arguments:", shout([arg for arg in args]))
+    if len(args) > 0:
+        stdout.print("the first is", args[0])
+    lines = stdin.lines()
+    stdout.print(len(lines), "lines of input")
+    for line in lines:
+        stdout.print(">", line)

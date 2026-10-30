@@ -9,7 +9,7 @@ use fennec_syntax::{BinOp, Diagnostic, Span};
 use crate::call::CallArg;
 use crate::collections::split_key;
 use crate::interp::Interp;
-use crate::value::Value;
+use crate::value::{Capability, Value};
 use crate::{format, ops, stdlib};
 
 /// The builtins. Standard library functions, like `json.loads`, are in `stdlib`.
@@ -99,6 +99,11 @@ impl Interp<'_> {
                 self.type_info(&instance.type_name).and_then(|info| info.methods.get("len").cloned())
         {
             return self.call_with_values(&len, vec![arg.value.clone()], span);
+        }
+        if let ([arg], "len") = (args.as_slice(), name)
+            && arg.value == Value::Capability(Capability::Args)
+        {
+            return Ok(Value::Int(i64::try_from(self.arguments().len()).unwrap_or(i64::MAX)));
         }
         let (values, key) = split_key(args, name)?;
         if key.is_some() && !matches!(name, "min" | "max" | "sorted") {

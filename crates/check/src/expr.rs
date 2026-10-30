@@ -480,6 +480,7 @@ impl FnCx<'_> {
                 self.error(unhandled_result(span));
                 Type::Unknown
             }
+            Type::Named(type_name) if type_name == "Args" && name == "program" => Type::Str,
             Type::Named(type_name) | Type::Generic(type_name, _) => {
                 match self.checker.program.type_info(type_name).map(|info| info.kind) {
                     Some(TypeKind::Enum) => {
@@ -572,6 +573,8 @@ impl FnCx<'_> {
                 self.error(might_be_none(span));
                 Type::Unknown
             }
+            // `for arg in args` gives the command-line arguments.
+            Type::Named(name) if name == "Args" => Type::Str,
             ty @ (Type::Named(_) | Type::Generic(..)) => self.iterated(&ty, span),
             other => {
                 self.error(Diagnostic::new(format!("can't loop over {}", article(&other.kind())), span));

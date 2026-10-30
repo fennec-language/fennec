@@ -9,14 +9,12 @@ from ast import Module
 from parser import parse
 from dump import dump_tokens, dump_tree, dump_check
 
-## Fennec programs can't read their command-line arguments yet, so this reads its work from
-## `inputs.txt` in the current folder: one `tokens <path>`, `tree <path>` or `check <path>`
+## Reads its work from standard input: one `tokens <path>`, `tree <path>` or `check <path>`
 ## line per file to dump. `std <path>` lines name the standard library's sources, which
 ## `check` checks against.
-def main(stdout: Stdout, fs: Fs):
-    request = fs.read_text("inputs.txt")?
+def main(stdout: Stdout, fs: Fs, stdin: Stdin):
     mut library = []
-    for line in request.lines():
+    for line in stdin.lines():
         space = line.find(" ")
         if space is None:
             continue

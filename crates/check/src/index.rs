@@ -49,6 +49,10 @@ impl FnCx<'_> {
                 self.key_fits(&Type::Id(item.clone()), &at, index.span);
                 item.as_ref().clone()
             }
+            Type::Named(name) if name == "Args" => {
+                self.key_fits(&Type::Int, &at, index.span);
+                Type::Str
+            }
             Type::Named(name) | Type::Generic(name, _) => {
                 if let Some((key, _)) = self.checker.program.method(name, "[]") {
                     return self.call_operator(&ty, &key, &at, index.span);

@@ -58,6 +58,8 @@ pub(crate) enum Cap {
     Stdout,
     Fs,
     Clock,
+    Args,
+    Stdin,
 }
 
 impl Cap {
@@ -66,6 +68,8 @@ impl Cap {
             "Stdout" => Some(Cap::Stdout),
             "Fs" => Some(Cap::Fs),
             "Clock" => Some(Cap::Clock),
+            "Args" => Some(Cap::Args),
+            "Stdin" => Some(Cap::Stdin),
             _ => None,
         }
     }
@@ -75,6 +79,8 @@ impl Cap {
             Cap::Stdout => "Stdout",
             Cap::Fs => "Fs",
             Cap::Clock => "Clock",
+            Cap::Args => "Args",
+            Cap::Stdin => "Stdin",
         }
     }
 
@@ -84,6 +90,8 @@ impl Cap {
             Cap::Stdout => 0,
             Cap::Fs => 1,
             Cap::Clock => 2,
+            Cap::Args => 3,
+            Cap::Stdin => 4,
         }
     }
 }

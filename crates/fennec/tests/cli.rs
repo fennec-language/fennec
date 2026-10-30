@@ -39,6 +39,22 @@ fn run_prints_the_programs_output() {
 }
 
 #[test]
+fn run_hands_main_its_arguments_and_input() {
+    let program = "examples/args_and_stdin.fen";
+    for engine in [&["run"][..], &["run", "--jit"]] {
+        let args: Vec<&str> = engine.iter().copied().chain([program, "fire", "two words"]).collect();
+        let output = fennec(&args, "one\ntwo\r\n").unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert_eq!(
+            text(&output.stdout),
+            "2 arguments: FIRE TWO WORDS\nthe first is fire\n2 lines of input\n> one\n> two\n"
+        );
+    }
+    let output = fennec_on("run", "program_name", "def main(stdout: Stdout, args: Args):\n    stdout.print(args.program.endswith(\"program_name.fen\"))\n").unwrap();
+    assert_eq!(text(&output.stdout), "True\n");
+}
+
+#[test]
 fn run_reports_errors_and_fails() {
     let output = fennec(&["run", "examples/errors/print.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));

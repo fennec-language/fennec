@@ -192,6 +192,20 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 - Entries are written to a temporary file and renamed into place, so readers never see half an entry and the normal path takes no locks. A lock is taken only while old entries are being cleaned up.
 - The JIT, release builds and the language server share the cache through the query-based compiler.
 
+## Sandboxing
+
+**Capabilities are the sandbox's policy in every engine.** A script can do only what the capabilities passed to its `main` allow, and sandboxed code can't use `extern` or `unsafe`. A host can show what a script asks for before running it: "this script wants `Net` and read access to `data/`".
+*Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
+
+**The interpreter runs untrusted scripts, with limits.** It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground, the REPL and AI-written scripts, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
+
+**Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
+*Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.
+
+**The native engines are for trusted code.** The Cranelift JIT and LLVM release builds run your own programs, not untrusted ones.
+
+**On servers, sandboxed code also runs in its own process,** under seccomp on Linux or the App Sandbox on macOS, as an outer wall.
+
 ## Writing Fennec in Fennec
 
 The current compiler stays as stage 0 until a Fennec compiler built by Fennec produces identical output when it builds itself again.

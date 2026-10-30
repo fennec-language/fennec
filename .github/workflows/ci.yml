@@ -31,6 +31,8 @@ jobs:
       - name: Check the Fennec code is formatted
         run: cargo run --locked --quiet -p fennec -- fmt --check examples
       - run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Clippy for the playground's WebAssembly module
+        run: cargo clippy --target wasm32-unknown-unknown -p fennec-wasm --locked -- -D warnings
       - run: cargo doc --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
@@ -98,6 +100,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The build compiles the interpreter to WebAssembly for the playground.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
@@ -105,6 +109,8 @@ jobs:
           cache-dependency-path: site/package-lock.json
       - run: npm ci --prefix site
       - run: npm run build --prefix site
+      - name: Run the examples through the playground's WebAssembly module
+        run: node site/scripts/check-playground.mjs
 
   workflows:
     name: Workflow lints and security audit

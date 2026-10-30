@@ -263,6 +263,15 @@ name = "fennec-syntax"
 version = "0.0.1"
 
 [[package]]
+name = "fennec-wasm"
+version = "0.0.1"
+dependencies = [
+ "fennec-check",
+ "fennec-interp",
+ "fennec-syntax",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

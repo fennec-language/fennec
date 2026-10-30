@@ -1,0 +1,24 @@
+Ash is level 8 and moves at 2.5
+carries torch
+carries rope
+True True
+{"name": "Ash", "level": 7, "speed": 2.5, "items": ["torch", "rope"], "pet": null, "alive": true}
+{
+  "volume": 0.8,
+  "fullscreen": false,
+  "keys": [
+    "w",
+    "a",
+    "s",
+    "d"
+  ]
+}
+[1, "two", 3.0, null, [4, 5], {"6": [], "7": {}}]
+"quotes \" and \\ and\nnew lines"
+True
+read [1, 2500.0, -0.5, "é"]
+couldn't read it: expected a value, but found `]`, at line 1, column 7
+couldn't read it: expected `:` after the key, but found `2`, at line 2, column 6
+couldn't read it: this string never ends, at line 1, column 1
+couldn't read it: `tru` isn't a JSON value; the words JSON knows are true, false and null, at line 1, column 1
+the problem is on line 3, column 3

@@ -12,6 +12,7 @@ use crate::{builtins, format, ops};
 impl Interp<'_> {
     pub(crate) fn eval(&mut self, expr: &Expr) -> Result<Value, Diagnostic> {
         let span = expr.span;
+        self.step(span)?;
         match &expr.kind {
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Float(x) => Ok(Value::Float(*x)),
@@ -67,10 +68,7 @@ impl Interp<'_> {
             },
             ExprKind::Try { value, context } => self.try_value(value, context.as_deref(), span),
             ExprKind::Call { callee, args } => self.call(callee, args, span),
-            ExprKind::Attr { object, name, optional } => {
-                let value = self.eval(object)?;
-                self.attr(value, name, *optional, span)
-            }
+            ExprKind::Attr { object, name, optional } => self.eval_attr(object, name, *optional, span),
             ExprKind::Index { object, index } => {
                 let value = self.eval(object)?;
                 let at = self.eval(index)?;
@@ -95,7 +93,41 @@ impl Interp<'_> {
         items.iter().map(|item| self.eval(item)).collect()
     }
 
-    fn lookup(&self, name: &str, span: Span) -> Result<Value, Diagnostic> {
+    /// `object.name`: a field, or a name from an imported module.
+    fn eval_attr(
+        &mut self,
+        object: &Expr,
+        name: &str,
+        optional: bool,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        if let Some(member) = self.module_member(object, name, span) {
+            return self.lookup(&member?, span);
+        }
+        let value = self.eval(object)?;
+        self.attr(value, name, optional, span)
+    }
+
+    /// For `json.loads` where `json` is an imported module, the name it means: a module
+    /// function like `json.loads`, or a name like `Path` that's available everywhere.
+    pub(crate) fn module_member(
+        &self,
+        object: &Expr,
+        name: &str,
+        span: Span,
+    ) -> Option<Result<String, Diagnostic>> {
+        let ExprKind::Name(alias) = &object.kind else { return None };
+        if self.frame.get(alias).is_some() {
+            return None;
+        }
+        let module = self.modules.get(alias)?;
+        Some(fennec_syntax::std_member(module, name, span).map(|()| {
+            let qualified = format!("{module}.{name}");
+            if builtins::named(&qualified).is_some() { qualified } else { name.to_owned() }
+        }))
+    }
+
+    pub(crate) fn lookup(&self, name: &str, span: Span) -> Result<Value, Diagnostic> {
         if let Some(binding) = self.frame.get(name) {
             return Ok(binding.value.clone().unpacked());
         }
@@ -104,6 +136,12 @@ impl Interp<'_> {
         }
         if self.types.contains_key(name) || builtins::is_type(name) {
             return Ok(Value::Type(Rc::from(name)));
+        }
+        if let Some(builtin) = self.imports.get(name) {
+            return Ok(Value::Builtin(builtin));
+        }
+        if let Some(module) = self.modules.get(name) {
+            return Err(fennec_syntax::module_as_value(name, module, span));
         }
         if let Some(constant) = builtins::constant(name) {
             return Ok(constant);
@@ -289,6 +327,12 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
         "null" | "nil" | "none" | "undefined" => diagnostic.with_help("write `None`"),
         "lambda" => diagnostic.with_help("write an arrow function: `x => x * 2`"),
         "raise" => diagnostic.with_help("Fennec has no exceptions: write `fail SomeError(...)`"),
-        _ => diagnostic,
+        _ => match builtins::modules_with(name).as_slice() {
+            [] => diagnostic,
+            modules @ [module, ..] => diagnostic.with_help(format!(
+                "import it from std.{}, like `from std.{module} import {name}`",
+                modules.join(" or std.")
+            )),
+        },
     }
 }

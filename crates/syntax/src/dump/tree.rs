@@ -67,6 +67,14 @@ impl Tree {
             Item::TypeAlias { name, ty, span } => {
                 self.node(&format!("type-alias {name}"), Some(*span), |tree| tree.type_expr(ty));
             }
+            Item::Const { name, ty, value, span } => {
+                self.node(&format!("const {name}"), Some(*span), |tree| {
+                    if let Some(ty) = ty {
+                        tree.type_expr(ty);
+                    }
+                    tree.expr(value);
+                });
+            }
             Item::Import(import) => {
                 let mut label = format!("import {}", import.module.join("."));
                 if !import.names.is_empty() {

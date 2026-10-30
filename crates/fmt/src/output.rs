@@ -3,17 +3,13 @@
 
 use crate::layout::OutLine;
 
-/// Writes the lines out, each ending with `newline`.
+/// Writes the lines out, each ending with `newline`. Blank lines have no indentation, and the
+/// writer never puts one first or last.
 pub(crate) fn render(lines: &[OutLine], newline: &str) -> String {
-    let first = lines.iter().position(|line| !is_blank(line)).unwrap_or(lines.len());
-    let last = lines.iter().rposition(|line| !is_blank(line)).map_or(first, |at| at + 1);
-    let lines = lines.get(first..last).unwrap_or(&[]);
     let columns = comment_columns(lines);
     let mut out = String::with_capacity(lines.iter().map(|line| line.indent + line.code.len() + 1).sum());
     for (line, column) in lines.iter().zip(columns) {
-        if !is_blank(line) {
-            push_spaces(&mut out, line.indent);
-        }
+        push_spaces(&mut out, line.indent);
         out.push_str(&line.code);
         if let Some(comment) = &line.comment {
             if line.code.is_empty() {
@@ -26,10 +22,6 @@ pub(crate) fn render(lines: &[OutLine], newline: &str) -> String {
         out.push_str(newline);
     }
     out
-}
-
-fn is_blank(line: &OutLine) -> bool {
-    line.code.is_empty() && line.comment.is_none()
 }
 
 fn width(text: &str) -> usize {

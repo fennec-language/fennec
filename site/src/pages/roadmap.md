@@ -31,7 +31,7 @@ The next milestone moves Fennec's checks from runtime to compile time.
 - The language's lints.
 - The intermediate representation, designed for native code from the start.
 - The interpreter.
-- Names and `mut`, `def` with inferred return types, structs with defaults, named constructors and `where`, `enum` and `match`.
+- Names and `mut`, `def` with written return types, structs with defaults, named constructors and `where`, `enum` and `match`.
 - Errors with `error`, `fail`, `?`, `else`, `match` and `from`, and optional types with `None` and `?.`.
 - Implicit interfaces and generics.
 - Values without references: automatic moves, sharing until changed, and the check that `mut` access is exclusive.

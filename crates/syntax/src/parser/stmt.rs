@@ -50,7 +50,6 @@ impl Parser {
             Tok::Kw(Kw::Continue) => self.keyword_stmt(StmtKind::Continue),
             Tok::Kw(Kw::Pass) => self.keyword_stmt(StmtKind::Pass),
             Tok::Kw(Kw::Mut) => self.mut_declaration()?,
-            Tok::Kw(Kw::Reserved(word)) => return Err(self.reserved(word)),
             Tok::Name(word) if self.is_python_only(&word) => return Err(python_only(&word, start)),
             _ => self.expr_or_assign()?,
         };

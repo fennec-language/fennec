@@ -1,0 +1,28 @@
+2 None 2 0
+3 [1, 4, 1, 5]
+[1, 4] (2, 3) (2,)
+[4, 1, 5, 9, 2]
+[2, 9, 5, 1, 4]
+[1, 2, 4, 5, 9]
+[9, 5, 4, 2, 1]
+[4, 2, 1]
+[]
+40 90 ["ash", "kit", "vex"] [70, 40, 90]
+40 {"ash": 70, "vex": 90} True False
+{} None
+{"storm"}
+set()
+ash True
+kit False
+vex False
+3 ash
+["ash", "vex"]
+[] None
+[fire ice  ] [  fire ice]
+["one", "two"] ["a", "b", "", "c"] True
+feNNec 3 None 2
+True False True
+no newline, then one
+False
+couldn't do it
+couldn't write it

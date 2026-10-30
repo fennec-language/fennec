@@ -66,14 +66,15 @@ impl Parser {
         Ok(Some(Expr { kind: ExprKind::Lambda { params, body: Box::new(body) }, span }))
     }
 
-    /// Looks ahead for `(a, b) =>`, returning the names and how many tokens they take.
+    /// Looks ahead for `(a, b) =>`, returning the names and how many tokens they take. A
+    /// trailing comma is fine, as it is in `def` parameters.
     fn paren_params(&self) -> Option<(Vec<String>, usize)> {
         let mut params = Vec::new();
         let mut at = 1;
         loop {
             match self.peek_at(at) {
                 Tok::Name(name) => params.push(name.clone()),
-                Tok::P(Punct::RParen) if params.is_empty() => break,
+                Tok::P(Punct::RParen) => break,
                 _ => return None,
             }
             at += 1;
@@ -312,7 +313,6 @@ impl Parser {
                 return Err(self.reserved(word));
             }
             other => {
-                self.pos -= 1;
                 return Err(Diagnostic::new(
                     format!("expected a value, found {}", super::describe(&other)),
                     span,
@@ -415,7 +415,11 @@ fn fstring_parts(parts: Vec<FPart>) -> Result<Vec<FStrPart>, Diagnostic> {
                     )
                     .with_help("put an expression inside, or write `{{` for a literal brace"));
                 }
-                let mut parser = Parser::new(lex(&source, offset)?);
+                // Lexed on its own, a leading space would read as indentation.
+                let trimmed = source.trim_start();
+                let skipped = source.len() - trimmed.len();
+                let offset = Span::new(skipped, skipped).shifted(offset).start;
+                let mut parser = Parser::new(lex(trimmed, offset)?);
                 let expr = parser.expr()?;
                 parser.eat(&Tok::Newline);
                 if !parser.at(&Tok::Eof) {

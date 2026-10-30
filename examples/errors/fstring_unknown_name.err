@@ -1,0 +1,5 @@
+error: `nmae` doesn't exist
+ --> examples/errors/fstring_unknown_name.fen:3:30
+  |
+3 |     stdout.print(f"hello, {  nmae }")
+  |                              ^^^^

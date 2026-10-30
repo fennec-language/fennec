@@ -1,0 +1,4 @@
+from std.game import IdMap
+
+def main(stdout: Stdout):
+    stdout.print(IdMap(3))

@@ -1,0 +1,7 @@
+error: tabs aren't allowed
+ --> examples/errors/tab_inside_line.fen:2:12
+  |
+2 |     total =	1 + 2
+  |            ^
+  |
+  = help: indent with 4 spaces

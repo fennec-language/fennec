@@ -99,10 +99,7 @@ impl Interp<'_> {
         fields: Vec<(&str, Value)>,
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        let args = fields
-            .into_iter()
-            .map(|(name, value)| CallArg { name: Some(name.to_owned()), ..CallArg::plain(value, span) })
-            .collect();
+        let args = fields.into_iter().map(|(name, value)| CallArg::named(name, value, span)).collect();
         self.construct(type_name, args, span)
     }
 

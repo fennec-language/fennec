@@ -73,7 +73,7 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **Floats give the same results on every platform.** There's no fast-math and no automatic fused multiply-add, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `with fast_math():` opts out for one block.
 *Why:* It makes lockstep multiplayer and replays possible. It costs a little, and only in math-heavy code, which can opt out.
 
-**Parallel reductions combine in a fixed order.** How `parallel sum(...)` splits and combines its work depends on the data's size, never the thread count.
+**Parallel reductions combine in a fixed order.** How `sum(... for e in parallel(xs))` splits and combines its work depends on the data's size, never the thread count.
 *Why:* Float results don't drift between runs or machines.
 
 **`Clock` and `Random` are capabilities,** passed in like `Stdout` and `Fs`.
@@ -123,11 +123,65 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **An enum fits an interface when every case does.** The compiler writes the `match`, so `total(targets)` works on a list of a `Target` enum whose cases are all `Damageable`.
 *Why:* Lists of mixed types stay static, since the `match` compiles to a jump table, with nothing extra to write.
 
-**An interface in a parameter's type means "any type that fits", chosen at compile time.** `def total(xs: list[Damageable])` takes a list of any one type that has the interface's methods. The compiler makes a copy of the function for each type, so calls are static. A list that mixes types is an `enum`.
-*Why:* Errors point at the call ("`Rock` isn't `Damageable`: it has no `damage` method"), not deep inside the function; the function is checked once against the interface; and there's no dynamic dispatch.
+**Type parameters are written the way Python 3.12 writes them.** The bound says what the type must be able to do:
+```fennec
+def total_area[T: Shape](shapes: list[T]):
+def largest[T: Ordered](xs: list[T]) -> T:
+def merge[T: Ordered & Hashable](a: list[T], b: list[T]):
+struct Pool[T]:
+interface Container[T]:
+```
+Type arguments are inferred at calls; `largest[int](xs)` is allowed when they can't be. This replaces the earlier shorthand where an interface in a parameter's type, `list[Shape]`, meant "any one type that fits". Writing that now is an error, with a fix to `[T: Shape]`.
+*Why:* `T` lets the type flow through, so `largest(enemies)` gives back an `Enemy`, and it relates parameters to each other. There's one way to write it, and it's Python's. In Python, Java, C# and Go, `list[Shape]` means a list of mixed types dispatched at run time, so the shorthand would have misled exactly the people and models Fennec is written for.
 
-**Closures capture by value.** Only a closure that doesn't escape, one passed straight into a call, can capture a `mut` name, and it changes the original. This replaces the earlier rule that closures can't change captured names at all.
-*Why:* Capturing by value costs one reference-count bump. Capturing a `mut` in a closure that doesn't escape costs a pointer and needs no lifetimes.
+**Generic code is checked once, and errors name the missing piece.** A generic body may use only what its bounds promise, so errors never surface at an instantiation. A call with a type that doesn't fit says what's missing and the nearest match: "`Rock` isn't a `Shape`: it has no `area(self) -> f32`. Its `area` returns `int`."
+
+**Generics are compiled per type everywhere, including development builds.** Each instantiation is a function compiled on its first call and cached by content. There's no dictionary passing and no dynamic dispatch, so development and release builds behave the same and every call is direct. If instantiations multiply, sharing code between ones with identical layout is a later optimization.
+
+**Mixed types are an `enum`; open sets are function values.** A list that holds different types is a list of an enum: each element is inline with a one-byte tag, and `match` compiles to a jump table. When other kits must be able to add kinds, as with plugins, a struct with function fields does it, and a call through a function value is the only run-time dispatch in the language.
+
+**`Eq`, `Hash`, `Ordered` and `Format` are built-in interfaces,** satisfied automatically wherever the automatic `==`, hashing, ordering and printing apply.
+
+**`=>` is one expression; anything longer is a nested `def`.** There are no multi-line anonymous functions, as in Python. Function types are written `(int, str) -> bool`.
+
+**Functions used as values never change anything around them.** An arrow function, or a nested `def` that's passed, stored or returned, captures the names it reads by value and can't change any of them. Capturing a `mut` name is an error, with a fix: bind it to a new name first.
+*Why:* Every closure that escapes is then a pure function of its inputs, safe to run in parallel, cache or replay. It needs no analysis of which closures escape and no marker on parameters that store one, and capturing costs a reference-count bump at most. Handlers return commands instead of changing state, and builtins and comprehensions build up values.
+
+**A nested `def` that's only called directly can change the enclosing function's `mut` names.**
+```fennec
+def collect_leaves(tree: Tree):
+    mut leaves = []
+    def visit(node: Tree):
+        if len(node.children) == 0:
+            leaves.append(node)
+        for child in node.children:
+            visit(child)
+    visit(tree)
+    leaves
+```
+*Why:* This is Python's most common closure pattern, and it needs no `nonlocal`. Whether a name is only ever called directly is trivial to check, and such a helper works on the enclosing function's variables in place, at no cost. `parallel` bodies still can't change outer names, including through helpers.
+
+This replaces the earlier rule that closures which don't escape may change captured `mut` names.
+
+## Cleanup
+
+**`with` runs cleanup on every way out of its block:** the end, `return`, `break` and `?`. Nested `with` blocks clean up innermost first. There's no unwinding.
+
+**The value after `with` must be a plain value.** An error from opening it is dealt with first: `with fs.open(path)? as file:`.
+
+**`def del` can't fail.** It does best-effort cleanup, such as closing, rolling back or freeing, and its signature can't have `fails`. Nothing can make an error disappear, unlike Python's `__exit__`.
+
+**Finishing that can fail is an explicit method,** called and checked:
+```fennec
+with db.transaction() as mut tx:
+    tx.insert(player)?
+    tx.insert(inventory)?
+    tx.commit()?
+# not committed? `del` rolls back
+```
+
+**A type can require its finish.** For a type like a buffered writer, cleaning up on the success path without calling its finishing method is a compile error: "`writer` was cleaned up without `close()`, so unflushed data would be lost". On error paths, best-effort cleanup is enough. How a type marks this is still open.
+*Why:* Cleanup that fails with nowhere to report the error silently loses data.
 
 ## Standard library
 
@@ -142,7 +196,7 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **Bad text fails with `ParseError`.** It has the `message`, `line` and `column`, and the message says the line and column too. A value a format can't hold, like a set in JSON or `None` in TOML, stops the program, like overflow.
 *Why:* Bad input is expected and has to be handled. Writing a set as JSON is a mistake in the program.
 
-**`Path` is a struct written in Fennec.** Its methods only look at its text: `join` (also `/`), `parent`, `name`, `stem`, `extension` and `normalize`. `extension` has no dot, as in Rust. `fs` methods take a `Path` or a `str`.
+**`Path` is a struct written in Fennec.** Its methods only look at its text: `join` (also `/`), `parent`, `name`, `stem`, `extension` and `normalize`. `extension` has no dot: `"png"`, not `".png"`. `fs` methods take a `Path` or a `str`.
 *Why:* Path handling needs nothing the language can't already do, and code written in Fennec is checked and compiled like everyone else's.
 
 ## Visibility
@@ -152,8 +206,12 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 - Enum cases and interface methods come with their type and have no `pub` of their own.
 - Writes from another kit still run the field's `where` rules.
 - A `pub` signature can't mention anything that isn't `pub`.
-- `pub` functions declare their return and error types, which the semver check compares. Everything else is inferred.
 - A lint flags `pub` items that no other kit can reach.
+
+**Return types and errors are inferred, even on `pub` functions.** A kit's API is checked against its last published version instead, cached from the Den. When a change would break other kits, `fennec check` says so at once, in the editor: "`load` can now also fail with `ParseError` (since v1.2.0). This is a breaking change: handle or wrap it, or release v2.0." `fennec publish` refuses a version number that undersells the change. Adding an error is a breaking change; removing one isn't.
+
+**Declaring errors is optional,** written with `fails` after the return type and checked like a declared return type: `def load(fs: Fs, path: Path) -> Config fails NotFound, ConfigUnreadable:`. `type LoadError = NotFound | ConfigUnreadable` names a set of errors.
+*Why:* The same protection as required declarations, with nothing to write. This replaces the earlier rule that `pub` functions must declare their return and error types.
 
 A big app that wants walls between its own parts splits into local kits in one workspace.
 *Why:* `pub` appears only where API stability matters, and never in apps. Making every field of a `pub struct` public would make every internal field part of the API, so renaming one would need a major version. Go's capitalization rule would clash with lowercase built-ins and capitalized user types.
@@ -177,7 +235,22 @@ A big app that wants walls between its own parts splits into local kits in one w
 **Tasks are scoped.** Every task ends before the `with` block or `parallel(...)` call that started it. There are no detached threads.
 *Why:* Because the parent outlives its tasks, a task can read the parent's values through views without touching reference counts, so reference counts stay non-atomic and fast. There's no `Send` or `Sync` to write.
 
-**Tasks change only separate pieces.** `parallel for mut e in enemies:` gives each task `mut` access to its own elements, checked by the same rule that makes `mut` exclusive. Results combine through reductions, like `parallel sum(...)`.
+**The first slice is parallel loops over collections.** `parallel(xs)` wraps anything iterable, with no new keyword:
+```fennec
+for mut particle in parallel(particles):
+    particle.position += particle.velocity * dt
+
+total = sum(e.mass for e in parallel(enemies))
+hits = [check(b) for b in parallel(bullets)]
+```
+- Each iteration can change only its own element. It can read anything around it, but can't change outer `mut` names or use capabilities.
+- Work runs on a work-stealing thread pool, and reading outer values changes no reference counts.
+- The interpreter runs the loop in order. Results are deterministic, so that's a correct implementation, and the playground needs no threads.
+
+Scoped tasks with `with`, channels, locks and overlapping I/O come in later slices.
+*Why:* It's most of what games need from many cores, it's the smallest sound piece, and it exercises the ownership rules everything later depends on.
+
+**Tasks change only separate pieces.** `for mut e in parallel(enemies):` gives each iteration `mut` access to its own element, checked by the same rule that makes `mut` exclusive. Results combine through reductions, like `sum(... for e in parallel(xs))`.
 
 **Only values with a single owner cross a channel.** They're moved, never shared.
 *Why:* That's what lets reference counts stay non-atomic even with long-lived worker tasks.
@@ -326,8 +399,8 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 
 ## Still open
 
-- How a function declares its errors, which `pub` functions must do.
-- How closures longer than one line should look, beyond nested functions.
+- How a type marks that its finishing method must be called.
+- Decorators. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.
 - The syntax for units of measure.

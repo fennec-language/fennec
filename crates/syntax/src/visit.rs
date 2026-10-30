@@ -154,6 +154,9 @@ fn expr(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
             expr(subject, change);
             for arm in arms {
                 pattern(&mut arm.pattern, change);
+                if let Some(guard) = &mut arm.guard {
+                    expr(guard, change);
+                }
                 stmts(&mut arm.body, change);
             }
         }
@@ -163,7 +166,7 @@ fn expr(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
 fn pattern(pattern: &mut Pattern, change: &mut dyn FnMut(&mut Expr)) {
     match pattern {
         Pattern::Literal(value) => expr(value, change),
-        Pattern::Variant { args, .. } | Pattern::Tuple(args) => {
+        Pattern::Variant { args, .. } | Pattern::Tuple(args) | Pattern::Or(args) => {
             for arg in args {
                 self::pattern(arg, change);
             }

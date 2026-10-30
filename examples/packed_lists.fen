@@ -21,7 +21,7 @@ def main(stdout: Stdout):
     copy = scores
     scores[0] = 9
     scores[-1] += 10
-    stdout.print(scores, copy, len(scores), scores[-2])
+    stdout.print(scores, copy, scores.len(), scores[-2])
 
     mut points = [Point(x=float(i), y=float(i) * 2.0) for i in range(3)]
     for mut p in points:
@@ -29,7 +29,7 @@ def main(stdout: Stdout):
         p.y = -p.y
     points[1].x = 100.0
     points.append(Point(y=7.0))
-    stdout.print(points[0], points[1].x, points[-1], len(points))
+    stdout.print(points[0], points[1].x, points[-1], points.len())
 
     mut weights = [0.5, 1.5, 2.0]
     stdout.print(total(weights))

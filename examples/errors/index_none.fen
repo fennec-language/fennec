@@ -1,6 +1,6 @@
 def find(items: list[list[int]], length: int) -> list[int]?:
     for item in items:
-        if len(item) == length: return item
+        if item.len() == length: return item
     None
 
 def main(stdout: Stdout):

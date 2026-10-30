@@ -11,7 +11,7 @@ struct Settings:
     speed: float
 
 def strongest(foes: list[Foe]) -> Foe?:
-    if len(foes) == 0: return None
+    if foes.len() == 0: return None
     foes[0]
 
 def main(stdout: Stdout):

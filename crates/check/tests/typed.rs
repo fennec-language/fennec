@@ -283,16 +283,16 @@ fn expressions_are_typed_where_they_are() {
             queue.append('first')
             mut target = None
             target = 3
-            count = len(queue)
+            count = queue.len()
             stdout.print(queue, target is None, count)
-            stdout.print(sorted(queue, key=name => len(name)))
+            stdout.print(sorted(queue, key=name => name.len()))
         ",
     );
     assert_eq!(type_of(&source, "main", "[]"), Some(list(Type::Str)));
     assert_eq!(type_of(&source, "main", "queue.append(\"first\")"), Some(Type::Unit));
-    assert_eq!(type_of(&source, "main", "len(queue)"), Some(Type::Int));
+    assert_eq!(type_of(&source, "main", "queue.len()"), Some(Type::Int));
     let arrow = Type::Arrow(vec![Type::Str], Box::new(Type::Int));
-    assert_eq!(type_of(&source, "main", "name => len(name)"), Some(arrow));
+    assert_eq!(type_of(&source, "main", "name => name.len()"), Some(arrow));
     assert_eq!(type_of(&source, "main", "queue"), Some(list(Type::Str)));
     assert_eq!(type_of(&source, "main", "target is None"), Some(Type::Bool));
 }

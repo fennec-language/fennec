@@ -146,7 +146,7 @@ impl Interp<'_> {
             other => {
                 let help = match other {
                     Value::List(_) | Value::Str(_) | Value::Dict(_) | Value::Set(_) => {
-                        "Fennec has no truthiness: write `len(x) > 0`"
+                        "Fennec has no truthiness: write `x.len() > 0`"
                     }
                     Value::None => "Fennec has no truthiness: write `x is None` or `x is not None`",
                     _ => "Fennec has no truthiness: compare explicitly, like `count > 0`",

@@ -29,4 +29,4 @@ def wave(size: int) -> list[Enemy]:
     [spawn(f"grunt {at + 1}", Vec3(x=float(at)), 100) for at in range(size)]
 
 test "a wave has as many enemies as asked":
-    assert len(wave(4)) == 4
+    assert wave(4).len() == 4

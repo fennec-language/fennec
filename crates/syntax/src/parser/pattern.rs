@@ -30,16 +30,30 @@ impl Parser {
             }
             let arm_start = self.advance().span;
             let pattern = self.pattern()?;
+            let guard = if self.eat_kw(Kw::If) { Some(self.expr()?) } else { None };
             self.expect_p(Punct::Colon)?;
             let body = self.block()?;
-            arms.push(MatchArm { pattern, body, span: arm_start.to(self.prev_span()) });
+            arms.push(MatchArm { pattern, guard, body, span: arm_start.to(self.prev_span()) });
         }
         self.block_ended = true;
         let span = start.to(self.prev_span());
         Ok(Expr { kind: ExprKind::Match { subject: Box::new(subject), arms }, span })
     }
 
+    /// A pattern, or several separated by `|`, any of which matches.
     fn pattern(&mut self) -> Result<Pattern, Diagnostic> {
+        let first = self.one_pattern()?;
+        if !self.at_p(Punct::Pipe) {
+            return Ok(first);
+        }
+        let mut alternatives = vec![first];
+        while self.eat_p(Punct::Pipe) {
+            alternatives.push(self.one_pattern()?);
+        }
+        Ok(Pattern::Or(alternatives))
+    }
+
+    fn one_pattern(&mut self) -> Result<Pattern, Diagnostic> {
         let token = self.advance();
         let literal = |kind| Ok(Pattern::Literal(Expr { kind, span: token.span }));
         match token.tok {

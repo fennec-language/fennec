@@ -11,11 +11,11 @@ def is_letter(c: str) -> bool:
 
 ## How many bytes `c` takes in UTF-8.
 def utf8_width(c: str) -> int:
-    len(c.encode())
+    c.encode().len()
 
 ## How many bytes `text` takes in UTF-8.
 def byte_length(text: str) -> int:
-    len(text.encode())
+    text.encode().len()
 
 ## The byte offset of each character, plus one past the end. Spans count bytes, but Fennec
 ## strings index by character.
@@ -83,7 +83,7 @@ struct Lexer:
     ## The character `ahead` places on, or an empty string past the end.
     def peek(self, ahead: int) -> str:
         at = self.pos + ahead
-        if at < len(self.chars):
+        if at < self.chars.len():
             return self.chars[at]
         ""
 
@@ -102,7 +102,7 @@ struct Lexer:
         self.tokens.append(Token(tok=tok, span=self.span(start)))
 
     def newline(mut self, start: int):
-        if len(self.tokens) > 0 and self.tokens[-1].tok != .Newline:
+        if self.tokens.len() > 0 and self.tokens[-1].tok != .Newline:
             self.push(.Newline, start)
 
     def tab_error(self, start: int) -> Diagnostic:
@@ -153,9 +153,9 @@ struct Lexer:
             )
 
     def finish(mut self):
-        self.pos = len(self.chars)
+        self.pos = self.chars.len()
         self.newline(self.pos)
-        while len(self.indents) > 1:
+        while self.indents.len() > 1:
             self.indents.pop()
             self.push(.Dedent, self.pos)
         self.push(.Eof, self.pos)
@@ -211,7 +211,7 @@ struct Lexer:
             self.pos += 2
             self.push(.Punct(pair), start)
             return
-        if c not in "()[]{},:.?+-*/%=<>&":
+        if c not in "()[]{},:.?+-*/%=<>&|":
             span = Span(start=self.offset(start), end=self.offset(start) + utf8_width(c))
             fail Diagnostic(message=f"unexpected character `{c}`", span=span)
         if c in "([{":

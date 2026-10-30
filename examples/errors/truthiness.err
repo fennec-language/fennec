@@ -4,4 +4,4 @@ error: `if` needs a bool, but this is a list
 3 |     if items:
   |        ^^^^^
   |
-  = help: Fennec has no truthiness: write `len(x) > 0`
+  = help: Fennec has no truthiness: write `x.len() > 0`

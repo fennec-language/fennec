@@ -338,6 +338,8 @@ pub enum CompKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MatchArm {
     pub pattern: Pattern,
+    /// `if condition` after the pattern: the arm is taken only when it's true.
+    pub guard: Option<Expr>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
@@ -354,6 +356,8 @@ pub enum Pattern {
         args: Vec<Pattern>,
     },
     Tuple(Vec<Pattern>),
+    /// `.Int(_) | .Float(_)`: any of the alternatives, each binding the same names.
+    Or(Vec<Pattern>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

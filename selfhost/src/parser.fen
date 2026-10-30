@@ -25,11 +25,11 @@ struct Parser:
     block_ended = False
 
     def over(tokens: list[Token]) -> Parser:
-        end = tokens[-1].span if len(tokens) > 0 else Span(start=0, end=0)
+        end = tokens[-1].span if tokens.len() > 0 else Span(start=0, end=0)
         Parser(tokens=tokens, eof=Token(tok=.Eof, span=end))
 
     def current(self) -> Token:
-        if self.pos < len(self.tokens):
+        if self.pos < self.tokens.len():
             return self.tokens[self.pos]
         self.eof
 
@@ -38,7 +38,7 @@ struct Parser:
 
     def peek_at(self, ahead: int) -> Tok:
         at = self.pos + ahead
-        if at < len(self.tokens):
+        if at < self.tokens.len():
             return self.tokens[at].tok
         self.eof.tok
 
@@ -46,13 +46,13 @@ struct Parser:
         self.current().span
 
     def prev_span(self) -> Span:
-        if self.pos > 0 and self.pos <= len(self.tokens):
+        if self.pos > 0 and self.pos <= self.tokens.len():
             return self.tokens[self.pos - 1].span
         self.span()
 
     def advance(mut self) -> Token:
         token = self.current()
-        if self.pos < len(self.tokens):
+        if self.pos < self.tokens.len():
             self.pos += 1
         token
 

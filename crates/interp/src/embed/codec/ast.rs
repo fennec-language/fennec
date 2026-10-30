@@ -39,7 +39,7 @@ fields!(Import { module, names, aliases, alias, span });
 fields!(TestDef { name, inputs, body, span });
 fields!(Stmt { kind, span });
 fields!(Expr { kind, span });
-fields!(MatchArm { pattern, body, span });
+fields!(MatchArm { pattern, guard, body, span });
 fields!(Arg { name, is_mut, value });
 
 /// Encodes and decodes an enum whose variants have no fields, by position.
@@ -390,6 +390,7 @@ impl Encode for Pattern {
                 args.encode(to);
             }
             Pattern::Tuple(items) => (4, items).encode_tagged(to),
+            Pattern::Or(alternatives) => (5, alternatives).encode_tagged(to),
         }
     }
 }
@@ -406,6 +407,7 @@ impl Decode for Pattern {
                 args: Decode::decode(from)?,
             },
             4 => Pattern::Tuple(Decode::decode(from)?),
+            5 => Pattern::Or(Decode::decode(from)?),
             _ => return None,
         })
     }

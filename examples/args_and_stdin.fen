@@ -6,10 +6,10 @@ def shout(words: list[str]) -> str:
     " ".join([word.upper() for word in words])
 
 def main(stdout: Stdout, args: Args, stdin: Stdin):
-    stdout.print(len(args), "arguments:", shout([arg for arg in args]))
-    if len(args) > 0:
+    stdout.print(args.len(), "arguments:", shout([arg for arg in args]))
+    if args.len() > 0:
         stdout.print("the first is", args[0])
     lines = stdin.lines()
-    stdout.print(len(lines), "lines of input")
+    stdout.print(lines.len(), "lines of input")
     for line in lines:
         stdout.print(">", line)

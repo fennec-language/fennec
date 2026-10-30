@@ -12,7 +12,7 @@ def main(stdout: Stdout, fs: Fs):
     # These paths don't exist, so each call fails without changing anything.
     match fs.list_dir("no/such/folder"):
         case Ok(paths):
-            stdout.print(len(paths), "paths")
+            stdout.print(paths.len(), "paths")
         case IoError(_):
             stdout.print("there's no folder to list")
     match fs.remove("no/such/folder/save.txt"):

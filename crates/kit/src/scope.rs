@@ -441,6 +441,9 @@ impl Resolver<'_> {
                 self.expr(subject);
                 for arm in arms {
                     self.pattern(&mut arm.pattern, arm.span);
+                    if let Some(guard) = &mut arm.guard {
+                        self.expr(guard);
+                    }
                     self.stmts(&mut arm.body);
                 }
             }
@@ -498,7 +501,7 @@ impl Resolver<'_> {
                     self.pattern(arg, span);
                 }
             }
-            Pattern::Tuple(items) => {
+            Pattern::Tuple(items) | Pattern::Or(items) => {
                 for item in items {
                     self.pattern(item, span);
                 }

@@ -1,4 +1,4 @@
-from enemies import count, spawn as len
+from enemies import count, spawn as sum
 from enemies import spawn as count
 
 def main(stdout: Stdout):

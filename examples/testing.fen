@@ -1,5 +1,5 @@
 def reverse(items: list[int]) -> list[int]:
-    [items[len(items) - 1 - at] for at in range(len(items))]
+    [items[items.len() - 1 - at] for at in range(items.len())]
 
 def clamp(value: int, low: int, high: int) -> int:
     max(low, min(value, high))

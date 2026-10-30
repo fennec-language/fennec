@@ -257,6 +257,15 @@ impl Interp<'_> {
             for (name, bound) in bindings {
                 self.frame.declare(&name, bound, false);
             }
+            // A guard that's false passes the value on to the next case.
+            if let Some(guard) = &arm.guard {
+                let taken = self.eval(guard);
+                if !matches!(taken, Ok(Value::Bool(true))) {
+                    self.frame.pop();
+                    taken?;
+                    continue;
+                }
+            }
             let flow = self.exec_stmts(&arm.body);
             self.frame.pop();
             return match flow? {
@@ -353,6 +362,7 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
         "lambda" => diagnostic.with_help("write an arrow function: `x => x * 2`"),
         "raise" => diagnostic.with_help("Fennec has no exceptions: write `fail SomeError(...)`"),
         "ord" => diagnostic.with_help("a character's code is a method: write `c.code()`"),
+        "len" => diagnostic.with_help("a length is a method: write `x.len()`, or `x => x.len()` to pass it"),
         "chr" => diagnostic.with_help("make a character from its code with `str.from_code(n)`"),
         _ => match builtins::modules_with(name).as_slice() {
             [] => diagnostic,

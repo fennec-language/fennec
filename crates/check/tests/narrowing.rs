@@ -153,7 +153,7 @@ fn question_mark_optional_chaining_and_else_unwrap() {
             damage + 1
 
         def c(name: str):
-            name_length = len(find(name)?.name)
+            name_length = (find(name)?.name).len()
 
         def d(name: str):
             player = find(name) else Player(name='x')
@@ -186,7 +186,7 @@ fn assigning_a_value_counts_as_checking() {
         def b(names: list[str]):
             mut best = find('')
             for name in names:
-                if best is None or len(name) > len(best.name):
+                if best is None or name.len() > best.name.len():
                     best = Player(name=name)
             best.name
 

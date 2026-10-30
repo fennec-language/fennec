@@ -61,7 +61,7 @@ def row(n: int) -> Shape:
 
 def main(stdout: Stdout):
     shapes = [row(1), row(3), shift(row(4), 10), row(50)]
-    stdout.print(deepest(shapes, 10), len(shapes))
+    stdout.print(deepest(shapes, 10), shapes.len())
     for shape in shapes:
         stdout.print(count(shape), first_dot(shape))
     stdout.print(shapes[2])

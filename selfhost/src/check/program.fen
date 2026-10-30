@@ -103,10 +103,10 @@ struct Program:
                 case _: pass
 
     def add_import(mut self, imported: Import):
-        if len(imported.module) == 1 and imported.module[0] == "std":
-            for at in range(len(imported.names)):
+        if imported.module.len() == 1 and imported.module[0] == "std":
+            for at in range(imported.names.len()):
                 self.modules.append(imported.aliases[at] else imported.names[at])
-        elif len(imported.module) == 2 and imported.module[0] == "std" and len(imported.names) == 0:
+        elif imported.module.len() == 2 and imported.module[0] == "std" and imported.names.len() == 0:
             self.modules.append(imported.alias else ".".join(imported.module))
 
     def add_type(mut self, type_def: TypeDef, kind: TypeKind, prelude: bool):
@@ -167,12 +167,12 @@ struct Program:
         written = [generic.name for generic in extension.generics]
         mut declared = self.type_params(name)
         if name == "list":
-            if len(written) == 1:
+            if written.len() == 1:
                 return None
             declared = ["T"]
         if written == declared:
             return None
-        if len(declared) == 0:
+        if declared.len() == 0:
             return Diagnostic(
                 message=f"`{name}` isn't generic, so its extension takes no type parameters",
                 span=extension.span,
@@ -214,7 +214,7 @@ struct Program:
     def generics_of(self, entry: FnEntry) -> list[Generic]:
         mut generics = []
         owner = entry.owner
-        if len(entry.extension) > 0:
+        if entry.extension.len() > 0:
             generics += entry.extension
         elif owner is not None and owner in self.types:
             generics += self.types[owner].type_def.generics
@@ -231,8 +231,8 @@ struct Program:
         builtin = name in built_in_types()
         if not builtin and name not in generics and name not in self.types and name not in self.aliases:
             fail unknown_type(name, written.span)
-        wanted = self.type_arg_count(name, len(written.args))
-        if len(written.args) != wanted:
+        wanted = self.type_arg_count(name, written.args.len())
+        if written.args.len() != wanted:
             fail wrong_type_args(written, wanted)
         mut args = []
         for arg in written.args:
@@ -242,7 +242,7 @@ struct Program:
             ty = builtin_type(name, args)
         elif name in generics:
             ty = Type.Param(name)
-        elif name in self.types and len(args) > 0:
+        elif name in self.types and args.len() > 0:
             ty = Type.Generic(name, args)
         elif name in self.types:
             ty = Type.Named(name)
@@ -258,7 +258,7 @@ struct Program:
     ## `Deque` for `std.collections.Deque` or `collections.Deque`, through an imported module.
     def through_module(self, name: str) -> str:
         parts = name.split(".")
-        if len(parts) < 2:
+        if parts.len() < 2:
             return name
         member = parts[-1]
         path = ".".join(parts[:-1])
@@ -277,7 +277,7 @@ struct Program:
             return 2
         if name == "tuple":
             return given
-        len(self.type_params(name))
+        self.type_params(name).len()
 
 def builtin_type(name: str, args: list[Type]) -> Type:
     match name:

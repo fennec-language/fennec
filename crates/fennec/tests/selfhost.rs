@@ -195,7 +195,7 @@ test \"boxes add\":
     assert Box() + Box() == Box()
 
 test \"any list\" for items: list[int], n: int:
-    assert len(items) >= 0
+    assert items.len() >= 0
 ",
     ),
 ];

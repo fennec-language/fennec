@@ -138,7 +138,7 @@ struct Tree:
                 mut label = "import " + ".".join(imported.module)
                 if imported.alias is not None:
                     label += " as " + imported.alias
-                if len(imported.names) > 0:
+                if imported.names.len() > 0:
                     label += ": " + ", ".join(bound_names(imported))
                 self.spanned(label, imported.span)
             case .Test(test):
@@ -406,6 +406,7 @@ struct Tree:
     def write_arm(mut self, arm: MatchArm):
         self.open("arm", arm.span)
         self.write_pattern(arm.pattern)
+        self.labelled("guard", arm.guard)
         self.write_stmts(arm.body)
         self.close()
 
@@ -416,6 +417,7 @@ struct Tree:
             case .Literal(expr): self.labelled("pattern literal", expr)
             case .Variant(name, dotted, args): self.write_patterns("pattern " + ("." if dotted else "") + name, args)
             case .Tuple(items): self.write_patterns("pattern tuple", items)
+            case .Or(alternatives): self.write_patterns("pattern or", alternatives)
 
     def write_patterns(mut self, label: str, patterns: list[Pattern]):
         self.open(label, None)
@@ -433,7 +435,7 @@ def comprehension_kind(kind: CompKind) -> str:
 ## Each imported name, written `name as alias` when `as` renames it.
 def bound_names(imported: Import) -> list[str]:
     mut shown = []
-    for at in range(len(imported.names)):
+    for at in range(imported.names.len()):
         name = imported.names[at]
         alias = imported.aliases[at]
         if alias is not None and alias != name:

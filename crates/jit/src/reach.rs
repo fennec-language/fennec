@@ -205,6 +205,9 @@ fn expr(value: &Expr, mentions: &mut Mentions) {
             expr(subject, mentions);
             for arm in arms {
                 pattern(&arm.pattern, mentions);
+                if let Some(guard) = &arm.guard {
+                    expr(guard, mentions);
+                }
                 block(&arm.body, mentions);
             }
         }
@@ -221,7 +224,7 @@ fn pattern(pattern_: &Pattern, mentions: &mut Mentions) {
                 pattern(arg, mentions);
             }
         }
-        Pattern::Tuple(args) => {
+        Pattern::Tuple(args) | Pattern::Or(args) => {
             for arg in args {
                 pattern(arg, mentions);
             }

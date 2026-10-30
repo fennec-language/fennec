@@ -138,7 +138,7 @@ def main(stdout: Stdout):                # no arrow: returns nothing
 - Everything inside a body is still inferred: locals, empty collections (`dict[str, int]()` when a type must be said), closures, comprehensions and type arguments at calls. Errors are still inferred too, and `fails` stays optional.
 - Recursion needs nothing special: every named function already has its type written, and an arrow can't call itself.
 
-*Why:* When AI writes most code, writing costs little and reading is what matters, for people reviewing it and for agents reading other files. A complete signature summarizes a function without its body. A mistake in a body is reported inside that function ("returns `float`, but the signature says `int`") instead of at a caller in another file, where an agent tends to "fix" the wrong place. Rust, Swift, Kotlin and well-kept TypeScript settled on the same line: explicit where a function meets the rest of the program, inferred inside. Annotating locals is left out because it's what makes bodies tiring to read. It's cheap to reverse: `fennec fix` can strip written return types again if measurement shows they don't help.
+*Why:* When AI writes most code, writing costs little and reading is what matters, for people reviewing it and for agents reading other files. A complete signature summarizes a function without its body. A mistake in a body is reported inside that function ("returns `float`, but the signature says `int`") instead of at a caller in another file, where an agent tends to "fix" the wrong place. Swift, Kotlin and well-kept TypeScript settled on the same line: explicit where a function meets the rest of the program, inferred inside. Annotating locals is left out because it's what makes bodies tiring to read. It's cheap to reverse: `fennec fix` can strip written return types again if measurement shows they don't help.
 
 This replaces the earlier rules that return types are inferred, and that recursive functions must declare theirs.
 
@@ -201,7 +201,7 @@ extend list[T: Ordered]:
     def sort(mut self): ...
 ```
 `count` exists only on lists whose elements can be compared with `==`, and `sort` only on lists whose elements can be ordered. Two methods with the same name on one type are an error, wherever they're written. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
-*Why:* A type that many responsibilities attach to, like a parser, an interpreter or a game's `World`, is otherwise one huge file, or its methods become free functions with noisier calls. Swift, C#, Kotlin, Go and Rust all let a type's methods live in several files. Keeping it to the kit's own types means no one can change a type they don't own.
+*Why:* A type that many responsibilities attach to, like a parser, an interpreter or a game's `World`, is otherwise one huge file, or its methods become free functions with noisier calls. Swift, C#, Kotlin and Go all let a type's methods live in several files. Keeping it to the kit's own types means no one can change a type they don't own.
 
 **Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They're erased at compile time, so they cost nothing at run time. The syntax is still open.
 *Why:* Game code mixes up degrees and radians, and world and screen space, constantly. F# has had units since 2009, and no mainstream language has followed.
@@ -464,6 +464,7 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 - `fennec check`: types, ownership and lints, without running anything.
 - `fennec test`: tests, property tests and the examples in doc comments.
 - `fennec doc`: documentation from `##` comments.
+- `fennec bench`: runs `bench` blocks, as below.
 - `fennec explain`: the long explanation of any error or lint.
 - `fennec search`: finds functions by type, locally and on the Den. `fennec search "Path -> str"` lists every function with that shape.
 - `fennec diff`: a semantic diff. It reports renames with their updated call sites, moved functions, changed bodies and API changes with the version bump they need, instead of lines added and removed. A GitHub Action posts it on every pull request.
@@ -473,6 +474,15 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 - The copies lint, as above.
 
 *Why:* Inferred types and error sets need to be visible to be trusted, and a fixed style plus automatic fixes means AI and people write the same code. Cost hints show what code costs while it's written, not after a profiler finds it.
+
+**Benchmarks are `bench "name":` blocks,** written next to the code they measure, like `test` blocks, and left out of release builds.
+```fennec
+bench "collide 10k bullets":
+    world = World.with_bullets(10_000)
+    world.collide()
+```
+`fennec bench` runs them and reports instruction counts and median times, compared against the previous run. It reuses the machinery CI already uses to benchmark every change.
+*Why:* A benchmark next to its code gets kept up to date, and instruction counts are steady enough to compare between runs even on a noisy machine.
 
 **The format depends only on the code.** Two files with the same syntax tree format to the same text, however they were laid out, so people and AI write identical code. `docs/formatting.md` has the details.
 - Lines are at most 100 characters. A bracketed list that doesn't fit puts one item per line, with a trailing comma; a list of plain literals fills its lines instead. A comma after the last item doesn't keep a list broken.
@@ -504,12 +514,13 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 
 These are default lints, and the Den requires them.
 
-- A `##` doc comment on every `pub` item.
-- At least one tested example on every `pub` function.
+- A `##` doc comment of at least one line on every `pub` item, enforced by the linter, which every build runs.
 - Descriptive names. One-letter and abbreviated names are flagged, except a short allowlist: `i`, `j`, `k`, `n`, `x`, `y`, `z`, `dt`, `id`.
 - Limits on nesting depth and function length, as lints rather than language rules.
 
-*Why:* Examples are the best documentation for people and AI alike, and they're tests too. Code that reads well is code AI writes well.
+*Why:* A one-line doc comment on every `pub` item costs little and tells people and AI what each piece of the API is for. Code that reads well is code AI writes well.
+
+**Runnable examples in doc comments are optional.** `fennec test` runs them, and `fennec doc`, `fennec context` and the Den show them. Whether they become required is left to the eval of what helps AI write Fennec (#76). This replaces the earlier rule that every `pub` function needs a tested example.
 
 ## Kits on the Den
 
@@ -599,6 +610,70 @@ The JIT, release builds and the language server all share one build engine and c
 2. A hash of each function's syntax tree that leaves out positions and comments. Reformatting, editing comments and moving code around recompile nothing. Positions are kept separately for error messages.
 
 BLAKE3 is written in-house rather than taken as a dependency, and checked against the official test vectors.
+
+## SIMD and GPU
+
+Six primitives cover a game engine's hot loops and ML inference. Everything else, like matrix multiplication, convolution, softmax and attention, is ordinary Fennec code in the first-party `fennec/ml` kit.
+
+**`Simd[T, N]` is the one vector type.** It holds `N` lanes of a number type `T`, where `N` is a power of two up to 64. It's a `std` struct whose operators are machine-level intrinsics, and comparisons give a `Mask[N]`.
+```fennec
+from std.simd import Simd
+
+a = Simd[f32, 8].splat(1.5)
+b = Simd[f32, 8](0, 1, 2, 3, 4, 5, 6, 7)
+c = a * b + a                              # lane by lane
+bright = c > Simd[f32, 8].splat(4.0)       # Mask[8]
+d = bright.select(c, a)
+total = sum(d)                             # a Simd is a sequence
+```
+- Operators work lane by lane wherever `T` has them. Integer lanes wrap, which the type makes visible; scalar ints still check overflow.
+- Methods cover the rest: `.select`, `.shuffle[...]` with indices fixed at compile time, `.min`, `.max`, `.abs`, `.sqrt` and `.fma`. A fused multiply-add happens only when written as `.fma`.
+- `sum`, `min`, `max`, `any` and `all` reduce lanes in a fixed tree order, so results match on every machine.
+- `simd_width[T]` is a compile-time constant for the target's best width, so portable code writes `Simd[f32, simd_width[f32]]`.
+- LLVM maps `Simd` onto its vector types. Cranelift runs vectors wider than 128 bits as several 128-bit operations. The interpreter runs lanes one at a time, with the same results.
+
+*Why:* One generic type covers every width and element type without dozens of names, and it reads like math. Zig, Mojo, C# and Swift settled on the same shape. Hand-written intrinsics tie code to one CPU and are unreadable.
+
+**`f16` and `bf16` are number types.** Arithmetic uses the hardware where it exists, and otherwise widens to `f32` and narrows back, with the same results. 8-bit quantization already works with `i8` and `u8`.
+*Why:* ML inference is mostly limited by memory, and 16-bit weights halve it.
+
+**`.lanes[N]()` walks a buffer `N` elements at a time.** It's a method on `Buffer[T]`, `list[T]` and `GpuBuffer[T]`, giving `Simd[T, N]` values and a final partial chunk with a mask. `for mut` writes back. Bounds are checked once per chunk, and the tail mask means nothing reads past the end.
+```fennec
+def scale(mut xs: list[f32], factor: f32):
+    k = Simd[f32, 8].splat(factor)
+    for mut v in xs.lanes[8]():
+        v *= k
+```
+Plain loops and `parallel(...)` loops are still vectorized automatically where LLVM can. `Simd` is for when you want a guarantee.
+
+**GPU access is a capability, `Gpu`,** passed to `main` like `Fs`. A kit gets the GPU only if it's handed one, and a sandboxed script only if its host grants it.
+
+**`GpuBuffer[T]` is GPU memory.** It holds numbers, `f16`, `bf16`, `Simd` values, or structs made only of those. `gpu.upload(xs)` and `gpu.download(buffer)` move data. Fennec values never point into GPU memory, so the CPU and the GPU can't race over data.
+
+**Kernels are ordinary functions, run with `gpu.run`.** Any function that follows the GPU rules can run on the GPU, and the compiler checks the rules at the `gpu.run` call. It calls the function once for each index from 0 up to `count`, in parallel.
+```fennec
+from std import gpu
+
+def brighten(i: int, mut pixels: GpuBuffer[f32], amount: f32):
+    pixels[i] = min(pixels[i] + amount, 1.0)
+
+def main(stdout: Stdout, gpu: Gpu):
+    mut image = gpu.upload(load_pixels())
+    gpu.run(brighten, count=image.len(), mut image, 0.2)
+    pixels = gpu.download(image)            # waits for the GPU here
+```
+- A kernel can't allocate, recurse, use capabilities, or use strings, lists or dicts. It works on numbers, `Simd` values, structs of numbers and `GpuBuffer`s.
+- Invocation `i` writes only element `i` of each `mut` buffer, and reads anything, the same rule as `for mut x in parallel(xs)`. Kernels can't race, and their results are deterministic. A write anywhere else is a compile error naming the line.
+- Buffer indexing is bounds-checked, and range analysis removes the check where the index is provably the invocation's own.
+- `gpu.run` queues work and returns, and `gpu.download` waits for what was queued before it.
+
+*Why:* A kernel that's just a function is tested on the CPU with `fennec test`, debugged like any code, and run by the interpreter too. A separate shader language means separate tools.
+
+**Kernels compile through two small in-house backends:** SPIR-V for Vulkan (Windows, Linux, Android) and Metal Shading Language source for Metal (macOS, iOS). No third-party translator is involved. Release builds compile kernels ahead of time and embed them; the JIT compiles each one when it first runs and caches it by content. WGSL for WebGPU can come later. `std.gpu` reaches Vulkan and Metal through `extern`, which only the standard library's OS layer may do.
+
+**GPU floats are the same on the same device, not across vendors.** `sqrt`, `exp` and division can differ in the last bit between GPU makers. `gpu.run(..., exact=True)` turns off contraction and uses Fennec's own math functions for results identical across vendors, at some cost in speed. Lockstep game simulation stays on the CPU.
+
+**Later slices, in order:** workgroup memory with barriers the compiler checks, for tiled kernels; subgroup operations; a `Tile[T, M, N]` type for matrix hardware, through Vulkan's cooperative matrices and Metal's simdgroup matrices; and training, with automatic differentiation as a library in `fennec/ml`. Graphics shaders can reuse the kernel compiler later, through `fennec/gpu`. A tensor type with operator fusion stays out of the language.
 
 ## Native code
 

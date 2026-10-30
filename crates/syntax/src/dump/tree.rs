@@ -410,6 +410,9 @@ impl Tree {
     fn arm(&mut self, arm: &MatchArm) {
         self.node("arm", Some(arm.span), |tree| {
             tree.pattern(&arm.pattern);
+            if let Some(guard) = &arm.guard {
+                tree.node("guard", None, |tree| tree.expr(guard));
+            }
             tree.stmts(&arm.body);
         });
     }
@@ -430,6 +433,11 @@ impl Tree {
             Pattern::Tuple(items) => self.node("pattern tuple", None, |tree| {
                 for item in items {
                     tree.pattern(item);
+                }
+            }),
+            Pattern::Or(alternatives) => self.node("pattern or", None, |tree| {
+                for alternative in alternatives {
+                    tree.pattern(alternative);
                 }
             }),
         }

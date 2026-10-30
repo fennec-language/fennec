@@ -16,22 +16,22 @@ def main(stdout: Stdout):
     mut text = "ab"
     text += text
     text += text
-    stdout.print(text, len(text))
+    stdout.print(text, text.len())
 
     # A copy keeps its value when the original grows.
     kept = text
     text += "é"
-    stdout.print(kept, text, len(text))
+    stdout.print(kept, text, text.len())
     stdout.print(shout("hi"), shout(kept))
     mut long = "<"
     for i in range(3):
         long += kept + kept + kept + kept + kept
-    stdout.print(long, len(long))
+    stdout.print(long, long.len())
 
     mut big = ""
     for i in range(100_000):
         big += "x" if i % 2 == 0 else "y"
-    stdout.print(len(big), big[4:9], big[-1])
+    stdout.print(big.len(), big[4:9], big[-1])
 
     # The loop goes over the text as it was when the loop started.
     mut fox = "wörld 🦊!"
@@ -39,7 +39,7 @@ def main(stdout: Stdout):
     for c in fox:
         fox += c
         count += 1
-    stdout.print(fox, count, len(fox))
+    stdout.print(fox, count, fox.len())
 
     mut dotted = ""
     for c in "a🦊bc":

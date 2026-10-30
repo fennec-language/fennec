@@ -225,6 +225,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fennec-blake3"
+version = "0.0.1"
+
+[[package]]
 name = "fennec-check"
 version = "0.0.1"
 dependencies = [

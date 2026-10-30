@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use fennec_check::{Signatures, Type};
 use fennec_syntax::{Expr, TypeDef, TypeExpr};
 
-use crate::types::{Cap, Ty};
+use crate::types::{Cap, Ty, Word};
 
 /// The size of every field that isn't a nested struct: an int, a float, or a bool.
 pub(crate) const WORD: u32 = 8;
@@ -305,6 +305,7 @@ impl Layouts {
             Type::Bool => Ty::Bool,
             Type::Unit => Ty::Unit,
             Type::Str => Ty::Str,
+            Type::Dict(key, value) => dict_ty(key, value),
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
                 (Some(cap), _) => Ty::Cap(cap),
                 (None, Some(id)) if self.get(id).is_some_and(|layout| layout.boxed) => Ty::Boxed(id),
@@ -313,6 +314,21 @@ impl Layouts {
             },
             _ => Ty::Obj,
         }
+    }
+}
+
+/// A dict natively, when its keys are ints or strings and its values plain words.
+fn dict_ty(key: &Type, value: &Type) -> Ty {
+    let word = |ty: &Type| match ty {
+        Type::Int => Some(Word::Int),
+        Type::Float => Some(Word::Float),
+        Type::Bool => Some(Word::Bool),
+        Type::Str => Some(Word::Str),
+        _ => None,
+    };
+    match (word(key), word(value)) {
+        (Some(key @ (Word::Int | Word::Str)), Some(value)) => Ty::Dict(key, value),
+        _ => Ty::Obj,
     }
 }
 

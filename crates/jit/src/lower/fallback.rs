@@ -154,7 +154,7 @@ impl Lowerer<'_, '_> {
     fn keeps_call_receiver(&self, object: &Expr) -> bool {
         match &object.kind {
             ExprKind::Name(name) => self.local(name).is_none_or(|local| {
-                local.ty == Ty::Obj || (local.is_mut && matches!(local.ty, Ty::Struct(_)))
+                local.ty == Ty::Obj || (local.is_mut && matches!(local.ty, Ty::Struct(_) | Ty::Dict(..)))
             }),
             ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => {
                 self.keeps_call_receiver(object)

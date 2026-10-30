@@ -1,0 +1,60 @@
+## Dicts keyed by ints and strings: counting, looking up, changing and walking them.
+
+def tally(words: list[str]) -> dict[str, int]:
+    mut counts: dict[str, int] = {}
+    for word in words:
+        counts[word] = counts.get(word, 0) + 1
+    return counts
+
+def total(counts: dict[str, int]) -> int:
+    mut sum = 0
+    for word in counts:
+        sum += counts[word]
+    return sum
+
+def main(stdout: Stdout):
+    counts = tally("the fox and the hound and the fennec".split())
+    stdout.print(counts, total(counts), len(counts))
+    for word, count in counts.items():
+        if count > 1:
+            stdout.print(word, count)
+
+    mut squares: dict[int, int] = {}
+    for i in range(1_000):
+        squares[i * 7 % 1_000] = i * i
+    stdout.print(
+        len(squares),
+        squares[7],
+        squares[993],
+        50 in squares,
+        5_000 in squares,
+        3 not in squares,
+    )
+
+    # A copy keeps its value when the original changes.
+    copy = squares
+    squares[7] = -1
+    squares[7] += 10
+    stdout.print(copy[7], squares[7], squares == copy)
+
+    # The loop goes over the dict as it was when the loop started.
+    mut grow: dict[int, int] = {1: 1}
+    for key in grow:
+        grow[key + 1] = key
+    stdout.print(grow)
+
+    mut names: dict[str, str] = {"a": "apple"}
+    names["b"] = "banana"
+    names["a"] += " pie"
+    for name in names.values():
+        stdout.print(name)
+    stdout.print(names["a"], names.get("z", "none"), names.get("b", "none"))
+
+    mut flags: dict[int, bool] = {}
+    flags[1] = True
+    flags[2] = False
+    mut ratios: dict[str, float] = {"half": 0.5}
+    ratios["third"] = 1.0 / 3.0
+    stdout.print(flags, ratios, flags[2], ratios["half"] * 2.0)
+    removed = squares.pop(7)
+    stdout.print(removed, len(squares), 7 in squares)

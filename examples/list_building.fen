@@ -11,7 +11,7 @@ def main(stdout: Stdout):
     zeros = [0.0 for _ in range(3)]
     backwards = [x for x in range(10, 3)]
     stdout.print(squares, halves, odd, none, zeros, backwards)
-    stdout.print(squares[-1], squares[-5], halves[-2], len(squares))
+    stdout.print(squares[-1], squares[-5], halves[-2], squares.len())
 
     mut composite = [0 for _ in range(50)]
     mut primes = 0

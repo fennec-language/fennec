@@ -14,7 +14,7 @@ def untouched(key: str, save: Save) -> bool:
 
 test "the same text always has the same hash" for text: str:
     assert blake3(text) == hash.blake3(text)
-    assert len(blake3(text)) == 64
+    assert blake3(text).len() == 64
 
 def main(stdout: Stdout):
     # The same text gives the same hash on every machine, so a hash names its content.

@@ -222,7 +222,7 @@ Type arguments are inferred at calls; `largest[int](xs)` is allowed when they ca
 def collect_leaves(tree: Tree) -> list[Tree]:
     mut leaves = []
     def visit(node: Tree):
-        if len(node.children) == 0:
+        if node.children.len() == 0:
             leaves.append(node)
         for child in node.children:
             visit(child)
@@ -258,7 +258,7 @@ with db.transaction() as mut tx:
 **Names live in their modules.** A standard library module provides nothing until it's imported: `from std.math import Vec3, sqrt`, or `from std import math` and then `math.Vec3` and `math.sqrt(x)`. That's every module so far: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`. Using a name without its import is reported with the import to add.
 *Why:* A file's imports show everything it uses from the standard library, as in Python.
 
-**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the Python builtins, like `len`, `range` and `abs`.
+**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the global functions, like `sum`, `range` and `sorted`.
 *Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
 
 **Command-line arguments and standard input are capabilities.** `def main(stdout: Stdout, args: Args, stdin: Stdin):`. `for arg in args:` gives the arguments, not the program's name, which is `args.program`. `stdin.lines()` reads input a line at a time. A program that doesn't name them can't read them, and both are recorded for replay.
@@ -267,10 +267,10 @@ with db.transaction() as mut tx:
 **`int(text)` and `float(text)` fail with `InvalidValue`** when the text isn't a number or doesn't fit, handled with `?`, `else` or `match`. `int(3.7)` still truncates to `3`. `int()` of NaN, or of a float too big for an int, stops the program, like overflow.
 *Why:* Text often comes from input, so a bad number is expected and must be handled. A NaN reaching `int()` is a bug in the program.
 
-**A string's characters are reached by code and as bytes without copying.** `"A".code()` gives `65`, `str.from_code(65)` gives `"A"` and fails with `InvalidValue` for a number that isn't a character, and `s.codes()` gives every code. `.code()` on anything but one character stops the program, like an index out of range. `s.encode()` is a view of the UTF-8 bytes, with no copy, so `len(s.encode())` is the length in bytes.
+**A string's characters are reached by code and as bytes without copying.** `"A".code()` gives `65`, `str.from_code(65)` gives `"A"` and fails with `InvalidValue` for a number that isn't a character, and `s.codes()` gives every code. `.code()` on anything but one character stops the program, like an index out of range. `s.encode()` is a view of the UTF-8 bytes, with no copy, so `s.encode().len()` is the length in bytes.
 *Why:* A lexer needs character codes and byte lengths, and strings are stored as UTF-8 already, so the bytes cost nothing.
 
-**`bytes` is binary data, a run of ints from 0 to 255.** It's a built-in type, like `str`: `len`, indexing and looping give ints, slicing and `+` give `bytes`, and it compares, orders and hashes. `bytes([137, 80])` makes some from a list, and a number outside 0 to 255 stops the program, like an index out of range. `text.encode()` gives text's UTF-8 bytes, and `data.decode()` gives the text back, failing with `InvalidValue` when the bytes aren't UTF-8. Bytes print as `bytes([137, 80])`, which is also how to write them; there's no literal like Python's `b"..."` yet.
+**`bytes` is binary data, a run of ints from 0 to 255.** It's a built-in type, like `str`: indexing and looping give ints, `.len()` counts the bytes, slicing and `+` give `bytes`, and it compares, orders and hashes. `bytes([137, 80])` makes some from a list, and a number outside 0 to 255 stops the program, like an index out of range. `text.encode()` gives text's UTF-8 bytes, and `data.decode()` gives the text back, failing with `InvalidValue` when the bytes aren't UTF-8. Bytes print as `bytes([137, 80])`, which is also how to write them; there's no literal like Python's `b"..."` yet.
 *Why:* Files, hashes and network data are bytes, and keeping them apart from `str` means text is checked once, when it's decoded. A byte out of range is a mistake in the program, while text that isn't UTF-8 comes from outside and has to be handled. Printing bytes the way they're written means a printed value can be pasted back into code.
 
 **Imports bind names exactly as in Python.** `import std.json` binds `std`, and the call is `std.json.loads(...)`. `from std import json` binds `json`, for `json.loads(...)`. `from std.json import loads` binds `loads`. A kit's own modules follow the same rule: `import game.physics` binds `game`, and `from game import physics` binds `physics`. Writing `json.loads` after `import std.json` is an error whose help suggests `from std import json`. There's no `import *`.
@@ -284,7 +284,7 @@ import game.world.physics as physics
 ```
 - The descriptive-names lint covers aliases: `import std.json as j` is flagged like a variable named `j`.
 - A module's own name has one spelling. `import std.json as json` has a fix that rewrites it to `from std import json`, which means the same.
-- An alias can't take a name the language provides everywhere, such as `len`, `Ok` or `Stdout`.
+- An alias can't take a name the language provides everywhere, such as `sum`, `Ok` or `Stdout`.
 - An alias to the same name (`from std import json as json`), or importing one thing twice under two names, is a lint.
 - `pub import x as y` re-exports under a new name, which helps a kit rename part of its API.
 

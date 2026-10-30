@@ -489,7 +489,7 @@ impl Lowerer<'_, '_> {
         self.param(done)
     }
 
-    /// `len(dict)`.
+    /// `dict.len()`.
     pub(super) fn dict_length(&mut self, dict: Value) -> Value {
         self.b.ins().load(types::I64, MemFlagsData::trusted(), dict, KEYS)
     }

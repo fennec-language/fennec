@@ -29,13 +29,12 @@ impl Lowerer<'_, '_> {
             self.append_packed(&list, item, &arg.value, expr.span)?;
             return Ok((None, Ty::Unit));
         }
-        if let (ExprKind::Name(name), [arg]) = (&callee.kind, args)
+        if let (ExprKind::Attr { object, name, optional: false }, []) = (&callee.kind, args)
             && name == "len"
-            && plain
-            && self.local(name).is_none()
-            && let Some((list, item)) = self.packed(&arg.value)
+            && self.std_member(callee).is_none()
+            && !matches!(self.static_ty(object), Some(Ty::Struct(_) | Ty::Boxed(_)))
         {
-            return Ok((Some(self.list_length(&list, item)?), Ty::Int));
+            return self.length(expr, object);
         }
         if let Some(name) = self.std_member(callee) {
             if let Some(id) = self.layouts.id(name)
@@ -456,7 +455,7 @@ impl Lowerer<'_, '_> {
     ) -> Result<Option<Lowered>, Diagnostic> {
         let known = matches!(
             name,
-            "abs" | "min" | "max" | "float" | "int" | "sqrt" | "floor" | "ceil" | "sin" | "cos" | "len"
+            "abs" | "min" | "max" | "float" | "int" | "sqrt" | "floor" | "ceil" | "sin" | "cos"
         );
         if !known || self.shared.compiled.contains_key(name) {
             return Ok(None);
@@ -475,12 +474,6 @@ impl Lowerer<'_, '_> {
                 (self.b.ins().select(negative, negated, *x), Ty::Int)
             }
             ("abs", [(Some(x), Ty::Float)]) => (self.b.ins().fabs(*x), Ty::Float),
-            ("len", [(Some(text), Ty::Str)]) => (self.string_length(*text)?, Ty::Int),
-            ("len", [(Some(dict), ty @ Ty::Dict(..))]) => {
-                let length = self.dict_length(*dict);
-                self.consume(Some(*dict), *ty)?;
-                (length, Ty::Int)
-            }
             ("min" | "max", [(Some(a), Ty::Int), (Some(b), Ty::Int)]) => {
                 (if name == "min" { self.b.ins().smin(*a, *b) } else { self.b.ins().smax(*a, *b) }, Ty::Int)
             }
@@ -504,6 +497,27 @@ impl Lowerer<'_, '_> {
             }
         };
         Ok(Some((Some(result.0), result.1)))
+    }
+
+    /// `x.len()`: natively for a packed list, text and a dict, and in the interpreter for
+    /// anything else.
+    fn length(&mut self, expr: &Expr, object: &Expr) -> Result<Lowered, Diagnostic> {
+        if let Some((list, item)) = self.packed(object) {
+            return Ok((Some(self.list_length(&list, item)?), Ty::Int));
+        }
+        let (value, ty) = self.expr(object)?;
+        match (value, ty) {
+            (Some(text), Ty::Str) => Ok((Some(self.string_length(text)?), Ty::Int)),
+            (Some(dict), Ty::Dict(..)) => {
+                let length = self.dict_length(dict);
+                self.consume(Some(dict), ty)?;
+                Ok((Some(length), Ty::Int))
+            }
+            _ => {
+                let receiver = self.handle_of(value, ty, object.span)?;
+                self.interpret_method(expr, object, receiver, "len", &[])
+            }
+        }
     }
 
     /// `int(x)` on a float: toward zero, failing like the interpreter for a float outside an

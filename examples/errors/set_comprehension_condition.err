@@ -4,4 +4,4 @@ error: `while` needs a bool, but this is a set
 2 |     while {n % 2 for n in range(3)}:
   |           ^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = help: Fennec has no truthiness: write `len(x) > 0`
+  = help: Fennec has no truthiness: write `x.len() > 0`

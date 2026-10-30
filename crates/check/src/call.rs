@@ -86,8 +86,8 @@ impl FnCx<'_> {
                 if let Some(builtin) = self.checker.program.imported(name, callee.span).cloned() {
                     return self.call_builtin(&builtin, args, span);
                 }
-                if builtins::is_builtin(name) {
-                    return self.call_builtin(name, args, span);
+                if name == "len" || builtins::is_builtin(name) {
+                    return self.call_global(name, callee, args, span);
                 }
             }
             _ => {}
@@ -375,6 +375,51 @@ impl FnCx<'_> {
         }
         self.bind_args(method, params, args, span);
         signature.returns
+    }
+
+    /// A global function, or `len(x)`, which isn't one.
+    fn call_global(&mut self, name: &str, callee: &Expr, args: &[Arg], span: Span) -> Type {
+        if name == "len" {
+            self.len_function(callee, args, span)
+        } else {
+            self.call_builtin(name, args, span)
+        }
+    }
+
+    /// `len(x)`, which Fennec doesn't have: a length is the value's own method, `x.len()`.
+    /// The fix moves it there.
+    fn len_function(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
+        let mut diagnostic = Diagnostic::new("`len` is a method: write `x.len()`", span).with_help(
+            "the global functions are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`",
+        );
+        if let [arg] = args
+            && arg.name.is_none()
+            && !arg.is_mut
+        {
+            self.expr(&arg.value);
+            let value = arg.value.span;
+            // A dict or set gets parentheses too, since `{{` in an f-string is a brace.
+            let grouped = matches!(
+                arg.value.kind,
+                ExprKind::Dict(_)
+                    | ExprKind::Set(_)
+                    | ExprKind::Binary { .. }
+                    | ExprKind::Unary { .. }
+                    | ExprKind::Cond { .. }
+                    | ExprKind::Else { .. }
+                    | ExprKind::Lambda { .. }
+                    | ExprKind::Int(_)
+                    | ExprKind::Float(_)
+            );
+            let (open, close) = if grouped { ("(", ").len()") } else { ("", ".len()") };
+            diagnostic = diagnostic
+                .with_fix(Span { start: callee.span.start, end: value.start }, open)
+                .with_fix(Span { start: value.end, end: span.end }, close);
+        } else {
+            self.ignore_args(args);
+        }
+        self.error(diagnostic);
+        Type::Int
     }
 
     /// Whether a method from a conditional extension, like `count` from

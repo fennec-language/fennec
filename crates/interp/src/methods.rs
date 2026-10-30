@@ -188,7 +188,7 @@ fn changes_in_place(value: &Value, method: &str) -> bool {
 pub(crate) fn no_method(value: &Value, method: &str, span: Span) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("a {} has no method `{method}`", value.type_name()), span);
     match method {
-        "len" | "length" | "size" | "count" => diagnostic.with_help("use `len(x)`"),
+        "length" | "size" | "count" => diagnostic.with_help("use `.len()`"),
         "push" | "add" => diagnostic.with_help("use `append`"),
         "trim" => diagnostic.with_help("use `strip()`"),
         "toUpperCase" | "to_uppercase" => diagnostic.with_help("use `upper()`"),

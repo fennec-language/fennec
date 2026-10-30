@@ -195,7 +195,7 @@ extend Parser:
                 name = self.name("an argument name")?
                 self.pos += 1
             mut value = self.expr()?
-            if len(args) == 0 and name is None and not is_mut and self.at_keyword("for"):
+            if args.len() == 0 and name is None and not is_mut and self.at_keyword("for"):
                 value = self.comprehension(.Generator, value, None)?
             args.append(Arg(name=name, is_mut=is_mut, value=value))
             if not self.eat_punct(","):
@@ -260,7 +260,7 @@ extend Parser:
             if not trailing_comma:
                 break
         span = start.to(self.expect_punct(")")?)
-        if len(items) == 1 and not trailing_comma:
+        if items.len() == 1 and not trailing_comma:
             return items[0]
         Expr(kind=ExprKind.Tuple(items), span=span)
 
@@ -268,7 +268,7 @@ extend Parser:
         mut items = []
         while not self.at_punct("]"):
             item = self.expr()?
-            if len(items) == 0 and self.at_keyword("for"):
+            if items.len() == 0 and self.at_keyword("for"):
                 comprehension = self.comprehension(CompKind.List, item, None)?
                 return Expr(kind=comprehension.kind, span=start.to(self.expect_punct("]")?))
             items.append(item)
@@ -342,7 +342,7 @@ def fstring_parts(parts: list[FPart]) -> list[FStrPart]:
                     )
                 # Lexed on its own, a leading space would read as indentation.
                 code = source.lstrip()
-                skipped = byte_length(source[:len(source) - len(code)])
+                skipped = byte_length(source[:source.len() - code.len()])
                 mut parser = Parser.over(lex(code, offset + skipped)?)
                 expr = parser.expr()?
                 parser.eat(.Newline)

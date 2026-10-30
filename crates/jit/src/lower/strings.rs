@@ -42,7 +42,7 @@ impl Lowerer<'_, '_> {
         self.literal_of.get(&value).cloned()
     }
 
-    /// `len(text)`: its length in characters.
+    /// `text.len()`: its length in characters.
     pub(super) fn string_length(&mut self, text: Value) -> Result<Value, Diagnostic> {
         let length = self.b.ins().load(types::I64, MemFlagsData::trusted(), text, CHARS);
         self.consume(Some(text), Ty::Str)?;

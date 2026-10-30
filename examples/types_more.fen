@@ -106,4 +106,4 @@ def main(stdout: Stdout):
     kit = enemies.insert("kit")
     stdout.print(enemies.get(ash), enemies[kit])
 
-    stdout.print(SoaList[int](), len(SoaList[int]()))
+    stdout.print(SoaList[int](), SoaList[int]().len())

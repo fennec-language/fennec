@@ -82,7 +82,7 @@ struct Checker:
         arrow = function.arrow
         if ret is None or arrow is None:
             return
-        if ret.name in ["None", "nothing"] and len(ret.args) == 0 and not ret.optional:
+        if ret.name in ["None", "nothing"] and ret.args.len() == 0 and not ret.optional:
             self.diagnostics.append(Diagnostic(
                 message=f"`{function.name}` gives back nothing, so it has no arrow",
                 span=arrow.to(ret.span),
@@ -135,6 +135,6 @@ def generic_names(generics: list[Generic]) -> list[str]:
 def sorted_diagnostics(diagnostics: list[Diagnostic]) -> list[Diagnostic]:
     mut unique = []
     for diagnostic in sorted(diagnostics, key=d => (d.span.start, d.message)):
-        if len(unique) == 0 or unique[-1] != diagnostic:
+        if unique.len() == 0 or unique[-1] != diagnostic:
             unique.append(diagnostic)
     unique

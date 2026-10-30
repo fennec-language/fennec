@@ -9,7 +9,7 @@ extend list[T]:
     ## Reverses the items in place.
     def reverse(mut self):
         mut low = 0
-        mut high = len(self) - 1
+        mut high = self.len() - 1
         while low < high:
             held = self[low]
             self[low] = self[high]

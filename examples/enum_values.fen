@@ -142,7 +142,7 @@ def main(stdout: Stdout):
         .End,
         .Number(100),
     ]
-    stdout.print(score(tokens), len(tokens), tokens[2], tokens[-1])
+    stdout.print(score(tokens), tokens.len(), tokens[2], tokens[-1])
 
     mut path = [Dir.North]
     for i in range(6):

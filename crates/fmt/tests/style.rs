@@ -34,8 +34,8 @@ fn calls_indexes_and_attributes_hug() {
 #[test]
 fn keyword_arguments_hug_their_equals() {
     check(
-        "def f():\n    Vec3(x = 1.0, y = 2.0)\n    sorted(names, key = name => len(name))\n",
-        "def f():\n    Vec3(x=1.0, y=2.0)\n    sorted(names, key=name => len(name))\n",
+        "def f():\n    Vec3(x = 1.0, y = 2.0)\n    sorted(names, key = name => name.len())\n",
+        "def f():\n    Vec3(x=1.0, y=2.0)\n    sorted(names, key=name => name.len())\n",
     );
 }
 

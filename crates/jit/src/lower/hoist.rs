@@ -1,6 +1,6 @@
 //! Looking packed lists up once per loop. Native code finds a packed list's items by asking
 //! the runtime for the name's list, which costs two lookups by name. A loop that only ever
-//! indexes a list (`xs[i]`, `xs[i] = v`, `xs[i].field`, `len(xs)`) can't make it grow, or
+//! indexes a list (`xs[i]`, `xs[i] = v`, `xs[i].field`, `xs.len()`) can't make it grow, or
 //! share it, or hand it anywhere: Fennec has no references, so nothing else in the loop can
 //! reach it. So the loop asks once, before it starts, and every access inside uses the
 //! answer.
@@ -80,9 +80,9 @@ fn indexed_only(cond: Option<&Expr>, body: &[Stmt], name: &str) -> Option<bool> 
         ExprKind::Name(found) if found == name => mentions += 1,
         ExprKind::Index { object, .. } if is_name(object, name) => indexed += 1,
         ExprKind::Call { callee, args }
-            if is_name(callee, "len")
-                && args.len() == 1
-                && args.first().is_some_and(|arg| !arg.is_mut && is_name(&arg.value, name)) =>
+            if args.is_empty()
+                && matches!(&callee.kind, ExprKind::Attr { object, name: method, optional: false }
+                    if method == "len" && is_name(object, name)) =>
         {
             indexed += 1;
         }

@@ -33,6 +33,9 @@ pub(super) fn new_module(span: Span) -> Result<JITModule, Diagnostic> {
     for helper in helpers::ALL {
         builder.symbol(helper.shape().symbol, helper.address());
     }
+    // The failure flag is the run's thread's own, and the program runs on this thread.
+    let failed = std::ptr::with_exposed_provenance::<u8>(fennec_interp::embed::failed_flag());
+    builder.symbol(super::symbols::FAILED, failed);
     Ok(JITModule::new(builder))
 }
 

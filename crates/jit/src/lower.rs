@@ -27,6 +27,7 @@ mod objects;
 mod stmt;
 mod strings;
 mod structs;
+mod symbols;
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,7 +35,7 @@ use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::{Block, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{FuncId, Module};
-use fennec_interp::embed::{self, Tables};
+use fennec_interp::embed::Tables;
 use fennec_syntax::{Diagnostic, Span};
 
 use crate::helpers::Helper;
@@ -84,6 +85,10 @@ pub(super) struct Shared {
     strings: HashMap<String, i64>,
     /// For an executable: the table of runtime addresses its code reads.
     slots: Option<object::Slots>,
+    /// The data symbols code reads program numbers through, with this run's values.
+    symbols: HashMap<String, (cranelift_module::DataId, i64)>,
+    /// For tests: each function's IR as `canonical_ir` writes it, by its key.
+    captured: Option<Vec<(String, String)>>,
     /// The compiled methods that take `self`, by method name, with each one's type.
     methods: HashMap<String, Vec<(String, String)>>,
     with_frames: usize,
@@ -117,6 +122,7 @@ pub(crate) fn compile(
         let mut module = new_module(span).map_err(fatal)?;
         let mut shared = Shared::new(program, stack_limit);
         let main = compile_functions(&mut module, &mut shared, program, signatures, skipped)?;
+        symbols::define(&mut module, &shared).map_err(fatal)?;
         let mut ctx = module.make_context();
         let mut builder_ctx = FunctionBuilderContext::new();
         let entry =
@@ -174,6 +180,8 @@ impl Shared {
             names: HashMap::new(),
             strings: HashMap::new(),
             slots: None,
+            symbols: HashMap::new(),
+            captured: None,
             methods: HashMap::new(),
             with_frames: 0,
             handed_over: 0,
@@ -214,6 +222,9 @@ pub(super) fn compile_functions(
         };
         lower_function(&mut cx, function).map_err(failed)?;
         let func = std::mem::replace(&mut ctx.func, cranelift_codegen::ir::Function::new());
+        if let Some(texts) = &mut shared.captured {
+            texts.push((function.key.clone(), codegen::canonical_ir(&*module, &func)));
+        }
         lowered.push((id, func, function));
         module.clear_context(&mut ctx);
     }
@@ -315,9 +326,10 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         let table = cx.module.declare_data_in_func(slots.data, b.func);
         b.ins().symbol_value(pointer_ty, table)
     });
-    let failed_flag = match slots_base {
-        Some(base) => b.ins().load(pointer_ty, MemFlagsData::trusted(), base, 0),
-        None => b.ins().iconst(pointer_ty, i64::try_from(embed::failed_flag()).unwrap_or(0)),
+    let failed_flag = if let Some(base) = slots_base {
+        b.ins().load(pointer_ty, MemFlagsData::trusted(), base, 0)
+    } else {
+        symbols::import(&mut b, &mut *cx.module, symbols::FAILED)?
     };
     let mut lowerer = Lowerer {
         b,
@@ -350,6 +362,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         slots_base,
         literal_of: HashMap::new(),
         hoisted: Vec::new(),
+        handed: 0,
     };
     lowerer.prologue(&params)?;
     let (tail, tail_ty) = lowerer.tail(&function.def.body)?;
@@ -436,6 +449,8 @@ pub(crate) struct Lowerer<'a, 'f> {
     hoisted: Vec<hoist::Hoisted>,
     /// Where the table of runtime addresses is, in an executable.
     slots_base: Option<Value>,
+    /// How many things this function has handed the runtime by number so far.
+    handed: usize,
     /// The text of each value that's a string literal.
     literal_of: HashMap<Value, String>,
     /// Where the program called the standard library function being inlined, which its
@@ -595,21 +610,6 @@ impl Lowerer<'_, '_> {
 
     fn int(&mut self, n: i64) -> Value {
         self.b.ins().iconst(types::I64, n)
-    }
-
-    fn span_args(&mut self, span: Span) -> [Value; 2] {
-        let span = self.site(span);
-        [self.int(i64::from(span.start)), self.int(i64::from(span.end))]
-    }
-
-    fn name_id(&mut self, name: &str) -> Value {
-        let id = intern(&mut self.shared.names, &mut self.shared.tables.names, name);
-        self.int(id)
-    }
-
-    fn string_id(&mut self, text: &str) -> Value {
-        let id = intern(&mut self.shared.strings, &mut self.shared.tables.strings, text);
-        self.int(id)
     }
 
     /// A name in sight. Inside an inlined body, only the body's own names are.

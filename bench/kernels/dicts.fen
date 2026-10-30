@@ -1,0 +1,8 @@
+## Counting keys in a dict: hashing and lookups.
+
+def main(stdout: Stdout):
+    mut counts: dict[int, int] = {}
+    for i in range(20_000):
+        key = i * 7919 % 10_007
+        counts[key] = counts.get(key, 0) + 1
+    stdout.print(len(counts), counts[0], counts[10_006])

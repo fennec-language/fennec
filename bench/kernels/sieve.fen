@@ -1,0 +1,16 @@
+## The sieve of Eratosthenes: a big list of ints, indexed in tight loops.
+
+def count_primes(limit: int) -> int:
+    mut composite = [0 for _ in range(limit + 1)]
+    mut count = 0
+    for n in range(2, limit + 1):
+        if composite[n] == 0:
+            count += 1
+            mut multiple = n * n
+            while multiple <= limit:
+                composite[multiple] = 1
+                multiple += n
+    count
+
+def main(stdout: Stdout):
+    stdout.print(count_primes(5_000_000))

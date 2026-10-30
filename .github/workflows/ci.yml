@@ -29,7 +29,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --check
       - name: Check the Fennec code is formatted
-        run: cargo run --locked --quiet -p fennec -- fmt --check examples crates/syntax/src/stdlib
+        run: cargo run --locked --quiet -p fennec -- fmt --check examples crates/syntax/src/stdlib bench
       - run: cargo clippy --all-targets --locked -- -D warnings
       - name: Clippy for the playground's WebAssembly module
         run: cargo clippy --target wasm32-unknown-unknown -p fennec-wasm --locked -- -D warnings
@@ -132,11 +132,40 @@ jobs:
       - name: zizmor
         run: zizmor --offline --min-severity low .github/workflows
 
+  bench:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build fennec and the benchmark suite
+        run: cargo build --release --locked -p fennec -p fennec-bench
+      # The previous commit is the base of a pull request or merge group, or the commit before
+      # a push to main. Both versions run on this machine, so their times compare fairly.
+      - name: Build the previous commit's fennec
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            git worktree add --detach ../previous "$BASE"
+            cargo build --release --locked -p fennec --manifest-path ../previous/Cargo.toml --target-dir target/previous
+          fi
+      - name: Time each kernel against Rust and the previous commit
+        run: |
+          previous=()
+          if [ -x target/previous/release/fennec ]; then
+            previous=(--previous target/previous/release/fennec)
+          fi
+          ./target/release/fennec-bench "${previous[@]}"
+
   # One status for branch protection to require, so adding jobs never means changing settings.
   ok:
     name: CI passed
     if: always()
-    needs: [lint, test, coverage, deny, site, workflows]
+    needs: [lint, test, coverage, deny, site, workflows, bench]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

@@ -1,0 +1,33 @@
+## The spectral norm from the Benchmarks Game: float math over lists of floats.
+
+from std.math import sqrt
+
+def a(i: int, j: int) -> float:
+    1.0 / float((i + j) * (i + j + 1) // 2 + i + 1)
+
+def times(v: list[float], transpose: bool) -> list[float]:
+    n = len(v)
+    mut out = [0.0 for _ in range(n)]
+    for i in range(n):
+        mut sum = 0.0
+        for j in range(n):
+            sum += (a(j, i) if transpose else a(i, j)) * v[j]
+        out[i] = sum
+    out
+
+def times_transposed(v: list[float]) -> list[float]:
+    times(times(v, False), True)
+
+def main(stdout: Stdout):
+    n = 400
+    mut u = [1.0 for _ in range(n)]
+    mut v = [0.0 for _ in range(n)]
+    for _ in range(10):
+        v = times_transposed(u)
+        u = times_transposed(v)
+    mut vbv = 0.0
+    mut vv = 0.0
+    for i in range(n):
+        vbv += u[i] * v[i]
+        vv += v[i] * v[i]
+    stdout.print(f"{sqrt(vbv / vv):.9f}")

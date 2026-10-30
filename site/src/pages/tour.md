@@ -122,7 +122,7 @@ Rules about a field's value go right next to it with `where`. Creating a value t
 
 ```fennec
 struct Player:
-    name: str where len(name) > 0
+    name: str where name.len() > 0
     level: int where level >= 1
 
 player = Player(name=entered_name, level=1)?
@@ -268,7 +268,7 @@ total = sum(hit.damage for hit in hits)                    # no allocation
 strongest = max(alive, key=enemy => enemy.health)
 ```
 
-- Python's builtins come along: `len`, `sum`, `min`, `max`, `any`, `all`, `enumerate`, `zip`, `range`.
+- Python's looping builtins come along: `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`, `range`. Questions about one value are methods: `xs.len()`, `x.abs()`.
 - A `dict` keeps insertion order, so iterating it is always deterministic.
 - Changing a collection while looping over it is a compile error. Use `remove_where`, or collect what to change first:
 

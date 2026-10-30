@@ -26,7 +26,7 @@ When a model reaches for something Fennec doesn't have, the compiler recognizes 
 | --- | --- |
 | `count = 0` then `count += 1` | `count` isn't mut. Declare it `mut count = 0`. |
 | `def area(shape):` | Parameters need types: `def area(shape: Shape):`. |
-| `if items:` | There's no truthiness. Write `if len(items) > 0:`. |
+| `if items:` | There's no truthiness. Write `if items.len() > 0:`. |
 | `raise NotFound(path)` | There are no exceptions. Write `fail NotFound(path)`, which returns the error. |
 | `try: ... except NotFound:` | Pass errors up with `?`, give a default with `else`, or handle them with `match`. |
 | `lambda x: x * 2` | Write `x => x * 2`. |

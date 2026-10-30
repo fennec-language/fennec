@@ -6,6 +6,9 @@
 //! request one line each, and reads back its exit code and what to print. The socket is named
 //! by version, so a command never talks to a daemon from another version.
 //!
+//! The daemon owns the cache in `~/.fennec/cache`: it keeps it under its cap (1 GiB, or
+//! `FENNEC_CACHE_CAP` bytes) when it starts and every five minutes after, while it's idle.
+//!
 //! `fennec daemon status` and `fennec daemon stop` manage it. It exits by itself after ten
 //! minutes with nothing to do; `FENNEC_DAEMON_IDLE` sets that in seconds. `FENNEC_NO_DAEMON`
 //! makes commands do their work in-process.
@@ -103,6 +106,8 @@ mod unix {
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::{Duration, Instant};
 
+    use fennec_build::Cache;
+
     use super::{Outcome, VERSION};
     use crate::changes::Snapshots;
 
@@ -117,6 +122,14 @@ mod unix {
         let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
         let folder = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
         folder.join(format!("fennec-{}-{VERSION}.sock", hash.get(..16).unwrap_or(&hash)))
+    }
+
+    /// How often the daemon checks the cache against its cap.
+    const CLEANUP_EVERY: Duration = Duration::from_secs(300);
+
+    #[expect(clippy::cast_precision_loss, reason = "a size shown to one decimal place")]
+    fn megabytes(bytes: u64) -> String {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
     }
 
     /// How long the daemon waits with nothing to do before it exits.
@@ -193,6 +206,8 @@ mod unix {
             stopping: false,
         }));
         let idle = idle_limit();
+        let cache = Cache::new(home);
+        let mut last_cleanup: Option<Instant> = None;
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
@@ -206,6 +221,12 @@ mod unix {
                     };
                     if done {
                         break;
+                    }
+                    // The daemon owns the cache, so it keeps it under its cap, in time when
+                    // nothing else is going on.
+                    if last_cleanup.is_none_or(|last| last.elapsed() > CLEANUP_EVERY) {
+                        let _ = cache.cleanup(Cache::cap());
+                        last_cleanup = Some(Instant::now());
                     }
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -233,14 +254,16 @@ mod unix {
         match (lines.next(), lines.next()) {
             (Some("status"), _) => Outcome {
                 stdout: format!(
-                    "running: Fennec {VERSION}, process {}, up {} s, {} served\n",
+                    "running: Fennec {VERSION}, process {}, up {} s, {} served\ncache: {} of {}\n",
                     std::process::id(),
                     state.started.elapsed().as_secs(),
                     if state.served == 1 {
                         "1 request".to_owned()
                     } else {
                         format!("{} requests", state.served)
-                    }
+                    },
+                    megabytes(Cache::new(&state.home).size()),
+                    megabytes(Cache::cap()),
                 ),
                 ..Outcome::default()
             },

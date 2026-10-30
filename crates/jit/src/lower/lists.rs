@@ -45,14 +45,14 @@ impl Lowerer<'_, '_> {
 
     /// The runtime's number for a kind of item, registering it the first time.
     fn element(&mut self, item: Ty) -> Result<Value, Diagnostic> {
-        if let Some(id) = self.elements.get(&item) {
-            return Ok(self.int(*id));
+        if let Some(&id) = self.elements.get(&item) {
+            return Ok(self.handed_number("element", id));
         }
         let described = std::rc::Rc::new(self.describe(item)?);
         let id = i64::try_from(self.shared.tables.elements.len()).unwrap_or(0);
         self.shared.tables.elements.push(described);
         self.elements.insert(item, id);
-        Ok(self.int(id))
+        Ok(self.handed_number("element", id))
     }
 
     fn describe(&self, item: Ty) -> Result<Element, Diagnostic> {

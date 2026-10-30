@@ -307,6 +307,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-object",
+ "fennec-blake3",
  "fennec-check",
  "fennec-interp",
  "fennec-runtime",

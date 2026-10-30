@@ -267,7 +267,7 @@ impl Lowerer<'_, '_> {
         self.note(span, super::notes::expression(&expr.kind));
         let id = i64::try_from(self.shared.tables.exprs.len()).unwrap_or(0);
         self.shared.tables.exprs.push(expr);
-        let id = self.int(id);
+        let id = self.handed_number("expr", id);
         let [start, end] = self.span_args(span);
         let handle = self.help(Helper::Expr, &[id, start, end])?;
         self.unsync(synced, span)?;
@@ -286,7 +286,7 @@ impl Lowerer<'_, '_> {
         self.note(span, super::notes::statement(&stmt.kind));
         let id = i64::try_from(self.shared.tables.stmts.len()).unwrap_or(0);
         self.shared.tables.stmts.push(stmt);
-        let id = self.int(id);
+        let id = self.handed_number("stmt", id);
         let [start, end] = self.span_args(span);
         self.call_helper(Helper::Stmt, &[id, start, end])?;
         self.unsync(synced, span)?;

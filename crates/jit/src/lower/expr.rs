@@ -54,6 +54,9 @@ impl Lowerer<'_, '_> {
                 if let Some(result) = self.binary(*op, left, right, span) {
                     return Ok(result);
                 }
+                if (*op, left.1, right.1) == (BinOp::Add, Ty::Str, Ty::Str) {
+                    self.note(span, "the runtime copies both strings to join them");
+                }
                 if let Some(result) = self.string_binary(*op, left, right)? {
                     return Ok(result);
                 }

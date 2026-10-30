@@ -63,6 +63,19 @@ impl Sources {
         rendered.join("\n")
     }
 
+    /// Where a span starts: its file's path, its line and column (from 1), and that line's
+    /// text.
+    pub fn locate(&self, span: Span) -> Option<(&str, usize, usize, &str)> {
+        let file = self.file(span)?;
+        let start = usize::try_from(span.start.saturating_sub(file.base)).ok()?.min(file.text.len());
+        let before = file.text.get(..start)?;
+        let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+        let line_end = file.text.get(start..)?.find('\n').map_or(file.text.len(), |at| start + at);
+        let column = file.text.get(line_start..start)?.chars().count() + 1;
+        let line = before.matches('\n').count() + 1;
+        Some((file.path.as_str(), line, column, file.text.get(line_start..line_end)?))
+    }
+
     /// Each file the fixes of `diagnostics` change, with its new text.
     pub fn fixed(&self, diagnostics: &[Diagnostic]) -> Vec<(String, String)> {
         self.files

@@ -111,6 +111,7 @@ impl Lowerer<'_, '_> {
                 return self.join(ends, span);
             }
         }
+        self.note(subject.span, "the runtime matches each pattern in turn");
         let subject_handle = self.handle_of(value, ty, subject.span)?;
         // The arms' statements drop temporaries back to here, keeping the subject.
         let mark = self.help(Helper::Mark, &[])?;

@@ -1,0 +1,237 @@
+---
+import Base from '../layouts/Base.astro';
+import data from '../data/benchmarks.json';
+
+const base = import.meta.env.BASE_URL;
+const { ci, builds, targets } = data;
+---
+
+<Base title="Benchmarks" description="Fennec's real benchmark numbers against Rust twins, measured in CI. In progress.">
+  <section class="wrap head">
+    <span class="pill">In progress</span>
+    <h1>Benchmarks</h1>
+    <p class="lede">
+      Every kernel is a Fennec program and a Rust twin doing the same work, the idiomatic way. These are real numbers from CI, and they
+      aren't where we want them yet.
+    </p>
+  </section>
+
+  <section class="wrap">
+    <h2>Speed against Rust</h2>
+    <p class="note">
+      Today's only native engine is the JIT, whose target is {targets.jit}% of Rust's speed. Release builds, with a target of {targets.release}%,
+      don't exist yet.
+    </p>
+    <div class="table">
+      <div class="tr th">
+        <span>Kernel</span><span class="num">Rust</span><span class="num">Fennec JIT</span><span>Speed vs Rust</span>
+      </div>
+      {
+        ci.kernels.map((kernel) => (
+          <div class="tr">
+            <span class="name">{kernel.name}</span>
+            <span class="num">{kernel.rust_ms.toFixed(1)} ms</span>
+            <span class="num">{kernel.fennec_ms.toFixed(1)} ms</span>
+            <span class="bar-cell">
+              <span class="track">
+                <span class="fill" style={`width: ${kernel.percent}%`} />
+                <span class="target" style={`left: ${targets.jit}%`} title={`JIT target: ${targets.jit}%`} />
+              </span>
+              <strong>{kernel.percent.toFixed(0)}%</strong>
+            </span>
+          </div>
+        ))
+      }
+    </div>
+    <p class="note">
+      No kernel meets the {targets.jit}% target in this run. Medians of repeated runs, from commit <code>{ci.commit}</code> on {ci.date}, on {ci.machine}.
+      The line on each bar marks the target. A shared CI machine is noisy, so these move by several percent between runs.
+    </p>
+  </section>
+
+  <section class="wrap">
+    <h2>Build and test times</h2>
+    <p class="note">Measured on {builds.machine}, at commit <code>{builds.commit}</code>, on {builds.kit}.</p>
+    <div class="stats">
+      <div class="stat"><strong>{builds.one_function_s} s</strong><span>to rebuild after changing one function</span></div>
+      <div class="stat"><strong>{builds.first_s.toFixed(0)} s</strong><span>for its first build, with an empty cache. We want this much lower.</span></div>
+      <div class="stat"><strong>&lt;{builds.tests_unchanged_s} s</strong><span>to rerun tests when nothing they depend on changed, on one small test file</span></div>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <h2>How it's measured</h2>
+    <p>
+      Both sides run on the same machine, taking turns, and must print the same result. The Rust twin is built with
+      <code>-C opt-level=3 -C target-cpu=native</code>. A failure is fixed in the compiler, never by changing the benchmark. The kernels and the
+      method are in <a href="https://github.com/fennec-language/fennec/tree/main/bench">the repository</a>, and you can{' '}
+      <a href={`${base}speed/`}>read how the two speeds are designed</a>.
+    </p>
+  </section>
+</Base>
+
+<style>
+  section {
+    margin-top: 3.5rem;
+  }
+
+  .head {
+    margin-top: 3rem;
+  }
+
+  .pill {
+    display: inline-block;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--accent);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 999px;
+    padding: 0.2rem 0.75rem;
+  }
+
+  h1 {
+    font-size: clamp(2.4rem, 7vw, 3.6rem);
+    letter-spacing: -0.035em;
+    line-height: 1.05;
+    margin: 0.75rem 0;
+  }
+
+  h2 {
+    font-size: 1.5rem;
+    letter-spacing: -0.02em;
+    margin: 0 0 0.5rem;
+  }
+
+  .lede {
+    font-size: 1.15rem;
+    color: var(--muted);
+    max-width: 640px;
+    margin: 0;
+  }
+
+  .note {
+    color: var(--muted);
+    font-size: 0.95rem;
+    max-width: 720px;
+  }
+
+  .table {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin: 1.25rem 0;
+  }
+
+  .tr {
+    display: grid;
+    grid-template-columns: 1.1fr 0.8fr 0.9fr 2.2fr;
+    gap: 1rem;
+    align-items: center;
+    padding: 0.7rem 1.1rem;
+    border-top: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tr:first-child {
+    border-top: 0;
+  }
+
+  .th {
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
+
+  .name {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+  }
+
+  .num {
+    text-align: right;
+  }
+
+  .bar-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .bar-cell strong {
+    width: 2.75rem;
+    text-align: right;
+  }
+
+  .track {
+    position: relative;
+    flex: 1;
+    height: 10px;
+    border-radius: 999px;
+    background: var(--surface-strong);
+  }
+
+  .fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 999px;
+    background: var(--accent-bright);
+  }
+
+  .target {
+    position: absolute;
+    top: -4px;
+    bottom: -4px;
+    width: 2px;
+    background: var(--text);
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin-top: 1.25rem;
+  }
+
+  .stat {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.4rem;
+  }
+
+  .stat strong {
+    display: block;
+    font-size: 2rem;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+  }
+
+  .stat span {
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+
+  @media (max-width: 640px) {
+    .tr {
+      grid-template-columns: 1fr 1fr;
+      gap: 0.35rem 1rem;
+    }
+
+    .th {
+      display: none;
+    }
+
+    .tr .num {
+      text-align: left;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .name,
+    .bar-cell {
+      grid-column: 1 / -1;
+    }
+  }
+</style>

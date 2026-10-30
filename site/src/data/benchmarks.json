@@ -1,0 +1,26 @@
+{
+  "ci": {
+    "commit": "10db769",
+    "date": "2026-10-30",
+    "machine": "GitHub Actions, ubuntu-latest",
+    "kernels": [
+      { "name": "dicts", "rust_ms": 25.3, "fennec_ms": 34.8, "percent": 72.7 },
+      { "name": "sieve", "rust_ms": 49.5, "fennec_ms": 73.0, "percent": 67.8 },
+      { "name": "nbody", "rust_ms": 14.5, "fennec_ms": 38.9, "percent": 37.3 },
+      { "name": "strings", "rust_ms": 19.3, "fennec_ms": 55.2, "percent": 34.9 },
+      { "name": "fib", "rust_ms": 29.3, "fennec_ms": 89.7, "percent": 32.7 },
+      { "name": "spectral_norm", "rust_ms": 10.4, "fennec_ms": 36.8, "percent": 28.2 }
+    ]
+  },
+  "builds": {
+    "machine": "Apple M3",
+    "commit": "633ea1e",
+    "kit": "the 2,800-line self-hosted front end",
+    "first_s": 12.0,
+    "one_function_s": 0.17,
+    "unchanged_s": 0.23,
+    "fib_first_s": 0.14,
+    "tests_unchanged_s": 0.01
+  },
+  "targets": { "jit": 80, "release": 97 }
+}

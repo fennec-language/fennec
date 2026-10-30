@@ -61,11 +61,14 @@ code does instead, and links the issue where it's being decided or fixed.
   checker wanted a return type on every recursive function, and rejected `-> None` when the
   body ended in a call. Since #108, a `def` with no arrow returns nothing, recursive or not,
   so those arrows are gone. (#63)
-- **A type's methods must all sit in its declaration.** Rust spreads `impl Parser` over
-  `parser.rs` and `parser/{stmt,expr,pattern}.rs`; here the parser is one ~1,000-line
-  `struct Parser`, with comments marking where each Rust file's part begins. Something like
-  Swift's extensions, or letting a later file add methods to a kit's own type, would let
-  it split the same way. (#69)
+- **Settled: a type's methods had to sit in its declaration.** The parser was one
+  ~1,000-line `struct Parser`. Since #117, `extend Parser:` lets `parser/stmt.fen`,
+  `parser/expr.fen` and `parser/pattern.fen` hold their parts, as in the Rust parser. (#69)
+- **A file that only extends a type has to be imported anyway.** `fennec run` loads `main.fen`
+  and what it imports, so the three parser files load only because `main.fen` says
+  `import parser.stmt` and so on, though it uses nothing from them by name. Without those
+  lines, the checker says "`Parser` has no method `stmt`", with no hint that a file in the
+  kit defines it.
 - **There's no `while let`.** Loops that run while a lookup succeeds are `while True:`, a
   lookup, and `if op is None: break`. (#69)
 

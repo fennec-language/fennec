@@ -1,0 +1,97 @@
+## `match` expressions and their `case` patterns. Mirrors `crates/syntax/src/parser/pattern.rs`.
+
+from span import Span, Diagnostic
+from token import Tok
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from parser import Parser, is_keyword_tok
+
+extend Parser:
+    ## Whether `match` here starts a match rather than naming something called `match`.
+    def at_match(self) -> bool:
+        if not self.at_soft("match"):
+            return False
+        next = self.peek_at(1)
+        if next == .Newline or next == .Eof:
+            return False
+        next not in [.Punct("="), .Punct("("), .Punct("."), .Punct(","), .Punct(")"), .Punct(":")]
+
+    def match_expr(mut self) -> Expr:
+        start = self.advance().span
+        subject = self.or_expr()?
+        self.expect_punct(":")?
+        self.expect_block_start()?
+        mut arms = []
+        while not self.eat(.Dedent) and not self.at(.Eof):
+            if not self.at_soft("case"):
+                fail self.unexpected("`case`")
+            arm_start = self.advance().span
+            pattern = self.pattern()?
+            self.expect_punct(":")?
+            body = self.block()?
+            arms.append(MatchArm(pattern=pattern, body=body, span=arm_start.to(self.prev_span())))
+        self.block_ended = True
+        Expr(kind=.Match(subject, arms), span=start.to(self.prev_span()))
+
+    def pattern(mut self) -> Pattern:
+        token = self.advance()
+        match token.tok:
+            case .Name(name):
+                if name == "_":
+                    return .Wildcard
+                if self.at_punct("."):
+                    # `physics.Hit(amount)`: a case from a module imported whole.
+                    mut dotted = name
+                    while self.eat_punct("."):
+                        dotted += "." + self.name("a name")?
+                    return Pattern.Variant(dotted, False, self.pattern_args()?)
+                if name[0] >= "A" and name[0] <= "Z":
+                    return Pattern.Variant(name, False, self.pattern_args()?)
+                .Bind(name)
+            case .Int(value): literal(ExprKind.Int(value), token.span)
+            case .Float(value): literal(ExprKind.Float(value), token.span)
+            case .Str(text): literal(ExprKind.Str(text), token.span)
+            case .Keyword(word):
+                if word == "True" or word == "False":
+                    return literal(ExprKind.Bool(word == "True"), token.span)
+                if word == "None":
+                    return literal(.Nothing, token.span)
+                self.pos -= 1
+                fail self.unexpected("a pattern")
+            case .Punct(text): self.punct_pattern(text, token.span)?
+            case _:
+                self.pos -= 1
+                fail self.unexpected("a pattern")
+
+    ## A pattern that starts with punctuation: `.Case(...)`, a negative number, or a tuple.
+    def punct_pattern(mut self, text: str, span: Span) -> Pattern:
+        if text == ".":
+            name = self.name("an enum case")?
+            return Pattern.Variant(name, True, self.pattern_args()?)
+        if text == "-":
+            match self.advance().tok:
+                case .Int(value): return literal(ExprKind.Int(-value), span)
+                case .Float(value): return literal(ExprKind.Float(-value), span)
+                case _: fail Diagnostic(message="expected a number after `-`", span=span)
+        if text == "(":
+            mut items = []
+            while not self.at_punct(")"):
+                items.append(self.pattern()?)
+                if not self.eat_punct(","):
+                    break
+            self.expect_punct(")")?
+            return Pattern.Tuple(items)
+        self.pos -= 1
+        fail self.unexpected("a pattern")
+
+    def pattern_args(mut self) -> list[Pattern]:
+        mut args = []
+        if self.eat_punct("("):
+            while not self.at_punct(")"):
+                args.append(self.pattern()?)
+                if not self.eat_punct(","):
+                    break
+            self.expect_punct(")")?
+        args
+
+def literal(kind: ExprKind, span: Span) -> Pattern:
+    .Literal(Expr(kind=kind, span=span))

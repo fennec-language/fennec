@@ -206,7 +206,7 @@ impl<'a> Line<'_, 'a> {
 /// Whether a comma may follow the last item, so the list can end with one when broken.
 fn comma_allowed(bracket: Bracket, items: usize, trailing_comma: bool, has_for: bool) -> bool {
     match bracket {
-        Bracket::Call | Bracket::Params | Bracket::List | Bracket::Brace => !has_for,
+        Bracket::Call | Bracket::Params | Bracket::Literal => !has_for,
         Bracket::Paren => items > 1 || trailing_comma,
         Bracket::LambdaParams | Bracket::Index | Bracket::Generics => trailing_comma,
     }

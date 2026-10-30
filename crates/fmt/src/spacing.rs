@@ -26,10 +26,8 @@ pub(crate) enum Bracket {
     Index,
     /// Generic parameters after a function or type name: `def f[T: Shape]`.
     Generics,
-    /// A list literal or comprehension.
-    List,
-    /// A dict or set.
-    Brace,
+    /// A list, dict or set, or a comprehension.
+    Literal,
 }
 
 /// The kind of block a line sits in, for soft keywords.
@@ -76,7 +74,7 @@ pub(crate) fn analyze(toks: &[Tok<'_>], block: BlockKind) -> Spacing {
         stack: Vec::new(),
         roles: Vec::with_capacity(toks.len()),
         spacing: Spacing { space: Vec::with_capacity(toks.len()), brackets: vec![None; toks.len()] },
-        header: header(toks),
+        declares_type: declares_type(toks),
         in_def_name: false,
         block,
     };
@@ -86,27 +84,14 @@ pub(crate) fn analyze(toks: &[Tok<'_>], block: BlockKind) -> Spacing {
     analyzer.spacing
 }
 
-/// What kind of declaration a line starts, if any.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Header {
-    Def,
-    Type,
-    Plain,
-}
-
-fn header(toks: &[Tok<'_>]) -> Header {
+/// Whether a line declares a type, like `struct Box[T]:`, where `[` opens generic parameters.
+fn declares_type(toks: &[Tok<'_>]) -> bool {
     let mut words = toks.iter().skip_while(|tok| matches!(tok.text, "export" | "noalloc"));
-    match (words.next(), words.next()) {
-        (Some(first), _) if first.kind == TokenKind::Keyword && first.text == "def" => Header::Def,
+    matches!(
+        (words.next(), words.next()),
         (Some(first), Some(second))
-            if first.kind == TokenKind::Name
-                && second.kind == TokenKind::Name
-                && matches!(first.text, "struct" | "enum" | "error" | "interface") =>
-        {
-            Header::Type
-        }
-        _ => Header::Plain,
-    }
+            if matches!(first.text, "struct" | "enum" | "error" | "interface") && second.kind == TokenKind::Name
+    )
 }
 
 struct Analyzer<'t, 'a> {
@@ -114,7 +99,7 @@ struct Analyzer<'t, 'a> {
     stack: Vec<Bracket>,
     roles: Vec<Role>,
     spacing: Spacing,
-    header: Header,
+    declares_type: bool,
     /// Between `def` and the `(` of its parameters, where `def []=(` is written without spaces.
     in_def_name: bool,
     block: BlockKind,
@@ -203,35 +188,17 @@ impl<'a> Analyzer<'_, 'a> {
             "(" if after_operand => Bracket::Call,
             "(" if self.closes_before_arrow(at) => Bracket::LambdaParams,
             "(" => Bracket::Paren,
-            "[" if top && (self.in_def_name || self.header == Header::Type) && self.after_name(at) => {
-                Bracket::Generics
-            }
+            "[" if top && (self.in_def_name || self.declares_type) => Bracket::Generics,
             "[" if after_operand => Bracket::Index,
-            "[" => Bracket::List,
-            _ => Bracket::Brace,
+            _ => Bracket::Literal,
         }
     }
 
-    fn after_name(&self, at: usize) -> bool {
-        at.checked_sub(1).and_then(|before| self.tok(before)).is_some_and(|tok| tok.kind == TokenKind::Name)
-    }
-
-    /// Whether the bracket opening at `at` closes right before `=>`.
+    /// Whether the `(` at `at` holds an arrow function's parameters: names up to the first `)`,
+    /// then `=>`.
     fn closes_before_arrow(&self, at: usize) -> bool {
-        let mut depth = 0_usize;
-        for (offset, tok) in self.toks.iter().enumerate().skip(at) {
-            match tok.text {
-                "(" | "[" | "{" if tok.kind == TokenKind::Punct => depth += 1,
-                ")" | "]" | "}" if tok.kind == TokenKind::Punct => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        return self.tok(offset + 1).is_some_and(|next| next.text == "=>");
-                    }
-                }
-                _ => {}
-            }
-        }
-        false
+        let close = self.toks.iter().skip(at).position(|tok| tok.text == ")");
+        close.is_some_and(|length| self.tok(at + length + 1).is_some_and(|next| next.text == "=>"))
     }
 
     /// Whether `=` at `at` names a call argument, as in `Vec3(x=1.0)`.

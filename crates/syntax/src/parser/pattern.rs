@@ -48,6 +48,13 @@ impl Parser {
                 let name = self.name("an enum case")?;
                 Ok(Pattern::Variant { name, dotted: true, args: self.pattern_args()? })
             }
+            // `physics.Hit(amount)`: a case from a module imported whole.
+            Tok::Name(mut name) if self.at_p(Punct::Dot) => {
+                while self.eat_p(Punct::Dot) {
+                    name = format!("{name}.{}", self.name("a name")?);
+                }
+                Ok(Pattern::Variant { name, dotted: false, args: self.pattern_args()? })
+            }
             Tok::Name(name) if name.starts_with(|c: char| c.is_ascii_uppercase()) => {
                 Ok(Pattern::Variant { name, dotted: false, args: self.pattern_args()? })
             }

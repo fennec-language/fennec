@@ -16,6 +16,12 @@ pub fn parse(source: &str) -> Result<Module, Diagnostic> {
     Parser::new(lex(source, 0)?).module(false)
 }
 
+/// Parses one file of a program with several, its spans starting at byte `base` so they
+/// don't overlap another file's. `Sources` turns them back into a file and line.
+pub fn parse_at(source: &str, base: u32) -> Result<Module, Diagnostic> {
+    Parser::new(lex(source, base)?).module(false)
+}
+
 /// Parses a chunk typed into the REPL, where statements may sit at the top level too.
 pub fn parse_repl(source: &str) -> Result<Module, Diagnostic> {
     Parser::new(lex(source, 0)?).module(true)
@@ -96,6 +102,13 @@ impl Parser {
         self.eat(&Tok::P(punct))
     }
 
+    /// Skips `pub` before a declaration or field. It matters only between kits.
+    fn eat_pub(&mut self) {
+        if self.at_soft("pub") && matches!(self.peek_at(1), Tok::Name(_) | Tok::Kw(_)) {
+            self.advance();
+        }
+    }
+
     fn eat_kw(&mut self, kw: Kw) -> bool {
         self.eat(&Tok::Kw(kw))
     }
@@ -172,7 +185,9 @@ impl Parser {
     }
 
     fn item(&mut self) -> Result<Item, Diagnostic> {
-        // `export` and `noalloc` are accepted; visibility and allocation checks come with the type checker.
+        // `pub`, `export` and `noalloc` are accepted. Inside a kit everything is visible, and
+        // allocation checks come later.
+        self.eat_pub();
         self.eat_kw(Kw::Export);
         if self.eat_kw(Kw::Noalloc) && !self.at_kw(Kw::Def) {
             return Err(Diagnostic::new("`noalloc` goes right before `def`", self.span()));
@@ -221,6 +236,10 @@ impl Parser {
         self.expect_block_start()?;
         let mut def = TypeDef { name, fields: Vec::new(), cases: Vec::new(), methods: Vec::new(), span };
         while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
+            // Enum cases come with their enum and have no `pub` of their own.
+            if !is_enum || matches!(self.peek_at(1), Tok::Kw(Kw::Def)) {
+                self.eat_pub();
+            }
             if self.at_kw(Kw::Def) {
                 def.methods.push(self.def()?);
             } else if self.eat_kw(Kw::Pass) {
@@ -428,7 +447,12 @@ impl Parser {
             self.expect_p(Punct::RParen)?;
             "tuple".to_owned()
         } else {
-            self.name("a type")?
+            // `physics.Body`, a type from a module imported whole.
+            let mut name = self.name("a type")?;
+            while self.eat_p(Punct::Dot) {
+                name = format!("{name}.{}", self.name("a type")?);
+            }
+            name
         };
         if self.eat_p(Punct::LBracket) {
             loop {

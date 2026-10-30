@@ -1,0 +1,5 @@
+error OutOfStock:
+    item: str
+
+def take(item: str) -> str:
+    fail OutOfStock(item)

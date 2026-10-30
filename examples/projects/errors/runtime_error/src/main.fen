@@ -1,0 +1,6 @@
+from inventory import pick
+
+def main(stdout: Stdout):
+    items = ["sword", "shield"]
+    stdout.print(pick(items, 0))
+    stdout.print(pick(items, 5))

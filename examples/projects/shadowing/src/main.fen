@@ -1,0 +1,21 @@
+## A file's own names may reuse names from other files it hasn't imported by name.
+## Each name below is bound one way only, so each way is checked.
+
+import tools
+
+def main(stdout: Stdout):
+    total = tools.total([1, 2, 3])
+    first, scale = (tools.first([4, 5]), 2)
+    stdout.print(total, first * scale)
+    stdout.print([count * 2 for count in [1, 2]])
+    stdout.print(sorted([3, 1, 2], key=size => -size))
+    for step in [10]:
+        stdout.print(step)
+    match tools.find([7, 8], 8):
+        case Ok(index): stdout.print(f"found at {index}")
+        case tools.Missing(value): stdout.print(f"{value} is missing")
+        case Err(error): stdout.print(error)
+    stdout.print(scaled(3, 4))
+
+def scaled(first: int, scale: int) -> int:
+    first * scale

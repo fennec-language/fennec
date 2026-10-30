@@ -1,0 +1,7 @@
+error: these imports go in a circle: ships → ports → ships
+ --> examples/projects/errors/cycle/src/ports.fen:1:1
+  |
+1 | from ships import Ship
+  | ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: move what the files share into a module of its own, and import that from each

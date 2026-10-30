@@ -1,0 +1,8 @@
+enum Shape:
+    Circle(radius: float)
+    Point
+
+def main(stdout: Stdout):
+    match Shape.Circle(1.0):
+        case .Circle(radius, color): stdout.print(radius, color)
+        case _: stdout.print("something else")

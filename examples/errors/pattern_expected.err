@@ -1,0 +1,5 @@
+error: expected a pattern, found `+`
+ --> examples/errors/pattern_expected.fen:3:14
+  |
+3 |         case +3: stdout.print("three")
+  |              ^

@@ -1,0 +1,8 @@
+def find(items: list[list[int]], length: int) -> list[int]?:
+    for item in items:
+        if len(item) == length:
+            return item
+    None
+
+def main(stdout: Stdout):
+    stdout.print(find([[1], [2, 3]], 3)[0])

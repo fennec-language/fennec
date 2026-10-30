@@ -1,0 +1,76 @@
+# Property tests that fail on purpose, for tests/cli.rs: what each reports shows how inputs
+# are generated and shrunk. Inputs come from a seed derived from each test's name, so these
+# failures replay exactly.
+
+error Oops:
+    reason: str
+
+struct Box:
+    label = "box"
+    size: int
+
+struct Inner:
+    rows: list[list[int]]
+
+struct Outer:
+    inner: Inner
+
+enum Coin:
+    Heads
+    Tails(times: int)
+
+test "ints stay below ten" for n: int:
+    assert n < 10
+
+test "floats are whole" for x: float:
+    assert x == float(int(x))
+
+test "floats stay small" for x: float:
+    assert x < 2.0
+
+test "words are short" for word: str:
+    assert len(word) < 3
+
+test "lists are short" for items: list[int]:
+    assert len(items) < 2
+
+test "grids are short" for grid: list[list[str]]:
+    assert len(grid) < 3
+
+test "deep lists are short" for deep: list[list[list[list[int]]]]:
+    assert len(deep) < 2
+
+test "deep tuples are small" for deep: (((list[int], int), int), int):
+    first, a = deep
+    second, b = first
+    items, n = second
+    assert n < 100
+
+test "nested rows are short" for outer: Outer:
+    assert len(outer.inner.rows) < 2
+
+test "flags and numbers" for pair: (bool, int):
+    flag, number = pair
+    assert flag or number < 500
+
+test "maybe nothing" for pair: (int?, int):
+    value, _ = pair
+    assert value is None
+
+test "boxes are small" for box: Box:
+    assert box.size < 3
+
+test "coins land heads" for coin: Coin:
+    assert coin == Coin.Heads
+
+test "big numbers are odd" for n: int:
+    assert n < 100 or n % 2 == 1
+
+test "failing with an error":
+    fail Oops("broken")
+
+test "a widget" for widget: Widget:
+    pass
+
+test "this one passes":
+    assert True

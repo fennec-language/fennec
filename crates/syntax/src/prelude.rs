@@ -18,6 +18,8 @@ error ParseError:
 ";
 
 const MATH: &str = r"
+from std.math import sqrt
+
 struct Vec3:
     x = 0.0
     y = 0.0

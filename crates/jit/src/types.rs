@@ -2,8 +2,10 @@
 //! machine values; every other value is an object the runtime holds, which native code
 //! refers to by a handle. Return types come from the type checker.
 
+use std::collections::HashSet;
+
 use fennec_check::Signatures;
-use fennec_syntax::{Diagnostic, FnDef, Item, Module, Span, StmtKind};
+use fennec_syntax::{Diagnostic, FnDef, Imported, Item, Module, Span, StmtKind};
 
 use crate::layout::Layouts;
 
@@ -98,6 +100,9 @@ pub(crate) struct Program<'m> {
     /// Functions and methods the JIT doesn't try to compile, like generators.
     pub(crate) excluded: Vec<String>,
     pub(crate) main_span: Span,
+    /// The standard library modules the program imports, by the name it uses them under,
+    /// like `math` in `math.sqrt(x)` or `std.math` in `std.math.sqrt(x)`.
+    pub(crate) modules: HashSet<String>,
 }
 
 pub(crate) fn unsupported(what: &str, span: Span) -> Diagnostic {
@@ -161,7 +166,20 @@ impl<'m> Program<'m> {
         if !functions.iter().any(|function| function.def.name == "main") {
             return Err(unsupported("this `main`", main_span));
         }
-        Ok(Program { functions, layouts, excluded, main_span })
+        let modules = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Import(import) => fennec_syntax::std_import(import).ok(),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|imported| match imported {
+                Imported::Module { alias, .. } => Some(alias),
+                Imported::Name { .. } => None,
+            })
+            .collect();
+        Ok(Program { functions, layouts, excluded, main_span, modules })
     }
 }
 

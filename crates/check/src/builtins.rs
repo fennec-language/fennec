@@ -17,17 +17,19 @@ const BUILTINS: [(&str, usize, usize); 36] = [
     ("abs", 1, 1),
     ("all", 1, 1),
     ("any", 1, 1),
-    ("ceil", 1, 1),
-    ("cos", 1, 1),
     ("enumerate", 1, 1),
     ("float", 1, 1),
-    ("floor", 1, 1),
     ("ignore", 2, 2),
     ("int", 1, 1),
     ("json.dumps", 1, 1),
     ("json.loads", 1, 1),
     ("len", 1, 1),
     ("list", 1, 1),
+    ("math.ceil", 1, 1),
+    ("math.cos", 1, 1),
+    ("math.floor", 1, 1),
+    ("math.sin", 1, 1),
+    ("math.sqrt", 1, 1),
     ("max", 1, usize::MAX),
     ("min", 1, usize::MAX),
     ("parallel", 1, 1),
@@ -40,9 +42,7 @@ const BUILTINS: [(&str, usize, usize); 36] = [
     ("reversed", 1, 1),
     ("round", 1, 2),
     ("set", 0, 1),
-    ("sin", 1, 1),
     ("sorted", 1, 1),
-    ("sqrt", 1, 1),
     ("str", 1, 1),
     ("sum", 1, 1),
     ("toml.dumps", 1, 1),
@@ -53,19 +53,19 @@ const BUILTINS: [(&str, usize, usize); 36] = [
 /// Builtins whose arguments have to be plain values, not results or optionals.
 const NEEDS_VALUES: [&str; 14] = [
     "abs",
-    "ceil",
-    "cos",
     "float",
-    "floor",
     "int",
     "len",
+    "math.ceil",
+    "math.cos",
+    "math.floor",
+    "math.sin",
+    "math.sqrt",
     "random.random_choice",
     "random.random_float",
     "random.random_int",
     "range",
     "round",
-    "sin",
-    "sqrt",
 ];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
@@ -376,7 +376,9 @@ impl FnCx<'_> {
                 }
                 if name == "int" { Type::Int } else { Type::Float }
             }
-            "round" | "floor" | "ceil" | "sqrt" | "sin" | "cos" | "abs" => self.math(name, &types, span),
+            "round" | "abs" | "math.floor" | "math.ceil" | "math.sqrt" | "math.sin" | "math.cos" => {
+                self.math(name, &types, span)
+            }
             _ => self.collection_builtin(name, plain, span),
         }
     }
@@ -418,7 +420,7 @@ impl FnCx<'_> {
         }
         match name {
             "round" if types.len() == 2 => Type::Float,
-            "round" | "floor" | "ceil" => Type::Int,
+            "round" | "math.floor" | "math.ceil" => Type::Int,
             "abs" => first,
             _ => Type::Float,
         }

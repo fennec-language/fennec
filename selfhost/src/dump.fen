@@ -1,0 +1,399 @@
+## Plain-text dumps of the token stream and the syntax tree, in exactly the text
+## `fennec dev tokens` and `fennec dev tree` print, so the two front ends can be compared
+## line by line. Mirrors `crates/syntax/src/dump.rs` and `dump/tree.rs`.
+
+from span import Span, Diagnostic
+from token import FPart, Tok
+from lexer import lex
+from parser import parse
+from ast import Module, Item, FnDef, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+
+## Every token in `source`, one per line, or the error that stopped the lexer.
+def dump_tokens(source: str) -> str:
+    match lex(source, 0):
+        case Ok(tokens):
+            "".join(f"{token.span.start}..{token.span.end} {describe_tok(token.tok)}\n" for token in tokens)
+        case Err(diagnostic): dump_error(diagnostic)
+
+## A diagnostic as the dumps show it: its span and message, then its help on a second line.
+def dump_error(diagnostic: Diagnostic) -> str:
+    span = diagnostic.span
+    text = f"error {span.start}..{span.end} {diagnostic.message}\n"
+    help = diagnostic.help
+    if help is None:
+        return text
+    text + f"help {help}\n"
+
+def describe_tok(tok: Tok) -> str:
+    match tok:
+        case .Name(text): f"name {text}"
+        case .Int(value): f"int {value}"
+        case .Float(value): f"float {value}"
+        case .Str(text): f"str {quoted(text)}"
+        case .FStr(parts): "fstr " + " | ".join([describe_fpart(part) for part in parts])
+        case .Keyword(word): f"keyword {word}"
+        case .Punct(text): f"punct {text}"
+        case .Newline: "newline"
+        case .Indent: "indent"
+        case .Dedent: "dedent"
+        case .Eof: "eof"
+
+def describe_fpart(part: FPart) -> str:
+    match part:
+        case .Text(text): f"text {quoted(text)}"
+        case .Code(source, offset, spec):
+            if spec is None:
+                return f"expr {offset} {quoted(source)}"
+            f"expr {offset} {quoted(source)} spec {quoted(spec)}"
+
+## A string in double quotes, with backslashes, quotes and line breaks escaped.
+def quoted(text: str) -> str:
+    mut out = "\""
+    for c in text:
+        out += match c:
+            case "\\": "\\\\"
+            case "\"": "\\\""
+            case "\n": "\\n"
+            case "\t": "\\t"
+            case "\r": "\\r"
+            case "\0": "\\0"
+            case _: c
+    out + "\""
+
+## The syntax tree of `source`, one node per line, or the error that stopped the parser.
+def dump_tree(source: str) -> str:
+    match parse(source):
+        case Ok(module):
+            mut tree = Tree()
+            tree.write_module(module)
+            "".join(line + "\n" for line in tree.lines)
+        case Err(diagnostic): dump_error(diagnostic)
+
+## The syntax tree as indented text: one node per line, its children two spaces deeper, and
+## its span at the end as `@start..end`.
+struct Tree:
+    lines: list[str] = []
+    ## Two spaces for each level of nesting.
+    indent = ""
+
+    def line(mut self, label: str):
+        self.lines.append(self.indent + label)
+
+    def spanned(mut self, label: str, span: Span):
+        self.line(f"{label} @{span.start}..{span.end}")
+
+    ## A line for a node whose children follow, one level deeper, until `close`.
+    def open(mut self, label: str, span: Span?):
+        if span is None:
+            self.line(label)
+        else:
+            self.spanned(label, span)
+        self.indent += "  "
+
+    def close(mut self):
+        self.indent = self.indent[2:]
+
+    def write_module(mut self, module: Module):
+        self.open("module", None)
+        for item in module.items:
+            self.write_item(item)
+        self.close()
+
+    def write_item(mut self, item: Item):
+        match item:
+            case .Function(function): self.write_function(function)
+            case .Struct(type_def): self.write_type_def("struct", type_def)
+            case .Enum(type_def): self.write_type_def("enum", type_def)
+            case .Error(type_def): self.write_type_def("error", type_def)
+            case .Interface(interface):
+                self.open(f"interface {interface.name}", interface.span)
+                for method in interface.methods:
+                    self.write_function(method)
+                self.close()
+            case .TypeAlias(name, ty, span):
+                self.open(f"type-alias {name}", span)
+                self.write_type_expr(ty)
+                self.close()
+            case .Import(imported):
+                mut label = "import " + ".".join(imported.module)
+                if len(imported.names) > 0:
+                    label += ": " + ", ".join(imported.names)
+                self.spanned(label, imported.span)
+            case .Test(test):
+                self.open(f"test {quoted(test.name)}", test.span)
+                for input in test.inputs:
+                    self.write_param(input)
+                self.write_stmts(test.body)
+                self.close()
+
+    def write_function(mut self, function: FnDef):
+        self.open(f"def {function.name}", function.span)
+        for param in function.params:
+            self.write_param(param)
+        ret = function.ret
+        if ret is not None:
+            self.open("returns", None)
+            self.write_type_expr(ret)
+            self.close()
+        self.write_stmts(function.body)
+        self.close()
+
+    def write_param(mut self, param: Param):
+        mut label = f"param {param.name}"
+        if param.is_mut:
+            label += " mut"
+        if param.is_self:
+            label += " self"
+        self.open(label, param.span)
+        ty = param.ty
+        if ty is not None:
+            self.write_type_expr(ty)
+        self.close()
+
+    def write_type_expr(mut self, ty: TypeExpr) -> nothing:
+        self.open(f"type {ty.name}" + ("?" if ty.optional else ""), ty.span)
+        for arg in ty.args:
+            self.write_type_expr(arg)
+        self.close()
+
+    def write_type_def(mut self, kind: str, type_def: TypeDef):
+        self.open(f"{kind} {type_def.name}", type_def.span)
+        for field in type_def.fields:
+            self.write_field(field)
+        for case in type_def.cases:
+            self.write_case(case)
+        for method in type_def.methods:
+            self.write_function(method)
+        self.close()
+
+    def write_field(mut self, field: Field):
+        self.open(f"field {field.name}", field.span)
+        ty = field.ty
+        if ty is not None:
+            self.write_type_expr(ty)
+        self.labelled("default", field.default)
+        self.labelled("where", field.rule)
+        self.close()
+
+    ## A line saying what `expr` is for, with `expr` under it, when there is one.
+    def labelled(mut self, label: str, expr: Expr?) -> nothing:
+        if expr is None:
+            return
+        self.open(label, None)
+        self.write_expr(expr)
+        self.close()
+
+    def write_case(mut self, case: Case):
+        self.open(f"case {case.name}", case.span)
+        for field in case.fields:
+            self.write_field(field)
+        self.close()
+
+    def write_stmts(mut self, stmts: list[Stmt]) -> nothing:
+        for stmt in stmts:
+            self.write_stmt(stmt)
+
+    def write_stmt(mut self, stmt: Stmt):
+        span = stmt.span
+        match stmt.kind:
+            case .Expr(expr):
+                self.open("expr", span)
+                self.write_expr(expr)
+            case .Assign(target, op, value, declare_mut, ty):
+                mut label = "assign"
+                if op is not None:
+                    label += f" {op.symbol()}="
+                if declare_mut:
+                    label += " mut"
+                self.open(label, span)
+                self.write_expr(target)
+                if ty is not None:
+                    self.write_type_expr(ty)
+                self.write_expr(value)
+            case .If(branches, otherwise):
+                self.open("if", span)
+                for cond, body in branches:
+                    self.open("branch", None)
+                    self.write_expr(cond)
+                    self.write_stmts(body)
+                    self.close()
+                if otherwise is not None:
+                    self.open("else", None)
+                    self.write_stmts(otherwise)
+                    self.close()
+            case .While(cond, body):
+                self.open("while", span)
+                self.write_expr(cond)
+                self.write_stmts(body)
+            case .For(names, is_mut, iter, body):
+                self.open("for" + (" mut " if is_mut else " ") + ", ".join(names), span)
+                self.write_expr(iter)
+                self.write_stmts(body)
+            case .Return(value):
+                self.open("return", span)
+                if value is not None:
+                    self.write_expr(value)
+            case .Fail(value):
+                self.open("fail", span)
+                self.write_expr(value)
+            case .Yield(value):
+                self.open("yield", span)
+                self.write_expr(value)
+            case .Assert(value):
+                self.open("assert", span)
+                self.write_expr(value)
+            case .With(value, name, is_mut, body):
+                mut label = "with"
+                if name is not None:
+                    label += (" as mut " if is_mut else " as ") + name
+                self.open(label, span)
+                self.write_expr(value)
+                self.write_stmts(body)
+            case .Def(function):
+                self.write_function(function)
+                return
+            case .Break:
+                self.spanned("break", span)
+                return
+            case .Continue:
+                self.spanned("continue", span)
+                return
+            case .Pass:
+                self.spanned("pass", span)
+                return
+        self.close()
+
+    def write_exprs(mut self, exprs: list[Expr]) -> nothing:
+        for expr in exprs:
+            self.write_expr(expr)
+
+    def write_expr(mut self, expr: Expr) -> nothing:
+        span = expr.span
+        match expr.kind:
+            case .Int(value): self.spanned(f"int {value}", span)
+            case .Float(value): self.spanned(f"float {value}", span)
+            case .Str(text): self.spanned(f"str {quoted(text)}", span)
+            case .Bool(value): self.spanned(f"bool {value}", span)
+            case .Nothing: self.spanned("none", span)
+            case .Name(name): self.spanned(f"name {name}", span)
+            case .Variant(name): self.spanned(f"variant {name}", span)
+            case .FStr(parts):
+                self.open("fstr", span)
+                for part in parts:
+                    self.write_fstring_part(part)
+                self.close()
+            case .List(items): self.group("list", span, items)
+            case .Tuple(items): self.group("tuple", span, items)
+            case .Set(items): self.group("set", span, items)
+            case .Dict(pairs):
+                self.open("dict", span)
+                for key, value in pairs:
+                    self.open("pair", None)
+                    self.write_expr(key)
+                    self.write_expr(value)
+                    self.close()
+                self.close()
+            case .Comprehension(kind, elem, value, names, iter, cond):
+                self.open(f"comprehension {comprehension_kind(kind)} " + ", ".join(names), span)
+                self.write_expr(elem)
+                self.labelled("value", value)
+                self.labelled("in", iter)
+                self.labelled("if", cond)
+                self.close()
+            case _: self.write_compound(expr)
+
+    ## A node holding a list of expressions.
+    def group(mut self, label: str, span: Span, items: list[Expr]) -> nothing:
+        self.open(label, span)
+        self.write_exprs(items)
+        self.close()
+
+    def write_fstring_part(mut self, part: FStrPart):
+        match part:
+            case .Text(text): self.line(f"text {quoted(text)}")
+            case .Code(expr, spec):
+                self.labelled("code" if spec is None else f"code spec {quoted(spec)}", expr)
+
+    ## Expressions built from operators, calls and blocks.
+    def write_compound(mut self, expr: Expr):
+        span = expr.span
+        match expr.kind:
+            case .Unary(op, operand):
+                self.open("unary " + ("-" if op == .Neg else "not"), span)
+                self.write_expr(operand)
+            case .Binary(op, lhs, rhs):
+                self.open(f"binary {op.symbol()}", span)
+                self.write_expr(lhs)
+                self.write_expr(rhs)
+            case .Cond(then, cond, otherwise):
+                self.open("cond", span)
+                self.write_exprs([then, cond, otherwise])
+            case .Else(value, default):
+                self.open("else", span)
+                self.write_exprs([value, default])
+            case .Try(value, context):
+                self.open("try", span)
+                self.write_expr(value)
+                self.labelled("from", context)
+            case .Call(callee, args):
+                self.open("call", span)
+                self.write_expr(callee)
+                for arg in args:
+                    self.write_arg(arg)
+            case .Attr(object, name, optional):
+                self.open("attr " + ("?." if optional else ".") + name, span)
+                self.write_expr(object)
+            case .Index(object, index):
+                self.open("index", span)
+                self.write_exprs([object, index])
+            case .Slice(object, start, end):
+                self.open("slice", span)
+                self.write_expr(object)
+                self.labelled("start", start)
+                self.labelled("end", end)
+            case .Lambda(params, body):
+                self.open("lambda " + ", ".join(params), span)
+                self.write_expr(body)
+            case .Match(subject, arms):
+                self.open("match", span)
+                self.write_expr(subject)
+                for arm in arms:
+                    self.write_arm(arm)
+            case _: return
+        self.close()
+
+    def write_arg(mut self, arg: Arg) -> nothing:
+        mut label = "arg"
+        if arg.is_mut:
+            label += " mut"
+        name = arg.name
+        if name is not None:
+            label += f" {name}="
+        self.labelled(label, arg.value)
+
+    def write_arm(mut self, arm: MatchArm):
+        self.open("arm", arm.span)
+        self.write_pattern(arm.pattern)
+        self.write_stmts(arm.body)
+        self.close()
+
+    def write_pattern(mut self, pattern: Pattern) -> nothing:
+        match pattern:
+            case .Wildcard: self.line("pattern _")
+            case .Bind(name): self.line(f"pattern bind {name}")
+            case .Literal(expr): self.labelled("pattern literal", expr)
+            case .Variant(name, dotted, args): self.write_patterns("pattern " + ("." if dotted else "") + name, args)
+            case .Tuple(items): self.write_patterns("pattern tuple", items)
+
+    def write_patterns(mut self, label: str, patterns: list[Pattern]):
+        self.open(label, None)
+        for pattern in patterns:
+            self.write_pattern(pattern)
+        self.close()
+
+def comprehension_kind(kind: CompKind) -> str:
+    match kind:
+        case .List: "list"
+        case .Generator: "generator"
+        case .Set: "set"
+        case .Dict: "dict"

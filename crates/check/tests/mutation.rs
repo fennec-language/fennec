@@ -87,7 +87,8 @@ fn arrow_function_parameters_can_change() {
         id = enemies.insert(Enemy())
         enemies.modify(id, enemy => enemy.take_damage(5))
     ";
-    assert_eq!(with_enemy(program), Vec::<String>::new());
+    let declarations = format!("from std.game import IdMap\n{ENEMY}");
+    assert_eq!(crate::in_main_after(&declarations, program), Vec::<String>::new());
 }
 
 #[test]
@@ -162,7 +163,8 @@ fn builtin_methods_that_change_a_value_need_a_mut_place() {
     for call in changing {
         let program = format!("items = [1]\ntable = {{1: 2}}\nbag = {{1}}\npool = IdMap[int]()\n{call}");
         let name = call.split('.').next().unwrap_or_default();
-        assert_eq!(in_main(&program), [format!("`{name}` isn't mut @ {name}")], "{call}");
+        let problems = crate::in_main_after("from std.game import IdMap", &program);
+        assert_eq!(problems, [format!("`{name}` isn't mut @ {name}")], "{call}");
     }
     let reading = "items = [1]\nstdout.print(items.index(1), items.count(1), 'a'.upper())";
     assert_eq!(in_main(reading), Vec::<String>::new());

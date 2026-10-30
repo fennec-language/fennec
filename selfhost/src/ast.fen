@@ -1,0 +1,213 @@
+## The syntax tree the parser produces. Mirrors `crates/syntax/src/ast.rs`.
+
+from span import Span
+
+## A parsed `.fen` file.
+struct Module:
+    items: list[Item]
+
+enum Item:
+    Function(function: FnDef)
+    Struct(type_def: TypeDef)
+    Enum(type_def: TypeDef)
+    Error(type_def: TypeDef)
+    Interface(interface: Interface)
+    TypeAlias(name: str, ty: TypeExpr, span: Span)
+    Import(imported: Import)
+    Test(test: TestDef)
+
+struct FnDef:
+    name: str
+    params: list[Param]
+    ret: TypeExpr?
+    body: list[Stmt]
+    span: Span
+
+struct Param:
+    name: str
+    ## Missing only for `self`.
+    ty: TypeExpr?
+    is_mut: bool
+    is_self: bool
+    span: Span
+
+## A written type, like `int`, `list[str]`, `(int, int)` or `Enemy?`.
+struct TypeExpr:
+    name: str
+    args: list[TypeExpr]
+    optional: bool
+    span: Span
+
+## A struct, an error, or an enum. Enums have cases; structs and errors have fields.
+struct TypeDef:
+    name: str
+    fields: list[Field] = []
+    cases: list[Case] = []
+    methods: list[FnDef] = []
+    span: Span
+
+struct Field:
+    name: str
+    ty: TypeExpr?
+    default: Expr?
+    ## The `where` rule a value of this field must follow.
+    rule: Expr?
+    span: Span
+
+struct Case:
+    name: str
+    fields: list[Field]
+    span: Span
+
+struct Interface:
+    name: str
+    methods: list[FnDef]
+    span: Span
+
+struct Import:
+    module: list[str]
+    names: list[str]
+    span: Span
+
+## `test "name":`, or a property test `test "name" for items: list[int]:`.
+struct TestDef:
+    name: str
+    inputs: list[Param]
+    body: list[Stmt]
+    span: Span
+
+struct Stmt:
+    kind: StmtKind
+    span: Span
+
+enum StmtKind:
+    Expr(expr: Expr)
+    ## `name = value`, `mut name = value`, `a, b = pair`, `target op= value`, and
+    ## `name: type = value`, which declares a name with its type written.
+    Assign(target: Expr, op: BinOp?, value: Expr, declare_mut: bool, ty: TypeExpr?)
+    If(branches: list[(Expr, list[Stmt])], otherwise: list[Stmt]?)
+    While(cond: Expr, body: list[Stmt])
+    For(names: list[str], is_mut: bool, iter: Expr, body: list[Stmt])
+    Return(value: Expr?)
+    Fail(value: Expr)
+    Yield(value: Expr)
+    Assert(value: Expr)
+    With(value: Expr, name: str?, is_mut: bool, body: list[Stmt])
+    Def(function: FnDef)
+    Break
+    Continue
+    Pass
+
+struct Expr:
+    kind: ExprKind
+    span: Span
+
+enum ExprKind:
+    Int(value: int)
+    Float(value: float)
+    Str(text: str)
+    FStr(parts: list[FStrPart])
+    Bool(value: bool)
+    ## The `None` literal. An enum case can't be called `None`.
+    Nothing
+    Name(name: str)
+    ## `.Circle`: an enum case of whatever enum has a case with this name.
+    Variant(name: str)
+    List(items: list[Expr])
+    Tuple(items: list[Expr])
+    Dict(pairs: list[(Expr, Expr)])
+    Set(items: list[Expr])
+    ## `[elem for a, b in iter if cond]`, generator expressions, and set and dict comprehensions.
+    Comprehension(kind: CompKind, elem: Expr, value: Expr?, names: list[str], iter: Expr, cond: Expr?)
+    Unary(op: UnaryOp, operand: Expr)
+    Binary(op: BinOp, lhs: Expr, rhs: Expr)
+    ## `then if cond else otherwise`.
+    Cond(then: Expr, cond: Expr, otherwise: Expr)
+    ## `value else default`: the value, or the default if it's None or an error.
+    Else(value: Expr, default: Expr)
+    ## `value?`, passing an error or None up; `value? from Context(...)` wraps the error.
+    Try(value: Expr, context: Expr?)
+    Call(callee: Expr, args: list[Arg])
+    Attr(object: Expr, name: str, optional: bool)
+    Index(object: Expr, index: Expr)
+    Slice(object: Expr, start: Expr?, end: Expr?)
+    ## `x => body` or `(a, b) => body`.
+    Lambda(params: list[str], body: Expr)
+    Match(subject: Expr, arms: list[MatchArm])
+
+enum CompKind:
+    List
+    ## A generator expression passed straight to a call, like `sum(x for x in xs)`.
+    Generator
+    Set
+    Dict
+
+struct MatchArm:
+    pattern: Pattern
+    body: list[Stmt]
+    span: Span
+
+enum Pattern:
+    Wildcard
+    Bind(name: str)
+    Literal(expr: Expr)
+    ## `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`.
+    Variant(name: str, dotted: bool, args: list[Pattern])
+    Tuple(items: list[Pattern])
+
+enum FStrPart:
+    Text(text: str)
+    Code(expr: Expr, spec: str?)
+
+## A call argument: `value`, `name=value` or `mut name`.
+struct Arg:
+    name: str?
+    is_mut: bool
+    value: Expr
+
+enum UnaryOp:
+    Neg
+    Not
+
+enum BinOp:
+    Add
+    Sub
+    Mul
+    Div
+    FloorDiv
+    Mod
+    Pow
+    Eq
+    NotEq
+    Lt
+    LtEq
+    Gt
+    GtEq
+    And
+    Or
+    In
+    NotIn
+    Is
+    IsNot
+
+    def symbol(self) -> str:
+        match self:
+            case .Add: "+"
+            case .Sub: "-"
+            case .Mul: "*"
+            case .Div: "/"
+            case .FloorDiv: "//"
+            case .Mod: "%"
+            case .Pow: "**"
+            case .Eq: "=="
+            case .NotEq: "!="
+            case .Lt: "<"
+            case .LtEq: "<="
+            case .Gt: ">"
+            case .GtEq: ">="
+            case .And: "and"
+            case .Or: "or"
+            case .In: "in"
+            case .NotIn: "not in"
+            case .Is: "is"
+            case .IsNot: "is not"

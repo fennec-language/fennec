@@ -87,7 +87,7 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
     if actual.maybe_none() && !expected.maybe_none() {
         return might_be_none(span);
     }
-    if matches!(actual, Type::Result(..)) {
+    if matches!(actual, Type::Result(..)) && !matches!(expected, Type::Result(..)) {
         return unhandled_result(span);
     }
     let diagnostic =
@@ -97,7 +97,7 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
             diagnostic.with_help("write it with a decimal point, like `1.0`, or convert it with float(...)")
         }
         (Type::Int, Type::Float) => {
-            diagnostic.with_help("convert it with int(...), round(...) or floor(...)")
+            diagnostic.with_help("convert it with int(...), round(...) or math.floor(...)")
         }
         _ => diagnostic,
     }

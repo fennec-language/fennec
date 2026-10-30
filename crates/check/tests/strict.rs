@@ -187,7 +187,7 @@ fn methods_of_built_in_values_check_their_arguments() {
         stdout.print(pool[0], pool[id].upper(), table[2])
     ";
     assert_eq!(
-        in_main(program),
+        in_main_after("from std.game import IdMap", program),
         [
             "`append`'s argument should be a str, but this is an int @ 3",
             "`insert`'s argument should be an int, but this is a str @ \"first\"",
@@ -339,7 +339,7 @@ fn enum_fields_are_reached_through_match() {
 
 #[test]
 fn types_are_not_values() {
-    let declarations = "struct Enemy:\n    health = 100\n";
+    let declarations = "from std.game import IdMap\n\nstruct Enemy:\n    health = 100\n";
     assert_eq!(in_main_after(declarations, "kind = Enemy"), ["`Enemy` is a type, not a value @ Enemy"]);
     assert_eq!(
         in_main_after(declarations, "pool = IdMap[Enemy]\nempty = IdMap()"),
@@ -350,4 +350,71 @@ fn types_are_not_values() {
     );
     assert_eq!(in_main("optional = [1].index(1)\nstdout.print(optional)"), Vec::<String>::new());
     let _ = optional(Type::Int);
+}
+
+#[test]
+fn functions_that_call_each_other_share_their_errors() {
+    let program = "
+        error TooLow:
+            n: int
+
+        error TooHigh:
+            n: int
+
+        def even(n: int) -> bool:
+            if n < 0:
+                fail TooLow(n)
+            if n == 0:
+                return True
+            odd(n - 1)?
+
+        def odd(n: int) -> bool:
+            if n > 100:
+                fail TooHigh(n)
+            if n == 0:
+                return False
+            even(n - 1)?
+
+        def check(n: int) -> bool:
+            even(n)?
+    ";
+    let both = Type::Errors(vec!["TooHigh".to_owned(), "TooLow".to_owned()]);
+    for function in ["even", "odd", "check"] {
+        assert_eq!(returns(program, function), Ok(crate::result(Type::Bool, both.clone())), "{function}");
+    }
+}
+
+#[test]
+fn a_function_that_gives_back_nothing_writes_nothing() {
+    let program = "
+        def countdown(stdout: Stdout, n: int) -> nothing:
+            if n > 0:
+                stdout.print(n)
+                countdown(stdout, n - 1)
+    ";
+    assert_eq!(returns(program, "countdown"), Ok(Type::Unit));
+}
+
+#[test]
+fn results_can_be_written_as_types() {
+    let program = "
+        def describe(result: Result[int, str]) -> str:
+            match result:
+                case Ok(n): f'{n}'
+                case Err(why): why
+
+        def main(stdout: Stdout):
+            ok: Result[int, str] = Ok(3)
+            stdout.print(describe(ok), describe(Err('no')), describe(Ok('three')))
+    ";
+    assert_eq!(
+        problems(program),
+        ["`result` should be a result of int, but this is a result of str @ Ok(\"three\")"]
+    );
+}
+
+#[test]
+fn tuple_slices_can_count_from_the_end() {
+    let program = "def f():\n    (1, 'a', 2.5)[-2:]\n";
+    assert_eq!(returns(program, "f"), Ok(Type::Tuple(vec![Type::Str, Type::Float])));
 }

@@ -54,8 +54,7 @@ fn reading_needs_a_type_the_format_can_hold() {
         e = loads[Player]('{}')
         f = loads[3]('1')
     ";
-    let declarations =
-        "from std.json import loads\n\nstruct Player:\n    name: str\n    friends: list[Player]\n";
+    let declarations = "from std.json import loads\nfrom std.game import Id\n\nstruct Player:\n    name: str\n    friends: list[Player]\n";
     assert_eq!(
         with_imports(declarations, program),
         [

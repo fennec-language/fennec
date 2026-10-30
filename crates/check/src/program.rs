@@ -211,6 +211,9 @@ impl Program {
             "bool" => Type::Bool,
             "str" => Type::Str,
             "None" => Type::None,
+            // What a function gives back when it gives back nothing, for writing the return
+            // type of one that calls itself.
+            "nothing" => Type::Unit,
             "list" | "SoaList" => Type::List(arg()),
             "set" => Type::Set(arg()),
             "dict" => Type::Dict(arg(), arg()),
@@ -288,9 +291,9 @@ impl Program {
 /// The interfaces every type that can fits automatically.
 pub(crate) const BUILT_IN_INTERFACES: [&str; 4] = ["Eq", "Hashable", "Ordered", "Format"];
 
-const BUILT_IN_TYPES: [&str; 17] = [
-    "int", "float", "bool", "str", "None", "list", "SoaList", "set", "dict", "tuple", "Id", "IdMap",
-    "Stdout", "Fs", "Clock", "Result", "->",
+const BUILT_IN_TYPES: [&str; 18] = [
+    "int", "float", "bool", "str", "None", "nothing", "list", "SoaList", "set", "dict", "tuple", "Id",
+    "IdMap", "Stdout", "Fs", "Clock", "Result", "->",
 ];
 
 /// An interface written where a type goes, as in `list[Shape]`.

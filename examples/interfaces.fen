@@ -1,3 +1,5 @@
+from std.math import PI
+
 interface Shape:
     def area(self) -> float
     def name(self) -> str

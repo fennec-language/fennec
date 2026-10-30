@@ -193,6 +193,10 @@ fn expr(value: &Expr, mentions: &mut Mentions) {
             }
         }
         ExprKind::Attr { object, name, .. } => {
+            // After a dotted name it may be a module's, like `math.Vec3`.
+            if fennec_syntax::dotted(object).is_some() {
+                mentions.names.insert(name.clone());
+            }
             mentions.members.insert(name.clone());
             expr(object, mentions);
         }

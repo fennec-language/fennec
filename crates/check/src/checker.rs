@@ -4,7 +4,7 @@
 //! directly or through others, so it has to have its return type written; until it's done,
 //! its written signature stands in.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fennec_syntax::{Diagnostic, FnDef, Generic, Module};
 
@@ -35,8 +35,23 @@ pub(crate) struct Checker {
     pub(crate) vars: Vec<Slot>,
     /// The typed tree, by function.
     pub(crate) typed: BTreeMap<String, Body>,
+    /// The functions being checked, innermost last.
+    checking: Vec<String>,
+    /// Functions that used a signature that may still grow: one being checked, so its
+    /// errors aren't all known yet, or one waiting here itself. They're checked again.
+    revisit: BTreeSet<String>,
+    /// What each function to check again gave back last time, for calls to it while it's
+    /// being checked again.
+    previous: BTreeMap<String, Signature>,
+    /// The functions that used each function's signature, so they're checked again when it
+    /// changes.
+    callers: BTreeMap<String, BTreeSet<String>>,
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
+
+/// How many times functions in a cycle of calls are checked again before the errors they
+/// can fail with stop growing.
+const REVISITS: usize = 16;
 
 impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
@@ -57,6 +72,10 @@ impl Checker {
             locals: BTreeMap::new(),
             vars: Vec::new(),
             typed: BTreeMap::new(),
+            checking: Vec::new(),
+            revisit: BTreeSet::new(),
+            previous: BTreeMap::new(),
+            callers: BTreeMap::new(),
             diagnostics,
         }
     }
@@ -69,6 +88,7 @@ impl Checker {
                 self.check_function(key);
             }
         }
+        self.revisit_cycles();
         for test in self.program.tests.clone() {
             FnCx::check_test(&mut self, &test);
         }
@@ -148,10 +168,27 @@ impl Checker {
     /// return type.
     pub(crate) fn signature(&mut self, key: &str) -> Option<Signature> {
         let has_return_type = self.program.functions.get(key)?.def.ret.is_some();
+        if let Some(caller) = self.checking.last() {
+            let caller = self.outermost(caller);
+            self.callers.entry(self.outermost(key)).or_default().insert(caller);
+        }
         match self.states.get_mut(key) {
-            Some(State::Done(signature)) => return Some(signature.clone()),
+            Some(State::Done(signature)) => {
+                let signature = signature.clone();
+                if self.revisit.contains(&self.outermost(key)) {
+                    self.mark_stale();
+                }
+                return Some(signature);
+            }
             Some(State::Checking { recursive }) => {
+                // When it's checked again, what it gave back last time stands in, so it
+                // doesn't need its return type written any more than the first time.
+                if let Some(previous) = self.previous.get(key).cloned() {
+                    self.mark_stale();
+                    return Some(previous);
+                }
                 *recursive |= !has_return_type;
+                self.mark_stale();
                 return self.declared(key);
             }
             None => self.check_function(key),
@@ -229,7 +266,9 @@ impl Checker {
         let Some(mut signature) = self.declared(key) else { return };
         self.states.insert(key.to_owned(), State::Checking { recursive: false });
         let effects = effects::of_body(&def.body);
+        self.checking.push(key.to_owned());
         let body = FnCx::check_function(self, key, &def, &signature.params, captured, !prelude);
+        self.checking.pop();
         let value = match &def.ret {
             Some(_) => self.written_return(key),
             None => body.value,
@@ -244,6 +283,74 @@ impl Checker {
             self.diagnostics.push(needs_return_type(&def, &body.suggestion));
         }
         self.states.insert(key.to_owned(), State::Done(signature));
+    }
+
+    /// Notes that the function being checked used a signature that may still grow.
+    fn mark_stale(&mut self) {
+        if let Some(caller) = self.checking.last() {
+            let outermost = self.outermost(caller);
+            self.revisit.insert(outermost);
+        }
+    }
+
+    /// The function a nested function is in, all the way out: nested functions are checked
+    /// again with the function around them, which gives them the names they read.
+    fn outermost(&self, key: &str) -> String {
+        let mut key = key.to_owned();
+        while let Some(entry) = self.program.functions.get(&key)
+            && entry.owner.is_none()
+            && let Some((outer, _)) = key.rsplit_once('.')
+        {
+            key = outer.to_owned();
+        }
+        key
+    }
+
+    /// Checks again the functions that used signatures that were still growing, until a
+    /// round changes none of them. A call cycle's errors are then every error any function
+    /// in it can fail with.
+    fn revisit_cycles(&mut self) {
+        let mut keys = std::mem::take(&mut self.revisit);
+        let mut pending: Vec<String> = keys.iter().cloned().collect();
+        while let Some(key) = pending.pop() {
+            for caller in self.callers.get(&key).into_iter().flatten() {
+                if keys.insert(caller.clone()) {
+                    pending.push(caller.clone());
+                }
+            }
+        }
+        for _ in 0..REVISITS {
+            if keys.is_empty() {
+                return;
+            }
+            let mut before = Vec::new();
+            for key in &keys {
+                if let Some(State::Done(signature)) = self.states.remove(key) {
+                    before.push(signature.clone());
+                    self.previous.insert(key.clone(), known_errors(signature));
+                }
+                let prefix = format!("{key}/");
+                self.locals.retain(|name, _| !name.starts_with(&prefix));
+            }
+            for key in &keys {
+                if !self.states.contains_key(key) {
+                    self.check_function(key);
+                }
+            }
+            let after: Vec<Signature> = keys
+                .iter()
+                .filter_map(|key| match self.states.get(key) {
+                    Some(State::Done(signature)) => Some(signature.clone()),
+                    _ => None,
+                })
+                .collect();
+            // Functions marked while being checked again belong to the same cycles, unless
+            // they're new.
+            keys.extend(std::mem::take(&mut self.revisit));
+            if before == after {
+                return;
+            }
+        }
     }
 
     /// The type of a field of a struct, error or enum case, from its written type or default.
@@ -396,6 +503,23 @@ impl Checker {
     pub(crate) fn is_error_type(&self, ty: &Type) -> bool {
         self.program.kind_of(ty) == Some(TypeKind::Error)
     }
+}
+
+/// A signature with the errors it couldn't tell yet left out, for calls to it while it's
+/// checked again: what's known so far, which grows to the whole set.
+fn known_errors(signature: Signature) -> Signature {
+    let returns = match signature.returns {
+        Type::Result(value, error) if !error.is_known() => {
+            let error = match *error {
+                Type::Errors(names) => Type::Errors(names),
+                Type::Named(name) => Type::Named(name),
+                _ => Type::Errors(Vec::new()),
+            };
+            Type::Result(value, Box::new(error))
+        }
+        other => other,
+    };
+    Signature { returns, ..signature }
 }
 
 /// A type with every variable left in it replaced by `Unknown`, for keeping in a signature

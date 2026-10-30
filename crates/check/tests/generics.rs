@@ -15,7 +15,7 @@ struct Circle:
     radius: float
 
     def area(self):
-        PI * self.radius * self.radius
+        3.14 * self.radius * self.radius
 
 struct Square:
     side: float

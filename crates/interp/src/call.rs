@@ -163,20 +163,25 @@ impl Interp<'_> {
             self.frame.declare(name, value.clone(), false);
         }
         self.frame.push();
-        for (param, arg) in def.params.iter().zip(&bound) {
-            self.frame.declare(&param.name, arg.value.clone(), param.is_mut);
+        // Arguments move into the frame, so a `mut` argument the callee changes has one owner
+        // and changes in place, rather than being copied on its first write.
+        let mut mut_places = Vec::new();
+        for (param, arg) in def.params.iter().zip(bound) {
+            if let Some(place) = arg.mut_place {
+                mut_places.push((place, param.name.as_str()));
+            }
+            self.frame.declare(&param.name, arg.value, param.is_mut);
         }
         if function.generator {
             self.yields.push(Vec::new());
         }
         let flow = self.exec_stmts(&def.body).map_err(|diagnostic| at_call(diagnostic, span));
         let yielded = if function.generator { self.yields.pop() } else { None };
-        let changed: Vec<(Place, Value)> = def
-            .params
-            .iter()
-            .zip(&bound)
-            .filter_map(|(param, arg)| {
-                Some((arg.mut_place.clone()?, self.frame.get(&param.name)?.value.clone()))
+        let changed: Vec<(Place, Value)> = mut_places
+            .into_iter()
+            .filter_map(|(place, name)| {
+                let binding = self.frame.get_mut(name)?;
+                Some((place, std::mem::replace(&mut binding.value, Value::Unit)))
             })
             .collect();
         self.leave(caller);

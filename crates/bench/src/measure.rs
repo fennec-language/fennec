@@ -7,7 +7,7 @@
 //! by simulating, about 50 times slower, so only to confirm a slowdown.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// One measured program: its median time and instruction count, and what it printed.
@@ -62,6 +62,30 @@ impl Program {
         }
         let instructions = count.and_then(|report| instructions(&std::fs::read_to_string(report).ok()?));
         Ok(Run { took, instructions, stdout, stderr })
+    }
+}
+
+/// Whether a program runs and succeeds within `limit`. A slower run is stopped.
+pub(crate) fn finishes_within(program: &Program, limit: Duration) -> bool {
+    let started = Instant::now();
+    let Ok(mut child) = Command::new(&program.command)
+        .args(&program.args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if started.elapsed() < limit => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                child.kill().ok();
+                child.wait().ok();
+                return false;
+            }
+        }
     }
 }
 

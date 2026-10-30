@@ -16,8 +16,14 @@ mod report;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use measure::{Program, build_twin, count_with_valgrind, perf_report, time_together, valgrind_available};
+use measure::{
+    Program, build_twin, count_with_valgrind, finishes_within, perf_report, time_together, valgrind_available,
+};
 use report::Result;
+
+/// How long one run of the previous `fennec` may take before it isn't compared: a kernel
+/// it was too slow for, like one that was resized once it stopped being quadratic.
+const PREVIOUS_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 struct Options {
     fennec: PathBuf,
@@ -182,8 +188,9 @@ fn run_kernel(
     let fennec = |command: &Path| Program { command: command.to_path_buf(), args: kernel_args(kernel) };
     let mut programs = vec![Program { command: twin, args: Vec::new() }, fennec(&options.fennec)];
     if let Some(previous) = &options.previous {
-        // A previous `fennec` that can't run a new kernel just isn't compared on it.
-        if time_together(&[fennec(previous)], 1, None).is_ok() {
+        // A previous `fennec` that can't run a new kernel, or takes too long to, just isn't
+        // compared on it.
+        if finishes_within(&fennec(previous), PREVIOUS_LIMIT) {
             programs.push(fennec(previous));
         }
     }

@@ -23,6 +23,10 @@ impl Diagnostic {
 
     /// Renders the diagnostic with the line it points at, for a terminal.
     pub fn render(&self, path: &str, source: &str) -> String {
+        if self.span.in_prelude() {
+            let help = self.help.as_ref().map_or_else(String::new, |help| format!("  = help: {help}\n"));
+            return format!("error: {}\n --> the standard library\n{help}", self.message);
+        }
         let start = usize::try_from(self.span.start).unwrap_or(0).min(source.len());
         let before = source.get(..start).unwrap_or("");
         let line_number = before.matches('\n').count() + 1;

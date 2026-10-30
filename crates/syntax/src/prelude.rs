@@ -2,7 +2,7 @@
 
 /// The standard library written in Fennec, loaded before every program by both the
 /// interpreter and the type checker.
-pub const PRELUDE: [&str; 2] = [ERRORS, MATH];
+pub const PRELUDE: [&str; 5] = [ERRORS, MATH, COLLECTIONS, RANDOM, TIME];
 
 const ERRORS: &str = r"
 error IoError:
@@ -38,4 +38,319 @@ struct Vec3:
 
     def distance_to(self, other: Vec3):
         (self - other).length()
+";
+
+const COLLECTIONS: &str = r"
+## A double-ended queue: adding or removing at either end is quick however long it gets.
+## For breadth-first searches, event queues and undo histories.
+struct Deque[T]:
+    ## The items sit in a ring that starts at `head`. Slots outside it hold stale items.
+    slots: list[T] = []
+    head = 0
+    count = 0
+
+    ## A deque holding `items`, first to last.
+    def of(items: list[T]) -> Deque[T]:
+        Deque(slots=items, count=len(items))
+
+    def len(self) -> int:
+        self.count
+
+    ## Adds an item at the back.
+    def append(mut self, item: T):
+        self.make_room(item)
+        self.slots[(self.head + self.count) % len(self.slots)] = item
+        self.count += 1
+
+    ## Adds an item at the front.
+    def appendleft(mut self, item: T):
+        self.make_room(item)
+        self.head = (self.head - 1) % len(self.slots)
+        self.slots[self.head] = item
+        self.count += 1
+
+    ## Removes the item at the back and gives it back, or None when the deque is empty.
+    def pop(mut self) -> T?:
+        if self.count == 0:
+            return None
+        self.count -= 1
+        self.slots[(self.head + self.count) % len(self.slots)]
+
+    ## Removes the item at the front and gives it back, or None when the deque is empty.
+    def popleft(mut self) -> T?:
+        if self.count == 0:
+            return None
+        item = self.slots[self.head]
+        self.head = (self.head + 1) % len(self.slots)
+        self.count -= 1
+        item
+
+    ## The item at the front, or None when the deque is empty.
+    def first(self) -> T?:
+        if self.count == 0:
+            return None
+        self.slots[self.head]
+
+    ## The item at the back, or None when the deque is empty.
+    def last(self) -> T?:
+        if self.count == 0:
+            return None
+        self.slots[(self.head + self.count - 1) % len(self.slots)]
+
+    def clear(mut self):
+        self.slots = []
+        self.head = 0
+        self.count = 0
+
+    ## The items, front to back.
+    def items(self) -> list[T]:
+        [self.slots[(self.head + at) % len(self.slots)] for at in range(self.count)]
+
+    def iter(self) -> list[T]:
+        self.items()
+
+    ## Makes room for one more item, doubling the slots when they're full. `filler` fills
+    ## the new slots.
+    def make_room(mut self, filler: T):
+        if self.count < len(self.slots):
+            return
+        mut slots = self.items()
+        for _ in range(len(slots) + 1):
+            slots.append(filler)
+        self.slots = slots
+        self.head = 0
+
+## A binary min-heap: `pop` gives back the smallest item. Items are compared with `<`, so
+## they can be numbers, strings, tuples, or structs with `def <`. For the largest first,
+## push negated numbers, or use a `PriorityQueue` with negated priorities.
+struct Heap[T]:
+    items: list[T] = []
+
+    ## A heap holding `items`.
+    def of(items: list[T]) -> Heap[T]:
+        mut heap = Heap(items=items)
+        for at in range(len(items) // 2 - 1, -1, -1):
+            heap.sift_down(at)
+        heap
+
+    def len(self) -> int:
+        len(self.items)
+
+    def push(mut self, item: T):
+        self.items.append(item)
+        mut at = len(self.items) - 1
+        while at > 0:
+            parent = (at - 1) // 2
+            if not self.items[at] < self.items[parent]:
+                break
+            self.swap(at, parent)
+            at = parent
+
+    ## Removes the smallest item and gives it back, or None when the heap is empty.
+    def pop(mut self) -> T?:
+        if len(self.items) == 0:
+            return None
+        smallest = self.items[0]
+        last = self.items.pop()
+        if len(self.items) > 0:
+            self.items[0] = last
+            self.sift_down(0)
+        smallest
+
+    ## The smallest item, or None when the heap is empty.
+    def peek(self) -> T?:
+        if len(self.items) == 0:
+            return None
+        self.items[0]
+
+    def clear(mut self):
+        self.items = []
+
+    ## Moves the item at `start` down until it's no bigger than the items below it.
+    def sift_down(mut self, start: int):
+        mut at = start
+        while True:
+            left = 2 * at + 1
+            if left >= len(self.items):
+                break
+            mut child = left
+            if left + 1 < len(self.items) and self.items[left + 1] < self.items[left]:
+                child = left + 1
+            if not self.items[child] < self.items[at]:
+                break
+            self.swap(at, child)
+            at = child
+
+    def swap(mut self, a: int, b: int):
+        item = self.items[a]
+        self.items[a] = self.items[b]
+        self.items[b] = item
+
+## A queue where items come out lowest priority first, and items with the same priority
+## come out in the order they went in. For highest first, negate the priorities.
+struct PriorityQueue[T, P]:
+    heap: Heap[(P, int, T)] = Heap()
+    pushed = 0
+
+    def len(self) -> int:
+        self.heap.len()
+
+    def push(mut self, item: T, priority: P):
+        self.heap.push((priority, self.pushed, item))
+        self.pushed += 1
+
+    ## Removes the item with the lowest priority and gives it back, or None when the queue
+    ## is empty.
+    def pop(mut self) -> T?:
+        entry = self.heap.pop()
+        if entry is None:
+            return None
+        priority, order, item = entry
+        item
+
+    ## The item with the lowest priority, or None when the queue is empty.
+    def peek(self) -> T?:
+        entry = self.heap.peek()
+        if entry is None:
+            return None
+        priority, order, item = entry
+        item
+
+## Counts how many times each item appears. Items keep the order they were first counted in.
+struct Counter[T]:
+    counts: dict[T, int] = {}
+
+    ## A counter of `items`.
+    def of(items: list[T]) -> Counter[T]:
+        mut counter = Counter()
+        counter.update(items)
+        counter
+
+    ## How many different items it has counted.
+    def len(self) -> int:
+        len(self.counts)
+
+    ## Counts one more `item`.
+    def add(mut self, item: T):
+        self.counts[item] = self.counts.get(item, 0) + 1
+
+    ## Counts each of `items`.
+    def update(mut self, items: list[T]):
+        for item in items:
+            self.add(item)
+
+    ## How many times `item` was counted: 0 if never.
+    def [](self, item: T) -> int:
+        self.counts.get(item, 0)
+
+    def []=(mut self, item: T, count: int):
+        self.counts[item] = count
+
+    ## How many items were counted in all.
+    def total(self) -> int:
+        sum(self.counts.values())
+
+    ## The `n` most common items and their counts, most common first. Ties keep the order
+    ## the items were first counted in.
+    def most_common(self, n: int) -> list[(T, int)]:
+        pairs = self.counts.items()
+        counts = self.counts.values()
+        ranked = sorted(range(len(pairs)), key=at => -counts[at])
+        [pairs[at] for at in ranked[:n]]
+
+    ## Each item and its count, in the order they were first counted.
+    def items(self) -> list[(T, int)]:
+        self.counts.items()
+
+    def iter(self) -> list[T]:
+        self.counts.keys()
+";
+
+const RANDOM: &str = r"
+## A seeded random number generator. The same seed gives the same numbers in the same order
+## on every machine, so games replay and tests repeat exactly. It's SplitMix64: fast, and
+## good enough for games, but not for secrets.
+struct Random:
+    seed: int
+    ## How many numbers it has drawn so far.
+    drawn = 0
+
+    ## A whole number from `low` to `high`, both included.
+    def randint(mut self, low: int, high: int) -> int:
+        value, drawn = random_int(self.seed, self.drawn, low, high)
+        self.drawn = drawn
+        value
+
+    ## A float from 0.0 up to, but not including, 1.0.
+    def random(mut self) -> float:
+        value, drawn = random_float(self.seed, self.drawn)
+        self.drawn = drawn
+        value
+
+    ## A float from `low` up to, but not including, `high`.
+    def uniform(mut self, low: float, high: float) -> float:
+        low + (high - low) * self.random()
+
+    ## One of `items`, picked at random.
+    def choice(mut self, items: list[T]) -> T:
+        item, drawn = random_choice(self.seed, self.drawn, items)
+        self.drawn = drawn
+        item
+
+    ## Puts `items` in a random order.
+    def shuffle(mut self, mut items: list[T]):
+        for at in range(len(items) - 1, 0, -1):
+            other = self.randint(0, at)
+            item = items[at]
+            items[at] = items[other]
+            items[other] = item
+";
+
+const TIME: &str = r"
+## A length of time, to the nanosecond. Made with `Duration.seconds(0.5)`,
+## `Duration.millis(16)` or `Duration(nanos=...)`.
+struct Duration:
+    nanos = 0
+
+    def seconds(seconds: float) -> Duration:
+        Duration(nanos=round(seconds * 1_000_000_000.0))
+
+    def millis(millis: int) -> Duration:
+        Duration(nanos=millis * 1_000_000)
+
+    def micros(micros: int) -> Duration:
+        Duration(nanos=micros * 1_000)
+
+    ## The duration in seconds, for moving things by `speed * dt.as_seconds()`.
+    def as_seconds(self) -> float:
+        float(self.nanos) / 1_000_000_000.0
+
+    def as_millis(self) -> float:
+        float(self.nanos) / 1_000_000.0
+
+    def +(self, other: Duration) -> Duration:
+        Duration(nanos=self.nanos + other.nanos)
+
+    def -(self, other: Duration) -> Duration:
+        Duration(nanos=self.nanos - other.nanos)
+
+    def *(self, times: int) -> Duration:
+        Duration(nanos=self.nanos * times)
+
+    def <(self, other: Duration) -> bool:
+        self.nanos < other.nanos
+
+## A moment, read from a `Clock`. Subtract two to get the `Duration` between them.
+struct Instant:
+    ## Nanoseconds since the clock started.
+    nanos = 0
+
+    def -(self, earlier: Instant) -> Duration:
+        Duration(nanos=self.nanos - earlier.nanos)
+
+    def +(self, later: Duration) -> Instant:
+        Instant(nanos=self.nanos + later.nanos)
+
+    def <(self, other: Instant) -> bool:
+        self.nanos < other.nanos
 ";

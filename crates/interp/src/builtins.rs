@@ -10,9 +10,9 @@ use crate::call::CallArg;
 use crate::collections::split_key;
 use crate::interp::Interp;
 use crate::value::Value;
-use crate::{format, ops};
+use crate::{format, ops, random};
 
-const NAMES: [&str; 27] = [
+const NAMES: [&str; 30] = [
     "Err",
     "Ok",
     "abs",
@@ -30,6 +30,9 @@ const NAMES: [&str; 27] = [
     "max",
     "min",
     "parallel",
+    "random_choice",
+    "random_float",
+    "random_int",
     "range",
     "replace",
     "reversed",
@@ -84,6 +87,12 @@ impl Interp<'_> {
         if name == "replace" {
             return Interp::replace(args, span);
         }
+        if let ([arg], "len") = (args.as_slice(), name)
+            && let Value::Instance(instance) = &arg.value
+            && let Some(len) = self.type_info(&instance.type_name).and_then(|info| info.methods.get("len").cloned())
+        {
+            return self.call_with_values(&len, vec![arg.value.clone()], span);
+        }
         let (values, key) = split_key(args, name)?;
         if key.is_some() && !matches!(name, "min" | "max" | "sorted") {
             return Err(Diagnostic::new(format!("`{name}` doesn't take `key`"), span));
@@ -97,6 +106,7 @@ impl Interp<'_> {
                 .with_help("like `ignore(save(fs, game), \"autosave is best effort\")`")),
             ("len", [value]) => length(value, span),
             ("range", _) => range(&values, span),
+            ("random_int" | "random_float" | "random_choice", _) => random::draw(name, &values, span),
             ("str", [value]) => Ok(Value::str(&format::display(value))),
             ("int", [value]) => to_int(value, span),
             ("float", [value]) => to_float(value, span),

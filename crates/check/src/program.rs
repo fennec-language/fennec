@@ -121,7 +121,7 @@ impl Program {
             "tuple" => Type::Tuple(written.args.iter().map(|arg| self.resolve_within(arg, depth)).collect()),
             "Id" => Type::Id(Box::new(arg(0))),
             "IdMap" => Type::IdMap(Box::new(arg(0))),
-            "Stdout" | "Fs" => Type::named(&written.name),
+            "Stdout" | "Fs" | "Clock" => Type::named(&written.name),
             name if self.types.contains_key(name) => Type::named(name),
             name => match (self.aliases.get(name), depth.checked_sub(1)) {
                 (Some(alias), Some(depth)) => self.resolve_within(alias, depth),

@@ -9,7 +9,7 @@ use crate::messages::{needless_mut, no_method, wrong_args};
 use crate::types::{Type, article, join, join_all};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most).
-const BUILTINS: [(&str, usize, usize); 28] = [
+const BUILTINS: [(&str, usize, usize); 31] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("abs", 1, 1),
@@ -27,6 +27,9 @@ const BUILTINS: [(&str, usize, usize); 28] = [
     ("max", 1, usize::MAX),
     ("min", 1, usize::MAX),
     ("parallel", 1, 1),
+    ("random_choice", 3, 3),
+    ("random_float", 2, 2),
+    ("random_int", 4, 4),
     ("range", 1, 3),
     ("replace", 1, usize::MAX),
     ("reversed", 1, 1),
@@ -41,8 +44,22 @@ const BUILTINS: [(&str, usize, usize); 28] = [
 ];
 
 /// Builtins whose arguments have to be plain values, not results or optionals.
-const NEEDS_VALUES: [&str; 11] =
-    ["abs", "ceil", "cos", "float", "floor", "int", "len", "range", "round", "sin", "sqrt"];
+const NEEDS_VALUES: [&str; 14] = [
+    "abs",
+    "ceil",
+    "cos",
+    "float",
+    "floor",
+    "int",
+    "len",
+    "random_choice",
+    "random_float",
+    "random_int",
+    "range",
+    "round",
+    "sin",
+    "sqrt",
+];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name)
@@ -129,6 +146,8 @@ fn capability_method(capability: &str, name: &str) -> Option<Method> {
         ("Fs", "exists") => Some(reads(Type::Bool, 1, 1)),
         ("Fs", "read_text") => Some(reads(Type::result(Type::Str, Type::named("IoError")), 1, 1)),
         ("Fs", "write_text") => Some(reads(Type::result(Type::Unit, Type::named("IoError")), 2, 2)),
+        ("Clock", "now") => Some(reads(Type::named("Instant"), 0, 0)),
+        ("Clock", "sleep") => Some(reads(Type::Unit, 1, 1)),
         _ => None,
     }
 }
@@ -227,7 +246,10 @@ impl FnCx<'_> {
             "Ok" => Type::result(first, Type::Unknown),
             "Err" => Type::result(Type::Unknown, first),
             "len" => {
-                if !first.is_collection() && !matches!(first, Type::Tuple(_) | Type::IdMap(_) | Type::Unknown)
+                let has_len = matches!(&first, Type::Named(name) if self.checker.program.method(name, "len").is_some());
+                if !first.is_collection()
+                    && !has_len
+                    && !matches!(first, Type::Tuple(_) | Type::IdMap(_) | Type::Unknown)
                 {
                     self.error(Diagnostic::new(format!("{} has no length", article(&first.kind())), span));
                 }
@@ -238,6 +260,17 @@ impl FnCx<'_> {
                     self.error(Diagnostic::new("`range` takes one to three ints", span));
                 }
                 Type::list(Type::Int)
+            }
+            "random_int" | "random_float" => {
+                if types.iter().any(|ty| !matches!(ty, Type::Int | Type::Unknown)) {
+                    self.error(Diagnostic::new(format!("`{name}` takes ints"), span));
+                }
+                let value = if name == "random_int" { Type::Int } else { Type::Float };
+                Type::Tuple(vec![value, Type::Int])
+            }
+            "random_choice" => {
+                let item = plain.get(2).map_or(Type::Unknown, |(ty, at)| self.item_type(ty, *at));
+                Type::Tuple(vec![item, Type::Int])
             }
             "str" => Type::Str,
             "round" if types.len() == 2 => Type::Float,

@@ -8,6 +8,14 @@ pub struct Span {
 }
 
 impl Span {
+    /// Where the standard library's spans start, well past any program's own source.
+    pub const PRELUDE: u32 = 1 << 31;
+
+    /// Whether this points into the standard library rather than the program.
+    pub fn in_prelude(self) -> bool {
+        self.start >= Span::PRELUDE
+    }
+
     pub fn new(start: usize, end: usize) -> Self {
         Span { start: to_u32(start), end: to_u32(end) }
     }

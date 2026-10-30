@@ -16,6 +16,12 @@ pub fn parse(source: &str) -> Result<Module, Diagnostic> {
     Parser::new(lex(source, 0)?).module(false)
 }
 
+/// Parses a standard library source. Its spans start at `Span::PRELUDE`, so a mistake found
+/// in it is never shown against the program's own lines.
+pub fn parse_prelude(source: &str) -> Result<Module, Diagnostic> {
+    Parser::new(lex(source, Span::PRELUDE)?).module(false)
+}
+
 /// Parses a chunk typed into the REPL, where statements may sit at the top level too.
 pub fn parse_repl(source: &str) -> Result<Module, Diagnostic> {
     Parser::new(lex(source, 0)?).module(true)

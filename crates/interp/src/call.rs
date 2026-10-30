@@ -142,7 +142,7 @@ impl Interp<'_> {
         if function.generator {
             self.yields.push(Vec::new());
         }
-        let flow = self.exec_stmts(&def.body);
+        let flow = self.exec_stmts(&def.body).map_err(|diagnostic| at_call(diagnostic, span));
         let yielded = if function.generator { self.yields.pop() } else { None };
         let changed: Vec<(Place, Value)> = def
             .params
@@ -345,6 +345,14 @@ fn bind(
         }
         None => Ok(slots.into_iter().flatten().collect()),
     }
+}
+
+/// A failure inside the standard library is reported where the program called it.
+pub(crate) fn at_call(mut diagnostic: Diagnostic, call: Span) -> Diagnostic {
+    if diagnostic.span.in_prelude() && !call.in_prelude() {
+        diagnostic.span = call;
+    }
+    diagnostic
 }
 
 fn check_mut(function: &str, param: &Param, arg: &CallArg) -> Result<(), Diagnostic> {

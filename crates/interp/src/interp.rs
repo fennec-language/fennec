@@ -75,7 +75,7 @@ impl<'out> Interp<'out> {
             yields: Vec::new(),
         };
         for source in prelude::SOURCES {
-            let module = fennec_syntax::parse(source)?;
+            let module = fennec_syntax::parse_prelude(source)?;
             interp.load(&module)?;
         }
         Ok(interp)
@@ -123,9 +123,10 @@ impl<'out> Interp<'out> {
             args.push(Value::Capability(match ty {
                 "Stdout" => Capability::Stdout,
                 "Fs" => Capability::Fs,
+                "Clock" => Capability::Clock,
                 other => {
                     return Err(Diagnostic::new(format!("`main` can't receive a `{other}`"), param.span)
-                        .with_help("`main` can receive `stdout: Stdout` and `fs: Fs`"));
+                        .with_help("`main` can receive `stdout: Stdout`, `fs: Fs` and `clock: Clock`"));
                 }
             }));
         }
@@ -139,10 +140,11 @@ impl<'out> Interp<'out> {
         }
     }
 
-    /// Starts a REPL session, where `stdout` and `fs` are already defined.
+    /// Starts a REPL session, where `stdout`, `fs` and `clock` are already defined.
     pub fn start_repl(&mut self) {
         self.frame.declare("stdout", Value::Capability(Capability::Stdout), false);
         self.frame.declare("fs", Value::Capability(Capability::Fs), false);
+        self.frame.declare("clock", Value::Capability(Capability::Clock), false);
     }
 
     /// Runs a chunk typed into the REPL. Returns how to echo its last expression, if anything.

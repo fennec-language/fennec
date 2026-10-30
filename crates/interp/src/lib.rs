@@ -16,6 +16,7 @@ mod methods;
 mod ops;
 mod place;
 mod prelude;
+mod random;
 mod scan;
 mod scope;
 mod testing;

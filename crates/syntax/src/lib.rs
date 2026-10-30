@@ -13,6 +13,6 @@ pub use ast::{
     Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
 };
 pub use diagnostic::Diagnostic;
-pub use parser::{parse, parse_repl};
+pub use parser::{parse, parse_prelude, parse_repl};
 pub use prelude::PRELUDE;
 pub use span::Span;

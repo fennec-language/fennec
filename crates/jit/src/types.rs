@@ -15,10 +15,8 @@ pub(crate) enum Ty {
     Bool,
     /// Nothing at all: what a function without a value returns.
     Unit,
-    /// The `stdout` capability, which needs nothing at run time.
-    Stdout,
-    /// The `fs` capability, which needs nothing at run time either.
-    Fs,
+    /// A capability, like `stdout`, which needs nothing at run time.
+    Cap(Cap),
     /// Anything else, held by the runtime.
     Obj,
     /// A plain struct, in memory native code owns, which it refers to by address. The
@@ -33,10 +31,45 @@ impl Ty {
             Ty::Float => "float",
             Ty::Bool => "bool",
             Ty::Unit => "nothing",
-            Ty::Stdout => "Stdout",
-            Ty::Fs => "Fs",
+            Ty::Cap(cap) => cap.name(),
             Ty::Obj => "value",
             Ty::Struct(_) => "struct",
+        }
+    }
+}
+
+/// The capabilities `main` can be given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cap {
+    Stdout,
+    Fs,
+    Clock,
+}
+
+impl Cap {
+    pub(crate) fn named(name: &str) -> Option<Cap> {
+        match name {
+            "Stdout" => Some(Cap::Stdout),
+            "Fs" => Some(Cap::Fs),
+            "Clock" => Some(Cap::Clock),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Cap::Stdout => "Stdout",
+            Cap::Fs => "Fs",
+            Cap::Clock => "Clock",
+        }
+    }
+
+    /// How the runtime tells capabilities apart.
+    pub(crate) fn kind(self) -> i64 {
+        match self {
+            Cap::Stdout => 0,
+            Cap::Fs => 1,
+            Cap::Clock => 2,
         }
     }
 }
@@ -86,6 +119,7 @@ impl<'m> Program<'m> {
                 layouts.add_defaults(def);
             }
         }
+        let used = crate::reach::used_types(module, prelude);
         let mut functions = Vec::new();
         let mut excluded = Vec::new();
         let mut main_span = None;
@@ -110,6 +144,9 @@ impl<'m> Program<'m> {
                     add(def, def.name.clone(), from_prelude);
                 }
                 Item::Struct(ty) | Item::Enum(ty) | Item::Error(ty) => {
+                    if from_prelude && !used.contains(&ty.name) {
+                        continue;
+                    }
                     for method in &ty.methods {
                         add(method, format!("{}.{}", ty.name, method.name), from_prelude);
                     }

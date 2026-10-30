@@ -11,7 +11,7 @@
 
 mod call;
 mod expr;
-mod fallback;
+pub(crate) mod fallback;
 mod flow;
 mod inline;
 mod objects;
@@ -161,7 +161,7 @@ fn attempt(
         module.clear_context(&mut ctx);
     }
     let main = shared.compiled.get("main").ok_or_else(|| fatal(unsupported("this `main`", span)))?;
-    if main.params.iter().any(|(_, ty, _)| !matches!(ty, Ty::Stdout | Ty::Fs)) {
+    if main.params.iter().any(|(_, ty, _)| !matches!(ty, Ty::Cap(_))) {
         return Err(fatal(unsupported("a `main` that takes anything but `stdout`", span)));
     }
     let (main_id, main_ret) = (main.id, main.ret);
@@ -252,7 +252,7 @@ fn abi(ty: Ty) -> Option<types::Type> {
         Ty::Int | Ty::Obj | Ty::Struct(_) => Some(types::I64),
         Ty::Float => Some(types::F64),
         Ty::Bool => Some(types::I8),
-        Ty::Unit | Ty::Stdout | Ty::Fs => None,
+        Ty::Unit | Ty::Cap(_) => None,
     }
 }
 
@@ -368,6 +368,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         signatures: cx.signatures,
         dest: None,
         inlining: Vec::new(),
+        call_site: None,
         function,
         scopes: vec![Scope::default()],
         loops: Vec::new(),
@@ -458,6 +459,9 @@ pub(crate) struct Lowerer<'a, 'f> {
     /// The functions being inlined, innermost last, each with the number of scopes open
     /// outside it, which its body can't see.
     inlining: Vec<(String, usize)>,
+    /// Where the program called the standard library function being inlined, which its
+    /// failures are reported at.
+    call_site: Option<Span>,
 }
 
 impl Lowerer<'_, '_> {
@@ -607,7 +611,17 @@ impl Lowerer<'_, '_> {
     }
 
     fn span_args(&mut self, span: Span) -> [Value; 2] {
+        let span = self.site(span);
         [self.int(i64::from(span.start)), self.int(i64::from(span.end))]
+    }
+
+    /// Where a failure at `span` is reported: inside an inlined standard library function,
+    /// at the program's call to it.
+    fn site(&self, span: Span) -> Span {
+        match self.call_site {
+            Some(site) if span.in_prelude() => site,
+            _ => span,
+        }
     }
 
     fn name_id(&mut self, name: &str) -> Value {
@@ -710,7 +724,7 @@ impl Lowerer<'_, '_> {
             Some(self.help(Helper::Ok, &[handle])?)
         } else {
             match function.ret {
-                Ty::Unit | Ty::Stdout | Ty::Fs => None,
+                Ty::Unit | Ty::Cap(_) => None,
                 Ty::Struct(id) => {
                     let value = self.convert(value, ty, Ty::Struct(id), span)?;
                     let dest = self.dest.ok_or_else(|| internal("no destination", span))?;

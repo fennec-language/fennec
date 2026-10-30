@@ -93,8 +93,9 @@ impl Interp<'_> {
         self.build(&shape, args, span)
     }
 
-    /// Builds a value of a built-in error type, like the `IoError` that `fs` methods fail with.
-    pub(crate) fn make_error(
+    /// Builds a value of a standard library type from its fields, like the `IoError` that
+    /// `fs` methods fail with.
+    pub(crate) fn make_value(
         &mut self,
         type_name: &str,
         fields: Vec<(&str, Value)>,
@@ -130,7 +131,7 @@ impl Interp<'_> {
             .with_help("`where` rules are checked whenever a value is made")),
             Some(field) => {
                 let message = Value::str(&format!("{}.{field} breaks its `where` rule", shape.type_name));
-                let error = self.make_error("InvalidValue", vec![("message", message)], span)?;
+                let error = self.make_value("InvalidValue", vec![("message", message)], span)?;
                 Ok(Value::Err(Rc::new(error)))
             }
         }

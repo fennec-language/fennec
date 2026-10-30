@@ -57,6 +57,8 @@ pub(crate) struct Function<'m> {
     pub(crate) def: &'m FnDef,
     /// Its name in the signature table: `name`, or `Type.name` for a method.
     pub(crate) key: String,
+    /// Whether it's from the standard library rather than the program.
+    pub(crate) prelude: bool,
     pub(crate) params: Vec<Param>,
     pub(crate) ret: Ty,
     /// Whether it gives back a result: it contains `fail` or `?`.
@@ -65,6 +67,8 @@ pub(crate) struct Function<'m> {
 
 pub(crate) struct Program<'m> {
     pub(crate) functions: Vec<Function<'m>>,
+    /// Functions and methods the JIT doesn't try to compile, like generators.
+    pub(crate) excluded: Vec<String>,
     pub(crate) main_span: Span,
 }
 
@@ -82,22 +86,31 @@ impl<'m> Program<'m> {
         signatures: &Signatures,
     ) -> Result<Self, Diagnostic> {
         let mut functions = Vec::new();
+        let mut excluded = Vec::new();
         let mut main_span = None;
-        for item in prelude.iter().chain(std::iter::once(module)).flat_map(|module| &module.items) {
+        let mut add = |def: &'m FnDef, key: String, from_prelude: bool| {
+            if signatures.get(&key).is_none() {
+                return;
+            }
+            match function(def, key.clone(), signatures) {
+                Some(function) => functions.push(Function { prelude: from_prelude, ..function }),
+                None => excluded.push(key),
+            }
+        };
+        let modules = prelude.iter().map(|module| (module, true)).chain(std::iter::once((module, false)));
+        for (item, from_prelude) in modules
+            .flat_map(|(module, from_prelude)| module.items.iter().map(move |item| (item, from_prelude)))
+        {
             match item {
                 Item::Function(def) => {
                     if def.name == "main" {
                         main_span = Some(def.span);
                     }
-                    functions.extend(function(def, def.name.clone(), signatures));
+                    add(def, def.name.clone(), from_prelude);
                 }
                 Item::Struct(ty) | Item::Enum(ty) | Item::Error(ty) => {
                     for method in &ty.methods {
-                        functions.extend(function(
-                            method,
-                            format!("{}.{}", ty.name, method.name),
-                            signatures,
-                        ));
+                        add(method, format!("{}.{}", ty.name, method.name), from_prelude);
                     }
                 }
                 Item::Stmt(stmt) => return Err(unsupported("top-level statements", stmt.span)),
@@ -109,7 +122,7 @@ impl<'m> Program<'m> {
         if !functions.iter().any(|function| function.def.name == "main") {
             return Err(unsupported("this `main`", main_span));
         }
-        Ok(Program { functions, main_span })
+        Ok(Program { functions, excluded, main_span })
     }
 }
 
@@ -124,7 +137,7 @@ fn function<'m>(def: &'m FnDef, key: String, signatures: &Signatures) -> Option<
         params.push(Param { name: param.name.clone(), ty, is_mut: param.is_mut });
     }
     let ret = if signature.can_fail { Ty::Obj } else { Ty::of(&signature.returns) };
-    Some(Function { def, key, params, ret, fallible: signature.can_fail })
+    Some(Function { def, key, prelude: false, params, ret, fallible: signature.can_fail })
 }
 
 /// How a parameter of a written type is held.

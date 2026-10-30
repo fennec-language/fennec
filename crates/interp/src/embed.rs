@@ -112,13 +112,24 @@ pub fn start(module: &Module, tables: Tables) -> Result<(), Diagnostic> {
     Ok(())
 }
 
-/// Ends the run: what it printed, and why it failed, if it did.
-pub fn finish() -> (Vec<u8>, Option<Diagnostic>) {
+/// What a run left in the runtime. A run that succeeds leaves nothing: a check on the
+/// bookkeeping native code does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Leftovers {
+    pub temps: usize,
+    pub frames: usize,
+}
+
+/// Ends the run: what it printed, why it failed if it did, and what it left behind.
+pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
     let state = STATE.take();
     FAILED.set(0);
     match state {
-        Some(state) => (state.output.0.take(), state.failure),
-        None => (Vec::new(), None),
+        Some(state) => {
+            let leftovers = Leftovers { temps: state.temps.len(), frames: state.callers.len() };
+            (state.output.0.take(), state.failure, leftovers)
+        }
+        None => (Vec::new(), None, Leftovers::default()),
     }
 }
 

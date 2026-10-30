@@ -12,6 +12,28 @@ use fennec_jit::JitError;
 /// `main` yet. Every other example must run natively.
 const INTERPRETED: &[&str] = &[];
 
+/// The functions the JIT can't compile yet, in the examples that have any: generators and
+/// functions with functions inside them. They run in the interpreter.
+const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] =
+    &[("functions_more.fen", &["countdown", "counter_from"]), ("operators.fen", &["Grid.iter"])];
+
+/// Examples that compile to plain machine code: nothing handed to the interpreter, and no
+/// function needing the runtime's frames.
+const PLAIN_MACHINE_CODE: &[&str] = &["hello.fen", "numbers.fen"];
+
+/// Checks how an example compiled, and that its run left nothing behind in the runtime.
+fn check_report(name: &str, report: &fennec_jit::Report) {
+    let expected = INTERPRETED_FUNCTIONS
+        .iter()
+        .find(|(example, _)| *example == name)
+        .map_or(&[][..], |(_, names)| names);
+    assert_eq!(report.interpreted, expected, "{name}: the JIT couldn't compile these");
+    assert_eq!((report.leftover_temps, report.leftover_frames), (0, 0), "{name} left temporaries or frames");
+    if PLAIN_MACHINE_CODE.contains(&name) {
+        assert_eq!((report.handed_over, report.with_frames), (0, 0), "{name} should be plain machine code");
+    }
+}
+
 fn examples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
@@ -116,8 +138,11 @@ fn the_jit_runs_examples_exactly_like_the_interpreter() {
                 continue;
             }
             let mut out = Vec::new();
-            let actual = match fennec_jit::run(&module, &mut out) {
-                Ok(()) => Ok(String::from_utf8_lossy(&out).into_owned()),
+            let actual = match fennec_jit::run_with_report(&module, &mut out) {
+                Ok(report) => {
+                    check_report(&name, &report);
+                    Ok(String::from_utf8_lossy(&out).into_owned())
+                }
                 Err(JitError::Failed(diagnostic)) => Err(diagnostic.render(&shown_as, &source)),
                 Err(JitError::Unsupported(why)) => {
                     assert!(

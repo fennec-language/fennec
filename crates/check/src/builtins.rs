@@ -12,10 +12,9 @@ use crate::types::{Type, a, article};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 23] = [
+const BUILTINS: [(&str, usize, usize); 22] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
-    ("abs", 1, 1),
     ("all", 1, 1),
     ("any", 1, 1),
     ("bytes", 0, 1),
@@ -39,7 +38,7 @@ const BUILTINS: [(&str, usize, usize); 23] = [
 ];
 
 /// Builtins whose arguments have to be plain values, not results or optionals.
-const NEEDS_VALUES: [&str; 5] = ["abs", "float", "int", "range", "round"];
+const NEEDS_VALUES: [&str; 4] = ["float", "int", "range", "round"];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name) || stdlib::function(name).is_some()
@@ -106,6 +105,9 @@ fn method(ty: &Type, name: &str) -> Option<Method> {
     );
     if sized && name == "len" {
         return Some(reads(&[], Type::Int));
+    }
+    if matches!(ty, Type::Int | Type::Float) && name == "abs" {
+        return Some(reads(&[], ty.clone()));
     }
     match ty {
         Type::List(item) => list_method(item, name),
@@ -361,12 +363,12 @@ impl FnCx<'_> {
                 }
                 number
             }
-            "round" | "abs" => self.math(name, &types, span),
+            "round" => self.math(name, &types, span),
             _ => self.collection_builtin(name, plain, span),
         }
     }
 
-    /// `round`, `abs` and `std.math`'s functions, which take numbers.
+    /// `round` and `std.math`'s functions, which take numbers.
     pub(crate) fn math(&mut self, name: &str, types: &[Type], span: Span) -> Type {
         let first = types.first().cloned().unwrap_or(Type::Unknown);
         let number = matches!(first, Type::Int | Type::Float | Type::Unknown);
@@ -379,7 +381,6 @@ impl FnCx<'_> {
         match name {
             "round" if types.len() == 2 => Type::Float,
             "round" | "math.floor" | "math.ceil" => Type::Int,
-            "abs" => first,
             _ => Type::Float,
         }
     }

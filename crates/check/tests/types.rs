@@ -253,7 +253,7 @@ fn builtins_give_back_the_right_types() {
         ("round(1.5, 1) + 1", "can't mix int and float in `+` @ round(1.5, 1) + 1"),
         ("float(1) + 1", "can't mix int and float in `+` @ float(1) + 1"),
         ("sqrt(4.0) + 1", "can't mix int and float in `+` @ sqrt(4.0) + 1"),
-        ("abs(-1) + 1.0", "can't mix int and float in `+` @ abs(-1) + 1.0"),
+        ("(-1).abs() + 1.0", "can't mix int and float in `+` @ -1).abs() + 1.0"),
         ("sum([1.0]) + 1", "can't mix int and float in `+` @ sum([1.0]) + 1"),
         ("max([1]) + 1.0", "can't mix int and float in `+` @ max([1]) + 1.0"),
         ("min(1, 2) + 1.0", "can't mix int and float in `+` @ min(1, 2) + 1.0"),

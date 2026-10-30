@@ -13,6 +13,8 @@ fn fennec_in(dir: &Path, args: &[&str], stdin: &str) -> std::io::Result<Output> 
     let mut child = Command::new(env!("CARGO_BIN_EXE_fennec"))
         .args(args)
         .current_dir(dir)
+        // Every run does all of its work, whatever earlier runs left in the real cache.
+        .env("FENNEC_NO_CACHE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -239,9 +241,13 @@ fn repl_says_which_module_to_import_from() {
 
 #[test]
 fn repl_says_how_to_write_ord_and_chr() {
-    let output = fennec(&["repl"], "ord(\"A\")\nchr(65)\n\"A\".code()\nlen([1])\nexit\n").unwrap();
+    let input = "ord(\"A\")\nchr(65)\n\"A\".code()\nstr.lower(\"A\")\nlen([1])\nabs(1)\nexit\n";
+    let output = fennec(&["repl"], input).unwrap();
     let errors = text(&output.stderr);
+    // Only `from_code` is called on `str` itself.
+    assert!(errors.contains("a function has no method `lower`"), "{errors}");
     assert!(errors.contains("a length is a method: write `x.len()`"), "{errors}");
+    assert!(errors.contains("a size is a method: write `x.abs()`"), "{errors}");
     assert!(errors.contains("a character's code is a method: write `c.code()`"), "{errors}");
     assert!(errors.contains("make a character from its code with `str.from_code(n)`"), "{errors}");
     assert!(text(&output.stdout).contains("65\n"));
@@ -748,6 +754,32 @@ fn a_loop_that_only_indexes_a_list_and_takes_its_length_stays_native() {
     let output = fennec(&["dev", "fallbacks", program.to_str().unwrap()], "").unwrap();
     let printed = text(&output.stdout);
     assert!(!printed.contains("total.fen:4:"), "{printed}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn abs_is_native_on_numbers() {
+    let dir = scratch("abs").unwrap();
+    let program = dir.join("size.fen");
+    let source = "def main(stdout: Stdout):\n    stdout.print((-4).abs(), (-2.5).abs())\n";
+    std::fs::write(&program, source).unwrap();
+    let output = fennec(&["dev", "fallbacks", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "everything compiles to native code\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_dicts_length_is_native() {
+    let dir = scratch("dict-length").unwrap();
+    let program = dir.join("size.fen");
+    std::fs::write(
+        &program,
+        "def size(table: dict[int, int]) -> int:\n    table.len()\n\ndef main(stdout: Stdout):\n    \
+         mut table: dict[int, int] = {}\n    table[1] = 2\n    stdout.print(size(table))\n",
+    )
+    .unwrap();
+    let output = fennec(&["dev", "fallbacks", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "everything compiles to native code\n");
     std::fs::remove_dir_all(dir).unwrap();
 }
 

@@ -29,8 +29,13 @@ type Inputs = Vec<(String, Value)>;
 
 impl Interp<'_> {
     pub fn run_tests(&mut self) -> Vec<TestOutcome> {
+        self.run_tests_where(&|_| true)
+    }
+
+    /// Runs the tests whose names `wanted` picks, in order.
+    pub fn run_tests_where(&mut self, wanted: &dyn Fn(&str) -> bool) -> Vec<TestOutcome> {
         let tests = self.tests.clone();
-        tests.iter().map(|test| self.run_test(test)).collect()
+        tests.iter().filter(|test| wanted(&test.name)).map(|test| self.run_test(test)).collect()
     }
 
     fn run_test(&mut self, test: &TestDef) -> TestOutcome {

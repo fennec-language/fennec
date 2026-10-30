@@ -9,3 +9,4 @@ mod lsp;
 mod projects;
 mod selfhost;
 mod syntax_errors;
+mod unchanged_tests;

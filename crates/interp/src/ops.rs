@@ -171,10 +171,7 @@ pub(crate) fn index(object: &Value, index: &Value, span: Span) -> Result<Value, 
     match object {
         Value::List(items) => position(*at, items.len(), span)
             .and_then(|at| items.get(at).cloned().ok_or_else(|| Diagnostic::new("index out of range", span))),
-        // ASCII text has one byte per character, so its characters are reached directly.
-        Value::Str(text) if text.is_ascii() => position(*at, text.len(), span).and_then(|at| {
-            text.get(at..=at).map(Value::str).ok_or_else(|| Diagnostic::new("index out of range", span))
-        }),
+        Value::Str(text) if let Some(found) = ascii_index(text, *at, span) => found,
         Value::Str(text) => {
             let count = text.chars().count();
             let at = position(*at, count, span)?;
@@ -190,6 +187,16 @@ pub(crate) fn index(object: &Value, index: &Value, span: Span) -> Result<Value, 
         }),
         other => Err(Diagnostic::new(format!("a {} can't be indexed", other.type_name()), span)),
     }
+}
+
+/// `text[at]` for ASCII text, which has one byte per character, so the character is reached
+/// directly. `None` for other text, which has to be walked.
+fn ascii_index(text: &str, at: i64, span: Span) -> Option<Result<Value, Diagnostic>> {
+    text.is_ascii().then(|| {
+        position(at, text.len(), span).and_then(|at| {
+            text.get(at..=at).map(Value::str).ok_or_else(|| Diagnostic::new("index out of range", span))
+        })
+    })
 }
 
 /// Resolves a possibly negative index against a length.
@@ -239,4 +246,22 @@ pub(crate) fn slice(
         Value::Bytes(data) => Value::Bytes(Rc::from(data.get(from..to).unwrap_or(&[]))),
         _ => Value::Unit,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use fennec_syntax::Span;
+
+    use super::ascii_index;
+    use crate::value::Value;
+
+    /// The shortcut gives the same characters the walk does, and only takes ASCII text.
+    #[test]
+    fn ascii_text_is_indexed_directly() {
+        let span = Span::default();
+        assert_eq!(ascii_index("fox", 1, span).map(Result::ok), Some(Some(Value::str("o"))));
+        assert_eq!(ascii_index("fox", -1, span).map(Result::ok), Some(Some(Value::str("x"))));
+        assert!(ascii_index("fox", 3, span).is_some_and(|found| found.is_err()));
+        assert!(ascii_index("héllo", 0, span).is_none());
+    }
 }

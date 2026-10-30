@@ -18,7 +18,7 @@ def main(stdout: Stdout):
             stdout.print(message)
 
     # Rounding goes to the even neighbour on a tie, as in Python.
-    stdout.print(abs(-3), abs(-2.5), abs(4))
+    stdout.print((-3).abs(), (-2.5).abs(), 4.abs())
     stdout.print(round(2.5), round(3.5), round(-2.5), round(3.14159, 2), round(1234.5, -2))
     stdout.print(floor(2.7), floor(-2.5), ceil(2.1), ceil(-2.5))
     stdout.print(sqrt(16), sqrt(2.25), sqrt(0), sin(0), cos(0), sin(PI / 2.0), cos(PI))

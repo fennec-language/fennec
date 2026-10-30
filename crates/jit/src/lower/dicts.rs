@@ -4,7 +4,6 @@
 //! the dict has one owner and room. Copying a shared dict and growing a full one go to the
 //! runtime, as does anything else, through the interpreter's dicts.
 
-use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{Block, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::Variable;
@@ -60,9 +59,8 @@ impl Lowerer<'_, '_> {
         let ExprKind::Name(name) = &object.kind else { return None };
         let local = self.local(name)?;
         match (local.ty, local.var) {
-            (Ty::Dict(key, value), Some(var)) if !self.borrowed_names.contains(&var.index()) => {
-                Some((var, (key, value)))
-            }
+            // A `mut` parameter is handed over for the call, so it can change in place.
+            (Ty::Dict(key, value), Some(var)) if local.is_mut => Some((var, (key, value))),
             _ => None,
         }
     }
@@ -255,7 +253,7 @@ impl Lowerer<'_, '_> {
         };
         let shape = shape(self.shared.tables.str_shape, key_word, value_word)
             .ok_or_else(|| internal("a dict's shape", value.span))?;
-        let shape = self.int(shape.cast_signed());
+        let shape = self.handed_number("shape", shape.cast_signed());
         let room = self.int(i64::try_from(pairs.len()).unwrap_or(0));
         let dict = self.help(Helper::DictNew, &[shape, room])?;
         let var = self.b.declare_var(types::I64);
@@ -283,7 +281,7 @@ impl Lowerer<'_, '_> {
     ) -> Result<Value, Diagnostic> {
         let shape = shape(self.shared.tables.str_shape, key, value)
             .ok_or_else(|| internal("a dict's shape", span))?;
-        let shape = self.int(shape.cast_signed());
+        let shape = self.handed_number("shape", shape.cast_signed());
         let [start, end] = self.span_args(span);
         self.help(Helper::BoxFromValue, &[handle, shape, start, end])
     }

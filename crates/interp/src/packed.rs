@@ -53,6 +53,8 @@ impl Element {
 pub(crate) struct Packed {
     pub(crate) element: Rc<Element>,
     pub(crate) words: Vec<u64>,
+    /// How many words one item takes, worked out once.
+    pub(crate) stride: usize,
 }
 
 impl Packed {
@@ -62,20 +64,22 @@ impl Packed {
         for item in items {
             pack_item(element, item, &mut words)?;
         }
-        Some(Packed { element: Rc::clone(element), words })
+        Some(Packed::new(Rc::clone(element), words))
+    }
+
+    pub(crate) fn new(element: Rc<Element>, words: Vec<u64>) -> Packed {
+        let stride = element.words().max(1);
+        Packed { element, words, stride }
     }
 
     /// The list as the interpreter holds lists.
     pub(crate) fn unpack(&self) -> Value {
-        let stride = self.element.words().max(1);
-        let items =
-            self.words.chunks(stride).map(|chunk| unpack_item(&self.element, &mut chunk.iter())).collect();
+        let items = self
+            .words
+            .chunks(self.stride)
+            .map(|chunk| unpack_item(&self.element, &mut chunk.iter()))
+            .collect();
         Value::list(items)
-    }
-
-    /// How many items it has.
-    pub(crate) fn len(&self) -> usize {
-        self.words.len() / self.element.words().max(1)
     }
 }
 

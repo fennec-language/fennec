@@ -499,7 +499,7 @@ impl Lowerer<'_, '_> {
         Ok(Some((Some(result.0), result.1)))
     }
 
-    /// `x.len()`: natively for a packed list, text and a dict, and in the interpreter for
+    /// `x.len()`: natively for a list, text and a dict, and in the interpreter for
     /// anything else.
     fn length(&mut self, expr: &Expr, object: &Expr) -> Result<Lowered, Diagnostic> {
         if let Some((list, item)) = self.packed(object) {
@@ -511,6 +511,11 @@ impl Lowerer<'_, '_> {
             (Some(dict), Ty::Dict(..)) => {
                 let length = self.dict_length(dict);
                 self.consume(Some(dict), ty)?;
+                Ok((Some(length), Ty::Int))
+            }
+            (Some(list), Ty::List(_)) => {
+                let length = self.length_of_list(list);
+                self.consume(Some(list), ty)?;
                 Ok((Some(length), Ty::Int))
             }
             _ => {
@@ -604,7 +609,7 @@ impl Lowerer<'_, '_> {
                 self.call_helper(Helper::StrPrint, &[address])?;
                 return self.consume(Some(address), ty);
             }
-            Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) => {
+            Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) | Ty::List(_) => {
                 let handle = self.handle_of(value, ty, expr.span)?;
                 return self.call_helper(Helper::PrintValue, &[handle]).map(|_| ());
             }

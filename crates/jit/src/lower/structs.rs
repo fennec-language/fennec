@@ -311,10 +311,7 @@ impl<'a> Lowerer<'a, '_> {
             }
         }
         if let Some(scope) = self.scopes.last_mut() {
-            scope.locals.insert(
-                name.to_owned(),
-                Local { var: Some(identity), ty: Ty::Struct(id), is_mut, list: None },
-            );
+            scope.locals.insert(name.to_owned(), Local { var: Some(identity), ty: Ty::Struct(id), is_mut });
         }
     }
 

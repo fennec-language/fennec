@@ -40,6 +40,9 @@ pub enum Word {
 const KEYS: [Word; 2] = [Word::Int, Word::Str];
 const VALUES: [Word; 4] = [Word::Int, Word::Float, Word::Bool, Word::Str];
 
+/// How many shapes dicts take, after the string shape.
+pub const SHAPES: u64 = (KEYS.len() * VALUES.len()) as u64;
+
 /// The shape of dicts with these keys and values, counted from the string shape, or `None`
 /// for a pair native dicts don't hold.
 pub fn shape(str_shape: u64, key: Word, value: Word) -> Option<u64> {

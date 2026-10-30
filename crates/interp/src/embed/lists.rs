@@ -1,80 +1,150 @@
-//! Packed lists for native code: packing a name's list, and the address and length of its
-//! items, which native code then reads and changes directly. An address stays good until
-//! the list grows, or something else gets hold of the list, so native code asks again
-//! after anything that could do either.
+//! Lists for native code. A list of ints, floats, bools or plain structs is a block in the
+//! heap (see `heap`): its owner count, its shape, how many items it has, how many it has
+//! room for, then its items packed one after another, a word per number. Native code
+//! reads, changes and appends items itself while the list has one owner and room; copying
+//! a shared list and growing a full one happen here.
+//!
+//! A list's shape is counted from the string shape, after the dicts' shapes: one for each
+//! kind of item, by the kind's number in the table of elements.
 
 use std::rc::Rc;
 
 use fennec_syntax::Diagnostic;
 
+use super::heap::release;
 use super::{State, attempt, span, with};
-use crate::packed::Packed;
+use crate::packed::{Element, Packed};
 use crate::value::Value;
 
-/// The packed list a name holds, packing it first if it holds an ordinary list of the
-/// right items.
-fn packed_mut(state: &mut State, name: i64, element: Option<i64>) -> Option<&mut Rc<Packed>> {
-    let element =
-        element.and_then(|at| usize::try_from(at).ok()).and_then(|at| state.tables.elements.get(at)).cloned();
-    let name = State::name_ref(&state.tables, name);
-    let binding = state.interp.frame.get_mut(name)?;
-    if let (Value::List(items), Some(element)) = (&binding.value, element) {
-        binding.value = Value::Packed(Rc::new(Packed::pack(&element, items)?));
-    }
-    match &mut binding.value {
-        Value::Packed(packed) => Some(packed),
-        _ => None,
-    }
+/// Words a list's block starts with: owner count, shape, items, room.
+pub const LIST_HEADER_WORDS: usize = 4;
+
+/// The fewest items a new list has room for.
+const MIN_ROOM: usize = 4;
+
+/// The shape of lists of the element numbered `element`.
+fn shape(state: &State, element: usize) -> u64 {
+    state.tables.str_shape + 1 + super::dicts::SHAPES + u64::try_from(element).unwrap_or(0)
 }
 
-/// Packs the list a name holds, when every item is of the kind `element` describes. Gives
-/// back whether it's packed now.
-pub extern "C" fn pack(name: i64, element: i64) -> i8 {
-    with(|state| i8::from(packed_mut(state, name, Some(element)).is_some()))
+/// The kind of item a block holds, when it's a list's.
+pub(super) fn element_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
+    let at = block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
+    state.tables.elements.get(usize::try_from(at).ok()?).cloned()
 }
 
-/// A new packed list of `count` items of a kind, all zero, as a temporary, for native code
-/// to fill.
-pub extern "C" fn zeroed(element: i64, count: i64) -> i64 {
+fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
+    let at = usize::try_from(element).ok()?;
+    Some((at, Rc::clone(state.tables.elements.get(at)?)))
+}
+
+/// A block owned once holding `items` words of items, with room for at least `room`.
+fn build(state: &mut State, at: usize, stride: usize, items: &[u64], room: usize) -> Box<[u64]> {
+    let count = items.len() / stride.max(1);
+    let room = room.max(count).max(MIN_ROOM);
+    let mut block = state.heap.fresh(LIST_HEADER_WORDS + room * stride);
+    let number = |n: usize| u64::try_from(n).unwrap_or(0);
+    if let Some(header) = block.get_mut(..LIST_HEADER_WORDS) {
+        header.copy_from_slice(&[1, shape(state, at), number(count), number(room)]);
+    }
+    if let Some(words) = block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + items.len()) {
+        words.copy_from_slice(items);
+    }
+    block
+}
+
+/// The words of a list block's items in use.
+pub(super) fn items(block: &[u64], stride: usize) -> &[u64] {
+    let count = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+    block.get(LIST_HEADER_WORDS..LIST_HEADER_WORDS + count * stride).unwrap_or_default()
+}
+
+/// A new list owned once of `count` items of a kind, all zero, for native code to fill.
+pub extern "C" fn new(element: i64, count: i64) -> i64 {
     with(|state| {
-        let element = usize::try_from(element).ok().and_then(|at| state.tables.elements.get(at)).cloned();
-        let Some(element) = element else { return state.push(Value::list(Vec::new())) };
-        let words = vec![0; usize::try_from(count).unwrap_or(0) * element.words()];
-        state.push(Value::Packed(Rc::new(Packed { element, words })))
+        let Some((at, element)) = self::element(state, element) else { return 0 };
+        let count = usize::try_from(count).unwrap_or(0);
+        // A fresh block is already zero, so only the header is written.
+        let mut block = build(state, at, element.words(), &[], count);
+        if let Some(length) = block.get_mut(2) {
+            *length = u64::try_from(count).unwrap_or(0);
+        }
+        state.heap.insert(block)
     })
 }
 
-/// Where a name's packed items start, for reading (`write` 0) or changing them (`write` 1,
-/// which first gives the list memory of its own if it shares it).
-pub extern "C" fn address(name: i64, element: i64, write: i8) -> i64 {
-    attempt(|state: &mut State| {
-        let packed = packed_mut(state, name, Some(element)).ok_or_else(not_packed)?;
-        let words = if write != 0 {
-            Rc::make_mut(packed).words.as_mut_ptr()
+/// Takes over a list's owner and gives back one with a zeroed item more on the end, for
+/// native code to fill: the same block when it had one owner and room, or else a copy
+/// with room to double.
+pub extern "C" fn grow(list: i64) -> i64 {
+    with(|state| grow_in(state, list, 1).unwrap_or(list))
+}
+
+/// Takes over a list's owner and gives back a block only that owner holds, copying the
+/// list if anything else shares it.
+pub extern "C" fn unshare(list: i64) -> i64 {
+    with(|state| grow_in(state, list, 0).unwrap_or(list))
+}
+
+fn grow_in(state: &mut State, list: i64, more: usize) -> Option<i64> {
+    let address = u64::try_from(list).ok()?;
+    let block = state.heap.block(address)?;
+    let element = element_of(state, block)?;
+    let at = usize::try_from(block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
+        .ok()?;
+    let stride = element.words();
+    let count = usize::try_from(*block.get(2)?).ok()?;
+    let room = usize::try_from(*block.get(3)?).ok()?;
+    let shared = block.first() != Some(&1);
+    let address = if shared || count + more > room {
+        let kept = items(block, stride).to_vec();
+        let grown =
+            build(state, at, stride, &kept, if count + more > room { 2 * (count + more) } else { room });
+        if shared {
+            release(state, address);
         } else {
-            packed.words.as_ptr().cast_mut()
+            state.heap.discard(address);
+        }
+        u64::try_from(state.heap.insert(grown)).ok()?
+    } else {
+        address
+    };
+    if more > 0 {
+        let block = state.heap.block_mut(address)?;
+        let start = LIST_HEADER_WORDS + count * stride;
+        block.get_mut(start..start + more * stride)?.fill(0);
+        *block.get_mut(2)? = u64::try_from(count + more).ok()?;
+    }
+    i64::try_from(address).ok()
+}
+
+/// A list's block as the interpreter holds it: a packed list.
+pub(super) fn read(state: &State, block: &[u64]) -> Value {
+    let Some(element) = element_of(state, block) else { return Value::None };
+    let words = items(block, element.words()).to_vec();
+    Value::Packed(Rc::new(Packed::new(element, words)))
+}
+
+/// A new list owned once with a temporary's items, failing like the interpreter when the
+/// temporary isn't a list of the kind of item expected.
+pub extern "C" fn from_value(value: i64, element: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let wrong = |value: &Value| {
+            Diagnostic::new(
+                format!("expected a list here, but this is a {}", value.type_name()),
+                span(start, end),
+            )
         };
-        Ok(i64::try_from(words.addr()).unwrap_or(0))
-    })
-}
-
-/// How many items a name's packed list has.
-pub extern "C" fn length(name: i64, element: i64) -> i64 {
-    attempt(|state: &mut State| {
-        let packed = packed_mut(state, name, Some(element)).ok_or_else(not_packed)?;
-        Ok(i64::try_from(packed.len()).unwrap_or(0))
-    })
-}
-
-/// Adds an item's worth of zeroed memory to the end of a name's packed list, for native
-/// code to fill, and gives back where it starts.
-pub extern "C" fn push(name: i64, element: i64) -> i64 {
-    attempt(|state: &mut State| {
-        let packed = Rc::make_mut(packed_mut(state, name, Some(element)).ok_or_else(not_packed)?);
-        let start = packed.words.len();
-        packed.words.resize(start + packed.element.words(), 0);
-        let item = packed.words.get_mut(start..).map_or(std::ptr::null_mut(), <[u64]>::as_mut_ptr);
-        Ok(i64::try_from(item.addr()).unwrap_or(0))
+        let value =
+            usize::try_from(value).ok().and_then(|at| state.temps.get(at)).cloned().unwrap_or(Value::Unit);
+        let (at, element) = self::element(state, element).ok_or_else(|| wrong(&value))?;
+        let packed = match &value {
+            Value::Packed(packed) if packed.element == element => Rc::clone(packed),
+            Value::List(items) => Rc::new(Packed::pack(&element, items).ok_or_else(|| wrong(&value))?),
+            _ => return Err(wrong(&value)),
+        };
+        let block = build(state, at, packed.stride, &packed.words, 0);
+        Ok(state.heap.insert(block))
     })
 }
 
@@ -83,9 +153,4 @@ pub extern "C" fn out_of_range(at: i64, len: i64, start: i64, end: i64) {
     attempt(|_: &mut State| -> Result<(), Diagnostic> {
         Err(Diagnostic::new(format!("index {at} is out of range for length {len}"), span(start, end)))
     });
-}
-
-fn not_packed() -> Diagnostic {
-    Diagnostic::new("the JIT expected a packed list here", fennec_syntax::Span::default())
-        .with_help("this is a bug in Fennec; run without `--jit` and please report it")
 }

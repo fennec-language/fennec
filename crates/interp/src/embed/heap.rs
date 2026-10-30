@@ -60,6 +60,9 @@ pub const IMMORTAL: u64 = 1 << 48;
 /// How many freed blocks of each size are kept for reuse.
 const SPARE_BLOCKS: usize = 1 << 16;
 
+/// The biggest block, in words, kept for reuse.
+const SPARE_WORDS: usize = 256;
+
 impl Heap {
     /// A heap holding the blocks that live for the whole run.
     pub(crate) fn new(statics: Vec<Box<[u64]>>) -> Heap {
@@ -90,9 +93,13 @@ impl Heap {
         }
     }
 
-    /// Keeps a freed block for reuse.
+    /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
+    /// rare enough to give back.
     fn recycle(&mut self, block: Box<[u64]>) {
         let words = block.len();
+        if words > SPARE_WORDS {
+            return;
+        }
         if self.spare.len() <= words {
             self.spare.resize_with(words + 1, Vec::new);
         }
@@ -348,6 +355,9 @@ pub(super) fn read_block(state: &mut State, address: u64) -> Value {
     if super::dicts::is_dict(state, &block) {
         return super::dicts::read(state, &block);
     }
+    if super::lists::element_of(state, &block).is_some() {
+        return super::lists::read(state, &block);
+    }
     let Some(shape) = shape_of(state, &block) else { return Value::None };
     let mut words = block.get(HEADER_WORDS..).unwrap_or_default().iter();
     read(state, &shape, &mut words)
@@ -473,6 +483,11 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
     }
     if super::dicts::is_dict(state, left) {
         return super::dicts::equal(state, left, right);
+    }
+    if let Some(element) = super::lists::element_of(state, left) {
+        // Items compare bit by bit, as the interpreter compares numbers and plain structs.
+        let stride = element.words();
+        return super::lists::items(left, stride) == super::lists::items(right, stride);
     }
     if left.len() != right.len() {
         return false;

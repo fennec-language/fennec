@@ -109,6 +109,10 @@ struct State {
     leaving: Option<crate::exec::Flow>,
     /// The frames of the native functions that called the running one.
     callers: Vec<Frame>,
+    /// Emptied frames, kept to reuse for later calls.
+    spare_frames: Vec<Frame>,
+    /// Names' text by their number, shared by every frame that declares them.
+    shared_names: Vec<Option<Rc<str>>>,
     heap: heap::Heap,
     failure: Option<Diagnostic>,
 }
@@ -157,6 +161,8 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
         name_ids,
         path: None,
         callers: Vec::new(),
+        spare_frames: Vec::new(),
+        shared_names: Vec::new(),
         heap: heap::Heap::new(std::mem::take(&mut tables.statics)),
         tables,
         failure: None,
@@ -253,6 +259,22 @@ impl State {
         usize::try_from(id).ok().and_then(|id| tables.names.get(id)).map_or("", String::as_str)
     }
 
+    /// A name's text from the table, shared rather than copied.
+    fn shared_name(&mut self, id: i64) -> Rc<str> {
+        let at = usize::try_from(id).unwrap_or(0);
+        if let Some(Some(name)) = self.shared_names.get(at) {
+            return Rc::clone(name);
+        }
+        let name: Rc<str> = Rc::from(Self::name_ref(&self.tables, id));
+        if self.shared_names.len() <= at {
+            self.shared_names.resize(at + 1, None);
+        }
+        if let Some(slot) = self.shared_names.get_mut(at) {
+            *slot = Some(Rc::clone(&name));
+        }
+        name
+    }
+
     fn name(&self, id: i64) -> String {
         usize::try_from(id).ok().and_then(|id| self.tables.names.get(id)).cloned().unwrap_or_default()
     }
@@ -260,12 +282,13 @@ impl State {
 
 /// Values of the names a native function holds.
 pub mod names {
-    use super::{Frame, State, Value, with};
+    use super::{Frame, Value, with};
 
     /// Starts a native function's frame.
     pub extern "C" fn enter() {
         with(|state| {
-            let frame = std::mem::replace(&mut state.interp.frame, Frame::new());
+            let fresh = state.spare_frames.pop().unwrap_or_else(Frame::new);
+            let frame = std::mem::replace(&mut state.interp.frame, fresh);
             state.callers.push(frame);
         });
     }
@@ -273,10 +296,17 @@ pub mod names {
     pub extern "C" fn leave() {
         with(|state| {
             if let Some(frame) = state.callers.pop() {
-                state.interp.frame = frame;
+                let mut done = std::mem::replace(&mut state.interp.frame, frame);
+                if state.spare_frames.len() < SPARE_FRAMES {
+                    done.reset();
+                    state.spare_frames.push(done);
+                }
             }
         });
     }
+
+    /// How many emptied frames are kept for reuse.
+    const SPARE_FRAMES: usize = 64;
 
     pub extern "C" fn push_scope() {
         with(|state| state.interp.frame.push());
@@ -290,8 +320,8 @@ pub mod names {
     pub extern "C" fn declare(name: i64, value: i64, is_mut: i8) {
         with(|state| {
             let value = state.take_raw(value);
-            let name = State::name_ref(&state.tables, name);
-            state.interp.frame.declare(name, value, is_mut != 0);
+            let name = state.shared_name(name);
+            state.interp.frame.declare_shared(name, value, is_mut != 0);
         });
     }
 
@@ -299,8 +329,8 @@ pub mod names {
     pub extern "C" fn assign(name: i64, value: i64) {
         with(|state| {
             let value = state.take_raw(value);
-            let name = State::name_ref(&state.tables, name);
-            if let Some(binding) = state.interp.frame.get_mut(name) {
+            let name = state.shared_name(name);
+            if let Some(binding) = state.interp.frame.get_mut(&name) {
                 binding.value = value;
             }
         });
@@ -309,8 +339,8 @@ pub mod names {
     /// A temporary with a copy of a name's value. Copies share memory until one changes.
     pub extern "C" fn get(name: i64) -> i64 {
         with(|state| {
-            let name = State::name_ref(&state.tables, name);
-            let value = state.interp.frame.get(name).map_or(Value::Unit, |binding| binding.value.clone());
+            let name = state.shared_name(name);
+            let value = state.interp.frame.get(&name).map_or(Value::Unit, |binding| binding.value.clone());
             state.push(value)
         })
     }
@@ -318,11 +348,11 @@ pub mod names {
     /// Moves a name's value into a temporary, for a `mut` argument that's put back after.
     pub extern "C" fn take(name: i64) -> i64 {
         with(|state| {
-            let name = State::name_ref(&state.tables, name);
+            let name = state.shared_name(name);
             let value = state
                 .interp
                 .frame
-                .get_mut(name)
+                .get_mut(&name)
                 .map_or(Value::Unit, |binding| std::mem::replace(&mut binding.value, Value::Unit));
             state.push(value)
         })
@@ -332,14 +362,14 @@ pub mod names {
     /// caller's frame. Runs just before the function leaves.
     pub extern "C" fn put_back(caller_name: i64, param: i64) {
         with(|state| {
-            let param = State::name_ref(&state.tables, param);
-            let caller_name = State::name_ref(&state.tables, caller_name);
+            let param = state.shared_name(param);
+            let caller_name = state.shared_name(caller_name);
             let value = state
                 .interp
                 .frame
-                .get_mut(param)
+                .get_mut(&param)
                 .map_or(Value::Unit, |binding| std::mem::replace(&mut binding.value, Value::Unit));
-            if let Some(binding) = state.callers.last_mut().and_then(|frame| frame.get_mut(caller_name)) {
+            if let Some(binding) = state.callers.last_mut().and_then(|frame| frame.get_mut(&caller_name)) {
                 binding.value = value;
             }
         });

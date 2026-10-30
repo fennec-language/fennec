@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use fennec_check::{Signatures, Type};
 use fennec_syntax::{Expr, TypeDef, TypeExpr};
 
-use crate::types::{Cap, Ty, Word};
+use crate::types::{Cap, ListItem, Ty, Word};
 
 /// The size of every field that isn't a nested struct: an int, a float, or a bool.
 pub(crate) const WORD: u32 = 8;
@@ -306,6 +306,7 @@ impl Layouts {
             Type::Unit => Ty::Unit,
             Type::Str => Ty::Str,
             Type::Dict(key, value) => dict_ty(key, value),
+            Type::List(item) => ListItem::of(self.ty(item)).map_or(Ty::Obj, Ty::List),
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
                 (Some(cap), _) => Ty::Cap(cap),
                 (None, Some(id)) if self.get(id).is_some_and(|layout| layout.boxed) => Ty::Boxed(id),

@@ -93,15 +93,14 @@ pub(crate) enum Helper {
     StrPrint,
     Sin,
     Cos,
-    Pack,
-    Zeroed,
-    Address,
-    Length,
-    Push,
+    ListNew,
+    ListGrow,
+    ListUnshare,
+    ListFromValue,
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 93] = [
+pub(crate) const ALL: [Helper; 92] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -189,11 +188,10 @@ pub(crate) const ALL: [Helper; 93] = [
     Helper::StrPrint,
     Helper::Sin,
     Helper::Cos,
-    Helper::Pack,
-    Helper::Zeroed,
-    Helper::Address,
-    Helper::Length,
-    Helper::Push,
+    Helper::ListNew,
+    Helper::ListGrow,
+    Helper::ListUnshare,
+    Helper::ListFromValue,
     Helper::OutOfRange,
 ];
 
@@ -281,11 +279,10 @@ impl Helper {
             Helper::MakeInstance => shape("fennec_make_instance", &[I64, I64, I64, I64], &[I64]),
             Helper::Sin => shape("fennec_sin", &[F64], &[F64]),
             Helper::Cos => shape("fennec_cos", &[F64], &[F64]),
-            Helper::Pack => shape("fennec_pack", &[I64, I64], &[I8]),
-            Helper::Zeroed => shape("fennec_zeroed", &[I64, I64], &[I64]),
-            Helper::Address => shape("fennec_address", &[I64, I64, I8], &[I64]),
-            Helper::Length => shape("fennec_length", &[I64, I64], &[I64]),
-            Helper::Push => shape("fennec_push", &[I64, I64], &[I64]),
+            Helper::ListNew => shape("fennec_list_new", &[I64, I64], &[I64]),
+            Helper::ListGrow => shape("fennec_list_grow", &[I64], &[I64]),
+            Helper::ListUnshare => shape("fennec_list_unshare", &[I64], &[I64]),
+            Helper::ListFromValue => shape("fennec_list_from_value", &[I64, I64, I64, I64], &[I64]),
             Helper::OutOfRange => shape("fennec_out_of_range", &[I64, I64, I64, I64], &[]),
             // The helpers for boxed values and strings, in `data_shape`.
             _ => shape("", &[], &[]),
@@ -304,6 +301,10 @@ impl Helper {
                 | Helper::StrConcat
                 | Helper::StrAppend
                 | Helper::StrCharAt
+                | Helper::ListNew
+                | Helper::ListGrow
+                | Helper::ListUnshare
+                | Helper::OutOfRange
                 | Helper::DictNew
                 | Helper::DictSet
                 | Helper::DictMissing
@@ -332,9 +333,10 @@ impl Helper {
                     | Helper::Count
                     | Helper::TypeOf
                     | Helper::ToInt
-                    | Helper::Address
-                    | Helper::Length
-                    | Helper::Push
+                    | Helper::ListNew
+                    | Helper::ListGrow
+                    | Helper::ListUnshare
+                    | Helper::ListFromValue
                     | Helper::CaseOf
                     | Helper::Alloc
                     | Helper::Unshare
@@ -373,9 +375,7 @@ impl Helper {
                 | Helper::StrSlice
                 | Helper::StrPrint
                 | Helper::DictMissing
-                | Helper::Address
-                | Helper::Length
-                | Helper::Push
+                | Helper::ListFromValue
                 | Helper::OutOfRange
                 | Helper::MainResult
                 | Helper::Unpack
@@ -464,11 +464,10 @@ impl Helper {
             Helper::MakeInstance => objects::make_instance as *const u8,
             Helper::Sin => checks::sin as *const u8,
             Helper::Cos => checks::cos as *const u8,
-            Helper::Pack => lists::pack as *const u8,
-            Helper::Zeroed => lists::zeroed as *const u8,
-            Helper::Address => lists::address as *const u8,
-            Helper::Length => lists::length as *const u8,
-            Helper::Push => lists::push as *const u8,
+            Helper::ListNew => lists::new as *const u8,
+            Helper::ListGrow => lists::grow as *const u8,
+            Helper::ListUnshare => lists::unshare as *const u8,
+            Helper::ListFromValue => lists::from_value as *const u8,
             Helper::OutOfRange => lists::out_of_range as *const u8,
             // The helpers for boxed values and strings, in `data_address`.
             _ => std::ptr::null(),

@@ -7,12 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// The runtime library executables link against, which `fennec build` expects next to
-/// itself. `cargo test` doesn't build it, so this does when it's missing.
+/// itself. `cargo test` doesn't build it, so this does, every time: an old one would be
+/// missing what the interpreter has learned since. Cargo does nothing when it's current.
 fn ensure_runtime() -> std::io::Result<bool> {
-    let fennec = PathBuf::from(env!("CARGO_BIN_EXE_fennec"));
-    if fennec.with_file_name("libfennec_runtime.a").is_file() {
-        return Ok(true);
-    }
     let profile = if cfg!(debug_assertions) { None } else { Some("--release") };
     let built = Command::new(env!("CARGO"))
         .args(["build", "--quiet", "-p", "fennec-runtime"])

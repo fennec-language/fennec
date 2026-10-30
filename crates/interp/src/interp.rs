@@ -33,8 +33,8 @@ pub(crate) struct TypeInfo {
     pub(crate) methods: HashMap<String, Rc<Callable>>,
 }
 
-/// The built-in types the standard library's code may give methods to with `extend`.
-const BUILT_IN_OWNERS: [&str; 8] = ["str", "bytes", "int", "float", "bool", "list", "set", "dict"];
+/// The built-in types the standard library's code gives methods to with `extend`.
+const BUILT_IN_OWNERS: [&str; 1] = ["str"];
 
 /// A running Fennec program: its declarations, the current call's names, and its output.
 pub struct Interp<'out> {
@@ -206,13 +206,6 @@ impl<'out> Interp<'out> {
     pub(crate) fn built_in_method(&self, value: &Value, method: &str) -> Option<Rc<Callable>> {
         let owner = match value {
             Value::Str(_) => "str",
-            Value::Bytes(_) => "bytes",
-            Value::Int(_) => "int",
-            Value::Float(_) => "float",
-            Value::Bool(_) => "bool",
-            Value::List(_) | Value::Packed(_) => "list",
-            Value::Set(_) => "set",
-            Value::Dict(_) => "dict",
             _ => return None,
         };
         self.built_in_methods.get(owner)?.get(method).cloned()

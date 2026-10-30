@@ -1,0 +1,7 @@
+def first(items: list[int]):
+    if len(items) == 0:
+        fail "empty"
+    items[0]
+
+def main(stdout: Stdout):
+    stdout.print(first([1, 2])[0])

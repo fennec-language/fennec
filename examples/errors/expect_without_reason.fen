@@ -1,0 +1,7 @@
+def parse(text: str):
+    if not text.isdigit():
+        fail "not a number"
+    int(text)
+
+def main(stdout: Stdout):
+    stdout.print(parse("12").expect(" "))

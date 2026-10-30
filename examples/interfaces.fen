@@ -1,0 +1,41 @@
+interface Shape:
+    def area(self) -> float
+    def name(self) -> str
+
+interface Marker:
+    pass
+
+struct Circle:
+    radius: float
+
+    def area(self):
+        PI * self.radius * self.radius  # Circle is a Shape because it has area() and name()
+
+    def name(self):
+        "circle"
+
+struct Square:
+    side: float
+
+    def area(self):
+        self.side * self.side
+
+    def name(self):
+        "square"
+
+def total_area[T: Shape](shapes: list[T]):
+    sum(shape.area() for shape in shapes)
+
+def first[T, U](pairs: list[(T, U)]) -> T:
+    item, _ = pairs[0]
+    item
+
+def main(stdout: Stdout):
+    stdout.print(f"{total_area([Circle(radius=1.0), Circle(radius=2.0)]):.2f}")
+    stdout.print(total_area([Square(side=2.0), Square(side=3.0)]))
+    stdout.print([shape.name() for shape in [Square(side=1.0)]], first([(1, "one"), (2, "two")]))
+    numbers = [
+        1,
+        2,
+    ]
+    stdout.print(numbers)

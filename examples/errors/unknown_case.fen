@@ -1,0 +1,6 @@
+enum Light:
+    Red
+    Green
+
+def main(stdout: Stdout):
+    stdout.print(.Purple)

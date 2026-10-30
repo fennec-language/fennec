@@ -1,0 +1,13 @@
+Light.Red Light.Red Light.Green
+[Coin.Heads, Coin.Tails, Light.Green]
+True False False True True
+Ok(Score(value=5))
+Err(InvalidValue(message="Score.value breaks its `where` rule"))
+inside
+closing the door
+outside
+None hi, Kit
+Ok(12) Err("twelve isn't a number")
+True False False True
+None kit
+[] 0 save.txt

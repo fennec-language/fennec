@@ -405,7 +405,11 @@ fn fstring_parts(parts: Vec<FPart>) -> Result<Vec<FStrPart>, Diagnostic> {
                     )
                     .with_help("put an expression inside, or write `{{` for a literal brace"));
                 }
-                let mut parser = Parser::new(lex(&source, offset)?);
+                // Lexed on its own, a leading space would read as indentation.
+                let trimmed = source.trim_start();
+                let skipped = source.len() - trimmed.len();
+                let offset = Span::new(skipped, skipped).shifted(offset).start;
+                let mut parser = Parser::new(lex(trimmed, offset)?);
                 let expr = parser.expr()?;
                 parser.eat(&Tok::Newline);
                 if !parser.at(&Tok::Eof) {

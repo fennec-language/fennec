@@ -61,17 +61,32 @@ fn instance_repr(instance: &Instance) -> String {
     format!("{name}({})", fields.join(", "))
 }
 
-/// Floats print like Python's: always with a decimal point, as short as round-trips.
+/// Floats print like Python's: as short as round-trips, always with a decimal point or an
+/// exponent, and with an exponent when they're very large or very small.
 #[expect(clippy::float_cmp, reason = "checking for a whole number is an exact comparison")]
 pub(crate) fn float(x: f64) -> String {
     if x.is_nan() {
         "nan".to_owned()
     } else if x.is_infinite() {
         if x > 0.0 { "inf".to_owned() } else { "-inf".to_owned() }
-    } else if x == x.trunc() && x.abs() < 1e16 {
+    } else if x != 0.0 && !(1e-4..1e16).contains(&x.abs()) {
+        scientific(x)
+    } else if x == x.trunc() {
         format!("{x:.1}")
     } else {
         format!("{x}")
+    }
+}
+
+/// `1.5e+17` and `1e-05`, as Python writes them.
+fn scientific(x: f64) -> String {
+    let text = format!("{x:e}");
+    match text.split_once('e') {
+        Some((mantissa, exponent)) => {
+            let (sign, digits) = exponent.strip_prefix('-').map_or(("+", exponent), |digits| ("-", digits));
+            format!("{mantissa}e{sign}{digits:0>2}")
+        }
+        None => text,
     }
 }
 

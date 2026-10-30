@@ -1,0 +1,7 @@
+error: this string never ends
+ --> examples/errors/unclosed_string.fen:2:18
+  |
+2 |     stdout.print("Hello, Fennec)
+  |                  ^
+  |
+  = help: close it with `"` on the same line

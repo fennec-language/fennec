@@ -1,0 +1,7 @@
+error: the dict has no key "vex"
+ --> examples/errors/missing_dict_key.fen:3:18
+  |
+3 |     stdout.print(hp["vex"])
+  |                  ^^^^^^^^^
+  |
+  = help: use `.get(key)`, which gives None instead

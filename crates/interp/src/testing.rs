@@ -205,6 +205,7 @@ fn simpler(value: &Value) -> Vec<Value> {
         Value::Int(0) | Value::Bool(false) => Vec::new(),
         Value::Int(n) => vec![Value::Int(0), Value::Int(n / 2), Value::Int(n - n.signum())],
         Value::Float(x) if *x == 0.0 => Vec::new(),
+        Value::Float(x) if x.fract() == 0.0 => vec![Value::Float(0.0)],
         Value::Float(x) => vec![Value::Float(0.0), Value::Float(x.trunc())],
         Value::Bool(true) => vec![Value::Bool(false)],
         Value::Str(text) if text.is_empty() => Vec::new(),
@@ -262,5 +263,65 @@ impl Rng {
             2 => -1,
             _ => i64::try_from(self.below(2001)).unwrap_or(0) - 1000,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fennec_syntax::{Diagnostic, Span};
+
+    use super::{Interp, Rng, SHRINK_ATTEMPTS, Value, simpler};
+
+    fn ints(values: &[i64]) -> Vec<Value> {
+        values.iter().map(|n| Value::Int(*n)).collect()
+    }
+
+    #[test]
+    fn simpler_values_head_toward_zero_and_empty() {
+        assert_eq!(simpler(&Value::Int(0)), []);
+        assert_eq!(simpler(&Value::Int(-9)), ints(&[0, -4, -8]));
+        assert_eq!(simpler(&Value::Int(9)), ints(&[0, 4, 8]));
+        assert_eq!(simpler(&Value::Float(0.0)), []);
+        assert_eq!(simpler(&Value::Float(3.0)), [Value::Float(0.0)]);
+        assert_eq!(simpler(&Value::Float(-2.5)), [Value::Float(0.0), Value::Float(-2.0)]);
+        assert_eq!(simpler(&Value::Bool(false)), []);
+        assert_eq!(simpler(&Value::Bool(true)), [Value::Bool(false)]);
+        assert_eq!(simpler(&Value::str("")), []);
+        assert_eq!(simpler(&Value::str("fox")), [Value::str(""), Value::str("fo")]);
+        assert_eq!(simpler(&Value::list(Vec::new())), []);
+        let shorter = [
+            Value::list(Vec::new()),
+            Value::list(ints(&[2, 3])),
+            Value::list(ints(&[1, 3])),
+            Value::list(ints(&[1, 2])),
+        ];
+        assert_eq!(simpler(&Value::list(ints(&[1, 2, 3]))), shorter);
+        assert_eq!(simpler(&Value::None), []);
+    }
+
+    #[test]
+    fn ints_are_small_and_often_edge_cases() {
+        let mut rng = Rng::seeded("ints");
+        let draws: Vec<i64> = (0..2000).map(|_| rng.int()).collect();
+        assert!(draws.iter().all(|n| (-1000..=1000).contains(n)));
+        assert!(draws.iter().any(|n| *n < -900) && draws.iter().any(|n| *n > 900));
+        for edge in [0, 1, -1] {
+            assert!(draws.iter().filter(|n| **n == edge).count() > 100, "too few {edge}s");
+        }
+    }
+
+    #[test]
+    fn shrinking_gives_up_after_its_attempts() {
+        let source = "test \"short\" for text: str:\n    assert len(text) < 1\n";
+        let module = fennec_syntax::parse(source).unwrap();
+        let mut out = std::io::sink();
+        let mut interp = Interp::new(&mut out).unwrap();
+        interp.load(&module).unwrap();
+        let test = interp.tests.first().cloned().unwrap();
+        let long = vec![("text".to_owned(), Value::str(&"a".repeat(300)))];
+        let (inputs, _) = interp.shrink(&test, long, Diagnostic::new("failed", Span::default()));
+        // Each step tries "" (which passes) and then one character shorter (which fails).
+        let steps = SHRINK_ATTEMPTS / 2;
+        assert_eq!(inputs, [("text".to_owned(), Value::str(&"a".repeat(300 - steps)))]);
     }
 }

@@ -38,9 +38,9 @@ impl Interp<'_> {
                 _ => Ok(None),
             },
             Pattern::Variant { name, dotted, args } => {
-                let target = match (value, dotted) {
-                    (Value::Err(error), false) => error.as_ref(),
-                    (Value::Err(_), true) => return Ok(None),
+                // A dotted case never looks inside an error.
+                let target = match value {
+                    Value::Err(error) if !dotted => error.as_ref(),
                     _ => success,
                 };
                 let Value::Instance(instance) = target else { return Ok(None) };

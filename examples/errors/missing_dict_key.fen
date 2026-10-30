@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    hp = {"ash": 70, "kit": 40}
+    stdout.print(hp["vex"])

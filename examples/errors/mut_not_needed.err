@@ -1,0 +1,5 @@
+error: `total` doesn't change `scores`, so it shouldn't be passed with `mut`
+ --> examples/errors/mut_not_needed.fen:6:28
+  |
+6 |     stdout.print(total(mut scores))
+  |                            ^^^^^^

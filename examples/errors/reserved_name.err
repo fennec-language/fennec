@@ -1,0 +1,7 @@
+error: `unsafe` is part of Fennec's design but isn't supported yet
+ --> examples/errors/reserved_name.fen:1:11
+  |
+1 | def greet(unsafe: str):
+  |           ^^^^^^
+  |
+  = help: see what's coming at https://seashell86.github.io/fennec/roadmap/

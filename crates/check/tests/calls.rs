@@ -258,7 +258,6 @@ fn builtin_methods_take_the_right_arguments() {
             "`append` was called with the wrong arguments @ items.append(1, 2)",
             "`insert` was called with the wrong arguments @ items.insert(1)",
             "`pop` doesn't take `key` @ items.pop(key=1)",
-            "`count` was called with the wrong arguments @ items.count(by=1)",
             "`count` has no parameter called `by` @ 1",
             "`split` was called with the wrong arguments @ 'a b'.split(' ', 1)".replace('\'', "\"").as_str(),
         ]

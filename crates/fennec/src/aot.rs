@@ -22,8 +22,8 @@ pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
         eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run --jit`");
         return ExitCode::FAILURE;
     }
-    let Some(program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    if !crate::run::check(&program) {
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
+    if !crate::run::check(&mut program) {
         return ExitCode::FAILURE;
     }
     let started = Instant::now();

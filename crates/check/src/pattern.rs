@@ -9,8 +9,17 @@ use crate::program::TypeKind;
 use crate::types::{Type, a};
 
 impl FnCx<'_> {
-    pub(crate) fn match_expr(&mut self, subject: &Expr, arms: &[MatchArm], span: Span) -> Type {
+    /// A `match`. `wanted` is the type expected of its value, if any, which each case's
+    /// value is expected to have too.
+    pub(crate) fn match_expr(
+        &mut self,
+        subject: &Expr,
+        arms: &[MatchArm],
+        span: Span,
+        wanted: Option<Type>,
+    ) -> Type {
         let ty = self.expr(subject);
+        let outer = std::mem::replace(&mut self.tail, wanted);
         let before = self.snapshot();
         let mut paths = Vec::new();
         let mut values = Vec::new();
@@ -25,6 +34,7 @@ impl FnCx<'_> {
             }
             self.restore(&before);
         }
+        self.tail = outer;
         self.merge(&paths);
         self.check_cases(&ty, arms, subject.span);
         if values.is_empty() {

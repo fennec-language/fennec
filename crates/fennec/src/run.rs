@@ -8,11 +8,11 @@ use fennec_interp::Inputs;
 
 /// Runs the program at `path`, handing `main` the `arguments` and this process's input.
 pub(crate) fn run(path: &str, jit: bool, arguments: &[String]) -> ExitCode {
-    let Some(program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    let module = &program.module;
-    if !check(&program) {
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
+    if !check(&mut program) {
         return ExitCode::FAILURE;
     }
+    let module = &program.module;
     let mut out = BufWriter::new(std::io::stdout().lock());
     let inputs = || Inputs {
         program: path.to_owned(),
@@ -76,10 +76,10 @@ fn interpret(
     interp.run_program(module)
 }
 
-/// Type-checks a program before it runs, printing every problem found. Returns whether it
-/// passed.
-pub(crate) fn check(program: &fennec_kit::Program) -> bool {
-    match fennec_check::check(&program.module) {
+/// Type-checks a program before it runs, printing every problem found, and names the enum
+/// of each leading-dot case its expected type decided. Returns whether it passed.
+pub(crate) fn check(program: &mut fennec_kit::Program) -> bool {
+    match fennec_check::check_and_resolve(&mut program.module) {
         Ok(_) => true,
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));

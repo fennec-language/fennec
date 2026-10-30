@@ -79,6 +79,12 @@ pub(crate) struct FnCx<'c> {
     names: Vec<(Span, String, Type)>,
     /// The first type variable this check made.
     first_var: usize,
+    /// The type expected where the next expression checked is written, which decides the
+    /// enum of a leading-dot case: `.Int(value)` passed for an `ExprKind` is `ExprKind.Int`.
+    pub(crate) expecting: Option<Type>,
+    /// The type expected of the value of the block being checked: the return type for a
+    /// function's body, or what's expected of a `match` for its cases.
+    pub(crate) tail: Option<Type>,
 }
 
 impl<'c> FnCx<'c> {
@@ -102,6 +108,8 @@ impl<'c> FnCx<'c> {
             exprs: Vec::new(),
             names: Vec::new(),
             first_var,
+            expecting: None,
+            tail: None,
         }
     }
 
@@ -165,6 +173,7 @@ impl<'c> FnCx<'c> {
         for (param, written) in params.iter().zip(&def.params) {
             cx.declare_as(&param.name, param.ty.clone(), param.is_mut, Origin::Param, written.span);
         }
+        cx.tail = if cx.generator { None } else { cx.declared.clone() };
         let flow = cx.stmts(&def.body, true);
         // A body that always leaves early has an unknown value, which fits any type.
         if let (Some(declared), Some(StmtKind::Expr(last))) =
@@ -231,6 +240,13 @@ impl<'c> FnCx<'c> {
                 Type::Unknown
             }
         }
+    }
+
+    /// The type a written type means, or `None` if it means nothing, which is reported
+    /// where it's checked.
+    pub(crate) fn written_type(&self, written: &fennec_syntax::TypeExpr) -> Option<Type> {
+        let names: Vec<String> = self.generics.iter().map(|generic| generic.name.clone()).collect();
+        self.checker.program.resolve_in(written, &names).ok()
     }
 
     /// Checks a value returned from a function whose return type is written.

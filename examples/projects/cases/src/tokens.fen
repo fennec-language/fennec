@@ -1,0 +1,16 @@
+## The words of a tiny language. `tree.fen` has cases called `Int` and `Name` too, but
+## this file doesn't import it, so `.Name(word)` here can only be a `Tok`.
+
+enum Tok:
+    Int(value: int)
+    Name(text: str)
+
+def tokens(source: str) -> list[Tok]:
+    mut found = []
+    for word in source.split():
+        if word.isdigit():
+            found.append(Tok.Int(int(word) else 0))
+        else:
+            tok = .Name(word)
+            found.append(tok)
+    found

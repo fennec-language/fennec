@@ -4,8 +4,8 @@
 use std::process::ExitCode;
 
 pub(crate) fn fallbacks(path: &str) -> ExitCode {
-    let Some(program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    if !crate::run::check(&program) {
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
+    if !crate::run::check(&mut program) {
         return ExitCode::FAILURE;
     }
     let mut notes = match fennec_jit::fallbacks(&program.module) {

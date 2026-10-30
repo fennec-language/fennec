@@ -22,13 +22,16 @@ pub(crate) enum Member {
 impl FnCx<'_> {
     /// An expression's type, recorded for the typed tree.
     pub(crate) fn expr(&mut self, expr: &Expr) -> Type {
-        let ty = self.expr_kind(expr);
+        let ty = match self.expecting.take() {
+            Some(expected) => self.expected_kind(expr, &expected),
+            None => self.expr_kind(expr),
+        };
         let ty = self.checker.settled(&ty);
         self.record(expr.span, &ty);
         ty
     }
 
-    fn expr_kind(&mut self, expr: &Expr) -> Type {
+    pub(crate) fn expr_kind(&mut self, expr: &Expr) -> Type {
         let span = expr.span;
         match &expr.kind {
             ExprKind::Int(_) => Type::Int,
@@ -53,6 +56,10 @@ impl FnCx<'_> {
                 self.condition(rhs, op.symbol());
                 self.restore(&before);
                 Type::Bool
+            }
+            ExprKind::Binary { op: op @ (BinOp::Eq | BinOp::NotEq), lhs, rhs } => {
+                let (left, right) = self.compared(lhs, rhs);
+                self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Binary { op, lhs, rhs } => {
                 let (left, right) = (self.expr(lhs), self.expr(rhs));
@@ -89,7 +96,7 @@ impl FnCx<'_> {
                 self.slice(object, start.as_deref(), end.as_deref(), span)
             }
             ExprKind::Lambda { params, body } => self.lambda(params, body, &[], span),
-            ExprKind::Match { subject, arms } => self.match_expr(subject, arms, span),
+            ExprKind::Match { subject, arms } => self.match_expr(subject, arms, span, None),
         }
     }
 

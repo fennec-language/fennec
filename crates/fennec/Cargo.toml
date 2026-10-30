@@ -22,6 +22,7 @@ fennec-fmt.workspace = true
 fennec-interp.workspace = true
 fennec-jit.workspace = true
 fennec-kit.workspace = true
+fennec-lsp.workspace = true
 fennec-syntax.workspace = true
 
 [lints]

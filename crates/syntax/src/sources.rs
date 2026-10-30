@@ -87,6 +87,16 @@ impl Sources {
             .collect()
     }
 
+    /// The file a span is in: its path, its text, and the offset its spans start at.
+    pub fn file_at(&self, span: Span) -> Option<(&str, &str, u32)> {
+        self.file(span).map(|file| (file.path.as_str(), file.text.as_str(), file.base))
+    }
+
+    /// A file's text and the offset its spans start at, by its path.
+    pub fn by_path(&self, path: &str) -> Option<(&str, u32)> {
+        self.files.iter().find(|file| file.path == path).map(|file| (file.text.as_str(), file.base))
+    }
+
     fn file(&self, span: Span) -> Option<&File> {
         self.files.iter().rev().find(|file| file.base <= span.start && span.start <= file.end())
     }

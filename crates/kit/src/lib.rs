@@ -11,9 +11,10 @@ mod manifest;
 mod scope;
 mod starter;
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-use fennec_syntax::{Module, Sources};
+use fennec_syntax::{Diagnostic, Module, Sources};
 
 pub use manifest::{Manifest, valid_name};
 pub use starter::create;
@@ -40,5 +41,45 @@ pub enum Entry {
 /// Loads a program from a `.fen` file, or from a kit's folder or any folder inside it.
 /// `shown_as` is how messages name `path`. Errors come back rendered, ready to print.
 pub fn load(path: &Path, shown_as: &str, entry: Entry) -> Result<Program, String> {
-    if path.is_dir() { load::kit(path, shown_as, entry) } else { load::file(path, shown_as) }
+    load_with(path, shown_as, entry, &Overlay::new()).map_err(|problems| problems.render())
+}
+
+/// Text to read in place of files on disk, by path: an editor's unsaved changes. A path is
+/// matched exactly as loading builds it, from the folder it's given.
+pub type Overlay = HashMap<PathBuf, String>;
+
+/// Like `load`, reading the files in `overlay` from it rather than from disk, and giving
+/// back what went wrong as diagnostics rather than rendered.
+pub fn load_with(path: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -> Result<Program, Problems> {
+    if path.is_dir() {
+        load::kit(path, shown_as, entry, overlay)
+    } else {
+        load::file(path, shown_as, overlay)
+    }
+}
+
+/// Why a program couldn't be loaded.
+#[derive(Clone, Debug, Default)]
+pub struct Problems {
+    /// The files read before the problems were found.
+    pub sources: Sources,
+    /// Problems in those files, like a parse error or an import of nothing.
+    pub diagnostics: Vec<Diagnostic>,
+    /// Problems with no place in a file, like a missing `kit.toml`, already rendered.
+    pub unplaced: Vec<String>,
+}
+
+impl Problems {
+    fn unplaced(message: String) -> Self {
+        Problems { unplaced: vec![message], ..Problems::default() }
+    }
+
+    /// Every problem, rendered, ready to print.
+    pub fn render(&self) -> String {
+        if self.unplaced.is_empty() {
+            self.sources.render_all(&self.diagnostics)
+        } else {
+            self.unplaced.concat()
+        }
+    }
 }

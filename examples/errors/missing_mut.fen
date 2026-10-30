@@ -1,0 +1,6 @@
+def apply_damage(mut health: int, amount: int):
+    health -= amount
+
+def main(stdout: Stdout):
+    mut health = 100
+    apply_damage(health, 10)

@@ -1,0 +1,7 @@
+error: `scores` isn't mut
+ --> examples/errors/list_not_mut.fen:3:5
+  |
+3 |     scores.append(4)
+  |     ^^^^^^
+  |
+  = help: declare it with `mut scores = ...` if it needs to change

@@ -1,0 +1,7 @@
+error: can't mix int and float in `+`
+ --> examples/errors/mixed_numbers.fen:3:18
+  |
+3 |     stdout.print(count + 2.5)
+  |                  ^^^^^^^^^^^
+  |
+  = help: convert one side with float(...) or int(...)

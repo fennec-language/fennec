@@ -8,7 +8,7 @@
 
 Fennec is a safe, compiled language for games and tools, designed so that the easy way to write something is also the readable way and the fast way, for people and for the AI they work with.
 
-> **Status: early design.** There is no compiler yet. The website describes the language as it's currently designed, and the syntax will change.
+> **Status: early design.** A first interpreter runs simple programs; most of the language described on the website isn't implemented yet, and the syntax will change.
 
 **Read more at [seashell86.github.io/fennec](https://seashell86.github.io/fennec/):**
 
@@ -35,11 +35,25 @@ alive = [enemy for enemy in world.enemies if enemy.health > 0]
 total_health = sum(enemy.health for enemy in alive)
 ```
 
+## Try it
+
+The first slice of the compiler runs real programs: functions, `if`/`elif`/`else`, loops, lists, comprehensions, f-strings, `mut`, and Fennec's error messages. It's a simple interpreter for now; the typed bytecode interpreter and native compilers come next.
+
+```bash
+cargo run -q -p fennec -- run examples/fizzbuzz.fen
+```
+
+Every program in [`examples/`](examples) is a test: it must print exactly its `.out` file, and every program in [`examples/errors/`](examples/errors) must fail with exactly its `.err` file.
+
 ## Repository layout
 
+- `crates/syntax`: the lexer (with Python-style indentation), parser and syntax tree.
+- `crates/interp`: the interpreter.
+- `crates/fennec`: the `fennec` command.
+- `examples/`: example programs, which double as the test suite.
 - `site/`: the website, built with [Astro](https://astro.build) and deployed to GitHub Pages on every push to `main`.
 
-To work on the site, from the repository root (Node's version is pinned in `.node-version` for fnm):
+The compiler has no dependencies beyond Rust's standard library, so it builds in seconds. To work on the site, from the repository root (Node's version is pinned in `.node-version` for fnm):
 
 ```bash
 npm --prefix site install

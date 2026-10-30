@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    scores = [1, 2, 3]
+    scores.append(4)

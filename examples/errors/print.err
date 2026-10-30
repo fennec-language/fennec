@@ -1,0 +1,7 @@
+error: `print` doesn't exist
+ --> examples/errors/print.fen:2:5
+  |
+2 |     print("hello")
+  |     ^^^^^
+  |
+  = help: there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`

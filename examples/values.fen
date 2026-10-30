@@ -1,0 +1,14 @@
+def add_bonus(mut scores: list[int], bonus: int):
+    for mut score in scores:
+        score += bonus
+
+def main(stdout: Stdout):
+    original = [1, 2, 3]
+    mut copy = original
+    copy.append(4)
+    stdout.print(original)
+    stdout.print(copy)
+
+    mut scores = [10, 20, 30]
+    add_bonus(mut scores, 5)
+    stdout.print(scores)

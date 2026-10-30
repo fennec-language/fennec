@@ -1,0 +1,99 @@
+//! Turning values into text: how `stdout.print` shows them, and f-string format specs like
+//! `{coins:,}` and `{health:.1f}`.
+
+use crate::value::Value;
+
+/// The text `stdout.print` and `str()` produce.
+pub(crate) fn display(value: &Value) -> String {
+    match value {
+        Value::Str(text) => text.to_string(),
+        other => repr(other),
+    }
+}
+
+/// The text a value shows inside a list: strings are quoted.
+pub(crate) fn repr(value: &Value) -> String {
+    match value {
+        Value::Unit => String::new(),
+        Value::None => "None".to_owned(),
+        Value::Bool(true) => "True".to_owned(),
+        Value::Bool(false) => "False".to_owned(),
+        Value::Int(n) => n.to_string(),
+        Value::Float(x) => float(*x),
+        Value::Str(text) => format!("{text:?}"),
+        Value::List(items) => format!("[{}]", items.iter().map(repr).collect::<Vec<_>>().join(", ")),
+        Value::Function(name) => format!("<function {name}>"),
+        Value::Builtin(name) => format!("<builtin {name}>"),
+        Value::Lambda(_) => "<function>".to_owned(),
+        Value::Stdout => "<stdout>".to_owned(),
+    }
+}
+
+/// Floats print like Python's: always with a decimal point, as short as round-trips.
+#[expect(
+    clippy::float_cmp,
+    reason = "checking for a whole number is an exact comparison"
+)]
+pub(crate) fn float(x: f64) -> String {
+    if x.is_nan() {
+        "nan".to_owned()
+    } else if x.is_infinite() {
+        if x > 0.0 {
+            "inf".to_owned()
+        } else {
+            "-inf".to_owned()
+        }
+    } else if x == x.trunc() && x.abs() < 1e16 {
+        format!("{x:.1}")
+    } else {
+        format!("{x}")
+    }
+}
+
+/// Applies an f-string format spec: an optional `,` for thousands separators, an optional
+/// `.N` precision, and an optional `f` or `d`.
+pub(crate) fn with_spec(value: &Value, spec: &str) -> Result<String, String> {
+    let (comma, rest) = spec.strip_prefix(',').map_or((false, spec), |rest| (true, rest));
+    let (precision, kind) = match rest.strip_prefix('.') {
+        Some(rest) => {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            let precision = digits
+                .parse::<usize>()
+                .map_err(|_| format!("`{spec}` needs a number after `.`"))?;
+            (Some(precision), rest.get(digits.len()..).unwrap_or(""))
+        }
+        None => (None, rest),
+    };
+    let text = match (value, kind, precision) {
+        (Value::Int(n), "" | "d", None) => n.to_string(),
+        (Value::Int(n), "" | "f", Some(places)) => format!("{:.places$}", crate::ops::to_float(*n)),
+        (Value::Float(x), "" | "f", Some(places)) => format!("{x:.places$}"),
+        (Value::Float(x), "" | "f", None) => float(*x),
+        (other, _, _) if spec.is_empty() => display(other),
+        (other, _, _) => {
+            return Err(format!(
+                "the format `{spec}` doesn't apply to a {}",
+                other.type_name()
+            ));
+        }
+    };
+    Ok(if comma { thousands(&text) } else { text })
+}
+
+fn thousands(number: &str) -> String {
+    let (sign, digits) = number.strip_prefix('-').map_or(("", number), |rest| ("-", rest));
+    let (whole, fraction) = digits
+        .split_once('.')
+        .map_or((digits, None), |(whole, fraction)| (whole, Some(fraction)));
+    let mut grouped = String::new();
+    for (at, c) in whole.chars().enumerate() {
+        if at > 0 && (whole.len() - at) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    match fraction {
+        Some(fraction) => format!("{sign}{grouped}.{fraction}"),
+        None => format!("{sign}{grouped}"),
+    }
+}

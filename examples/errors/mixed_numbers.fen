@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    count = 3
+    stdout.print(count + 2.5)

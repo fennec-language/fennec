@@ -1,0 +1,7 @@
+error: tabs aren't allowed
+ --> examples/errors/tabs.fen:2:1
+  |
+2 | 	stdout.print("tabbed")
+  | ^
+  |
+  = help: indent with 4 spaces

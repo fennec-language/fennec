@@ -1,0 +1,12 @@
+[24, 14, 62, 36]
+[12, 31, 18]
+total 68, best 31, worst 7, count 4
+1478
+True True
+["earth", "fire", "ice"] 3
+ice ["earth", "fire"]
+["ash", "bramble", "kit", "vex"]
+["vex", "ash", "kit", "bramble"]
+bramble
+vex bramble True True
+[0, 5, 2]

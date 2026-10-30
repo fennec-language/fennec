@@ -1,0 +1,58 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/seashell86/fennec"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+non_ascii_idents = "forbid"
+trivial_numeric_casts = "deny"
+unused_qualifications = "deny"
+elided_lifetimes_in_paths = "deny"
+unreachable_pub = "deny"
+
+# Safety lints are "forbid": no attribute anywhere can switch them off. Tests get their
+# exemptions only through clippy.toml.
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+unwrap_used = "forbid"
+expect_used = "forbid"
+panic = "forbid"
+unwrap_in_result = "forbid"
+indexing_slicing = "forbid"
+string_slice = "forbid"
+todo = "forbid"
+unimplemented = "forbid"
+dbg_macro = "forbid"
+exit = "forbid"
+mod_module_files = "forbid"
+allow_attributes = "forbid"
+allow_attributes_without_reason = "deny"
+mem_forget = "forbid"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[workspace.dependencies]
+fennec-interp = { path = "crates/interp" }
+fennec-syntax = { path = "crates/syntax" }
+
+# Day-to-day builds skip debug info: they build and link faster, and errors still name a line.
+[profile.dev]
+debug = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

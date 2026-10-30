@@ -8,8 +8,9 @@ description: Where Fennec is today, what gets built first, and the design questi
 
 <p class="lede">Fennec is in early design. The plan is to start with a small, solid core, then add each feature when real programs need it.</p>
 
-## Now: design
+## Now: design and the first slice
 
+- A first interpreter that runs simple programs: functions, `if`/`elif`/`else`, loops, lists, comprehensions, f-strings, `mut` and Fennec's error messages. Every example in the repository's `examples/` folder is a test.
 - This site, describing the language as it's currently designed.
 - A written specification of the core language.
 - A short guide for AI models, the same one that will ship with the compiler.

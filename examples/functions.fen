@@ -1,0 +1,23 @@
+def factorial(n: int) -> int:
+    1 if n <= 1 else n * factorial(n - 1)
+
+def fibonacci(n: int) -> int:
+    if n < 2:
+        return n
+    fibonacci(n - 1) + fibonacci(n - 2)
+
+def apply_damage(mut health: int, amount: int):
+    health -= amount
+
+def describe(name: str, health: int):
+    status = "healthy" if health > 50 else "hurt"
+    f"{name} is {status} ({health} HP)"
+
+def main(stdout: Stdout):
+    stdout.print(factorial(10))
+    stdout.print([fibonacci(n) for n in range(10)])
+    mut health = 100
+    apply_damage(mut health, 30)
+    stdout.print(describe("Ash", health))
+    apply_damage(mut health, 45)
+    stdout.print(describe(health=health, name="Ash"))

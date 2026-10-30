@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    items = [1, 2, 3]
+    if items:
+        stdout.print("has items")

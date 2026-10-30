@@ -1,0 +1,7 @@
+error: `name` isn't mut
+ --> examples/errors/not_mut.fen:3:5
+  |
+3 |     name = "Vex"
+  |     ^^^^
+  |
+  = help: declare it with `mut name = ...` if it needs to change

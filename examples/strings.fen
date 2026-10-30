@@ -1,0 +1,20 @@
+def main(stdout: Stdout):
+    name = "Fennec"
+    coins = 1234567
+    health = 87.456
+    stdout.print(f"{name} has {coins:,} coins and {health:.1f} HP")
+    stdout.print(f"{{literal braces}} and {len(name) * 2}")
+
+    words = "fire ice  storm".split()
+    stdout.print(words)
+    stdout.print(", ".join(words).upper())
+    stdout.print("ice" in words, "ICE".lower() == "ice")
+    stdout.print(name[0], name[-1], len(name))
+    stdout.print("  padded  ".strip() + "!")
+    stdout.print("a-b-c".split("-"), "file.toml".endswith(".toml"))
+
+    mut initials = ""
+    for word in words:
+        initials += word[0]
+    stdout.print(initials)
+    stdout.print(str(3.0), str(2.5), 7 / 2, 7 // 2, -7 // 2, -7 % 3, 2 ** 10)

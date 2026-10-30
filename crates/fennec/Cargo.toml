@@ -1,0 +1,22 @@
+[package]
+name = "fennec"
+description = "The fennec command: run, and soon build and test, Fennec programs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+# The tests are one binary, tests/main.rs, not one per file.
+autotests = false
+
+[[test]]
+name = "fennec"
+path = "tests/main.rs"
+
+[dependencies]
+fennec-interp.workspace = true
+fennec-syntax.workspace = true
+
+[lints]
+workspace = true

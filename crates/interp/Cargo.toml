@@ -1,0 +1,15 @@
+[package]
+name = "fennec-interp"
+description = "Fennec's tree-walking interpreter, the first engine for running Fennec programs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+fennec-syntax.workspace = true
+
+[lints]
+workspace = true

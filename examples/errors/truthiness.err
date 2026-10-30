@@ -1,0 +1,7 @@
+error: `if` needs a bool, but this is a list
+ --> examples/errors/truthiness.fen:3:8
+  |
+3 |     if items:
+  |        ^^^^^
+  |
+  = help: Fennec has no truthiness: write `len(x) > 0`

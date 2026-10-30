@@ -1,0 +1,13 @@
+// The website as a Cloudflare Worker that only serves the built files in `dist/`.
+// `wrangler deploy` attaches it to fennec-lang.dev and manages the DNS record and certificate.
+{
+  "name": "fennec-site",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "routes": [{ "pattern": "fennec-lang.dev", "custom_domain": true }],
+  "workers_dev": false
+}

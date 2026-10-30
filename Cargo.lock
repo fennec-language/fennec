@@ -219,6 +219,7 @@ dependencies = [
  "fennec-check",
  "fennec-interp",
  "fennec-jit",
+ "fennec-kit",
  "fennec-syntax",
 ]
 
@@ -247,6 +248,13 @@ dependencies = [
  "cranelift-native",
  "fennec-check",
  "fennec-interp",
+ "fennec-syntax",
+]
+
+[[package]]
+name = "fennec-kit"
+version = "0.0.1"
+dependencies = [
  "fennec-syntax",
 ]
 

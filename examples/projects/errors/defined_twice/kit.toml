@@ -1,0 +1,5 @@
+name = "defined_twice"
+version = "0.1.0"
+fennec = "0.0.1"
+
+[dependencies]

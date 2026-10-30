@@ -1,0 +1,2 @@
+def pick(items: list[str], slot: int) -> str:
+    items[slot]

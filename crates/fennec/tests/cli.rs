@@ -1,4 +1,4 @@
-//! The `fennec` command itself: `run`, `test`, `new`, `repl`, `--version`, and what it does
+//! The `fennec` command itself: `run`, `test`, `new`, `repl`, `dev`, `--version`, and what it does
 //! with bad input. These run the real binary.
 
 use std::io::Write;
@@ -48,6 +48,23 @@ fn run_reports_errors_and_fails() {
 #[test]
 fn run_reports_a_missing_file() {
     let output = fennec(&["run", "examples/no-such-program.fen"], "").unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(text(&output.stderr).contains("couldn't read examples/no-such-program.fen"));
+}
+
+#[test]
+fn dev_tokens_and_dev_tree_dump_the_front_ends_work() {
+    let tokens = fennec(&["dev", "tokens", "examples/hello.fen"], "").unwrap();
+    assert!(tokens.status.success());
+    assert!(text(&tokens.stdout).starts_with("0..3 keyword def\n4..8 name main\n"));
+    let tree = fennec(&["dev", "tree", "examples/hello.fen"], "").unwrap();
+    assert!(tree.status.success());
+    assert!(text(&tree.stdout).starts_with("module\n  def main @0..24\n"));
+}
+
+#[test]
+fn dev_reports_a_missing_file() {
+    let output = fennec(&["dev", "tokens", "examples/no-such-program.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(text(&output.stderr).contains("couldn't read examples/no-such-program.fen"));
 }

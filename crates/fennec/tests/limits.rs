@@ -1,17 +1,32 @@
 //! The interpreter's limits for hosts like the browser playground: a step budget, a shallower
 //! call depth, and no files.
 
+use std::sync::mpsc;
+use std::time::Duration;
+
 use fennec_interp::Interp;
 
+/// Runs `work` on its own thread, giving up after ten seconds. Several tests run programs that
+/// never end on their own, so a broken limit fails them quickly instead of hanging the run.
+fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (done, result) = mpsc::channel();
+    std::thread::spawn(move || done.send(work()));
+    result.recv_timeout(Duration::from_secs(10)).ok()
+}
+
 /// Loads `source` into an interpreter that `setup` configures, then runs `main`.
-fn run(source: &str, setup: impl FnOnce(&mut Interp<'_>)) -> Result<String, String> {
-    let module = fennec_syntax::parse(source).map_err(|diagnostic| diagnostic.message)?;
-    let mut out = Vec::new();
-    let mut interp = Interp::new(&mut out).map_err(|diagnostic| diagnostic.message)?;
-    setup(&mut interp);
-    interp.run_program(&module).map_err(|diagnostic| diagnostic.message)?;
-    drop(interp);
-    Ok(String::from_utf8_lossy(&out).into_owned())
+fn run(source: &str, setup: impl FnOnce(&mut Interp<'_>) + Send + 'static) -> Result<String, String> {
+    let source = source.to_owned();
+    within_deadline(move || {
+        let module = fennec_syntax::parse(&source).map_err(|diagnostic| diagnostic.message)?;
+        let mut out = Vec::new();
+        let mut interp = Interp::new(&mut out).map_err(|diagnostic| diagnostic.message)?;
+        setup(&mut interp);
+        interp.run_program(&module).map_err(|diagnostic| diagnostic.message)?;
+        drop(interp);
+        Ok(String::from_utf8_lossy(&out).into_owned())
+    })
+    .unwrap_or_else(|| Err("still running after ten seconds".to_owned()))
 }
 
 const FOREVER: &str = "def main(stdout: Stdout):\n    while True:\n        pass\n";
@@ -46,12 +61,15 @@ fn each_test_gets_the_whole_step_budget() {
 
 /// Runs `source`'s tests with a step limit, returning the first failure's help.
 fn first_failure_help(source: &str, steps: u64) -> Option<String> {
-    let module = fennec_syntax::parse(source).ok()?;
-    let mut out = std::io::sink();
-    let mut interp = Interp::new(&mut out).ok()?;
-    interp.limit_steps(steps);
-    interp.load(&module).ok()?;
-    interp.run_tests().into_iter().find_map(|outcome| outcome.failure)?.help
+    let source = source.to_owned();
+    within_deadline(move || {
+        let module = fennec_syntax::parse(&source).ok()?;
+        let mut out = std::io::sink();
+        let mut interp = Interp::new(&mut out).ok()?;
+        interp.limit_steps(steps);
+        interp.load(&module).ok()?;
+        interp.run_tests().into_iter().find_map(|outcome| outcome.failure)?.help
+    })?
 }
 
 #[test]

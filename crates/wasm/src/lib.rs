@@ -275,6 +275,15 @@ mod tests {
     /// Enough for the tests' programs, and quick to run out of.
     const STEPS: u64 = 100_000;
 
+    /// Runs `work` on its own thread and fails if it's still going after ten seconds. Some
+    /// tests run programs that never end on their own, so a broken limit should fail them
+    /// quickly rather than hang the run.
+    fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(work()));
+        result.recv_timeout(std::time::Duration::from_secs(10)).expect("still running after ten seconds")
+    }
+
     const HELLO: &str = "def main(stdout: Stdout):\n    stdout.print(\"Hello, Fennec\")\n";
 
     #[test]
@@ -296,10 +305,12 @@ mod tests {
 
     #[test]
     fn stops_a_loop_that_never_ends() {
-        let report = run_within(
-            "def main(stdout: Stdout):\n    stdout.print(\"before\")\n    while True:\n        pass\n",
-            STEPS,
-        );
+        let report = within_deadline(|| {
+            run_within(
+                "def main(stdout: Stdout):\n    stdout.print(\"before\")\n    while True:\n        pass\n",
+                STEPS,
+            )
+        });
         assert!(!report.ok);
         assert_eq!(report.parts[0], (Stream::Out, "before\n".into()));
         let (_, error) = &report.parts[1];
@@ -309,7 +320,9 @@ mod tests {
 
     #[test]
     fn stops_a_test_that_never_ends() {
-        let report = test_within("test \"spins\" for n: int:\n    while True:\n        pass\n", STEPS);
+        let report = within_deadline(|| {
+            test_within("test \"spins\" for n: int:\n    while True:\n        pass\n", STEPS)
+        });
         assert!(!report.ok);
         assert_eq!(report.parts[0], (Stream::Out, "  ✗ spins\n".into()));
         assert!(report.parts[1].1.contains("stopped after"), "{:?}", report.parts);
@@ -336,7 +349,7 @@ mod tests {
         let line = "spam ".repeat(100);
         let source =
             format!("def main(stdout: Stdout):\n    while True:\n        stdout.print(\"{line}\")\n");
-        let report = run_within(&source, STEPS);
+        let report = within_deadline(move || run_within(&source, STEPS));
         assert_eq!(report.parts[0].1.len(), 1024 * 1024);
         assert!(
             report.parts[1].1.starts_with("note: output stopped after 1024 KiB\nerror: "),

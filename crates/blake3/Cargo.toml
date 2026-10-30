@@ -1,0 +1,18 @@
+[package]
+name = "fennec-blake3"
+description = "BLAKE3, written in-house: for the build cache and std.hash"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+# The tests are one binary, tests/main.rs, not one per file.
+autotests = false
+
+[[test]]
+name = "blake3"
+path = "tests/main.rs"
+
+[lints]
+workspace = true

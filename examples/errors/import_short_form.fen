@@ -1,0 +1,4 @@
+import std.json
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps([1, 2]))

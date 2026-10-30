@@ -1,0 +1,48 @@
+from std.time import Clock, Duration, Instant
+
+struct Ball:
+    y = 10.0
+    speed = 0.0
+
+    ## Falls for one step of the simulation.
+    def fall(mut self, dt: Duration):
+        self.speed -= 9.8 * dt.as_seconds()
+        self.y += self.speed * dt.as_seconds()
+
+## How many fixed steps fit in the time since the last frame, carrying the rest over. The
+## simulation only ever sees `step`, so it runs the same however fast the machine is.
+def steps_due(carried: Duration, frame: Duration, step: Duration) -> (int, Duration):
+    mut left = carried + frame
+    mut steps = 0
+    while not left < step:
+        left = left - step
+        steps += 1
+    (steps, left)
+
+test "frame times add up exactly" for millis: list[int]:
+    total = Duration.millis(sum(millis))
+    mut added = Duration()
+    for ms in millis:
+        added = added + Duration.millis(ms)
+    assert added == total
+
+def main(stdout: Stdout, clock: Clock):
+    step = Duration.seconds(1.0 / 60.0)
+    stdout.print(step, f"{step.as_millis():.3f} ms")
+    stdout.print(Duration.millis(16) < step, step * 60, Duration.micros(1_500).as_millis())
+
+    # Frame times as a real loop would read them, here made up so the run repeats.
+    frames = [Instant(nanos=0), Instant(nanos=20_000_000), Instant(nanos=31_000_000), Instant(nanos=70_000_000)]
+    mut ball = Ball()
+    mut carried = Duration()
+    for at in range(1, len(frames)):
+        due, carried = steps_due(carried, frames[at] - frames[at - 1], step)
+        for _ in range(due):
+            ball.fall(step)
+        stdout.print(f"frame {at}: {due} steps, y = {ball.y:.4f}")
+
+    # The real clock only ever moves forward.
+    started = clock.now()
+    clock.sleep(Duration.millis(2))
+    waited = clock.now() - started
+    stdout.print(not waited < Duration.millis(2), started < clock.now())

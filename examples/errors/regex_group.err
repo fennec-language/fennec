@@ -1,0 +1,5 @@
+error: the pattern has no group 3
+ --> examples/errors/regex_group.fen:5:18
+  |
+5 |     stdout.print(stat.replace("hp=30", r"\2 \3"))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

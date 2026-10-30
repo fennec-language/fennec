@@ -234,7 +234,7 @@ fn builtin_values_have_their_methods() {
             "use `lower()`",
             "use `stdout.print(...)`",
             "values are copied automatically when assigned: `b = a`",
-            "use `len(x)`",
+            "use `.len()`",
             "",
         ]
     );
@@ -267,12 +267,12 @@ fn builtin_methods_take_the_right_arguments() {
 #[test]
 fn builtins_take_the_right_arguments() {
     let program = "
-        len([1], [2])
+        [1].len(2)
         sorted([1], key=n => n, reverse=True)
         sum([1], key=n => n)
         range(1, 2, 3, 4)
         range('a')
-        len(5)
+        5.len()
         zip([1])
         set()
         round(1.5, 2)
@@ -282,12 +282,12 @@ fn builtins_take_the_right_arguments() {
     assert_eq!(
         in_main(program),
         [
-            "`len` was called with the wrong arguments @ len([1], [2])",
+            "`len` was called with the wrong arguments @ [1].len(2)",
             "`sorted` has no parameter called `reverse` @ True",
             "`sum` doesn't take `key` @ sum([1], key=n => n)",
             "`range` was called with the wrong arguments @ range(1, 2, 3, 4)",
             "`range` takes one to three ints @ range('a')".replace('\'', "\"").as_str(),
-            "an int has no length @ len(5)",
+            "an int has no method `len` @ 5.len()",
             "`zip` was called with the wrong arguments @ zip([1])",
             "`any` needs bools, but got an int @ any([1])",
             "`ignore` was called with the wrong arguments @ ignore(1)",
@@ -417,14 +417,14 @@ fn types_and_builtins_are_not_values() {
             Point
 
         def main(stdout: Stdout):
-            measure = len
+            measure = sum
             kind = Enemy
             stdout.print(mystery.field, Shape.Hexagon)
     ";
     assert_eq!(
         problems(program),
         [
-            "`len` can only be called @ len",
+            "`sum` can only be called @ sum",
             "`Enemy` is a type, not a value @ Enemy",
             "`mystery` doesn't exist @ mystery",
             "`Shape` has nothing called `Hexagon` @ Shape.Hexagon",

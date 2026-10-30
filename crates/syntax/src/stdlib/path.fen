@@ -24,14 +24,14 @@ struct Path:
     ## The last part: `fox.png` for `assets/fox.png`.
     def name(self) -> str:
         parts = self.parts()
-        if len(parts) == 0: return ""
+        if parts.len() == 0: return ""
         parts[-1]
 
     ## What follows the name's last `.`, without the dot: `png` for `fox.png`. Empty for
     ## names like `notes` and `.hidden`.
     def extension(self) -> str:
         pieces = self.name().split(".")
-        if len(pieces) < 2 or (len(pieces) == 2 and pieces[0] == ""): return ""
+        if pieces.len() < 2 or (pieces.len() == 2 and pieces[0] == ""): return ""
         pieces[-1]
 
     ## The name without its extension: `fox` for `fox.png`.
@@ -39,13 +39,13 @@ struct Path:
         name = self.name()
         extension = self.extension()
         if extension == "": return name
-        name[:len(name) - len(extension) - 1]
+        name[:name.len() - extension.len() - 1]
 
     ## The path without its last part: `assets` for `assets/fox.png`, and `.` for `fox.png`.
     def parent(self) -> Path:
         parts = self.parts()
-        if len(parts) == 0: return self.rebuild([])
-        self.rebuild(parts[:len(parts) - 1])
+        if parts.len() == 0: return self.rebuild([])
+        self.rebuild(parts[:parts.len() - 1])
 
     ## The same path written simply: `a/./b/../c` becomes `a/c`. A `..` that would go above
     ## the start stays in a relative path and is dropped from an absolute one.
@@ -54,7 +54,7 @@ struct Path:
         for part in self.parts():
             if part != "..":
                 kept.append(part)
-            elif len(kept) > 0 and kept[-1] != "..":
+            elif kept.len() > 0 and kept[-1] != "..":
                 kept.pop()
             elif not self.is_absolute():
                 kept.append("..")

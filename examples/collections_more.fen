@@ -3,7 +3,7 @@ from std.game import IdMap
 def describe(result: Result[str, IoError]) -> str:
     match result:
         case Ok(text):
-            f"read {len(text)} characters"
+            f"read {text.len()} characters"
         case Err(_):
             "couldn't do it"
 
@@ -52,7 +52,7 @@ def main(stdout: Stdout, fs: Fs):
     enemies.insert("vex")
     for id, name in enemies.items():
         stdout.print(name, id == first)
-    stdout.print(len(enemies.ids()), enemies[first])
+    stdout.print(enemies.ids().len(), enemies[first])
     enemies.remove_where(name => name.startswith("k"))
     stdout.print(enemies.values())
     enemies.clear()

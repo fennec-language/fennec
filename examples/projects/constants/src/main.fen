@@ -8,4 +8,4 @@ def main(stdout: Stdout):
     stdout.print(GREETING)
     for word in ["if", "fox", "return"]:
         stdout.print(word, is_keyword(word), word in KEYWORDS)
-    stdout.print(LENGTHS["while"], len(KEYWORDS))
+    stdout.print(LENGTHS["while"], KEYWORDS.len())

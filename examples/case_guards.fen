@@ -31,7 +31,7 @@ def size(n: int) -> str:
 
 def first_word(found: str?) -> str:
     match found:
-        case text if text is not None and len(text) > 0:
+        case text if text is not None and text.len() > 0:
             text.split()[0]
         case _:
             "(nothing)"

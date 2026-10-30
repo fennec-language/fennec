@@ -15,7 +15,7 @@ def main(stdout: Stdout):
     mut queue = std.collections.Deque()
     queue.append("ash")
     queue.append("kit")
-    stdout.print(queue.popleft(), len(queue))
+    stdout.print(queue.popleft(), queue.len())
 
     mut rng = random.Random(seed=7)
     stdout.print(rng.randint(1, 6))

@@ -245,12 +245,12 @@ fn values_and_builtins_do_not_take_mut() {
     let program = "
         mut n = 1
         mut s = 'a'
-        stdout.print(len(mut s), Enemy(mut n), 'a'.startswith(mut s), replace(Enemy(), mut n))
+        stdout.print(sorted(mut s), Enemy(mut n), 'a'.startswith(mut s), replace(Enemy(), mut n))
     ";
     assert_eq!(
         with_enemy(program),
         [
-            "`len` doesn't change its arguments, so don't pass `mut` @ len(mut s)",
+            "`sorted` doesn't change its arguments, so don't pass `mut` @ sorted(mut s)",
             "building a value doesn't change its arguments, so don't pass `mut` @ n",
             "`startswith` doesn't change `prefix`, so it shouldn't be passed with `mut` @ s",
             "`replace` doesn't change its arguments, so don't pass `mut` @ replace(Enemy(), mut n)",

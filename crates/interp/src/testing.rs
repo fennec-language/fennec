@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn shrinking_gives_up_after_its_attempts() {
-        let source = "test \"short\" for text: str:\n    assert len(text) < 1\n";
+        let source = "test \"short\" for text: str:\n    assert text.len() < 1\n";
         let module = fennec_syntax::parse(source).unwrap();
         let mut out = std::io::sink();
         let mut interp = Interp::new(&mut out).unwrap();

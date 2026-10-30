@@ -51,7 +51,7 @@ def main(stdout: Stdout):
         l = l.next()
     stdout.print(all)
     all.append(.Green(-0.0))
-    stdout.print(all[-1] == .Green(0.0), all[-1] == .Green(-0.0), len(all))
+    stdout.print(all[-1] == .Green(0.0), all[-1] == .Green(-0.0), all.len())
     cell = Cell(3, 4)
     picked = match cell:
         case Cell(0, c):

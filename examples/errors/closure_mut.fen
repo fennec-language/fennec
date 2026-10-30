@@ -1,6 +1,6 @@
 def main(stdout: Stdout):
     mut seen = []
     words = ["fire", "ice"]
-    lengths = [len(word) for word in words]
+    lengths = [word.len() for word in words]
     words_seen = sorted(words, key=word => seen.append(word))
     stdout.print(lengths, words_seen)

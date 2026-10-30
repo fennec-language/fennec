@@ -161,7 +161,7 @@ fn a_def_with_no_arrow_gives_back_nothing() {
 fn arrow_functions_never_write_a_return_type() {
     let program = "
         def main(stdout: Stdout):
-            stdout.print(sorted(['bb', 'a'], key=name => len(name)))
+            stdout.print(sorted(['bb', 'a'], key=name => name.len()))
     ";
     assert_eq!(problems_as_written(program), Vec::<String>::new());
 }
@@ -195,4 +195,33 @@ fn a_type_the_program_cant_name_gets_no_fix() {
     let diagnostics = fennec_check::check(&module).err().unwrap_or_default();
     assert_eq!(diagnostics.len(), 1);
     assert!(diagnostics.iter().all(|diagnostic| diagnostic.fixes.is_empty()), "{diagnostics:?}");
+}
+
+#[test]
+fn len_is_a_method_and_its_fix_moves_it_there() {
+    let program = "
+        def main(stdout: Stdout):
+            xs = [1, 2]
+            stdout.print(len(xs), len(xs + [3]), f\"{len({1: 2})}\", len(len('ab') * 'c'))
+    ";
+    assert_eq!(
+        fixed(program),
+        dedent(
+            "
+            def main(stdout: Stdout):
+                xs = [1, 2]
+                stdout.print(xs.len(), (xs + [3]).len(), f\"{({1: 2}).len()}\", ('ab'.len() * 'c').len())
+            "
+        )
+    );
+    assert_eq!(
+        helps("def main(stdout: Stdout):\n    stdout.print(len([1]))"),
+        [
+            "the global functions are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`"
+        ]
+    );
+    assert_eq!(
+        helps("def main(stdout: Stdout):\n    stdout.print(sorted(['a'], key=len))"),
+        ["a length is a method: write `x.len()`, or `x => x.len()` to pass it"]
+    );
 }

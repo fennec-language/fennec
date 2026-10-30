@@ -25,7 +25,7 @@ def step() -> int:
     0
 
 def find(items: list[int], value: int) -> int:
-    for at in range(len(items)):
+    for at in range(items.len()):
         if items[at] == value: return at
     fail Missing(value)
 

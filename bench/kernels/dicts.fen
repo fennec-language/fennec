@@ -5,4 +5,4 @@ def main(stdout: Stdout):
     for i in range(2_000_000):
         key = i * 7919 % 10_007
         counts[key] = counts.get(key, 0) + 1
-    stdout.print(len(counts), counts[0], counts[10_006])
+    stdout.print(counts.len(), counts[0], counts[10_006])

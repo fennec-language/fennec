@@ -61,6 +61,16 @@ impl Interp<'_> {
             ));
         }
         let args = plain(args, method, span)?;
+        if method == "len" && args.is_empty() {
+            // Every collection knows its length, and so do a tuple and the arguments.
+            return match receiver {
+                Value::Capability(Capability::Args) => {
+                    Ok(Value::Int(i64::try_from(self.arguments().len()).unwrap_or(i64::MAX)))
+                }
+                Value::Packed(packed) => crate::builtins::length(&packed.unpack(), span),
+                other => crate::builtins::length(other, span).map_err(|_| no_method(other, method, span)),
+            };
+        }
         match receiver {
             Value::Capability(Capability::Stdout) => self.stdout_method(method, &args, span),
             Value::Capability(Capability::Fs) => self.fs_method(method, &args, span),

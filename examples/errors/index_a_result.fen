@@ -2,7 +2,7 @@ error Empty:
     reason: str
 
 def first(items: list[int]) -> int:
-    if len(items) == 0: fail Empty("no items")
+    if items.len() == 0: fail Empty("no items")
     items[0]
 
 def main(stdout: Stdout):

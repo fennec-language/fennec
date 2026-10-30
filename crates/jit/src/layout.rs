@@ -8,7 +8,7 @@
 //! is a machine int: floats keep their bits and bools are 0 or 1, and words a case doesn't
 //! use are 0. So two enum values are equal exactly when their words are.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use fennec_check::{Signatures, Type};
 use fennec_syntax::{Expr, TypeDef, TypeExpr};
@@ -41,6 +41,9 @@ pub(crate) struct Layout {
     pub(crate) size: u32,
     /// An enum's cases, in the order they're written; `None` for a struct.
     pub(crate) cases: Option<Vec<Case>>,
+    /// Whether values of this type are boxed: held by the address of a block the runtime
+    /// owns, because the type contains itself or holds a type that does.
+    pub(crate) boxed: bool,
 }
 
 #[derive(Default)]
@@ -74,10 +77,97 @@ impl Layouts {
         }
         let mut enum_names: Vec<&str> = sources.enums.keys().copied().collect();
         enum_names.sort_unstable();
-        for name in names.chain(enum_names.into_iter().map(str::to_owned)) {
-            layouts.add(&sources, &name, &mut Vec::new());
+        let names: Vec<String> = names.chain(enum_names.into_iter().map(str::to_owned)).collect();
+        for name in &names {
+            layouts.add(&sources, name, &mut Vec::new());
         }
+        layouts.add_boxed(&sources, &names);
         layouts
+    }
+
+    /// Lays out the boxed types: the most structs and enums that hold only numbers, bools,
+    /// plain types and each other. They're the ones that contain themselves, and the ones
+    /// that hold those.
+    fn add_boxed(&mut self, sources: &Sources<'_>, names: &[String]) {
+        let mut candidates: BTreeMap<String, Written> = names
+            .iter()
+            .filter(|name| !self.by_name.contains_key(*name))
+            .filter_map(|name| Some((name.clone(), written(sources, name)?)))
+            .collect();
+        loop {
+            let fits = |ty: &Type| match ty {
+                Type::Int | Type::Float | Type::Bool => true,
+                Type::Named(name) => self.by_name.contains_key(name) || candidates.contains_key(name),
+                _ => false,
+            };
+            let unfit: Vec<String> = candidates
+                .iter()
+                .filter(|(_, written)| !written.types().all(&fits))
+                .map(|(name, _)| name.clone())
+                .collect();
+            if unfit.is_empty() {
+                break;
+            }
+            for name in unfit {
+                candidates.remove(&name);
+            }
+        }
+        let first = self.all.len();
+        let reserved: HashMap<String, u32> = candidates
+            .keys()
+            .enumerate()
+            .filter_map(|(at, name)| Some((name.clone(), u32::try_from(first + at).ok()?)))
+            .collect();
+        let ty_of = |layouts: &Layouts, ty: &Type| -> Option<Ty> {
+            Some(match ty {
+                Type::Int => Ty::Int,
+                Type::Float => Ty::Float,
+                Type::Bool => Ty::Bool,
+                Type::Named(name) => match reserved.get(name) {
+                    Some(id) => Ty::Boxed(*id),
+                    None => Ty::Struct(layouts.id(name)?),
+                },
+                _ => return None,
+            })
+        };
+        let mut built = Vec::with_capacity(candidates.len());
+        for (name, written) in &candidates {
+            let place = |layouts: &Layouts, fields: &[(String, Type, Option<Expr>)], start: u32| {
+                let typed: Option<Vec<_>> = fields
+                    .iter()
+                    .map(|(field, ty, default)| Some((field.clone(), ty_of(layouts, ty)?, default.clone())))
+                    .collect();
+                layouts.place_fields(typed?, start)
+            };
+            let layout = match written {
+                Written::Struct(fields) => place(self, fields, 0).map(|(fields, size)| Layout {
+                    name: name.clone(),
+                    fields,
+                    size: size.max(WORD),
+                    cases: None,
+                    boxed: true,
+                }),
+                Written::Enum(cases) => {
+                    let mut placed = Vec::with_capacity(cases.len());
+                    let mut size = WORD;
+                    for (case, fields) in cases {
+                        let Some((fields, end)) = place(self, fields, WORD) else { break };
+                        size = size.max(end);
+                        placed.push(Case { name: case.clone(), fields });
+                    }
+                    (placed.len() == cases.len()).then(|| enum_of(name, placed, size, true))
+                }
+            };
+            // Every candidate's fields fit, so each lays out; a gap would shift the ids.
+            let Some(layout) = layout else { return };
+            built.push(layout);
+        }
+        for layout in built {
+            if let Some(id) = reserved.get(&layout.name) {
+                self.by_name.insert(layout.name.clone(), *id);
+            }
+            self.all.push(layout);
+        }
     }
 
     /// Lays out a struct or enum if it's plain, after the plain types inside it. `visiting`
@@ -97,7 +187,7 @@ impl Layouts {
                     fields.push((field.clone(), self.field_ty(sources, ty, visiting)?, None));
                 }
                 let (fields, size) = self.place_fields(fields, 0)?;
-                Layout { name: name.to_owned(), fields, size: size.max(WORD), cases: None }
+                Layout { name: name.to_owned(), fields, size: size.max(WORD), cases: None, boxed: false }
             }
             Some(_) => return None,
             None => self.enum_layout(sources, name, visiting)?,
@@ -139,11 +229,7 @@ impl Layouts {
             size = size.max(end);
             cases.push(Case { name: case.name.clone(), fields });
         }
-        let words = size / WORD;
-        let fields = (0..words)
-            .map(|word| Field { name: format!("\0{word}"), ty: Ty::Int, offset: word * WORD, default: None })
-            .collect();
-        Some(Layout { name: name.to_owned(), fields, size, cases: Some(cases) })
+        Some(enum_of(name, cases, size, false))
     }
 
     /// How a plain field is held, laying out the type it names first.
@@ -197,6 +283,11 @@ impl Layouts {
         }
     }
 
+    /// How many layouts there are.
+    pub(crate) fn len(&self) -> usize {
+        self.all.len()
+    }
+
     pub(crate) fn get(&self, id: u32) -> Option<&Layout> {
         self.all.get(usize::try_from(id).ok()?)
     }
@@ -214,7 +305,11 @@ impl Layouts {
             Type::Unit => Ty::Unit,
             Type::Named(name) if name == "Stdout" => Ty::Stdout,
             Type::Named(name) if name == "Fs" => Ty::Fs,
-            Type::Named(name) => self.id(name).map_or(Ty::Obj, Ty::Struct),
+            Type::Named(name) => match self.id(name) {
+                Some(id) if self.get(id).is_some_and(|layout| layout.boxed) => Ty::Boxed(id),
+                Some(id) => Ty::Struct(id),
+                None => Ty::Obj,
+            },
             _ => Ty::Obj,
         }
     }
@@ -233,4 +328,55 @@ fn written_type(written: &TypeExpr) -> Option<Type> {
         "str" | "list" | "dict" | "set" | "tuple" | "Id" | "IdMap" => return None,
         name => Type::Named(name.to_owned()),
     })
+}
+
+/// An enum's layout from its cases: its words are the case's number, then `size` bytes in
+/// all.
+fn enum_of(name: &str, cases: Vec<Case>, size: u32, boxed: bool) -> Layout {
+    let words = size / WORD;
+    let fields = (0..words)
+        .map(|word| Field { name: format!("\0{word}"), ty: Ty::Int, offset: word * WORD, default: None })
+        .collect();
+    Layout { name: name.to_owned(), fields, size, cases: Some(cases), boxed }
+}
+
+/// A field as written: its name, type and default.
+type WrittenField = (String, Type, Option<Expr>);
+
+/// A type's fields as written: a struct's, or each case's.
+enum Written {
+    Struct(Vec<WrittenField>),
+    Enum(Vec<(String, Vec<WrittenField>)>),
+}
+
+impl Written {
+    fn types(&self) -> Box<dyn Iterator<Item = &Type> + '_> {
+        match self {
+            Written::Struct(fields) => Box::new(fields.iter().map(|(_, ty, _)| ty)),
+            Written::Enum(cases) => {
+                Box::new(cases.iter().flat_map(|(_, fields)| fields.iter().map(|(_, ty, _)| ty)))
+            }
+        }
+    }
+}
+
+/// A struct's or enum's fields as written, when none has a `where` rule.
+fn written(sources: &Sources<'_>, name: &str) -> Option<Written> {
+    if let Some(structure) = sources.signatures.structure(name) {
+        let fields = structure.fields.iter().map(|(field, ty)| (field.clone(), ty.clone(), None));
+        return (!structure.rules).then(|| Written::Struct(fields.collect()));
+    }
+    let def = sources.enums.get(name)?;
+    let mut cases = Vec::with_capacity(def.cases.len());
+    for case in &def.cases {
+        let mut fields = Vec::with_capacity(case.fields.len());
+        for field in &case.fields {
+            if field.rule.is_some() {
+                return None;
+            }
+            fields.push((field.name.clone(), written_type(field.ty.as_ref()?)?, field.default.clone()));
+        }
+        cases.push((case.name.clone(), fields));
+    }
+    (!cases.is_empty()).then_some(Written::Enum(cases))
 }

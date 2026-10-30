@@ -2,7 +2,7 @@
 //! where they are. Each takes and returns only plain numbers.
 
 use cranelift_codegen::ir::types::{F64, I8, I64, Type};
-use fennec_interp::embed::{eval, io, lists, names, objects, temps};
+use fennec_interp::embed::{eval, heap, io, lists, names, objects, temps};
 
 use crate::runtime;
 
@@ -73,6 +73,12 @@ pub(crate) enum Helper {
     MakeInstance,
     MakeVariant,
     CaseOf,
+    Alloc,
+    Free,
+    Unshare,
+    BoxToValue,
+    BoxFromValue,
+    BoxEqual,
     Sin,
     Cos,
     Pack,
@@ -82,7 +88,7 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 72] = [
+pub(crate) const ALL: [Helper; 78] = [
     Helper::Fail,
     Helper::Enter,
     Helper::Leave,
@@ -148,6 +154,12 @@ pub(crate) const ALL: [Helper; 72] = [
     Helper::MakeInstance,
     Helper::MakeVariant,
     Helper::CaseOf,
+    Helper::Alloc,
+    Helper::Free,
+    Helper::Unshare,
+    Helper::BoxToValue,
+    Helper::BoxFromValue,
+    Helper::BoxEqual,
     Helper::Sin,
     Helper::Cos,
     Helper::Pack,
@@ -236,6 +248,12 @@ impl Helper {
             Helper::MakeInstance => shape("fennec_make_instance", &[I64, I64, I64, I64], &[I64]),
             Helper::MakeVariant => shape("fennec_make_variant", &[I64, I64, I64, I64, I64], &[I64]),
             Helper::CaseOf => shape("fennec_case_of", &[I64, I64, I64, I64], &[I64]),
+            Helper::Alloc => shape("fennec_alloc", &[I64], &[I64]),
+            Helper::Free => shape("fennec_free", &[I64], &[]),
+            Helper::Unshare => shape("fennec_unshare", &[I64], &[I64]),
+            Helper::BoxToValue => shape("fennec_box_to_value", &[I64], &[I64]),
+            Helper::BoxFromValue => shape("fennec_box_from_value", &[I64, I64, I64, I64], &[I64]),
+            Helper::BoxEqual => shape("fennec_box_equal", &[I64, I64], &[I8]),
             Helper::Sin => shape("fennec_sin", &[F64], &[F64]),
             Helper::Cos => shape("fennec_cos", &[F64], &[F64]),
             Helper::Pack => shape("fennec_pack", &[I64, I64], &[I8]),
@@ -251,6 +269,10 @@ impl Helper {
         !matches!(
             self,
             Helper::Fail
+                | Helper::Alloc
+                | Helper::Free
+                | Helper::Unshare
+                | Helper::BoxEqual
                 | Helper::Sin
                 | Helper::Cos
                 | Helper::PrintInt
@@ -274,6 +296,9 @@ impl Helper {
                     | Helper::Length
                     | Helper::Push
                     | Helper::CaseOf
+                    | Helper::Alloc
+                    | Helper::Unshare
+                    | Helper::BoxFromValue
             )
     }
 
@@ -293,6 +318,7 @@ impl Helper {
                 | Helper::MakeInstance
                 | Helper::MakeVariant
                 | Helper::CaseOf
+                | Helper::BoxFromValue
                 | Helper::Address
                 | Helper::Length
                 | Helper::Push
@@ -379,6 +405,12 @@ impl Helper {
             Helper::MakeInstance => objects::make_instance as *const u8,
             Helper::MakeVariant => objects::make_variant as *const u8,
             Helper::CaseOf => objects::case_of as *const u8,
+            Helper::Alloc => heap::alloc as *const u8,
+            Helper::Free => heap::free as *const u8,
+            Helper::Unshare => heap::unshare as *const u8,
+            Helper::BoxToValue => heap::to_value as *const u8,
+            Helper::BoxFromValue => heap::from_value as *const u8,
+            Helper::BoxEqual => heap::equal as *const u8,
             Helper::Sin => runtime::sin as *const u8,
             Helper::Cos => runtime::cos as *const u8,
             Helper::Pack => lists::pack as *const u8,

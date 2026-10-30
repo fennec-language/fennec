@@ -34,6 +34,10 @@ impl Lowerer<'_, '_> {
                     let place = self.local_place(local).ok_or_else(|| unsupported("this struct", span))?;
                     Ok((Some(self.read_place(&place)), local.ty))
                 }
+                Some(local @ super::Local { ty: Ty::Boxed(_), var: Some(var), .. }) => {
+                    let value = self.b.use_var(var);
+                    Ok((Some(self.borrow(value)), local.ty))
+                }
                 Some(local) => Ok((local.var.map(|var| self.b.use_var(var)), local.ty)),
                 None => self.fallback(expr),
             },
@@ -101,6 +105,7 @@ impl Lowerer<'_, '_> {
             Ty::Bool => Helper::ToBool,
             Ty::Obj => return Ok(handle),
             Ty::Struct(id) => return self.unbox_struct(handle, id, span),
+            Ty::Boxed(id) => return self.handle_to_box(handle, id, span),
             Ty::Unit | Ty::Stdout | Ty::Fs => {
                 return Err(unsupported(&format!("using a value as {}", to.name()), span));
             }
@@ -125,6 +130,10 @@ impl Lowerer<'_, '_> {
             Ty::Struct(id) => {
                 let address = value.ok_or_else(|| unsupported("this value", span))?;
                 return self.box_struct(address, id, span);
+            }
+            Ty::Boxed(id) => {
+                let address = value.ok_or_else(|| unsupported("this value", span))?;
+                return self.box_to_handle(address, id);
             }
             Ty::Stdout | Ty::Fs => {
                 return Err(unsupported(&format!("using {} as a value", ty.name()), span));

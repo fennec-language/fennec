@@ -2,7 +2,7 @@
 
 /// Checks `input` formats to `expected`, and that `expected` is already formatted.
 #[track_caller]
-fn check(input: &str, expected: &str) {
+pub(crate) fn check(input: &str, expected: &str) {
     assert_eq!(fennec_fmt::format(input), Ok(expected.to_owned()));
     assert_eq!(fennec_fmt::format(expected), Ok(expected.to_owned()), "formatting twice changed it");
 }

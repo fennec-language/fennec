@@ -53,7 +53,7 @@ When a model reaches for something Fennec doesn't have, the compiler recognizes 
 
 ## Signatures that tell the truth
 
-A function's parameters say what it changes (`mut`) and what it can touch (capabilities like `Fs` and `Clock`). Its return type, inferred by the compiler and shown by the editor and tools, says what it produces and how it can fail. A model, or a reviewer, can understand a call without reading the function behind it.
+A function's parameters say what it changes (`mut`) and what it can touch (capabilities like `Fs` and `Clock`). Its written return type says what it produces, and the errors it can fail with, inferred by the compiler and shown by the editor and tools, say how it can fail. A model, or a reviewer, can understand a call without reading the function behind it.
 
 ## Errors written to be fixed
 

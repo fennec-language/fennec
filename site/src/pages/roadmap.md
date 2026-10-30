@@ -20,7 +20,7 @@ description: Where Fennec is today, what gets built first, and the design questi
 - Values without references: copies are independent, and changes happen in place without copying when nothing else shares the value.
 - Every example in the repository's `examples/` folder is a test, including the error messages.
 - A first type checker, run before every program and test: unknown names, `mut`, arguments and fields, bool conditions, int and float mixing, unhandled errors and `None`, `match` over every case, and inferred return types.
-- The first standard library modules: `std.collections` (`Deque`, `Heap`, `PriorityQueue`, `Counter`), `std.random` (seeded, the same on every machine), `std.time` (`Duration`, and a monotonic `Clock` passed to `main`) and `std.re` (regular expressions in linear time).
+- The first standard library modules: `std.collections` (`Deque`, `Heap`, `PriorityQueue`, `Counter`), `std.random` (seeded, the same on every machine), `std.time` (`Duration`, and a monotonic `Clock` passed to `main`) `std.re` (regular expressions in linear time) and `std.hash` (BLAKE3, written in-house).
 - A first native compiler: `fennec run --jit` compiles programs to machine code with Cranelift, and every example runs with exactly the interpreter's output. Numbers stay in machine registers, so numeric code runs about 70 times faster than in the interpreter; other values still go through the interpreter's runtime for now.
 
 ## v0.1: checked before it runs
@@ -31,7 +31,7 @@ The next milestone moves Fennec's checks from runtime to compile time.
 - The language's lints.
 - The intermediate representation, designed for native code from the start.
 - The interpreter.
-- Names and `mut`, `def` with inferred return types, structs with defaults, named constructors and `where`, `enum` and `match`.
+- Names and `mut`, `def` with written return types, structs with defaults, named constructors and `where`, `enum` and `match`.
 - Errors with `error`, `fail`, `?`, `else`, `match` and `from`, and optional types with `None` and `?.`.
 - Implicit interfaces and generics.
 - Values without references: automatic moves, sharing until changed, and the check that `mut` access is exclusive.

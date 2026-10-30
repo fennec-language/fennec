@@ -28,6 +28,7 @@ modules! {
     collections,
     fs,
     game,
+    hash,
     json,
     layout,
     math,

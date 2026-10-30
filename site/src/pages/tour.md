@@ -47,29 +47,29 @@ Names belong to the block they're created in. A name created inside an `if`, `fo
 
 ## Functions
 
-Parameters have types. Return types are inferred, and the last expression in a function is its value.
+Parameters and return types are written; everything inside a function is inferred. The last expression in a function is its value.
 
 ```fennec
 from std.math import PI
 
-def area(radius: float):
-    PI * radius * radius                  # returns float
+def area(radius: float) -> float:
+    PI * radius * radius
 
-def label(enemy: Enemy):
-    f"{enemy.name} ({enemy.health} HP)"   # returns str
+def label(enemy: Enemy) -> str:
+    f"{enemy.name} ({enemy.health} HP)"
 
-def factorial(n: int) -> int:             # recursive functions state their return type
+def factorial(n: int) -> int:
     1 if n <= 1 else n * factorial(n - 1)
 ```
 
-- Use `return` to leave early. You can write a return type anywhere you want it as documentation; your editor shows the inferred one.
+- Use `return` to leave early. A function with no `->` returns nothing. If you leave a return type out, the error's fix writes in the one the compiler inferred.
 - Short functions can be passed inline with an arrow: `enemies.sort(key=enemy => enemy.health)`.
 - Closures read the names around them but can't change them. To build up a value, use a comprehension or a builtin like `sum`. A nested function that's only called directly, never passed around, can change the enclosing function's `mut` names.
 - Anything longer is a nested function, which also gives the logic a name:
 
 ```fennec
-def visible_enemies(world: World):
-    def in_view(enemy: Enemy):
+def visible_enemies(world: World) -> list[Enemy]:
+    def in_view(enemy: Enemy) -> bool:
         distance = (enemy.position - world.camera).length()
         distance < world.view_range
 
@@ -112,7 +112,7 @@ struct Enemy:
     position: Vec3
     health = 100
 
-    def at(position: Vec3):
+    def at(position: Vec3) -> Enemy:
         Enemy(position=position)
 
 boss = Enemy.at(spawn_point)
@@ -173,7 +173,7 @@ Reading any call, you know whether it can modify your data without opening the f
 struct Enemy:
     health: int
 
-    def is_alive(self):
+    def is_alive(self) -> bool:
         self.health > 0
 
     def take_damage(mut self, amount: int):
@@ -194,7 +194,7 @@ enum Shape:
     Circle(radius: f32)
     Rect(width: f32, height: f32)
 
-def area(shape: Shape):
+def area(shape: Shape) -> f32:
     match shape:
         case .Circle(radius): PI * radius * radius
         case .Rect(width, height): width * height
@@ -231,7 +231,7 @@ error NotFound:
 error ConfigUnreadable:
     path: Path
 
-def load_config(fs: Fs, path: Path):
+def load_config(fs: Fs, path: Path) -> Config:
     if not fs.exists(path):
         fail NotFound(path)
     text = fs.read_text(path)? from ConfigUnreadable(path)
@@ -313,7 +313,7 @@ log += "spawned\n"                 # appends in place
 A function with `yield` produces values one at a time.
 
 ```fennec
-def visible(enemies: list[Enemy], camera: Camera):
+def visible(enemies: list[Enemy], camera: Camera) -> Iterator[Enemy]:
     for enemy in enemies:
         if camera.sees(enemy.position):
             yield enemy
@@ -363,7 +363,7 @@ struct Vec3:
     y: f32
     z: f32
 
-    def +(self, other: Vec3):
+    def +(self, other: Vec3) -> Vec3:
         Vec3(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z)
 
 position += velocity * dt
@@ -384,10 +384,10 @@ interface Shape:
 struct Circle:
     radius: f32
 
-    def area(self):
+    def area(self) -> f32:
         PI * self.radius * self.radius     # Circle is a Shape because it has area()
 
-def total_area[T: Shape](shapes: list[T]):
+def total_area[T: Shape](shapes: list[T]) -> f32:
     sum(shape.area() for shape in shapes)
 ```
 
@@ -404,7 +404,7 @@ enum Command:
     Spawn(enemy: Enemy)
     Damage(target: EnemyId, amount: int)
 
-def on_explosion(world: World, center: Vec3):
+def on_explosion(world: World, center: Vec3) -> list[Command]:
     [.Damage(id, 50) for id, enemy in world.enemies.items() if enemy.distance_to(center) < 3.0]
 
 for command in on_explosion(world, blast):
@@ -420,7 +420,7 @@ Every change to the world happens in one visible place, which also makes replays
 There's no `async` or `await`. Code that waits on disk or the network is written as normal functions, and the runtime does other work while it waits. Independent reads overlap automatically:
 
 ```fennec
-def load_assets(fs: Fs, manifest: Manifest):
+def load_assets(fs: Fs, manifest: Manifest) -> Assets:
     textures = load_textures(fs, manifest)?    # these two reads run at the same time
     sounds = load_sounds(fs, manifest)?
     Assets(textures=textures, sounds=sounds)
@@ -440,10 +440,10 @@ Each element is changed by exactly one thread, and results are deterministic. Da
 A function can only touch the outside world through what it's given. Without an `Fs` parameter, it can't read files. Without a `Clock`, it can't read the time.
 
 ```fennec
-def load_save(fs: Fs, clock: Clock, slot: int):
+def load_save(fs: Fs, clock: Clock, slot: int) -> Save:
     ...   # can read files and the time
 
-def parse_save(data: bytes):
+def parse_save(data: bytes) -> Save:
     ...   # pure: no I/O possible
 ```
 

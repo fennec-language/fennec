@@ -81,6 +81,8 @@ pub(crate) enum Helper {
     BoxEqual,
     StrFromValue,
     StrConcat,
+    StrAppend,
+    StrCharAt,
     StrIndex,
     StrSlice,
     StrCompare,
@@ -95,7 +97,7 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 87] = [
+pub(crate) const ALL: [Helper; 89] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -171,6 +173,8 @@ pub(crate) const ALL: [Helper; 87] = [
     Helper::BoxEqual,
     Helper::StrFromValue,
     Helper::StrConcat,
+    Helper::StrAppend,
+    Helper::StrCharAt,
     Helper::StrIndex,
     Helper::StrSlice,
     Helper::StrCompare,
@@ -289,6 +293,8 @@ impl Helper {
                 | Helper::Unshare
                 | Helper::BoxEqual
                 | Helper::StrConcat
+                | Helper::StrAppend
+                | Helper::StrCharAt
                 | Helper::StrIndex
                 | Helper::StrSlice
                 | Helper::StrCompare
@@ -323,6 +329,8 @@ impl Helper {
                     | Helper::BoxFromValue
                     | Helper::StrFromValue
                     | Helper::StrConcat
+                    | Helper::StrAppend
+                    | Helper::StrCharAt
                     | Helper::StrIndex
                     | Helper::StrSlice
                     | Helper::StrCompare
@@ -464,6 +472,8 @@ impl Helper {
             Helper::BoxEqual => shape("fennec_box_equal", &[I64, I64], &[I8]),
             Helper::StrFromValue => shape("fennec_str_from_value", &[I64, I64, I64], &[I64]),
             Helper::StrConcat => shape("fennec_str_concat", &[I64, I64], &[I64]),
+            Helper::StrAppend => shape("fennec_str_append", &[I64, I64], &[I64]),
+            Helper::StrCharAt => shape("fennec_str_char_at", &[I64, I64], &[I64]),
             Helper::StrIndex => shape("fennec_str_index", &[I64, I64, I64, I64], &[I64]),
             Helper::StrSlice => shape("fennec_str_slice", &[I64, I64, I64, I64, I64], &[I64]),
             Helper::StrCompare => shape("fennec_str_compare", &[I64, I64], &[I64]),
@@ -486,6 +496,8 @@ impl Helper {
             Helper::BoxEqual => heap::equal as *const u8,
             Helper::StrFromValue => strings::from_value as *const u8,
             Helper::StrConcat => strings::concat as *const u8,
+            Helper::StrAppend => strings::append as *const u8,
+            Helper::StrCharAt => strings::char_at as *const u8,
             Helper::StrIndex => strings::index as *const u8,
             Helper::StrSlice => strings::slice as *const u8,
             Helper::StrCompare => strings::compare as *const u8,

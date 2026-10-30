@@ -2,6 +2,7 @@
 //! Assigning into a field or item, and the statements the JIT doesn't compile yet, run in
 //! the interpreter as one step.
 
+use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use fennec_syntax::{Arg, BinOp, Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind};
@@ -131,6 +132,13 @@ impl Lowerer<'_, '_> {
     ) -> Result<(), Diagnostic> {
         match &target.kind {
             ExprKind::Name(name) => match self.local(name) {
+                Some(local @ super::Local { ty: Ty::Str, var: Some(var), .. })
+                    if op == Some(BinOp::Add)
+                        && !declare_mut
+                        && !self.borrowed_names.contains(&var.index()) =>
+                {
+                    self.append(name, local, target, value)
+                }
                 Some(local) if !declare_mut => {
                     let (new, new_ty) = self.assigned(target, op, value)?;
                     self.set_local(name, local, new, new_ty, target.span)
@@ -166,6 +174,29 @@ impl Lowerer<'_, '_> {
                 _ => self.interpret_assign(target, op, value, declare_mut, target.span),
             },
         }
+    }
+
+    /// `name += value` for a string the name owns, appended in place when the block has
+    /// room, so building a string a piece at a time isn't quadratic.
+    fn append(
+        &mut self,
+        name: &str,
+        local: super::Local,
+        target: &Expr,
+        value: &Expr,
+    ) -> Result<(), Diagnostic> {
+        let span = target.span.to(value.span);
+        let more = self.expr(value)?;
+        let (Some(more), Ty::Str, Some(var)) = (more.0, more.1, local.var) else {
+            let text = self.expr(target)?;
+            let (new, new_ty) = self.operate(BinOp::Add, text, more, span)?;
+            return self.set_local(name, local, new, new_ty, span);
+        };
+        // The helper takes over the name's owner, so the old value isn't released here.
+        let text = self.b.use_var(var);
+        let joined = self.append_text(text, more)?;
+        self.b.def_var(var, joined);
+        self.consume(Some(more), Ty::Str)
     }
 
     /// The value an assignment stores: `value`, or `target op value` for `+=` and the like.
@@ -421,6 +452,9 @@ impl Lowerer<'_, '_> {
     /// the loop counts through them.
     fn for_items(&mut self, names: &[String], iter: &Expr, body: &[Stmt]) -> Result<(), Diagnostic> {
         let (value, ty) = self.expr(iter)?;
+        if let (Some(text), Ty::Str, [name]) = (value, ty, names) {
+            return self.for_text(name, text, iter.span, body);
+        }
         self.note(iter.span, "the runtime lists the items a `for` loop goes over");
         let source = self.handle_of(value, ty, iter.span)?;
         let [start, end] = self.span_args(iter.span);

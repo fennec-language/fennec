@@ -142,6 +142,16 @@ def main(stdout: Stdout):                # no arrow: returns nothing
 
 This replaces the earlier rules that return types are inferred, and that recursive functions must declare theirs.
 
+**Built-in types are ordinary structs in the standard library.** `int`, `float`, `str`, `list` and `dict` are structs in `std`, with methods and the interfaces they satisfy written like any other type's. Only machine-level operations, such as adding two machine integers or loading from memory, are intrinsics the compiler provides.
+*Why:* There's no second kind of type that only the compiler can make. A user type does everything a built-in one does, by the same means.
+
+**Generic builtins are ordinary generic functions that call a method.** `abs`, `len`, `min`, `max`, `sum` and the like are written in `std`:
+```fennec
+def abs[T: Signed](x: T) -> T:
+    return x.abs()
+```
+A user type joins in by defining the method.
+
 **Builtins work on anything; methods belong to a type.** Builtins work on any value that fits an interface and never change it: `len`, `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`. Methods are specific to a type or change the value: `xs.append(x)`, `d.keys()`, `s.split(",")`, `mut xs.sort()`. A type supports a builtin by having the method, such as `def len(self)`. The language server offers the builtins that apply after `xs.`.
 *Why:* Builtins read well with comprehensions (`sum(e.health for e in enemies)`), and Python users and AI already write them. Python mostly follows this split; Fennec always does.
 
@@ -192,9 +202,10 @@ Type arguments are inferred at calls; `largest[int](xs)` is allowed when they ca
 
 **Generic code is checked once, and errors name the missing piece.** A generic body may use only what its bounds promise, so errors never surface at an instantiation. A call with a type that doesn't fit says what's missing and the nearest match: "`Rock` isn't a `Shape`: it has no `area(self) -> f32`. Its `area` returns `int`."
 
-**Generics are compiled per type everywhere, including development builds.** Each instantiation is a function compiled on its first call and cached by content. There's no dictionary passing and no dynamic dispatch, so development and release builds behave the same and every call is direct. If instantiations multiply, sharing code between ones with identical layout is a later optimization.
+**Generics compile the way Swift's do.** Development builds, including the JIT, compile a generic function once and share that code across every type it's used with, passing each type's methods alongside its values. Release builds compile a copy for each type, so every call is direct and can be inlined, then merge copies whose machine code comes out identical. What a program does is the same either way.
+*Why:* Development builds compile once per generic function instead of once per type, which keeps them fast to build. Release builds get full speed, without paying in binary size for copies that are identical anyway. This replaces the earlier rule that generics are compiled per type in every build.
 
-**Mixed types are an `enum`; open sets are function values.** A list that holds different types is a list of an enum: each element is inline with a one-byte tag, and `match` compiles to a jump table. When other kits must be able to add kinds, as with plugins, a struct with function fields does it, and a call through a function value is the only run-time dispatch in the language.
+**Mixed types are an `enum`; open sets are function values.** A list that holds different types is a list of an enum: each element is inline with a one-byte tag, and `match` compiles to a jump table. When other kits must be able to add kinds, as with plugins, a struct with function fields does it, and a call through a function value is the only run-time dispatch a program can ask for. Generic code shared in development builds is the compiler's choice, and release builds compile it away.
 
 **`Eq`, `Hash`, `Ordered` and `Format` are built-in interfaces,** satisfied automatically wherever the automatic `==`, hashing, ordering and printing apply.
 

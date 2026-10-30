@@ -116,3 +116,45 @@ fn arguments_to_anything_are_checked() {
         ["`missing` doesn't exist @ missing", "`also_missing` doesn't exist @ also_missing"]
     );
 }
+
+#[test]
+fn standard_library_methods_give_back_their_types() {
+    let setup = "mut rng = Random(seed=1)\nword = Regex(r'\\w+')\nmut queue = Deque()";
+    plus_one(setup, "rng.randint(1, 6) / 2", "can't mix int and float in `+`");
+    plus_one(setup, "rng.random()", "can't mix int and float in `+`");
+    plus_one(setup, "random_int(1, 2, 3, 4)", "can't use `+` on a tuple and an int");
+    plus_one(setup, "word.replace('a', 'b')", "can't use `+` on a str and an int");
+    plus_one(setup, "word.split('a')[0]", "can't use `+` on a str and an int");
+    plus_one(setup, "word.find_all('a')[0].start / 2", "can't mix int and float in `+`");
+    plus_one(setup, "len(queue) / 2", "can't mix int and float in `+`");
+    plus_one(setup, "is_regex('a')", "can't use `+` on a bool and an int");
+}
+
+#[test]
+fn a_regex_search_might_find_nothing() {
+    let program = "stdout.print(Regex(r'a').search('b').text)";
+    assert_eq!(in_main(program), ["this might be None @ Regex(r\"a\").search(\"b\").text"]);
+}
+
+#[test]
+fn patterns_written_in_the_program_are_checked() {
+    assert_eq!(
+        in_main("stdout.print(Regex(r'(a'))"),
+        ["this pattern isn't valid: this `(` is never closed @ r\"(a\""]
+    );
+    // A pattern made while the program runs might not be valid, so making it can fail.
+    assert_eq!(
+        in_main("stdout.print(Regex('(' + 'a').search('a'))"),
+        ["this is the result of something that can fail @ Regex(\"(\" + \"a\")"]
+    );
+}
+
+#[test]
+fn a_clock_gives_instants() {
+    let program = "
+        def main(stdout: Stdout, clock: Clock):
+            elapsed = clock.now() - clock.now()
+            stdout.print(elapsed.nanos + 'a')
+    ";
+    assert_eq!(problems(program), ["can't use `+` on an int and a str @ elapsed.nanos + \"a\""]);
+}

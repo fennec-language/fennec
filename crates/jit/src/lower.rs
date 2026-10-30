@@ -615,15 +615,6 @@ impl Lowerer<'_, '_> {
         [self.int(i64::from(span.start)), self.int(i64::from(span.end))]
     }
 
-    /// Where a failure at `span` is reported: inside an inlined standard library function,
-    /// at the program's call to it.
-    fn site(&self, span: Span) -> Span {
-        match self.call_site {
-            Some(site) if span.in_prelude() => site,
-            _ => span,
-        }
-    }
-
     fn name_id(&mut self, name: &str) -> Value {
         let id = intern(&mut self.shared.names, &mut self.shared.tables.names, name);
         self.int(id)

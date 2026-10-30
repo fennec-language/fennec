@@ -153,10 +153,12 @@ impl Lowerer<'_, '_> {
     /// and a `mut` struct held natively, which a method that changes `self` changes.
     fn keeps_call_receiver(&self, object: &Expr) -> bool {
         match &object.kind {
-            ExprKind::Name(name) => self
-                .local(name)
-                .is_none_or(|local| local.ty == Ty::Obj || (local.is_mut && matches!(local.ty, Ty::Struct(_)))),
-            ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => self.keeps_call_receiver(object),
+            ExprKind::Name(name) => self.local(name).is_none_or(|local| {
+                local.ty == Ty::Obj || (local.is_mut && matches!(local.ty, Ty::Struct(_)))
+            }),
+            ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => {
+                self.keeps_call_receiver(object)
+            }
             _ => false,
         }
     }

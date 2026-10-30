@@ -45,6 +45,8 @@ pub struct Interp<'out> {
     pub(crate) passing_up: Option<Flow>,
     /// Values collected by `yield`, one list per running generator.
     pub(crate) yields: Vec<Vec<Value>>,
+    /// Each regex pattern used so far, compiled.
+    pub(crate) regexes: HashMap<String, Rc<fennec_re::Regex>>,
 }
 
 /// Runs `module`'s `main`, writing what it prints to `out`.
@@ -73,6 +75,7 @@ impl<'out> Interp<'out> {
             out,
             passing_up: None,
             yields: Vec::new(),
+            regexes: HashMap::new(),
         };
         for source in prelude::SOURCES {
             let module = fennec_syntax::parse_prelude(source)?;

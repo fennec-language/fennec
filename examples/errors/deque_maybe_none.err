@@ -1,0 +1,7 @@
+error: this might be None
+  --> examples/errors/deque_maybe_none.fen:10:18
+   |
+10 |     stdout.print(events.popleft().name)
+   |                  ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: check with `if x is None:` first, use `?.`, or give a default with `else`

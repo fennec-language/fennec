@@ -17,6 +17,7 @@ mod ops;
 mod place;
 mod prelude;
 mod random;
+mod regex;
 mod scan;
 mod scope;
 mod testing;

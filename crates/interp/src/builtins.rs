@@ -12,7 +12,7 @@ use crate::interp::Interp;
 use crate::value::Value;
 use crate::{format, ops, random};
 
-const NAMES: [&str; 30] = [
+const NAMES: [&str; 31] = [
     "Err",
     "Ok",
     "abs",
@@ -25,6 +25,7 @@ const NAMES: [&str; 30] = [
     "floor",
     "ignore",
     "int",
+    "is_regex",
     "len",
     "list",
     "max",
@@ -89,7 +90,8 @@ impl Interp<'_> {
         }
         if let ([arg], "len") = (args.as_slice(), name)
             && let Value::Instance(instance) = &arg.value
-            && let Some(len) = self.type_info(&instance.type_name).and_then(|info| info.methods.get("len").cloned())
+            && let Some(len) =
+                self.type_info(&instance.type_name).and_then(|info| info.methods.get("len").cloned())
         {
             return self.call_with_values(&len, vec![arg.value.clone()], span);
         }
@@ -105,6 +107,7 @@ impl Interp<'_> {
             ("ignore", _) => Err(Diagnostic::new("`ignore` needs a reason the result doesn't matter", span)
                 .with_help("like `ignore(save(fs, game), \"autosave is best effort\")`")),
             ("len", [value]) => length(value, span),
+            ("is_regex", [Value::Str(pattern)]) => Ok(Value::Bool(self.regex(pattern).is_ok())),
             ("range", _) => range(&values, span),
             ("random_int" | "random_float" | "random_choice", _) => random::draw(name, &values, span),
             ("str", [value]) => Ok(Value::str(&format::display(value))),

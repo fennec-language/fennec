@@ -76,8 +76,11 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **Parallel reductions combine in a fixed order.** How `parallel sum(...)` splits and combines its work depends on the data's size, never the thread count.
 *Why:* Float results don't drift between runs or machines.
 
-**`Clock` and `Random` are capabilities,** passed in like `Stdout` and `Fs`.
-*Why:* Pass a fixed clock and a seeded `Random` and a game or test runs the same way every time.
+**`Clock` is a capability,** passed to `main` like `Stdout` and `Fs`. `clock.now()` reads a monotonic clock. A fixed clock for tests is still to come.
+*Why:* Code that reads the time says so in its parameters, and can be handed a fixed clock instead.
+
+**`Random` is a seeded value.** `Random(seed=42)` draws the same numbers in the same order on every machine. It's SplitMix64, done in integer math, and `random_int(seed, n, low, high)` gives the `n`th number of a seed's sequence without keeping a generator. Seeding from the OS will be a capability `main` receives; it isn't built yet.
+*Why:* A seed is all a replay or a lockstep peer needs to see the same numbers. Drawing by position also suits procedural generation, where each chunk of a world takes numbers from its own index.
 
 ## Speed
 
@@ -148,11 +151,25 @@ A big app that wants walls between its own parts splits into local kits in one w
 
 ## Syntax
 
+**Raw strings are `r"..."`.** Backslashes stay as written, so a pattern reads `r"\d+"`. A raw string can't contain `"`.
+*Why:* Regular expressions are unreadable with every backslash doubled. Python has the same strings, so people and AI already write them.
+
 **Doc comments are `##`, above what they document.** A `##` comment documents the function, struct, field or enum case that follows it, or the module when it's at the top of the file. Examples go in Markdown code fences and check results with `assert`. `fennec test` runs them. There are no `"""` docstrings: strings are never documentation.
 *Why:* One form that works on everything, including fields and enum cases. Fences render properly in `fennec doc`. Nim uses `##` for doc comments too.
 
 **f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay.
 *Why:* `{x=}` is what people want when debugging; `!r` has no meaning without Python's `repr`.
+
+## Standard library
+
+**Failures inside the standard library point at the program's call.** When a standard library function written in Fennec fails, the error shows the line in the program that called it, in both engines.
+*Why:* The library's own source isn't something the reader can fix, or even see.
+
+**Taking from an empty `Deque`, `Heap` or `PriorityQueue` gives `None`.** `pop`, `popleft` and `peek` return optionals, so the checker makes the empty case visible. `list.pop` keeps Python's behavior and fails on an empty list.
+*Why:* Draining a queue until it's empty is the normal way to use one, so the empty case is expected, not a mistake.
+
+**Regular expressions take linear time.** `std.re` runs patterns on a Pike VM, which follows every way a pattern could match at once, so no pattern can make matching blow up. There are no backreferences or lookarounds, which need backtracking. A pattern written in the program is checked before it runs; `Regex(text)` with a pattern built while it runs gives a result, like any struct with a `where` rule.
+*Why:* A pattern from a mod, a config file or a player can't hang a game or a server.
 
 ## Tooling
 

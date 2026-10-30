@@ -87,6 +87,15 @@ impl Lowerer<'_, '_> {
         self.shared.compiled.get(key)?.inline.clone()
     }
 
+    /// Where a failure at `span` is reported: inside an inlined standard library function,
+    /// at the program's call to it.
+    pub(super) fn site(&self, span: Span) -> Span {
+        match self.call_site {
+            Some(site) if span.in_prelude() => site,
+            _ => span,
+        }
+    }
+
     /// Lowers a call to `key` by lowering its body here, with its parameters bound to
     /// `values`, which are in the order a real call would pass them. For a method that
     /// changes `self`, `self_place` is where the caller holds the struct.

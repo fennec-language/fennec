@@ -1,0 +1,48 @@
+from std.random import Random, random_int
+
+struct Enemy:
+    name: str
+    health: int
+
+## Rolls `count` dice with `sides` sides each.
+def roll(mut rng: Random, count: int, sides: int) -> int:
+    sum(rng.randint(1, sides) for _ in range(count))
+
+test "the same seed gives the same numbers" for seed: int:
+    mut a = Random(seed=seed)
+    mut b = Random(seed=seed)
+    assert [a.randint(0, 99) for _ in range(5)] == [b.randint(0, 99) for _ in range(5)]
+
+test "randint stays in its range" for seed: int, low: int:
+    mut rng = Random(seed=seed)
+    value = rng.randint(low, low + 5)
+    assert low <= value <= low + 5
+
+test "shuffling keeps every item" for seed: int, items: list[int]:
+    mut rng = Random(seed=seed)
+    mut shuffled = items
+    rng.shuffle(mut shuffled)
+    assert sorted(shuffled) == sorted(items)
+
+def main(stdout: Stdout):
+    mut rng = Random(seed=42)
+    stdout.print([rng.randint(1, 6) for _ in range(10)])
+    stdout.print(roll(mut rng, 3, 6), rng.random(), rng.uniform(-1.0, 1.0))
+
+    enemies = [Enemy(name="goblin", health=7), Enemy(name="orc", health=15), Enemy(name="troll", health=30)]
+    stdout.print(rng.choice(enemies).name)
+
+    mut deck = ["ace", "king", "queen", "jack", "ten"]
+    rng.shuffle(mut deck)
+    stdout.print(deck)
+    stdout.print(rng)
+
+    # A replay starts again from the same seed and sees the same numbers.
+    mut replay = Random(seed=42)
+    stdout.print([replay.randint(1, 6) for _ in range(10)])
+
+    # Without keeping a generator: the 3rd number of seed 7's sequence, from 0 to 9.
+    value, drawn = random_int(7, 3, 0, 9)
+    stdout.print(value, drawn)
+    mut wide = Random(seed=-1)
+    stdout.print(wide.randint(-9_223_372_036_854_775_807, 9_223_372_036_854_775_807))

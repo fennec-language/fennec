@@ -2,7 +2,7 @@
 
 /// The standard library written in Fennec, loaded before every program by both the
 /// interpreter and the type checker.
-pub const PRELUDE: [&str; 5] = [ERRORS, MATH, COLLECTIONS, RANDOM, TIME];
+pub const PRELUDE: [&str; 6] = [ERRORS, MATH, COLLECTIONS, RANDOM, TIME, RE];
 
 const ERRORS: &str = r"
 error IoError:
@@ -354,3 +354,31 @@ struct Instant:
     def <(self, other: Instant) -> bool:
         self.nanos < other.nanos
 ";
+
+const RE: &str = r#"
+## A regular expression. Matching takes time in proportion to the text's length whatever the
+## pattern, since nothing backtracks. Patterns follow Python's `re`: `.`, classes like `[a-z]`
+## and `\d`, anchors `^ $ \b`, repeats `* + ? {m,n}` (lazy with a `?` after), groups,
+## `(?:...)` and `|`. Write them as raw strings, like `Regex(r"\d+")`.
+##
+## Its methods: `match(text)` at the start, `fullmatch(text)` for all of it, `search(text)`
+## anywhere (each gives a `Match?`); `find_all(text)`; `replace(text, with)`, where `\1` in
+## `with` is group 1; and `split(text)`.
+struct Regex:
+    pattern: str where is_regex(pattern)
+
+## Where a `Regex` matched, and what its groups caught.
+struct Match:
+    text: str
+    ## Where the match starts and ends, counting characters, as in `text[start:end]`.
+    start: int
+    end: int
+    ## What each group caught, from group 1 on: None for a group that took no part.
+    groups: list[str?]
+
+    ## Group `n`'s text: 0 for the whole match.
+    def [](self, n: int) -> str?:
+        if n == 0:
+            return self.text
+        self.groups[n - 1]
+"#;

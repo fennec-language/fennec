@@ -9,7 +9,7 @@ use crate::messages::{needless_mut, no_method, wrong_args};
 use crate::types::{Type, article, join, join_all};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most).
-const BUILTINS: [(&str, usize, usize); 31] = [
+const BUILTINS: [(&str, usize, usize); 32] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("abs", 1, 1),
@@ -22,6 +22,7 @@ const BUILTINS: [(&str, usize, usize); 31] = [
     ("floor", 1, 1),
     ("ignore", 2, 2),
     ("int", 1, 1),
+    ("is_regex", 1, 1),
     ("len", 1, 1),
     ("list", 1, 1),
     ("max", 1, usize::MAX),
@@ -121,7 +122,7 @@ fn method(ty: &Type, name: &str) -> Option<Method> {
         }
         (Type::IdMap(item), "ids") => reads(Type::list(Type::Id(item.clone())), 0, 0),
         (Type::Str, _) => return str_method(name),
-        (Type::Named(capability), _) => return capability_method(capability, name),
+        (Type::Named(type_name), _) => return named_method(type_name, name),
         _ => return None,
     })
 }
@@ -140,14 +141,20 @@ fn str_method(name: &str) -> Option<Method> {
     }
 }
 
-fn capability_method(capability: &str, name: &str) -> Option<Method> {
-    match (capability, name) {
+/// Methods of capabilities, and of standard library types that are written in Rust.
+fn named_method(type_name: &str, name: &str) -> Option<Method> {
+    let found = || Type::named("Match");
+    match (type_name, name) {
         ("Stdout", "print" | "write") => Some(reads(Type::Unit, 0, usize::MAX)),
         ("Fs", "exists") => Some(reads(Type::Bool, 1, 1)),
         ("Fs", "read_text") => Some(reads(Type::result(Type::Str, Type::named("IoError")), 1, 1)),
         ("Fs", "write_text") => Some(reads(Type::result(Type::Unit, Type::named("IoError")), 2, 2)),
         ("Clock", "now") => Some(reads(Type::named("Instant"), 0, 0)),
         ("Clock", "sleep") => Some(reads(Type::Unit, 1, 1)),
+        ("Regex", "match" | "fullmatch" | "search") => Some(reads(Type::optional(found()), 1, 1)),
+        ("Regex", "find_all") => Some(reads(Type::list(found()), 1, 1)),
+        ("Regex", "replace") => Some(reads(Type::Str, 2, 2)),
+        ("Regex", "split") => Some(reads(Type::list(Type::Str), 1, 1)),
         _ => None,
     }
 }
@@ -246,7 +253,8 @@ impl FnCx<'_> {
             "Ok" => Type::result(first, Type::Unknown),
             "Err" => Type::result(Type::Unknown, first),
             "len" => {
-                let has_len = matches!(&first, Type::Named(name) if self.checker.program.method(name, "len").is_some());
+                let has_len =
+                    matches!(&first, Type::Named(name) if self.checker.program.method(name, "len").is_some());
                 if !first.is_collection()
                     && !has_len
                     && !matches!(first, Type::Tuple(_) | Type::IdMap(_) | Type::Unknown)
@@ -273,6 +281,7 @@ impl FnCx<'_> {
                 Type::Tuple(vec![item, Type::Int])
             }
             "str" => Type::Str,
+            "is_regex" => Type::Bool,
             "round" if types.len() == 2 => Type::Float,
             "int" | "floor" | "ceil" | "round" => Type::Int,
             "float" | "sqrt" | "sin" | "cos" => Type::Float,

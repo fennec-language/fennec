@@ -1,13 +1,18 @@
-//! Building the Rust twins and timing runs.
+//! Building the Rust twins, and timing runs. Each program runs several times, taking turns
+//! with the others so they share whatever the machine is doing, and its median run counts.
+//! On Linux with `perf`, each run's user-space instructions are counted too: unlike time,
+//! they barely move when the machine is busy.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// One timed program: its fastest run and what it printed.
+/// One measured program: its median time and instruction count, and what it printed.
 #[derive(Clone, Debug)]
 pub(crate) struct Timing {
-    pub(crate) best: Duration,
+    pub(crate) median: Duration,
+    /// The median count of instructions it ran, where `perf` can count them.
+    pub(crate) instructions: Option<u64>,
     pub(crate) output: String,
     /// What it wrote to stderr, where the JIT says it fell back to the interpreter.
     pub(crate) notes: String,
@@ -19,10 +24,30 @@ pub(crate) struct Program {
     pub(crate) args: Vec<String>,
 }
 
+/// One run: how long it took, how many instructions it ran, and what it printed.
+struct Run {
+    took: Duration,
+    instructions: Option<u64>,
+    stdout: String,
+    stderr: String,
+}
+
 impl Program {
-    fn run(&self) -> Result<(Duration, String, String), String> {
+    /// Runs the program, under `perf stat` when `count` names a file for its report.
+    fn run(&self, count: Option<&Path>) -> Result<Run, String> {
+        let mut command = match count {
+            Some(report) => {
+                let mut perf = Command::new("perf");
+                perf.args(["stat", "-x,", "-e", "instructions:u", "-o"])
+                    .arg(report)
+                    .arg("--")
+                    .arg(&self.command);
+                perf
+            }
+            None => Command::new(&self.command),
+        };
         let started = Instant::now();
-        let output = Command::new(&self.command)
+        let output = command
             .args(&self.args)
             .output()
             .map_err(|err| format!("couldn't run {}: {err}", self.command.display()))?;
@@ -32,24 +57,57 @@ impl Program {
         if !output.status.success() {
             return Err(format!("{} {} failed:\n{stderr}", self.command.display(), self.args.join(" ")));
         }
-        Ok((took, stdout, stderr))
+        let instructions = count.and_then(|report| instructions(&std::fs::read_to_string(report).ok()?));
+        Ok(Run { took, instructions, stdout, stderr })
     }
 }
 
-/// Runs each program `runs` times, taking turns so they share whatever the machine is doing,
-/// and keeps each one's fastest run.
-pub(crate) fn time_together(programs: &[Program], runs: usize) -> Result<Vec<Timing>, String> {
-    let mut timings: Vec<Option<Timing>> = vec![None; programs.len()];
+/// The instruction count in a `perf stat -x,` report: the first field of the line for the event.
+fn instructions(report: &str) -> Option<u64> {
+    report.lines().find(|line| line.contains("instructions"))?.split(',').next()?.trim().parse().ok()
+}
+
+/// Where `perf` writes its report, if it can count instructions on this machine. CI allows it
+/// on Linux; elsewhere the suite goes by time alone.
+pub(crate) fn perf_report(out_dir: &Path) -> Option<PathBuf> {
+    let report = out_dir.join("perf.txt");
+    let probe = Program { command: PathBuf::from("true"), args: Vec::new() };
+    probe.run(Some(&report)).ok()?.instructions.map(|_| report)
+}
+
+/// The middle value: the mean of the middle two for an even count.
+fn median<T: Copy + Ord>(values: &mut [T], mean: fn(T, T) -> T) -> Option<T> {
+    values.sort_unstable();
+    let middle = values.len() / 2;
+    let upper = *values.get(middle)?;
+    if values.len() % 2 == 1 { Some(upper) } else { values.get(middle - 1).map(|&lower| mean(lower, upper)) }
+}
+
+/// Runs each program `runs` times, taking turns, and keeps each one's median time and count.
+pub(crate) fn time_together(
+    programs: &[Program],
+    runs: usize,
+    count: Option<&Path>,
+) -> Result<Vec<Timing>, String> {
+    let mut all: Vec<Vec<Run>> = programs.iter().map(|_| Vec::with_capacity(runs)).collect();
     for _ in 0..runs {
-        for (program, timing) in programs.iter().zip(timings.iter_mut()) {
-            let (took, output, notes) = program.run()?;
-            match timing {
-                Some(timing) if timing.best <= took => {}
-                _ => *timing = Some(Timing { best: took, output, notes }),
-            }
+        for (program, runs) in programs.iter().zip(all.iter_mut()) {
+            runs.push(program.run(count)?);
         }
     }
-    Ok(timings.into_iter().flatten().collect())
+    let mut timings = Vec::with_capacity(programs.len());
+    for runs in all {
+        let mut times: Vec<Duration> = runs.iter().map(|run| run.took).collect();
+        let mut counts: Vec<u64> = runs.iter().filter_map(|run| run.instructions).collect();
+        let Some(first) = runs.into_iter().next() else { continue };
+        timings.push(Timing {
+            median: median(&mut times, |a, b| (a + b) / 2).unwrap_or_default(),
+            instructions: if counts.is_empty() { None } else { median(&mut counts, u64::midpoint) },
+            output: first.stdout,
+            notes: first.stderr,
+        });
+    }
+    Ok(timings)
 }
 
 /// Compiles a Rust twin the way a release build would, for this machine's CPU.
@@ -71,4 +129,24 @@ pub(crate) fn build_twin(source: &Path, out_dir: &Path) -> Result<PathBuf, Strin
         ));
     }
     Ok(binary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{instructions, median};
+
+    #[test]
+    fn perf_reports_give_their_instruction_count() {
+        let report = "# started on Fri Oct 30 12:00:00 2026\n\n1234567890,,instructions:u,1000000,100.00,,\n";
+        assert_eq!(instructions(report), Some(1_234_567_890));
+        assert_eq!(instructions("<not supported>,,instructions:u,0,100.00,,\n"), None);
+        assert_eq!(instructions(""), None);
+    }
+
+    #[test]
+    fn the_median_is_the_middle_run() {
+        assert_eq!(median(&mut [5, 1, 9], u64::midpoint), Some(5));
+        assert_eq!(median(&mut [4, 1, 9, 2], u64::midpoint), Some(3));
+        assert_eq!(median(&mut Vec::<u64>::new(), u64::midpoint), None);
+    }
 }

@@ -1,0 +1,5 @@
+def area(width: float, height: float):
+    width * height
+
+def main(stdout: Stdout):
+    stdout.print(area(width=2.0))

@@ -1,0 +1,7 @@
+error: `fibonacci` calls itself, so its return type has to be written
+ --> examples/errors/recursive.fen:1:1
+  |
+1 | def fibonacci(n: int):
+  | ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: write it after the parameters: `def fibonacci(n: int) -> int:`

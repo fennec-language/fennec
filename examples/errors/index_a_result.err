@@ -1,7 +1,7 @@
 error: this is the result of something that can fail
- --> examples/errors/index_a_result.fen:7:18
-  |
-7 |     stdout.print(first([1, 2])[0])
-  |                  ^^^^^^^^^^^^^^^^
-  |
-  = help: get the value out with `?`, `else`, or `match` first
+  --> examples/errors/index_a_result.fen:10:18
+   |
+10 |     stdout.print(first([1, 2])[0])
+   |                  ^^^^^^^^^^^^^^^^
+   |
+   = help: get the value out with `?`, `else`, or `match` first

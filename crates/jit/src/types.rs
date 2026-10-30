@@ -1,0 +1,152 @@
+//! What the JIT knows about a program's functions. Ints, floats and bools are native
+//! machine values; every other value is an object the runtime holds, which native code
+//! refers to by a handle. Return types come from the type checker.
+
+use fennec_check::Signatures;
+use fennec_syntax::{Diagnostic, FnDef, Item, Module, Span, StmtKind};
+
+use crate::layout::Layouts;
+
+/// How native code holds a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ty {
+    Int,
+    Float,
+    Bool,
+    /// Nothing at all: what a function without a value returns.
+    Unit,
+    /// The `stdout` capability, which needs nothing at run time.
+    Stdout,
+    /// The `fs` capability, which needs nothing at run time either.
+    Fs,
+    /// Anything else, held by the runtime.
+    Obj,
+    /// A plain struct, in memory native code owns, which it refers to by address. The
+    /// number picks its layout.
+    Struct(u32),
+}
+
+impl Ty {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Ty::Int => "int",
+            Ty::Float => "float",
+            Ty::Bool => "bool",
+            Ty::Unit => "nothing",
+            Ty::Stdout => "Stdout",
+            Ty::Fs => "Fs",
+            Ty::Obj => "value",
+            Ty::Struct(_) => "struct",
+        }
+    }
+}
+
+pub(crate) struct Param {
+    pub(crate) name: String,
+    pub(crate) ty: Ty,
+    pub(crate) is_mut: bool,
+}
+
+pub(crate) struct Function<'m> {
+    pub(crate) def: &'m FnDef,
+    /// Its name in the signature table: `name`, or `Type.name` for a method.
+    pub(crate) key: String,
+    /// Whether it's from the standard library rather than the program.
+    pub(crate) prelude: bool,
+    pub(crate) params: Vec<Param>,
+    pub(crate) ret: Ty,
+    /// Whether it gives back a result: it contains `fail` or `?`.
+    pub(crate) fallible: bool,
+}
+
+pub(crate) struct Program<'m> {
+    pub(crate) functions: Vec<Function<'m>>,
+    pub(crate) layouts: Layouts,
+    /// Functions and methods the JIT doesn't try to compile, like generators.
+    pub(crate) excluded: Vec<String>,
+    pub(crate) main_span: Span,
+}
+
+pub(crate) fn unsupported(what: &str, span: Span) -> Diagnostic {
+    Diagnostic::new(format!("the JIT can't compile {what} yet"), span)
+        .with_help("run the program without `--jit` to use the interpreter")
+}
+
+impl<'m> Program<'m> {
+    /// The functions and methods the JIT could compile, the standard library's included.
+    /// The rest run in the interpreter when native code calls them.
+    pub(crate) fn from_module(
+        module: &'m Module,
+        prelude: &'m [Module],
+        signatures: &Signatures,
+    ) -> Result<Self, Diagnostic> {
+        let mut layouts = Layouts::new(signatures, signatures.structures().map(str::to_owned));
+        for item in prelude.iter().chain(std::iter::once(module)).flat_map(|module| &module.items) {
+            if let Item::Struct(def) = item {
+                layouts.add_defaults(def);
+            }
+        }
+        let mut functions = Vec::new();
+        let mut excluded = Vec::new();
+        let mut main_span = None;
+        let mut add = |def: &'m FnDef, key: String, from_prelude: bool| {
+            if signatures.get(&key).is_none() {
+                return;
+            }
+            match function(def, key.clone(), signatures, &layouts) {
+                Some(function) => functions.push(Function { prelude: from_prelude, ..function }),
+                None => excluded.push(key),
+            }
+        };
+        let modules = prelude.iter().map(|module| (module, true)).chain(std::iter::once((module, false)));
+        for (item, from_prelude) in modules
+            .flat_map(|(module, from_prelude)| module.items.iter().map(move |item| (item, from_prelude)))
+        {
+            match item {
+                Item::Function(def) => {
+                    if def.name == "main" {
+                        main_span = Some(def.span);
+                    }
+                    add(def, def.name.clone(), from_prelude);
+                }
+                Item::Struct(ty) | Item::Enum(ty) | Item::Error(ty) => {
+                    for method in &ty.methods {
+                        add(method, format!("{}.{}", ty.name, method.name), from_prelude);
+                    }
+                }
+                Item::Stmt(stmt) => return Err(unsupported("top-level statements", stmt.span)),
+                _ => {}
+            }
+        }
+        let main_span = main_span
+            .ok_or_else(|| Diagnostic::new("this program has no `main` function", Span::default()))?;
+        if !functions.iter().any(|function| function.def.name == "main") {
+            return Err(unsupported("this `main`", main_span));
+        }
+        Ok(Program { functions, layouts, excluded, main_span })
+    }
+}
+
+fn function<'m>(
+    def: &'m FnDef,
+    key: String,
+    signatures: &Signatures,
+    layouts: &Layouts,
+) -> Option<Function<'m>> {
+    let signature = signatures.get(&key)?;
+    if signature.generator || def.body.iter().any(|stmt| matches!(stmt.kind, StmtKind::Def(_))) {
+        return None;
+    }
+    let params = def
+        .params
+        .iter()
+        .zip(&signature.params)
+        .map(|(param, typed)| Param {
+            name: param.name.clone(),
+            ty: layouts.ty(&typed.ty),
+            is_mut: param.is_mut,
+        })
+        .collect();
+    let ret = if signature.can_fail { Ty::Obj } else { layouts.ty(&signature.returns) };
+    Some(Function { def, key, prelude: false, params, ret, fallible: signature.can_fail })
+}

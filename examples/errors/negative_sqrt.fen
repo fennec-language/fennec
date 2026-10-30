@@ -1,0 +1,6 @@
+def distance(squared: float):
+    sqrt(squared)
+
+def main(stdout: Stdout):
+    stdout.print(distance(9.0))
+    stdout.print(distance(-1.0))

@@ -1,0 +1,6 @@
+def next_id(last: int):
+    last + 1
+
+def main(stdout: Stdout):
+    stdout.print(next_id(41))
+    stdout.print(next_id(9223372036854775807))

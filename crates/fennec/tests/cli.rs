@@ -72,10 +72,11 @@ fn fennec_on(command: &str, name: &str, source: &str) -> std::io::Result<Output>
 fn run_stops_runaway_recursion_with_an_error() {
     // The interpreter runs on a big stack so that the depth limit, not a stack overflow,
     // is what stops a program that recurses forever.
-    let source = "def forever(n: int):\n    forever(n + 1)\n\ndef main(stdout: Stdout):\n    forever(0)\n";
+    let source =
+        "def forever(n: int) -> int:\n    forever(n + 1)\n\ndef main(stdout: Stdout):\n    forever(0)\n";
     let output = fennec_on("run", "forever", source).unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(text(&output.stderr).starts_with("error: calls nested more than 1000 deep"));
+    assert!(text(&output.stderr).starts_with("error: calls nested too deeply"));
 }
 
 #[test]
@@ -147,6 +148,24 @@ fn test_reports_a_program_that_cant_parse() {
     let output = fennec(&["test", "examples/errors/raise.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(text(&output.stderr).starts_with("error: Fennec doesn't have `raise`"));
+}
+
+#[test]
+fn run_reports_every_problem_the_checker_finds_before_running() {
+    let output = fennec(&["run", "examples/errors/several.fen"], "").unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(text(&output.stdout), "");
+    let stderr = text(&output.stderr);
+    assert_eq!(stderr.matches("error: ").count(), 3, "{stderr}");
+    assert!(stderr.contains("\n\nerror: can't mix int and float"), "{stderr}");
+}
+
+#[test]
+fn test_checks_the_program_before_running_its_tests() {
+    let output = fennec(&["test", "examples/errors/mut_self.fen"], "").unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(text(&output.stdout), "");
+    assert!(text(&output.stderr).starts_with("error: `self` isn't mut"));
 }
 
 #[test]

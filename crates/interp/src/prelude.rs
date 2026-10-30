@@ -1,45 +1,10 @@
-//! The standard library so far. Most of it is written in Fennec itself; the rest is builtins.
+//! The standard library so far. Most of it is written in Fennec itself (in `fennec_syntax::PRELUDE`,
+//! which the type checker reads too); the rest is builtins.
 
 use fennec_syntax::{Diagnostic, Import};
 
 /// Fennec source loaded before every program.
-pub(crate) const SOURCES: [&str; 2] = [ERRORS, MATH];
-
-const ERRORS: &str = r"
-error IoError:
-    reason: str
-
-error InvalidValue:
-    message: str
-";
-
-const MATH: &str = r"
-struct Vec3:
-    x = 0.0
-    y = 0.0
-    z = 0.0
-
-    def zero():
-        Vec3()
-
-    def +(self, other: Vec3):
-        Vec3(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z)
-
-    def -(self, other: Vec3):
-        Vec3(x=self.x - other.x, y=self.y - other.y, z=self.z - other.z)
-
-    def *(self, scale: float):
-        Vec3(x=self.x * scale, y=self.y * scale, z=self.z * scale)
-
-    def dot(self, other: Vec3):
-        self.x * other.x + self.y * other.y + self.z * other.z
-
-    def length(self):
-        sqrt(self.dot(self))
-
-    def distance_to(self, other: Vec3):
-        (self - other).length()
-";
+pub(crate) const SOURCES: [&str; 2] = fennec_syntax::PRELUDE;
 
 /// The modules that exist so far, and the names each one provides.
 const MODULES: [(&str, &[&str]); 3] = [

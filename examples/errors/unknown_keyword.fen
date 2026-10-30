@@ -1,0 +1,5 @@
+def greet(name: str):
+    f"Hello, {name}"
+
+def main(stdout: Stdout):
+    stdout.print(greet(nmae="Ash"))

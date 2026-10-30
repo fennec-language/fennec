@@ -1,0 +1,7 @@
+error: an arrow function can't change `seen`, which is defined outside it
+ --> examples/errors/closure_mut.fen:5:44
+  |
+5 |     words_seen = sorted(words, key=word => seen.append(word))
+  |                                            ^^^^
+  |
+  = help: functions can read the names around them but not change them: return a value instead, and change `seen` outside the function

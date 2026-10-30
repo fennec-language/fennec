@@ -1,0 +1,23 @@
+error: `enemy` isn't mut
+ --> examples/errors/several.fen:6:5
+  |
+6 |     enemy.health = 0
+  |     ^^^^^^^^^^^^
+  |
+  = help: declare it with `mut enemy = ...` if it needs to change
+
+error: can't mix int and float in `+`
+ --> examples/errors/several.fen:7:18
+  |
+7 |     stdout.print(enemy.health + 0.5)
+  |                  ^^^^^^^^^^^^^^^^^^
+  |
+  = help: convert one side with float(...) or int(...)
+
+error: `print` doesn't exist
+ --> examples/errors/several.fen:8:5
+  |
+8 |     print(enemy)
+  |     ^^^^^
+  |
+  = help: there's no global output: write with the `stdout` that `main` receives, like `stdout.print(x)`

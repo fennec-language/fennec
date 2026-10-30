@@ -1,0 +1,7 @@
+error: `enemy` isn't mut
+ --> examples/errors/mut_method.fen:9:5
+  |
+9 |     enemy.take_damage(10)
+  |     ^^^^^
+  |
+  = help: declare it with `mut enemy = ...` if it needs to change

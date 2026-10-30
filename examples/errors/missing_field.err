@@ -1,0 +1,7 @@
+error: `Enemy` needs a value for `name`
+ --> examples/errors/missing_field.fen:6:18
+  |
+6 |     stdout.print(Enemy(health=50))
+  |                  ^^^^^^^^^^^^^^^^
+  |
+  = help: pass it, like `Enemy(name=...)`

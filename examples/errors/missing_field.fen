@@ -1,0 +1,6 @@
+struct Enemy:
+    name: str
+    health = 100
+
+def main(stdout: Stdout):
+    stdout.print(Enemy(health=50))

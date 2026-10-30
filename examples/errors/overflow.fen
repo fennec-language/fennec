@@ -1,0 +1,8 @@
+def factorial(n: int) -> int:
+    if n <= 1:
+        return 1
+    return n * factorial(n - 1)
+
+def main(stdout: Stdout):
+    stdout.print(factorial(20))
+    stdout.print(factorial(21))

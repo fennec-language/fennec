@@ -1,0 +1,7 @@
+error: `Enemy` has no field `hp`
+ --> examples/errors/unknown_field.fen:7:18
+  |
+7 |     stdout.print(boss.hp)
+  |                  ^^^^^^^
+  |
+  = help: call a method with parentheses, like `x.length()`

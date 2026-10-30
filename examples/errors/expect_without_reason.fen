@@ -1,6 +1,9 @@
+error NotANumber:
+    text: str
+
 def parse(text: str):
     if not text.isdigit():
-        fail "not a number"
+        fail NotANumber(text)
     int(text)
 
 def main(stdout: Stdout):

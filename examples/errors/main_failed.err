@@ -1,0 +1,5 @@
+error: `main` failed: Broken(reason="on purpose")
+ --> examples/errors/main_failed.fen:4:1
+  |
+4 | def main(stdout: Stdout):
+  | ^^^^^^^^^^^^^^^^^^^^^^^^

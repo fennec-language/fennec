@@ -17,6 +17,8 @@ description: Where Fennec is today, what gets built first, and the design questi
 - Lists, dicts, sets, tuples, comprehensions, slices, generators, `with`, `IdMap` and `Vec3`.
 - Values without references: copies are independent, and changes happen in place without copying when nothing else shares the value.
 - Every example in the repository's `examples/` folder is a test, including the error messages.
+- A first type checker, run before every program and test: unknown names, `mut`, arguments and fields, bool conditions, int and float mixing, unhandled errors and `None`, `match` over every case, and inferred return types.
+- A first native compiler: `fennec run --jit` compiles programs to machine code with Cranelift, and every example runs with exactly the interpreter's output. Numbers stay in machine registers, so numeric code runs about 70 times faster than in the interpreter; other values still go through the interpreter's runtime for now.
 
 ## v0.1: checked before it runs
 
@@ -35,8 +37,7 @@ The next milestone moves Fennec's checks from runtime to compile time.
 
 ## v0.2: native speed
 
-- The typed bytecode interpreter.
-- The fast compiler for development builds, with hot functions promoted from the interpreter.
+- The fast compiler for development builds, compiling each function on its first call.
 - The optimizing compiler for release builds.
 - The shared build cache.
 - The benchmark suite and the performance check on every change.
@@ -65,12 +66,10 @@ The next milestone moves Fennec's checks from runtime to compile time.
 
 ## Open questions
 
-These are still being decided:
+These are still being decided. Decisions already made, and why, are in [the design decisions](https://github.com/fennec-language/fennec/blob/main/docs/decisions.md).
 
-- Whether ID types are written with an alias (`type EnemyId = Id[Enemy]`) or provided automatically (`Enemy.Id`).
-- Whether integer overflow checks stay on in release builds by default. The benchmark suite will decide.
+- How a function declares the errors it can fail with.
 - How closures longer than one line should look, beyond nested functions.
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.
-- How views into collections are returned from functions without lifetime annotations.
 - The file extension (currently `.fen`).

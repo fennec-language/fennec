@@ -1,6 +1,9 @@
+error Empty:
+    reason: str
+
 def first(items: list[int]):
     if len(items) == 0:
-        fail "empty"
+        fail Empty("no items")
     items[0]
 
 def main(stdout: Stdout):

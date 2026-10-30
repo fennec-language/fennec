@@ -1,0 +1,5 @@
+error: division by zero
+ --> examples/errors/division_by_zero.fen:2:5
+  |
+2 |     total // count
+  |     ^^^^^^^^^^^^^^

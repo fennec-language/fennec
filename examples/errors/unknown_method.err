@@ -1,0 +1,7 @@
+error: a list has no method `push`
+ --> examples/errors/unknown_method.fen:3:5
+  |
+3 |     queue.push("ice")
+  |     ^^^^^^^^^^^^^^^^^
+  |
+  = help: use `append`

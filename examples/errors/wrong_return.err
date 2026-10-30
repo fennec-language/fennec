@@ -1,0 +1,7 @@
+error: `label` returns a str, but this is an int
+ --> examples/errors/wrong_return.fen:2:5
+  |
+2 |     count * 2
+  |     ^^^^^^^^^
+  |
+  = help: return a str, or change the return type

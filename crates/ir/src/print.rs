@@ -9,6 +9,12 @@ use crate::{BlockId, Function, InstKind, LocalId, Operand, Program, Terminator};
 
 impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for def in &self.structs {
+            writeln!(f, "struct {}", def.name)?;
+            for (name, ty) in &def.fields {
+                writeln!(f, "  {name}: {ty}")?;
+            }
+        }
         for function in &self.functions {
             writeln!(f, "{function}")?;
         }
@@ -73,6 +79,14 @@ impl fmt::Display for InstKind {
             InstKind::Unary { dest, op: UnaryOp::Neg, value } => write!(f, "{dest} = -{value}"),
             InstKind::Unary { dest, op: UnaryOp::Not, value } => write!(f, "{dest} = not {value}"),
             InstKind::Binary { dest, op, lhs, rhs } => write!(f, "{dest} = {lhs} {} {rhs}", op.symbol()),
+            InstKind::Make { dest, type_name, fields } => {
+                let fields: Vec<String> = fields.iter().map(ToString::to_string).collect();
+                write!(f, "{dest} = make {type_name}({})", fields.join(", "))
+            }
+            InstKind::GetField { dest, object, field } => write!(f, "{dest} = {object}.{field}"),
+            InstKind::SetField { object, path, value } => {
+                write!(f, "{object}.{} = {value}", path.join("."))
+            }
             InstKind::Call { dest, function, args } => {
                 let args: Vec<String> = args.iter().map(ToString::to_string).collect();
                 if let Some(dest) = dest {

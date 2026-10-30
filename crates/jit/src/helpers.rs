@@ -2,7 +2,7 @@
 //! where they are. Each takes and returns only plain numbers.
 
 use cranelift_codegen::ir::types::{F64, I8, I64, Type};
-use fennec_interp::embed::{eval, io, names, temps};
+use fennec_interp::embed::{eval, io, names, objects, temps};
 
 use crate::runtime;
 
@@ -26,6 +26,7 @@ pub(crate) enum Helper {
     Float,
     Bool,
     None,
+    Unit,
     Str,
     ToInt,
     ToFloat,
@@ -57,9 +58,21 @@ pub(crate) enum Helper {
     Items,
     Count,
     Item,
+    Binary,
+    Unary,
+    Field,
+    Index,
+    TypeOf,
+    Path,
+    PathField,
+    PathIndex,
+    PathGet,
+    Put,
+    PutItem,
+    Entries,
 }
 
-pub(crate) const ALL: [Helper; 49] = [
+pub(crate) const ALL: [Helper; 62] = [
     Helper::Fail,
     Helper::Enter,
     Helper::Leave,
@@ -78,6 +91,7 @@ pub(crate) const ALL: [Helper; 49] = [
     Helper::Float,
     Helper::Bool,
     Helper::None,
+    Helper::Unit,
     Helper::Str,
     Helper::ToInt,
     Helper::ToFloat,
@@ -109,6 +123,18 @@ pub(crate) const ALL: [Helper; 49] = [
     Helper::Items,
     Helper::Count,
     Helper::Item,
+    Helper::Binary,
+    Helper::Unary,
+    Helper::Field,
+    Helper::Index,
+    Helper::TypeOf,
+    Helper::Path,
+    Helper::PathField,
+    Helper::PathIndex,
+    Helper::PathGet,
+    Helper::Put,
+    Helper::PutItem,
+    Helper::Entries,
 ];
 
 /// A helper's symbol, parameters and results.
@@ -143,6 +169,7 @@ impl Helper {
             Helper::Float => shape("fennec_float", &[F64], &[I64]),
             Helper::Bool => shape("fennec_bool", &[I8], &[I64]),
             Helper::None => shape("fennec_none", &[], &[I64]),
+            Helper::Unit => shape("fennec_unit", &[], &[I64]),
             Helper::Str => shape("fennec_str", &[I64], &[I64]),
             Helper::ToInt => shape("fennec_to_int", &[I64, I64, I64], &[I64]),
             Helper::ToFloat => shape("fennec_to_float", &[I64, I64, I64], &[F64]),
@@ -174,6 +201,18 @@ impl Helper {
             Helper::Items => shape("fennec_items", &[I64, I64, I64], &[I64]),
             Helper::Count => shape("fennec_count", &[I64], &[I64]),
             Helper::Item => shape("fennec_item", &[I64, I64], &[I64]),
+            Helper::Binary => shape("fennec_binary", &[I64, I64, I64, I64, I64], &[I64]),
+            Helper::Unary => shape("fennec_unary", &[I64, I64, I64, I64], &[I64]),
+            Helper::Field => shape("fennec_field", &[I64, I64, I8, I64, I64], &[I64]),
+            Helper::Index => shape("fennec_index", &[I64, I64, I64, I64], &[I64]),
+            Helper::TypeOf => shape("fennec_type_of", &[I64], &[I64]),
+            Helper::Path => shape("fennec_path", &[I64], &[]),
+            Helper::PathField => shape("fennec_path_field", &[I64], &[]),
+            Helper::PathIndex => shape("fennec_path_index", &[I64], &[]),
+            Helper::PathGet => shape("fennec_path_get", &[I64, I64], &[I64]),
+            Helper::Put => shape("fennec_put", &[I64, I64, I64], &[]),
+            Helper::PutItem => shape("fennec_put_item", &[I64, I64, I64, I64], &[]),
+            Helper::Entries => shape("fennec_entries", &[I64, I64, I64], &[I64]),
         }
     }
 
@@ -190,6 +229,14 @@ impl Helper {
         matches!(
             self,
             Helper::ToInt
+                | Helper::Binary
+                | Helper::Unary
+                | Helper::Field
+                | Helper::Index
+                | Helper::Put
+                | Helper::PathGet
+                | Helper::PutItem
+                | Helper::Entries
                 | Helper::MainResult
                 | Helper::Unpack
                 | Helper::ToFloat
@@ -225,6 +272,7 @@ impl Helper {
             Helper::Float => temps::float as *const u8,
             Helper::Bool => temps::bool as *const u8,
             Helper::None => temps::none as *const u8,
+            Helper::Unit => temps::unit as *const u8,
             Helper::Str => temps::str as *const u8,
             Helper::ToInt => temps::to_int as *const u8,
             Helper::ToFloat => temps::to_float as *const u8,
@@ -256,6 +304,18 @@ impl Helper {
             Helper::Items => io::items as *const u8,
             Helper::Count => io::count as *const u8,
             Helper::Item => io::item as *const u8,
+            Helper::Binary => objects::binary as *const u8,
+            Helper::Unary => objects::unary as *const u8,
+            Helper::Field => objects::field as *const u8,
+            Helper::Index => objects::index as *const u8,
+            Helper::TypeOf => objects::type_of as *const u8,
+            Helper::Path => objects::path as *const u8,
+            Helper::PathField => objects::path_field as *const u8,
+            Helper::PathIndex => objects::path_index as *const u8,
+            Helper::PathGet => objects::path_get as *const u8,
+            Helper::Put => objects::put as *const u8,
+            Helper::PutItem => objects::put_item as *const u8,
+            Helper::Entries => objects::entries as *const u8,
         }
     }
 }

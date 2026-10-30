@@ -87,8 +87,7 @@ impl Lowerer<'_, '_> {
                 let handle = self.handle_of(error.0, error.1, stmt.span)?;
                 let [start, end] = self.span_args(stmt.span);
                 let failed = self.help(Helper::Err, &[handle, start, end])?;
-                self.pass_up(failed);
-                Ok(())
+                self.pass_up(failed)
             }
             StmtKind::Break | StmtKind::Continue => {
                 let target = self.loops.last().map(|lp| {
@@ -102,9 +101,13 @@ impl Lowerer<'_, '_> {
                 Ok(())
             }
             StmtKind::Pass => Ok(()),
-            StmtKind::For { is_mut: true, .. } | StmtKind::Assert(_) | StmtKind::With { .. } => {
-                self.interpret_stmt(stmt)
+            StmtKind::For { names, is_mut: true, iter, body } => {
+                match (names.as_slice(), self.field_path(iter)) {
+                    ([name], Some(path)) => self.for_mut(name, path, iter, body),
+                    _ => self.interpret_stmt(stmt),
+                }
             }
+            StmtKind::Assert(_) | StmtKind::With { .. } => self.interpret_stmt(stmt),
             StmtKind::Yield(_) | StmtKind::Def(_) => Err(unsupported("this kind of statement", stmt.span)),
         }
     }
@@ -141,7 +144,12 @@ impl Lowerer<'_, '_> {
                 }
             },
             ExprKind::Tuple(names) => self.unpack(names, value, target.span),
-            _ => self.interpret_assign(target, op, value, declare_mut, target.span),
+            _ => match self.field_path(target) {
+                Some((root, fields)) if !fields.is_empty() => {
+                    self.assign_path(&root, &fields, target, op, value)
+                }
+                _ => self.interpret_assign(target, op, value, declare_mut, target.span),
+            },
         }
     }
 
@@ -262,7 +270,7 @@ impl Lowerer<'_, '_> {
         self.drop_temps()?;
         self.b.ins().brif(test, inside, &[], exit, &[]);
         self.b.switch_to_block(inside);
-        self.loops.push(Loop { next: header, done: exit, depth: self.scopes.len() });
+        self.loops.push(Loop { next: header, done: exit, depth: self.scopes.len(), put_back: None });
         let lowered = self.block_tail(body);
         self.loops.pop();
         lowered?;
@@ -320,7 +328,7 @@ impl Lowerer<'_, '_> {
         let depth = self.scopes.len();
         self.open_scope();
         self.bind_native(name, Ty::Int, Some(at), false);
-        self.loops.push(Loop { next: advance, done: exit, depth });
+        self.loops.push(Loop { next: advance, done: exit, depth, put_back: None });
         let lowered = self.tail(body);
         self.loops.pop();
         lowered?;
@@ -375,7 +383,7 @@ impl Lowerer<'_, '_> {
             self.unpack_into(&names, item, true, iter.span)?;
         }
         self.drop_temps()?;
-        self.loops.push(Loop { next: advance, done: exit, depth });
+        self.loops.push(Loop { next: advance, done: exit, depth, put_back: None });
         let lowered = self.tail(body);
         self.loops.pop();
         lowered?;

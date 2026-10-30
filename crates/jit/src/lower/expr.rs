@@ -37,7 +37,7 @@ impl Lowerer<'_, '_> {
                 let operand = self.expr(inner)?;
                 match self.unary(*op, operand, span)? {
                     Some(result) => Ok(result),
-                    None => self.interpret_op(expr, &[operand]),
+                    None => self.object_unary(*op, operand, span),
                 }
             }
             ExprKind::Binary { op: op @ (BinOp::And | BinOp::Or), lhs, rhs } => {
@@ -48,7 +48,7 @@ impl Lowerer<'_, '_> {
                 let right = self.expr(rhs)?;
                 match self.binary(*op, left, right, span) {
                     Some(result) => Ok(result),
-                    None => self.interpret_op(expr, &[left, right]),
+                    None => self.object_binary(*op, left, right, span),
                 }
             }
             ExprKind::Cond { then, cond, otherwise } => self.conditional(then, cond, otherwise),
@@ -56,6 +56,8 @@ impl Lowerer<'_, '_> {
             ExprKind::Try { value, context } => self.try_value(value, context.as_deref()),
             ExprKind::Call { callee, args } => self.call(expr, callee, args),
             ExprKind::Match { subject, arms } => self.match_value(subject, arms, span),
+            ExprKind::Attr { object, name, optional } => self.read_field(expr, object, name, *optional),
+            ExprKind::Index { object, index } => self.read_index(expr, object, index),
             _ => self.fallback(expr),
         }
     }
@@ -104,7 +106,8 @@ impl Lowerer<'_, '_> {
             Ty::Float => Helper::Float,
             Ty::Bool => Helper::Bool,
             Ty::Obj => return value.ok_or_else(|| unsupported("this value", span)),
-            Ty::Unit | Ty::Stdout | Ty::Fs => {
+            Ty::Unit => return self.help(Helper::Unit, &[]),
+            Ty::Stdout | Ty::Fs => {
                 return Err(unsupported(&format!("using {} as a value", ty.name()), span));
             }
         };

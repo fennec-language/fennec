@@ -16,8 +16,13 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
 
+pub mod objects;
+
+use std::collections::HashMap;
+
 use crate::format;
 use crate::interp::Interp;
+use crate::place::Place;
 use crate::scope::Frame;
 use crate::value::{Capability, Value};
 
@@ -56,6 +61,10 @@ struct State {
     inputs: Vec<Value>,
     /// The names the last pattern that matched binds.
     bindings: Vec<(String, Value)>,
+    /// Each name's number in the name table, for telling types apart.
+    name_ids: HashMap<String, i64>,
+    /// The path `objects::put` changes, built a step at a time.
+    path: Option<Place>,
     /// A `return`, or a failure `?` or `fail` passes up, from code the interpreter ran,
     /// which native code must now carry out.
     leaving: Option<crate::exec::Flow>,
@@ -85,6 +94,7 @@ pub fn start(module: &Module, tables: Tables) -> Result<(), Diagnostic> {
     let output = Output::default();
     let mut interp = Interp::with_output(Box::new(output.clone()))?;
     interp.load(module)?;
+    let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     FAILED.set(0);
     STATE.set(Some(State {
         interp,
@@ -94,6 +104,8 @@ pub fn start(module: &Module, tables: Tables) -> Result<(), Diagnostic> {
         inputs: Vec::new(),
         bindings: Vec::new(),
         leaving: None,
+        name_ids,
+        path: None,
         callers: Vec::new(),
         failure: None,
     }));
@@ -163,6 +175,11 @@ impl State {
             .map_or(Value::Unit, |slot| std::mem::replace(slot, Value::Unit))
     }
 
+    /// A name from the table, without copying it.
+    fn name_ref(tables: &Tables, id: i64) -> &str {
+        usize::try_from(id).ok().and_then(|id| tables.names.get(id)).map_or("", String::as_str)
+    }
+
     fn name(&self, id: i64) -> String {
         usize::try_from(id).ok().and_then(|id| self.tables.names.get(id)).cloned().unwrap_or_default()
     }
@@ -170,7 +187,7 @@ impl State {
 
 /// Values of the names a native function holds.
 pub mod names {
-    use super::{Frame, Value, with};
+    use super::{Frame, State, Value, with};
 
     /// Starts a native function's frame.
     pub extern "C" fn enter() {
@@ -199,18 +216,18 @@ pub mod names {
     /// Creates a name holding a temporary's value.
     pub extern "C" fn declare(name: i64, value: i64, is_mut: i8) {
         with(|state| {
-            let name = state.name(name);
             let value = state.take(value);
-            state.interp.frame.declare(&name, value, is_mut != 0);
+            let name = State::name_ref(&state.tables, name);
+            state.interp.frame.declare(name, value, is_mut != 0);
         });
     }
 
     /// Changes what a name holds.
     pub extern "C" fn assign(name: i64, value: i64) {
         with(|state| {
-            let name = state.name(name);
             let value = state.take(value);
-            if let Some(binding) = state.interp.frame.get_mut(&name) {
+            let name = State::name_ref(&state.tables, name);
+            if let Some(binding) = state.interp.frame.get_mut(name) {
                 binding.value = value;
             }
         });
@@ -219,8 +236,8 @@ pub mod names {
     /// A temporary with a copy of a name's value. Copies share memory until one changes.
     pub extern "C" fn get(name: i64) -> i64 {
         with(|state| {
-            let name = state.name(name);
-            let value = state.interp.frame.get(&name).map_or(Value::Unit, |binding| binding.value.clone());
+            let name = State::name_ref(&state.tables, name);
+            let value = state.interp.frame.get(name).map_or(Value::Unit, |binding| binding.value.clone());
             state.push(value)
         })
     }
@@ -228,11 +245,11 @@ pub mod names {
     /// Moves a name's value into a temporary, for a `mut` argument that's put back after.
     pub extern "C" fn take(name: i64) -> i64 {
         with(|state| {
-            let name = state.name(name);
+            let name = State::name_ref(&state.tables, name);
             let value = state
                 .interp
                 .frame
-                .get_mut(&name)
+                .get_mut(name)
                 .map_or(Value::Unit, |binding| std::mem::replace(&mut binding.value, Value::Unit));
             state.push(value)
         })
@@ -242,14 +259,14 @@ pub mod names {
     /// caller's frame. Runs just before the function leaves.
     pub extern "C" fn put_back(caller_name: i64, param: i64) {
         with(|state| {
-            let param = state.name(param);
-            let caller_name = state.name(caller_name);
+            let param = State::name_ref(&state.tables, param);
+            let caller_name = State::name_ref(&state.tables, caller_name);
             let value = state
                 .interp
                 .frame
-                .get_mut(&param)
+                .get_mut(param)
                 .map_or(Value::Unit, |binding| std::mem::replace(&mut binding.value, Value::Unit));
-            if let Some(binding) = state.callers.last_mut().and_then(|frame| frame.get_mut(&caller_name)) {
+            if let Some(binding) = state.callers.last_mut().and_then(|frame| frame.get_mut(caller_name)) {
                 binding.value = value;
             }
         });
@@ -299,6 +316,11 @@ pub mod temps {
 
     pub extern "C" fn bool(b: i8) -> i64 {
         with(|state| state.push(Value::Bool(b != 0)))
+    }
+
+    /// Nothing: what a function without a value gives back.
+    pub extern "C" fn unit() -> i64 {
+        with(|state| state.push(Value::Unit))
     }
 
     pub extern "C" fn none() -> i64 {

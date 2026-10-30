@@ -22,6 +22,20 @@ impl Lowerer<'_, '_> {
             self.print(args, name == "print")?;
             return Ok((None, Ty::Unit));
         }
+        if let ExprKind::Attr { object, name, optional: false } = &callee.kind {
+            let result = match &object.kind {
+                ExprKind::Name(type_name) if self.local(type_name).is_none() => {
+                    let key = format!("{type_name}.{name}");
+                    let constructor =
+                        self.shared.compiled.get(&key).is_some_and(|compiled| !compiled.takes_self);
+                    if constructor { self.call_compiled(&key, args, expr.span)? } else { None }
+                }
+                _ => self.call_method(expr, object, name, args)?,
+            };
+            if let Some(result) = result {
+                return Ok(result);
+            }
+        }
         if let ExprKind::Name(name) = &callee.kind
             && self.local(name).is_none()
         {
@@ -86,16 +100,7 @@ impl Lowerer<'_, '_> {
                 *slot = Some(self.expr(&arg.value)?);
             }
         }
-        let depth = self.depth.ok_or_else(|| super::internal("no depth", span))?;
-        // Like the interpreter, stop calls nested more than 1000 deep, at the call.
-        let too_deep = self.b.ins().icmp_imm_s(
-            cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThanOrEqual,
-            depth,
-            fennec_interp::embed::MAX_DEPTH,
-        );
-        self.fail_if(too_deep, runtime::TOO_DEEP, span);
-        let deeper = self.b.ins().iadd_imm_s(depth, 1);
-        let mut values = vec![deeper];
+        let mut values = Vec::new();
         let mut mut_natives = Vec::new();
         for ((arg, (_, ty, is_mut)), lowered) in arranged.iter().zip(&params).zip(lowered) {
             match (lowered, is_mut, &arg.value.kind) {
@@ -117,11 +122,7 @@ impl Lowerer<'_, '_> {
                 _ => {}
             }
         }
-        let callee = self.module.declare_func_in_func(id, self.b.func);
-        let call = self.b.ins().call(callee, &values);
-        let results = self.b.inst_results(call).to_vec();
-        self.check_failed();
-        let mut results = results.into_iter();
+        let mut results = self.raw_call(id, values, span)?.into_iter();
         let value = if super::abi(ret).is_some() { results.next() } else { None };
         for (var, result) in mut_natives.into_iter().zip(results) {
             self.b.def_var(var, result);
@@ -130,6 +131,49 @@ impl Lowerer<'_, '_> {
             self.dirty = true;
         }
         Ok(Some((value, ret)))
+    }
+
+    /// Calls a compiled function by its key with arguments already as its parameters take
+    /// them, giving back its result.
+    pub(super) fn call_key(
+        &mut self,
+        key: &str,
+        values: Vec<Value>,
+        span: Span,
+    ) -> Result<Lowered, Diagnostic> {
+        let compiled = self.shared.compiled.get(key).map(|compiled| (compiled.id, compiled.ret));
+        let (id, ret) = compiled.ok_or_else(|| super::internal("unknown function", span))?;
+        let results = self.raw_call(id, values, span)?;
+        let value = if super::abi(ret).is_some() { results.first().copied() } else { None };
+        if ret == Ty::Obj {
+            self.dirty = true;
+        }
+        Ok((value, ret))
+    }
+
+    /// Calls a compiled function, after checking calls aren't nested too deep: like the
+    /// interpreter, more than 1000 deep fails, at the call.
+    fn raw_call(
+        &mut self,
+        id: cranelift_module::FuncId,
+        values: Vec<Value>,
+        span: Span,
+    ) -> Result<Vec<Value>, Diagnostic> {
+        let depth = self.depth.ok_or_else(|| super::internal("no depth", span))?;
+        let too_deep = self.b.ins().icmp_imm_s(
+            cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThanOrEqual,
+            depth,
+            fennec_interp::embed::MAX_DEPTH,
+        );
+        self.fail_if(too_deep, runtime::TOO_DEEP, span);
+        let deeper = self.b.ins().iadd_imm_s(depth, 1);
+        let mut args = vec![deeper];
+        args.extend(values);
+        let callee = self.module.declare_func_in_func(id, self.b.func);
+        let call = self.b.ins().call(callee, &args);
+        let results = self.b.inst_results(call).to_vec();
+        self.check_failed();
+        Ok(results)
     }
 
     /// Builtins on numbers that compile to a few instructions.

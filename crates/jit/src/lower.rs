@@ -13,6 +13,7 @@ mod call;
 mod expr;
 mod fallback;
 mod flow;
+mod objects;
 mod stmt;
 
 use std::collections::{HashMap, HashSet};
@@ -38,6 +39,8 @@ struct Compiled {
     id: FuncId,
     params: Vec<(String, Ty, bool)>,
     ret: Ty,
+    /// Whether it's a method called on a value, rather than a function or named constructor.
+    takes_self: bool,
 }
 
 /// What every function being compiled shares.
@@ -102,9 +105,9 @@ fn attempt(program: &Program<'_>, skipped: &HashSet<String>) -> Attempt {
     declare_all(&mut module, &mut shared, program, skipped).map_err(fatal)?;
     let mut ctx = module.make_context();
     let mut builder_ctx = FunctionBuilderContext::new();
-    for function in program.functions.iter().filter(|function| !skipped.contains(&function.def.name)) {
-        let failed = |diagnostic| (function.def.name.clone(), diagnostic);
-        let id = shared.compiled.get(&function.def.name).map(|compiled| compiled.id);
+    for function in program.functions.iter().filter(|function| !skipped.contains(&function.key)) {
+        let failed = |diagnostic| (function.key.clone(), diagnostic);
+        let id = shared.compiled.get(&function.key).map(|compiled| compiled.id);
         let id = id.ok_or_else(|| failed(internal("undeclared function", function.def.span)))?;
         let mut cx =
             Cx { module: &mut module, ctx: &mut ctx, builder_ctx: &mut builder_ctx, shared: &mut shared };
@@ -178,13 +181,16 @@ fn declare_all(
             .map_err(|err| internal(err, span))?;
         shared.helpers.insert(helper, id);
     }
-    for function in program.functions.iter().filter(|function| !skipped.contains(&function.def.name)) {
+    for (at, function) in
+        program.functions.iter().enumerate().filter(|(_, function)| !skipped.contains(&function.key))
+    {
         let sig = signature(module, function);
-        let name = format!("fennec_user_{}", function.def.name);
+        let name = format!("fennec_user_{at}");
         let id = module.declare_function(&name, Linkage::Local, &sig).map_err(|err| internal(err, span))?;
         let params =
             function.params.iter().map(|param| (param.name.clone(), param.ty, param.is_mut)).collect();
-        shared.compiled.insert(function.def.name.clone(), Compiled { id, params, ret: function.ret });
+        let takes_self = function.def.params.first().is_some_and(|param| param.is_self);
+        shared.compiled.insert(function.key.clone(), Compiled { id, params, ret: function.ret, takes_self });
     }
     Ok(())
 }
@@ -278,6 +284,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         pointer,
         mut_names: Vec::new(),
         depth: None,
+        pending: Vec::new(),
     };
     lowerer.prologue(&params)?;
     let (tail, tail_ty) = lowerer.tail(&function.def.body)?;
@@ -307,6 +314,8 @@ struct Loop {
     done: Block,
     /// How many scopes were open outside the loop's body.
     depth: usize,
+    /// For `for mut`, the item to put back whenever the loop's body is left.
+    put_back: Option<objects::PutBack>,
 }
 
 pub(crate) struct Lowerer<'a, 'f> {
@@ -334,6 +343,9 @@ pub(crate) struct Lowerer<'a, 'f> {
     mut_names: Vec<(String, Variable)>,
     /// How deeply this call is nested: 1 for `main`.
     depth: Option<Value>,
+    /// The blocks for "the receiver is some other type", while calls on each compiled
+    /// type are being lowered.
+    pending: Vec<Block>,
 }
 
 impl Lowerer<'_, '_> {
@@ -556,6 +568,7 @@ impl Lowerer<'_, '_> {
 
     /// Leaves the function from here with a value.
     fn ret(&mut self, value: Option<Value>, ty: Ty, span: Span) -> Result<(), Diagnostic> {
+        self.put_back_all()?;
         let function = self.function;
         let value = if function.fallible {
             let handle = self.handle_of(value, ty, span)?;
@@ -572,9 +585,11 @@ impl Lowerer<'_, '_> {
 
     /// Leaves the function with a value that's already what it returns, like a failure
     /// `?` passes up.
-    fn pass_up(&mut self, handle: Value) {
+    fn pass_up(&mut self, handle: Value) -> Result<(), Diagnostic> {
+        self.put_back_all()?;
         let value = abi(self.function.ret).map(|_| handle);
         self.jump_exit(value);
+        Ok(())
     }
 
     fn jump_exit(&mut self, value: Option<Value>) {

@@ -167,7 +167,7 @@ impl Lowerer<'_, '_> {
             }
             None => handle,
         };
-        self.pass_up(failure);
+        self.pass_up(failure)?;
         self.b.switch_to_block(present);
         let inner = self.help(Helper::Unwrap, &[handle])?;
         Ok((Some(inner), Ty::Obj))

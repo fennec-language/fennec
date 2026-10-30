@@ -29,7 +29,10 @@ pub fn run(module: &Module, out: &mut dyn Write) -> Result<(), JitError> {
             diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default())),
         )
     })?;
-    let program = types::Program::from_module(module, &signatures).map_err(JitError::Unsupported)?;
+    let prelude: Vec<Module> =
+        fennec_syntax::PRELUDE.iter().filter_map(|source| fennec_syntax::parse(source).ok()).collect();
+    let program =
+        types::Program::from_module(module, &prelude, &signatures).map_err(JitError::Unsupported)?;
     let (entry, tables) = lower::compile(&program).map_err(JitError::Unsupported)?;
     let result = runtime::execute(&entry, module, tables).map_err(JitError::Failed)?;
     out.write_all(&result.output).and_then(|()| out.flush()).map_err(|err| {

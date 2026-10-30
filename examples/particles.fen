@@ -1,0 +1,49 @@
+# Structs whose methods change them, `for mut` loops that change every item, and an
+# operator defined on a struct.
+
+struct Particle:
+    x = 0.0
+    vx = 1.0
+    hits = 0
+
+    def step(mut self, dt: float):
+        self.x += self.vx * dt
+        if self.x > 10.0:
+            self.vx = -self.vx
+            self.hits += 1
+
+    def +(self, other: Particle):
+        Particle(x=self.x + other.x, vx=self.vx + other.vx, hits=self.hits + other.hits)
+
+struct Swarm:
+    particles: list[Particle]
+
+    def run(mut self, frames: int):
+        for frame in range(frames):
+            for mut p in self.particles:
+                p.step(0.5)
+
+    # Stops at the first particle that has bounced, after nudging it.
+    def nudge_first_bounced(mut self):
+        for mut p in self.particles:
+            if p.hits > 0:
+                p.x = 0.0
+                return True
+        False
+
+def main(stdout: Stdout):
+    mut swarm = Swarm(particles=[Particle(vx=float(i)) for i in range(4)])
+    swarm.run(12)
+    for p in swarm.particles:
+        stdout.print(f"{p.x:.1f} {p.vx} {p.hits}")
+    stdout.print(swarm.nudge_first_bounced(), swarm.particles[2].x)
+
+    total = swarm.particles[0] + swarm.particles[3]
+    stdout.print(total)
+
+    mut counts = [1, 2, 3, 4]
+    for mut n in counts:
+        if n == 3:
+            break
+        n *= 10
+    stdout.print(counts)

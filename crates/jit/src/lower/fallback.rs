@@ -33,22 +33,33 @@ impl Lowerer<'_, '_> {
         Ok((Some(handle), Ty::Obj))
     }
 
-    /// Runs an operator in the interpreter, on operands already computed.
-    pub(super) fn interpret_op(&mut self, expr: &Expr, operands: &[Lowered]) -> Result<Lowered, Diagnostic> {
+    /// Runs a method call in the interpreter, with its receiver and arguments already
+    /// computed. A receiver that's a name, or a field of one, stays as written, so a method
+    /// that changes it changes it in place.
+    pub(super) fn interpret_method(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        receiver: Value,
+        method: &str,
+        args: &[Lowered],
+    ) -> Result<Lowered, Diagnostic> {
         let mut handover = Handover::default();
-        let mut names = Vec::new();
-        for (value, ty) in operands {
-            names.push(self.input_value(*value, *ty, expr.span, &mut handover)?);
-        }
-        let kind = match (&expr.kind, names.as_slice()) {
-            (ExprKind::Unary { op, .. }, [operand]) => {
-                ExprKind::Unary { op: *op, expr: Box::new(operand.clone()) }
-            }
-            (ExprKind::Binary { op, .. }, [lhs, rhs]) => {
-                ExprKind::Binary { op: *op, lhs: Box::new(lhs.clone()), rhs: Box::new(rhs.clone()) }
-            }
-            _ => return self.fallback(expr),
+        let object = if self.keeps_receiver(object) {
+            Self::keep(object, &mut handover)
+        } else {
+            self.input_value(Some(receiver), Ty::Obj, object.span, &mut handover)?
         };
+        let mut rebuilt = Vec::new();
+        for (value, ty) in args {
+            let value = self.input_value(*value, *ty, expr.span, &mut handover)?;
+            rebuilt.push(Arg { name: None, is_mut: false, value });
+        }
+        let callee = Expr {
+            kind: ExprKind::Attr { object: Box::new(object), name: method.to_owned(), optional: false },
+            span: expr.span,
+        };
+        let kind = ExprKind::Call { callee: Box::new(callee), args: rebuilt };
         let handle = self.run_expr(Expr { kind, span: expr.span }, handover, expr.span)?;
         Ok((Some(handle), Ty::Obj))
     }
@@ -287,7 +298,7 @@ impl Lowerer<'_, '_> {
         self.ret(Some(value), Ty::Obj, span)?;
         self.b.switch_to_block(passes);
         self.b.seal_block(passes);
-        self.pass_up(value);
+        self.pass_up(value)?;
         self.b.switch_to_block(stay);
         self.b.seal_block(stay);
         Ok(())

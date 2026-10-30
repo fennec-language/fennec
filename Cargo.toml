@@ -59,6 +59,7 @@ fennec-jit = { path = "crates/jit" }
 fennec-interp = { path = "crates/interp" }
 fennec-runtime = { path = "crates/runtime" }
 fennec-kit = { path = "crates/kit" }
+fennec-lsp = { path = "crates/lsp" }
 fennec-re = { path = "crates/re" }
 fennec-syntax = { path = "crates/syntax" }
 

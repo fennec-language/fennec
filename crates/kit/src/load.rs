@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use fennec_syntax::{Diagnostic, Import, Item, Module, Sources, Span};
 
-use crate::{Entry, Manifest, Program, manifest, scope};
+use crate::{Entry, Manifest, Overlay, Problems, Program, manifest, scope};
 
 /// A parsed file of a program.
 pub(crate) struct File {
@@ -22,31 +22,31 @@ pub(crate) fn is_std(import: &Import) -> bool {
 }
 
 /// Loads a single `.fen` file. Its imports resolve against its own folder.
-pub(crate) fn file(path: &Path, shown_as: &str) -> Result<Program, String> {
+pub(crate) fn file(path: &Path, shown_as: &str, overlay: &Overlay) -> Result<Program, Problems> {
     let src = path.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let mut loader = Loader::new(src, folder_prefix(Path::new(shown_as).parent()));
+    let mut loader = Loader::new(src, folder_prefix(Path::new(shown_as).parent()), overlay);
     let name = path.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     loader.visit(&name, path, shown_as.to_owned(), None);
     loader.finish(None)
 }
 
 /// Loads a kit from its folder or any folder inside it.
-pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry) -> Result<Program, String> {
+pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -> Result<Program, Problems> {
     let Some((root, shown_root)) = find_root(dir, shown_as) else {
-        return Err(format!(
+        return Err(Problems::unplaced(format!(
             "error: there's no kit.toml in {shown_as} or any folder above it\n  = help: `fennec new <name>` starts a kit, and `fennec run <file.fen>` runs a single file\n"
-        ));
+        )));
     };
-    let manifest = read_manifest(&root, &shown_root)?;
+    let manifest = read_manifest(&root, &shown_root).map_err(Problems::unplaced)?;
     let src = root.join("src");
-    let mut loader = Loader::new(src.clone(), format!("{shown_root}src/"));
+    let mut loader = Loader::new(src.clone(), format!("{shown_root}src/"), overlay);
     let main = src.join("main.fen");
-    if main.is_file() {
+    if main.is_file() || overlay.contains_key(&main) {
         loader.visit("main", &main, format!("{shown_root}src/main.fen"), None);
     } else if entry == Entry::Main {
-        return Err(format!(
+        return Err(Problems::unplaced(format!(
             "error: {shown_root}src/main.fen doesn't exist\n  = help: a kit runs `main` from src/main.fen\n"
-        ));
+        )));
     }
     if entry == Entry::Everything {
         let mut modules = Vec::new();
@@ -115,7 +115,9 @@ fn find_modules(dir: &Path, prefix: &mut Vec<String>, found: &mut Vec<Vec<String
     }
 }
 
-struct Loader {
+struct Loader<'a> {
+    /// Text read in place of files on disk.
+    overlay: &'a Overlay,
     /// The folder module paths resolve against.
     src: PathBuf,
     /// How `src` is shown before a module's path.
@@ -130,9 +132,10 @@ struct Loader {
     unplaced: Vec<String>,
 }
 
-impl Loader {
-    fn new(src: PathBuf, shown_src: String) -> Self {
+impl<'a> Loader<'a> {
+    fn new(src: PathBuf, shown_src: String, overlay: &'a Overlay) -> Self {
         Loader {
+            overlay,
             src,
             shown_src,
             sources: Sources::new(),
@@ -175,7 +178,7 @@ impl Loader {
         if !self.seen.insert(name.to_owned()) {
             return;
         }
-        let text = match std::fs::read_to_string(real) {
+        let text = match self.read(real) {
             Ok(text) => text,
             Err(err) => {
                 match from {
@@ -221,7 +224,7 @@ impl Loader {
         let mut from_parent = import.names.is_empty();
         for name in &import.names {
             let submodule: Vec<String> = import.module.iter().chain([name]).cloned().collect();
-            if self.module_path(&submodule).0.is_file() {
+            if self.exists(&self.module_path(&submodule).0) {
                 modules.push((submodule, import.span));
             } else {
                 from_parent = true;
@@ -233,17 +236,30 @@ impl Loader {
         modules
     }
 
+    /// A file's text, from the overlay when it's there.
+    fn read(&self, path: &Path) -> std::io::Result<String> {
+        self.overlay.get(path).map_or_else(|| std::fs::read_to_string(path), |text| Ok(text.clone()))
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        self.overlay.contains_key(path) || path.is_file()
+    }
+
     /// Checks names across the files and merges them into one module.
-    fn finish(mut self, manifest: Option<Manifest>) -> Result<Program, String> {
+    fn finish(mut self, manifest: Option<Manifest>) -> Result<Program, Problems> {
         if !self.unplaced.is_empty() {
-            return Err(self.unplaced.concat());
+            return Err(Problems {
+                sources: self.sources,
+                diagnostics: self.errors,
+                unplaced: self.unplaced,
+            });
         }
         if self.errors.is_empty() {
             scope::resolve(&mut self.files, &mut self.errors);
         }
         if !self.errors.is_empty() {
             self.errors.sort_by_key(|diagnostic| diagnostic.span.start);
-            return Err(self.sources.render_all(&self.errors));
+            return Err(Problems { sources: self.sources, diagnostics: self.errors, unplaced: Vec::new() });
         }
         let items = self
             .files

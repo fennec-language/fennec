@@ -8,6 +8,7 @@ mod daemon;
 mod fallbacks;
 mod fix;
 mod fmt;
+mod lsp;
 mod repl;
 mod run;
 mod test;
@@ -23,6 +24,7 @@ const USAGE: &str = "usage:
   fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
   fennec fmt --check        list the files that aren't formatted, and fail if any aren't
   fennec fix [path]         make the fixes the type checker suggests, in a kit or a .fen file
+  fennec lsp                the language server, for editors, over standard input and output
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
   fennec repl               try Fennec interactively
   fennec --version          show the version
@@ -30,7 +32,7 @@ const USAGE: &str = "usage:
   path is a .fen file, or a kit's folder; it defaults to the current folder";
 
 /// The interpreter recurses for each nested call, so it gets a generous stack.
-const STACK_BYTES: usize = 512 * 1024 * 1024;
+pub(crate) const STACK_BYTES: usize = 512 * 1024 * 1024;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -54,6 +56,7 @@ fn main() -> ExitCode {
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["dev", "check", path] => dev(check_dump, path),
         ["daemon", action] => daemon::command(action),
+        ["lsp"] => lsp::lsp(),
         ["dev", "fallbacks"] => on_big_stack(fallbacks::fallbacks, "."),
         ["dev", "fallbacks", path] => on_big_stack(fallbacks::fallbacks, path),
         ["dev", "changes"] => changes::changes("."),

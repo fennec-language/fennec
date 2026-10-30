@@ -9,6 +9,9 @@
 //! The daemon owns the cache in `~/.fennec/cache`: it keeps it under its cap (1 GiB, or
 //! `FENNEC_CACHE_CAP` bytes) when it starts and every five minutes after, while it's idle.
 //!
+//! `fennec lsp` sends `lsp` and then keeps the connection open: the daemon serves the
+//! language server's session over it until the editor is done.
+//!
 //! `fennec daemon status` and `fennec daemon stop` manage it. It exits by itself after ten
 //! minutes with nothing to do; `FENNEC_DAEMON_IDLE` sets that in seconds. `FENNEC_NO_DAEMON`
 //! makes commands do their work in-process.
@@ -96,10 +99,23 @@ pub(crate) fn ask(home: &Path, request: &[&str]) -> Option<Outcome> {
     })
 }
 
+/// A connection to the daemon serving a language server session, starting the daemon first
+/// if it isn't running. None if it can't be reached, so the session runs in-process.
+#[cfg(unix)]
+pub(crate) fn language_server(home: &Path) -> Option<std::os::unix::net::UnixStream> {
+    if std::env::var_os("FENNEC_NO_DAEMON").is_some() {
+        return None;
+    }
+    unix::open_session(home).or_else(|| {
+        unix::start(home)?;
+        unix::open_session(home)
+    })
+}
+
 #[cfg(unix)]
 mod unix {
     use std::collections::HashMap;
-    use std::io::{ErrorKind, Read, Write};
+    use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
     use std::process::{ExitCode, Stdio};
@@ -153,6 +169,8 @@ mod unix {
         /// When it last did work. Asking for its status doesn't count, so it doesn't keep an
         /// idle daemon alive.
         last_work: Instant,
+        /// How many language server sessions are open. The daemon isn't idle while one is.
+        sessions: usize,
         stopping: bool,
     }
 
@@ -164,6 +182,13 @@ mod unix {
         let mut reply = String::new();
         stream.read_to_string(&mut reply).ok()?;
         Outcome::decode(&reply)
+    }
+
+    /// Opens a language server session: after `lsp`, the connection carries its messages.
+    pub(super) fn open_session(home: &Path) -> Option<UnixStream> {
+        let mut stream = UnixStream::connect(socket_path(home)).ok()?;
+        stream.write_all(format!("fennec {VERSION}\nlsp\n").as_bytes()).ok()?;
+        Some(stream)
     }
 
     /// Starts the daemon in the background and waits until it answers, for up to 2 seconds.
@@ -208,6 +233,7 @@ mod unix {
             served: 0,
             started: Instant::now(),
             last_work: Instant::now(),
+            sessions: 0,
             stopping: false,
         }));
         let idle = idle_limit();
@@ -222,7 +248,7 @@ mod unix {
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
                     let done = {
                         let state = state.lock().unwrap_or_else(PoisonError::into_inner);
-                        state.stopping || state.last_work.elapsed() > idle
+                        state.stopping || (state.sessions == 0 && state.last_work.elapsed() > idle)
                     };
                     if done {
                         break;
@@ -242,13 +268,44 @@ mod unix {
         ExitCode::SUCCESS
     }
 
-    fn answer(mut stream: UnixStream, state: &Mutex<State>) {
-        let mut request = String::new();
-        if stream.set_nonblocking(false).is_err() || stream.read_to_string(&mut request).is_err() {
+    fn answer(stream: UnixStream, state: &Mutex<State>) {
+        let Ok(mut writer) = stream.set_nonblocking(false).and_then(|()| stream.try_clone()) else { return };
+        let mut reader = BufReader::new(stream);
+        let (mut header, mut kind) = (String::new(), String::new());
+        if reader.read_line(&mut header).is_err() || reader.read_line(&mut kind).is_err() {
             return;
         }
+        if header.trim_end() == format!("fennec {VERSION}") && kind.trim_end() == "lsp" {
+            language_server(&mut reader, &mut writer, state);
+            return;
+        }
+        let mut rest = String::new();
+        if reader.read_to_string(&mut rest).is_err() {
+            return;
+        }
+        let request = format!("{header}{kind}{rest}");
         let outcome = handle(&request, &mut state.lock().unwrap_or_else(PoisonError::into_inner));
-        let _ = stream.write_all(outcome.encode().as_bytes());
+        let _ = writer.write_all(outcome.encode().as_bytes());
+    }
+
+    /// Serves a language server session over a connection, on a thread with room for the
+    /// checker to recurse, until the editor is done.
+    fn language_server(reader: &mut BufReader<UnixStream>, writer: &mut UnixStream, state: &Mutex<State>) {
+        let lock = || state.lock().unwrap_or_else(PoisonError::into_inner);
+        {
+            let mut state = lock();
+            state.sessions += 1;
+            state.served += 1;
+        }
+        std::thread::scope(|scope| {
+            let session = std::thread::Builder::new()
+                .stack_size(crate::STACK_BYTES)
+                .spawn_scoped(scope, || fennec_lsp::serve(reader, writer));
+            let _ = session.map(std::thread::ScopedJoinHandle::join);
+        });
+        let mut state = lock();
+        state.sessions = state.sessions.saturating_sub(1);
+        state.last_work = Instant::now();
     }
 
     fn handle(request: &str, state: &mut State) -> Outcome {

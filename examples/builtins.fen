@@ -1,3 +1,5 @@
+from std.math import PI, sqrt, floor, ceil, sin, cos
+
 def square(n: int):
     n * n
 

@@ -143,6 +143,10 @@ fn signatures_cover_methods_nested_functions_and_the_standard_library() {
 #[test]
 fn written_types_resolve() {
     let program = "
+        from std.game import Id, IdMap
+        from std.layout import SoaList
+        from std.path import Path
+
         struct Thing:
             n = 1
 

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use fennec_check::{Signatures, Type};
 use fennec_syntax::{Expr, TypeDef, TypeExpr};
 
-use crate::types::Ty;
+use crate::types::{Cap, Ty};
 
 /// The size of every field that isn't a nested struct: an int, a float, or a bool.
 pub(crate) const WORD: u32 = 8;
@@ -212,9 +212,10 @@ impl Layouts {
             Type::Float => Ty::Float,
             Type::Bool => Ty::Bool,
             Type::Unit => Ty::Unit,
-            Type::Named(name) if name == "Stdout" => Ty::Stdout,
-            Type::Named(name) if name == "Fs" => Ty::Fs,
-            Type::Named(name) => self.id(name).map_or(Ty::Obj, Ty::Struct),
+            Type::Named(name) => match Cap::named(name) {
+                Some(cap) => Ty::Cap(cap),
+                None => self.id(name).map_or(Ty::Obj, Ty::Struct),
+            },
             _ => Ty::Obj,
         }
     }

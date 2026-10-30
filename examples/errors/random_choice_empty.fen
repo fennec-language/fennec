@@ -1,0 +1,9 @@
+from std.random import Random
+
+def pick(mut rng: Random, names: list[str]) -> str:
+    rng.choice(names)
+
+def main(stdout: Stdout):
+    mut rng = Random(seed=7)
+    stdout.print(pick(mut rng, ["ash", "kit"]))
+    stdout.print(pick(mut rng, []))

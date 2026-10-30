@@ -80,7 +80,7 @@ fn arguments_have_the_parameters_types() {
     );
     assert_eq!(
         helps("def f(n: int):\n    n\n\ndef g():\n    f(1.5)\n"),
-        ["convert it with int(...), round(...) or floor(...)"]
+        ["convert it with int(...), round(...) or math.floor(...)"]
     );
     assert_eq!(helps("def f(n: str):\n    n\n\ndef g():\n    f(1.5)\n"), [""]);
     assert_eq!(
@@ -325,8 +325,9 @@ fn builtin_types_are_built_the_right_way() {
         e = Path(1)
         f = Id()
     ";
+    let imports = "from std.game import Id, IdMap\nfrom std.layout import SoaList\nfrom std.path import Path";
     assert_eq!(
-        with_types(program),
+        crate::in_main_after(&format!("{imports}\n{TYPES}"), program),
         [
             "`IdMap` was called with the wrong arguments @ IdMap(1)",
             "`text` should be a str, but this is an int @ 1",

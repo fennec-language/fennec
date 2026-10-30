@@ -9,6 +9,7 @@ use crate::runtime;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Helper {
     Fail,
+    AtCall,
     Enter,
     Leave,
     PushScope,
@@ -82,8 +83,9 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 72] = [
+pub(crate) const ALL: [Helper; 73] = [
     Helper::Fail,
+    Helper::AtCall,
     Helper::Enter,
     Helper::Leave,
     Helper::PushScope,
@@ -172,6 +174,7 @@ impl Helper {
     pub(crate) fn shape(self) -> Shape {
         match self {
             Helper::Fail => shape("fennec_fail", &[I64, I64, I64], &[]),
+            Helper::AtCall => shape("fennec_at_call", &[I64, I64], &[]),
             Helper::Enter => shape("fennec_enter", &[], &[]),
             Helper::Leave => shape("fennec_leave", &[], &[]),
             Helper::PushScope => shape("fennec_push_scope", &[], &[]),
@@ -251,6 +254,7 @@ impl Helper {
         !matches!(
             self,
             Helper::Fail
+                | Helper::AtCall
                 | Helper::Sin
                 | Helper::Cos
                 | Helper::PrintInt
@@ -315,6 +319,7 @@ impl Helper {
     pub(crate) fn address(self) -> *const u8 {
         match self {
             Helper::Fail => runtime::fail as *const u8,
+            Helper::AtCall => eval::at_call as *const u8,
             Helper::Enter => names::enter as *const u8,
             Helper::Leave => names::leave as *const u8,
             Helper::PushScope => names::push_scope as *const u8,

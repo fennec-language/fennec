@@ -16,6 +16,12 @@ pub fn parse(source: &str) -> Result<Module, Diagnostic> {
     Parser::new(lex(source, 0)?).module(false)
 }
 
+/// Parses a standard library source. Its spans start at `Span::PRELUDE`, so a mistake found
+/// in it is never shown against the program's own lines.
+pub fn parse_prelude(source: &str) -> Result<Module, Diagnostic> {
+    Parser::new(lex(source, Span::PRELUDE)?).module(false)
+}
+
 /// Parses one file of a program with several, its spans starting at byte `base` so they
 /// don't overlap another file's. `Sources` turns them back into a file and line.
 pub fn parse_at(source: &str, base: u32) -> Result<Module, Diagnostic> {

@@ -1,0 +1,13 @@
+["spawn", "move", "jump", "attack"] 4
+attack spawn move jump
+move
+jump
+7 10
+10 [10, 20, 30, 40] 4
+["dragon", "goblin", "knight", "wizard"]
+3 0 8 4
+[("gold", 3), ("gem", 2)]
+gold: 3
+gem: 2
+potion: 2
+key: 1

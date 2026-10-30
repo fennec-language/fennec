@@ -7,6 +7,7 @@ mod parser;
 mod prelude;
 mod span;
 mod token;
+mod trivia;
 
 pub use ast::{
     Arg, BinOp, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Import, Interface, Item, MatchArm,
@@ -16,3 +17,4 @@ pub use diagnostic::Diagnostic;
 pub use parser::{parse, parse_repl};
 pub use prelude::PRELUDE;
 pub use span::Span;
+pub use trivia::{Lexed, SourceToken, TokenKind, lex_source};

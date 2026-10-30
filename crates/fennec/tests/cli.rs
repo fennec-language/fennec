@@ -112,3 +112,53 @@ fn unknown_commands_show_usage() {
     assert_eq!(output.status.code(), Some(2));
     assert!(text(&output.stderr).starts_with("usage:"));
 }
+
+/// A fresh folder for one test, named after it.
+fn scratch(name: &str) -> std::io::Result<PathBuf> {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{name}-{}", std::process::id()));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)?;
+    }
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+#[test]
+fn fmt_check_passes_on_the_examples() {
+    let output = fennec(&["fmt", "--check", "examples"], "").unwrap();
+    assert!(output.status.success(), "{}{}", text(&output.stdout), text(&output.stderr));
+    assert_eq!(text(&output.stdout), "");
+    assert!(text(&output.stderr).contains("raise.fen: it doesn't parse"));
+}
+
+#[test]
+fn fmt_rewrites_a_folder_and_check_lists_what_it_would_change() {
+    let dir = scratch("fmt").unwrap();
+    std::fs::create_dir_all(dir.join("src/.hidden")).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"demo\"\n").unwrap();
+    std::fs::write(dir.join("src/main.fen"), "def main(stdout:Stdout):\n  stdout.print(1+2)\n").unwrap();
+    std::fs::write(dir.join("src/done.fen"), "def done():\n    pass\n").unwrap();
+    std::fs::write(dir.join("src/.hidden/skip.fen"), "def skip( ):\n  pass\n").unwrap();
+    let folder = dir.to_str().unwrap();
+
+    let check = fennec(&["fmt", "--check", folder], "").unwrap();
+    assert_eq!(check.status.code(), Some(1));
+    assert!(text(&check.stdout).trim_end().ends_with("main.fen"), "{}", text(&check.stdout));
+    assert!(text(&check.stderr).contains("1 file isn't formatted"));
+
+    let write = fennec(&["fmt", folder], "").unwrap();
+    assert!(write.status.success());
+    let main = std::fs::read_to_string(dir.join("src/main.fen")).unwrap();
+    assert_eq!(main, "def main(stdout: Stdout):\n    stdout.print(1 + 2)\n");
+    let hidden = std::fs::read_to_string(dir.join("src/.hidden/skip.fen")).unwrap();
+    assert_eq!(hidden, "def skip( ):\n  pass\n");
+    assert!(fennec(&["fmt", "--check", folder], "").unwrap().status.success());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn fmt_has_no_options() {
+    let output = fennec(&["fmt", "--line-width=80", "examples"], "").unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(text(&output.stderr).contains("has no option `--line-width=80`"));
+}

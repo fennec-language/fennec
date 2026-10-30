@@ -2,6 +2,7 @@
 #![expect(clippy::print_stdout, reason = "the command line prints its results")]
 #![expect(clippy::print_stderr, reason = "the command line reports errors")]
 
+mod fmt;
 mod repl;
 mod run;
 mod test;
@@ -12,6 +13,8 @@ const USAGE: &str = "usage:
   fennec run <file.fen>    run a program's main
   fennec run --jit <file>  run it as native code (still in progress)
   fennec test <file.fen>   run a program's tests
+  fennec fmt [paths]       format files in place; a folder means every .fen file in it
+  fennec fmt --check       list the files that aren't formatted, and fail if there are any
   fennec repl              try Fennec interactively
   fennec --version         show the version";
 
@@ -25,6 +28,7 @@ fn main() -> ExitCode {
         ["run", "--jit", path] => on_big_stack(run::run_jit, path),
         ["test", path] => on_big_stack(test::test, path),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
+        ["fmt", rest @ ..] => fmt::fmt(rest),
         ["--version" | "-V"] => {
             println!("🦊 fennec {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

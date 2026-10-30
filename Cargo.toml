@@ -50,6 +50,7 @@ cranelift-jit = "=0.137.0"
 cranelift-module = "=0.137.0"
 cranelift-native = "=0.137.0"
 fennec-check = { path = "crates/check" }
+fennec-fmt = { path = "crates/fmt" }
 fennec-jit = { path = "crates/jit" }
 fennec-interp = { path = "crates/interp" }
 fennec-syntax = { path = "crates/syntax" }

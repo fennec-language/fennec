@@ -7,6 +7,11 @@ use crate::token::{FPart, Kw, Punct, Tok, Token};
 
 /// Lexes `source`. `base` is added to every span, for code lexed out of an f-string.
 pub(crate) fn lex(source: &str, base: u32) -> Result<Vec<Token>, Diagnostic> {
+    lex_with_comments(source, base).map(|(tokens, _)| tokens)
+}
+
+/// Lexes `source`, also returning where each comment is, for the formatter.
+pub(crate) fn lex_with_comments(source: &str, base: u32) -> Result<(Vec<Token>, Vec<Span>), Diagnostic> {
     let lexer = Lexer {
         source,
         chars: source.char_indices().collect(),
@@ -16,6 +21,7 @@ pub(crate) fn lex(source: &str, base: u32) -> Result<Vec<Token>, Diagnostic> {
         depth: 0,
         base,
         at_line_start: true,
+        comments: Vec::new(),
     };
     lexer.run()
 }
@@ -30,10 +36,11 @@ struct Lexer<'a> {
     depth: usize,
     base: u32,
     at_line_start: bool,
+    comments: Vec<Span>,
 }
 
 impl Lexer<'_> {
-    fn run(mut self) -> Result<Vec<Token>, Diagnostic> {
+    fn run(mut self) -> Result<(Vec<Token>, Vec<Span>), Diagnostic> {
         loop {
             if self.at_line_start && self.depth == 0 && !self.indentation()? {
                 break;
@@ -90,9 +97,12 @@ impl Lexer<'_> {
     }
 
     fn skip_comment(&mut self) {
+        let start = self.offset();
         while self.peek(0).is_some_and(|c| c != '\n') {
             self.pos += 1;
         }
+        let span = self.span(start);
+        self.comments.push(span);
     }
 
     /// Measures the indentation at the start of a line and emits `Indent` or `Dedent` tokens.
@@ -144,7 +154,7 @@ impl Lexer<'_> {
         }
     }
 
-    fn finish(mut self) -> Vec<Token> {
+    fn finish(mut self) -> (Vec<Token>, Vec<Span>) {
         let end = self.source.len();
         self.newline(end);
         while self.indents.len() > 1 {
@@ -152,7 +162,7 @@ impl Lexer<'_> {
             self.push(Tok::Dedent, end);
         }
         self.push(Tok::Eof, end);
-        self.tokens
+        (self.tokens, self.comments)
     }
 
     fn word(&mut self, start: usize) {

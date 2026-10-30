@@ -1,0 +1,5 @@
+from enemies import count, spawn as sum
+from enemies import spawn as count
+
+def main(stdout: Stdout):
+    stdout.print(count())

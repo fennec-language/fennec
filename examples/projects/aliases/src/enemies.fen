@@ -1,0 +1,19 @@
+## What `main.fen` imports under other names.
+
+enum Kind:
+    Walker
+    Flyer(height: float)
+
+struct Enemy:
+    name: str
+    kind: Kind
+
+def spawn(name: str, kind: Kind) -> Enemy:
+    Enemy(name, kind)
+
+def describe(enemy: Enemy) -> str:
+    match enemy.kind:
+        case .Walker:
+            enemy.name + " walks"
+        case .Flyer(height):
+            enemy.name + " flies at " + str(height)

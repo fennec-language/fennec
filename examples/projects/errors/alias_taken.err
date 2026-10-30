@@ -1,0 +1,15 @@
+error: `sum` is a name the language provides everywhere
+ --> examples/projects/errors/alias_taken/src/main.fen:1:1
+  |
+1 | from enemies import count, spawn as sum
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: pick another name after `as`
+
+error: `count` is imported twice in this file
+ --> examples/projects/errors/alias_taken/src/main.fen:2:1
+  |
+2 | from enemies import spawn as count
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: give one of them another name with `as`

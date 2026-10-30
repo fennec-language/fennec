@@ -320,6 +320,7 @@ dependencies = [
 name = "fennec-kit"
 version = "0.0.1"
 dependencies = [
+ "fennec-check",
  "fennec-syntax",
 ]
 

@@ -52,6 +52,15 @@ pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
     checker::Checker::new(module).run()
 }
 
+/// Whether the language provides `name` everywhere, with no import: a builtin like `len`,
+/// `Ok` or `Err`, a built-in type like `str` or `Stdout`, or a built-in interface like `Eq`.
+/// An import can't take one of these names with `as`.
+pub fn provided_everywhere(name: &str) -> bool {
+    (builtins::is_builtin(name) && !name.contains('.'))
+        || program::BUILT_IN_TYPES.contains(&name)
+        || program::BUILT_IN_INTERFACES.contains(&name)
+}
+
 /// Checks a parsed module, then writes into it the enum of each leading-dot case whose name
 /// more than one enum has, as the type expected where it's written decided: `.Int(value)`
 /// given back as an `ExprKind` becomes `ExprKind.Int(value)`. Running a module needs this,

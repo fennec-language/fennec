@@ -123,10 +123,10 @@ impl Program {
                 Imported::Module { alias, module } => {
                     self.modules.insert(alias, module);
                 }
-                Imported::Name { name, module } => {
+                Imported::Name { name, alias, module } => {
                     let builtin = format!("{module}.{name}");
                     if crate::builtins::is_builtin(&builtin) {
-                        self.imports.insert(name, builtin);
+                        self.imports.insert(alias, builtin);
                     } else {
                         self.imported_types.insert(name);
                     }

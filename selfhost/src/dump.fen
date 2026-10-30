@@ -136,8 +136,10 @@ struct Tree:
                 self.close()
             case .Import(imported):
                 mut label = "import " + ".".join(imported.module)
+                if imported.alias is not None:
+                    label += " as " + imported.alias
                 if imported.names.len() > 0:
-                    label += ": " + ", ".join(imported.names)
+                    label += ": " + ", ".join(bound_names(imported))
                 self.spanned(label, imported.span)
             case .Test(test):
                 self.open(f"test {quoted(test.name)}", test.span)
@@ -429,3 +431,15 @@ def comprehension_kind(kind: CompKind) -> str:
         case .Generator: "generator"
         case .Set: "set"
         case .Dict: "dict"
+
+## Each imported name, written `name as alias` when `as` renames it.
+def bound_names(imported: Import) -> list[str]:
+    mut shown = []
+    for at in range(imported.names.len()):
+        name = imported.names[at]
+        alias = imported.aliases[at]
+        if alias is not None and alias != name:
+            shown.append(name + " as " + alias)
+        else:
+            shown.append(name)
+    shown

@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+fennec-check.workspace = true
 fennec-syntax.workspace = true
 
 [lints]

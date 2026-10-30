@@ -1,0 +1,4 @@
+from std.collections import Deque as Queue
+
+def main(stdout: Stdout):
+    stdout.print(1)

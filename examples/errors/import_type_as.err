@@ -1,0 +1,7 @@
+error: `as` can't rename a type from the standard library yet, like `Deque`
+ --> examples/errors/import_type_as.fen:1:1
+  |
+1 | from std.collections import Deque as Queue
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: import it as `Deque`

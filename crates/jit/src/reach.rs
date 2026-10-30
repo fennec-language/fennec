@@ -4,13 +4,25 @@
 //!
 //! The search errs toward including: a method is reached when any code calls a method of
 //! that name, a type's own operators when the operator appears anywhere, and a struct's
-//! field defaults whenever the struct's name does.
+//! field defaults whenever the struct's name does. A standard library type's methods are
+//! reached only once its name appears too, or a method that gives one back is called, so a
+//! program that never uses a `Deque` doesn't compile `Deque.append` for its lists.
 
 use std::collections::HashSet;
 
 use fennec_syntax::{BinOp, Expr, ExprKind, FStrPart, Item, Module, Pattern, Stmt, StmtKind, TypeDef};
 
 use crate::types::Function;
+
+/// Standard library types a program gets values of without naming them, by the method
+/// that gives one back.
+const GIVEN: [(&str, &str); 5] = [
+    ("now", "Instant"),
+    ("match", "Match"),
+    ("fullmatch", "Match"),
+    ("search", "Match"),
+    ("find_all", "Match"),
+];
 
 /// The names code mentions: plain names, names after a dot, and operators' method names.
 #[derive(Default)]
@@ -35,6 +47,11 @@ pub(crate) fn reachable(functions: &[Function<'_>], modules: &[&Module]) -> (Has
     mentions.names.insert("main".to_owned());
     loop {
         let before = reached.len() + seen_types.len();
+        for (method, given) in GIVEN {
+            if mentions.members.contains(method) {
+                mentions.names.insert(given.to_owned());
+            }
+        }
         for def in &types {
             if mentions.names.contains(&def.name) && seen_types.insert(def.name.clone()) {
                 for default in def.fields.iter().filter_map(|field| field.default.as_ref()) {
@@ -44,6 +61,12 @@ pub(crate) fn reachable(functions: &[Function<'_>], modules: &[&Module]) -> (Has
         }
         for function in functions {
             if reached.contains(&function.key) || !is_mentioned(&function.key, &mentions) {
+                continue;
+            }
+            if function.prelude
+                && let Some((owner, _)) = function.key.rsplit_once('.')
+                && !seen_types.contains(owner)
+            {
                 continue;
             }
             reached.insert(function.key.clone());

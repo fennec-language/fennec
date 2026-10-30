@@ -1,0 +1,75 @@
+from std.collections import Deque, Heap, PriorityQueue, Counter
+
+## Steps from `start` to every square of a grid, by breadth-first search. `#` is a wall.
+def distances(grid: list[str], start: (int, int)) -> dict[(int, int), int]:
+    mut steps = {start: 0}
+    mut frontier = Deque()
+    frontier.append(start)
+    while len(frontier) > 0:
+        here = frontier.popleft()
+        if here is None:
+            break
+        x, y = here
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            next = (x + dx, y + dy)
+            nx, ny = next
+            open = 0 <= ny < len(grid) and 0 <= nx < len(grid[ny]) and grid[ny][nx] != "#"
+            if open and next not in steps:
+                steps[next] = steps[here] + 1
+                frontier.append(next)
+    steps
+
+## A heap's items, smallest first. The heap passed in doesn't change: this pops a copy.
+def drain(heap: Heap[int]) -> list[int]:
+    mut left = heap
+    mut items = []
+    while True:
+        item = left.pop()
+        if item is None:
+            return items
+        items.append(item)
+
+test "a heap gives back its items in order" for items: list[int]:
+    assert drain(Heap.of(items)) == sorted(items)
+
+test "a deque used from both ends keeps its order" for items: list[int]:
+    mut deque = Deque()
+    for item in items:
+        deque.appendleft(item)
+    assert deque.items() == reversed(items)
+    assert len(deque) == len(items)
+
+def main(stdout: Stdout):
+    mut history = Deque.of(["move", "jump"])
+    history.append("attack")
+    history.appendleft("spawn")
+    stdout.print(history.items(), len(history))
+    stdout.print(history.pop(), history.popleft(), history.first(), history.last())
+    for action in history:
+        stdout.print(action)
+
+    grid = ["..#.", "..#.", "...."]
+    steps = distances(grid, (0, 0))
+    stdout.print(steps[(3, 0)], len(steps))
+
+    mut scores = Heap.of([40, 10, 30])
+    scores.push(20)
+    stdout.print(scores.peek(), drain(scores), len(scores))
+
+    mut turns = PriorityQueue()
+    turns.push("goblin", 12)
+    turns.push("wizard", 18)
+    turns.push("knight", 12)
+    turns.push("dragon", 3)
+    mut order = []
+    while len(turns) > 0:
+        order.append(turns.pop())
+    stdout.print(order)
+
+    mut loot = Counter.of(["gold", "gem", "gold", "potion", "gold", "gem"])
+    loot.add("potion")
+    loot["key"] += 1
+    stdout.print(loot["gold"], loot["sword"], loot.total(), len(loot))
+    stdout.print(loot.most_common(2))
+    for item, count in loot.items():
+        stdout.print(f"{item}: {count}")

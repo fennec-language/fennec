@@ -1,0 +1,5 @@
+error: can't pick a number from 6 to 1: `low` is bigger than `high`
+ --> examples/errors/random_range.fen:6:18
+  |
+6 |     stdout.print(rng.randint(low, 1))
+  |                  ^^^^^^^^^^^^^^^^^^^

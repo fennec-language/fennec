@@ -15,6 +15,7 @@ name = "check"
 path = "tests/main.rs"
 
 [dependencies]
+fennec-re.workspace = true
 fennec-syntax.workspace = true
 
 [lints]

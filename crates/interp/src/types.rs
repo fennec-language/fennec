@@ -92,8 +92,9 @@ impl Interp<'_> {
         self.build(&shape, args, span)
     }
 
-    /// Builds a value of a built-in error type, like the `IoError` that `fs` methods fail with.
-    pub(crate) fn make_error(
+    /// Builds a value of a standard library type from its fields, like the `IoError` that
+    /// `fs` methods fail with.
+    pub(crate) fn make_value(
         &mut self,
         type_name: &str,
         fields: Vec<(&str, Value)>,
@@ -116,20 +117,23 @@ impl Interp<'_> {
         if shape.fields.iter().all(|field| field.rule.is_none()) {
             return Ok(instance);
         }
-        match self.broken_rule(shape, &values)? {
-            None if all_literal => Ok(instance),
-            None => Ok(Value::Ok(Rc::new(instance))),
-            Some(field) if all_literal => Err(Diagnostic::new(
-                format!("this breaks the `where` rule on `{}.{field}`", shape.type_name),
-                span,
-            )
-            .with_help("`where` rules are checked whenever a value is made")),
-            Some(field) => {
-                let message = Value::str(&format!("{}.{field} breaks its `where` rule", shape.type_name));
-                let error = self.make_error("InvalidValue", vec![("message", message)], span)?;
-                Ok(Value::Err(Rc::new(error)))
+        let problem = self.pattern_problem(shape.type_name, &values, span);
+        let message = match (self.broken_rule(shape, &values)?, problem) {
+            (None, _) if all_literal => return Ok(instance),
+            (None, _) => return Ok(Value::Ok(Rc::new(instance))),
+            (Some(_), Some(problem)) if all_literal => return Err(problem),
+            (Some(_), Some(problem)) => problem.message,
+            (Some(field), None) if all_literal => {
+                return Err(Diagnostic::new(
+                    format!("this breaks the `where` rule on `{}.{field}`", shape.type_name),
+                    span,
+                )
+                .with_help("`where` rules are checked whenever a value is made"));
             }
-        }
+            (Some(field), None) => format!("{}.{field} breaks its `where` rule", shape.type_name),
+        };
+        let error = self.make_value("InvalidValue", vec![("message", Value::str(&message))], span)?;
+        Ok(Value::Err(Rc::new(error)))
     }
 
     /// Matches arguments to fields, positionally and by name, filling in defaults.

@@ -1,24 +1,45 @@
 //! The standard library's modules and the names each one provides. The checker and the
 //! interpreter both read imports through here, so they agree on what an import brings in.
 
-use crate::ast::Import;
+use crate::ast::{Expr, ExprKind, Import};
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
 
 /// The modules under `std` so far, and the names each one provides.
-const MODULES: [(&str, &[&str]); 6] = [
+const MODULES: [(&str, &[&str]); 10] = [
     ("math", &["Vec3", "PI", "sqrt", "floor", "ceil", "sin", "cos"]),
     ("game", &["Id", "IdMap"]),
     ("layout", &["SoaList"]),
     ("json", &["loads", "dumps", "ParseError"]),
     ("toml", &["loads", "dumps", "ParseError"]),
     ("path", &["Path"]),
+    ("collections", &["Deque", "Heap", "PriorityQueue", "Counter"]),
+    ("random", &["Random", "random_int", "random_float", "random_choice"]),
+    ("time", &["Clock", "Duration", "Instant"]),
+    ("re", &["Regex", "Match", "is_regex"]),
 ];
+
+/// Modules whose types, like `Deque`, exist only once imported. The older modules' names
+/// are still available everywhere.
+const IMPORTED_ONLY: [&str; 4] = ["collections", "random", "time", "re"];
+
+/// The module a type that has to be imported comes from, like `collections` for `Deque`.
+/// `Clock` is left out: it's a capability, which `main` names like `Stdout` and `Fs`.
+pub fn importable_type(name: &str) -> Option<&'static str> {
+    if name == "Clock" || !name.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return None;
+    }
+    MODULES
+        .iter()
+        .find(|(module, names)| IMPORTED_ONLY.contains(module) && names.contains(&name))
+        .map(|(module, _)| *module)
+}
 
 /// What an import brings in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Imported {
-    /// A module, used as `json.loads(...)`: from `import std.json` or `from std import json`.
+    /// A module, used under `alias`: `std.json` for `import std.json`, which binds `std` as
+    /// in Python, and `json` for `from std import json`.
     Module { alias: String, module: &'static str },
     /// One name from a module: from `from std.json import loads`.
     Name { name: String, module: &'static str },
@@ -44,7 +65,7 @@ pub fn std_import(import: &Import) -> Result<Vec<Imported>, Diagnostic> {
         [std, name] if std == "std" => {
             let module = module(name).ok_or_else(|| no_module(&format!("std.{name}"), span))?;
             if import.names.is_empty() {
-                return Ok(vec![Imported::Module { alias: name.clone(), module }]);
+                return Ok(vec![Imported::Module { alias: format!("std.{name}"), module }]);
             }
             import
                 .names
@@ -75,6 +96,34 @@ pub fn module_as_value(alias: &str, module: &str, span: Span) -> Diagnostic {
     let example = names.first().copied().unwrap_or("name");
     Diagnostic::new(format!("`{alias}` is a module, so use one of its names, like `{alias}.{example}`"), span)
         .with_help(format!("`std.{module}` provides {}", names.join(", ")))
+}
+
+/// `a.b.c` for a chain of names and attributes, like the module path in `std.json.loads`.
+pub fn dotted(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some(name.clone()),
+        ExprKind::Attr { object, name, optional: false } => Some(format!("{}.{name}", dotted(object)?)),
+        _ => None,
+    }
+}
+
+/// `std.toml` written after `import std.json`, which binds `std` but not `std.toml`; or
+/// `std.json` on its own, which is a module, not a value. `module` is the module `path`
+/// names, if it's imported.
+pub fn package_member(path: &str, module: Option<&str>, span: Span) -> Diagnostic {
+    match module {
+        Some(module) => module_as_value(path, module, span),
+        None => Diagnostic::new(format!("`{path}` isn't imported here"), span)
+            .with_help(format!("add `import {path}` at the top of this file")),
+    }
+}
+
+/// The mistake of writing `json.loads` after `import std.json`, which binds `std`.
+pub fn short_module(name: &str, span: Span) -> Diagnostic {
+    let example = names(name).first().copied().unwrap_or("name");
+    Diagnostic::new(format!("`{name}` doesn't exist"), span).with_help(format!(
+        "`import std.{name}` binds `std`, so write `std.{name}.{example}`, or import it with `from std import {name}`"
+    ))
 }
 
 fn names(module: &str) -> &'static [&'static str] {

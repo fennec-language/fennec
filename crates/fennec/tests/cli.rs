@@ -548,6 +548,7 @@ fn changes_in(dir: &Path, home: &Path) -> std::io::Result<Output> {
         .args(["dev", "changes"])
         .current_dir(dir)
         .env("FENNEC_HOME", home)
+        .env("FENNEC_NO_DAEMON", "1")
         .output()
 }
 
@@ -587,4 +588,69 @@ fn dev_changes_reports_what_changed_since_the_last_run() {
         text(&broken.stderr)
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Runs `fennec` in `dir` with its own Fennec folder, letting it use the daemon.
+#[cfg(unix)]
+fn with_daemon(dir: &Path, home: &Path, idle: &str, args: &[&str]) -> std::io::Result<Output> {
+    Command::new(env!("CARGO_BIN_EXE_fennec"))
+        .args(args)
+        .current_dir(dir)
+        .env("FENNEC_HOME", home)
+        .env("FENNEC_DAEMON_IDLE", idle)
+        .env_remove("FENNEC_NO_DAEMON")
+        .output()
+}
+
+/// Waits up to 5 seconds for the daemon to be gone.
+#[cfg(unix)]
+fn stops(dir: &Path, home: &Path) -> bool {
+    (0..250).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        with_daemon(dir, home, "30", &["daemon", "status"])
+            .is_ok_and(|output| text(&output.stdout) == "not running\n")
+    })
+}
+
+#[cfg(unix)]
+fn small_kit(name: &str) -> std::io::Result<(PathBuf, PathBuf)> {
+    let dir = scratch(name)?;
+    std::fs::create_dir_all(dir.join("kit/src"))?;
+    std::fs::write(dir.join("kit/kit.toml"), "name = \"demo\"\n")?;
+    std::fs::write(dir.join("kit/src/main.fen"), "def main(stdout: Stdout):\n    stdout.print(1)\n")?;
+    Ok((dir.join("kit"), dir.join("home")))
+}
+
+#[cfg(unix)]
+#[test]
+fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
+    let (kit, home) = small_kit("daemon").unwrap();
+    let status = || text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    assert_eq!(status(), "not running\n");
+
+    let first = with_daemon(&kit, &home, "30", &["dev", "changes"]).unwrap();
+    assert_eq!(text(&first.stdout), "first run: hashed 1 files and 1 definitions\n");
+    assert!(
+        status().starts_with("running: Fennec") && status().ends_with("1 request served\n"),
+        "{}",
+        status()
+    );
+
+    let again = with_daemon(&kit, &home, "30", &["dev", "changes"]).unwrap();
+    assert_eq!(text(&again.stdout), "0 files parsed, 1 unchanged and not parsed again\nnothing changed\n");
+    assert!(status().ends_with("2 requests served\n"), "{}", status());
+
+    let stop = with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert_eq!(text(&stop.stdout), "stopped\n");
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_idle_daemon_exits_by_itself() {
+    let (kit, home) = small_kit("idle-daemon").unwrap();
+    with_daemon(&kit, &home, "1", &["dev", "changes"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't exit after a second with nothing to do");
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }

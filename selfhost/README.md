@@ -3,10 +3,12 @@
 The start of a self-hosted Fennec: the front end written in Fennec. It mirrors the Rust
 front end in `crates/syntax` part for part, and prints the same dumps:
 
-| Fennec                     | Rust                                   |
-| -------------------------- | -------------------------------------- |
-| the lexer in `src/main.fen` | `crates/syntax/src/lexer.rs`, `token.rs` |
-| `dump_tokens`              | `fennec dev tokens <file>`             |
+| Fennec           | Rust                                      |
+| ---------------- | ----------------------------------------- |
+| `src/span.fen`   | `crates/syntax/src/span.rs`, `diagnostic.rs` |
+| `src/token.fen`  | `crates/syntax/src/token.rs`              |
+| `src/lexer.fen`  | `crates/syntax/src/lexer.rs`              |
+| `src/dump.fen`   | `crates/syntax/src/dump.rs`, which `fennec dev tokens <file>` prints |
 
 `crates/fennec/tests/selfhost.rs` checks that both front ends print exactly the same dump for
 every example, every error example, the standard library's Fennec sources and this kit's own
@@ -19,7 +21,7 @@ Fennec programs can't read their command-line arguments yet, so this one reads i
 
 ```bash
 echo "tokens examples/hello.fen" > inputs.txt
-fennec run selfhost/src/main.fen
+fennec run selfhost
 ```
 
 Compare with `fennec dev tokens examples/hello.fen`.

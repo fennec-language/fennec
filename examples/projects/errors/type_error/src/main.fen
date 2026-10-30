@@ -1,0 +1,4 @@
+from scores import total
+
+def main(stdout: Stdout):
+    stdout.print(total([1, 2, 3]))

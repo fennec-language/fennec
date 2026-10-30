@@ -1,22 +1,24 @@
-//! `fennec test`: checks a program, then runs its `test` blocks and reports each one.
+//! `fennec test`: checks a program, then runs its `test` blocks and reports each one. For a
+//! kit, that's the tests in every file under `src`.
 
 use std::process::ExitCode;
 
 pub(crate) fn test(path: &str) -> ExitCode {
-    let Some((source, module)) = crate::load(path) else { return ExitCode::FAILURE };
-    if !crate::run::check(path, &source, &module) {
+    let Some(program) = crate::load(path, fennec_kit::Entry::Everything) else { return ExitCode::FAILURE };
+    if !crate::run::check(&program) {
         return ExitCode::FAILURE;
     }
+    let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
     let mut out = std::io::sink();
     let mut interp = match fennec_interp::Interp::new(&mut out) {
         Ok(interp) => interp,
         Err(diagnostic) => {
-            eprint!("{}", diagnostic.render(path, &source));
+            eprint!("{}", render(&diagnostic));
             return ExitCode::FAILURE;
         }
     };
-    if let Err(diagnostic) = interp.load(&module) {
-        eprint!("{}", diagnostic.render(path, &source));
+    if let Err(diagnostic) = interp.load(&program.module) {
+        eprint!("{}", render(&diagnostic));
         return ExitCode::FAILURE;
     }
     let outcomes = interp.run_tests();
@@ -32,7 +34,7 @@ pub(crate) fn test(path: &str) -> ExitCode {
             Some(diagnostic) => {
                 failed += 1;
                 println!("  ✗ {}", outcome.name);
-                eprint!("{}", diagnostic.render(path, &source));
+                eprint!("{}", render(diagnostic));
             }
         }
     }

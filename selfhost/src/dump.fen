@@ -1,0 +1,58 @@
+## Plain-text dumps of the token stream, in exactly the text `fennec dev tokens` prints, so
+## the two front ends can be compared line by line. Mirrors `crates/syntax/src/dump.rs`.
+
+from span import Diagnostic
+from token import FPart, Tok
+from lexer import lex
+
+## Every token in `source`, one per line, or the error that stopped the lexer.
+def dump_tokens(source: str) -> str:
+    match lex(source, 0):
+        case Ok(tokens):
+            "".join(f"{token.span.start}..{token.span.end} {describe_tok(token.tok)}\n" for token in tokens)
+        case Err(diagnostic): dump_error(diagnostic)
+
+## A diagnostic as the dumps show it: its span and message, then its help on a second line.
+def dump_error(diagnostic: Diagnostic) -> str:
+    span = diagnostic.span
+    text = f"error {span.start}..{span.end} {diagnostic.message}\n"
+    help = diagnostic.help
+    if help is None:
+        return text
+    text + f"help {help}\n"
+
+def describe_tok(tok: Tok) -> str:
+    match tok:
+        case .Name(text): f"name {text}"
+        case .Int(value): f"int {value}"
+        case .Float(value): f"float {value}"
+        case .Str(text): f"str {quoted(text)}"
+        case .FStr(parts): "fstr " + " | ".join([describe_fpart(part) for part in parts])
+        case .Keyword(word): f"keyword {word}"
+        case .Punct(text): f"punct {text}"
+        case .Newline: "newline"
+        case .Indent: "indent"
+        case .Dedent: "dedent"
+        case .Eof: "eof"
+
+def describe_fpart(part: FPart) -> str:
+    match part:
+        case .Text(text): f"text {quoted(text)}"
+        case .Code(source, offset, spec):
+            if spec is None:
+                return f"expr {offset} {quoted(source)}"
+            f"expr {offset} {quoted(source)} spec {quoted(spec)}"
+
+## A string in double quotes, with backslashes, quotes and line breaks escaped.
+def quoted(text: str) -> str:
+    mut out = "\""
+    for c in text:
+        out += match c:
+            case "\\": "\\\\"
+            case "\"": "\\\""
+            case "\n": "\\n"
+            case "\t": "\\t"
+            case "\r": "\\r"
+            case "\0": "\\0"
+            case _: c
+    out + "\""

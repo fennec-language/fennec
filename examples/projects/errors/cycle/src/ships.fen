@@ -1,0 +1,5 @@
+from ports import Port
+
+struct Ship:
+    name: str
+    home = Port(name="Brightwater")

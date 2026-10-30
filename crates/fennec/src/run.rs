@@ -13,17 +13,18 @@ pub(crate) fn run_jit(path: &str) -> ExitCode {
 }
 
 fn execute(path: &str, jit: bool) -> ExitCode {
-    let Some((source, module)) = crate::load(path) else { return ExitCode::FAILURE };
-    if !check(path, &source, &module) {
+    let Some(program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
+    let module = &program.module;
+    if !check(&program) {
         return ExitCode::FAILURE;
     }
     let mut out = BufWriter::new(std::io::stdout().lock());
-    let result = if jit { native(&module, &mut out) } else { fennec_interp::run(&module, &mut out) };
+    let result = if jit { native(module, &mut out) } else { fennec_interp::run(module, &mut out) };
     let flushed = out.flush();
     match (result, flushed) {
         (Ok(()), Ok(())) => ExitCode::SUCCESS,
         (Err(diagnostic), _) => {
-            eprint!("{}", diagnostic.render(path, &source));
+            eprint!("{}", program.sources.render(&diagnostic));
             ExitCode::FAILURE
         }
         (Ok(()), Err(err)) => {
@@ -48,13 +49,11 @@ fn native(module: &fennec_syntax::Module, out: &mut dyn Write) -> Result<(), fen
 
 /// Type-checks a program before it runs, printing every problem found. Returns whether it
 /// passed.
-pub(crate) fn check(path: &str, source: &str, module: &fennec_syntax::Module) -> bool {
-    match fennec_check::check(module) {
+pub(crate) fn check(program: &fennec_kit::Program) -> bool {
+    match fennec_check::check(&program.module) {
         Ok(_) => true,
         Err(diagnostics) => {
-            let rendered: Vec<String> =
-                diagnostics.iter().map(|diagnostic| diagnostic.render(path, source)).collect();
-            eprint!("{}", rendered.join("\n"));
+            eprint!("{}", program.sources.render_all(&diagnostics));
             false
         }
     }

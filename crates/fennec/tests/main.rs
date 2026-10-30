@@ -3,4 +3,5 @@
 mod cli;
 mod examples;
 mod limits;
+mod projects;
 mod selfhost;

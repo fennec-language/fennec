@@ -7,9 +7,9 @@
 <p align="center"><strong>Fast to write. Fast to build. Fast to run.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/seashell86/fennec/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/seashell86/fennec/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/seashell86/fennec/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/seashell86/fennec/actions/workflows/codeql.yml/badge.svg"></a>
-  <a href="https://scorecard.dev/viewer/?uri=github.com/seashell86/fennec"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/seashell86/fennec/badge"></a>
+  <a href="https://github.com/fennec-language/fennec/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/fennec-language/fennec/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/fennec-language/fennec/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/fennec-language/fennec/actions/workflows/codeql.yml/badge.svg"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/fennec-language/fennec"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/fennec-language/fennec/badge"></a>
 </p>
 
 Fennec is a safe, compiled language for games and tools, designed so that the easy way to write something is also the readable way and the fast way, for people and for the AI they work with.

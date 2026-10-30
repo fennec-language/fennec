@@ -7,7 +7,7 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/seashell86/fennec"
+repository = "https://github.com/fennec-language/fennec"
 publish = false
 
 [workspace.lints.rust]

@@ -299,6 +299,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fennec-ir"
+version = "0.0.1"
+dependencies = [
+ "fennec-check",
+ "fennec-syntax",
+]
+
+[[package]]
 name = "fennec-jit"
 version = "0.0.1"
 dependencies = [

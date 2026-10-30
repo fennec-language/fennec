@@ -12,11 +12,10 @@ description: How Fennec makes development builds nearly instant and release buil
 
 The goal for development builds is that a change runs in moments.
 
-- **An interpreter runs your changes first.** Fennec's compiler turns your code into compact, typed bytecode that runs immediately, with no time spent generating machine code. Because every type is known ahead of time, the interpreter never checks types while running, which makes it far faster than interpreters for dynamic languages.
-- **Hot code gets compiled in the background.** When a function runs often, a fast compiler turns it into native code and swaps it in while the program keeps running.
-- **Only touched code is processed.** Functions are prepared the first time they're called, so a large program starts instantly.
+- **Your code runs as native code right away.** A fast compiler turns each function into machine code the first time it's called, in microseconds. Only the code that runs gets compiled, so a large program starts instantly.
+- **Reruns reuse what's already compiled.** Compiled functions are cached on your machine by their content, so a change recompiles only what it touched.
 - **Dependencies are built once.** Libraries are compiled fully optimized a single time and shared across every project on your machine, so a development build of a game still runs its engine and physics at full speed.
-- **Your code and its dependencies use the same memory layout.** Interpreted code calls compiled code directly, with no conversion in between.
+- **Your code and its dependencies use the same memory layout.** Your code calls into them directly, with no conversion in between.
 - **Hot reload is a goal.** Swapping a changed function into a running game should be the normal way to iterate on gameplay.
 
 ## When you ship

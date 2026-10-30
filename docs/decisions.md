@@ -180,6 +180,18 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 
 **Lints are pinned to the kit's Fennec version.** A lint added in Fennec 0.5 never blocks a patch release of a kit written for 0.4.
 
+## Engines
+
+**Development runs use the Cranelift JIT, with no tiering.** Each function is compiled on its first call, so only code that runs gets compiled. There's no bytecode interpreter that promotes hot functions to the JIT.
+*Why:* Lazy compilation takes microseconds per function and the cache makes reruns instant, so a second fast engine would buy almost nothing. Tiering means two engines that must always agree, plus falling back from compiled code to the interpreter, which is the hardest part of the runtimes that do it.
+
+**The tree-walking interpreter stays simple and correct, not fast.** It runs the REPL, the playground, compile-time evaluation and the sandbox, and it's the reference the JIT is tested against: every example must give the same output on both.
+
+**One cache, shared per machine, keyed by content.**
+- Each compiled function is stored under a hash of its body and the signatures of what it calls. A change inside a function that leaves its signature alone doesn't recompile its callers.
+- Entries are written to a temporary file and renamed into place, so readers never see half an entry and the normal path takes no locks. A lock is taken only while old entries are being cleaned up.
+- The JIT, release builds and the language server share the cache through the query-based compiler.
+
 ## Writing Fennec in Fennec
 
 The current compiler stays as stage 0 until a Fennec compiler built by Fennec produces identical output when it builds itself again.

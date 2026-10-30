@@ -10,56 +10,60 @@ description: How Fennec is designed so AI models write correct code on the first
 
 ## A shape models already know
 
-Fennec's syntax is close to TypeScript: braces, `const` and `let`, `name: Type`, arrow functions, `import` and `export`. Models have seen a great deal of code shaped like this, so they write Fennec fluently with a short guide rather than a learning curve.
+Fennec reads like typed Python: indentation, `def`, comprehensions, f-strings, `and`, `or` and `not`, `True`, `False` and `None`. Python is the language models have written more of than any other, so they write Fennec fluently from a short guide rather than a learning curve.
 
-What Fennec drops is the part of TypeScript that causes bugs: `null` and `undefined`, `===`, `any`, implicit conversions, structural typing, and class inheritance.
+What Fennec drops is the part of Python that causes bugs at scale: types that are only checked at runtime, exceptions, truthiness, shared mutable objects, inheritance, and `None` values you can forget to check.
 
 ## One way to do each thing
 
-Models do best when there's one obvious answer. Fennec has one string syntax, one equality operator, one way to declare a function, one formatter with no settings, and one tool that builds, tests and lints. There are no macros and no custom operators to learn per project.
+Models do best when there's one obvious answer. Comprehensions build collections, and builtins like `sum` and `max` consume them. There's one string syntax, one way to declare a function, one formatter with no settings, and one tool that builds, tests and lints. There are no macros and no decorators to learn per project.
 
 ## Habits from other languages are caught, not guessed at
 
-When a model reaches for something from another language, the compiler recognizes it and says exactly what to write instead.
+When a model reaches for something Fennec doesn't have, the compiler recognizes it and says exactly what to write instead.
 
 | What a model writes | What Fennec says |
 | --- | --- |
-| `if (item == null)` | There's no `null`. `item` is an `Option`; compare it with `.None` or use `??`. |
-| `try { ... } catch` | There are no exceptions. Return a `Result` and pass errors up with `?`. |
-| `if (items)` | There's no truthiness. Write `if !items.isEmpty()`. |
-| `x === y` | There's only `==`, and it never converts types. |
-| `class Boss extends Enemy` | There's no inheritance. Use an `enum` case or an interface. |
-| `var count = 0` | Use `let` for values that change and `const` for values that don't. |
-| `console.log(value)` | There's no `console`. Write output through the `Stdout` that `main` receives; to inspect a value, use a test or the debugger. |
+| `count = 0` | Declare it: `let count = 0` if it changes, `const count = 0` if it doesn't. |
+| `def area(shape):` | Parameters need types: `def area(shape: Shape):`. |
+| `if items:` | There's no truthiness. Write `if len(items) > 0:`. |
+| `try: ... except` | There are no exceptions. Return a `Result` and pass errors up with `?`. |
+| `lambda x: x * 2` | Write `x => x * 2`. |
+| `print(value)` or `console.log(value)` | There's no global output. Write through the `Stdout` that `main` receives; to inspect a value, use a test or the debugger. |
+| `class Boss(Enemy):` | There's no inheritance. `Enemy` is a struct; use an enum case or an interface. |
 
 ## Guardrails for the mistakes models actually make
 
 | The mistake | What stops it |
 | --- | --- |
+| Forgetting a value might be missing | An `Enemy?` can't be used until it's checked for `None`. |
 | Ignoring an error | You can't use a `Result` without handling the failure. Discarding one needs `ignore(result, "why")`. |
-| Assuming something can't fail | There's no `unwrap`. Asserting success needs `expect("reason")`, and an empty reason is rejected. |
-| Leaving a stub behind | `todo` compiles in development builds and is an error in release builds. Unused values and dead code are errors. |
+| Assuming something can't fail | Asserting success needs `expect("reason")`, and an empty reason is rejected. |
+| Leaving a stub behind | `todo()` compiles in development builds and is an error in release builds. Unused values and dead code are errors. |
 | Forgetting the last step | A type can require that its value is consumed. A `Transaction` that's never committed or rolled back doesn't compile. |
 | Silencing the compiler | No lint can be switched off inline. Exceptions go in project config, each with a written reason. |
-| Quietly adding I/O | A function can only use the filesystem, network or clock if it's given one, and that shows in its signature. |
-| Writing slow code | Allocations and copies are visible, and lints catch quadratic patterns like `contains` inside a loop. |
+| Quietly adding I/O | A function can only use the filesystem, network or clock if it's given one, and that shows in its parameters. |
+| Writing slow code | Allocations and copies are visible, and lints catch quadratic patterns like `in` on a list inside a loop. |
 
 ## Signatures that tell the truth
 
-A function's signature says what it changes (`inout`), what it can touch (capabilities like `Fs` and `Clock`), and how it can fail (`Result` and its error type). A model, or a reviewer, can understand a call without reading the function behind it.
+A function's parameters say what it changes (`mut`) and what it can touch (capabilities like `Fs` and `Clock`). Its return type, inferred by the compiler and shown by the editor and tools, says what it produces and how it can fail. A model, or a reviewer, can understand a call without reading the function behind it.
 
 ## Errors written to be fixed
 
 Every compiler error names the problem, explains why, and offers a fix that tools can apply automatically. Errors are also available as JSON, so an agent can read them directly.
 
 ```text
-error: Fennec has no `null`
-  --> src/inventory.fen:14:13
+error: `enemy` might be None
+  --> src/combat.fen:14:5
    |
-14 |   if item == null {
-   |              ^^^^ there is no null value
+12 |     const enemy = world.enemies.get(target)
+   |                   ------------------------- this can return None
    |
-   = fix: `item` is an `Option<Item>`. Write `if item == .None {` or use `item ?? fallback`.
+14 |     enemy.take_damage(10)
+   |     ^^^^^ used without checking
+   |
+   = fix: add `if enemy is None: return` above it, or write `enemy?.take_damage(10)`
 ```
 
 ## Testing with nothing to set up
@@ -81,5 +85,6 @@ Syntax decisions get settled with this data. When two designs are close, the one
 ## Tools for agents
 
 - Diagnostics as JSON, with automatic fixes.
+- The inferred signature of any function, on request.
 - A short guide for models that ships with each compiler version.
 - An MCP server so agents can build, test and look up types directly.

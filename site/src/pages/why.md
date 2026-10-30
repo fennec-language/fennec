@@ -18,6 +18,8 @@ Builds that take minutes break your focus. Build setups that need pages of confi
 
 **A gap between the two is fine.** Developing and shipping are different jobs. A development build optimizes for your time; a release build optimizes for the player's or user's time. Fennec doesn't pretend one build can do both well.
 
+**Code that reads like Python.** If you can read Python, you can read Fennec: indentation, `def`, comprehensions and f-strings, with types checked before anything runs.
+
 **Code you can trust.** If it compiles, it's memory-safe, its errors are handled, and anything that mutates your data says so where it happens.
 
 **Nothing to configure.** One tool builds, tests, formats, lints and manages dependencies. Strong defaults are built in, so a new project starts out strict without a page of settings.

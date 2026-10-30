@@ -25,8 +25,9 @@ Release builds take as long as they need to produce the fastest code.
 
 - A mature optimizing compiler backend, with the whole program optimized together.
 - Every generic function specialized for each type it's used with.
-- The language's guarantees passed to the optimizer: an `inout` parameter is known to be the only reference to its data, which unlocks optimizations most languages can't prove are safe.
-- Compact data layouts: field reordering, and optional values that take no extra space.
+- The language's guarantees passed to the optimizer: a `mut` parameter is known to be the only reference to its data, which unlocks optimizations most languages can't prove are safe.
+- Compact data layouts: field reordering, and optional values (`Enemy?`) that take no extra space.
+- Immutable updates done in place: `replace()` reuses the original's memory when the original isn't used again.
 - No garbage collector, and a fast memory allocator by default.
 
 ## The engines
@@ -41,9 +42,9 @@ Release builds take as long as they need to produce the fastest code.
 
 Fast builds come from design decisions, not just a fast compiler.
 
-- **Files compile in parallel, and changes stay local.** Exported functions state their types, so changing a function's body never forces code that calls it to recompile.
+- **Changes stay local.** When you edit a function, the compiler checks whether its signature changed, including its inferred return type. Almost always it hasn't, and nothing that calls the function is checked again.
 - **No macros.** Code generation at compile time runs through the interpreter in a sandbox, so its results can be cached.
-- **Simple type checking.** Types are inferred within functions, never across them, so checking takes time proportional to the size of your code.
+- **Simple type checking.** Parameters are typed, so each function is checked on its own once the signatures it calls are known. There are no program-wide inference puzzles, and files are checked in parallel.
 - **One shared cache with a size limit.** Build output is stored once per machine and shared by every project, with old entries removed automatically, so builds don't fill your disk.
 
 ## The performance target
@@ -56,4 +57,4 @@ Release builds should land within a few percent of hand-tuned native code. That'
 
 ## What costs nothing
 
-These features exist only at compile time and have no runtime cost: `const` and `let`, `inout`, type inference, `?`, `?.` and `??`, enums and `match`, interfaces and generics, capabilities, and `noalloc`.
+These features exist only at compile time and have no runtime cost: `const` and `let`, `mut`, type inference, `?`, `?.` and `??`, optional types, enums and `match`, interfaces and generics, generator expressions, tuples, capabilities, and `noalloc`.

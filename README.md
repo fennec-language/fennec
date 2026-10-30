@@ -20,16 +20,19 @@ Fennec is a safe, compiled language for games and tools, designed so that the ea
 
 ## A taste
 
-```ts
-fn attack(inout world: World, target: Id<Enemy>) -> Result<Void, CombatError> {
-  const enemy = world.enemies.get(target) ?? return Err(.TargetGone(target))
-  const distance = (enemy.position - world.player).length()
-  if distance > 5.0 {
-    return Err(.OutOfRange(distance))
-  }
-  world.enemies.modify(target, enemy => enemy.health -= 10)
-  Ok()
-}
+```python
+export def attack(mut world: World, target: Id[Enemy]):
+    const enemy = world.enemies.get(target)
+    if enemy is None:
+        return Err(.TargetGone(target))
+    const distance = (enemy.position - world.player).length()
+    if distance > 5.0:
+        return Err(.OutOfRange(distance))
+    world.enemies.modify(target, enemy => enemy.take_damage(10))
+    Ok(None)
+
+const alive = [enemy for enemy in world.enemies if enemy.is_alive()]
+const total_health = sum(enemy.health for enemy in alive)
 ```
 
 ## Repository layout

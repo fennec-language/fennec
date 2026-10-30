@@ -6,38 +6,39 @@ import fennec from '../fennec.tmLanguage.json';
 const base = import.meta.env.BASE_URL;
 const themes = { light: 'vitesse-light', dark: 'vitesse-dark' } as const;
 
-const hero = `struct Enemy {
-  position: Vec3
-  velocity: Vec3
-  health: i32
-}
+const hero = `from std.math import Vec3
+from std.game import Id
 
-error CombatError {
-  TargetGone(target: Id<Enemy>)
-  OutOfRange(distance: f32)
-}
+struct Enemy:
+    position: Vec3
+    velocity: Vec3
+    health: int
 
-noalloc fn step(inout world: World, dt: f32) {
-  for enemy in world.enemies.iterMut() {
-    enemy.position += enemy.velocity * dt
-  }
-}
+    def take_damage(mut self, amount: int):
+        self.health -= amount
 
-fn attack(inout world: World, target: Id<Enemy>) -> Result<Void, CombatError> {
-  const enemy = world.enemies.get(target) ?? return Err(.TargetGone(target))
-  const distance = (enemy.position - world.player).length()
-  if distance > 5.0 {
-    return Err(.OutOfRange(distance))
-  }
-  world.enemies.modify(target, enemy => enemy.health -= 10)
-  Ok()
-}
+enum CombatError:
+    TargetGone(target: Id[Enemy])
+    OutOfRange(distance: f32)
 
-test "attacking a distant enemy fails" {
-  let world = World.empty()
-  const far = world.enemies.insert(Enemy.at(Vec3(x: 10.0, y: 0.0, z: 0.0)))
-  assert attack(inout world, far) == Err(.OutOfRange(10.0))
-}`;
+noalloc def step(mut world: World, dt: f32):
+    for mut enemy in world.enemies:
+        enemy.position += enemy.velocity * dt
+
+export def attack(mut world: World, target: Id[Enemy]):
+    const enemy = world.enemies.get(target)
+    if enemy is None:
+        return Err(.TargetGone(target))
+    const distance = (enemy.position - world.player).length()
+    if distance > 5.0:
+        return Err(.OutOfRange(distance))
+    world.enemies.modify(target, enemy => enemy.take_damage(10))
+    Ok(None)
+
+test "attacking a distant enemy fails":
+    let world = World.empty()
+    const far = world.enemies.insert(Enemy.at(Vec3(x=10.0, y=0.0, z=0.0)))
+    assert attack(mut world, far) == Err(.OutOfRange(10.0))`;
 
 const pillars = [
   {
@@ -58,7 +59,7 @@ const pillars = [
   },
   {
     title: 'Written well by AI',
-    body: 'A familiar, TypeScript-shaped syntax with one way to do each thing, guardrails for the mistakes models make, and errors that tell a model how to fix them.',
+    body: 'It reads like typed Python, the language models know best, with one way to do each thing, guardrails for the mistakes models make, and errors that say how to fix them.',
   },
   {
     title: 'Made for games',
@@ -68,21 +69,20 @@ const pillars = [
 
 const readable = [
   {
-    code: `applyDamage(inout player, 10)   // player changes
-describe(player)                // guaranteed not to`,
+    code: `apply_damage(mut player, 10)   # player changes
+describe(player)               # guaranteed not to`,
     title: 'You can see what changes',
-    body: 'Values are immutable unless you say otherwise. A function that mutates its argument says inout in its signature, and so does every call to it.',
+    body: 'Values are immutable unless you say otherwise. A function that changes its argument says mut in its signature, and so does every call to it.',
   },
   {
-    code: `const total = hits.map(hit => hit.damage).sum()   // no allocation
-const names = players.map(p => p.name).toList()    // allocates, and says so`,
+    code: `const total = sum(hit.damage for hit in hits)        # no allocation
+const names = [player.name for player in players]   # a new list: allocates`,
     title: 'You can see what costs',
-    body: 'Iterator chains compile down to plain loops. Building a new collection, copying heap data and allocating are always visible in the code.',
+    body: 'Generator expressions compile down to plain loops. Brackets build a new collection, so allocation is visible from the syntax itself.',
   },
   {
-    code: `noalloc fn update(inout world: World, dt: f32) {
-  world.particles.removeWhere(p => p.life <= 0.0)
-}`,
+    code: `noalloc def update(mut world: World, dt: f32):
+    world.particles.remove_where(p => p.life <= 0.0)`,
     title: 'You can prove what matters',
     body: 'noalloc is checked through every call, so a stray allocation in the frame loop is a compile error, not a stutter you find in profiling.',
   },

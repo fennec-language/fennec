@@ -10,7 +10,7 @@ struct Enemy:
 struct Rock:
     weight = 10
 
-def hit_all(mut targets: list[Damageable]):
+def hit_all[T: Damageable](mut targets: list[T]):
     for mut target in targets:
         target.damage(5)
 

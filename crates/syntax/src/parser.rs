@@ -18,6 +18,12 @@ pub fn parse(source: &str) -> Result<Module, Diagnostic> {
     Parser::new(lex(source, 0)?).module(false)
 }
 
+/// Parses a standard library source. Its spans start at `Span::PRELUDE`, so a mistake found
+/// in it is never shown against the program's own lines.
+pub fn parse_prelude(source: &str) -> Result<Module, Diagnostic> {
+    Parser::new(lex(source, Span::PRELUDE)?).module(false)
+}
+
 /// Parses one file of a program with several, its spans starting at byte `base` so they
 /// don't overlap another file's. `Sources` turns them back into a file and line.
 pub fn parse_at(source: &str, base: u32) -> Result<Module, Diagnostic> {
@@ -230,14 +236,12 @@ impl Parser {
 
     fn type_def(&mut self, start: Span, is_enum: bool) -> Result<TypeDef, Diagnostic> {
         let name = self.name("a type name")?;
-        if let Some(generic) = self.generic_params()?.first() {
-            return Err(Diagnostic::new(format!("`{name}` can't have type parameters yet"), generic.span)
-                .with_help("write a separate type for each kind of value it holds, or an enum of them"));
-        }
+        let generics = self.generic_params()?;
         let span = start.to(self.prev_span());
         self.expect_p(Punct::Colon)?;
         self.expect_block_start()?;
-        let mut def = TypeDef { name, fields: Vec::new(), cases: Vec::new(), methods: Vec::new(), span };
+        let mut def =
+            TypeDef { name, generics, fields: Vec::new(), cases: Vec::new(), methods: Vec::new(), span };
         while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
             // Enum cases come with their enum and have no `pub` of their own.
             if !is_enum || matches!(self.peek_at(1), Tok::Kw(Kw::Def)) {
@@ -362,8 +366,14 @@ impl Parser {
         loop {
             let start = self.span();
             let name = self.name("a type parameter")?;
-            let bound = if self.eat_p(Punct::Colon) { Some(self.type_expr()?) } else { None };
-            generics.push(Generic { name, bound, span: start.to(self.prev_span()) });
+            let mut bounds = Vec::new();
+            if self.eat_p(Punct::Colon) {
+                bounds.push(self.type_expr()?);
+                while self.eat_p(Punct::Amp) {
+                    bounds.push(self.type_expr()?);
+                }
+            }
+            generics.push(Generic { name, bounds, span: start.to(self.prev_span()) });
             if !self.eat_p(Punct::Comma) {
                 break;
             }
@@ -449,6 +459,16 @@ impl Parser {
                 }
             }
             self.expect_p(Punct::RParen)?;
+            // `(int, str) -> bool`: a function type, its return type last.
+            if self.eat_p(Punct::Arrow) {
+                args.push(self.type_expr()?);
+                return Ok(TypeExpr {
+                    name: "->".to_owned(),
+                    args,
+                    optional: false,
+                    span: start.to(self.prev_span()),
+                });
+            }
             "tuple".to_owned()
         } else {
             // `physics.Body`, a type from a module imported whole.

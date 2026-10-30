@@ -1,0 +1,7 @@
+error: `Deque` doesn't exist
+ --> examples/errors/needs_import.fen:2:17
+  |
+2 |     mut queue = Deque()
+  |                 ^^^^^
+  |
+  = help: import it from std.collections, like `from std.collections import Deque`

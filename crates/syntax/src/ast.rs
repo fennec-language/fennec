@@ -44,11 +44,12 @@ impl FnDef {
     }
 }
 
-/// A type parameter, with the interface its types have to fit: `T` or `T: Shape`.
+/// A type parameter, with the interfaces its types have to fit: `T`, `T: Shape` or
+/// `T: Ordered & Hashable`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Generic {
     pub name: String,
-    pub bound: Option<TypeExpr>,
+    pub bounds: Vec<TypeExpr>,
     pub span: Span,
 }
 
@@ -62,7 +63,8 @@ pub struct Param {
     pub span: Span,
 }
 
-/// A written type, like `int`, `list[str]`, `(int, int)` or `Enemy?`.
+/// A written type, like `int`, `list[str]`, `(int, int)` or `Enemy?`. A function type,
+/// `(int, str) -> bool`, is named `->`, with its parameters' types and then its return type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeExpr {
     pub name: String,
@@ -75,6 +77,8 @@ pub struct TypeExpr {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeDef {
     pub name: String,
+    /// Type parameters, like `T` in `struct Deque[T]:`.
+    pub generics: Vec<Generic>,
     pub fields: Vec<Field>,
     pub cases: Vec<Case>,
     pub methods: Vec<FnDef>,

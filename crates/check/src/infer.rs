@@ -98,6 +98,9 @@ impl Checker {
             (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
                 a.iter().zip(b).all(|(a, b)| self.fits(a, b))
             }
+            (Type::Generic(n1, a), Type::Generic(n2, b)) if n1 == n2 && a.len() == b.len() => {
+                a.iter().zip(b).all(|(a, b)| self.fits(a, b))
+            }
             (Type::Arrow(p1, r1), Type::Arrow(p2, r2)) if p1.len() == p2.len() => {
                 p1.iter().zip(p2).all(|(a, b)| self.fits(b, a)) && self.fits(r1, r2)
             }
@@ -134,15 +137,16 @@ impl Checker {
             (Type::Result(v1, e1), Type::Result(v2, e2)) => {
                 Type::result(self.join(v1, v2)?, self.join(e1, e2)?)
             }
-            (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
-                let mut items = Vec::new();
-                for (a, b) in a.iter().zip(b) {
-                    items.push(self.join(a, b)?);
-                }
-                Type::Tuple(items)
+            (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => Type::Tuple(self.join_each(a, b)?),
+            (Type::Generic(n1, a), Type::Generic(n2, b)) if n1 == n2 && a.len() == b.len() => {
+                Type::Generic(n1.clone(), self.join_each(a, b)?)
             }
             _ => return self.error_union(&a, &b),
         })
+    }
+
+    fn join_each(&mut self, a: &[Type], b: &[Type]) -> Option<Vec<Type>> {
+        a.iter().zip(b).map(|(a, b)| self.join(a, b)).collect()
     }
 
     /// Joins every type in a list. An empty list joins to `None`, like types that don't fit.

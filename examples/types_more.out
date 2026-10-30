@@ -1,5 +1,5 @@
 Light.Red Light.Red Light.Green
-[Coin.Heads, Coin.Tails, Light.Green]
+[Coin.Heads, Coin.Tails] Light.Green
 True False False True True
 Money(cents=4) Money(cents=1)
 Ok(Score(value=5))

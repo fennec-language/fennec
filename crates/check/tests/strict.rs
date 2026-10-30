@@ -214,7 +214,7 @@ fn builtins_check_what_they_are_given() {
             "`round` takes a number, but this is a float @ round(1.5, \"a\")",
         ]
     );
-    assert_eq!(in_main("stdout.print(Err(1))"), ["`Err` holds an error, but this is an int @ 1"]);
+    assert_eq!(in_main("stdout.print(Err(1))"), ["can't tell what value this result could hold @ Err(1)"]);
     assert_eq!(
         in_main("stdout.print(replace(1, n=2))"),
         ["`replace` copies a struct, but this is an int @ replace(1, n=2)"]

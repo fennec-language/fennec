@@ -39,6 +39,8 @@ pub struct Interp<'out> {
     pub(crate) types: HashMap<String, Rc<TypeInfo>>,
     /// Builtins that exist only once imported, by the name they're imported under.
     pub(crate) imports: HashMap<String, &'static str>,
+    /// What the standard library's own code imports, which only that code sees.
+    pub(crate) prelude_imports: HashMap<String, &'static str>,
     /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
     pub(crate) modules: HashMap<String, &'static str>,
     pub(crate) tests: Vec<TestDef>,
@@ -50,10 +52,13 @@ pub struct Interp<'out> {
     pub(crate) passing_up: Option<Flow>,
     /// Values collected by `yield`, one list per running generator.
     pub(crate) yields: Vec<Vec<Value>>,
+    /// Each regex pattern used so far, compiled.
+    pub(crate) regexes: HashMap<String, Rc<fennec_re::Regex>>,
     /// How many more steps the program may take, if it's limited.
     pub(crate) steps_left: Option<u64>,
     step_limit: Option<u64>,
     files: bool,
+    clock: bool,
 }
 
 /// Runs `module`'s `main`, writing what it prints to `out`.
@@ -72,6 +77,7 @@ impl<'out> Interp<'out> {
             functions: HashMap::new(),
             types: HashMap::new(),
             imports: HashMap::new(),
+            prelude_imports: HashMap::new(),
             modules: HashMap::new(),
             tests: Vec::new(),
             frame: Frame::new(),
@@ -80,14 +86,17 @@ impl<'out> Interp<'out> {
             out,
             passing_up: None,
             yields: Vec::new(),
+            regexes: HashMap::new(),
             steps_left: None,
             step_limit: None,
             files: true,
+            clock: true,
         };
         for source in prelude::SOURCES {
-            let module = fennec_syntax::parse(source)?;
+            let module = fennec_syntax::parse_prelude(source)?;
             interp.load(&module)?;
         }
+        interp.prelude_imports = std::mem::take(&mut interp.imports);
         Ok(interp)
     }
 
@@ -106,6 +115,12 @@ impl<'out> Interp<'out> {
     /// Refuses `main` the `Fs` capability, for hosts that have no files, like a browser.
     pub fn deny_files(&mut self) {
         self.files = false;
+    }
+
+    /// Refuses `main` the `Clock` capability, for hosts with no clock to read, like a
+    /// browser running WebAssembly.
+    pub fn deny_clock(&mut self) {
+        self.clock = false;
     }
 
     /// Gives the program its full step budget again.
@@ -187,9 +202,17 @@ impl<'out> Interp<'out> {
                     )
                     .with_help("where this runs, `main` can only receive `stdout: Stdout`"));
                 }
+                "Clock" if self.clock => Capability::Clock,
+                "Clock" => {
+                    return Err(Diagnostic::new(
+                        "`main` can't receive `Clock` here: there's no clock",
+                        param.span,
+                    )
+                    .with_help("where this runs, `main` can only receive `stdout: Stdout`"));
+                }
                 other => {
                     return Err(Diagnostic::new(format!("`main` can't receive a `{other}`"), param.span)
-                        .with_help("`main` can receive `stdout: Stdout` and `fs: Fs`"));
+                        .with_help("`main` can receive `stdout: Stdout`, `fs: Fs` and `clock: Clock`"));
                 }
             }));
         }
@@ -204,10 +227,11 @@ impl<'out> Interp<'out> {
         }
     }
 
-    /// Starts a REPL session, where `stdout` and `fs` are already defined.
+    /// Starts a REPL session, where `stdout`, `fs` and `clock` are already defined.
     pub fn start_repl(&mut self) {
         self.frame.declare("stdout", Value::Capability(Capability::Stdout), false);
         self.frame.declare("fs", Value::Capability(Capability::Fs), false);
+        self.frame.declare("clock", Value::Capability(Capability::Clock), false);
     }
 
     /// Runs a chunk typed into the REPL. Returns how to echo its last expression, if anything.

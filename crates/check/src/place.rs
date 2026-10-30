@@ -157,19 +157,16 @@ impl FnCx<'_> {
     /// Whether `object[...] = value` calls the object's own `def []=`.
     fn has_set_index(&mut self, object: &Expr) -> bool {
         let ty = self.peek_type(object);
-        match ty {
-            Type::Named(name) => self.checker.program.method(&name, "[]=").is_some(),
-            _ => false,
-        }
+        ty.type_name().is_some_and(|name| self.checker.program.method(name, "[]=").is_some())
     }
 
     /// `grid[at] = value` on a type with its own `def []=`. Returns the type of the value it
     /// takes.
     fn set_index(&mut self, object: &Expr, index: &Expr, value: &Expr) -> Type {
         let ty = self.expr(object);
-        let Type::Named(name) = ty else { return Type::Unknown };
-        let Some((key, _)) = self.checker.program.method(&name, "[]=") else { return Type::Unknown };
-        let Some(signature) = self.checker.signature(&key) else { return Type::Unknown };
+        let Some(name) = ty.type_name() else { return Type::Unknown };
+        let Some((key, _)) = self.checker.program.method(name, "[]=") else { return Type::Unknown };
+        let Some(signature) = self.method_signature(&ty, &key) else { return Type::Unknown };
         if signature.params.first().is_some_and(|param| param.is_mut) {
             self.mut_place(object, "`[]=` changes its value, so call it on something held in a mut name");
         }

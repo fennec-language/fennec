@@ -173,12 +173,19 @@ impl FnCx<'_> {
         if name == "PI" {
             return Type::Float;
         }
-        let problem = if let Some(module) = self.checker.program.modules.get(name) {
+        let modules = &self.checker.program.modules;
+        let problem = if let Some(module) = modules.get(name) {
             fennec_syntax::module_as_value(name, module, span)
+        } else if let Some((path, module)) =
+            modules.iter().find(|(path, _)| path.split_once('.').is_some_and(|(package, _)| package == name))
+        {
+            fennec_syntax::module_as_value(path, module, span)
+        } else if modules.contains_key(&format!("std.{name}")) {
+            fennec_syntax::short_module(name, span)
         } else if self.checker.program.is_type_name(name) {
             Diagnostic::new(format!("`{name}` is a type, not a value"), span)
                 .with_help(format!("make one with `{name}(...)`"))
-        } else if builtins::is_builtin(name) || self.checker.program.imports.contains_key(name) {
+        } else if builtins::is_builtin(name) || self.checker.program.imported(name, span).is_some() {
             Diagnostic::new(format!("`{name}` can only be called"), span)
                 .with_help(format!("call it, like `{name}(...)`, or pass an arrow function that calls it"))
         } else {
@@ -192,11 +199,22 @@ impl FnCx<'_> {
     /// function like `json.loads`, or a name like `Path` that's available everywhere. A name
     /// the module doesn't have is reported here.
     pub(crate) fn module_member(&mut self, object: &Expr, name: &str, span: Span) -> Option<Member> {
-        let ExprKind::Name(alias) = &object.kind else { return None };
-        if self.lookup(alias).is_some() {
+        let alias = fennec_syntax::dotted(object)?;
+        if self.lookup(alias.split('.').next().unwrap_or_default()).is_some() {
             return None;
         }
-        let module = *self.checker.program.modules.get(alias)?;
+        let modules = &self.checker.program.modules;
+        let Some(&module) = modules.get(&alias) else {
+            // `std.toml` after `import std.json`, which binds `std` but not `std.toml`.
+            let path = format!("{alias}.{name}");
+            let package = format!("{alias}.");
+            if !modules.keys().any(|bound| bound.starts_with(&package)) {
+                return None;
+            }
+            let problem = fennec_syntax::package_member(&path, modules.get(&path).copied(), span);
+            self.error(problem);
+            return Some(Member::Missing);
+        };
         if let Err(problem) = fennec_syntax::std_member(module, name, span) {
             self.error(problem);
             return Some(Member::Missing);
@@ -248,10 +266,10 @@ impl FnCx<'_> {
         if !self.usable_operands(&left, &right, span, spans) {
             return Type::Unknown;
         }
-        if let (Type::Named(name), Some(method)) = (&left, op.method_name())
+        if let (Some(name), Some(method)) = (left.type_name(), op.method_name())
             && let Some((key, _)) = self.checker.program.method(name, method)
         {
-            return self.call_operator(&key, &right, spans.1);
+            return self.call_operator(&left, &key, &right, spans.1);
         }
         match (&left, &right) {
             (Type::Int, Type::Int) if op == BinOp::Div => Type::Float,
@@ -295,9 +313,21 @@ impl FnCx<'_> {
         (self.checker.settled(&left), self.checker.settled(&right))
     }
 
-    /// `==` and `!=` need two values that could be equal.
+    /// `==` and `!=` need two values that could be equal. A value of a type parameter can
+    /// be compared only if its bounds say so.
     fn comparable(&mut self, left: &Type, right: &Type, op: BinOp, span: Span) {
-        if self.checker.fits(left, right) || self.checker.fits(right, left) {
+        if let Type::Param(name) = left
+            && let Err((_, fix)) = self.fits_bound(left, "Eq")
+        {
+            let message = format!("`{name}` could be any type, so `{}` might not work on it", op.symbol());
+            self.error(Diagnostic::new(message, span).with_help(fix));
+            return;
+        }
+        let function = |ty: &Type| matches!(ty, Type::Function(_) | Type::Arrow(..));
+        if (function(left) && function(right))
+            || self.checker.fits(left, right)
+            || self.checker.fits(right, left)
+        {
             return;
         }
         let diagnostic = Diagnostic::new(
@@ -333,21 +363,27 @@ impl FnCx<'_> {
 
     /// `<`, `<=`, `>` and `>=` need two values of a type with an order.
     fn ordered(&mut self, left: &Type, right: &Type, op: BinOp, span: Span, right_span: Span) {
-        if let Type::Named(name) = left
+        if let Some(name) = left.type_name()
             && let Some((key, _)) = self.checker.program.method(name, "<")
         {
-            self.call_operator(&key, right, right_span);
+            self.call_operator(left, &key, right, right_span);
             return;
         }
-        let orderable =
-            |ty: &Type| matches!(ty, Type::Int | Type::Float | Type::Str | Type::Tuple(_) | Type::List(_));
+        if let Type::Param(name) = left
+            && !self.is_ordered(left)
+        {
+            let message = format!("`{name}` could be any type, so it might not have an order");
+            let help = format!("write `{name}: Ordered` where `{name}` is declared");
+            self.error(Diagnostic::new(message, span).with_help(help));
+            return;
+        }
         match (left, right) {
             (Type::Unknown, _) | (_, Type::Unknown) => {}
             (Type::Int, Type::Float) | (Type::Float, Type::Int) => self.error(
                 Diagnostic::new(format!("can't mix int and float in `{}`", op.symbol()), span)
                     .with_help("convert one side with float(...) or int(...)"),
             ),
-            _ if left == right && orderable(left) => {}
+            _ if left == right && self.is_ordered(left) => {}
             _ => {
                 let message = format!("can't order {} and {} with `{}`", a(left), a(right), op.symbol());
                 let help = format!("define `def <(self, other: ...)` to order {}", describe(left));
@@ -435,34 +471,37 @@ impl FnCx<'_> {
                 self.error(unhandled_result(span));
                 Type::Unknown
             }
-            Type::Named(type_name) => match self.checker.program.type_info(type_name).map(|info| info.kind) {
-                Some(TypeKind::Enum) => {
-                    self.error(
-                        Diagnostic::new(
-                            format!("`{type_name}` is an enum, so its fields depend on its case"),
-                            span,
-                        )
-                        .with_help("get them with `match`, like `case .Circle(radius):`"),
-                    );
-                    Type::Unknown
-                }
-                Some(_) => {
-                    let has_field = self
-                        .checker
-                        .program
-                        .type_info(type_name)
-                        .is_some_and(|info| info.def.fields.iter().any(|field| field.name == name));
-                    if has_field {
-                        return self.checker.field_type(type_name, None, name);
+            Type::Named(type_name) | Type::Generic(type_name, _) => {
+                match self.checker.program.type_info(type_name).map(|info| info.kind) {
+                    Some(TypeKind::Enum) => {
+                        self.error(
+                            Diagnostic::new(
+                                format!("`{type_name}` is an enum, so its fields depend on its case"),
+                                span,
+                            )
+                            .with_help("get them with `match`, like `case .Circle(radius):`"),
+                        );
+                        Type::Unknown
                     }
-                    self.error(
-                        Diagnostic::new(format!("`{type_name}` has no field `{name}`"), span)
-                            .with_help("call a method with parentheses, like `x.length()`"),
-                    );
-                    Type::Unknown
+                    Some(_) => {
+                        let has_field = self
+                            .checker
+                            .program
+                            .type_info(type_name)
+                            .is_some_and(|info| info.def.fields.iter().any(|field| field.name == name));
+                        if has_field {
+                            let field = self.checker.field_type(type_name, None, name);
+                            return field.substitute(&self.checker.program.type_args(ty));
+                        }
+                        self.error(
+                            Diagnostic::new(format!("`{type_name}` has no field `{name}`"), span)
+                                .with_help("call a method with parentheses, like `x.length()`"),
+                        );
+                        Type::Unknown
+                    }
+                    None => self.no_field(ty, name, span),
                 }
-                None => self.no_field(ty, name, span),
-            },
+            }
             _ => self.no_field(ty, name, span),
         }
     }
@@ -499,138 +538,6 @@ impl FnCx<'_> {
         Type::Unknown
     }
 
-    fn index(&mut self, object: &Expr, index: &Expr, span: Span) -> Type {
-        if let Some(type_name) = self.as_type_name(object) {
-            self.error(
-                Diagnostic::new(format!("`{type_name}[...]` is a type, not a value"), span)
-                    .with_help(format!("call it to make one, like `{type_name}[Enemy]()`")),
-            );
-            return Type::Unknown;
-        }
-        let ty = self.expr(object);
-        let at = self.expr(index);
-        match &ty {
-            Type::Unknown | Type::Var(_) => Type::Unknown,
-            Type::Result(..) => {
-                self.error(unhandled_result(span));
-                Type::Unknown
-            }
-            ty if ty.maybe_none() => {
-                self.error(might_be_none(span));
-                Type::Unknown
-            }
-            Type::List(item) => {
-                self.key_fits(&Type::Int, &at, index.span);
-                item.as_ref().clone()
-            }
-            Type::Str => {
-                self.key_fits(&Type::Int, &at, index.span);
-                Type::Str
-            }
-            Type::Tuple(items) => self.tuple_item(items, index),
-            Type::Dict(key, item) => {
-                self.key_fits(key, &at, index.span);
-                item.as_ref().clone()
-            }
-            Type::IdMap(item) => {
-                self.key_fits(&Type::Id(item.clone()), &at, index.span);
-                item.as_ref().clone()
-            }
-            Type::Named(name) => {
-                if let Some((key, _)) = self.checker.program.method(name, "[]") {
-                    return self.call_operator(&key, &at, index.span);
-                }
-                self.error(
-                    Diagnostic::new(format!("`{name}` can't be indexed"), span)
-                        .with_help("define `def [](self, index: ...)` to index it"),
-                );
-                Type::Unknown
-            }
-            other => {
-                self.error(Diagnostic::new(format!("{} can't be indexed", article(&other.kind())), span));
-                Type::Unknown
-            }
-        }
-    }
-
-    /// Checks an index or key fits what's indexed: an int for a list, a key for a dict.
-    fn key_fits(&mut self, expected: &Type, actual: &Type, span: Span) {
-        if self.checker.fits(expected, actual) {
-            return;
-        }
-        let message = match expected {
-            Type::Int => format!("an index must be an int, not {}", article(&actual.kind())),
-            other => format!("this is looked up by {}, not {}", a(other), a(actual)),
-        };
-        self.error(Diagnostic::new(message, span));
-    }
-
-    /// `pair[0]`: the item's type. The index has to be written as a number, unless every
-    /// item has the same type.
-    fn tuple_item(&mut self, items: &[Type], index: &Expr) -> Type {
-        let at = match index.kind {
-            ExprKind::Int(at) => usize::try_from(at).ok(),
-            _ => None,
-        };
-        if let Some(item) = at.and_then(|at| items.get(at)) {
-            return item.clone();
-        }
-        if at.is_some() {
-            let message =
-                format!("this tuple has {} items, so there's no item {}", items.len(), at.unwrap_or(0));
-            self.error(Diagnostic::new(message, index.span));
-            return Type::Unknown;
-        }
-        if let Some(joined) = self.checker.join_all(items) {
-            return joined;
-        }
-        self.error(
-            Diagnostic::new(
-                "a tuple whose items have different types needs its index written as a number",
-                index.span,
-            )
-            .with_help("write it like `pair[0]`, or unpack it: `first, second = pair`"),
-        );
-        Type::Unknown
-    }
-
-    fn slice(&mut self, object: &Expr, start: Option<&Expr>, end: Option<&Expr>, span: Span) -> Type {
-        let ty = self.expr(object);
-        for bound in start.into_iter().chain(end) {
-            let at = self.expr(bound);
-            if !self.checker.fits(&Type::Int, &at) {
-                let message = format!("a slice position must be an int, not {}", article(&at.kind()));
-                self.error(Diagnostic::new(message, bound.span));
-            }
-        }
-        match ty {
-            Type::List(_) | Type::Str | Type::Unknown => ty,
-            Type::Tuple(items) => self.tuple_slice(&items, start, end, span),
-            other => {
-                self.error(Diagnostic::new(format!("{} can't be sliced", article(&other.kind())), span));
-                Type::Unknown
-            }
-        }
-    }
-
-    /// `pair[1:]`: a shorter tuple. Its bounds have to be written as numbers, so its items'
-    /// types are known.
-    fn tuple_slice(&mut self, items: &[Type], start: Option<&Expr>, end: Option<&Expr>, span: Span) -> Type {
-        let bound = |at: Option<&Expr>, default: usize| match at.map(|at| &at.kind) {
-            None => Some(default),
-            Some(ExprKind::Int(n)) => usize::try_from(*n).ok().map(|n| n.min(items.len())),
-            Some(_) => None,
-        };
-        if let (Some(from), Some(to)) = (bound(start, 0), bound(end, items.len())) {
-            return Type::Tuple(items.get(from..to.max(from)).unwrap_or_default().to_vec());
-        }
-        self.error(
-            Diagnostic::new("a tuple's slice needs its positions written as numbers", span)
-                .with_help("write it like `triple[1:]`"),
-        );
-        Type::Unknown
-    }
-
     /// The type of each item when looping over a value.
     pub(crate) fn item_type(&mut self, ty: &Type, span: Span) -> Type {
         match self.checker.settled(ty) {
@@ -655,7 +562,7 @@ impl FnCx<'_> {
                 self.error(might_be_none(span));
                 Type::Unknown
             }
-            Type::Named(name) => self.iterated(&name, span),
+            ty @ (Type::Named(_) | Type::Generic(..)) => self.iterated(&ty, span),
             other => {
                 self.error(Diagnostic::new(format!("can't loop over {}", article(&other.kind())), span));
                 Type::Unknown
@@ -664,9 +571,10 @@ impl FnCx<'_> {
     }
 
     /// The items of a type looped over with its own `def iter`.
-    fn iterated(&mut self, name: &str, span: Span) -> Type {
+    fn iterated(&mut self, ty: &Type, span: Span) -> Type {
+        let name = ty.type_name().unwrap_or_default();
         if let Some((key, _)) = self.checker.program.method(name, "iter") {
-            return match self.checker.signature(&key).map(|signature| signature.returns) {
+            return match self.method_signature(ty, &key).map(|signature| signature.returns) {
                 Some(Type::List(item)) => *item,
                 Some(Type::Unknown) | None => Type::Unknown,
                 Some(other) => {

@@ -96,7 +96,7 @@ fn test_fails_when_a_test_fails() {
 fn test_shrinks_and_replays_property_failures() {
     let output = fennec(&["test", "crates/fennec/tests/fixtures/failing_properties.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(text(&output.stdout).ends_with("  ✓ this one passes\n1 passed, 16 failed\n"));
+    assert!(text(&output.stdout).ends_with("  ✓ this one passes\n1 passed, 15 failed\n"));
     let stderr = text(&output.stderr);
     let reported: Vec<&str> = stderr
         .lines()
@@ -127,8 +127,6 @@ fn test_shrinks_and_replays_property_failures() {
              side is Coin.Heads",
             "it failed for n = 160",
             "the test failed with Oops(reason=\"broken\")",
-            "property tests can't generate a `Widget` yet",
-            "use int, float, bool, str, list, tuples, or your own structs and enums",
         ]
     );
 }

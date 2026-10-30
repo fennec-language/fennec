@@ -49,11 +49,17 @@ def parse(text: str):
         return Err(f"{text} isn't a number")
     Ok(int(text))
 
+def call(make: () -> int) -> int:
+    make()
+
+def combine(join: (int, int) -> int, a: int, b: int) -> int:
+    join(a, b)
+
 def main(stdout: Stdout):
     # A named constructor that takes nothing can be used without parentheses.
     stdout.print(Light.default(), Light.default, Light.Green)
     # A case name that only one enum has needs no type in front of it.
-    stdout.print([.Heads, .Tails, .Green])
+    stdout.print([.Heads, .Tails], .Green)
 
     # Types with their own `<` get the other comparisons from it.
     small = Money(cents=5)
@@ -73,14 +79,12 @@ def main(stdout: Stdout):
     # `?.` skips a method call on None.
     stdout.print(find("Vex")?.greet(), find("Kit")?.greet(), find("Kit") is not None, find("Vex") is not None)
 
-    # Arrow functions can take no arguments, or several.
-    answer = () => 42
-    add = (a, b) => a + b
-    pick = (
+    # Arrow functions can take no arguments, or several, when passed for a parameter with a
+    # function type.
+    stdout.print(call(() => 42), combine((a, b) => a + b, 2, 3), combine((
         first,
         second,
-    ) => second
-    stdout.print(answer(), add(2, 3), pick(1, 2))
+    ) => second, 1, 2))
 
     # Collections can end with a comma.
     stdout.print({"a": 1,}, {1, 2,}, [1,], (1,))
@@ -98,4 +102,4 @@ def main(stdout: Stdout):
     kit = enemies.insert("kit")
     stdout.print(enemies.get(ash), enemies[kit])
 
-    stdout.print(SoaList(), len(SoaList()))
+    stdout.print(SoaList[int](), len(SoaList[int]()))

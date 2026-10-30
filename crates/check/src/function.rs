@@ -69,10 +69,13 @@ pub(crate) struct FnCx<'c> {
     pub(crate) returns: Vec<Type>,
     pub(crate) errors: Vec<Type>,
     pub(crate) yields: Vec<Type>,
-    /// The type parameters in scope, with the interface each has to fit.
-    pub(crate) generics: Vec<(String, Option<String>)>,
+    /// The type parameters in scope, with the interfaces each has to fit.
+    pub(crate) generics: Vec<Generic>,
     /// How many problems were reported. Types left open after one are consequences, not news.
     pub(crate) reported: usize,
+    /// Types filled in for type parameters that weren't worked out when they were used,
+    /// with the bounds they have to fit and where.
+    pub(crate) pending_bounds: Vec<(Type, Vec<String>, Span)>,
     /// Every expression's type and every declared name's, as they're found.
     exprs: Vec<(Span, Type)>,
     names: Vec<(Span, String, Type)>,
@@ -96,6 +99,7 @@ impl<'c> FnCx<'c> {
             errors: Vec::new(),
             yields: Vec::new(),
             generics: Vec::new(),
+            pending_bounds: Vec::new(),
             reported: 0,
             exprs: Vec::new(),
             names: Vec::new(),
@@ -107,6 +111,7 @@ impl<'c> FnCx<'c> {
     /// types under `key` in the typed tree. `extra` are more types that have to be settled,
     /// like the function's return type.
     pub(crate) fn finish(mut self, extra: &[Type]) {
+        self.check_pending_bounds();
         // An expression looked at twice, like an argument peeked at first, keeps the type
         // it got last.
         let exprs: std::collections::BTreeMap<(u32, u32), Type> =
@@ -150,7 +155,8 @@ impl<'c> FnCx<'c> {
         report: bool,
     ) -> BodyType {
         let mut cx = FnCx::new(checker, key, &def.name, report);
-        cx.generics = generics(&def.generics);
+        let entry = cx.checker.program.functions.get(key);
+        cx.generics = entry.map(|entry| cx.checker.program.generics_of(entry)).unwrap_or_default();
         cx.declared = def.ret.as_ref().map(|ret| cx.resolve(ret));
         let effects = effects::of_body(&def.body);
         (cx.generator, cx.fallible) = (effects.yields, effects.fails);
@@ -221,7 +227,7 @@ impl<'c> FnCx<'c> {
 
     /// A written type, with this function's type parameters in scope.
     pub(crate) fn resolve(&mut self, written: &fennec_syntax::TypeExpr) -> Type {
-        let names: Vec<String> = self.generics.iter().map(|(name, _)| name.clone()).collect();
+        let names: Vec<String> = self.generics.iter().map(|generic| generic.name.clone()).collect();
         match self.checker.program.resolve_in(written, &names) {
             Ok(ty) => ty,
             Err(problem) => {
@@ -265,7 +271,9 @@ impl<'c> FnCx<'c> {
     pub(crate) fn check_fields(checker: &'c mut Checker, type_name: &str) {
         let Some(info) = checker.program.type_info(type_name) else { return };
         let def = info.def.clone();
-        let mut cx = FnCx::new(checker, &format!("fields of {type_name}"), type_name, true);
+        let report = !info.prelude;
+        let mut cx = FnCx::new(checker, &format!("fields of {type_name}"), type_name, report);
+        cx.generics.clone_from(&def.generics);
         for field in &def.fields {
             let expected = cx.checker.field_type(type_name, None, &field.name);
             let Some(default) = &field.default else { continue };
@@ -515,12 +523,4 @@ impl<'c> FnCx<'c> {
             }
         }
     }
-}
-
-/// A function's type parameters, with the interface each has to fit.
-pub(crate) fn generics(written: &[Generic]) -> Vec<(String, Option<String>)> {
-    written
-        .iter()
-        .map(|generic| (generic.name.clone(), generic.bound.as_ref().map(|bound| bound.name.clone())))
-        .collect()
 }

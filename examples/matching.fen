@@ -50,20 +50,27 @@ def main(stdout: Stdout):
     stdout.print(outcome(Ok(0)), outcome(Ok(5)), outcome(Err("no")))
     stdout.print(width(.Rect(width=2.0, height=1.0)), width(.Point), width(.Circle(radius=1.0)))
 
-    # A tuple pattern only matches a tuple of the same length.
-    for point in [(0, 4), (2, 3, 1), ()]:
-        match point:
-            case (0, y): stdout.print(f"on the y axis at {y}")
-            case (x, y): stdout.print(f"at {x}, {y}")
-            case (): stdout.print("no numbers")
-            case _: stdout.print("three numbers")
+    # A tuple pattern has as many parts as the tuple it matches.
+    pair = (0, 4)
+    match pair:
+        case (0, y): stdout.print(f"on the y axis at {y}")
+        case (x, y): stdout.print(f"at {x}, {y}")
+    triple = (2, 3, 1)
+    match triple:
+        case (0, y, _): stdout.print(f"on the y axis at {y}")
+        case _: stdout.print("three numbers")
+    empty = ()
+    match empty:
+        case (): stdout.print("no numbers")
 
     # A plain name never matches an error, so a forgotten error can't pass as a value.
-    match Err("broken"):
+    broken: Result[int, str] = Err("broken")
+    match broken:
         case value: stdout.print(f"got {value}")
         case _: stdout.print("an error")
 
     # A dotted case never looks inside an error.
-    match Err(Shape.Point):
+    pointless: Result[Shape, Shape] = Err(Shape.Point)
+    match pointless:
         case .Point: stdout.print("a point")
         case _: stdout.print("an error")

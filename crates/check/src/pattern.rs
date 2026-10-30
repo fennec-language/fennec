@@ -53,7 +53,19 @@ impl FnCx<'_> {
             Pattern::Tuple(patterns) => {
                 let items = match value {
                     Type::Tuple(items) if items.len() == patterns.len() => items,
-                    _ => vec![Type::Unknown; patterns.len()],
+                    Type::Unknown => vec![Type::Unknown; patterns.len()],
+                    other => {
+                        let message = match other {
+                            Type::Tuple(items) => format!(
+                                "this pattern has {} parts, but the value has {}, so it can't match",
+                                patterns.len(),
+                                items.len()
+                            ),
+                            other => format!("this pattern is a tuple, but the value is {}", a(&other)),
+                        };
+                        self.error(Diagnostic::new(message, span));
+                        vec![Type::Unknown; patterns.len()]
+                    }
                 };
                 for (pattern, item) in patterns.iter().zip(&items) {
                     self.bind_pattern(pattern, item, span);

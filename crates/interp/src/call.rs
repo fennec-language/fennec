@@ -49,11 +49,19 @@ impl Interp<'_> {
             ExprKind::Index { object, index }
                 if matches!(object.kind, ExprKind::Name(_) | ExprKind::Attr { .. }) =>
             {
-                if let (Value::Builtin(name), Some(ty)) = (self.eval(object)?, index.as_type())
-                    && matches!(name, "json.loads" | "toml.loads")
-                {
-                    let args = self.eval_args(args)?;
-                    return self.typed_loads(name, &ty, args, span);
+                let function = self.eval(object)?;
+                match (&function, index.as_type()) {
+                    (Value::Builtin(name), Some(ty)) if matches!(*name, "json.loads" | "toml.loads") => {
+                        let args = self.eval_args(args)?;
+                        return self.typed_loads(name, &ty, args, span);
+                    }
+                    // Types in brackets after a generic function or type, as in `largest[int](xs)`
+                    // or `Deque[int]()`, matter only to the type checker.
+                    (Value::Function(_) | Value::Type(_), _) => {
+                        let args = self.eval_args(args)?;
+                        return self.call_value(&function, args, span);
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -161,7 +169,7 @@ impl Interp<'_> {
         if function.generator {
             self.yields.push(Vec::new());
         }
-        let flow = self.exec_stmts(&def.body);
+        let flow = self.exec_stmts(&def.body).map_err(|diagnostic| at_call(diagnostic, span));
         let yielded = if function.generator { self.yields.pop() } else { None };
         let changed: Vec<(Place, Value)> = def
             .params
@@ -364,6 +372,14 @@ fn bind(
         }
         None => Ok(slots.into_iter().flatten().collect()),
     }
+}
+
+/// A failure inside the standard library is reported where the program called it.
+pub(crate) fn at_call(mut diagnostic: Diagnostic, call: Span) -> Diagnostic {
+    if diagnostic.span.in_prelude() && !call.in_prelude() {
+        diagnostic.span = call;
+    }
+    diagnostic
 }
 
 fn check_mut(function: &str, param: &Param, arg: &CallArg) -> Result<(), Diagnostic> {

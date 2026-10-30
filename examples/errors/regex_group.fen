@@ -1,0 +1,5 @@
+from std.re import Regex
+
+def main(stdout: Stdout):
+    stat = Regex(r"(\w+)=(\d+)")
+    stdout.print(stat.replace("hp=30", r"\2 \3"))

@@ -111,3 +111,15 @@ fn files_can_be_denied() {
     let error = run(source, |interp| interp.deny_files()).unwrap_err();
     assert_eq!(error, "`main` can't receive `Fs` here: there are no files");
 }
+
+#[test]
+#[expect(
+    clippy::redundant_closure_for_method_calls,
+    reason = "the method fits one lifetime, and `run` needs a closure that fits them all"
+)]
+fn the_clock_can_be_denied() {
+    let source = "def main(stdout: Stdout, clock: Clock):\n    stdout.print(\"ran\")\n";
+    assert_eq!(run(source, |_| {}).unwrap(), "ran\n");
+    let error = run(source, |interp| interp.deny_clock()).unwrap_err();
+    assert_eq!(error, "`main` can't receive `Clock` here: there's no clock");
+}

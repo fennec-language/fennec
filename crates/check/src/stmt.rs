@@ -264,7 +264,8 @@ impl FnCx<'_> {
             origin: Origin::Captured,
         });
         let report = self.report;
-        self.checker.check_nested(&key, def, captured, !report);
+        let inherited = self.generics.clone();
+        self.checker.check_nested(&key, def, captured, !report, inherited);
         self.declare(&def.name, function, false, def.span);
     }
 

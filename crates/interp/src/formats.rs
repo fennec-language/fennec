@@ -174,7 +174,7 @@ impl Interp<'_> {
                     ("line", Value::Int(0)),
                     ("column", Value::Int(0)),
                 ];
-                let error = self.make_error("ParseError", fields, span)?;
+                let error = self.make_value("ParseError", fields, span)?;
                 Ok(Value::Err(Rc::new(error)))
             }
         }
@@ -193,7 +193,7 @@ impl Interp<'_> {
             ("line", Value::Int(i64::try_from(line).unwrap_or(i64::MAX))),
             ("column", Value::Int(i64::try_from(column).unwrap_or(i64::MAX))),
         ];
-        let error = self.make_error("ParseError", fields, span)?;
+        let error = self.make_value("ParseError", fields, span)?;
         Ok(Value::Err(Rc::new(error)))
     }
 }

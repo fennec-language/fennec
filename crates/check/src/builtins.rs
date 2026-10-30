@@ -11,7 +11,7 @@ use crate::types::{Type, a, article};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most).
 /// Names with a dot belong to a module, like `json.loads`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 32] = [
+const BUILTINS: [(&str, usize, usize); 36] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("abs", 1, 1),
@@ -31,7 +31,11 @@ const BUILTINS: [(&str, usize, usize); 32] = [
     ("max", 1, usize::MAX),
     ("min", 1, usize::MAX),
     ("parallel", 1, 1),
+    ("random.random_choice", 3, 3),
+    ("random.random_float", 2, 2),
+    ("random.random_int", 4, 4),
     ("range", 1, 3),
+    ("re.is_regex", 1, 1),
     ("replace", 1, usize::MAX),
     ("reversed", 1, 1),
     ("round", 1, 2),
@@ -47,8 +51,22 @@ const BUILTINS: [(&str, usize, usize); 32] = [
 ];
 
 /// Builtins whose arguments have to be plain values, not results or optionals.
-const NEEDS_VALUES: [&str; 11] =
-    ["abs", "ceil", "cos", "float", "floor", "int", "len", "range", "round", "sin", "sqrt"];
+const NEEDS_VALUES: [&str; 14] = [
+    "abs",
+    "ceil",
+    "cos",
+    "float",
+    "floor",
+    "int",
+    "len",
+    "random.random_choice",
+    "random.random_float",
+    "random.random_int",
+    "range",
+    "round",
+    "sin",
+    "sqrt",
+];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name)
@@ -60,6 +78,7 @@ pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
         .iter()
         .filter_map(|(builtin, ..)| builtin.split_once('.').filter(|(_, function)| *function == name))
         .map(|(module, _)| module)
+        .chain(fennec_syntax::importable_type(name))
         .collect()
 }
 
@@ -108,7 +127,7 @@ fn method(ty: &Type, name: &str) -> Option<Method> {
         Type::Dict(key, value) => dict_method(key, value, name),
         Type::IdMap(item) => id_map_method(item, name),
         Type::Str => str_method(name),
-        Type::Named(capability) => capability_method(capability, name),
+        Type::Named(type_name) => named_method(type_name, name),
         _ => None,
     }
 }
@@ -182,13 +201,22 @@ fn str_method(name: &str) -> Option<Method> {
     })
 }
 
-fn capability_method(capability: &str, name: &str) -> Option<Method> {
+/// Methods of capabilities, and of standard library types that are written in Rust.
+fn named_method(type_name: &str, name: &str) -> Option<Method> {
     let io = |value: Type| Type::result(value, Type::named("IoError"));
-    Some(match (capability, name) {
+    let found = || Type::named("Match");
+    let text = || Type::Str;
+    Some(match (type_name, name) {
         ("Stdout", "print" | "write") => reads(&[], Type::Unit).any_args(),
-        ("Fs", "exists") => reads(&[Type::Str], Type::Bool),
-        ("Fs", "read_text") => reads(&[Type::Str], io(Type::Str)),
-        ("Fs", "write_text") => reads(&[Type::Str, Type::Str], io(Type::Unit)),
+        ("Fs", "exists") => reads(&[text()], Type::Bool),
+        ("Fs", "read_text") => reads(&[text()], io(text())),
+        ("Fs", "write_text") => reads(&[text(), text()], io(Type::Unit)),
+        ("Clock", "now") => reads(&[], Type::named("Instant")),
+        ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),
+        ("Regex", "match" | "fullmatch" | "search") => reads(&[text()], Type::optional(found())),
+        ("Regex", "find_all") => reads(&[text()], Type::list(found())),
+        ("Regex", "replace") => reads(&[text(), text()], text()),
+        ("Regex", "split") => reads(&[text()], Type::list(text())),
         _ => return None,
     })
 }
@@ -220,10 +248,17 @@ impl FnCx<'_> {
         let path = *ty == Type::named("Fs");
         for ((actual, at), expected) in plain.iter().zip(&method.params) {
             let as_path = path && *expected == Type::Str && *actual == Type::named("Path");
-            if !as_path && !self.checker.fits(expected, actual) {
-                let expected = self.checker.settled(expected);
-                self.error(mismatch(&format!("`{name}`'s argument"), &expected, actual, *at));
+            if as_path || self.checker.fits(expected, actual) {
+                continue;
             }
+            if path {
+                let message =
+                    format!("`{name}` takes a path, as a str or a `Path`, but this is {}", a(actual));
+                self.error(Diagnostic::new(message, *at));
+                continue;
+            }
+            let expected = self.checker.settled(expected);
+            self.error(mismatch(&format!("`{name}`'s argument"), &expected, actual, *at));
         }
         // `table.get(key, default)` gives the default instead of None.
         if let (Type::Dict(_, value), [_, _]) = (ty, plain.as_slice()) {
@@ -303,15 +338,12 @@ impl FnCx<'_> {
         }
         match name {
             "Ok" => Type::result(first, self.checker.fresh(span, Hole::OkError)),
-            "Err" => {
-                if first != Type::Unknown && !self.checker.is_error_type(&first) {
-                    let message = format!("`Err` holds an error, but this is {}", a(&first));
-                    self.error(Diagnostic::new(message, at).with_help("declare error types with `error`"));
-                }
-                Type::result(self.checker.fresh(span, Hole::ErrValue), first)
-            }
+            "Err" => Type::result(self.checker.fresh(span, Hole::ErrValue), first),
             "len" => {
-                let sized = first.is_collection() || matches!(first, Type::Tuple(_) | Type::IdMap(_));
+                let has_len =
+                    first.type_name().is_some_and(|name| self.checker.program.method(name, "len").is_some());
+                let sized =
+                    first.is_collection() || has_len || matches!(first, Type::Tuple(_) | Type::IdMap(_));
                 if !sized && first.is_known() {
                     self.error(Diagnostic::new(format!("{} has no length", article(&first.kind())), span));
                 }
@@ -327,6 +359,10 @@ impl FnCx<'_> {
                 self.format_result(name, &first, (at, span))
             }
             "str" => Type::Str,
+            "re.is_regex" => Type::Bool,
+            "random.random_int" | "random.random_float" | "random.random_choice" => {
+                self.random(name, plain, span)
+            }
             "ignore" => {
                 if !plain.get(1).is_some_and(|(reason, _)| self.checker.fits(&Type::Str, reason)) {
                     self.error(wrong_args(name, span));
@@ -343,6 +379,31 @@ impl FnCx<'_> {
             "round" | "floor" | "ceil" | "sqrt" | "sin" | "cos" | "abs" => self.math(name, &types, span),
             _ => self.collection_builtin(name, plain, span),
         }
+    }
+
+    /// `std.random`'s builtins, which its `Random` is written with. Each takes the seed and
+    /// how many numbers were drawn, and gives back a value and the new count.
+    fn random(&mut self, name: &str, plain: &[(Type, Span)], span: Span) -> Type {
+        // `random_int` also takes the range; the others take only the seed and count.
+        let ints = if name == "random.random_int" { 4 } else { 2 };
+        let all_ints = plain.iter().take(ints).all(|(ty, _)| self.checker.fits(&Type::Int, ty));
+        if !all_ints {
+            self.error(Diagnostic::new(format!("`{name}` takes ints"), span));
+        }
+        let value = match name {
+            "random.random_int" => Type::Int,
+            "random.random_float" => Type::Float,
+            _ => match plain.get(2) {
+                Some((Type::List(item), _)) => item.as_ref().clone(),
+                Some((other, at)) => {
+                    let message = format!("`{name}` picks from a list, but this is {}", a(other));
+                    self.error(Diagnostic::new(message, *at));
+                    Type::Unknown
+                }
+                None => Type::Unknown,
+            },
+        };
+        Type::Tuple(vec![value, Type::Int])
     }
 
     /// The math builtins, which take numbers.
@@ -428,7 +489,7 @@ impl FnCx<'_> {
         if args.iter().any(|arg| arg.is_mut) {
             self.error(needless_mut("replace", span));
         }
-        let Type::Named(type_name) = ty else {
+        let Some(type_name) = ty.type_name() else {
             if ty.is_known() {
                 let message = format!("`replace` copies a struct, but this is {}", a(ty));
                 self.error(Diagnostic::new(message, span));
@@ -452,7 +513,10 @@ impl FnCx<'_> {
                 ));
                 continue;
             }
-            let expected = self.checker.field_type(type_name, None, name);
+            let expected = self
+                .checker
+                .field_type(type_name, None, name)
+                .substitute(&self.checker.program.type_args(ty));
             if !self.checker.fits(&expected, actual) {
                 self.error(mismatch(&format!("`{name}`"), &expected, actual, arg.value.span));
             }

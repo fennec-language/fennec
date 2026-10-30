@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use fennec_syntax::{Diagnostic, FnDef, Module};
+use fennec_syntax::{Diagnostic, FnDef, Generic, Module};
 
 use crate::effects::{self, Effects};
 use crate::function::{Binding, FnCx};
@@ -42,12 +42,14 @@ impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
         let mut program = Program::default();
         for source in fennec_syntax::PRELUDE {
-            if let Ok(prelude) = fennec_syntax::parse(source) {
+            if let Ok(prelude) = fennec_syntax::parse_prelude(source) {
                 program.add(&prelude, true);
             }
         }
+        program.prelude_imports = std::mem::take(&mut program.imports);
         program.add(module, false);
-        let diagnostics = std::mem::take(&mut program.import_problems);
+        let mut diagnostics = std::mem::take(&mut program.import_problems);
+        diagnostics.extend(crate::imports::unimported(module, &program));
         Checker {
             program,
             states: BTreeMap::new(),
@@ -108,23 +110,38 @@ impl Checker {
     /// type parameters bound to something that isn't an interface.
     fn check_declarations(&mut self) {
         let mut problems = Vec::new();
-        let functions =
-            self.program.functions.values().filter(|entry| !entry.prelude).map(|entry| &entry.def);
-        let methods = self.program.interfaces.values().flat_map(|interface| &interface.methods);
-        for def in functions.chain(methods) {
-            let generics: Vec<String> = def.generics.iter().map(|generic| generic.name.clone()).collect();
-            for bound in def.generics.iter().filter_map(|generic| generic.bound.as_ref()) {
-                if !self.program.interfaces.contains_key(&bound.name) {
-                    problems.push(
-                        Diagnostic::new(format!("`{}` isn't an interface", bound.name), bound.span)
-                            .with_help("a type parameter can be bound to an interface, like `T: Shape`"),
-                    );
-                }
-            }
+        for entry in self.program.functions.values().filter(|entry| !entry.prelude) {
+            let generics = self.program.generics_of(entry);
+            let names: Vec<String> = generics.iter().map(|generic| generic.name.clone()).collect();
+            let def = &entry.def;
             let written = def.params.iter().filter_map(|param| param.ty.as_ref()).chain(def.ret.as_ref());
-            problems.extend(written.filter_map(|ty| self.program.resolve_in(ty, &generics).err()));
+            problems.extend(written.filter_map(|ty| self.program.resolve_in(ty, &names).err()));
+            problems.extend(self.bad_bounds(&def.generics));
+        }
+        for interface in self.program.interfaces.values() {
+            for def in &interface.methods {
+                let written = def.params.iter().filter_map(|param| param.ty.as_ref()).chain(def.ret.as_ref());
+                problems.extend(written.filter_map(|ty| self.program.resolve(ty).err()));
+            }
+        }
+        for info in self.program.types.values().filter(|info| !info.prelude) {
+            problems.extend(self.bad_bounds(&info.def.generics));
         }
         self.diagnostics.extend(problems);
+    }
+
+    /// Bounds that aren't interfaces, as in `T: Enemy`.
+    fn bad_bounds(&self, generics: &[Generic]) -> Vec<Diagnostic> {
+        generics
+            .iter()
+            .flat_map(|generic| &generic.bounds)
+            .filter(|bound| !self.program.is_interface(&bound.name))
+            .map(|bound| {
+                Diagnostic::new(format!("`{}` isn't an interface", bound.name), bound.span).with_help(
+                    "a type parameter can be bound to an interface, like `T: Ordered` or `T: Shape`",
+                )
+            })
+            .collect()
     }
 
     /// A function's signature, checking its body first if that's the only way to know its
@@ -148,7 +165,7 @@ impl Checker {
     /// The return type written in a function's signature, or `Unknown` if none is.
     fn written_return(&self, key: &str) -> Type {
         let Some(entry) = self.program.functions.get(key) else { return Type::Unknown };
-        let generics: Vec<String> = entry.def.generics.iter().map(|generic| generic.name.clone()).collect();
+        let generics = self.generic_names(entry);
         let written = entry.def.ret.as_ref().map(|ret| self.program.resolve_in(ret, &generics));
         written.and_then(Result::ok).unwrap_or(Type::Unknown)
     }
@@ -166,8 +183,12 @@ impl Checker {
         })
     }
 
+    fn generic_names(&self, entry: &FnEntry) -> Vec<String> {
+        self.program.generics_of(entry).into_iter().map(|generic| generic.name).collect()
+    }
+
     fn params(&self, entry: &FnEntry) -> Vec<ParamType> {
-        let generics: Vec<String> = entry.def.generics.iter().map(|generic| generic.name.clone()).collect();
+        let generics = self.generic_names(entry);
         entry
             .def
             .params
@@ -176,7 +197,7 @@ impl Checker {
                 name: param.name.clone(),
                 ty: match (&param.ty, &entry.owner) {
                     (Some(ty), _) => self.program.resolve_in(ty, &generics).unwrap_or(Type::Unknown),
-                    (None, Some(owner)) => Type::named(owner),
+                    (None, Some(owner)) => self.program.self_type(owner),
                     (None, None) => Type::Unknown,
                 },
                 is_mut: param.is_mut,
@@ -189,8 +210,16 @@ impl Checker {
     }
 
     /// Checks a function defined inside another, which can read the names around it.
-    pub(crate) fn check_nested(&mut self, key: &str, def: &FnDef, captured: Vec<Binding>, prelude: bool) {
-        self.program.functions.insert(key.to_owned(), FnEntry { def: def.clone(), owner: None, prelude });
+    pub(crate) fn check_nested(
+        &mut self,
+        key: &str,
+        def: &FnDef,
+        captured: Vec<Binding>,
+        prelude: bool,
+        inherited: Vec<Generic>,
+    ) {
+        let entry = FnEntry { def: def.clone(), owner: None, prelude, inherited };
+        self.program.functions.insert(key.to_owned(), entry);
         self.check_with(key, captured);
     }
 
@@ -236,7 +265,7 @@ impl Checker {
         self.fields.insert(key.clone(), None);
         let report = !info.prelude;
         let ty = match (&found.ty, &found.default) {
-            (Some(ty), _) => match self.program.resolve(ty) {
+            (Some(ty), _) => match self.program.resolve_in(ty, &self.program.type_params(owner)) {
                 Ok(ty) => ty,
                 Err(problem) => {
                     self.diagnostics.push(problem);

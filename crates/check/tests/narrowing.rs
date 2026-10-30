@@ -288,6 +288,7 @@ fn match_binds_the_fields_of_each_case() {
         [
             "can't use `+` on a str and an int @ label + count",
             "this pattern has 2 parts, but the value has 1 fields @ case .Circle(radius, extra): 1\n",
+            "this pattern is a tuple, but the value is an int @ case (a, b): a\n",
             "can't use `+` on a str and an int @ name + 1",
             "can't mix int and float in `+` @ value + 1.5",
         ]
@@ -397,6 +398,7 @@ fn match_cases_bind_typed_values() {
             "`T` isn't a type @ T",
             "can't mix int and float in `+` @ r + 1",
             "can't mix int and float in `+` @ dotted + 1",
+            "this pattern has 3 parts, but the value has 2, so it can't match @ case (a, b, c): c\n",
         ]
     );
 }

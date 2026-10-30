@@ -4,13 +4,15 @@
 
 use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Span, TypeExpr};
 
+use crate::ParamType;
 use crate::builtins;
 use crate::expr::Member;
 use crate::function::FnCx;
+use crate::generic::Chosen;
+use crate::infer::Hole;
 use crate::messages::{might_be_none, mismatch, no_method, unhandled_result};
 use crate::program::TypeKind;
 use crate::types::{Type, a};
-use crate::{ParamType, Signature};
 
 /// A method call: `object.method(args)`.
 #[derive(Clone, Copy)]
@@ -19,6 +21,14 @@ struct MethodCall<'a> {
     method: &'a str,
     args: &'a [Arg],
     span: Span,
+}
+
+/// What's being built: a type, or one case of an enum, with the types filled in for the
+/// type's parameters.
+struct Target<'a> {
+    name: &'a str,
+    case: Option<&'a str>,
+    given: Vec<(String, Type)>,
 }
 
 const MUT_ARG: &str = "only a name, or a field or item of one, can be passed with `mut`";
@@ -41,7 +51,19 @@ impl FnCx<'_> {
             ExprKind::Variant(name) => return self.construct_variant(None, name, args, span),
             ExprKind::Index { object, index } => {
                 if let Some(type_name) = self.as_type_name(object) {
+                    if self.checker.program.type_info(type_name).is_some() {
+                        let types = self.types_in(index);
+                        return self.construct_with(type_name, (args, &types), span);
+                    }
                     return self.construct_builtin(type_name, Some(index), args, span);
+                }
+                if let ExprKind::Name(name) = &object.kind
+                    && self.lookup(name).is_none()
+                    && self.checker.program.functions.contains_key(name)
+                {
+                    let types = self.types_in(index);
+                    self.record(object.span, &Type::Function(name.clone()));
+                    return self.call_with_types(name, name, (args, &types), span);
                 }
                 if let Some(builtin) = self.loads(object) {
                     return self.typed_loads(&builtin, index, args, span);
@@ -55,7 +77,7 @@ impl FnCx<'_> {
                 if self.checker.program.is_type_name(name) {
                     return self.construct(name, args, span);
                 }
-                if let Some(builtin) = self.checker.program.imports.get(name).cloned() {
+                if let Some(builtin) = self.checker.program.imported(name, callee.span).cloned() {
                     return self.call_builtin(&builtin, args, span);
                 }
                 if builtins::is_builtin(name) {
@@ -97,7 +119,7 @@ impl FnCx<'_> {
                 Member::Missing => return None,
             },
             ExprKind::Name(name) if self.lookup(name).is_none() => {
-                self.checker.program.imports.get(name)?.clone()
+                self.checker.program.imported(name, callee.span)?.clone()
             }
             _ => return None,
         };
@@ -123,147 +145,27 @@ impl FnCx<'_> {
     }
 
     pub(crate) fn call_function(&mut self, key: &str, name: &str, args: &[Arg], span: Span) -> Type {
+        self.call_with_types(key, name, (args, &[]), span)
+    }
+
+    /// Calls a function, with the types for its type parameters that are written in
+    /// brackets, as in `largest[int](xs)`.
+    pub(crate) fn call_with_types(
+        &mut self,
+        key: &str,
+        name: &str,
+        given: (&[Arg], &[Type]),
+        span: Span,
+    ) -> Type {
+        let (args, types) = given;
         let Some(signature) = self.checker.signature(key) else {
             self.ignore_args(args);
             return Type::Unknown;
         };
-        let (signature, chosen) = self.instantiate(key, &signature, span);
+        let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
         self.bind_args(name, &signature.params, args, span);
-        self.check_bounds(&chosen, span);
+        self.check_bounds(chosen, span);
         signature.returns
-    }
-
-    /// A generic function's signature for one call, with a new type variable for each of
-    /// its type parameters. Also returns each parameter's name, interface and variable.
-    fn instantiate(
-        &mut self,
-        key: &str,
-        signature: &Signature,
-        span: Span,
-    ) -> (Signature, Vec<(String, Option<String>, Type)>) {
-        let mut names = Vec::new();
-        for ty in signature.params.iter().map(|param| &param.ty).chain([&signature.returns]) {
-            ty.map(&mut |part| {
-                if let Type::Param(name) = part
-                    && !names.contains(name)
-                {
-                    names.push(name.clone());
-                }
-                None
-            });
-        }
-        if names.is_empty() {
-            return (signature.clone(), Vec::new());
-        }
-        let written = self.checker.program.functions.get(key).map(|entry| entry.def.generics.clone());
-        let mut chosen = Vec::new();
-        for name in names {
-            let bound = if self.checker.program.interfaces.contains_key(&name) {
-                Some(name.clone())
-            } else {
-                written
-                    .iter()
-                    .flatten()
-                    .find(|generic| generic.name == name)
-                    .and_then(|generic| generic.bound.as_ref().map(|bound| bound.name.clone()))
-            };
-            let var = self.checker.fresh(span, crate::infer::Hole::TypeParam(name.clone()));
-            chosen.push((name, bound, var));
-        }
-        let fill = |ty: &Type| {
-            ty.map(&mut |part| match part {
-                Type::Param(name) => chosen.iter().find(|(n, ..)| n == name).map(|(.., var)| var.clone()),
-                _ => None,
-            })
-        };
-        let params =
-            signature.params.iter().map(|param| ParamType { ty: fill(&param.ty), ..param.clone() }).collect();
-        let returns = fill(&signature.returns);
-        (Signature { params, returns, ..signature.clone() }, chosen)
-    }
-
-    /// Checks the types chosen for a call's type parameters fit their interfaces.
-    fn check_bounds(&mut self, chosen: &[(String, Option<String>, Type)], span: Span) {
-        for (_, bound, var) in chosen {
-            let (Some(interface), ty) = (bound, self.checker.settled(var)) else { continue };
-            if !ty.is_known() {
-                continue;
-            }
-            if let Err((why, fix)) = self.fits_interface(&ty, interface) {
-                self.error(
-                    Diagnostic::new(format!("{} isn't `{interface}`: {why}", show(&ty)), span).with_help(fix),
-                );
-            }
-        }
-    }
-
-    /// Whether a type has every method an interface asks for, or why not and what to do.
-    pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
-        if let Type::Param(name) = ty {
-            let bound = self.bound_of(name);
-            return if bound.as_deref() == Some(interface) {
-                Ok(())
-            } else {
-                Err((
-                    format!("`{name}` could be any type"),
-                    format!("write `{name}: {interface}` where `{name}` is declared"),
-                ))
-            };
-        }
-        let methods = self.checker.program.interfaces.get(interface).map(|found| found.methods.clone());
-        for wanted in methods.unwrap_or_default() {
-            let found = match ty {
-                Type::Named(name) => self.checker.program.method(name, &wanted.name).map(|(key, _)| key),
-                _ => None,
-            };
-            let fix = format!("give {} the method `{}`", show(ty), signature_text(&wanted));
-            let Some(key) = found else { return Err((format!("it has no `{}` method", wanted.name), fix)) };
-            let Some(actual) = self.checker.signature(&key) else { continue };
-            let expected = self.interface_method(interface, &wanted, ty);
-            let fits = actual.params.len() == expected.params.len()
-                && actual.params.iter().zip(&expected.params).skip(1).all(|(actual, expected)| {
-                    actual.is_mut == expected.is_mut && self.checker.fits(&actual.ty, &expected.ty)
-                })
-                && self.checker.fits(&expected.returns, &actual.returns);
-            if !fits {
-                return Err((format!("its `{}` method doesn't match `{interface}`'s", wanted.name), fix));
-            }
-        }
-        Ok(())
-    }
-
-    /// The interface a type parameter of this function has to fit.
-    pub(crate) fn bound_of(&self, name: &str) -> Option<String> {
-        if self.checker.program.interfaces.contains_key(name) {
-            return Some(name.to_owned());
-        }
-        self.generics.iter().find(|(generic, _)| generic == name).and_then(|(_, bound)| bound.clone())
-    }
-
-    /// The signature an interface gives a method, for a value of type `owner`. A method that
-    /// doesn't write its return type gives back nothing.
-    pub(crate) fn interface_method(
-        &mut self,
-        interface: &str,
-        method: &fennec_syntax::FnDef,
-        owner: &Type,
-    ) -> Signature {
-        let resolve = |cx: &mut Self, ty: &TypeExpr| match cx.checker.program.resolve(ty) {
-            Ok(Type::Param(name)) if name == interface => owner.clone(),
-            Ok(ty) => ty,
-            Err(_) => Type::Unknown,
-        };
-        let params = method
-            .params
-            .iter()
-            .map(|param| ParamType {
-                name: param.name.clone(),
-                ty: param.ty.as_ref().map_or_else(|| owner.clone(), |ty| resolve(self, ty)),
-                is_mut: param.is_mut,
-            })
-            .collect();
-        let returns = method.ret.as_ref().map_or(Type::Unit, |ret| resolve(self, ret));
-        Signature { params, returns, can_fail: false, generator: false }
     }
 
     /// Matches arguments to parameters, positionally and by name.
@@ -272,14 +174,20 @@ impl FnCx<'_> {
         let mut unmatched_args = false;
         let mut next = 0;
         for arg in args {
-            let ty = self.arg_value(arg, &[]);
             let at = if let Some(name) = &arg.name {
                 params.iter().position(|param| &param.name == name)
             } else {
                 next += 1;
                 Some(next - 1)
             };
-            let Some((at, param)) = at.and_then(|at| params.get(at).map(|param| (at, param))) else {
+            let found = at.and_then(|at| params.get(at).map(|param| (at, param)));
+            // An arrow function passed for a function parameter receives its parameters' types.
+            let receives = match found.map(|(_, param)| self.checker.settled(&param.ty)) {
+                Some(Type::Arrow(receives, _)) => receives,
+                _ => Vec::new(),
+            };
+            let ty = self.arg_value(arg, &receives);
+            let Some((at, param)) = found else {
                 let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();
                 self.error(unmatched(function, ("parameter", "argument"), &names, arg));
                 unmatched_args = true;
@@ -329,9 +237,10 @@ impl FnCx<'_> {
         }
     }
 
-    /// An operator defined by a type, like `def +` or `def []`, called with one argument.
-    pub(crate) fn call_operator(&mut self, key: &str, arg: &Type, span: Span) -> Type {
-        let Some(signature) = self.checker.signature(key) else { return Type::Unknown };
+    /// An operator defined by a value's type, like `def +` or `def []`, called with one
+    /// argument.
+    pub(crate) fn call_operator(&mut self, receiver: &Type, key: &str, arg: &Type, span: Span) -> Type {
+        let Some(signature) = self.method_signature(receiver, key) else { return Type::Unknown };
         if let Some(param) = signature.params.get(1) {
             self.check_arg(param, arg, span);
         }
@@ -360,13 +269,14 @@ impl FnCx<'_> {
                 value.as_ref().clone()
             }
             Type::Result(..) => self.unusable(unhandled_result(object.span), args),
-            Type::Named(name) if self.checker.program.type_info(name).is_some() => {
+            Type::Named(name) | Type::Generic(name, _) if self.checker.program.type_info(name).is_some() => {
                 match self.checker.program.method(name, method) {
                     Some((key, entry)) => {
                         let takes_self = entry.def.takes_self();
-                        self.call_method(call, &key, takes_self)
+                        self.call_method(call, ty, (&key, takes_self))
                     }
-                    None => self.unusable(no_method(ty, method, span), args),
+                    // Methods written in Rust, like `Regex`'s.
+                    None => self.builtin_method(object, ty, method, args, span),
                 }
             }
             Type::Param(name) => self.interface_call(call, name),
@@ -379,25 +289,21 @@ impl FnCx<'_> {
     }
 
     /// A method called on a value of a type parameter, which has the methods of its
-    /// interface and no others.
+    /// interfaces and no others.
     fn interface_call(&mut self, call: &MethodCall<'_>, name: &str) -> Type {
         let MethodCall { object, method, args, span } = *call;
         let owner = Type::Param(name.to_owned());
-        let found = self.bound_of(name).and_then(|interface| {
-            let methods = &self.checker.program.interfaces.get(&interface)?.methods;
-            Some((interface.clone(), methods.iter().find(|m| m.name == method)?.clone()))
-        });
-        let Some((interface, def)) = found else {
-            let help = match self.bound_of(name) {
-                Some(interface) => format!("`{interface}` has no `{method}` method; add it to the interface"),
-                None => format!("bind `{name}` to an interface that has it, like `{name}: HasLength`"),
+        let Some((_, def)) = self.bound_method(name, method) else {
+            let help = match self.bounds_of(name).as_slice() {
+                [] => format!("bind `{name}` to an interface that has it, like `{name}: HasLength`"),
+                bounds => {
+                    format!("`{}` has no `{method}` method; add it to the interface", bounds.join("` or `"))
+                }
             };
-            return self.unusable(
-                Diagnostic::new(no_method(&owner, method, span).message, span).with_help(help),
-                args,
-            );
+            let message = no_method(&owner, method, span).message;
+            return self.unusable(Diagnostic::new(message, span).with_help(help), args);
         };
-        let signature = self.interface_method(&interface, &def, &owner);
+        let signature = self.interface_method(&def, &owner);
         if signature.params.first().is_some_and(|param| param.is_mut) {
             let what = format!("`{method}` changes its value, so call it on something held in a mut name");
             self.mut_place(object, &what);
@@ -424,10 +330,12 @@ impl FnCx<'_> {
         }
     }
 
-    /// Calls a method on a value. A `mut self` method needs its value in a mut place.
-    fn call_method(&mut self, call: &MethodCall<'_>, key: &str, takes_self: bool) -> Type {
+    /// Calls a method on a value of type `receiver`. A `mut self` method needs its value in
+    /// a mut place.
+    fn call_method(&mut self, call: &MethodCall<'_>, receiver: &Type, method_key: (&str, bool)) -> Type {
         let MethodCall { object, method, args, span } = *call;
-        let Some(signature) = self.checker.signature(key) else {
+        let (key, takes_self) = method_key;
+        let Some(signature) = self.method_signature(receiver, key) else {
             self.ignore_args(args);
             return Type::Unknown;
         };
@@ -462,8 +370,29 @@ impl FnCx<'_> {
         }
     }
 
+    /// The types written in brackets after a generic function or type: `int` in
+    /// `largest[int]`, `str, int` in `Pair[str, int]`.
+    fn types_in(&mut self, index: &Expr) -> Vec<Type> {
+        let written = match &index.kind {
+            ExprKind::Tuple(items) => items.iter().map(Expr::as_type).collect::<Option<Vec<_>>>(),
+            _ => index.as_type().map(|ty| vec![ty]),
+        };
+        let Some(written) = written else {
+            self.error(Diagnostic::new("write types in the brackets, like `[int]`", index.span));
+            return Vec::new();
+        };
+        written.iter().map(|ty| self.resolve(ty)).collect()
+    }
+
     /// Calls a type to build a value: `Enemy(position=p)`, `NotFound(path)`.
     pub(crate) fn construct(&mut self, type_name: &str, args: &[Arg], span: Span) -> Type {
+        self.construct_with(type_name, (args, &[]), span)
+    }
+
+    /// Builds a value, with the types for the type's parameters that are written in
+    /// brackets, as in `Deque[int]()`. The others are worked out from the fields given.
+    fn construct_with(&mut self, type_name: &str, given: (&[Arg], &[Type]), span: Span) -> Type {
+        let (args, types) = given;
         let Some(info) = self.checker.program.type_info(type_name) else {
             return self.construct_builtin(type_name, None, args, span);
         };
@@ -475,13 +404,47 @@ impl FnCx<'_> {
                     .with_help(format!("write one of {}", cases.join(", ")));
             return self.unusable(diagnostic, args);
         }
-        let fields = info.def.fields.clone();
-        let literal = self.build(type_name, None, &fields, args, span);
-        let built = Type::named(type_name);
+        let (fields, generics) = (info.def.fields.clone(), info.def.generics.clone());
+        if types.len() > generics.len() {
+            self.error(crate::messages::wrong_args(type_name, span));
+        }
+        let mut given = Vec::new();
+        let mut chosen = Vec::new();
+        for (at, generic) in generics.iter().enumerate() {
+            let ty = match types.get(at) {
+                Some(ty) => ty.clone(),
+                None => self.checker.fresh(span, Hole::TypeParam(generic.name.clone())),
+            };
+            let bounds = generic.bounds.iter().map(|bound| bound.name.clone()).collect();
+            chosen.push(Chosen { ty: ty.clone(), bounds });
+            given.push((generic.name.clone(), ty));
+        }
+        let built = match given.as_slice() {
+            [] => Type::named(type_name),
+            given => Type::Generic(type_name.to_owned(), given.iter().map(|(_, ty)| ty.clone()).collect()),
+        };
+        let literal = self.build(&Target { name: type_name, case: None, given }, &fields, args, span);
+        self.check_bounds(chosen, span);
+        if type_name == "Regex" {
+            self.check_pattern(args);
+        }
         if fields.iter().any(|field| field.rule.is_some()) && !literal {
             return Type::result(built, Type::named("InvalidValue"));
         }
         built
+    }
+
+    /// A `Regex` written with a literal pattern: a pattern that isn't valid is a mistake in
+    /// the program, so it's reported now rather than when it runs.
+    fn check_pattern(&mut self, args: &[Arg]) {
+        let Some(arg) = args.first() else { return };
+        let ExprKind::Str(pattern) = &arg.value.kind else { return };
+        if let Err(error) = fennec_re::Regex::new(pattern) {
+            self.error(
+                Diagnostic::new(format!("this pattern isn't valid: {}", error.message), arg.value.span)
+                    .with_help(format!("the problem is at character {} of the pattern", error.at)),
+            );
+        }
     }
 
     /// `IdMap[Enemy]()` and `SoaList[Particle]()`.
@@ -544,20 +507,14 @@ impl FnCx<'_> {
             .and_then(|info| info.def.cases.iter().find(|c| c.name == case))
             .map(|c| c.fields.clone())
             .unwrap_or_default();
-        self.build(&owner, Some(case), &fields, args, span);
+        self.build(&Target { name: &owner, case: Some(case), given: Vec::new() }, &fields, args, span);
         Type::Named(owner)
     }
 
     /// Matches arguments to fields, positionally and by name. Returns whether every argument
     /// is written as a literal, so `where` rules can be checked when the value is made.
-    fn build(
-        &mut self,
-        type_name: &str,
-        case: Option<&str>,
-        fields: &[Field],
-        args: &[Arg],
-        span: Span,
-    ) -> bool {
+    fn build(&mut self, target: &Target<'_>, fields: &[Field], args: &[Arg], span: Span) -> bool {
+        let Target { name: type_name, case, .. } = *target;
         let display = case.map_or_else(|| type_name.to_owned(), |case| format!("{type_name}.{case}"));
         let mut given = vec![false; fields.len()];
         let mut unmatched_args = false;
@@ -581,8 +538,9 @@ impl FnCx<'_> {
                 self.error(Diagnostic::new("this field is given twice", arg.value.span));
             }
             *slot = true;
-            let expected = self.checker.field_type(type_name, case, &field.name);
+            let expected = self.checker.field_type(type_name, case, &field.name).substitute(&target.given);
             if !self.checker.fits(&expected, &ty) {
+                let expected = self.checker.settled(&expected);
                 self.error(mismatch(&format!("`{}`", field.name), &expected, &ty, arg.value.span));
             }
         }
@@ -600,31 +558,6 @@ impl FnCx<'_> {
                 ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None
             )
         })
-    }
-}
-
-/// A method's signature as it's written: `def damage(mut self, amount: int)`.
-fn signature_text(def: &fennec_syntax::FnDef) -> String {
-    let params: Vec<String> = def
-        .params
-        .iter()
-        .map(|param| {
-            let prefix = if param.is_mut { "mut " } else { "" };
-            match &param.ty {
-                Some(ty) => format!("{prefix}{}: {}", param.name, crate::program::written(ty)),
-                None => format!("{prefix}{}", param.name),
-            }
-        })
-        .collect();
-    let ret = def.ret.as_ref().map(|ret| format!(" -> {}", crate::program::written(ret))).unwrap_or_default();
-    format!("def {}({}){ret}", def.name, params.join(", "))
-}
-
-/// A type for a message: `Rock`, or "an int".
-fn show(ty: &Type) -> String {
-    match ty {
-        Type::Named(name) | Type::Param(name) => format!("`{name}`"),
-        other => a(other),
     }
 }
 

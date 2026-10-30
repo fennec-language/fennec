@@ -1,4 +1,4 @@
-import std.json
+from std import json
 
 def main(stdout: Stdout):
     save = json.loads("{\"level\": 3}")?

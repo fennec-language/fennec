@@ -1,4 +1,4 @@
-import std.json
+from std import json
 
 struct Save:
     level: int

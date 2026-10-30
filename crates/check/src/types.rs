@@ -30,6 +30,8 @@ pub enum Type {
     Result(Box<Type>, Box<Type>),
     /// A struct, enum or error, or a capability like `Stdout`.
     Named(String),
+    /// A struct with type parameters, and the type given for each: `Deque[int]`.
+    Generic(String, Vec<Type>),
     /// An `Id` from an `IdMap` of the given type.
     Id(Box<Type>),
     IdMap(Box<Type>),
@@ -37,9 +39,8 @@ pub enum Type {
     Function(String),
     /// An arrow function: the types of its parameters, and what it gives back.
     Arrow(Vec<Type>, Box<Type>),
-    /// A type parameter of a generic function: `T` in `def first[T](items: list[T]) -> T`.
-    /// An interface written as a parameter's type, like `list[Shape]`, is a type parameter
-    /// named after the interface. Each call picks one type for it.
+    /// A type parameter of a generic function or type: `T` in `def first[T](items: list[T]) -> T`
+    /// or `struct Deque[T]:`. Each use fills in one type for it.
     Param(String),
     /// One of several error types, in name order: what something gives back when it can
     /// fail in more than one way.
@@ -99,7 +100,7 @@ impl Type {
             Type::Tuple(_) => "tuple".to_owned(),
             Type::Optional(inner) => format!("{}?", inner.kind()),
             Type::Result(..) => "result".to_owned(),
-            Type::Named(name) | Type::Param(name) => name.clone(),
+            Type::Named(name) | Type::Param(name) | Type::Generic(name, _) => name.clone(),
             Type::Id(_) => "Id".to_owned(),
             Type::IdMap(_) => "IdMap".to_owned(),
             Type::Function(_) | Type::Arrow(..) => "function".to_owned(),
@@ -131,7 +132,7 @@ impl Type {
                 vec![inner]
             }
             Type::Dict(a, b) | Type::Result(a, b) => vec![a, b],
-            Type::Tuple(items) => items.iter().collect(),
+            Type::Tuple(items) | Type::Generic(_, items) => items.iter().collect(),
             Type::Arrow(params, ret) => params.iter().chain(std::iter::once(ret.as_ref())).collect(),
             _ => Vec::new(),
         }
@@ -150,12 +151,31 @@ impl Type {
             Type::Dict(a, b) => Type::Dict(inner(a), inner(b)),
             Type::Result(a, b) => Type::Result(inner(a), inner(b)),
             Type::Tuple(items) => Type::Tuple(items.iter().map(|item| *inner(item)).collect()),
+            Type::Generic(name, items) => {
+                Type::Generic(name.clone(), items.iter().map(|item| *inner(item)).collect())
+            }
             Type::Arrow(params, ret) => {
                 Type::Arrow(params.iter().map(|param| *inner(param)).collect(), inner(ret))
             }
             other => other.clone(),
         };
         change(&mapped).unwrap_or(mapped)
+    }
+
+    /// The name of the struct, enum, error or capability this is a value of.
+    pub(crate) fn type_name(&self) -> Option<&str> {
+        match self {
+            Type::Named(name) | Type::Generic(name, _) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Replaces type parameters by name: `T` with `int` in `Deque[T]`.
+    pub(crate) fn substitute(&self, given: &[(String, Type)]) -> Type {
+        self.map(&mut |part| match part {
+            Type::Param(name) => given.iter().find(|(param, _)| param == name).map(|(_, ty)| ty.clone()),
+            _ => None,
+        })
     }
 
     /// Whether `var` appears anywhere in this type.
@@ -179,9 +199,13 @@ impl fmt::Display for Type {
             Type::Errors(names) => f.write_str(&names.join(" | ")),
             Type::Arrow(params, ret) => {
                 let params: Vec<String> = params.iter().map(ToString::to_string).collect();
-                write!(f, "({}) => {ret}", params.join(", "))
+                write!(f, "({}) -> {ret}", params.join(", "))
             }
             Type::Id(item) => write!(f, "Id[{item}]"),
+            Type::Generic(name, items) => {
+                let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+                write!(f, "{name}[{}]", items.join(", "))
+            }
             Type::IdMap(item) => write!(f, "IdMap[{item}]"),
             other => f.write_str(&other.kind()),
         }

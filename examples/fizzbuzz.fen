@@ -1,4 +1,4 @@
-def fizzbuzz(n: int):
+def fizzbuzz(n: int) -> str:
     if n % 15 == 0:
         "FizzBuzz"
     elif n % 3 == 0:

@@ -8,7 +8,7 @@ def fibonacci(n: int) -> int:
 def apply_damage(mut health: int, amount: int):
     health -= amount
 
-def describe(name: str, health: int):
+def describe(name: str, health: int) -> str:
     status = "healthy" if health > 50 else "hurt"
     f"{name} is {status} ({health} HP)"
 

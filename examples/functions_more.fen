@@ -7,23 +7,23 @@ error SettingsUnreadable:
 struct Score:
     value: int where value >= 0
 
-def parse_score(text: str):
+def parse_score(text: str) -> Score:
     if not text.isdigit(): fail ConfigError(f"\"{text}\" isn't a number")
     Score(value=int(text)?)?
 
-def load_scores(lines: list[str]):
+def load_scores(lines: list[str]) -> list[Score]:
     [parse_score(line)? for line in lines]
 
-def read_settings(fs: Fs, path: str):
+def read_settings(fs: Fs, path: str) -> str:
     text = fs.read_text(path)? from SettingsUnreadable(path)
     text.strip()
 
-def counter_from(start: int):
-    def next_after(n: int):
+def counter_from(start: int) -> list[int]:
+    def next_after(n: int) -> int:
         n + start
     [next_after(n) for n in range(3)]
 
-def countdown(n: int):
+def countdown(n: int) -> Iterator[int]:
     mut at = n
     while at > 0:
         yield at

@@ -6,7 +6,6 @@
 use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::ir::Function as Ir;
 use cranelift_codegen::isa::TargetIsa;
-use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module, ModuleReloc};
 use fennec_syntax::Diagnostic;
 
@@ -21,7 +20,7 @@ pub(super) struct MachineCode {
 }
 
 impl MachineCode {
-    pub(super) fn install(&self, module: &mut JITModule, id: FuncId) -> Result<(), (String, Diagnostic)> {
+    pub(super) fn install(&self, module: &mut dyn Module, id: FuncId) -> Result<(), (String, Diagnostic)> {
         module
             .define_function_bytes(id, self.alignment, &self.bytes, &self.relocs)
             .map_err(|err| ("main".to_owned(), internal(err, fennec_syntax::Span::default())))

@@ -1,4 +1,4 @@
-def average(total: int, count: int):
+def average(total: int, count: int) -> int:
     total // count
 
 def main(stdout: Stdout):

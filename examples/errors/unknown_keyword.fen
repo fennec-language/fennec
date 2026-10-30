@@ -1,4 +1,4 @@
-def greet(name: str):
+def greet(name: str) -> str:
     f"Hello, {name}"
 
 def main(stdout: Stdout):

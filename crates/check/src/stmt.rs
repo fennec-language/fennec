@@ -84,6 +84,13 @@ impl FnCx<'_> {
             }
             StmtKind::Yield(value) => {
                 let ty = self.expr(value);
+                // `-> Iterator[T]` says what each item it yields is.
+                if let Some(Type::List(item)) = self.declared.clone()
+                    && !self.checker.fits(&item, &ty)
+                {
+                    let what = format!("what `{}` yields", self.name);
+                    self.error(crate::messages::mismatch(&what, &item, &ty, value.span));
+                }
                 self.yields.push(ty);
                 Flow::unit()
             }

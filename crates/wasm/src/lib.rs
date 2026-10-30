@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn type_checks_before_running() {
-        let source = "def area(width: float, height: float):\n    width * height\n\ndef main(stdout: Stdout):\n    stdout.print(\"ran\")\n    stdout.print(area(width=2.0))\n";
+        let source = "def area(width: float, height: float) -> float:\n    width * height\n\ndef main(stdout: Stdout):\n    stdout.print(\"ran\")\n    stdout.print(area(width=2.0))\n";
         let report = run(source);
         assert!(!report.ok);
         // Nothing ran: the checker stopped it, so "ran" was never printed.

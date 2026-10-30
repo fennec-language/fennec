@@ -1,4 +1,4 @@
-def parse(text: str):
+def parse(text: str) -> str:
     if text == "": fail "empty"
     text
 

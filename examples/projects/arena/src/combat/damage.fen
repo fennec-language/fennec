@@ -13,7 +13,7 @@ extend Enemy:
 error Dodged:
     name: str
 
-def hit(mut enemy: enemies.Enemy, amount: int):
+def hit(mut enemy: enemies.Enemy, amount: int) -> int:
     if amount == 0: fail Dodged(enemy.name)
     enemy.health -= amount
     enemy.health

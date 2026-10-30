@@ -1,11 +1,12 @@
 //! Fennec's type checker. It finds mistakes before a program runs (unknown names, changes to
 //! names that aren't `mut`, wrong arguments, ignored errors, values that might be None,
-//! `match`es that miss a case) and works out every function's signature, inferring the
-//! return types that aren't written.
+//! `match`es that miss a case) and works out every function's signature. Every `def` writes
+//! the type it gives back, and one with no arrow gives back nothing; the errors a function
+//! can fail with are inferred.
 //!
 //! Each function is checked on its own, against the signatures of the functions it calls.
-//! A function whose return type isn't written is checked the first time something needs its
-//! signature, so every body is checked exactly once, in whatever order calls require.
+//! A function is checked the first time something needs its signature, which is when its
+//! errors become known.
 //!
 //! Every type in a program that checks is known. Where the checker can't tell a type from
 //! the code, like the items of an empty list nothing is added to, it says what to write. So

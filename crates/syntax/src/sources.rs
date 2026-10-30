@@ -52,10 +52,26 @@ impl Sources {
         )
     }
 
+    /// Every file, as its path and text, in the order they were added.
+    pub fn files(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.files.iter().map(|file| (file.path.as_str(), file.text.as_str()))
+    }
+
     /// Renders several diagnostics, a blank line between each.
     pub fn render_all(&self, diagnostics: &[Diagnostic]) -> String {
         let rendered: Vec<String> = diagnostics.iter().map(|diagnostic| self.render(diagnostic)).collect();
         rendered.join("\n")
+    }
+
+    /// Each file the fixes of `diagnostics` change, with its new text.
+    pub fn fixed(&self, diagnostics: &[Diagnostic]) -> Vec<(String, String)> {
+        self.files
+            .iter()
+            .filter_map(|file| {
+                let text = crate::diagnostic::apply_fixes(&file.text, file.base, diagnostics)?;
+                Some((file.path.clone(), text))
+            })
+            .collect()
     }
 
     fn file(&self, span: Span) -> Option<&File> {

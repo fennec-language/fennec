@@ -2,8 +2,10 @@
 #![expect(clippy::print_stdout, reason = "the command line prints its results")]
 #![expect(clippy::print_stderr, reason = "the command line reports errors")]
 
+mod aot;
 mod changes;
 mod daemon;
+mod fix;
 mod fmt;
 mod repl;
 mod run;
@@ -14,10 +16,12 @@ use std::process::ExitCode;
 const USAGE: &str = "usage:
   fennec run [path] [args]  run a kit's main, or a single .fen file's, passing it args
   fennec run --jit [path]   run it as native code (still in progress)
+  fennec build [path] [-o out]  compile it to a standalone executable
   fennec test [path]        run a kit's tests, or a single file's
   fennec new <name>         start a kit in a new folder
   fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
   fennec fmt --check        list the files that aren't formatted, and fail if any aren't
+  fennec fix [path]         make the fixes the type checker suggests, in a kit or a .fen file
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
   fennec repl               try Fennec interactively
   fennec --version          show the version
@@ -34,11 +38,17 @@ fn main() -> ExitCode {
         ["run", "--jit"] => run(true, ".", &[]),
         ["run", "--jit", path, arguments @ ..] => run(true, path, arguments),
         ["run", path, arguments @ ..] => run(false, path, arguments),
+        ["build"] => aot::build(".", None),
+        ["build", "-o", output] => aot::build(".", Some(output)),
+        ["build", path] => aot::build(path, None),
+        ["build", path, "-o", output] => aot::build(path, Some(output)),
         ["test"] => on_big_stack(test::test, "."),
         ["test", path] => on_big_stack(test::test, path),
         ["new", path] => new(path),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
         ["fmt", rest @ ..] => fmt::fmt(rest),
+        ["fix"] => fix::fix("."),
+        ["fix", path] => fix::fix(path),
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["dev", "check", path] => dev(check_dump, path),

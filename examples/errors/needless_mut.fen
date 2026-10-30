@@ -1,4 +1,4 @@
-def describe(health: int):
+def describe(health: int) -> str:
     f"{health} HP"
 
 def main(stdout: Stdout):

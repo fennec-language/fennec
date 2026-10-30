@@ -1,4 +1,4 @@
-def heal(health: int):
+def heal(health: int) -> int:
     health += 10
     health
 

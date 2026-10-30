@@ -5,7 +5,7 @@ enum Shape:
     Rect(width: float, height: float)
     Point
 
-def area(shape: Shape):
+def area(shape: Shape) -> float:
     match shape:
         case .Circle(radius):
             PI * radius * radius
@@ -14,7 +14,7 @@ def area(shape: Shape):
         case .Point:
             0.0
 
-def describe(shape: Shape):
+def describe(shape: Shape) -> str:
     kind = match shape:
         case .Circle(_):
             "round"

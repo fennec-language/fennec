@@ -1,6 +1,6 @@
 from std import math
 
-def distance(squared: float):
+def distance(squared: float) -> float:
     math.sqrt(squared)
 
 def main(stdout: Stdout):

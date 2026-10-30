@@ -22,15 +22,20 @@ const TEXT: i32 = 32;
 impl Lowerer<'_, '_> {
     /// A string literal: the address of a block that lives for the whole run.
     pub(super) fn literal(&mut self, text: &str) -> Lowered {
-        let address = heap::literal(&mut self.shared.tables, text);
-        self.shared.literal_texts.insert(address, text.to_owned());
-        let value = self.int(address);
+        let value = if let (Some(base), Some(slots)) = (self.slots_base, &mut self.shared.slots) {
+            let at = i32::try_from(slots.literal(text) * 8).unwrap_or(0);
+            self.b.ins().load(types::I64, MemFlagsData::trusted(), base, at)
+        } else {
+            let address = heap::literal(&mut self.shared.tables, text);
+            self.int(address)
+        };
+        self.literal_of.insert(value, text.to_owned());
         (Some(self.borrow(value)), Ty::Str)
     }
 
     /// The text of a literal a value is, when it's one.
     fn literal_text(&self, value: Value) -> Option<String> {
-        self.shared.literal_texts.get(&self.constant(value)?).cloned()
+        self.literal_of.get(&value).cloned()
     }
 
     /// `len(text)`: its length in characters.
@@ -59,8 +64,12 @@ impl Lowerer<'_, '_> {
         self.b.seal_block(quick);
         let place = self.b.ins().iadd(text, resolved);
         let byte = self.b.ins().uload8(types::I64, MemFlagsData::trusted(), place, TEXT);
-        let table = heap::ascii_table(&mut self.shared.tables);
-        let table = self.int(table);
+        let table = if let Some(base) = self.slots_base {
+            self.b.ins().load(types::I64, MemFlagsData::trusted(), base, 8)
+        } else {
+            let table = heap::ascii_table(&mut self.shared.tables);
+            self.int(table)
+        };
         let offset = self.b.ins().imul_imm_s(byte, 8);
         let entry = self.b.ins().iadd(table, offset);
         let one = self.b.ins().load(types::I64, MemFlagsData::trusted(), entry, 0);
@@ -96,8 +105,8 @@ impl Lowerer<'_, '_> {
     pub(super) fn equals_literal(&mut self, text: Value, literal: &str) -> Result<Value, Diagnostic> {
         let bytes = literal.as_bytes();
         if bytes.len() > 8 {
-            let address = heap::literal(&mut self.shared.tables, literal);
-            let address = self.int(address);
+            let address =
+                self.literal(literal).0.ok_or_else(|| internal("a lost literal", Span::default()))?;
             return self.help(Helper::BoxEqual, &[text, address]);
         }
         let mut word = [0; 8];

@@ -5,7 +5,7 @@ enum Light:
     Red
     Green
 
-    def default():
+    def default() -> Light:
         Light.Red
 
 enum Coin:
@@ -15,13 +15,13 @@ enum Coin:
 struct Money:
     cents: int
 
-    def <(self, other: Money):
+    def <(self, other: Money) -> bool:
         self.cents < other.cents
 
-    def /(self, parts: int):
+    def /(self, parts: int) -> Money:
         Money(cents=self.cents // parts)
 
-    def %(self, parts: int):
+    def %(self, parts: int) -> Money:
         Money(cents=self.cents % parts)
 
 struct Score:
@@ -36,14 +36,14 @@ struct Door:
 struct Player:
     name: str
 
-    def greet(self):
+    def greet(self) -> str:
         f"hi, {self.name}"
 
 def find(name: str) -> Player?:
     if name == "Kit": return Player(name="Kit")
     None
 
-def parse(text: str):
+def parse(text: str) -> Result[int, str]:
     if not text.isdigit(): return Err(f"{text} isn't a number")
     Ok(int(text) else 0)
 

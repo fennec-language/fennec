@@ -17,7 +17,7 @@ pub use ast::{
     Arg, BinOp, Case, CompKind, Expr, ExprKind, Extension, FStrPart, Field, FnDef, Generic, Import,
     Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
 };
-pub use diagnostic::Diagnostic;
+pub use diagnostic::{Diagnostic, Edit, apply_fixes};
 pub use modules::{
     Imported, dotted, importable_type, member as std_member, module_as_value, package_member, short_module,
     std_import,

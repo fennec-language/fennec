@@ -1,7 +1,7 @@
 error Oops:
     reason: str
 
-def risky(n: int):
+def risky(n: int) -> int:
     if n > 1: fail Oops("too big")
     n
 

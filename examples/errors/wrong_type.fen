@@ -1,4 +1,4 @@
-def move(position: float, speed: float):
+def move(position: float, speed: float) -> float:
     position + speed
 
 def main(stdout: Stdout):

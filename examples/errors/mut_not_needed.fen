@@ -1,4 +1,4 @@
-def total(scores: list[int]):
+def total(scores: list[int]) -> int:
     sum(scores)
 
 def main(stdout: Stdout):

@@ -35,6 +35,8 @@ pub struct FnDef {
     pub generics: Vec<Generic>,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
+    /// Where `->` is, when the return type is written, so a fix can remove it.
+    pub arrow: Option<Span>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }

@@ -1,0 +1,47 @@
+[package]
+name = "fennec-runtime"
+description = "The runtime library Fennec's compiled executables link against"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+fennec-interp.workspace = true
+
+[lints.rust]
+# Unsafe only to export the runtime's functions by name, in one `expect`.
+unsafe_code = "deny"
+non_ascii_idents = "forbid"
+trivial_numeric_casts = "deny"
+unused_qualifications = "deny"
+elided_lifetimes_in_paths = "deny"
+unreachable_pub = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+unwrap_used = "forbid"
+expect_used = "forbid"
+panic = "forbid"
+unwrap_in_result = "forbid"
+indexing_slicing = "forbid"
+string_slice = "forbid"
+todo = "forbid"
+unimplemented = "forbid"
+dbg_macro = "forbid"
+exit = "forbid"
+mod_module_files = "forbid"
+allow_attributes = "forbid"
+allow_attributes_without_reason = "deny"
+mem_forget = "forbid"
+print_stdout = "deny"
+print_stderr = "deny"

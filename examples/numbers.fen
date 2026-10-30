@@ -4,7 +4,7 @@ def fib(n: int) -> int:
     if n < 2: return n
     return fib(n - 1) + fib(n - 2)
 
-def collatz_steps(start: int):
+def collatz_steps(start: int) -> int:
     mut n = start
     mut steps = 0
     while n != 1:
@@ -12,7 +12,7 @@ def collatz_steps(start: int):
         steps += 1
     steps
 
-def is_prime(n: int):
+def is_prime(n: int) -> bool:
     if n < 2: return False
     mut d = 2
     while d * d <= n:
@@ -20,7 +20,7 @@ def is_prime(n: int):
         d += 1
     True
 
-def lerp(a: float, b: float, t: float):
+def lerp(a: float, b: float, t: float) -> float:
     a + (b - a) * t
 
 def main(stdout: Stdout):

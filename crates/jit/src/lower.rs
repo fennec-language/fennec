@@ -27,6 +27,7 @@ mod module;
 pub(crate) mod notes;
 pub(crate) mod object;
 mod objects;
+mod ranges;
 mod stmt;
 mod strings;
 mod structs;
@@ -355,6 +356,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         literal_of: HashMap::new(),
         hoisted: Vec::new(),
         checked: Vec::new(),
+        facts: ranges::Facts::default(),
         handed: 0,
         origin,
         inlined_origin: None,
@@ -444,6 +446,8 @@ pub(crate) struct Lowerer<'a, 'f> {
     hoisted: Vec<hoist::Hoisted>,
     /// Indexes checked in the straight-line code being lowered.
     checked: Vec<lists::Checked>,
+    /// What's known about values, to leave out checks that can't fail.
+    facts: ranges::Facts,
     /// Where the table of runtime addresses is, in an executable.
     slots_base: Option<Value>,
     /// How many things this function has handed the runtime by number so far.
@@ -633,6 +637,9 @@ impl Lowerer<'_, '_> {
             }
             var
         });
+        if let (Some(var), Some(value), false) = (var, value, is_mut) {
+            self.note_fixed(var, value, ty);
+        }
         if let Some(scope) = self.scopes.last_mut() {
             scope.locals.insert(name.to_owned(), Local { var, ty, is_mut });
         }

@@ -1,0 +1,7 @@
+error: this calculation overflows an int
+ --> examples/errors/print_fails_first.fen:6:25
+  |
+6 |         stdout.print(i, i + big)
+  |                         ^^^^^^^
+  |
+  = help: ints are 64-bit; check the values involved, or use floats for very large numbers

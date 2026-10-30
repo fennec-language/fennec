@@ -295,12 +295,14 @@ impl Lowerer<'_, '_> {
             (Some(var), local_ty) if local_ty.counted() => {
                 let converted = self.convert(value, ty, local_ty, span)?;
                 let new = self.own(converted, local_ty);
+                self.forget_var(var);
                 let old = self.b.use_var(var);
                 self.b.def_var(var, new);
                 self.release(old)
             }
             (Some(var), local_ty) => {
                 let converted = self.convert(value, ty, local_ty, span)?;
+                self.forget_var(var);
                 self.b.def_var(var, converted);
                 Ok(())
             }
@@ -436,6 +438,11 @@ impl Lowerer<'_, '_> {
         self.b.ins().jump(header, &[]);
         self.b.switch_to_block(header);
         let at = self.b.use_var(counter);
+        let counts_up = self.constant(step) == Some(1);
+        if counts_up {
+            let (low, high) = (self.range(start), self.range(end));
+            self.note_range(at, (low.0, low.1.max(high.1)));
+        }
         let up = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, step, 0);
         let below = self.b.ins().icmp(IntCC::SignedLessThan, at, end);
         let above = self.b.ins().icmp(IntCC::SignedGreaterThan, at, end);
@@ -446,7 +453,13 @@ impl Lowerer<'_, '_> {
         self.open_scope();
         self.bind_native(name, Ty::Int, Some(at), false);
         self.loops.push(Loop { next: advance, done: exit, depth, put_back: None });
+        if counts_up {
+            self.push_below(at, end);
+        }
         let lowered = self.tail(body);
+        if counts_up {
+            self.pop_below();
+        }
         self.loops.pop();
         self.unhoist(hoisted);
         lowered?;

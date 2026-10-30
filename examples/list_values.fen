@@ -19,6 +19,11 @@ def nudge(mut points: list[Point]):
     for i in range(points.len()):
         points[i].x += 1.0
 
+def both(xs: list[int], mut ys: list[int]) -> int:
+    ys.append(9)
+    ys[0] = 7
+    return xs.len() * 10 + xs[0]
+
 def main(stdout: Stdout):
     mut xs = [1, 2, 3]
     copy = xs
@@ -57,3 +62,7 @@ def main(stdout: Stdout):
     for w in walked:
         walked.append(w)
     stdout.print(walked)
+
+    # Passed both ways, the argument without `mut` keeps its items.
+    mut twice = [1, 2]
+    stdout.print(both(twice, mut twice), twice)

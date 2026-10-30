@@ -1,0 +1,7 @@
+error: this calculation overflows an int
+ --> examples/errors/overflow.fen:4:12
+  |
+4 |     return n * factorial(n - 1)
+  |            ^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: ints are 64-bit; check the values involved, or use floats for very large numbers

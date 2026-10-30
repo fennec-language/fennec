@@ -21,5 +21,6 @@ mod testing;
 mod types;
 mod value;
 
+pub use format::float as format_float;
 pub use interp::{Interp, run};
 pub use testing::TestOutcome;

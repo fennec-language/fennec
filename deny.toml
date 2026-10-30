@@ -6,7 +6,9 @@ all-features = true
 ignore = []
 
 [licenses]
-allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
+# Cranelift is Apache-2.0 with the LLVM exception, which only loosens Apache-2.0's terms.
+# Zlib is as permissive as MIT.
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "Unicode-3.0", "Zlib"]
 confidence-threshold = 0.9
 unused-allowed-license = "allow"
 
@@ -18,6 +20,13 @@ ignore = true
 multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
+# Cranelift's own dependencies pull in older copies of these. Remove each once Cranelift
+# catches up.
+skip = [
+    { crate = "hashbrown@0.16.1", reason = "gimli, through cranelift-codegen" },
+    { crate = "mach2@0.4.3", reason = "region, through cranelift-jit" },
+    { crate = "windows-sys@0.52.0", reason = "region, through cranelift-jit" },
+]
 
 [sources]
 unknown-registry = "deny"

@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   fennec run <file.fen>    run a program's main
+  fennec run --jit <file>  run it as native code (still in progress)
   fennec test <file.fen>   run a program's tests
   fennec repl              try Fennec interactively
   fennec --version         show the version";
@@ -21,6 +22,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["run", path] => on_big_stack(run::run, path),
+        ["run", "--jit", path] => on_big_stack(run::run_jit, path),
         ["test", path] => on_big_stack(test::test, path),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
         ["--version" | "-V"] => {

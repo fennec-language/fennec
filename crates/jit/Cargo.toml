@@ -1,0 +1,52 @@
+[package]
+name = "fennec-jit"
+description = "Compiles Fennec to native code with Cranelift and runs it, for fast development builds"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+cranelift-codegen.workspace = true
+cranelift-frontend.workspace = true
+cranelift-jit.workspace = true
+cranelift-module.workspace = true
+cranelift-native.workspace = true
+fennec-interp.workspace = true
+fennec-syntax.workspace = true
+
+[lints.rust]
+# The one crate allowed unsafe code: calling the machine code it generates. Every
+# use is a single `#[expect(unsafe_code, reason = ...)]`.
+unsafe_code = "deny"
+non_ascii_idents = "forbid"
+trivial_numeric_casts = "deny"
+unused_qualifications = "deny"
+elided_lifetimes_in_paths = "deny"
+unreachable_pub = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+unwrap_used = "forbid"
+expect_used = "forbid"
+panic = "forbid"
+unwrap_in_result = "forbid"
+indexing_slicing = "forbid"
+string_slice = "forbid"
+todo = "forbid"
+unimplemented = "forbid"
+dbg_macro = "forbid"
+exit = "forbid"
+mod_module_files = "forbid"
+allow_attributes = "forbid"
+allow_attributes_without_reason = "deny"
+mem_forget = "forbid"
+print_stdout = "deny"
+print_stderr = "deny"
+

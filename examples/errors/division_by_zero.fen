@@ -1,0 +1,6 @@
+def average(total: int, count: int):
+    total // count
+
+def main(stdout: Stdout):
+    stdout.print(average(10, 2))
+    stdout.print(average(10, 0))

@@ -70,7 +70,7 @@ struct Checker:
     ## A function's return type, and every type written in its body. A function defined
     ## inside another sees that one's type parameters, and has its return type checked but
     ## not its parameters' types, as the Rust checker does.
-    def check_function(mut self, function: FnDef, generics: list[Generic]) -> nothing:
+    def check_function(mut self, function: FnDef, generics: list[Generic]):
         self.check_written(function.ret, generic_names(generics))
         self.check_body(function.body, generics)
 
@@ -86,7 +86,7 @@ struct Checker:
             case Err(problem): self.diagnostics.append(problem)
 
     ## The types written inside a body: typed names, and the bodies of nested functions.
-    def check_body(mut self, stmts: list[Stmt], generics: list[Generic]) -> nothing:
+    def check_body(mut self, stmts: list[Stmt], generics: list[Generic]):
         names = generic_names(generics)
         for stmt in stmts:
             match stmt.kind:

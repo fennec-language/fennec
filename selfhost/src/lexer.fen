@@ -9,21 +9,13 @@ def is_digit(c: str) -> bool:
 def is_letter(c: str) -> bool:
     (c >= "a" and c <= "z") or (c >= "A" and c <= "Z")
 
-## How many bytes `c` takes in UTF-8. Fennec has no `ord` yet, so this compares against the
-## first character of each width: `ࠀ` is U+0800 and `𐀀` is U+10000.
+## How many bytes `c` takes in UTF-8.
 def utf8_width(c: str) -> int:
-    if c <= "~":
-        1
-    elif c < "ࠀ":
-        2
-    elif c < "𐀀":
-        3
-    else:
-        4
+    len(c.encode())
 
 ## How many bytes `text` takes in UTF-8.
 def byte_length(text: str) -> int:
-    sum(utf8_width(c) for c in text)
+    len(text.encode())
 
 ## The byte offset of each character, plus one past the end. Spans count bytes, but Fennec
 ## strings index by character.

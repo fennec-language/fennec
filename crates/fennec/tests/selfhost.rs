@@ -27,6 +27,7 @@ const LEX_CASES: &[(&str, &str)] = &[
     ("unexpected_dollar", "x = $\n"),
     ("unexpected_wide", "x = é\n"),
     ("wide_then_error", "# 🦊 and €\ns = \"héllo\"\nt = f\"é{s}\"\nu = $\n"),
+    ("delete_character", "# a \u{7f} in a comment\ns = \"\u{7f}\u{80}\u{7ff}\u{800}\"\nu = $\n"),
     ("int_too_big", "x = 99999999999999999999\n"),
     ("int_largest", "x = 9_223_372_036_854_775_807\ny = 1_000\n"),
     (

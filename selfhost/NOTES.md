@@ -16,11 +16,10 @@ code does instead, and links the issue where it's being decided or fixed.
   and shrinks, instead of writing `"  " * depth`. (#69)
 - **An f-string's `{expression}` can't contain a string**, since the first `"` ends the
   f-string. The lexer copies this rule from the Rust lexer.
-- **There's no way to get a character's code or its UTF-8 length.** Spans count bytes, but
-  strings index by character, so the lexer needs each character's byte width. `utf8_width`
-  compares against the first character of each width (`ࠀ` is U+0800, `𐀀` is U+10000). It
-  can't name U+0080 at all, so it treats everything after `~` as two bytes or more, and gets
-  DEL (U+007F) wrong. `ord`, or a `str.utf8_len()`, would make this one line. (#65)
+- **Settled: there was no way to get a character's UTF-8 length.** Spans count bytes, but
+  strings index by character, so the lexer needs each character's byte width. It used to
+  compare against the first character of each width (`ࠀ` is U+0800, `𐀀` is U+10000), which
+  got DEL (U+007F) wrong. Since #93 it's `len(c.encode())`. (#65)
 - **Indexing a string walks it from the start**, so `source[i]` in a loop is quadratic. The
   lexer turns the source into a list of one-character strings with `list(source)` and
   indexes that, and rebuilds text with `"".join(chars[start:end])`. (#65)
@@ -59,11 +58,10 @@ code does instead, and links the issue where it's being decided or fixed.
 
 ## Functions
 
-- **A recursive function that returns nothing has to say `-> nothing`.** The checker wants
-  a return type on every recursive function, and rejects `-> None` when the body ends in a
-  call. #27 made `nothing` a real type, so the tree writer's and the checker's recursive
-  methods say `-> nothing`. #71 decided that a `def` with no arrow returns nothing; once
-  that's built, these lose their arrows. (#63)
+- **Settled: a recursive function that returned nothing had to say `-> nothing`.** The
+  checker wanted a return type on every recursive function, and rejected `-> None` when the
+  body ended in a call. Since #108, a `def` with no arrow returns nothing, recursive or not,
+  so those arrows are gone. (#63)
 - **A type's methods must all sit in its declaration.** Rust spreads `impl Parser` over
   `parser.rs` and `parser/{stmt,expr,pattern}.rs`; here the parser is one ~1,000-line
   `struct Parser`, with comments marking where each Rust file's part begins. Something like

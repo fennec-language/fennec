@@ -1,0 +1,10 @@
+error IoError:
+    reason: str
+
+error InvalidValue:
+    message: str
+
+error ParseError:
+    message: str
+    line: int
+    column: int

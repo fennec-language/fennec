@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
 
+pub mod heap;
 pub mod lists;
 pub mod objects;
 
@@ -38,6 +39,8 @@ pub struct Tables {
     pub patterns: Vec<Pattern>,
     /// The kinds of items in the lists native code packs.
     pub elements: Vec<Rc<crate::packed::Element>>,
+    /// The shapes of boxed values' blocks, by their number.
+    pub shapes: Vec<Rc<crate::packed::Element>>,
 }
 
 /// Collects what the program prints.
@@ -73,6 +76,7 @@ struct State {
     leaving: Option<crate::exec::Flow>,
     /// The frames of the native functions that called the running one.
     callers: Vec<Frame>,
+    heap: heap::Heap,
     failure: Option<Diagnostic>,
 }
 
@@ -107,6 +111,7 @@ pub fn start(module: &Module, tables: Tables) -> Result<(), Diagnostic> {
         name_ids,
         path: None,
         callers: Vec::new(),
+        heap: heap::Heap::default(),
         failure: None,
     }));
     Ok(())
@@ -118,6 +123,8 @@ pub fn start(module: &Module, tables: Tables) -> Result<(), Diagnostic> {
 pub struct Leftovers {
     pub temps: usize,
     pub frames: usize,
+    /// Boxed values' blocks no one released.
+    pub boxes: usize,
 }
 
 /// Ends the run: what it printed, why it failed if it did, and what it left behind.
@@ -126,7 +133,8 @@ pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
     FAILED.set(0);
     match state {
         Some(state) => {
-            let leftovers = Leftovers { temps: state.temps.len(), frames: state.callers.len() };
+            let leftovers =
+                Leftovers { temps: state.temps.len(), frames: state.callers.len(), boxes: state.heap.live() };
             (state.output.0.take(), state.failure, leftovers)
         }
         None => (Vec::new(), None, Leftovers::default()),

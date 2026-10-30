@@ -23,6 +23,9 @@ pub enum Element {
         name: Rc<str>,
         fields: Fields,
     },
+    /// A boxed value inside another, by the address of its block, with the number of
+    /// the block's shape. Packed lists never hold these.
+    Boxed(usize),
     /// An enum, with each case's fields in the order they're written, taking `words`
     /// words.
     Enum {
@@ -108,6 +111,10 @@ fn unpack_item<'w>(element: &Element, words: &mut dyn Iterator<Item = &'w u64>) 
         Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
         Element::Float => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
+        Element::Boxed(_) => {
+            word(words);
+            Value::None
+        }
         Element::Struct { name, fields } => {
             let fields = fields
                 .iter()

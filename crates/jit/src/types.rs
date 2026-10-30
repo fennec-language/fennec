@@ -24,6 +24,9 @@ pub(crate) enum Ty {
     /// A plain struct, in memory native code owns, which it refers to by address. The
     /// number picks its layout.
     Struct(u32),
+    /// A boxed struct or enum: the address of a block the runtime owns, shared by every
+    /// copy. The number picks its layout.
+    Boxed(u32),
 }
 
 impl Ty {
@@ -36,6 +39,7 @@ impl Ty {
             Ty::Cap(cap) => cap.name(),
             Ty::Obj => "value",
             Ty::Struct(_) => "struct",
+            Ty::Boxed(_) => "boxed value",
         }
     }
 }
@@ -196,6 +200,10 @@ fn function<'m>(
 ) -> Option<Function<'m>> {
     let signature = signatures.get(&key)?;
     if signature.generator || def.body.iter().any(|stmt| matches!(stmt.kind, StmtKind::Def(_))) {
+        return None;
+    }
+    // A boxed value changed through a `mut` parameter needs the interpreter for now.
+    if signature.params.iter().any(|param| param.is_mut && matches!(layouts.ty(&param.ty), Ty::Boxed(_))) {
         return None;
     }
     let params = def

@@ -217,6 +217,9 @@ impl<'a> Lowerer<'a, '_> {
         if layout.cases.is_some() {
             return Ok(None);
         }
+        if layout.boxed {
+            return self.construct_boxed(id, args, span);
+        }
         let Some(values) = self.field_values(&layout.fields, args, span)? else { return Ok(None) };
         let mut leaves = Vec::new();
         for (field, value) in layout.fields.iter().zip(values) {

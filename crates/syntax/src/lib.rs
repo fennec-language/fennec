@@ -7,9 +7,9 @@ pub mod dump;
 mod lexer;
 mod modules;
 mod parser;
-mod prelude;
 mod sources;
 mod span;
+mod stdlib;
 mod token;
 mod trivia;
 
@@ -23,7 +23,7 @@ pub use modules::{
     std_import,
 };
 pub use parser::{parse, parse_at, parse_prelude, parse_repl};
-pub use prelude::PRELUDE;
 pub use sources::Sources;
 pub use span::Span;
+pub use stdlib::{given, prelude};
 pub use trivia::{Lexed, SourceToken, TokenKind, lex_source};

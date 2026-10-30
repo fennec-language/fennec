@@ -69,9 +69,12 @@ fn error_examples_keep_their_meaning() {
 
 #[test]
 fn the_prelude_keeps_its_meaning() {
-    for source in fennec_syntax::PRELUDE {
+    for source in fennec_syntax::prelude() {
         let formatted = round_trip(source, "the prelude").unwrap();
-        assert_eq!(formatted, source.trim_start(), "the prelude isn't formatted");
+        assert_eq!(
+            formatted, source,
+            "the prelude isn't formatted; run `fennec fmt crates/syntax/src/stdlib`"
+        );
     }
 }
 

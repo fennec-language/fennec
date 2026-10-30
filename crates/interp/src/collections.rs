@@ -34,7 +34,7 @@ pub(crate) fn split_key(
     Ok((values, key))
 }
 
-fn plain(args: Vec<CallArg>, method: &str, span: Span) -> Result<Vec<Value>, Diagnostic> {
+pub(crate) fn plain(args: Vec<CallArg>, method: &str, span: Span) -> Result<Vec<Value>, Diagnostic> {
     match split_key(args, method)? {
         (values, None) => Ok(values),
         (_, Some(_)) => Err(Diagnostic::new(format!("`{method}` doesn't take `key`"), span)),

@@ -2,7 +2,7 @@
 //! where they are. Each takes and returns only plain numbers.
 
 use cranelift_codegen::ir::types::{F64, I8, I64, Type};
-use fennec_interp::embed::{eval, io, lists, names, objects, temps};
+use fennec_interp::embed::{eval, heap, io, lists, names, objects, temps};
 
 use crate::runtime;
 
@@ -74,6 +74,12 @@ pub(crate) enum Helper {
     MakeInstance,
     MakeVariant,
     CaseOf,
+    Alloc,
+    Free,
+    Unshare,
+    BoxToValue,
+    BoxFromValue,
+    BoxEqual,
     Sin,
     Cos,
     Pack,
@@ -83,7 +89,7 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 73] = [
+pub(crate) const ALL: [Helper; 79] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -150,6 +156,12 @@ pub(crate) const ALL: [Helper; 73] = [
     Helper::MakeInstance,
     Helper::MakeVariant,
     Helper::CaseOf,
+    Helper::Alloc,
+    Helper::Free,
+    Helper::Unshare,
+    Helper::BoxToValue,
+    Helper::BoxFromValue,
+    Helper::BoxEqual,
     Helper::Sin,
     Helper::Cos,
     Helper::Pack,
@@ -172,6 +184,9 @@ const fn shape(symbol: &'static str, params: &'static [Type], results: &'static 
 
 impl Helper {
     pub(crate) fn shape(self) -> Shape {
+        if let Some(shape) = self.data_shape() {
+            return shape;
+        }
         match self {
             Helper::Fail => shape("fennec_fail", &[I64, I64, I64], &[]),
             Helper::AtCall => shape("fennec_at_call", &[I64, I64], &[]),
@@ -237,8 +252,6 @@ impl Helper {
             Helper::PutItem => shape("fennec_put_item", &[I64, I64, I64, I64], &[]),
             Helper::Entries => shape("fennec_entries", &[I64, I64, I64], &[I64]),
             Helper::MakeInstance => shape("fennec_make_instance", &[I64, I64, I64, I64], &[I64]),
-            Helper::MakeVariant => shape("fennec_make_variant", &[I64, I64, I64, I64, I64], &[I64]),
-            Helper::CaseOf => shape("fennec_case_of", &[I64, I64, I64, I64], &[I64]),
             Helper::Sin => shape("fennec_sin", &[F64], &[F64]),
             Helper::Cos => shape("fennec_cos", &[F64], &[F64]),
             Helper::Pack => shape("fennec_pack", &[I64, I64], &[I8]),
@@ -246,6 +259,8 @@ impl Helper {
             Helper::Length => shape("fennec_length", &[I64, I64], &[I64]),
             Helper::Push => shape("fennec_push", &[I64, I64], &[I64]),
             Helper::OutOfRange => shape("fennec_out_of_range", &[I64, I64, I64, I64], &[]),
+            // The helpers for enums and boxed values, in `data_shape`.
+            _ => shape("", &[], &[]),
         }
     }
 
@@ -254,6 +269,10 @@ impl Helper {
         !matches!(
             self,
             Helper::Fail
+                | Helper::Alloc
+                | Helper::Free
+                | Helper::Unshare
+                | Helper::BoxEqual
                 | Helper::AtCall
                 | Helper::Sin
                 | Helper::Cos
@@ -278,6 +297,9 @@ impl Helper {
                     | Helper::Length
                     | Helper::Push
                     | Helper::CaseOf
+                    | Helper::Alloc
+                    | Helper::Unshare
+                    | Helper::BoxFromValue
             )
     }
 
@@ -297,6 +319,7 @@ impl Helper {
                 | Helper::MakeInstance
                 | Helper::MakeVariant
                 | Helper::CaseOf
+                | Helper::BoxFromValue
                 | Helper::Address
                 | Helper::Length
                 | Helper::Push
@@ -317,6 +340,9 @@ impl Helper {
     }
 
     pub(crate) fn address(self) -> *const u8 {
+        if let Some(address) = self.data_address() {
+            return address;
+        }
         match self {
             Helper::Fail => runtime::fail as *const u8,
             Helper::AtCall => eval::at_call as *const u8,
@@ -382,8 +408,6 @@ impl Helper {
             Helper::PutItem => objects::put_item as *const u8,
             Helper::Entries => objects::entries as *const u8,
             Helper::MakeInstance => objects::make_instance as *const u8,
-            Helper::MakeVariant => objects::make_variant as *const u8,
-            Helper::CaseOf => objects::case_of as *const u8,
             Helper::Sin => runtime::sin as *const u8,
             Helper::Cos => runtime::cos as *const u8,
             Helper::Pack => lists::pack as *const u8,
@@ -391,6 +415,38 @@ impl Helper {
             Helper::Length => lists::length as *const u8,
             Helper::Push => lists::push as *const u8,
             Helper::OutOfRange => lists::out_of_range as *const u8,
+            // The helpers for enums and boxed values, in `data_address`.
+            _ => std::ptr::null(),
         }
+    }
+
+    /// The machine signature of a helper for enums or boxed values.
+    fn data_shape(self) -> Option<Shape> {
+        Some(match self {
+            Helper::MakeVariant => shape("fennec_make_variant", &[I64, I64, I64, I64, I64], &[I64]),
+            Helper::CaseOf => shape("fennec_case_of", &[I64, I64, I64, I64], &[I64]),
+            Helper::Alloc => shape("fennec_alloc", &[I64], &[I64]),
+            Helper::Free => shape("fennec_free", &[I64], &[]),
+            Helper::Unshare => shape("fennec_unshare", &[I64], &[I64]),
+            Helper::BoxToValue => shape("fennec_box_to_value", &[I64], &[I64]),
+            Helper::BoxFromValue => shape("fennec_box_from_value", &[I64, I64, I64, I64], &[I64]),
+            Helper::BoxEqual => shape("fennec_box_equal", &[I64, I64], &[I8]),
+            _ => return None,
+        })
+    }
+
+    /// Where a helper for enums or boxed values is.
+    fn data_address(self) -> Option<*const u8> {
+        Some(match self {
+            Helper::MakeVariant => objects::make_variant as *const u8,
+            Helper::CaseOf => objects::case_of as *const u8,
+            Helper::Alloc => heap::alloc as *const u8,
+            Helper::Free => heap::free as *const u8,
+            Helper::Unshare => heap::unshare as *const u8,
+            Helper::BoxToValue => heap::to_value as *const u8,
+            Helper::BoxFromValue => heap::from_value as *const u8,
+            Helper::BoxEqual => heap::equal as *const u8,
+            _ => return None,
+        })
     }
 }

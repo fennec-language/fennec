@@ -79,7 +79,7 @@ file is left alone and the command reports a bug.
   or above it with a `kit.toml`, `src/` and all. Outside a kit, it formats the current
   folder.
 - `fennec fmt --check [paths]` lists the files that aren't formatted and fails if there are
-  any. CI runs `fennec fmt --check examples`.
+  any. CI runs `fennec fmt --check examples crates/syntax/src/stdlib`.
 - A file that doesn't parse is skipped with a note, and doesn't fail the command: the
   compiler reports syntax errors. *To confirm.*
 - A file keeps its line endings: CRLF stays CRLF.

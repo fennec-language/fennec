@@ -18,6 +18,12 @@ struct Money:
     def <(self, other: Money):
         self.cents < other.cents
 
+    def /(self, parts: int):
+        Money(cents=self.cents // parts)
+
+    def %(self, parts: int):
+        Money(cents=self.cents % parts)
+
 struct Score:
     value: int where value >= 0
 
@@ -53,6 +59,7 @@ def main(stdout: Stdout):
     small = Money(cents=5)
     big = Money(cents=9)
     stdout.print(small <= big, big <= small, small >= big, big >= small, small <= small)
+    stdout.print(big / 2, big % 2)
 
     # `where` rules: literals are checked as the program is read; anything else gives a result.
     for value in [5, -1]:
@@ -64,7 +71,15 @@ def main(stdout: Stdout):
     stdout.print("outside")
 
     # `?.` skips a method call on None.
-    stdout.print(find("Vex")?.greet(), find("Kit")?.greet())
+    stdout.print(find("Vex")?.greet(), find("Kit")?.greet(), find("Kit") is not None, find("Vex") is not None)
+
+    # Arrow functions can take no arguments, or several.
+    answer = () => 42
+    add = (a, b) => a + b
+    stdout.print(answer(), add(2, 3))
+
+    # Collections can end with a comma.
+    stdout.print({"a": 1,}, {1, 2,}, [1,], (1,))
 
     # A function can return a result it made itself.
     stdout.print(parse("12"), parse("twelve"))

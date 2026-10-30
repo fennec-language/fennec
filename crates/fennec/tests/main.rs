@@ -3,3 +3,4 @@
 mod cli;
 mod examples;
 mod hints;
+mod syntax_errors;

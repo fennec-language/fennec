@@ -27,13 +27,13 @@ pub(super) fn inline_body(function: &Function<'_>) -> Option<Rc<FnDef>> {
         }
         Ty::Int | Ty::Float | Ty::Bool => !param.is_mut,
         Ty::Cap(_) => true,
-        Ty::Unit | Ty::Obj | Ty::Boxed(_) | Ty::Str => false,
+        Ty::Unit | Ty::Obj | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) => false,
     });
     let mut nodes = 0;
     let simple = function.def.body.iter().all(|stmt| simple_stmt(stmt, &mut nodes));
     (params_fit
         && !function.fallible
-        && !matches!(function.ret, Ty::Obj | Ty::Boxed(_) | Ty::Str)
+        && !matches!(function.ret, Ty::Obj | Ty::Boxed(_) | Ty::Str | Ty::Dict(..))
         && simple
         && nodes <= MAX_NODES)
         .then(|| Rc::new(function.def.clone()))

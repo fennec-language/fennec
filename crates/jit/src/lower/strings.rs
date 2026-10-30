@@ -31,7 +31,7 @@ impl Lowerer<'_, '_> {
             self.b.ins().load(types::I64, MemFlagsData::trusted(), base, at)
         } else {
             let address = heap::literal(&mut self.shared.tables, text);
-            self.int(address)
+            self.program_number(format!("fennec.literal.{}", super::symbols::digest(text)), address)
         };
         self.literal_of.insert(value, text.to_owned());
         (Some(self.borrow(value)), Ty::Str)
@@ -124,7 +124,7 @@ impl Lowerer<'_, '_> {
             self.b.ins().load(types::I64, MemFlagsData::trusted(), base, 8)
         } else {
             let table = heap::ascii_table(&mut self.shared.tables);
-            self.int(table)
+            self.program_number("fennec.ascii".to_owned(), table)
         }
     }
 

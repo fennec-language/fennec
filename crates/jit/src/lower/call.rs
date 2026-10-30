@@ -111,6 +111,7 @@ impl Lowerer<'_, '_> {
         match self.static_ty(object) {
             Some(Ty::Struct(id)) => self.call_struct_method(expr, object, id, name, args),
             Some(Ty::Boxed(id)) => self.call_boxed_method(object, id, name, args, expr.span),
+            Some(Ty::Dict(key, value)) => self.call_dict_method(object, (key, value), name, args),
             _ => Ok(None),
         }
     }
@@ -475,6 +476,11 @@ impl Lowerer<'_, '_> {
             }
             ("abs", [(Some(x), Ty::Float)]) => (self.b.ins().fabs(*x), Ty::Float),
             ("len", [(Some(text), Ty::Str)]) => (self.string_length(*text)?, Ty::Int),
+            ("len", [(Some(dict), ty @ Ty::Dict(..))]) => {
+                let length = self.dict_length(*dict);
+                self.consume(Some(*dict), *ty)?;
+                (length, Ty::Int)
+            }
             ("min" | "max", [(Some(a), Ty::Int), (Some(b), Ty::Int)]) => {
                 (if name == "min" { self.b.ins().smin(*a, *b) } else { self.b.ins().smax(*a, *b) }, Ty::Int)
             }
@@ -584,7 +590,7 @@ impl Lowerer<'_, '_> {
                 self.call_helper(Helper::StrPrint, &[address])?;
                 return self.consume(Some(address), ty);
             }
-            Ty::Struct(_) | Ty::Boxed(_) => {
+            Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) => {
                 let handle = self.handle_of(value, ty, expr.span)?;
                 return self.call_helper(Helper::PrintValue, &[handle]).map(|_| ());
             }

@@ -1,0 +1,49 @@
+# Plain structs, made only of numbers, bools and other plain structs, are values: copying
+# one copies it, and only a `mut` name or `mut self` changes one in place.
+from std.math import Vec3
+
+struct Body:
+    position = Vec3.zero
+    velocity = Vec3(x=1.0)
+    mass = 1.0
+    asleep = False
+
+    def kick(mut self, push: Vec3):
+        self.velocity = self.velocity + push * (1.0 / self.mass)
+        self.asleep = False
+
+    def moved(self, dt: float):
+        Body(position=self.position + self.velocity * dt, velocity=self.velocity, mass=self.mass)
+
+def settle(mut body: Body):
+    body.velocity = Vec3.zero()
+    body.asleep = True
+
+def heaviest(a: Body, b: Body):
+    a if a.mass >= b.mass else b
+
+def main(stdout: Stdout):
+    mut ball = Body(mass=2.0)
+    copy = ball
+    ball.kick(Vec3(y=4.0))
+    stdout.print(ball.velocity, copy.velocity)
+
+    later = ball.moved(0.5)
+    stdout.print(later.position, ball.position)
+
+    ball.position.x = 3.0
+    ball.position.z += 1.5
+    stdout.print(ball.position, ball.position.length())
+
+    settle(mut ball)
+    stdout.print(ball.velocity, ball.asleep)
+
+    rock = Body(mass=5.0)
+    stdout.print(heaviest(ball, rock).mass, ball == copy, copy == Body(mass=2.0))
+
+    mut bodies = [Body(mass=float(n)) for n in range(1, 4)]
+    for mut body in bodies:
+        body.kick(Vec3(x=float(body.mass)))
+    for body in bodies:
+        stdout.print(body.velocity.x)
+    stdout.print(sqrt(16.0), floor(2.7), ceil(2.1), round(sin(0.0)), cos(0.0))

@@ -86,6 +86,7 @@ impl Lowerer<'_, '_> {
             Ty::Float => Helper::ToFloat,
             Ty::Bool => Helper::ToBool,
             Ty::Obj => return Ok(handle),
+            Ty::Struct(id) => return self.unbox_struct(handle, id, span),
             Ty::Unit | Ty::Stdout | Ty::Fs => {
                 return Err(unsupported(&format!("using a value as {}", to.name()), span));
             }
@@ -107,6 +108,10 @@ impl Lowerer<'_, '_> {
             Ty::Bool => Helper::Bool,
             Ty::Obj => return value.ok_or_else(|| unsupported("this value", span)),
             Ty::Unit => return self.help(Helper::Unit, &[]),
+            Ty::Struct(id) => {
+                let address = value.ok_or_else(|| unsupported("this value", span))?;
+                return self.box_struct(address, id, span);
+            }
             Ty::Stdout | Ty::Fs => {
                 return Err(unsupported(&format!("using {} as a value", ty.name()), span));
             }

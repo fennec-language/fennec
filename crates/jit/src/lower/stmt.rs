@@ -144,6 +144,24 @@ impl Lowerer<'_, '_> {
                 }
             },
             ExprKind::Tuple(names) => self.unpack(names, value, target.span),
+            _ if let Some((address, field)) = self.struct_target(target)? => {
+                let span = target.span.to(value.span);
+                let new = match op {
+                    Some(op) => {
+                        let combined = Expr {
+                            kind: ExprKind::Binary {
+                                op,
+                                lhs: Box::new(target.clone()),
+                                rhs: Box::new(value.clone()),
+                            },
+                            span,
+                        };
+                        self.expr(&combined)?
+                    }
+                    None => self.expr(value)?,
+                };
+                self.store_field(address, field, new, span)
+            }
             _ => match self.field_path(target) {
                 Some((root, fields)) if !fields.is_empty() => {
                     self.assign_path(&root, &fields, target, op, value)
@@ -162,16 +180,39 @@ impl Lowerer<'_, '_> {
         is_mut: bool,
         source: &Expr,
     ) -> Result<(), Diagnostic> {
-        if ty == Ty::Obj {
-            let handle = value.ok_or_else(|| unsupported("this value", source.span))?;
-            return self.declare_object(name, handle, is_mut);
+        // An object the checker knows is a plain struct is kept natively from here on.
+        let (value, ty) = match (ty, self.checked_ty(name)) {
+            (Ty::Obj, Some(Ty::Struct(id))) => {
+                (Some(self.convert(value, ty, Ty::Struct(id), source.span)?), Ty::Struct(id))
+            }
+            _ => (value, ty),
+        };
+        match ty {
+            Ty::Obj => {
+                let handle = value.ok_or_else(|| unsupported("this value", source.span))?;
+                self.declare_object(name, handle, is_mut)
+            }
+            Ty::Struct(id) => {
+                let from = value.ok_or_else(|| unsupported("this value", source.span))?;
+                let own = self.clone_struct(from, id)?;
+                self.bind_native(name, ty, Some(own), is_mut);
+                Ok(())
+            }
+            _ => {
+                self.bind_native(name, ty, value, is_mut);
+                Ok(())
+            }
         }
-        self.bind_native(name, ty, value, is_mut);
-        Ok(())
+    }
+
+    /// How native code holds what the checker says a name in this function holds.
+    pub(super) fn checked_ty(&self, name: &str) -> Option<Ty> {
+        let signatures = self.signatures;
+        signatures.local(&self.function.key, name).map(|ty| self.layouts.ty(ty))
     }
 
     /// Changes what a name holds.
-    fn set_local(
+    pub(super) fn set_local(
         &mut self,
         name: &str,
         local: super::Local,
@@ -184,6 +225,11 @@ impl Lowerer<'_, '_> {
                 let handle = self.handle_of(value, ty, span)?;
                 let id = self.name_id(name);
                 self.call_helper(Helper::Assign, &[id, handle]).map(|_| ())
+            }
+            (Some(var), Ty::Struct(id)) => {
+                let converted = self.convert(value, ty, Ty::Struct(id), span)?;
+                let own = self.b.use_var(var);
+                self.copy_struct(own, converted, id)
             }
             (Some(var), local_ty) => {
                 let converted = self.convert(value, ty, local_ty, span)?;
@@ -377,7 +423,7 @@ impl Lowerer<'_, '_> {
         let list = self.help(Helper::Get, &[hidden_id])?;
         let item = self.help(Helper::Item, &[list, at])?;
         if let [name] = names {
-            self.declare_object(name, item, false)?;
+            self.declare(name, Some(item), Ty::Obj, false, iter)?;
         } else {
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
             self.unpack_into(&names, item, true, iter.span)?;

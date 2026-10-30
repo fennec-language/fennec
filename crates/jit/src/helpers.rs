@@ -70,9 +70,12 @@ pub(crate) enum Helper {
     Put,
     PutItem,
     Entries,
+    MakeInstance,
+    Sin,
+    Cos,
 }
 
-pub(crate) const ALL: [Helper; 62] = [
+pub(crate) const ALL: [Helper; 65] = [
     Helper::Fail,
     Helper::Enter,
     Helper::Leave,
@@ -135,6 +138,9 @@ pub(crate) const ALL: [Helper; 62] = [
     Helper::Put,
     Helper::PutItem,
     Helper::Entries,
+    Helper::MakeInstance,
+    Helper::Sin,
+    Helper::Cos,
 ];
 
 /// A helper's symbol, parameters and results.
@@ -213,6 +219,9 @@ impl Helper {
             Helper::Put => shape("fennec_put", &[I64, I64, I64], &[]),
             Helper::PutItem => shape("fennec_put_item", &[I64, I64, I64, I64], &[]),
             Helper::Entries => shape("fennec_entries", &[I64, I64, I64], &[I64]),
+            Helper::MakeInstance => shape("fennec_make_instance", &[I64, I64, I64, I64], &[I64]),
+            Helper::Sin => shape("fennec_sin", &[F64], &[F64]),
+            Helper::Cos => shape("fennec_cos", &[F64], &[F64]),
         }
     }
 
@@ -220,7 +229,13 @@ impl Helper {
     pub(crate) fn needs_frame(self) -> bool {
         !matches!(
             self,
-            Helper::Fail | Helper::PrintInt | Helper::PrintFloat | Helper::PrintBool | Helper::PrintStr
+            Helper::Fail
+                | Helper::Sin
+                | Helper::Cos
+                | Helper::PrintInt
+                | Helper::PrintFloat
+                | Helper::PrintBool
+                | Helper::PrintStr
         )
     }
 
@@ -237,6 +252,7 @@ impl Helper {
                 | Helper::PathGet
                 | Helper::PutItem
                 | Helper::Entries
+                | Helper::MakeInstance
                 | Helper::MainResult
                 | Helper::Unpack
                 | Helper::ToFloat
@@ -316,6 +332,9 @@ impl Helper {
             Helper::Put => objects::put as *const u8,
             Helper::PutItem => objects::put_item as *const u8,
             Helper::Entries => objects::entries as *const u8,
+            Helper::MakeInstance => objects::make_instance as *const u8,
+            Helper::Sin => runtime::sin as *const u8,
+            Helper::Cos => runtime::cos as *const u8,
         }
     }
 }

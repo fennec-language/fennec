@@ -27,6 +27,9 @@ pub(crate) struct Checker {
     states: BTreeMap<String, State>,
     /// Field types, once worked out. `None` while a field's default is being looked at.
     fields: BTreeMap<String, Option<Type>>,
+    /// The type of each name in each function, keyed `function/name`; `Unknown` for a name
+    /// that holds different types in different places.
+    locals: BTreeMap<String, Type>,
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
@@ -39,7 +42,13 @@ impl Checker {
             }
         }
         program.add(module, false);
-        Checker { program, states: BTreeMap::new(), fields: BTreeMap::new(), diagnostics: Vec::new() }
+        Checker {
+            program,
+            states: BTreeMap::new(),
+            fields: BTreeMap::new(),
+            locals: BTreeMap::new(),
+            diagnostics: Vec::new(),
+        }
     }
 
     pub(crate) fn run(mut self) -> Result<Signatures, Vec<Diagnostic>> {
@@ -63,6 +72,8 @@ impl Checker {
             FnCx::check_fields(&mut self, &name);
         }
         if self.diagnostics.is_empty() {
+            let structs = self.structs();
+            let locals = std::mem::take(&mut self.locals);
             let functions = self
                 .states
                 .into_iter()
@@ -71,7 +82,7 @@ impl Checker {
                     State::Checking { .. } => None,
                 })
                 .collect();
-            return Ok(Signatures { functions });
+            return Ok(Signatures { functions, structs, locals });
         }
         let mut diagnostics = self.diagnostics;
         diagnostics.sort_by(|a, b| (a.span.start, &a.message).cmp(&(b.span.start, &b.message)));
@@ -182,6 +193,48 @@ impl Checker {
         };
         self.fields.insert(key, Some(ty.clone()));
         ty
+    }
+
+    /// Records the type a function's name holds, for compilers to use.
+    pub(crate) fn note_local(&mut self, function: &str, name: &str, ty: &Type) {
+        let key = format!("{function}/{name}");
+        match self.locals.get(&key) {
+            Some(known) if known != ty => {
+                self.locals.insert(key, Type::Unknown);
+            }
+            Some(_) => {}
+            None => {
+                self.locals.insert(key, ty.clone());
+            }
+        }
+    }
+
+    /// Every struct's fields and their types, in the order they're written.
+    fn structs(&mut self) -> BTreeMap<String, crate::Struct> {
+        let structs: Vec<(String, Vec<String>, bool)> = self
+            .program
+            .types
+            .values()
+            .filter(|info| info.kind == TypeKind::Struct)
+            .map(|info| {
+                let names = info.def.fields.iter().map(|field| field.name.clone()).collect();
+                let rules = info.def.fields.iter().any(|field| field.rule.is_some());
+                (info.def.name.clone(), names, rules)
+            })
+            .collect();
+        structs
+            .into_iter()
+            .map(|(name, fields, rules)| {
+                let fields = fields
+                    .into_iter()
+                    .map(|field| {
+                        let ty = self.field_type(&name, None, &field);
+                        (field, ty)
+                    })
+                    .collect();
+                (name, crate::Struct { fields, rules })
+            })
+            .collect()
     }
 
     pub(crate) fn is_error_type(&self, ty: &Type) -> bool {

@@ -183,3 +183,27 @@ pub extern "C" fn entries(value: i64, start: i64, end: i64) -> i64 {
         Ok(state.push(Value::list(pairs)))
     })
 }
+
+/// A struct made from field values native code computed: the last `count` inputs handed
+/// over, in the order the struct's fields are written. Native code only makes structs that
+/// have no `where` rules this way, so there's nothing to check.
+pub extern "C" fn make_instance(type_name: i64, count: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let type_name = State::name_ref(&state.tables, type_name).to_owned();
+        let info = state.interp.type_info(&type_name).ok_or_else(|| {
+            Diagnostic::new(format!("the JIT lost the type `{type_name}`"), span(start, end))
+        })?;
+        let count = usize::try_from(count).unwrap_or(0);
+        let values = state.inputs.split_off(state.inputs.len().saturating_sub(count));
+        let fields =
+            info.def.fields.iter().map(|field| std::rc::Rc::from(field.name.as_str())).zip(values).collect();
+        let instance = crate::value::Instance {
+            type_name: std::rc::Rc::from(type_name.as_str()),
+            case: None,
+            fields,
+            is_error: false,
+            cause: None,
+        };
+        Ok(state.push(Value::Instance(std::rc::Rc::new(instance))))
+    })
+}

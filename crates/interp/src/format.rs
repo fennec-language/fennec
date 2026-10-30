@@ -68,7 +68,7 @@ pub(crate) fn float(x: f64) -> String {
     if x.is_nan() {
         "nan".to_owned()
     } else if x.is_infinite() {
-        if x > 0.0 { "inf".to_owned() } else { "-inf".to_owned() }
+        if x.is_sign_positive() { "inf".to_owned() } else { "-inf".to_owned() }
     } else if x != 0.0 && !(1e-4..1e16).contains(&x.abs()) {
         scientific(x)
     } else if x == x.trunc() {

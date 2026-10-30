@@ -86,9 +86,9 @@ fn int_arithmetic(op: BinOp, a: i64, b: i64, span: Span) -> Result<Value, Diagno
         BinOp::Mul => a.checked_mul(b),
         BinOp::Div => return Ok(Value::Float(to_float(a) / to_float(b))),
         BinOp::FloorDiv => {
-            a.checked_div_euclid(b).map(|q| if b < 0 && a.rem_euclid(b) != 0 { q - 1 } else { q })
+            a.checked_div_euclid(b).map(|q| if b.is_negative() && a.rem_euclid(b) != 0 { q - 1 } else { q })
         }
-        BinOp::Mod => a.checked_rem_euclid(b).map(|r| if b < 0 && r != 0 { r + b } else { r }),
+        BinOp::Mod => a.checked_rem_euclid(b).map(|r| if b.is_negative() && r != 0 { r + b } else { r }),
         BinOp::Pow => {
             let exponent = u32::try_from(b).map_err(|_| {
                 Diagnostic::new("an int can only be raised to a non-negative power", span)

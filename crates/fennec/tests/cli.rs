@@ -91,7 +91,7 @@ fn test_fails_when_a_test_fails() {
 fn test_shrinks_and_replays_property_failures() {
     let output = fennec(&["test", "crates/fennec/tests/fixtures/failing_properties.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(text(&output.stdout).ends_with("  ✓ this one passes\n1 passed, 13 failed\n"));
+    assert!(text(&output.stdout).ends_with("  ✓ this one passes\n1 passed, 16 failed\n"));
     let stderr = text(&output.stderr);
     let reported: Vec<&str> = stderr
         .lines()
@@ -110,6 +110,11 @@ fn test_shrinks_and_replays_property_failures() {
             "it failed for items = [-656, -806]; the left side is 2 and the right side is 2",
             "it failed for grid = [[\"ldu\", \"tdxoqz\", \"fwvlmdz\", \"guzmwk\"], [\"qpov\", \"\", \"upomgfx\", \
              \"hrcdawk\", \"ka\", \"xer\", \"\"], []]; the left side is 3 and the right side is 3",
+            "it failed for deep = [[[[], [], [], [], []], [[], []], [[], [], [], [], [], []]], [[[], []], [[], [], [], \
+             [], [], [], []], [[], [], [], []], [[], [], [], [], [], []], [[], [], [], [], [], []], [], [[], [], [], \
+             [], [], [], []]]]; the left side is 2 and the right side is 2",
+            "it failed for deep = ((([], 777), -171), -278); the left side is 777 and the right side is 100",
+            "it failed for outer = Outer(inner=Inner(rows=[[], [], []])); the left side is 3 and the right side is 2",
             "it failed for pair = (False, 993)",
             "it failed for pair = (0, -106); the left side is 0 and the right side is None",
             "it failed for box = Box(label=\"box\", size=436); the left side is 436 and the right side is 3",

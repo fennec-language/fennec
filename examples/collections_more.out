@@ -21,6 +21,7 @@ vex False
 [fire ice  ] [  fire ice]
 ["one", "two"] ["a", "b", "", "c"] True
 feNNec 3 None 2
+True False True
 no newline, then one
 False
 couldn't do it

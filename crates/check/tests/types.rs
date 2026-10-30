@@ -277,8 +277,9 @@ fn builtins_give_back_the_right_types() {
         ("IdMap[str]().values()[0] + 1", "can't use `+` on a str and an int @ IdMap[str]().values()[0] + 1"),
     ];
     for (expression, expected) in cases {
-        let program =
-            format!("def main(stdout: Stdout):\n    mut xs = [1]\n    stdout.print({expression})\n");
+        let program = format!(
+            "from std.math import PI, sqrt, floor\nfrom std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut xs = [1]\n    stdout.print({expression})\n"
+        );
         assert_eq!(problems(&program), [expected.to_owned()], "{expression}");
     }
 }
@@ -289,7 +290,7 @@ fn optional_results_of_builtins_might_be_none() {
         ["[1].index(1) + 1", "'abc'.find('b') + 1", "{'a': 1}.get('a') + 1", "pool.get(pool.insert(1)) + 1"];
     for expression in cases {
         let program = format!(
-            "def main(stdout: Stdout):\n    mut pool = IdMap[int]()\n    stdout.print({expression})\n"
+            "from std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut pool = IdMap[int]()\n    stdout.print({expression})\n"
         );
         let expression = expression.replace('\'', "\"");
         let operand = expression.rsplit_once(" + ").map_or("", |(left, _)| left);

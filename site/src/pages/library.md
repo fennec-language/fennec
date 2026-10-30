@@ -24,11 +24,24 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Diagnostics | `log`, `profile`, `test` |
 | Games | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat4`, `simd`, `layout`, `arena`; later `window`, `input`, `audio` and `gpu` |
 
+## Importing what you use
+
+A module's names exist only once it's imported, as in Python, so a file's imports show everything it uses:
+
+```fennec
+from std.math import Vec3, sqrt   # Vec3 and sqrt by name
+from std import json             # the whole module, as json.loads(...)
+```
+
+Using a name without its import is an error that says which import to add. Capabilities like `Stdout`, `Fs` and `Clock` need no import, and nor do the errors standard operations fail with, like `IoError`.
+
 ## Serialization with nothing to set up
 
 The compiler knows every struct's fields, so reading and writing data formats needs no annotations:
 
 ```fennec
+from std import json
+
 struct Settings:
     volume = 0.8
     fullscreen = False

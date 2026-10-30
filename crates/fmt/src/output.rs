@@ -40,28 +40,15 @@ fn push_spaces(out: &mut String, count: usize) {
     out.extend(std::iter::repeat_n(' ', count));
 }
 
-/// The column each line's trailing comment starts at.
+/// The column each line's trailing comment starts at. Neighbouring lines at the same
+/// indentation that both end in a comment are lined up.
 fn comment_columns(lines: &[OutLine]) -> Vec<usize> {
-    let mut columns = vec![0; lines.len()];
-    let mut start = 0;
-    while start < lines.len() {
-        let in_run = |line: &OutLine, indent: usize| {
-            line.comment.is_some() && !line.code.is_empty() && line.indent == indent
-        };
-        let Some(first) = lines.get(start) else { break };
-        if !in_run(first, first.indent) {
-            start += 1;
-            continue;
-        }
-        let end = (start..lines.len())
-            .find(|&at| lines.get(at).is_none_or(|line| !in_run(line, first.indent)))
-            .unwrap_or(lines.len());
-        let run = lines.get(start..end).unwrap_or(&[]);
-        let column = run.iter().map(|line| line.indent + width(&line.code)).max().unwrap_or(0) + 2;
-        for slot in columns.get_mut(start..end).unwrap_or(&mut []) {
-            *slot = column;
-        }
-        start = end;
+    let in_run = |line: &OutLine| line.comment.is_some() && !line.code.is_empty();
+    let runs = lines.chunk_by(|above, below| in_run(above) && in_run(below) && above.indent == below.indent);
+    let mut columns = Vec::with_capacity(lines.len());
+    for run in runs {
+        let widest = run.iter().map(|line| line.indent + width(&line.code)).max().unwrap_or(0);
+        columns.extend(std::iter::repeat_n(widest + 2, run.len()));
     }
     columns
 }

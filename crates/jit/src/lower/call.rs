@@ -38,6 +38,17 @@ impl Lowerer<'_, '_> {
         {
             return Ok((Some(self.list_length(&list, item)?), Ty::Int));
         }
+        if let Some(name) = self.std_member(callee) {
+            if let Some(id) = self.layouts.id(name)
+                && let Some(result) = self.construct(id, args, expr.span)?
+            {
+                return Ok(result);
+            }
+            if plain && let Some(result) = self.builtin(name, callee, args, expr.span)? {
+                return Ok(result);
+            }
+            return self.fallback(expr);
+        }
         if let ExprKind::Attr { object, name, optional: false } = &callee.kind
             && let Some(Ty::Struct(id)) = self.static_ty(object)
             && let Some(result) = self.call_struct_method(expr, object, id, name, args)?
@@ -71,11 +82,20 @@ impl Lowerer<'_, '_> {
             if let Some(result) = self.call_compiled(name, args, expr.span)? {
                 return Ok(result);
             }
-            if plain && let Some(result) = self.builtin(name, args, expr.span)? {
+            if plain && let Some(result) = self.builtin(name, callee, args, expr.span)? {
                 return Ok(result);
             }
         }
         self.fallback(expr)
+    }
+
+    /// For `math.sqrt` where `math` is an imported module, or `std.math.sqrt` after
+    /// `import std.math`, the name after the last dot.
+    fn std_member<'e>(&self, callee: &'e Expr) -> Option<&'e str> {
+        let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return None };
+        let alias = fennec_syntax::dotted(object)?;
+        let first = alias.split('.').next().unwrap_or_default();
+        (self.local(first).is_none() && self.shared.modules.contains(&alias)).then_some(name.as_str())
     }
 
     /// Which argument goes to each parameter, or `None` when they don't line up, which the
@@ -364,8 +384,15 @@ impl Lowerer<'_, '_> {
         Ok(Some(result))
     }
 
-    /// Builtins on numbers that compile to a few instructions.
-    fn builtin(&mut self, name: &str, args: &[Arg], span: Span) -> Result<Option<Lowered>, Diagnostic> {
+    /// Builtins on numbers that compile to a few instructions. `callee` is the name as
+    /// written, like `sqrt` or `math.sqrt`.
+    fn builtin(
+        &mut self,
+        name: &str,
+        callee: &Expr,
+        args: &[Arg],
+        span: Span,
+    ) -> Result<Option<Lowered>, Diagnostic> {
         let known = matches!(
             name,
             "abs" | "min" | "max" | "float" | "int" | "sqrt" | "floor" | "ceil" | "sin" | "cos"
@@ -402,9 +429,10 @@ impl Lowerer<'_, '_> {
                 self.math(name, x, span)?
             }
             _ => {
-                let callee = Expr { kind: ExprKind::Name(name.to_owned()), span };
-                let call =
-                    Expr { kind: ExprKind::Call { callee: Box::new(callee), args: args.to_vec() }, span };
+                let call = Expr {
+                    kind: ExprKind::Call { callee: Box::new(callee.clone()), args: args.to_vec() },
+                    span,
+                };
                 return self.interpret_call(&call, &values).map(Some);
             }
         };

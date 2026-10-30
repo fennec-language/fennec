@@ -112,7 +112,11 @@ impl<'a> Line<'_, 'a> {
     fn item(&self, start: usize, end: usize, in_group: bool) -> (Item<'a>, usize) {
         let mut item = Item { leading: Vec::new(), nodes: Vec::new(), trailing: Vec::new(), flat: Some(0) };
         let mut at = start;
-        while at < end {
+        // Each pass takes at least one token, so this bounds the loop.
+        for _ in start..end {
+            if at >= end {
+                break;
+            }
             if in_group && (self.is_punct(at, ",") || self.closes(at)) {
                 break;
             }

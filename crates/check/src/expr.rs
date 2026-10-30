@@ -139,8 +139,8 @@ impl FnCx<'_> {
     }
 
     /// For `json.loads` where `json` is an imported module, the name it means: a module
-    /// function like `json.loads`, or a name like `Path` that's available everywhere. A name
-    /// the module doesn't have is reported here.
+    /// function like `json.loads`, or a type like `Path`. A name the module doesn't have is
+    /// reported here.
     pub(crate) fn module_member(&mut self, object: &Expr, name: &str, span: Span) -> Option<Member> {
         let alias = fennec_syntax::dotted(object)?;
         if self.lookup(alias.split('.').next().unwrap_or_default()).is_some() {
@@ -166,16 +166,23 @@ impl FnCx<'_> {
         Some(Member::Name(if builtins::is_builtin(&qualified) { qualified } else { name.to_owned() }))
     }
 
-    /// A name used as a type, like `Enemy` in `Enemy.at(...)`, rather than as a value.
+    /// A name used as a type, like `Enemy` in `Enemy.at(...)` or `game.IdMap` in
+    /// `game.IdMap[Enemy]()`, rather than as a value.
     pub(crate) fn as_type_name<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
-        match &expr.kind {
-            ExprKind::Name(name)
-                if self.lookup(name).is_none() && self.checker.program.is_type_name(name) =>
-            {
-                Some(name)
+        let name = match &expr.kind {
+            ExprKind::Name(name) => name,
+            ExprKind::Attr { object, name, optional: false } => {
+                let alias = fennec_syntax::dotted(object)?;
+                if self.lookup(alias.split('.').next().unwrap_or_default()).is_some() {
+                    return None;
+                }
+                let module = self.checker.program.modules.get(&alias)?;
+                fennec_syntax::std_member(module, name, expr.span).ok()?;
+                name
             }
-            _ => None,
-        }
+            _ => return None,
+        };
+        (self.lookup(name).is_none() && self.checker.program.is_type_name(name)).then_some(name.as_str())
     }
 
     /// An operator on two values. `spans` are the two sides', for pointing at one of them.

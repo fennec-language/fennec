@@ -1,3 +1,5 @@
+from std.math import PI
+
 enum Shape:
     Circle(radius: float)
     Rect(width: float, height: float)

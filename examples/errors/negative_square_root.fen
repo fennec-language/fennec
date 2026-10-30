@@ -1,2 +1,4 @@
+from std.math import sqrt
+
 def main(stdout: Stdout):
     stdout.print(sqrt(-1.0))

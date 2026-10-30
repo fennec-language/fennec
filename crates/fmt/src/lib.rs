@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn comments_are_listed_word_for_word() {
         assert_eq!(comment_texts("# one  \nx = 1  #two\n"), ["# one", "#two"]);
-        assert!(comment_texts("x = 1\n").is_empty());
+        assert_eq!(comment_texts("x = 1\n"), Vec::<String>::new());
     }
 
     #[test]

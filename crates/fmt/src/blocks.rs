@@ -60,40 +60,36 @@ impl<'s, 't> Driver<'s, 't> {
         }
     }
 
+    /// Writes the file line by line. Each chunk of tokens up to a line break is the indents
+    /// and dedents before a logical line, then the line.
     pub(crate) fn run(&mut self) {
-        let mut at = 0;
-        while let Some(token) = self.tokens.get(at) {
-            match token.kind {
-                TokenKind::Newline => at += 1,
-                TokenKind::Indent => {
-                    let width =
-                        self.tokens.get(at + 1).map_or(0, |next| self.comments.column(next.span.start));
-                    self.blocks
-                        .push(Block::new(width, std::mem::replace(&mut self.pending, BlockKind::Other)));
-                    at += 1;
-                }
-                TokenKind::Dedent => {
-                    if self.blocks.len() > 1 {
-                        self.blocks.pop();
+        let tokens = self.tokens;
+        let mut offset = 0;
+        for chunk in tokens.split_inclusive(|token| token.kind == TokenKind::Newline) {
+            for (index, token) in chunk.iter().enumerate() {
+                let at = offset + index;
+                match token.kind {
+                    TokenKind::Newline => {}
+                    TokenKind::Indent => {
+                        let width =
+                            tokens.get(at + 1).map_or(0, |next| self.comments.column(next.span.start));
+                        let kind = std::mem::replace(&mut self.pending, BlockKind::Other);
+                        self.blocks.push(Block::new(width, kind));
                     }
-                    at += 1;
-                }
-                TokenKind::Eof => {
-                    self.end_of_file(at);
-                    break;
-                }
-                _ => {
-                    let end = (at..self.tokens.len())
-                        .find(|&end| {
-                            self.tokens.get(end).is_some_and(|token| {
-                                matches!(token.kind, TokenKind::Newline | TokenKind::Eof)
-                            })
-                        })
-                        .unwrap_or(self.tokens.len());
-                    self.line(at, end);
-                    at = end;
+                    TokenKind::Dedent => {
+                        if self.blocks.len() > 1 {
+                            self.blocks.pop();
+                        }
+                    }
+                    TokenKind::Eof => self.end_of_file(at),
+                    _ => {
+                        let end = chunk.iter().position(|token| token.kind == TokenKind::Newline);
+                        self.line(at, offset + end.unwrap_or(chunk.len()));
+                        break;
+                    }
                 }
             }
+            offset += chunk.len();
         }
     }
 
@@ -186,13 +182,13 @@ impl<'s, 't> Driver<'s, 't> {
         let kind = self.blocks.last().map_or(BlockKind::Other, |block| block.kind);
         let separated = matches!(kind, BlockKind::TopLevel | BlockKind::TypeBody)
             && (is_item || self.blocks.last().is_some_and(|block| block.last_was_item));
-        let mut attached = entries.len().saturating_sub(1);
-        while attached > 0
-            && entries.get(attached).is_some_and(|entry| entry.blank == 0)
-            && entries.get(attached - 1).is_some_and(|entry| entry.level == level)
-        {
-            attached -= 1;
-        }
+        // The comments right above the line, with no blank line between, go with it.
+        let touching = entries
+            .windows(2)
+            .rev()
+            .take_while(|pair| matches!(pair, [above, below] if below.blank == 0 && above.level == level))
+            .count();
+        let attached = entries.len().saturating_sub(1 + touching);
         for (at, entry) in entries.iter().enumerate() {
             let started = self.blocks.get(entry.level).is_none_or(|block| block.started);
             let wanted = entry.blank.min(1) == 1 || separated && at == attached;

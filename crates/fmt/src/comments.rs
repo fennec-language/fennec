@@ -30,15 +30,10 @@ impl<'a> Comments<'a> {
             starts: vec![Vec::new(); tokens.len()],
             line_starts,
         };
-        let mut next = 0;
-        let mut prev_code: Option<usize> = None;
         for span in spans {
-            while tokens.get(next).is_some_and(|token| token.span.start < span.start) {
-                if tokens.get(next).is_some_and(|token| !is_layout(token.kind)) {
-                    prev_code = Some(next);
-                }
-                next += 1;
-            }
+            let next = tokens.partition_point(|token| token.span.start < span.start);
+            let prev_code =
+                tokens.get(..next).and_then(|before| before.iter().rposition(|token| !is_layout(token.kind)));
             let text = text(source, *span).trim_end();
             let same_line = prev_code
                 .and_then(|at| tokens.get(at))

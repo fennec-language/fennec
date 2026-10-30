@@ -7,7 +7,7 @@
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value, types};
 use fennec_interp::embed::heap;
-use fennec_syntax::{BinOp, Diagnostic, Span};
+use fennec_syntax::{BinOp, Diagnostic, Span, Stmt};
 
 use super::expr::Lowered;
 use super::{Lowerer, internal};
@@ -45,6 +45,92 @@ impl Lowerer<'_, '_> {
         Ok(length)
     }
 
+    /// The one-character string for an ASCII byte, from the shared table. It lives for the
+    /// whole run.
+    fn ascii(&mut self, byte: Value) -> Value {
+        let table = if let Some(base) = self.slots_base {
+            self.b.ins().load(types::I64, MemFlagsData::trusted(), base, 8)
+        } else {
+            let table = heap::ascii_table(&mut self.shared.tables);
+            self.int(table)
+        };
+        let offset = self.b.ins().imul_imm_s(byte, 8);
+        let entry = self.b.ins().iadd(table, offset);
+        self.b.ins().load(types::I64, MemFlagsData::trusted(), entry, 0)
+    }
+
+    /// `for name in text`, walking its bytes. An ASCII character comes from the shared
+    /// table; the runtime makes any other. The loop keeps an owner of the string, so
+    /// changing the name it came from inside the loop doesn't change what the loop sees.
+    pub(super) fn for_text(
+        &mut self,
+        name: &str,
+        text: Value,
+        span: Span,
+        body: &[Stmt],
+    ) -> Result<(), Diagnostic> {
+        let text = self.own(text, Ty::Str);
+        self.drop_temps()?;
+        self.open_scope();
+        self.bind_native(&format!("\0for{}", span.start), Ty::Str, Some(text), false);
+        let length = self.b.ins().load(types::I64, MemFlagsData::trusted(), text, BYTES);
+        let [at, step] = [(); 2].map(|()| self.b.declare_var(types::I64));
+        let zero = self.int(0);
+        self.b.def_var(at, zero);
+        self.b.def_var(step, zero);
+        let [header, ascii, wide, inside, advance, exit] = [(); 6].map(|()| self.b.create_block());
+        self.b.set_cold_block(wide);
+        self.b.append_block_param(inside, types::I64);
+        self.b.ins().jump(header, &[]);
+        self.b.switch_to_block(header);
+        let here = self.b.use_var(at);
+        let more = self.b.ins().icmp(IntCC::SignedLessThan, here, length);
+        self.b.ins().brif(more, ascii, &[], exit, &[]);
+        self.b.switch_to_block(ascii);
+        let place = self.b.ins().iadd(text, here);
+        let byte = self.b.ins().uload8(types::I64, MemFlagsData::trusted(), place, TEXT);
+        let one = self.int(1);
+        self.b.def_var(step, one);
+        let wider = self.b.ins().icmp_imm_u(IntCC::UnsignedGreaterThanOrEqual, byte, 0x80);
+        let quick = self.b.create_block();
+        self.b.ins().brif(wider, wide, &[], quick, &[]);
+        self.b.switch_to_block(quick);
+        let char = self.ascii(byte);
+        self.b.ins().jump(inside, &[char.into()]);
+        self.b.switch_to_block(wide);
+        // A UTF-8 lead byte says how many bytes its character takes.
+        let [two, three, four] = [0xC0, 0xE0, 0xF0]
+            .map(|lead| self.b.ins().icmp_imm_u(IntCC::UnsignedGreaterThanOrEqual, byte, lead));
+        let size = [two, three, four].into_iter().fold(one, |size, longer| {
+            let longer = self.b.ins().uextend(types::I64, longer);
+            self.b.ins().iadd(size, longer)
+        });
+        self.b.def_var(step, size);
+        let char = self.help(Helper::StrCharAt, &[text, here])?;
+        self.b.ins().jump(inside, &[char.into()]);
+        self.b.switch_to_block(inside);
+        let char =
+            self.b.block_params(inside).first().copied().ok_or_else(|| internal("lost a character", span))?;
+        let depth = self.scopes.len();
+        self.open_scope();
+        self.bind_native(name, Ty::Str, Some(char), false);
+        self.loops.push(super::Loop { next: advance, done: exit, depth, put_back: None });
+        let lowered = self.tail(body);
+        self.loops.pop();
+        lowered?;
+        self.close_scope()?;
+        if !self.is_dead() {
+            self.b.ins().jump(advance, &[]);
+        }
+        self.b.switch_to_block(advance);
+        let (here, size) = (self.b.use_var(at), self.b.use_var(step));
+        let after = self.b.ins().iadd(here, size);
+        self.b.def_var(at, after);
+        self.b.ins().jump(header, &[]);
+        self.b.switch_to_block(exit);
+        self.close_scope()
+    }
+
     /// `text[at]`. An ASCII string's character comes from a table; any other goes to the
     /// runtime, which also fails like the interpreter for a position past either end.
     pub(super) fn string_index(&mut self, text: Value, at: Value, span: Span) -> Result<Lowered, Diagnostic> {
@@ -64,15 +150,7 @@ impl Lowerer<'_, '_> {
         self.b.seal_block(quick);
         let place = self.b.ins().iadd(text, resolved);
         let byte = self.b.ins().uload8(types::I64, MemFlagsData::trusted(), place, TEXT);
-        let table = if let Some(base) = self.slots_base {
-            self.b.ins().load(types::I64, MemFlagsData::trusted(), base, 8)
-        } else {
-            let table = heap::ascii_table(&mut self.shared.tables);
-            self.int(table)
-        };
-        let offset = self.b.ins().imul_imm_s(byte, 8);
-        let entry = self.b.ins().iadd(table, offset);
-        let one = self.b.ins().load(types::I64, MemFlagsData::trusted(), entry, 0);
+        let one = self.ascii(byte);
         self.b.ins().jump(done, &[one.into()]);
         self.b.switch_to_block(slow);
         self.b.seal_block(slow);

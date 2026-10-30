@@ -80,7 +80,7 @@ impl Heap {
     }
 
     /// A zeroed block of `words` words, reusing a freed one when there is one.
-    fn fresh(&mut self, words: usize) -> Box<[u64]> {
+    pub(super) fn fresh(&mut self, words: usize) -> Box<[u64]> {
         match self.spare.get_mut(words).and_then(Vec::pop) {
             Some(mut block) => {
                 block.fill(0);
@@ -117,6 +117,12 @@ impl Heap {
 
     fn block_mut(&mut self, address: u64) -> Option<&mut [u64]> {
         self.blocks.get_mut(&usize::try_from(address).ok()?).map(AsMut::as_mut)
+    }
+
+    /// A string's block, to change in place: the text made from it before is dropped.
+    pub(super) fn text_mut(&mut self, address: u64) -> Option<&mut [u64]> {
+        self.texts.remove(&usize::try_from(address).ok()?);
+        self.block_mut(address)
     }
 }
 
@@ -248,27 +254,45 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
 /// Frees a block whose last owner let it go, and releases its boxed fields, freeing those
 /// that had no other owner, all the way down.
 pub extern "C" fn free(address: i64) {
-    with(|state| {
-        let mut pending = vec![u64::try_from(address).unwrap_or(0)];
-        while let Some(address) = pending.pop() {
-            let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove(&at))
-            else {
-                continue;
-            };
-            if let Ok(at) = usize::try_from(address) {
-                state.heap.texts.remove(&at);
-            }
-            for child in children(state, &block) {
-                if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
-                    *count = count.saturating_sub(1);
-                    if *count == 0 {
-                        pending.push(child);
-                    }
+    with(|state| free_block(state, u64::try_from(address).unwrap_or(0)));
+}
+
+/// Frees a block and releases its boxed fields, freeing those with no other owner, all the
+/// way down.
+fn free_block(state: &mut State, address: u64) {
+    let mut pending = vec![address];
+    while let Some(address) = pending.pop() {
+        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove(&at)) else {
+            continue;
+        };
+        if let Ok(at) = usize::try_from(address) {
+            state.heap.texts.remove(&at);
+        }
+        for child in children(state, &block) {
+            if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    pending.push(child);
                 }
             }
-            state.heap.recycle(block);
         }
-    });
+        state.heap.recycle(block);
+    }
+}
+
+/// Gives up one owner of a block, freeing it when that was the last.
+pub(super) fn release(state: &mut State, address: u64) {
+    let last = match state.heap.block_mut(address).and_then(|block| block.first_mut()) {
+        Some(count) if *count > 1 => {
+            *count -= 1;
+            false
+        }
+        Some(_) => true,
+        None => false,
+    };
+    if last {
+        free_block(state, address);
+    }
 }
 
 /// A copy of a shared block for one owner to change: owned once, sharing its boxed
@@ -424,11 +448,19 @@ fn same(state: &State, a: u64, b: u64) -> bool {
         return true;
     }
     let (Some(left), Some(right)) = (state.heap.block(a), state.heap.block(b)) else { return false };
-    if left.get(1) != right.get(1) || left.len() != right.len() {
+    if left.get(1) != right.get(1) {
         return false;
     }
     if is_text(state, left) {
-        return left.get(1..) == right.get(1..);
+        // Compare the bytes in use: a string's block may have room to grow.
+        let used = |block: &[u64]| {
+            let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+            block.get(1..TEXT_HEADER_WORDS + length.div_ceil(8)).map(<[u64]>::to_vec)
+        };
+        return used(left) == used(right);
+    }
+    if left.len() != right.len() {
+        return false;
     }
     let Some(shape) = shape_of(state, left) else { return false };
     let (left, right) =

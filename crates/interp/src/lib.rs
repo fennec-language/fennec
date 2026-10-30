@@ -18,6 +18,8 @@ mod ops;
 pub mod packed;
 mod place;
 mod prelude;
+mod random;
+mod regex;
 mod scan;
 mod scope;
 mod testing;

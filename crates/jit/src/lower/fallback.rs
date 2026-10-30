@@ -112,7 +112,7 @@ impl Lowerer<'_, '_> {
             return Ok(expr.clone());
         }
         if let ExprKind::Name(name) = &expr.kind
-            && self.local(name).is_some_and(|local| matches!(local.ty, Ty::Stdout | Ty::Fs))
+            && self.local(name).is_some_and(|local| matches!(local.ty, Ty::Cap(_)))
         {
             return Ok(Self::keep(expr, handover));
         }
@@ -145,6 +145,20 @@ impl Lowerer<'_, '_> {
         match &object.kind {
             ExprKind::Name(name) => self.local(name).is_none_or(|local| local.ty == Ty::Obj),
             ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => self.keeps_receiver(object),
+            _ => false,
+        }
+    }
+
+    /// Whether a method call's receiver must stay as written: what `keeps_receiver` keeps,
+    /// and a `mut` struct held natively, which a method that changes `self` changes.
+    fn keeps_call_receiver(&self, object: &Expr) -> bool {
+        match &object.kind {
+            ExprKind::Name(name) => self.local(name).is_none_or(|local| {
+                local.ty == Ty::Obj || (local.is_mut && matches!(local.ty, Ty::Struct(_)))
+            }),
+            ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => {
+                self.keeps_call_receiver(object)
+            }
             _ => false,
         }
     }
@@ -219,7 +233,7 @@ impl Lowerer<'_, '_> {
     ) -> Result<ExprKind, Diagnostic> {
         let callee = match &callee.kind {
             ExprKind::Attr { object, name, optional } => {
-                let object = if self.keeps_receiver(object) {
+                let object = if self.keeps_call_receiver(object) {
                     Self::keep(object, handover)
                 } else {
                     self.input(object, handover)?
@@ -322,8 +336,8 @@ impl Lowerer<'_, '_> {
         for name in native {
             let Some(local) = self.local(&name) else { continue };
             let id = self.name_id(&name);
-            if matches!(local.ty, Ty::Stdout | Ty::Fs) {
-                let kind = self.int(i64::from(local.ty == Ty::Fs));
+            if let Ty::Cap(cap) = local.ty {
+                let kind = self.int(cap.kind());
                 self.call_helper(Helper::DeclareCapability, &[id, kind])?;
                 continue;
             }

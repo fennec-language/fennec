@@ -1,6 +1,6 @@
 // Runs every program in examples/ through the playground's WebAssembly module, the way the
 // page's worker does, and checks it prints its .out file and passes its tests. Programs that
-// use files are skipped: the playground has none.
+// use files or the clock are skipped: the playground has neither.
 import { readFileSync, readdirSync } from 'node:fs';
 
 const examples = new URL('../../examples/', import.meta.url);
@@ -20,6 +20,10 @@ for (const name of readdirSync(examples).filter((file) => file.endsWith('.fen'))
   const source = readFileSync(new URL(name, examples), 'utf8');
   if (/\bfs: Fs\b/.test(source)) {
     console.log(`  - ${name} (uses files)`);
+    continue;
+  }
+  if (/\bclock: Clock\b/.test(source)) {
+    console.log(`  - ${name} (uses the clock)`);
     continue;
   }
   const expected = readFileSync(new URL(name.replace(/\.fen$/, '.out'), examples), 'utf8');

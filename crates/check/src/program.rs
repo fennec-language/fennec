@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use fennec_syntax::{Diagnostic, FnDef, Import, Imported, Item, Module, TestDef, TypeDef, TypeExpr};
+use fennec_syntax::{Diagnostic, FnDef, Import, Imported, Item, Module, Span, TestDef, TypeDef, TypeExpr};
 
 use crate::types::Type;
 
@@ -38,6 +38,10 @@ pub(crate) struct Program {
     /// Builtins that exist only once imported, like `loads` from `std.json`, by the name
     /// they're imported under.
     pub(crate) imports: BTreeMap<String, String>,
+    /// What the standard library's own code imports, which only that code sees.
+    pub(crate) prelude_imports: BTreeMap<String, String>,
+    /// Standard library types imported by name, like `Deque` from `std.collections`.
+    pub(crate) imported_types: std::collections::BTreeSet<String>,
     /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
     pub(crate) modules: BTreeMap<String, &'static str>,
     /// Imports of modules or names that don't exist.
@@ -86,6 +90,8 @@ impl Program {
                     let builtin = format!("{module}.{name}");
                     if crate::builtins::is_builtin(&builtin) {
                         self.imports.insert(name, builtin);
+                    } else {
+                        self.imported_types.insert(name);
                     }
                 }
             }
@@ -98,6 +104,12 @@ impl Program {
             self.functions.insert(format!("{}.{}", def.name, method.name), entry);
         }
         self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone(), prelude });
+    }
+
+    /// The builtin an imported name at `span` stands for.
+    pub(crate) fn imported(&self, name: &str, span: Span) -> Option<&String> {
+        let prelude = span.in_prelude().then(|| self.prelude_imports.get(name)).flatten();
+        self.imports.get(name).or(prelude)
     }
 
     pub(crate) fn type_info(&self, name: &str) -> Option<&TypeInfo> {
@@ -152,8 +164,15 @@ impl Program {
             "tuple" => Type::Tuple(written.args.iter().map(|arg| self.resolve_within(arg, depth)).collect()),
             "Id" => Type::Id(Box::new(arg(0))),
             "IdMap" => Type::IdMap(Box::new(arg(0))),
-            "Stdout" | "Fs" => Type::named(&written.name),
+            "Stdout" | "Fs" | "Clock" => Type::named(&written.name),
             name if self.types.contains_key(name) => Type::named(name),
+            // `std.collections.Deque` or `collections.Deque`, through an imported module.
+            name if let Some((path, member)) = name.rsplit_once('.')
+                && self.modules.contains_key(path)
+                && self.types.contains_key(member) =>
+            {
+                Type::named(member)
+            }
             name => match (self.aliases.get(name), depth.checked_sub(1)) {
                 (Some(alias), Some(depth)) => self.resolve_within(alias, depth),
                 _ => Type::Unknown,

@@ -1,0 +1,6 @@
+Duration(nanos=16666667) 16.667 ms
+True Duration(nanos=1000000020) 1.5
+frame 1: 1 steps, y = 9.9973
+frame 2: 0 steps, y = 9.9973
+frame 3: 3 steps, y = 9.9728
+True True

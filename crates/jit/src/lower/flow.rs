@@ -98,6 +98,9 @@ impl Lowerer<'_, '_> {
         arms: &[MatchArm],
         span: Span,
     ) -> Result<Lowered, Diagnostic> {
+        if let Some(arm) = arms.iter().find(|arm| arm.guard.is_some()) {
+            return Err(Diagnostic::new("a `case` with a guard isn't compiled yet", arm.span));
+        }
         let (value, ty) = self.expr(subject)?;
         if matches!(ty, Ty::Int | Ty::Bool | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str) {
             // Arms drop temporaries back to here, keeping the ones made before the match.
@@ -223,6 +226,12 @@ fn bindings(pattern: &Pattern, names: &mut Vec<String>) {
         Pattern::Variant { args, .. } | Pattern::Tuple(args) => {
             for arg in args {
                 bindings(arg, names);
+            }
+        }
+        // Every alternative binds the same names.
+        Pattern::Or(alternatives) => {
+            if let Some(first) = alternatives.first() {
+                bindings(first, names);
             }
         }
         Pattern::Wildcard | Pattern::Literal(_) => {}

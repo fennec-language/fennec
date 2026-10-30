@@ -16,7 +16,8 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use fennec_interp::embed::codec::Image;
 use fennec_syntax::{Diagnostic, Sources, Span};
 
-use super::{Compilation, Shared, compile_functions, internal, retrying};
+use super::module::retrying;
+use super::{Compilation, Shared, compile_functions, internal};
 use crate::helpers::Helper;
 use crate::types::Ty;
 
@@ -47,7 +48,7 @@ pub(crate) fn compile_object(
     })?;
     let (bytes, (with_frames, handed_over)) = bytes;
     let (interpreted, reasons) = skipped.into_iter().unzip();
-    Ok((bytes, Compilation { interpreted, reasons, with_frames, handed_over, notes: Vec::new() }))
+    Ok((bytes, Compilation { interpreted, reasons, with_frames, handed_over, notes: Vec::new(), cached: 0 }))
 }
 
 /// An executable's table of runtime addresses: the failure flag's, the ASCII table's, then

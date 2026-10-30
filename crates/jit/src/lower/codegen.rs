@@ -14,9 +14,9 @@ use crate::types::Function;
 
 /// A function's machine code, ready to go into the module.
 pub(super) struct MachineCode {
-    bytes: Vec<u8>,
-    alignment: u64,
-    relocs: Vec<ModuleReloc>,
+    pub(super) bytes: Vec<u8>,
+    pub(super) alignment: u64,
+    pub(super) relocs: Vec<ModuleReloc>,
 }
 
 impl MachineCode {
@@ -158,5 +158,18 @@ mod tests {
         let in_other = lowered(&other).get("target").cloned().unwrap();
         assert_eq!(in_one, &in_other, "the same function lowers the same in another program");
         assert!(in_one.contains("fennec.literal."), "literals go through symbols:\n{in_one}");
+    }
+
+    #[test]
+    fn moving_an_inlined_function_leaves_its_callers_alone() {
+        let program = |greeting: &str| {
+            format!(
+                "def double(x: int) -> int:\n    x * 2\n\ndef greet(name: str) -> str:\n    \"{greeting}, \" + name\n\n\
+                def main(stdout: Stdout):\n    stdout.print(greet(\"kit\"), double(21))\n"
+            )
+        };
+        let (before, after) = (lowered(&program("hello")), lowered(&program("hi there")));
+        assert_ne!(before.get("greet"), after.get("greet"));
+        assert_eq!(before.get("main"), after.get("main"), "main inlines double, which only moved");
     }
 }

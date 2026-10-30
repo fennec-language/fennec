@@ -66,6 +66,9 @@ fn expression(expr: &Expr, effects: &mut Effects) {
         ExprKind::Try { .. } => effects.fails = true,
         ExprKind::Match { arms, .. } => {
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    expression(guard, effects);
+                }
                 block(&arm.body, effects);
             }
         }

@@ -1,8 +1,9 @@
-//! `match`: the names each `case` binds, and whether the cases cover every case of an enum.
+//! `match`: the names each `case` binds, its guard, and whether the cases cover every case
+//! of an enum. A guarded case never counts toward covering one.
 //! Matching a result looks through `Ok`: `case Ok(x)` and `case x` bind the value, and
 //! `case Err(e)` or `case NotFound(path)` the error.
 
-use fennec_syntax::{Diagnostic, Expr, MatchArm, Pattern, Span};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, MatchArm, Pattern, Span};
 
 use crate::function::FnCx;
 use crate::program::TypeKind;
@@ -26,6 +27,9 @@ impl FnCx<'_> {
         for arm in arms {
             self.push(false);
             self.bind_pattern(&arm.pattern, &ty, arm.span);
+            if let Some(guard) = &arm.guard {
+                self.guard(guard);
+            }
             let flow = self.stmts(&arm.body, true);
             self.pop();
             if !flow.exits {
@@ -60,6 +64,7 @@ impl FnCx<'_> {
                 }
             }
             Pattern::Bind(name) => self.declare(name, value, false, span),
+            Pattern::Or(alternatives) => self.bind_alternatives(alternatives, subject, span),
             Pattern::Tuple(patterns) => {
                 let items = match value {
                     Type::Tuple(items) if items.len() == patterns.len() => items,
@@ -111,6 +116,65 @@ impl FnCx<'_> {
                 }
             }
         }
+    }
+
+    /// `a | b`: each alternative has to bind the same names, with the same types.
+    fn bind_alternatives(&mut self, alternatives: &[Pattern], subject: &Type, span: Span) {
+        let mut bound: Vec<Vec<(String, Type)>> = Vec::new();
+        for alternative in alternatives {
+            self.push(false);
+            self.bind_pattern(alternative, subject, span);
+            let mut names = self.bound_here();
+            names.sort_by(|a, b| a.0.cmp(&b.0));
+            bound.push(names);
+            self.pop();
+        }
+        let Some((first, rest)) = bound.split_first() else { return };
+        for other in rest {
+            let only_some = first
+                .iter()
+                .map(|(name, _)| name)
+                .filter(|name| !other.iter().any(|(bound, _)| bound == *name))
+                .chain(
+                    other
+                        .iter()
+                        .map(|(name, _)| name)
+                        .filter(|name| !first.iter().any(|(bound, _)| bound == *name)),
+                )
+                .next();
+            if let Some(name) = only_some {
+                let message = format!("`{name}` is bound by only some of the alternatives of this `case`");
+                self.error(
+                    Diagnostic::new(message, span).with_help("every alternative has to bind the same names"),
+                );
+                return;
+            }
+            for ((name, ty), (_, other_ty)) in first.iter().zip(other) {
+                if !self.checker.fits(ty, other_ty) || !self.checker.fits(other_ty, ty) {
+                    let message =
+                        format!("`{name}` is {} in one alternative and {} in another", a(ty), a(other_ty));
+                    self.error(Diagnostic::new(message, span));
+                    return;
+                }
+            }
+        }
+        for (name, ty) in first.clone() {
+            self.declare(&name, ty, false, span);
+        }
+    }
+
+    /// A `case`'s guard: a bool that can't change anything, so it never passes `mut`. What
+    /// it shows isn't None stays shown in the case's body.
+    fn guard(&mut self, guard: &Expr) {
+        self.condition(guard, "if");
+        if let Some(span) = mut_arg(guard) {
+            self.error(
+                Diagnostic::new("a guard can't change anything, so it can't pass `mut`", span)
+                    .with_help("change it in the case's body instead"),
+            );
+        }
+        self.track(guard);
+        self.narrow(&crate::stmt::not_none(guard, true));
     }
 
     /// The field types of what a `case` names: a case of the enum being matched, an error or
@@ -170,12 +234,18 @@ impl FnCx<'_> {
         else {
             return;
         };
-        if arms.iter().any(|arm| matches!(arm.pattern, Pattern::Wildcard | Pattern::Bind(_))) {
+        // A guarded case might not be taken, so it covers nothing.
+        let unguarded: Vec<&Pattern> = arms
+            .iter()
+            .filter(|arm| arm.guard.is_none())
+            .flat_map(|arm| alternatives(&arm.pattern))
+            .collect();
+        if unguarded.iter().any(|pattern| matches!(pattern, Pattern::Wildcard | Pattern::Bind(_))) {
             return;
         }
-        let covered: Vec<&str> = arms
+        let covered: Vec<&str> = unguarded
             .iter()
-            .filter_map(|arm| match &arm.pattern {
+            .filter_map(|pattern| match pattern {
                 Pattern::Variant { name, args, .. } if args.iter().all(always_matches) => Some(name.as_str()),
                 _ => None,
             })
@@ -204,6 +274,25 @@ fn always_matches(pattern: &Pattern) -> bool {
     match pattern {
         Pattern::Wildcard | Pattern::Bind(_) => true,
         Pattern::Tuple(patterns) => patterns.iter().all(always_matches),
+        Pattern::Or(patterns) => patterns.iter().any(always_matches),
         Pattern::Literal(_) | Pattern::Variant { .. } => false,
     }
+}
+
+/// The patterns a `case` tries: each alternative of `a | b`, or the one pattern.
+fn alternatives(pattern: &Pattern) -> Vec<&Pattern> {
+    match pattern {
+        Pattern::Or(patterns) => patterns.iter().flat_map(alternatives).collect(),
+        other => vec![other],
+    }
+}
+
+/// Where an expression passes something with `mut`, if it does.
+fn mut_arg(expr: &Expr) -> Option<Span> {
+    if let ExprKind::Call { args, .. } = &expr.kind
+        && let Some(arg) = args.iter().find(|arg| arg.is_mut)
+    {
+        return Some(arg.value.span);
+    }
+    crate::effects::children(expr).into_iter().find_map(mut_arg)
 }

@@ -19,7 +19,8 @@ pub(crate) fn run(path: &str, jit: bool, arguments: &[String]) -> ExitCode {
         arguments: arguments.to_vec(),
         stdin: Box::new(BufReader::new(std::io::stdin())),
     };
-    let result = if jit { native(module, &mut out, inputs) } else { interpret(module, &mut out, inputs()) };
+    let result =
+        if jit { native(module, path, &mut out, inputs) } else { interpret(module, &mut out, inputs()) };
     let flushed = out.flush();
     match (result, flushed) {
         (Ok(()), Ok(())) => ExitCode::SUCCESS,
@@ -38,10 +39,24 @@ pub(crate) fn run(path: &str, jit: bool, arguments: &[String]) -> ExitCode {
 /// can't compile yet. Nothing runs before the JIT decides, so nothing runs twice.
 fn native(
     module: &fennec_syntax::Module,
+    path: &str,
     out: &mut dyn Write,
     inputs: impl Fn() -> Inputs,
 ) -> Result<(), fennec_syntax::Diagnostic> {
-    match fennec_jit::run_with_inputs(module, out, inputs()) {
+    // Machine code is reused from the cache in `~/.fennec`, unless `FENNEC_NO_CACHE` is set.
+    let cache = fennec_build::fennec_home()
+        .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
+        .map(|home| fennec_build::Cache::new(&home));
+    let ran = match &cache {
+        Some(cache) => {
+            // A program's machine code is kept together, under its absolute path.
+            let program = std::fs::canonicalize(path)
+                .map_or_else(|_| path.to_owned(), |path| path.display().to_string());
+            fennec_jit::run_cached(module, out, inputs(), cache, &program).map(|_| ())
+        }
+        None => fennec_jit::run_with_inputs(module, out, inputs()),
+    };
+    match ran {
         Ok(()) => Ok(()),
         Err(fennec_jit::JitError::Failed(diagnostic)) => Err(diagnostic),
         Err(fennec_jit::JitError::Unsupported(diagnostic)) => {

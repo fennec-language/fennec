@@ -145,17 +145,23 @@ This replaces the earlier rules that return types are inferred, and that recursi
 **Built-in types are ordinary structs in the standard library.** `int`, `float`, `str`, `list` and `dict` are structs in `std`, with methods and the interfaces they satisfy written like any other type's. Only machine-level operations, such as adding two machine integers or loading from memory, are intrinsics the compiler provides.
 *Why:* There's no second kind of type that only the compiler can make. A user type does everything a built-in one does, by the same means.
 
-**Generic builtins are ordinary generic functions that call a method.** `abs`, `len`, `min`, `max`, `sum` and the like are written in `std`:
+**`Buffer[T]` is the one public building block for memory.** It's safe, bounds-checked, growable and reference-counted. It allocates, reads and writes a slot, grows, and says whether it's unique, which is what copy-on-write needs. `list`, `dict` and `str` are written in Fennec on top of it, and any program can use it the same way.
+*Why:* The built-in collections need no machinery a program can't use, so a game's own pool or ring buffer is built from the same safe piece.
+
+**A function is global only when it works on any sequence using nothing but looping and operators; anything that asks a value about itself is a method.**
+- The globals are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`. They use only iteration and a type's operators (`def +`, `def <`), so a user type joins them by defining its operators. There are no hooks and no dunders.
+- Everything type-specific is a method, including `xs.len()` and `x.abs()`. `len(xs)` and `abs(x)` are ordinary "no such function" errors, and the message points to the method.
+- `int(...)`, `str(...)` and `float(...)` are the types' constructors, not global functions.
 ```fennec
-def abs[T: Signed](x: T) -> T:
-    return x.abs()
+interface Signed:
+    def abs(self) -> Self
+
+total = sum(e.health for e in enemies)    # global: only looping and +
+distance = (a - b).abs()                  # method: a question about one value
 ```
-A user type joins in by defining the method.
+*Why:* A looping function belongs to no one type: it works on lists, sets, dicts and generator expressions alike. A question about a value is answered differently by each type, so it lives on the type.
 
-**Builtins work on anything; methods belong to a type.** Builtins work on any value that fits an interface and never change it: `len`, `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`. Methods are specific to a type or change the value: `xs.append(x)`, `d.keys()`, `s.split(",")`, `mut xs.sort()`. A type supports a builtin by having the method, such as `def len(self)`. The language server offers the builtins that apply after `xs.`.
-*Why:* Builtins read well with comprehensions (`sum(e.health for e in enemies)`), and Python users and AI already write them. Python mostly follows this split; Fennec always does.
-
-**No global function serves only one type.** A builtin has to work across types, through an interface, or be a type's constructor, like `int(...)`, `float(...)` and `range(...)`. An operation on one type is a method. So a character's code is `"A".code()`, not Python's `ord("A")`, and `ord(c)` is an error whose fix writes `c.code()`.
+**No global function serves only one type.** A global has to follow the rule above, or be a type's constructor, like `int(...)`, `float(...)` and `str(...)`. An operation on one type is a method. So a character's code is `"A".code()`, not Python's `ord("A")`, and `ord(c)` is an error whose fix writes `c.code()`.
 *Why:* Global functions that only fit one type crowd the namespace, can't be extended by other types, and hide where an operation lives.
 
 **The standard library uses only what any program can.** Its types get no powers user types lack: `str`'s `*` is a `def *` written in Fennec, like any user type's operator, and its methods are ordinary methods. Where something can be written in Fennec, it is.
@@ -180,7 +186,21 @@ extend Parser:
     def parse_expr(mut self) -> Expr:
         ...
 ```
-An extension adds methods only, never fields, so a type's shape stays in its declaration. It works only on the kit's own types, never another kit's or the standard library's. Two methods with the same name on one type are an error, wherever they're written. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
+An extension adds methods only, never fields, so a type's shape stays in its declaration. It works only on the kit's own types, never another kit's or the standard library's; the standard library extends its own types the same way.
+
+**A generic type's extension names its type parameter, and a bound makes it conditional,** as in Swift:
+```fennec
+extend list[T]:
+    def first(self) -> T?: ...
+
+extend list[T: Eq]:
+    def count(self, x: T) -> int: ...
+    def index(self, x: T) -> int?: ...
+
+extend list[T: Ordered]:
+    def sort(mut self): ...
+```
+`count` exists only on lists whose elements can be compared with `==`, and `sort` only on lists whose elements can be ordered. Two methods with the same name on one type are an error, wherever they're written. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
 *Why:* A type that many responsibilities attach to, like a parser, an interpreter or a game's `World`, is otherwise one huge file, or its methods become free functions with noisier calls. Swift, C#, Kotlin, Go and Rust all let a type's methods live in several files. Keeping it to the kit's own types means no one can change a type they don't own.
 
 **Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They're erased at compile time, so they cost nothing at run time. The syntax is still open.
@@ -210,6 +230,8 @@ Type arguments are inferred at calls; `largest[int](xs)` is allowed when they ca
 
 **Mixed types are an `enum`; open sets are function values.** A list that holds different types is a list of an enum: each element is inline with a one-byte tag, and `match` compiles to a jump table. When other kits must be able to add kinds, as with plugins, a struct with function fields does it, and a call through a function value is the only run-time dispatch a program can ask for. Generic code shared in development builds is the compiler's choice, and release builds compile it away.
 
+**`Self` in an interface's method means the type that fits it.** `interface Signed: def abs(self) -> Self` says `abs` returns the same type it's called on: a `Money` for a `Money`.
+
 **`Eq`, `Hash`, `Ordered` and `Format` are built-in interfaces,** satisfied automatically wherever the automatic `==`, hashing, ordering and printing apply.
 
 **`=>` is one expression; anything longer is a nested `def`.** There are no multi-line anonymous functions, as in Python. Function types are written `(int, str) -> bool`.
@@ -222,7 +244,7 @@ Type arguments are inferred at calls; `largest[int](xs)` is allowed when they ca
 def collect_leaves(tree: Tree) -> list[Tree]:
     mut leaves = []
     def visit(node: Tree):
-        if len(node.children) == 0:
+        if node.children.len() == 0:
             leaves.append(node)
         for child in node.children:
             visit(child)
@@ -258,7 +280,7 @@ with db.transaction() as mut tx:
 **Names live in their modules.** A standard library module provides nothing until it's imported: `from std.math import Vec3, sqrt`, or `from std import math` and then `math.Vec3` and `math.sqrt(x)`. That's every module so far: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`. Using a name without its import is reported with the import to add.
 *Why:* A file's imports show everything it uses from the standard library, as in Python.
 
-**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the Python builtins, like `len`, `range` and `abs`.
+**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the global functions, like `sum`, `range` and `sorted`.
 *Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
 
 **Command-line arguments and standard input are capabilities.** `def main(stdout: Stdout, args: Args, stdin: Stdin):`. `for arg in args:` gives the arguments, not the program's name, which is `args.program`. `stdin.lines()` reads input a line at a time. A program that doesn't name them can't read them, and both are recorded for replay.
@@ -267,10 +289,10 @@ with db.transaction() as mut tx:
 **`int(text)` and `float(text)` fail with `InvalidValue`** when the text isn't a number or doesn't fit, handled with `?`, `else` or `match`. `int(3.7)` still truncates to `3`. `int()` of NaN, or of a float too big for an int, stops the program, like overflow.
 *Why:* Text often comes from input, so a bad number is expected and must be handled. A NaN reaching `int()` is a bug in the program.
 
-**A string's characters are reached by code and as bytes without copying.** `"A".code()` gives `65`, `str.from_code(65)` gives `"A"` and fails with `InvalidValue` for a number that isn't a character, and `s.codes()` gives every code. `.code()` on anything but one character stops the program, like an index out of range. `s.encode()` is a view of the UTF-8 bytes, with no copy, so `len(s.encode())` is the length in bytes.
+**A string's characters are reached by code and as bytes without copying.** `"A".code()` gives `65`, `str.from_code(65)` gives `"A"` and fails with `InvalidValue` for a number that isn't a character, and `s.codes()` gives every code. `.code()` on anything but one character stops the program, like an index out of range. `s.encode()` is a view of the UTF-8 bytes, with no copy, so `s.encode().len()` is the length in bytes.
 *Why:* A lexer needs character codes and byte lengths, and strings are stored as UTF-8 already, so the bytes cost nothing.
 
-**`bytes` is binary data, a run of ints from 0 to 255.** It's a built-in type, like `str`: `len`, indexing and looping give ints, slicing and `+` give `bytes`, and it compares, orders and hashes. `bytes([137, 80])` makes some from a list, and a number outside 0 to 255 stops the program, like an index out of range. `text.encode()` gives text's UTF-8 bytes, and `data.decode()` gives the text back, failing with `InvalidValue` when the bytes aren't UTF-8. Bytes print as `bytes([137, 80])`, which is also how to write them; there's no literal like Python's `b"..."` yet.
+**`bytes` is binary data, a run of ints from 0 to 255.** It's a built-in type, like `str`: `.len()` gives its length, indexing and looping give ints, slicing and `+` give `bytes`, and it compares, orders and hashes. `bytes([137, 80])` makes some from a list, and a number outside 0 to 255 stops the program, like an index out of range. `text.encode()` gives text's UTF-8 bytes, and `data.decode()` gives the text back, failing with `InvalidValue` when the bytes aren't UTF-8. Bytes print as `bytes([137, 80])`, which is also how to write them; there's no literal like Python's `b"..."` yet.
 *Why:* Files, hashes and network data are bytes, and keeping them apart from `str` means text is checked once, when it's decoded. A byte out of range is a mistake in the program, while text that isn't UTF-8 comes from outside and has to be handled. Printing bytes the way they're written means a printed value can be pasted back into code.
 
 **Imports bind names exactly as in Python.** `import std.json` binds `std`, and the call is `std.json.loads(...)`. `from std import json` binds `json`, for `json.loads(...)`. `from std.json import loads` binds `loads`. A kit's own modules follow the same rule: `import game.physics` binds `game`, and `from game import physics` binds `physics`. Writing `json.loads` after `import std.json` is an error whose help suggests `from std import json`. There's no `import *`.
@@ -284,7 +306,7 @@ import game.world.physics as physics
 ```
 - The descriptive-names lint covers aliases: `import std.json as j` is flagged like a variable named `j`.
 - A module's own name has one spelling. `import std.json as json` has a fix that rewrites it to `from std import json`, which means the same.
-- An alias can't take a name the language provides everywhere, such as `len`, `Ok` or `Stdout`.
+- An alias can't take a name the language provides everywhere, such as `sum`, `Ok` or `Stdout`.
 - An alias to the same name (`from std import json as json`), or importing one thing twice under two names, is a lint.
 - `pub import x as y` re-exports under a new name, which helps a kit rename part of its API.
 
@@ -526,7 +548,14 @@ These are default lints, and the Den requires them.
 **Every kit has an owner's namespace,** `owner/kit`. The Den rejects names a small edit away from popular ones. There's one public registry, and private kits live in their own namespace.
 *Why:* That stops typosquatting and dependency confusion.
 
-**Accounts use passkeys, and every release is signed** with Sigstore.
+**Den accounts sign in with passkeys only.** There are no passwords and no recovery by email.
+- At least one passkey is required; adding a second is encouraged, not required.
+- One-time recovery codes are issued at signup, and you have to save them.
+- If both your passkeys and your codes are lost, the last resort is a manual review by the Den team.
+- Email is only for notices, such as a new passkey added, a new release or a change of ownership. It's never used to sign in or recover an account.
+- Publishing still needs the signed release statement, as above, and every release is signed with Sigstore.
+
+*Why:* Stolen passwords and hijacked email are how package accounts get taken over. With no password and no email reset, there's nothing for an attacker to phish or reset.
 
 **`fennec audit` is built in.** It checks every dependency against the advisory database, and CI fails on a known vulnerability.
 
@@ -662,6 +691,13 @@ The order:
 
 Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compiler can run on the Cranelift JIT, since the interpreter is too slow to run a compiler.
 *Why:* Every language change after the compiler is self-hosted has to be made in two compilers.
+
+## License
+
+**The compiler and tools are `MIT OR Apache-2.0`, and the runtime library and standard library add a runtime library exception,** modeled on Swift's. A program compiled with Fennec owes no attribution for the runtime and standard library code built into it. The exception is in `RUNTIME-LIBRARY-EXCEPTION`.
+*Why:* Every compiled program carries pieces of the runtime and standard library. Without the exception, every game or tool shipped would have to include Fennec's license notice for code its author never chose to use. Swift and GCC have the same kind of exception for the same reason. The compiler and tools themselves keep the usual dual license, which most open-source compiler tooling uses, so code can move between projects in either direction.
+
+**Contributions are dual licensed the same way,** unless the contributor explicitly says otherwise. The README states it.
 
 ## Still open
 

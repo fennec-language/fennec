@@ -464,6 +464,9 @@ fn arm_names(arm: &MatchArm, names: &mut Vec<String>) {
     if let Pattern::Literal(expr) = &arm.pattern {
         expr_names(expr, names);
     }
+    if let Some(guard) = &arm.guard {
+        expr_names(guard, names);
+    }
     for stmt in &arm.body {
         stmt_names(stmt, names);
     }

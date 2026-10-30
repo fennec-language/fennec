@@ -115,6 +115,9 @@ fn expr_effects(expr: &Expr, effects: &mut Effects) {
         ExprKind::Match { subject, arms } => {
             visit(subject);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    expr_effects(guard, effects);
+                }
                 block_effects(&arm.body, effects);
             }
         }

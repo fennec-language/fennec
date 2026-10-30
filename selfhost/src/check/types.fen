@@ -12,6 +12,8 @@ enum Type:
     Int
     Float
     Str
+    ## Binary data: a run of bytes, each an int from 0 to 255.
+    Bytes
     List(item: Type)
     Set(item: Type)
     Dict(key: Type, value: Type)

@@ -39,6 +39,7 @@ def built_in_types() -> list[str]:
         "float",
         "bool",
         "str",
+        "bytes",
         "None",
         "nothing",
         "list",
@@ -182,6 +183,7 @@ def builtin_type(name: str, args: list[Type]) -> Type:
         case "float": Type.Float
         case "bool": Type.Bool
         case "str": Type.Str
+        case "bytes": Type.Bytes
         case "None": Type.NoneType
         case "nothing": Type.Unit
         case "list": Type.List(args[0])

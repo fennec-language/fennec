@@ -1,6 +1,7 @@
 //! Every program in `examples/` runs and prints exactly its `.out` file, and every program in
-//! `examples/errors/` fails with exactly its `.err` file. The examples are the language's
-//! working specification, so the site and the compiler can't drift apart.
+//! `examples/errors/` fails with exactly its `.err` file, whether the type checker or the
+//! interpreter catches the mistake. The examples are the language's working specification,
+//! so the site and the compiler can't drift apart.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,9 +22,14 @@ fn programs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Runs a program the way `fennec run` does: its output, or its rendered error.
+/// Runs a program the way `fennec run` does: its output, or its rendered errors.
 fn run(source: &str, shown_as: &str) -> Result<String, String> {
     let module = fennec_syntax::parse(source).map_err(|diagnostic| diagnostic.render(shown_as, source))?;
+    fennec_check::check(&module).map_err(|diagnostics| {
+        let rendered: Vec<String> =
+            diagnostics.iter().map(|diagnostic| diagnostic.render(shown_as, source)).collect();
+        rendered.join("\n")
+    })?;
     let mut out = Vec::new();
     fennec_interp::run(&module, &mut out).map_err(|diagnostic| diagnostic.render(shown_as, source))?;
     Ok(String::from_utf8_lossy(&out).into_owned())

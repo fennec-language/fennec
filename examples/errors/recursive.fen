@@ -1,0 +1,7 @@
+def fibonacci(n: int):
+    if n < 2:
+        return n
+    fibonacci(n - 1) + fibonacci(n - 2)
+
+def main(stdout: Stdout):
+    stdout.print(fibonacci(10))

@@ -1,0 +1,7 @@
+error: `health` isn't mut
+ --> examples/errors/param_not_mut.fen:2:5
+  |
+2 |     health += 10
+  |     ^^^^^^
+  |
+  = help: parameters are read-only: to change it, write `mut health` in `heal`'s parameters, and pass it with `mut` at each call

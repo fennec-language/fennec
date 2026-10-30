@@ -14,7 +14,7 @@
 
 Fennec is a safe, compiled language for games and tools, designed so that the easy way to write something is also the readable way and the fast way, for people and for the AI they work with.
 
-> **Status: early design.** The interpreter runs most of the language described on the website. The type checker, native compilers and concurrency come next, and the syntax will still change.
+> **Status: early design.** The interpreter runs most of the language described on the website, and a first type checker catches most mistakes before a program runs. Native compilers and concurrency come next, and the syntax will still change.
 
 **Read more at [fennec-lang.dev](https://fennec-lang.dev/):**
 
@@ -43,7 +43,7 @@ total_health = sum(enemy.health for enemy in alive)
 
 ## Try it
 
-The interpreter runs most of the language on the website: structs, enums, `match`, errors with `fail` and `?`, optional values, comprehensions, generators, `with`, operators, tests and property tests. Fennec's checks happen at runtime until the type checker lands.
+The interpreter runs most of the language on the website: structs, enums, `match`, errors with `fail` and `?`, optional values, comprehensions, generators, `with`, operators, tests and property tests. `fennec run` and `fennec test` type-check a program first and report every mistake they find; the interpreter still checks what the type checker can't yet.
 
 ```bash
 cargo run -q -p fennec -- run examples/game.fen
@@ -62,6 +62,7 @@ Every program in [`examples/`](examples) is a test: it must print exactly its `.
 ## Repository layout
 
 - `crates/syntax`: the lexer (with Python-style indentation), parser and syntax tree.
+- `crates/check`: the type checker, which also infers every function's signature.
 - `crates/interp`: the interpreter.
 - `crates/fennec`: the `fennec` command.
 - `examples/`: example programs, which double as the test suite.

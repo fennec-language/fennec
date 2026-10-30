@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    mut count = 3
+    while count:
+        count -= 1

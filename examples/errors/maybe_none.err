@@ -1,0 +1,7 @@
+error: this might be None
+  --> examples/errors/maybe_none.fen:13:18
+   |
+13 |     stdout.print(player.name)
+   |                  ^^^^^^^^^^^
+   |
+   = help: check with `if x is None:` first, use `?.`, or give a default with `else`

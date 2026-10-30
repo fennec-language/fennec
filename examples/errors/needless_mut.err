@@ -1,0 +1,5 @@
+error: `describe` doesn't change `health`, so it shouldn't be passed with `mut`
+ --> examples/errors/needless_mut.fen:6:31
+  |
+6 |     stdout.print(describe(mut health))
+  |                               ^^^^^^

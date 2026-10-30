@@ -1,0 +1,6 @@
+def describe(health: int):
+    f"{health} HP"
+
+def main(stdout: Stdout):
+    mut health = 100
+    stdout.print(describe(mut health))

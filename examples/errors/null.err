@@ -1,0 +1,7 @@
+error: `null` doesn't exist
+ --> examples/errors/null.fen:2:14
+  |
+2 |     target = null
+  |              ^^^^
+  |
+  = help: write `None`

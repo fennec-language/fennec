@@ -1,0 +1,5 @@
+def label(count: int) -> str:
+    count * 2
+
+def main(stdout: Stdout):
+    stdout.print(label(3))

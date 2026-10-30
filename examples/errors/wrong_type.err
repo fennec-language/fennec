@@ -1,0 +1,7 @@
+error: `speed` should be a float, but this is an int
+ --> examples/errors/wrong_type.fen:5:28
+  |
+5 |     stdout.print(move(1.5, 2))
+  |                            ^
+  |
+  = help: write it with a decimal point, like `1.0`, or convert it with float(...)

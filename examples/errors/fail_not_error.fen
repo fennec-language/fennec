@@ -1,0 +1,7 @@
+def parse(text: str):
+    if text == "":
+        fail "empty"
+    text
+
+def main(stdout: Stdout):
+    stdout.print(parse("x") else "")

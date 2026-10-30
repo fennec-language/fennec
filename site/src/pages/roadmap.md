@@ -17,6 +17,7 @@ description: Where Fennec is today, what gets built first, and the design questi
 - Lists, dicts, sets, tuples, comprehensions, slices, generators, `with`, `IdMap` and `Vec3`.
 - Values without references: copies are independent, and changes happen in place without copying when nothing else shares the value.
 - Every example in the repository's `examples/` folder is a test, including the error messages.
+- A first type checker, run before every program and test: unknown names, `mut`, arguments and fields, bool conditions, int and float mixing, unhandled errors and `None`, `match` over every case, and inferred return types.
 
 ## v0.1: checked before it runs
 

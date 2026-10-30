@@ -33,6 +33,17 @@ pub extern "C" fn pack(name: i64, element: i64) -> i8 {
     with(|state| i8::from(packed_mut(state, name, Some(element)).is_some()))
 }
 
+/// A new packed list of `count` items of a kind, all zero, as a temporary, for native code
+/// to fill.
+pub extern "C" fn zeroed(element: i64, count: i64) -> i64 {
+    with(|state| {
+        let element = usize::try_from(element).ok().and_then(|at| state.tables.elements.get(at)).cloned();
+        let Some(element) = element else { return state.push(Value::list(Vec::new())) };
+        let words = vec![0; usize::try_from(count).unwrap_or(0) * element.words()];
+        state.push(Value::Packed(Rc::new(Packed { element, words })))
+    })
+}
+
 /// Where a name's packed items start, for reading (`write` 0) or changing them (`write` 1,
 /// which first gives the list memory of its own if it shares it).
 pub extern "C" fn address(name: i64, element: i64, write: i8) -> i64 {

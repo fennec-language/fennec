@@ -10,37 +10,57 @@
 //! the symbols with its own values. An executable is built whole and never reused, so it uses
 //! the numbers themselves.
 
-use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value, types};
+use cranelift_codegen::ir::{GlobalValue, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::FunctionBuilder;
-use cranelift_module::{DataDescription, Linkage, Module};
-use fennec_syntax::{Diagnostic, Span};
+use cranelift_module::{DataDescription, DataId, Linkage, Module};
+use fennec_syntax::{Diagnostic, FnDef, Span};
 
-use super::{Lowerer, Shared, intern, internal};
+use std::collections::HashMap;
 
-/// Loads `value` through the data symbol `symbol`, declaring it the first time it's used.
-pub(super) fn load(
-    b: &mut FunctionBuilder<'_>,
+use super::{Lowerer, Shared, internal};
+
+/// The data symbol `symbol`, declared the first time it's used, holding `value` this run.
+fn data(
     module: &mut dyn Module,
     shared: &mut Shared,
     symbol: String,
     value: i64,
-) -> Result<Value, Diagnostic> {
-    let id = if let Some((id, stored)) = shared.symbols.get_mut(&symbol) {
+) -> Result<DataId, Diagnostic> {
+    if let Some((id, stored)) = shared.symbols.get_mut(&symbol) {
         *stored = value;
-        *id
-    } else {
-        let id = module
-            .declare_data(&symbol, Linkage::Local, false, false)
-            .map_err(|err| internal(err, Span::default()))?;
-        shared.symbols.insert(symbol, (id, value));
-        id
-    };
-    let global = module.declare_data_in_func(id, b.func);
-    let pointer = module.target_config().pointer_type();
+        return Ok(*id);
+    }
+    let id = module
+        .declare_data(&symbol, Linkage::Local, false, false)
+        .map_err(|err| internal(err, Span::default()))?;
+    shared.symbols.insert(symbol, (id, value));
+    Ok(id)
+}
+
+/// Loads a symbol's value. It never changes during the run, so the load can move: out of
+/// loops, and into the cold blocks that are its only uses.
+fn load_from(b: &mut FunctionBuilder<'_>, pointer: types::Type, global: GlobalValue) -> Value {
     let address = b.ins().symbol_value(pointer, global);
-    // The value never changes during the run, so the load can move out of loops.
     let flags = MemFlagsData::trusted().with_readonly().with_can_move();
-    Ok(b.ins().load(types::I64, flags, address, 0))
+    b.ins().load(types::I64, flags, address, 0)
+}
+
+/// Where a function starts in its file, which failures' positions are relative to, loaded in
+/// its entry block. None in an executable, which uses positions as they are.
+pub(super) fn origin(
+    b: &mut FunctionBuilder<'_>,
+    module: &mut dyn Module,
+    shared: &mut Shared,
+    function: &crate::types::Function<'_>,
+    digest: &str,
+) -> Result<Option<Value>, Diagnostic> {
+    if shared.slots.is_some() {
+        return Ok(None);
+    }
+    let start = i64::from(function.def.span.start);
+    let id = data(module, shared, format!("fennec.origin.{digest}"), start)?;
+    let global = module.declare_data_in_func(id, b.func);
+    Ok(Some(load_from(b, module.target_config().pointer_type(), global)))
 }
 
 /// The failure flag native code checks after each call into the runtime. It's linked in by
@@ -86,12 +106,16 @@ impl Lowerer<'_, '_> {
         if self.slots_base.is_some() {
             return self.int(value);
         }
-        match load(&mut self.b, &mut *self.module, &mut *self.shared, symbol, value) {
-            Ok(loaded) => loaded,
-            // Declaring a symbol only fails on a clash, which names by content rule out;
-            // the number itself is still right, only not reusable.
-            Err(_) => self.int(value),
-        }
+        // Declaring a symbol only fails on a clash, which names by content rule out; the
+        // number itself is still right, only not reusable.
+        let Ok(id) = data(&mut *self.module, &mut *self.shared, symbol, value) else {
+            return self.int(value);
+        };
+        let module = &mut *self.module;
+        let func = &mut *self.b.func;
+        let global = *self.globals.entry(id).or_insert_with(|| module.declare_data_in_func(id, func));
+        let pointer = self.module.target_config().pointer_type();
+        load_from(&mut self.b, pointer, global)
     }
 
     pub(super) fn name_id(&mut self, name: &str) -> Value {
@@ -105,25 +129,49 @@ impl Lowerer<'_, '_> {
     }
 
     /// Where `span` is, for a failure to point at. Positions are written relative to the
-    /// function's own start, which is read through a symbol, so a function that moves
-    /// within its file keeps the same machine code.
+    /// start of the function they're in, which is read through a symbol, so a function that
+    /// moves within its file keeps the same machine code, and so does code it's inlined into.
+    /// A position in an inlined standard library function is reported at the call to it.
     pub(super) fn span_args(&mut self, span: Span) -> [Value; 2] {
-        let span = self.site(span);
-        let [start, end] = [span.start, span.end].map(i64::from);
-        if self.slots_base.is_some() {
-            return [self.int(start), self.int(end)];
-        }
-        let origin = i64::from(self.function.def.span.start);
-        let base = self.program_number(format!("fennec.origin.{}", digest(&self.function.key)), origin);
-        [start, end].map(|at| self.b.ins().iadd_imm_s(base, at - origin))
+        let at = self.site(span);
+        let [start, end] = [at.start, at.end].map(i64::from);
+        let Some(own) = self.origin else { return [self.int(start), self.int(end)] };
+        let (origin, from) = match self.inlined_origin {
+            Some(inlined) if !span.in_prelude() => inlined,
+            _ => (own, i64::from(self.function.def.span.start)),
+        };
+        [start, end].map(|at| self.b.ins().iadd_imm_s(origin, at - from))
     }
 
     /// The number of something this function hands the runtime, like an expression for the
     /// interpreter, read through a symbol named by the function and how many it handed over
     /// before. Inlined code counts as the function it's inlined into.
+    /// Starts inlining the program function `key`, defined by `def`: positions in it are
+    /// relative to its own start from here on. Gives back what to restore afterwards.
+    pub(super) fn enter_origin(&mut self, key: &str, def: &FnDef) -> Option<(Value, i64)> {
+        let outer = self.inlined_origin;
+        if self.origin.is_some() && !def.span.in_prelude() {
+            let start = i64::from(def.span.start);
+            let value = self.program_number(format!("fennec.origin.{}", digest(key)), start);
+            self.inlined_origin = Some((value, start));
+        }
+        outer
+    }
+
     pub(super) fn handed_number(&mut self, kind: &str, value: i64) -> Value {
-        let symbol = format!("fennec.{kind}.{}.{}", digest(&self.function.key), self.handed);
+        let symbol = format!("fennec.{kind}.{}.{}", self.digest, self.handed);
         self.handed += 1;
         self.program_number(symbol, value)
     }
+}
+
+/// A string's number in `table`, giving it the next one the first time.
+fn intern(map: &mut HashMap<String, i64>, table: &mut Vec<String>, text: &str) -> i64 {
+    if let Some(id) = map.get(text) {
+        return *id;
+    }
+    let id = i64::try_from(table.len()).unwrap_or(0);
+    table.push(text.to_owned());
+    map.insert(text.to_owned(), id);
+    id
 }

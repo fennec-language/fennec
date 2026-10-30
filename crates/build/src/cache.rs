@@ -17,6 +17,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The cache's size cap unless `FENNEC_CACHE_CAP` sets one, in bytes.
 pub const DEFAULT_CAP: u64 = 1 << 30;
 
+/// An entry used this recently is already near the end of cleanup's order.
+const MARKED_RECENTLY: Duration = Duration::from_secs(600);
+
 /// A cleanup lock older than this was left by a cleanup that died, and is taken over.
 const STALE_LOCK: Duration = Duration::from_secs(600);
 
@@ -64,7 +67,11 @@ impl Cache {
     pub fn read(&self, kind: &str, name: &str) -> Option<Vec<u8>> {
         let path = self.path(kind, name);
         let bytes = std::fs::read(&path).ok()?;
-        if let Ok(file) = File::options().write(true).open(&path) {
+        // Marking costs a write, so an entry marked in the last few minutes isn't marked again.
+        let age = std::fs::metadata(&path).and_then(|metadata| metadata.modified()).ok();
+        if age.and_then(|time| time.elapsed().ok()).is_none_or(|age| age > MARKED_RECENTLY)
+            && let Ok(file) = File::options().write(true).open(&path)
+        {
             // Only cleanup's order depends on this, so a failure here doesn't matter.
             let _ = file.set_modified(SystemTime::now());
         }

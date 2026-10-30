@@ -94,13 +94,14 @@ pub(crate) enum Helper {
     Sin,
     Cos,
     Pack,
+    Zeroed,
     Address,
     Length,
     Push,
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 92] = [
+pub(crate) const ALL: [Helper; 93] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -189,6 +190,7 @@ pub(crate) const ALL: [Helper; 92] = [
     Helper::Sin,
     Helper::Cos,
     Helper::Pack,
+    Helper::Zeroed,
     Helper::Address,
     Helper::Length,
     Helper::Push,
@@ -280,6 +282,7 @@ impl Helper {
             Helper::Sin => shape("fennec_sin", &[F64], &[F64]),
             Helper::Cos => shape("fennec_cos", &[F64], &[F64]),
             Helper::Pack => shape("fennec_pack", &[I64, I64], &[I8]),
+            Helper::Zeroed => shape("fennec_zeroed", &[I64, I64], &[I64]),
             Helper::Address => shape("fennec_address", &[I64, I64, I8], &[I64]),
             Helper::Length => shape("fennec_length", &[I64, I64], &[I64]),
             Helper::Push => shape("fennec_push", &[I64, I64], &[I64]),
@@ -462,6 +465,7 @@ impl Helper {
             Helper::Sin => checks::sin as *const u8,
             Helper::Cos => checks::cos as *const u8,
             Helper::Pack => lists::pack as *const u8,
+            Helper::Zeroed => lists::zeroed as *const u8,
             Helper::Address => lists::address as *const u8,
             Helper::Length => lists::length as *const u8,
             Helper::Push => lists::push as *const u8,

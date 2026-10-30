@@ -16,6 +16,7 @@ cranelift-module.workspace = true
 cranelift-native.workspace = true
 cranelift-object.workspace = true
 fennec-blake3.workspace = true
+fennec-build.workspace = true
 fennec-check.workspace = true
 fennec-interp.workspace = true
 fennec-syntax.workspace = true

@@ -95,6 +95,7 @@ export! {
     fennec_sin(a0: f64) -> f64 => checks::sin(a0);
     fennec_cos(a0: f64) -> f64 => checks::cos(a0);
     fennec_pack(a0: i64, a1: i64) -> i8 => lists::pack(a0, a1);
+    fennec_zeroed(a0: i64, a1: i64) -> i64 => lists::zeroed(a0, a1);
     fennec_address(a0: i64, a1: i64, a2: i8) -> i64 => lists::address(a0, a1, a2);
     fennec_length(a0: i64, a1: i64) -> i64 => lists::length(a0, a1);
     fennec_push(a0: i64, a1: i64) -> i64 => lists::push(a0, a1);

@@ -10,7 +10,7 @@ use fennec_syntax::{Diagnostic, Span};
 pub struct Manifest {
     pub name: String,
     pub version: String,
-    /// The oldest Fennec the kit works with.
+    /// The Fennec toolchain the kit is built with.
     pub fennec: String,
 }
 

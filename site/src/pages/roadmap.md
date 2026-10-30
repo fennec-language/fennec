@@ -65,7 +65,7 @@ The next milestone moves Fennec's checks from runtime to compile time.
 
 ## Open questions
 
-These are still being decided. Decisions already made, and why, are in [the design decisions](https://github.com/seashell86/fennec/blob/main/docs/decisions.md).
+These are still being decided. Decisions already made, and why, are in [the design decisions](https://github.com/fennec-language/fennec/blob/main/docs/decisions.md).
 
 - Visibility: `pub` for what other kits can see, a `_` prefix for private, or both.
 - How closures longer than one line should look, beyond nested functions.

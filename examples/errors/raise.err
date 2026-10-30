@@ -1,0 +1,7 @@
+error: Fennec doesn't have `raise`
+ --> examples/errors/raise.fen:2:5
+  |
+2 |     raise ValueError("no")
+  |     ^^^^^
+  |
+  = help: Fennec has no exceptions: write `fail SomeError(...)`, which returns the error

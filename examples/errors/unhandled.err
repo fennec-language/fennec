@@ -1,0 +1,7 @@
+error: this can fail, but nothing handles it
+  --> examples/errors/unhandled.fen:10:5
+   |
+10 |     risky(3)
+   |     ^^^^^^^^
+   |
+   = help: pass the error up with `?`, give a default with `else`, or handle it with `match`

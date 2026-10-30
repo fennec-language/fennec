@@ -1,0 +1,15 @@
+(3, 4) 7
+3 2
+{"ash": 70, "kit": 40}
+{"ash": 70, "kit": 45, "vex": 90} 3 True
+None 0
+ash: 70
+kit: 45
+vex: 90
+{"ash": 70, "vex": 90}
+3 True
+{0, 1, 2}
+enn nec [1, 2]
+0 a
+1 b
+[(1, "one"), (2, "two")]

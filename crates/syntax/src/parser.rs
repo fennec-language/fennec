@@ -1,35 +1,39 @@
-//! Tokens to a syntax tree, by recursive descent. Statements live here; expressions in `expr`.
+//! Tokens to a syntax tree, by recursive descent: declarations here, statements in `stmt`,
+//! expressions in `expr`, and `match` patterns in `pattern`.
 
 mod expr;
+mod pattern;
+mod stmt;
 
-use crate::ast::{BinOp, ExprKind, FnDef, Module, Param, Stmt, StmtKind, TypeExpr};
+use crate::ast::{Case, Field, FnDef, Import, Interface, Item, Module, Param, TestDef, TypeDef, TypeExpr};
 use crate::diagnostic::Diagnostic;
 use crate::lexer::lex;
 use crate::span::Span;
 use crate::token::{Kw, Punct, Tok, Token};
 
-/// Parses a whole `.fen` file.
+/// Parses a whole `.fen` file, where only declarations may sit at the top level.
 pub fn parse(source: &str) -> Result<Module, Diagnostic> {
-    Parser::new(lex(source, 0)?).module()
+    Parser::new(lex(source, 0)?).module(false)
+}
+
+/// Parses a chunk typed into the REPL, where statements may sit at the top level too.
+pub fn parse_repl(source: &str) -> Result<Module, Diagnostic> {
+    Parser::new(lex(source, 0)?).module(true)
 }
 
 pub(crate) struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     eof: Token,
+    /// Set when an expression ended with an indented block (a `match`), so the statement
+    /// holding it has no line ending of its own to consume.
+    block_ended: bool,
 }
 
 impl Parser {
     fn new(tokens: Vec<Token>) -> Self {
         let end = tokens.last().map_or_else(Span::default, |token| token.span);
-        Parser {
-            tokens,
-            pos: 0,
-            eof: Token {
-                tok: Tok::Eof,
-                span: end,
-            },
-        }
+        Parser { tokens, pos: 0, eof: Token { tok: Tok::Eof, span: end }, block_ended: false }
     }
 
     fn current(&self) -> &Token {
@@ -41,9 +45,7 @@ impl Parser {
     }
 
     fn peek_at(&self, ahead: usize) -> &Tok {
-        self.tokens
-            .get(self.pos + ahead)
-            .map_or(&self.eof.tok, |token| &token.tok)
+        self.tokens.get(self.pos + ahead).map_or(&self.eof.tok, |token| &token.tok)
     }
 
     fn span(&self) -> Span {
@@ -77,6 +79,11 @@ impl Parser {
         self.at(&Tok::Kw(kw))
     }
 
+    /// Whether the next token is the soft keyword `word`.
+    fn at_soft(&self, word: &str) -> bool {
+        matches!(self.peek(), Tok::Name(name) if name == word)
+    }
+
     fn eat(&mut self, tok: &Tok) -> bool {
         let found = self.at(tok);
         if found {
@@ -102,10 +109,7 @@ impl Parser {
     }
 
     fn unexpected(&self, expected: &str) -> Diagnostic {
-        Diagnostic::new(
-            format!("expected {expected}, found {}", describe(self.peek())),
-            self.span(),
-        )
+        Diagnostic::new(format!("expected {expected}, found {}", describe(self.peek())), self.span())
     }
 
     fn name(&mut self, what: &str) -> Result<String, Diagnostic> {
@@ -120,36 +124,267 @@ impl Parser {
     }
 
     fn reserved(&self, word: &str) -> Diagnostic {
-        Diagnostic::new(
-            format!("`{word}` is part of Fennec's design but isn't supported yet"),
-            self.span(),
-        )
-        .with_help("see what's coming at https://seashell86.github.io/fennec/roadmap/")
+        Diagnostic::new(format!("`{word}` is part of Fennec's design but isn't supported yet"), self.span())
+            .with_help("see what's coming at https://seashell86.github.io/fennec/roadmap/")
     }
 
-    fn module(&mut self) -> Result<Module, Diagnostic> {
-        let mut functions = Vec::new();
+    /// The start of an indented block: a line break, then a deeper indent.
+    fn expect_block_start(&mut self) -> Result<(), Diagnostic> {
+        if self.eat(&Tok::Newline) && self.eat(&Tok::Indent) {
+            Ok(())
+        } else {
+            Err(Diagnostic::new("expected an indented block", self.span())
+                .with_help("indent the body 4 spaces more than the line ending in `:`"))
+        }
+    }
+
+    fn end_line(&mut self) -> Result<(), Diagnostic> {
+        if std::mem::take(&mut self.block_ended)
+            || self.eat(&Tok::Newline)
+            || matches!(self.peek(), Tok::Eof | Tok::Dedent)
+        {
+            Ok(())
+        } else {
+            Err(self.unexpected("the end of the line"))
+        }
+    }
+
+    fn module(&mut self, allow_statements: bool) -> Result<Module, Diagnostic> {
+        let mut items = Vec::new();
         loop {
             while self.eat(&Tok::Newline) {}
-            match self.peek() {
-                Tok::Eof => break,
-                Tok::Kw(Kw::Def) => functions.push(self.def()?),
-                Tok::Kw(Kw::Reserved(word)) => return Err(self.reserved(word)),
-                _ => {
-                    return Err(Diagnostic::new(
-                        "only `def` is supported at the top level so far",
-                        self.span(),
-                    )
-                    .with_help("put this code inside `def main(stdout: Stdout):`"));
+            if self.at(&Tok::Eof) {
+                break;
+            }
+            let item = self.item()?;
+            if let Item::Stmt(stmt) = &item
+                && !allow_statements
+            {
+                return Err(Diagnostic::new(
+                    "only declarations can go at the top level of a file",
+                    stmt.span,
+                )
+                .with_help("put this code inside `def main(stdout: Stdout):`"));
+            }
+            items.push(item);
+        }
+        Ok(Module { items })
+    }
+
+    fn item(&mut self) -> Result<Item, Diagnostic> {
+        // `export` and `noalloc` are accepted; visibility and allocation checks come with the type checker.
+        self.eat_kw(Kw::Export);
+        if self.eat_kw(Kw::Noalloc) && !self.at_kw(Kw::Def) {
+            return Err(Diagnostic::new("`noalloc` goes right before `def`", self.span()));
+        }
+        match self.peek().clone() {
+            Tok::Kw(Kw::Def) => Ok(Item::Function(self.def()?)),
+            Tok::Kw(Kw::From | Kw::Import) => Ok(Item::Import(self.import()?)),
+            Tok::Name(word) if self.is_declaration(&word) => self.declaration(&word),
+            _ => Ok(Item::Stmt(self.stmt()?)),
+        }
+    }
+
+    fn is_declaration(&self, word: &str) -> bool {
+        match word {
+            "struct" | "enum" | "error" | "interface" => matches!(self.peek_at(1), Tok::Name(_)),
+            "type" => matches!((self.peek_at(1), self.peek_at(2)), (Tok::Name(_), Tok::P(Punct::Assign))),
+            "test" => matches!(self.peek_at(1), Tok::Str(_)),
+            _ => false,
+        }
+    }
+
+    fn declaration(&mut self, word: &str) -> Result<Item, Diagnostic> {
+        let start = self.advance().span;
+        match word {
+            "struct" => Ok(Item::Struct(self.type_def(start, false)?)),
+            "error" => Ok(Item::Error(self.type_def(start, false)?)),
+            "enum" => Ok(Item::Enum(self.type_def(start, true)?)),
+            "interface" => self.interface(start),
+            "type" => {
+                let name = self.name("a type name")?;
+                self.expect_p(Punct::Assign)?;
+                let ty = self.type_expr()?;
+                let span = start.to(self.prev_span());
+                self.end_line()?;
+                Ok(Item::TypeAlias { name, ty, span })
+            }
+            _ => self.test(start),
+        }
+    }
+
+    fn type_def(&mut self, start: Span, is_enum: bool) -> Result<TypeDef, Diagnostic> {
+        let name = self.name("a type name")?;
+        self.generic_params()?;
+        let span = start.to(self.prev_span());
+        self.expect_p(Punct::Colon)?;
+        self.expect_block_start()?;
+        let mut def = TypeDef { name, fields: Vec::new(), cases: Vec::new(), methods: Vec::new(), span };
+        while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
+            if self.at_kw(Kw::Def) {
+                def.methods.push(self.def()?);
+            } else if self.eat_kw(Kw::Pass) {
+                self.end_line()?;
+            } else if is_enum {
+                def.cases.push(self.case()?);
+            } else {
+                def.fields.push(self.field(true)?);
+                self.end_line()?;
+            }
+        }
+        Ok(def)
+    }
+
+    /// `name: type`, `name = default`, or both, with a `where` rule when `rules` allows.
+    fn field(&mut self, rules: bool) -> Result<Field, Diagnostic> {
+        let start = self.span();
+        let name = self.name("a field name")?;
+        let ty = if self.eat_p(Punct::Colon) { Some(self.type_expr()?) } else { None };
+        let default = if self.eat_p(Punct::Assign) { Some(self.expr()?) } else { None };
+        let rule = if rules && self.at_soft("where") {
+            self.advance();
+            Some(self.expr()?)
+        } else {
+            None
+        };
+        if ty.is_none() && default.is_none() {
+            return Err(Diagnostic::new(format!("field `{name}` needs a type or a default"), start)
+                .with_help(format!("write `{name}: int`, or a default like `{name} = 0`")));
+        }
+        Ok(Field { name, ty, default, rule, span: start.to(self.prev_span()) })
+    }
+
+    fn case(&mut self) -> Result<Case, Diagnostic> {
+        let start = self.span();
+        let name = self.name("an enum case")?;
+        let mut fields = Vec::new();
+        if self.eat_p(Punct::LParen) {
+            while !self.at_p(Punct::RParen) {
+                fields.push(self.field(false)?);
+                if !self.eat_p(Punct::Comma) {
+                    break;
+                }
+            }
+            self.expect_p(Punct::RParen)?;
+        }
+        let span = start.to(self.prev_span());
+        self.end_line()?;
+        Ok(Case { name, fields, span })
+    }
+
+    fn interface(&mut self, start: Span) -> Result<Item, Diagnostic> {
+        let name = self.name("an interface name")?;
+        self.expect_p(Punct::Colon)?;
+        self.expect_block_start()?;
+        let mut methods = Vec::new();
+        while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
+            if !self.eat_kw(Kw::Pass) {
+                methods.push(self.signature()?);
+            }
+            self.end_line()?;
+        }
+        Ok(Item::Interface(Interface { name, methods, span: start.to(self.prev_span()) }))
+    }
+
+    fn test(&mut self, start: Span) -> Result<Item, Diagnostic> {
+        let Tok::Str(name) = self.advance().tok else { return Err(self.unexpected("a test name")) };
+        let mut inputs = Vec::new();
+        if self.eat_kw(Kw::For) {
+            loop {
+                inputs.push(self.param()?);
+                if !self.eat_p(Punct::Comma) {
+                    break;
                 }
             }
         }
-        Ok(Module { functions })
+        let span = start.to(self.prev_span());
+        self.expect_p(Punct::Colon)?;
+        let body = self.block()?;
+        Ok(Item::Test(TestDef { name, inputs, body, span }))
     }
 
-    fn def(&mut self) -> Result<FnDef, Diagnostic> {
+    fn import(&mut self) -> Result<Import, Diagnostic> {
+        let start = self.span();
+        let from = self.eat_kw(Kw::From);
+        if !from {
+            self.advance();
+        }
+        let mut module = vec![self.name("a module name")?];
+        while self.eat_p(Punct::Dot) {
+            module.push(self.name("a module name")?);
+        }
+        let mut names = Vec::new();
+        if from {
+            if !self.eat_kw(Kw::Import) {
+                return Err(self.unexpected("`import`"));
+            }
+            loop {
+                names.push(self.name("a name to import")?);
+                if !self.eat_p(Punct::Comma) {
+                    break;
+                }
+            }
+        }
+        let span = start.to(self.prev_span());
+        self.end_line()?;
+        Ok(Import { module, names, span })
+    }
+
+    /// `[T, U: Shape]` after a function or type name. Generic parameters are checked by the
+    /// type checker, so the interpreter only needs to skip them.
+    fn generic_params(&mut self) -> Result<(), Diagnostic> {
+        if !self.eat_p(Punct::LBracket) {
+            return Ok(());
+        }
+        loop {
+            self.name("a type parameter")?;
+            if self.eat_p(Punct::Colon) {
+                self.type_expr()?;
+            }
+            if !self.eat_p(Punct::Comma) {
+                break;
+            }
+        }
+        self.expect_p(Punct::RBracket)?;
+        Ok(())
+    }
+
+    pub(crate) fn def(&mut self) -> Result<FnDef, Diagnostic> {
+        let mut function = self.signature()?;
+        self.expect_p(Punct::Colon)?;
+        function.body = self.block()?;
+        Ok(function)
+    }
+
+    /// `def name(params) -> ret`, without a body. Operators and indexing are defined as
+    /// `def +`, `def []` and `def []=`.
+    fn signature(&mut self) -> Result<FnDef, Diagnostic> {
         let start = self.advance().span;
-        let name = self.name("a function name")?;
+        let name = match self.peek().clone() {
+            Tok::Name(name) => {
+                self.advance();
+                name
+            }
+            Tok::P(
+                punct @ (Punct::Plus
+                | Punct::Minus
+                | Punct::Star
+                | Punct::Slash
+                | Punct::SlashSlash
+                | Punct::Percent
+                | Punct::EqEq
+                | Punct::Lt),
+            ) => {
+                self.advance();
+                punct.text().to_owned()
+            }
+            Tok::P(Punct::LBracket) if self.peek_at(1) == &Tok::P(Punct::RBracket) => {
+                self.pos += 2;
+                if self.eat_p(Punct::Assign) { "[]=".to_owned() } else { "[]".to_owned() }
+            }
+            _ => return Err(self.unexpected("a function name")),
+        };
+        self.generic_params()?;
         self.expect_p(Punct::LParen)?;
         let mut params = Vec::new();
         while !self.at_p(Punct::RParen) {
@@ -159,50 +394,42 @@ impl Parser {
             }
         }
         self.expect_p(Punct::RParen)?;
-        let ret = if self.eat_p(Punct::Arrow) {
-            Some(self.type_expr()?)
-        } else {
-            None
-        };
-        let span = start.to(self.prev_span());
-        self.expect_p(Punct::Colon)?;
-        let body = self.block()?;
-        Ok(FnDef {
-            name,
-            params,
-            ret,
-            body,
-            span,
-        })
+        let ret = if self.eat_p(Punct::Arrow) { Some(self.type_expr()?) } else { None };
+        Ok(FnDef { name, params, ret, body: Vec::new(), span: start.to(self.prev_span()) })
     }
 
     fn param(&mut self) -> Result<Param, Diagnostic> {
         let start = self.span();
         let is_mut = self.eat_kw(Kw::Mut);
         let name = self.name("a parameter name")?;
+        if name == "self" {
+            return Ok(Param { name, ty: None, is_mut, is_self: true, span: start.to(self.prev_span()) });
+        }
         if !self.eat_p(Punct::Colon) {
-            return Err(
-                Diagnostic::new(format!("parameter `{name}` needs a type"), self.prev_span())
-                    .with_help(format!("write it with its type, like `{name}: int`")),
-            );
+            return Err(Diagnostic::new(format!("parameter `{name}` needs a type"), self.prev_span())
+                .with_help(format!("write it with its type, like `{name}: int`")));
         }
         let ty = self.type_expr()?;
-        Ok(Param {
-            name,
-            ty,
-            is_mut,
-            span: start.to(self.prev_span()),
-        })
+        Ok(Param { name, ty: Some(ty), is_mut, is_self: false, span: start.to(self.prev_span()) })
     }
 
     fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
         let start = self.span();
+        let mut args = Vec::new();
         let name = if self.eat_kw(Kw::None) {
             "None".to_owned()
+        } else if self.eat_p(Punct::LParen) {
+            while !self.at_p(Punct::RParen) {
+                args.push(self.type_expr()?);
+                if !self.eat_p(Punct::Comma) {
+                    break;
+                }
+            }
+            self.expect_p(Punct::RParen)?;
+            "tuple".to_owned()
         } else {
             self.name("a type")?
         };
-        let mut args = Vec::new();
         if self.eat_p(Punct::LBracket) {
             loop {
                 args.push(self.type_expr()?);
@@ -213,175 +440,7 @@ impl Parser {
             self.expect_p(Punct::RBracket)?;
         }
         let optional = self.eat_p(Punct::Question);
-        Ok(TypeExpr {
-            name,
-            args,
-            optional,
-            span: start.to(self.prev_span()),
-        })
-    }
-
-    /// The body after a `:`: an indented block, or one simple statement on the same line.
-    fn block(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
-        if !self.eat(&Tok::Newline) {
-            return Ok(vec![self.simple_stmt()?]);
-        }
-        if !self.eat(&Tok::Indent) {
-            return Err(Diagnostic::new("expected an indented block", self.span())
-                .with_help("indent the body 4 spaces more than the line ending in `:`"));
-        }
-        let mut stmts = Vec::new();
-        while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
-            stmts.push(self.stmt()?);
-        }
-        Ok(stmts)
-    }
-
-    fn stmt(&mut self) -> Result<Stmt, Diagnostic> {
-        match self.peek() {
-            Tok::Kw(Kw::If) => self.if_stmt(),
-            Tok::Kw(Kw::While) => self.while_stmt(),
-            Tok::Kw(Kw::For) => self.for_stmt(),
-            Tok::Kw(Kw::Def) => Err(Diagnostic::new(
-                "nested functions aren't supported yet",
-                self.span(),
-            )),
-            _ => self.simple_stmt(),
-        }
-    }
-
-    fn simple_stmt(&mut self) -> Result<Stmt, Diagnostic> {
-        let start = self.span();
-        let kind = match self.peek().clone() {
-            Tok::Kw(Kw::Return) => {
-                self.advance();
-                StmtKind::Return(if self.at_line_end() {
-                    None
-                } else {
-                    Some(self.expr()?)
-                })
-            }
-            Tok::Kw(Kw::Break) => self.keyword_stmt(StmtKind::Break),
-            Tok::Kw(Kw::Continue) => self.keyword_stmt(StmtKind::Continue),
-            Tok::Kw(Kw::Pass) => self.keyword_stmt(StmtKind::Pass),
-            Tok::Kw(Kw::Mut) => self.mut_declaration()?,
-            Tok::Kw(Kw::Reserved(word)) => return Err(self.reserved(word)),
-            _ => self.expr_or_assign()?,
-        };
-        let span = start.to(self.prev_span());
-        if !self.eat(&Tok::Newline) && !matches!(self.peek(), Tok::Eof | Tok::Dedent) {
-            return Err(self.unexpected("the end of the line"));
-        }
-        Ok(Stmt { kind, span })
-    }
-
-    fn keyword_stmt(&mut self, kind: StmtKind) -> StmtKind {
-        self.advance();
-        kind
-    }
-
-    fn at_line_end(&self) -> bool {
-        matches!(self.peek(), Tok::Newline | Tok::Eof | Tok::Dedent)
-    }
-
-    fn mut_declaration(&mut self) -> Result<StmtKind, Diagnostic> {
-        self.advance();
-        let target = self.expr()?;
-        if !matches!(target.kind, ExprKind::Name(_)) {
-            return Err(Diagnostic::new(
-                "`mut` declares a new name, like `mut count = 0`",
-                target.span,
-            ));
-        }
-        self.expect_p(Punct::Assign)?;
-        let value = self.expr()?;
-        Ok(StmtKind::Assign {
-            target,
-            op: None,
-            value,
-            declare_mut: true,
-        })
-    }
-
-    fn expr_or_assign(&mut self) -> Result<StmtKind, Diagnostic> {
-        let target = self.expr()?;
-        let op = match self.peek() {
-            Tok::P(Punct::Assign) => None,
-            Tok::P(Punct::PlusEq) => Some(BinOp::Add),
-            Tok::P(Punct::MinusEq) => Some(BinOp::Sub),
-            Tok::P(Punct::StarEq) => Some(BinOp::Mul),
-            Tok::P(Punct::SlashEq) => Some(BinOp::Div),
-            _ => return Ok(StmtKind::Expr(target)),
-        };
-        self.advance();
-        if !matches!(
-            target.kind,
-            ExprKind::Name(_) | ExprKind::Index { .. } | ExprKind::Attr { .. }
-        ) {
-            return Err(Diagnostic::new("this can't be assigned to", target.span));
-        }
-        let value = self.expr()?;
-        Ok(StmtKind::Assign {
-            target,
-            op,
-            value,
-            declare_mut: false,
-        })
-    }
-
-    fn if_stmt(&mut self) -> Result<Stmt, Diagnostic> {
-        let start = self.advance().span;
-        let mut branches = vec![self.condition_and_block()?];
-        let mut otherwise = None;
-        loop {
-            if self.eat_kw(Kw::Elif) {
-                branches.push(self.condition_and_block()?);
-            } else if self.eat_kw(Kw::Else) {
-                self.expect_p(Punct::Colon)?;
-                otherwise = Some(self.block()?);
-                break;
-            } else {
-                break;
-            }
-        }
-        Ok(Stmt {
-            kind: StmtKind::If { branches, otherwise },
-            span: start.to(self.prev_span()),
-        })
-    }
-
-    fn condition_and_block(&mut self) -> Result<(crate::ast::Expr, Vec<Stmt>), Diagnostic> {
-        let cond = self.expr()?;
-        self.expect_p(Punct::Colon)?;
-        Ok((cond, self.block()?))
-    }
-
-    fn while_stmt(&mut self) -> Result<Stmt, Diagnostic> {
-        let start = self.advance().span;
-        let (cond, body) = self.condition_and_block()?;
-        Ok(Stmt {
-            kind: StmtKind::While { cond, body },
-            span: start.to(self.prev_span()),
-        })
-    }
-
-    fn for_stmt(&mut self) -> Result<Stmt, Diagnostic> {
-        let start = self.advance().span;
-        let is_mut = self.eat_kw(Kw::Mut);
-        let name = self.name("a loop variable")?;
-        if !self.eat_kw(Kw::In) {
-            return Err(self.unexpected("`in`"));
-        }
-        let (iter, body) = self.condition_and_block()?;
-        Ok(Stmt {
-            kind: StmtKind::For {
-                name,
-                is_mut,
-                iter,
-                body,
-            },
-            span: start.to(self.prev_span()),
-        })
+        Ok(TypeExpr { name, args, optional, span: start.to(self.prev_span()) })
     }
 }
 

@@ -1,0 +1,8 @@
+Enemy(name="Ash", position=Vec3(x=3.0, y=4.0, z=0.0), health=100)
+5.0
+100 70
+False -20
+Vec3(x=10.0, y=4.0, z=0.0)
+50 -20
+Vec3(x=12.0, y=8.0, z=0.0)
+False True

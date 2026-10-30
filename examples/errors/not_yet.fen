@@ -1,2 +1,3 @@
-struct Enemy:
-    health: int
+def main(stdout: Stdout):
+    unsafe("no C code yet"):
+        stdout.print("hi")

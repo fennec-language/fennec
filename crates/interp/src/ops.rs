@@ -9,10 +9,7 @@ use fennec_syntax::{BinOp, Diagnostic, Span, UnaryOp};
 use crate::value::Value;
 
 pub(crate) fn to_float(n: i64) -> f64 {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "int to float is allowed to round, as in Python"
-    )]
+    #[expect(clippy::cast_precision_loss, reason = "int to float is allowed to round, as in Python")]
     let x = n as f64;
     x
 }
@@ -22,15 +19,11 @@ pub(crate) fn unary(op: UnaryOp, value: Value, span: Span) -> Result<Value, Diag
         (UnaryOp::Neg, Value::Int(n)) => n.checked_neg().map(Value::Int).ok_or_else(|| overflow(span)),
         (UnaryOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
         (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
-        (UnaryOp::Not, other) => Err(Diagnostic::new(
-            format!("`not` needs a bool, but this is a {}", other.type_name()),
-            span,
-        )
-        .with_help("Fennec has no truthiness: compare explicitly, like `len(items) == 0`")),
-        (UnaryOp::Neg, other) => Err(Diagnostic::new(
-            format!("can't negate a {}", other.type_name()),
-            span,
-        )),
+        (UnaryOp::Not, other) => {
+            Err(Diagnostic::new(format!("`not` needs a bool, but this is a {}", other.type_name()), span)
+                .with_help("Fennec has no truthiness: compare explicitly, like `len(items) == 0`"))
+        }
+        (UnaryOp::Neg, other) => Err(Diagnostic::new(format!("can't negate a {}", other.type_name()), span)),
     }
 }
 
@@ -69,10 +62,8 @@ fn logic(op: BinOp, lhs: &Value, rhs: &Value, span: Span) -> Result<Value, Diagn
         (Value::Bool(a), Value::Bool(b)) => {
             Ok(Value::Bool(if op == BinOp::And { *a && *b } else { *a || *b }))
         }
-        _ => Err(
-            Diagnostic::new(format!("`{}` needs bools on both sides", op.symbol()), span)
-                .with_help("Fennec has no truthiness: compare explicitly, like `count > 0`"),
-        ),
+        _ => Err(Diagnostic::new(format!("`{}` needs bools on both sides", op.symbol()), span)
+            .with_help("Fennec has no truthiness: compare explicitly, like `count > 0`")),
     }
 }
 
@@ -84,18 +75,12 @@ fn arithmetic(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Value, Di
         (Value::List(a), Value::List(b)) if op == BinOp::Add => {
             Ok(Value::list(a.iter().chain(b.iter()).cloned().collect()))
         }
-        (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => Err(Diagnostic::new(
-            format!("can't mix int and float in `{}`", op.symbol()),
-            span,
-        )
-        .with_help("convert one side with float(...) or int(...)")),
+        (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => {
+            Err(Diagnostic::new(format!("can't mix int and float in `{}`", op.symbol()), span)
+                .with_help("convert one side with float(...) or int(...)"))
+        }
         (lhs, rhs) => Err(Diagnostic::new(
-            format!(
-                "can't use `{}` on a {} and a {}",
-                op.symbol(),
-                lhs.type_name(),
-                rhs.type_name()
-            ),
+            format!("can't use `{}` on a {} and a {}", op.symbol(), lhs.type_name(), rhs.type_name()),
             span,
         )),
     }
@@ -110,12 +95,10 @@ fn int_arithmetic(op: BinOp, a: i64, b: i64, span: Span) -> Result<Value, Diagno
         BinOp::Sub => a.checked_sub(b),
         BinOp::Mul => a.checked_mul(b),
         BinOp::Div => return Ok(Value::Float(to_float(a) / to_float(b))),
-        BinOp::FloorDiv => a
-            .checked_div_euclid(b)
-            .map(|q| if b < 0 && a.rem_euclid(b) != 0 { q + 1 } else { q }),
-        BinOp::Mod => a
-            .checked_rem_euclid(b)
-            .map(|r| if b < 0 && r != 0 { r + b } else { r }),
+        BinOp::FloorDiv => {
+            a.checked_div_euclid(b).map(|q| if b < 0 && a.rem_euclid(b) != 0 { q + 1 } else { q })
+        }
+        BinOp::Mod => a.checked_rem_euclid(b).map(|r| if b < 0 && r != 0 { r + b } else { r }),
         BinOp::Pow => {
             let exponent = u32::try_from(b).map_err(|_| {
                 Diagnostic::new("an int can only be raised to a non-negative power", span)
@@ -155,6 +138,15 @@ pub(crate) fn compare(lhs: &Value, rhs: &Value, span: Span) -> Result<Ordering, 
         (Value::Float(a), Value::Float(b)) => Ok(a.total_cmp(b)),
         (Value::Str(a), Value::Str(b)) => Ok(a.cmp(b)),
         (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
+        (Value::Tuple(a), Value::Tuple(b)) | (Value::List(a), Value::List(b)) => {
+            for (x, y) in a.iter().zip(b.iter()) {
+                let ordering = compare(x, y, span)?;
+                if ordering.is_ne() {
+                    return Ok(ordering);
+                }
+            }
+            Ok(a.len().cmp(&b.len()))
+        }
         _ => Err(Diagnostic::new(
             format!("can't compare a {} with a {}", lhs.type_name(), rhs.type_name()),
             span,
@@ -164,14 +156,11 @@ pub(crate) fn compare(lhs: &Value, rhs: &Value, span: Span) -> Result<Ordering, 
 
 fn contains(container: &Value, item: &Value, span: Span) -> Result<bool, Diagnostic> {
     match (container, item) {
-        (Value::List(items), item) => Ok(items.contains(item)),
+        (Value::List(items) | Value::Tuple(items) | Value::Set(items), item) => Ok(items.contains(item)),
+        (Value::Dict(pairs), key) => Ok(pairs.iter().any(|(existing, _)| existing == key)),
         (Value::Str(text), Value::Str(part)) => Ok(text.contains(part.as_ref())),
         _ => Err(Diagnostic::new(
-            format!(
-                "can't look for a {} in a {}",
-                item.type_name(),
-                container.type_name()
-            ),
+            format!("can't look for a {} in a {}", item.type_name(), container.type_name()),
             span,
         )),
     }
@@ -180,18 +169,11 @@ fn contains(container: &Value, item: &Value, span: Span) -> Result<bool, Diagnos
 /// `list[i]` and `str[i]`, with negative indexes counting from the end as in Python.
 pub(crate) fn index(object: &Value, index: &Value, span: Span) -> Result<Value, Diagnostic> {
     let Value::Int(at) = index else {
-        return Err(Diagnostic::new(
-            format!("an index must be an int, not a {}", index.type_name()),
-            span,
-        ));
+        return Err(Diagnostic::new(format!("an index must be an int, not a {}", index.type_name()), span));
     };
     match object {
-        Value::List(items) => position(*at, items.len(), span).and_then(|at| {
-            items
-                .get(at)
-                .cloned()
-                .ok_or_else(|| Diagnostic::new("index out of range", span))
-        }),
+        Value::List(items) => position(*at, items.len(), span)
+            .and_then(|at| items.get(at).cloned().ok_or_else(|| Diagnostic::new("index out of range", span))),
         Value::Str(text) => {
             let count = text.chars().count();
             let at = position(*at, count, span)?;
@@ -200,10 +182,7 @@ pub(crate) fn index(object: &Value, index: &Value, span: Span) -> Result<Value, 
                 .map(|c| Value::str(c.encode_utf8(&mut [0; 4])))
                 .ok_or_else(|| Diagnostic::new("index out of range", span))
         }
-        other => Err(Diagnostic::new(
-            format!("a {} can't be indexed", other.type_name()),
-            span,
-        )),
+        other => Err(Diagnostic::new(format!("a {} can't be indexed", other.type_name()), span)),
     }
 }
 
@@ -215,4 +194,41 @@ pub(crate) fn position(at: i64, len: usize, span: Span) -> Result<usize, Diagnos
         .ok()
         .filter(|&resolved| resolved < len)
         .ok_or_else(|| Diagnostic::new(format!("index {at} is out of range for length {len}"), span))
+}
+
+/// `value[start:end]`, with Python's rules: negative positions count from the end, and
+/// positions past either end are clamped.
+pub(crate) fn slice(
+    value: &Value,
+    start: Option<&Value>,
+    end: Option<&Value>,
+    span: Span,
+) -> Result<Value, Diagnostic> {
+    let len = match value {
+        Value::List(items) | Value::Tuple(items) => items.len(),
+        Value::Str(text) => text.chars().count(),
+        other => return Err(Diagnostic::new(format!("a {} can't be sliced", other.type_name()), span)),
+    };
+    let bound = |at: Option<&Value>, default: usize| -> Result<usize, Diagnostic> {
+        match at {
+            None => Ok(default),
+            Some(Value::Int(at)) => {
+                let len_i = i64::try_from(len).unwrap_or(i64::MAX);
+                let at = if *at < 0 { at + len_i } else { *at };
+                Ok(usize::try_from(at.clamp(0, len_i)).unwrap_or(0))
+            }
+            Some(other) => Err(Diagnostic::new(
+                format!("a slice position must be an int, not a {}", other.type_name()),
+                span,
+            )),
+        }
+    };
+    let (from, to) = (bound(start, 0)?, bound(end, len)?);
+    let to = to.max(from);
+    Ok(match value {
+        Value::List(items) => Value::list(items.get(from..to).unwrap_or(&[]).to_vec()),
+        Value::Tuple(items) => Value::tuple(items.get(from..to).unwrap_or(&[]).to_vec()),
+        Value::Str(text) => Value::str(&text.chars().skip(from).take(to - from).collect::<String>()),
+        _ => Value::Unit,
+    })
 }

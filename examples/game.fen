@@ -1,0 +1,69 @@
+from std.math import Vec3
+from std.game import Id, IdMap
+
+type EnemyId = Id[Enemy]
+
+struct Enemy:
+    position: Vec3
+    velocity = Vec3.zero
+    health = 100
+
+    def take_damage(mut self, amount: int):
+        self.health -= amount
+
+struct World:
+    enemies = IdMap[Enemy]()
+    player = Vec3.zero
+
+error TargetGone:
+    target: EnemyId
+
+error OutOfRange:
+    distance: float
+
+noalloc def step(mut world: World, dt: float):
+    for mut enemy in world.enemies:
+        enemy.position += enemy.velocity * dt
+
+export def attack(mut world: World, target: EnemyId):
+    mut enemy = world.enemies.get(target)
+    if enemy is None:
+        fail TargetGone(target)
+    distance = (enemy.position - world.player).length()
+    if distance > 5.0:
+        fail OutOfRange(distance)
+    enemy.take_damage(10)
+    world.enemies[target] = enemy
+
+def main(stdout: Stdout):
+    mut world = World()
+    near = world.enemies.insert(Enemy(position=Vec3(x=3.0, y=4.0), velocity=Vec3(x=-1.0)))
+    far = world.enemies.insert(Enemy(position=Vec3(x=10.0)))
+
+    stdout.print(attack(mut world, near))
+    stdout.print(attack(mut world, far))
+    stdout.print(world.enemies[near].health)
+
+    step(mut world, 2.0)
+    stdout.print(world.enemies[near].position)
+
+    world.enemies.modify(far, e => e.take_damage(25))
+    stdout.print(world.enemies[far].health)
+
+    world.enemies.remove(near)
+    stdout.print(attack(mut world, near))
+    stdout.print(len(world.enemies), world.enemies.get(near))
+
+    weakest = min(world.enemies.values(), key=enemy => enemy.health)
+    stdout.print(weakest.health)
+
+test "attacking a distant enemy fails":
+    mut world = World()
+    far = world.enemies.insert(Enemy(position=Vec3(x=10.0, y=0.0, z=0.0)))
+    assert attack(mut world, far) == Err(OutOfRange(distance=10.0))
+
+test "attacking a removed enemy fails":
+    mut world = World()
+    id = world.enemies.insert(Enemy(position=Vec3.zero))
+    world.enemies.remove(id)
+    assert attack(mut world, id) == Err(TargetGone(id))

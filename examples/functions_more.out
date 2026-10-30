@@ -1,0 +1,7 @@
+Ok([Score(value=3), Score(value=14), Score(value=15)])
+Err(ConfigError(message="\"x\" isn't a number"))
+Score(value=5)
+[10, 11, 12]
+[3, 2, 1] 10
+couldn't read /no/such/fennec/settings.toml
+["ash", "kit", "bramble"]

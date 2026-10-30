@@ -1,0 +1,7 @@
+error: no case matches Light.Green
+ --> examples/errors/no_case_matches.fen:6:11
+  |
+6 |     match Light.Green:
+  |           ^^^^^^^^^^^
+  |
+  = help: add a case for it, or `case _:` for everything else

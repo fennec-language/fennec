@@ -9,28 +9,19 @@ pub struct Span {
 
 impl Span {
     pub fn new(start: usize, end: usize) -> Self {
-        Span {
-            start: to_u32(start),
-            end: to_u32(end),
-        }
+        Span { start: to_u32(start), end: to_u32(end) }
     }
 
     /// The smallest span covering both `self` and `other`.
     #[must_use]
     pub fn to(self, other: Span) -> Span {
-        Span {
-            start: self.start.min(other.start),
-            end: self.end.max(other.end),
-        }
+        Span { start: self.start.min(other.start), end: self.end.max(other.end) }
     }
 
     /// This span moved `by` bytes later, for code lexed out of an f-string.
     #[must_use]
     pub fn shifted(self, by: u32) -> Span {
-        Span {
-            start: self.start.saturating_add(by),
-            end: self.end.saturating_add(by),
-        }
+        Span { start: self.start.saturating_add(by), end: self.end.saturating_add(by) }
     }
 }
 

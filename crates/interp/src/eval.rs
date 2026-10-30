@@ -2,14 +2,16 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, FStrPart, Span};
+use fennec_syntax::{BinOp, CompKind, Diagnostic, Expr, ExprKind, FStrPart, MatchArm, Span};
 
-use crate::interp::Interp;
+use crate::exec::Flow;
+use crate::interp::{Interp, PASSING_UP};
 use crate::value::{Lambda, Value};
 use crate::{builtins, format, ops};
 
 impl Interp<'_> {
     pub(crate) fn eval(&mut self, expr: &Expr) -> Result<Value, Diagnostic> {
+        let span = expr.span;
         match &expr.kind {
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Float(x) => Ok(Value::Float(*x)),
@@ -17,28 +19,29 @@ impl Interp<'_> {
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
             ExprKind::None => Ok(Value::None),
             ExprKind::FStr(parts) => self.fstring(parts),
-            ExprKind::Name(name) => self.lookup(name, expr.span),
-            ExprKind::List(items) => Ok(Value::list(
-                items
-                    .iter()
-                    .map(|item| self.eval(item))
-                    .collect::<Result<_, _>>()?,
-            )),
-            ExprKind::ListComp {
-                elem,
-                var,
-                iter,
-                cond,
-            } => self.comprehension(elem, var, iter, cond.as_deref()),
+            ExprKind::Name(name) => self.lookup(name, span),
+            ExprKind::Variant(name) => self.construct_variant(None, name, Vec::new(), span),
+            ExprKind::List(items) => Ok(Value::list(self.eval_all(items)?)),
+            ExprKind::Tuple(items) => Ok(Value::tuple(self.eval_all(items)?)),
+            ExprKind::Set(items) => Ok(Value::Set(Rc::new(dedupe(self.eval_all(items)?)))),
+            ExprKind::Dict(pairs) => {
+                let mut built = Vec::with_capacity(pairs.len());
+                for (key, value) in pairs {
+                    let key = self.eval(key)?;
+                    let value = self.eval(value)?;
+                    insert_pair(&mut built, key, value);
+                }
+                Ok(Value::Dict(Rc::new(built)))
+            }
+            ExprKind::Comprehension { kind, elem, value, names, iter, cond } => {
+                let parts = Parts { elem, value: value.as_deref(), cond: cond.as_deref() };
+                self.comprehension(*kind, &parts, names, iter)
+            }
             ExprKind::Unary { op, expr: inner } => {
                 let value = self.eval(inner)?;
-                ops::unary(*op, value, expr.span)
+                ops::unary(*op, value, span)
             }
-            ExprKind::Binary {
-                op: op @ (BinOp::And | BinOp::Or),
-                lhs,
-                rhs,
-            } => {
+            ExprKind::Binary { op: op @ (BinOp::And | BinOp::Or), lhs, rhs } => {
                 let left = self.truth(lhs, op.symbol())?;
                 if left == (*op == BinOp::Or) {
                     return Ok(Value::Bool(left));
@@ -48,46 +51,62 @@ impl Interp<'_> {
             ExprKind::Binary { op, lhs, rhs } => {
                 let left = self.eval(lhs)?;
                 let right = self.eval(rhs)?;
-                ops::binary(*op, left, right, expr.span)
+                self.binary(*op, left, right, span)
             }
-            ExprKind::Cond {
-                then,
-                cond,
-                otherwise,
-            } => {
+            ExprKind::Cond { then, cond, otherwise } => {
                 if self.truth(cond, "if")? {
                     self.eval(then)
                 } else {
                     self.eval(otherwise)
                 }
             }
-            ExprKind::Call { callee, args } => self.call(callee, args, expr.span),
-            ExprKind::Attr { object, name } => {
+            ExprKind::Else { value, default } => match self.eval(value)? {
+                Value::Err(_) | Value::None => self.eval(default),
+                Value::Ok(inner) => Ok(inner.as_ref().clone()),
+                other => Ok(other),
+            },
+            ExprKind::Try { value, context } => self.try_value(value, context.as_deref(), span),
+            ExprKind::Call { callee, args } => self.call(callee, args, span),
+            ExprKind::Attr { object, name, optional } => {
                 let value = self.eval(object)?;
-                Err(Diagnostic::new(
-                    format!("a {} has no field `{name}`", value.type_name()),
-                    expr.span,
-                ))
+                self.attr(value, name, *optional, span)
             }
             ExprKind::Index { object, index } => {
                 let value = self.eval(object)?;
                 let at = self.eval(index)?;
-                ops::index(&value, &at, expr.span)
+                self.index(value, at, span)
+            }
+            ExprKind::Slice { object, start, end } => {
+                let value = self.eval(object)?;
+                let start = start.as_deref().map(|start| self.eval(start)).transpose()?;
+                let end = end.as_deref().map(|end| self.eval(end)).transpose()?;
+                ops::slice(&value, start.as_ref(), end.as_ref(), span)
             }
             ExprKind::Lambda { params, body } => Ok(Value::Lambda(Rc::new(Lambda {
                 params: params.clone(),
                 body: body.as_ref().clone(),
                 captured: self.frame.visible(),
             }))),
+            ExprKind::Match { subject, arms } => self.match_value(subject, arms),
         }
+    }
+
+    fn eval_all(&mut self, items: &[Expr]) -> Result<Vec<Value>, Diagnostic> {
+        items.iter().map(|item| self.eval(item)).collect()
     }
 
     fn lookup(&self, name: &str, span: Span) -> Result<Value, Diagnostic> {
         if let Some(binding) = self.frame.get(name) {
             return Ok(binding.value.clone());
         }
-        if self.functions.contains_key(name) {
-            return Ok(Value::Function(Rc::from(name)));
+        if let Some(function) = self.functions.get(name) {
+            return Ok(Value::Function(Rc::clone(function)));
+        }
+        if self.types.contains_key(name) || builtins::is_type(name) {
+            return Ok(Value::Type(Rc::from(name)));
+        }
+        if let Some(constant) = builtins::constant(name) {
+            return Ok(constant);
         }
         if let Some(builtin) = builtins::named(name) {
             return Ok(Value::Builtin(builtin));
@@ -113,26 +132,149 @@ impl Interp<'_> {
 
     fn comprehension(
         &mut self,
-        elem: &Expr,
-        var: &str,
+        kind: CompKind,
+        parts: &Parts<'_>,
+        names: &[String],
         iter: &Expr,
-        cond: Option<&Expr>,
     ) -> Result<Value, Diagnostic> {
         let source = self.eval(iter)?;
-        let mut results = Vec::new();
-        for item in crate::exec::items(source, iter.span)? {
+        let mut items = Vec::new();
+        let mut pairs = Vec::new();
+        for item in self.iterate(source, iter.span)? {
             self.frame.push();
-            self.frame.declare(var, item, false);
-            let keep = cond.map_or(Ok(true), |cond| self.truth(cond, "if"));
-            let value = match keep {
-                Ok(true) => self.eval(elem).map(Some),
-                Ok(false) => Ok(None),
-                Err(err) => Err(err),
-            };
+            let result = self.comprehension_step(names, item, iter.span, parts);
             self.frame.pop();
-            results.extend(value?);
+            match result? {
+                Some((key, Some(value))) => insert_pair(&mut pairs, key, value),
+                Some((item, None)) => items.push(item),
+                None => {}
+            }
         }
-        Ok(Value::list(results))
+        Ok(match kind {
+            CompKind::List | CompKind::Generator => Value::list(items),
+            CompKind::Set => Value::Set(Rc::new(dedupe(items))),
+            CompKind::Dict => Value::Dict(Rc::new(pairs)),
+        })
+    }
+
+    /// One item of a comprehension: the element (and value, for a dict), or nothing if filtered out.
+    fn comprehension_step(
+        &mut self,
+        names: &[String],
+        item: Value,
+        span: Span,
+        parts: &Parts<'_>,
+    ) -> Result<Option<(Value, Option<Value>)>, Diagnostic> {
+        self.bind_names(names, item, false, span)?;
+        if let Some(cond) = parts.cond
+            && !self.truth(cond, "if")?
+        {
+            return Ok(None);
+        }
+        let elem = self.eval(parts.elem)?;
+        let value = parts.value.map(|value| self.eval(value)).transpose()?;
+        Ok(Some((elem, value)))
+    }
+
+    /// `value?`: the value inside an `Ok`, or else leave the function with the error or `None`.
+    fn try_value(&mut self, value: &Expr, context: Option<&Expr>, span: Span) -> Result<Value, Diagnostic> {
+        let passed = match self.eval(value)? {
+            Value::Ok(inner) => return Ok(inner.as_ref().clone()),
+            Value::Err(error) => match context {
+                Some(context) => {
+                    let mut wrapper = self.eval(context)?;
+                    if let Value::Instance(instance) = &mut wrapper {
+                        Rc::make_mut(instance).cause = Some(error.as_ref().clone());
+                    }
+                    Value::Err(Rc::new(wrapper))
+                }
+                None => Value::Err(error),
+            },
+            Value::None => Value::None,
+            other => return Ok(other),
+        };
+        self.passing_up = Some(Flow::PassUp(passed));
+        Err(Diagnostic::new(PASSING_UP, span))
+    }
+
+    fn match_value(&mut self, subject: &Expr, arms: &[MatchArm]) -> Result<Value, Diagnostic> {
+        let value = self.eval(subject)?;
+        for arm in arms {
+            let Some(bindings) = self.matches(&arm.pattern, &value, arm.span)? else { continue };
+            self.frame.push();
+            for (name, bound) in bindings {
+                self.frame.declare(&name, bound, false);
+            }
+            let flow = self.exec_stmts(&arm.body);
+            self.frame.pop();
+            return match flow? {
+                Flow::Normal(value) => Ok(value),
+                other => {
+                    self.passing_up = Some(other);
+                    Err(Diagnostic::new(PASSING_UP, arm.span))
+                }
+            };
+        }
+        Err(Diagnostic::new(format!("no case matches {}", format::repr(&value)), subject.span)
+            .with_help("add a case for it, or `case _:` for everything else"))
+    }
+
+    /// An operator, using the type's own definition (like `def +`) when it has one.
+    pub(crate) fn binary(
+        &mut self,
+        op: BinOp,
+        left: Value,
+        right: Value,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        if let (Value::Instance(instance), Some(method)) = (&left, op.method_name())
+            && let Some(function) =
+                self.type_info(&instance.type_name).and_then(|info| info.methods.get(method).cloned())
+        {
+            return self.call_with_values(&function, vec![left, right], span);
+        }
+        if matches!(op, BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
+            && let Value::Instance(instance) = &right
+            && let Some(less) =
+                self.type_info(&instance.type_name).and_then(|info| info.methods.get("<").cloned())
+        {
+            let (a, b) = if matches!(op, BinOp::Gt | BinOp::LtEq) { (right, left) } else { (left, right) };
+            let less_than = self.call_with_values(&less, vec![a, b], span)? == Value::Bool(true);
+            return Ok(Value::Bool(if op == BinOp::Gt { less_than } else { !less_than }));
+        }
+        if matches!(left, Value::Ok(_) | Value::Err(_)) && !matches!(op, BinOp::Eq | BinOp::NotEq) {
+            return Err(unhandled_result(span));
+        }
+        ops::binary(op, left, right, span)
+    }
+}
+
+/// The parts of a comprehension evaluated for each item.
+struct Parts<'a> {
+    elem: &'a Expr,
+    value: Option<&'a Expr>,
+    cond: Option<&'a Expr>,
+}
+
+pub(crate) fn unhandled_result(span: Span) -> Diagnostic {
+    Diagnostic::new("this is the result of something that can fail", span)
+        .with_help("get the value out with `?`, `else`, or `match` first")
+}
+
+fn dedupe(items: Vec<Value>) -> Vec<Value> {
+    let mut unique: Vec<Value> = Vec::with_capacity(items.len());
+    for item in items {
+        if !unique.contains(&item) {
+            unique.push(item);
+        }
+    }
+    unique
+}
+
+fn insert_pair(pairs: &mut Vec<(Value, Value)>, key: Value, value: Value) {
+    match pairs.iter_mut().find(|(existing, _)| *existing == key) {
+        Some((_, slot)) => *slot = value,
+        None => pairs.push((key, value)),
     }
 }
 
@@ -146,6 +288,7 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
         "true" | "false" => diagnostic.with_help("write `True` or `False`"),
         "null" | "nil" | "none" | "undefined" => diagnostic.with_help("write `None`"),
         "lambda" => diagnostic.with_help("write an arrow function: `x => x * 2`"),
+        "raise" => diagnostic.with_help("Fennec has no exceptions: write `fail SomeError(...)`"),
         _ => diagnostic,
     }
 }

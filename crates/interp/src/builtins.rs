@@ -1,27 +1,66 @@
-//! Python's builtins that Fennec keeps: `len`, `range`, `sum`, `min`, `max`, `sorted` and the
-//! rest. There's no `print`; output goes through `stdout`.
+//! Python's builtins that Fennec keeps, plus `Ok`, `Err`, `replace`, `ignore` and the math
+//! functions. There's no `print`; output goes through `stdout`.
 
 use std::cmp::Ordering;
+use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Span};
+use fennec_syntax::{BinOp, Diagnostic, Span};
 
 use crate::call::CallArg;
+use crate::collections::split_key;
 use crate::interp::Interp;
-use crate::methods::split_key;
 use crate::value::Value;
 use crate::{format, ops};
 
-const NAMES: [&str; 14] = [
-    "abs", "all", "any", "float", "int", "len", "max", "min", "range", "reversed", "round", "sorted", "str",
+const NAMES: [&str; 27] = [
+    "Err",
+    "Ok",
+    "abs",
+    "all",
+    "any",
+    "ceil",
+    "cos",
+    "enumerate",
+    "float",
+    "floor",
+    "ignore",
+    "int",
+    "len",
+    "list",
+    "max",
+    "min",
+    "parallel",
+    "range",
+    "replace",
+    "reversed",
+    "round",
+    "set",
+    "sin",
+    "sorted",
+    "sqrt",
+    "str",
     "sum",
 ];
+
+/// Built-in types that can be called or indexed, like `IdMap[Enemy]()`.
+const TYPES: [&str; 4] = ["Id", "IdMap", "Path", "SoaList"];
 
 /// The longest list `range` will build, until ranges become lazy.
 const MAX_RANGE: usize = 10_000_000;
 
-/// The builtin with this name, if there is one.
 pub(crate) fn named(name: &str) -> Option<&'static str> {
-    NAMES.iter().copied().find(|builtin| *builtin == name)
+    NAMES.iter().copied().find(|builtin| *builtin == name).or_else(|| (name == "zip").then_some("zip"))
+}
+
+pub(crate) fn is_type(name: &str) -> bool {
+    TYPES.contains(&name)
+}
+
+pub(crate) fn constant(name: &str) -> Option<Value> {
+    match name {
+        "PI" => Some(Value::Float(std::f64::consts::PI)),
+        _ => None,
+    }
 }
 
 impl Interp<'_> {
@@ -31,66 +70,130 @@ impl Interp<'_> {
         args: Vec<CallArg>,
         span: Span,
     ) -> Result<Value, Diagnostic> {
+        if args.iter().any(|arg| arg.mut_place.is_some()) {
+            for arg in args {
+                if let Some(place) = &arg.mut_place {
+                    self.put(place, arg.value)?;
+                }
+            }
+            return Err(Diagnostic::new(
+                format!("`{name}` doesn't change its arguments, so don't pass `mut`"),
+                span,
+            ));
+        }
+        if name == "replace" {
+            return Interp::replace(args, span);
+        }
         let (values, key) = split_key(args, name)?;
         if key.is_some() && !matches!(name, "min" | "max" | "sorted") {
             return Err(Diagnostic::new(format!("`{name}` doesn't take `key`"), span));
         }
         match (name, values.as_slice()) {
-            ("len", [Value::List(items)]) => int_len(items.len(), span),
-            ("len", [Value::Str(text)]) => int_len(text.chars().count(), span),
+            ("Ok", [value]) => Ok(Value::Ok(Rc::new(value.clone()))),
+            ("Ok", []) => Ok(Value::Ok(Rc::new(Value::Unit))),
+            ("Err", [value]) => Ok(Value::Err(Rc::new(value.clone()))),
+            ("ignore", [_, Value::Str(reason)]) if !reason.trim().is_empty() => Ok(Value::Unit),
+            ("ignore", _) => Err(Diagnostic::new("`ignore` needs a reason the result doesn't matter", span)
+                .with_help("like `ignore(save(fs, game), \"autosave is best effort\")`")),
+            ("len", [value]) => length(value, span),
             ("range", _) => range(&values, span),
-            ("sum", [Value::List(items)]) => sum(items, span),
-            ("min" | "max", _) => self.extreme(name, values, key.as_ref(), span),
-            ("sorted", [Value::List(items)]) => {
-                let mut items = items.as_ref().clone();
-                self.sort_values(&mut items, key.as_ref(), span)?;
-                Ok(Value::list(items))
-            }
-            ("reversed", [Value::List(items)]) => Ok(Value::list(items.iter().rev().cloned().collect())),
-            ("reversed", [Value::Str(text)]) => Ok(Value::str(&text.chars().rev().collect::<String>())),
-            ("abs", [Value::Int(n)]) => n
-                .checked_abs()
-                .map(Value::Int)
-                .ok_or_else(|| Diagnostic::new("this overflows an int", span)),
-            ("abs", [Value::Float(x)]) => Ok(Value::Float(x.abs())),
             ("str", [value]) => Ok(Value::str(&format::display(value))),
             ("int", [value]) => to_int(value, span),
             ("float", [value]) => to_float(value, span),
+            ("abs", [Value::Int(n)]) => {
+                n.checked_abs().map(Value::Int).ok_or_else(|| Diagnostic::new("this overflows an int", span))
+            }
+            ("abs", [Value::Float(x)]) => Ok(Value::Float(x.abs())),
             ("round", [Value::Float(x)]) => to_int(&Value::Float(x.round_ties_even()), span),
             ("round", [Value::Float(x), Value::Int(places)]) => {
                 let scale = 10_f64.powi(i32::try_from(*places).unwrap_or(0));
                 Ok(Value::Float((x * scale).round_ties_even() / scale))
             }
-            ("any" | "all", [Value::List(items)]) => all_or_any(name, items, span),
-            _ => Err(Diagnostic::new(
-                format!("`{name}` was called with the wrong arguments"),
-                span,
-            )),
+            ("sqrt" | "floor" | "ceil" | "sin" | "cos", [value]) => math(name, value, span),
+            _ => self.collection_builtin(name, values, key.as_ref(), span),
         }
     }
 
-    fn extreme(
+    /// Builtins that walk through a collection.
+    fn collection_builtin(
         &mut self,
         name: &str,
         values: Vec<Value>,
         key: Option<&Value>,
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        let items = match values.as_slice() {
-            [Value::List(items)] => items.as_ref().clone(),
-            [_, _, ..] => values,
-            _ => {
-                return Err(Diagnostic::new(
-                    format!("`{name}` needs a list, or two or more values"),
-                    span,
-                ));
+        let mut values = values.into_iter();
+        let (first, second, rest) = (values.next(), values.next(), values.next());
+        match (name, first, second, rest) {
+            ("min" | "max", Some(first), Some(second), rest) => {
+                let items = [first, second].into_iter().chain(rest).chain(values).collect();
+                self.extreme(name, items, key, span)
             }
-        };
-        let wanted = if name == "max" {
-            Ordering::Greater
-        } else {
-            Ordering::Less
-        };
+            ("min" | "max", Some(items), None, None) => {
+                let items = self.iterate(items, span)?;
+                self.extreme(name, items, key, span)
+            }
+            ("sum", Some(items), None, None) => {
+                let items = self.iterate(items, span)?;
+                let mut total = if matches!(items.first(), Some(Value::Float(_))) {
+                    Value::Float(0.0)
+                } else {
+                    Value::Int(0)
+                };
+                for item in items {
+                    total = self.binary(BinOp::Add, total, item, span)?;
+                }
+                Ok(total)
+            }
+            ("sorted", Some(items), None, None) => {
+                let mut items = self.iterate(items, span)?;
+                self.sort_values(&mut items, key, span)?;
+                Ok(Value::list(items))
+            }
+            ("reversed", Some(Value::Str(text)), None, None) => {
+                Ok(Value::str(&text.chars().rev().collect::<String>()))
+            }
+            ("reversed", Some(items), None, None) => {
+                Ok(Value::list(self.iterate(items, span)?.into_iter().rev().collect()))
+            }
+            ("list" | "parallel", Some(items), None, None) => Ok(Value::list(self.iterate(items, span)?)),
+            ("set", None, None, None) => Ok(Value::Set(Rc::default())),
+            ("set", Some(items), None, None) => {
+                let mut unique: Vec<Value> = Vec::new();
+                for item in self.iterate(items, span)? {
+                    if !unique.contains(&item) {
+                        unique.push(item);
+                    }
+                }
+                Ok(Value::Set(Rc::new(unique)))
+            }
+            ("enumerate", Some(items), None, None) => Ok(Value::list(
+                self.iterate(items, span)?
+                    .into_iter()
+                    .zip(0_i64..)
+                    .map(|(item, at)| Value::tuple(vec![Value::Int(at), item]))
+                    .collect(),
+            )),
+            ("zip", Some(a), Some(b), None) => {
+                let (a, b) = (self.iterate(a, span)?, self.iterate(b, span)?);
+                Ok(Value::list(a.into_iter().zip(b).map(|(a, b)| Value::tuple(vec![a, b])).collect()))
+            }
+            ("any" | "all", Some(items), None, None) => {
+                let items = self.iterate(items, span)?;
+                all_or_any(name, &items, span)
+            }
+            _ => Err(Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span)),
+        }
+    }
+
+    fn extreme(
+        &mut self,
+        name: &str,
+        items: Vec<Value>,
+        key: Option<&Value>,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        let wanted = if name == "max" { Ordering::Greater } else { Ordering::Less };
         let mut best: Option<(Value, Value)> = None;
         for item in items {
             let score = match key {
@@ -98,22 +201,26 @@ impl Interp<'_> {
                 None => item.clone(),
             };
             let better = match &best {
-                Some((best_score, _)) => ops::compare(&score, best_score, span)? == wanted,
+                Some((best_score, _)) => self.order(&score, best_score, span)? == wanted,
                 None => true,
             };
             if better {
                 best = Some((score, item));
             }
         }
-        best.map(|(_, item)| item)
-            .ok_or_else(|| Diagnostic::new(format!("`{name}` of an empty list"), span))
+        best.map(|(_, item)| item).ok_or_else(|| Diagnostic::new(format!("`{name}` of an empty list"), span))
     }
 }
 
-fn int_len(len: usize, span: Span) -> Result<Value, Diagnostic> {
-    i64::try_from(len)
-        .map(Value::Int)
-        .map_err(|_| Diagnostic::new("this is too long to measure", span))
+fn length(value: &Value, span: Span) -> Result<Value, Diagnostic> {
+    let len = match value {
+        Value::List(items) | Value::Tuple(items) | Value::Set(items) => items.len(),
+        Value::Dict(pairs) => pairs.len(),
+        Value::Str(text) => text.chars().count(),
+        Value::IdMap(map) => map.entries().count(),
+        other => return Err(Diagnostic::new(format!("a {} has no length", other.type_name()), span)),
+    };
+    i64::try_from(len).map(Value::Int).map_err(|_| Diagnostic::new("this is too long to measure", span))
 }
 
 fn range(values: &[Value], span: Span) -> Result<Value, Diagnostic> {
@@ -130,10 +237,7 @@ fn range(values: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let mut at = first;
     while (stride > 0 && at < end) || (stride < 0 && at > end) {
         if items.len() >= MAX_RANGE {
-            return Err(Diagnostic::new(
-                format!("ranges are limited to {MAX_RANGE} items for now"),
-                span,
-            ));
+            return Err(Diagnostic::new(format!("ranges are limited to {MAX_RANGE} items for now"), span));
         }
         items.push(Value::Int(at));
         at = at.saturating_add(stride);
@@ -141,25 +245,32 @@ fn range(values: &[Value], span: Span) -> Result<Value, Diagnostic> {
     Ok(Value::list(items))
 }
 
-fn sum(items: &[Value], span: Span) -> Result<Value, Diagnostic> {
-    let mut total = match items.first() {
-        Some(Value::Float(_)) => Value::Float(0.0),
-        _ => Value::Int(0),
+fn math(name: &str, value: &Value, span: Span) -> Result<Value, Diagnostic> {
+    let x = match value {
+        Value::Float(x) => *x,
+        Value::Int(n) => ops::to_float(*n),
+        other => {
+            return Err(Diagnostic::new(
+                format!("`{name}` needs a number, not a {}", other.type_name()),
+                span,
+            ));
+        }
     };
-    for item in items {
-        total = ops::binary(fennec_syntax::BinOp::Add, total, item.clone(), span)?;
+    match name {
+        "floor" => to_int(&Value::Float(x.floor()), span),
+        "ceil" => to_int(&Value::Float(x.ceil()), span),
+        "sin" => Ok(Value::Float(x.sin())),
+        "cos" => Ok(Value::Float(x.cos())),
+        _ if x < 0.0 => Err(Diagnostic::new("can't take the square root of a negative number", span)),
+        _ => Ok(Value::Float(x.sqrt())),
     }
-    Ok(total)
 }
 
 fn to_int(value: &Value, span: Span) -> Result<Value, Diagnostic> {
     match value {
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Float(x) if x.is_finite() && x.abs() < 9.2e18 => {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "int() truncates toward zero, as in Python"
-            )]
+            #[expect(clippy::cast_possible_truncation, reason = "int() truncates toward zero, as in Python")]
             let n = x.trunc() as i64;
             Ok(Value::Int(n))
         }
@@ -168,10 +279,7 @@ fn to_int(value: &Value, span: Span) -> Result<Value, Diagnostic> {
             .parse()
             .map(Value::Int)
             .map_err(|_| Diagnostic::new(format!("can't turn {text:?} into an int"), span)),
-        other => Err(Diagnostic::new(
-            format!("can't turn a {} into an int", other.type_name()),
-            span,
-        )),
+        other => Err(Diagnostic::new(format!("can't turn a {} into an int", other.type_name()), span)),
     }
 }
 
@@ -184,10 +292,7 @@ fn to_float(value: &Value, span: Span) -> Result<Value, Diagnostic> {
             .parse()
             .map(Value::Float)
             .map_err(|_| Diagnostic::new(format!("can't turn {text:?} into a float"), span)),
-        other => Err(Diagnostic::new(
-            format!("can't turn a {} into a float", other.type_name()),
-            span,
-        )),
+        other => Err(Diagnostic::new(format!("can't turn a {} into a float", other.type_name()), span)),
     }
 }
 
@@ -198,19 +303,12 @@ fn all_or_any(name: &str, items: &[Value], span: Span) -> Result<Value, Diagnost
             Value::Bool(b) => bools.push(*b),
             other => {
                 return Err(Diagnostic::new(
-                    format!(
-                        "`{name}` needs a list of bools, but it has a {}",
-                        other.type_name()
-                    ),
+                    format!("`{name}` needs bools, but got a {}", other.type_name()),
                     span,
                 )
                 .with_help("Fennec has no truthiness: compare explicitly, like `any(x > 0 for x in xs)`"));
             }
         }
     }
-    Ok(Value::Bool(if name == "all" {
-        bools.iter().all(|&b| b)
-    } else {
-        bools.iter().any(|&b| b)
-    }))
+    Ok(Value::Bool(if name == "all" { bools.iter().all(|&b| b) } else { bools.iter().any(|&b| b) }))
 }

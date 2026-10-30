@@ -1,0 +1,6 @@
+a round shape with area 3.14
+a rectangle shape with area 6.00
+a square shape with area 4.00
+a tiny shape with area 0.00
+True
+Shape.Rect(width=2.0, height=3.0)

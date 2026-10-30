@@ -85,11 +85,8 @@ impl Lexer<'_> {
     }
 
     fn tab_error(&self, start: usize) -> Diagnostic {
-        Diagnostic::new(
-            "tabs aren't allowed",
-            Span::new(start, start + 1).shifted(self.base),
-        )
-        .with_help("indent with 4 spaces")
+        Diagnostic::new("tabs aren't allowed", Span::new(start, start + 1).shifted(self.base))
+            .with_help("indent with 4 spaces")
     }
 
     fn skip_comment(&mut self) {
@@ -159,10 +156,7 @@ impl Lexer<'_> {
     }
 
     fn word(&mut self, start: usize) {
-        while self
-            .peek(0)
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
+        while self.peek(0).is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
             self.pos += 1;
         }
         let word = self.source.get(start..self.offset()).unwrap_or("");
@@ -186,13 +180,8 @@ impl Lexer<'_> {
             }
             self.digits();
         }
-        let text: String = self
-            .source
-            .get(start..self.offset())
-            .unwrap_or("")
-            .chars()
-            .filter(|&c| c != '_')
-            .collect();
+        let text: String =
+            self.source.get(start..self.offset()).unwrap_or("").chars().filter(|&c| c != '_').collect();
         let tok = if is_float {
             text.parse()
                 .map(Tok::Float)
@@ -224,8 +213,7 @@ impl Lexer<'_> {
         let Some(punct) = Punct::single(c) else {
             return Err(Diagnostic::new(
                 format!("unexpected character `{c}`"),
-                self.span(start)
-                    .to(Span::new(start, start + c.len_utf8()).shifted(self.base)),
+                self.span(start).to(Span::new(start, start + c.len_utf8()).shifted(self.base)),
             ));
         };
         match punct {
@@ -258,11 +246,8 @@ impl Lexer<'_> {
     }
 
     fn unterminated(&self, start: usize) -> Diagnostic {
-        Diagnostic::new(
-            "this string never ends",
-            Span::new(start, start + 1).shifted(self.base),
-        )
-        .with_help("close it with `\"` on the same line")
+        Diagnostic::new("this string never ends", Span::new(start, start + 1).shifted(self.base))
+            .with_help("close it with `\"` on the same line")
     }
 
     /// Reads a backslash escape and returns the character it stands for.
@@ -312,10 +297,8 @@ impl Lexer<'_> {
                     parts.push(self.fstring_expr(start)?);
                 }
                 Some('}') => {
-                    return Err(
-                        Diagnostic::new("`}` without a matching `{`", self.span(self.offset()))
-                            .with_help("write `}}` for a literal brace"),
-                    );
+                    return Err(Diagnostic::new("`}` without a matching `{`", self.span(self.offset()))
+                        .with_help("write `}}` for a literal brace"));
                 }
                 Some(c) => {
                     text.push(c);
@@ -353,9 +336,7 @@ impl Lexer<'_> {
         self.pos += 1;
         let expr_end = spec_start.unwrap_or(end);
         let source = self.source.get(expr_start..expr_end).unwrap_or("").to_owned();
-        let spec = spec_start
-            .and_then(|at| self.source.get(at + 1..end))
-            .map(str::to_owned);
+        let spec = spec_start.and_then(|at| self.source.get(at + 1..end)).map(str::to_owned);
         let offset = Span::new(expr_start, expr_start).shifted(self.base).start;
         Ok(FPart::Expr { source, offset, spec })
     }

@@ -29,6 +29,20 @@ fn run(source: &str, shown_as: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
+/// Runs a program's `test` blocks, returning each failure, rendered.
+fn failing_tests(source: &str, shown_as: &str) -> Result<Vec<String>, String> {
+    let render = |diagnostic: fennec_syntax::Diagnostic| diagnostic.render(shown_as, source);
+    let module = fennec_syntax::parse(source).map_err(render)?;
+    let mut out = std::io::sink();
+    let mut interp = fennec_interp::Interp::new(&mut out).map_err(render)?;
+    interp.load(&module).map_err(render)?;
+    Ok(interp
+        .run_tests()
+        .into_iter()
+        .filter_map(|outcome| outcome.failure.map(|failure| format!("{}: {}", outcome.name, render(failure))))
+        .collect())
+}
+
 #[test]
 fn examples_print_their_expected_output() {
     let paths = programs(&examples_dir()).unwrap();
@@ -40,6 +54,8 @@ fn examples_print_their_expected_output() {
         let actual =
             run(&source, &format!("examples/{name}")).unwrap_or_else(|err| panic!("{name} failed:\n{err}"));
         assert_eq!(actual, expected, "{name} printed something different");
+        let failures = failing_tests(&source, &format!("examples/{name}")).unwrap();
+        assert!(failures.is_empty(), "{name} has failing tests:\n{}", failures.join("\n"));
     }
 }
 

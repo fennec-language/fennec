@@ -1,0 +1,7 @@
+error: more than one enum has a case called `Red`
+  --> examples/errors/ambiguous_case.fen:10:18
+   |
+10 |     stdout.print(.Red)
+   |                  ^^^^
+   |
+   = help: say which one: `Light.Red` or `Team.Red`

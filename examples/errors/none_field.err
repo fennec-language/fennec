@@ -1,0 +1,7 @@
+error: this might be None
+ --> examples/errors/none_field.fen:6:18
+  |
+6 |     stdout.print(weapon.damage)
+  |                  ^^^^^^^^^^^^^
+  |
+  = help: check with `if x is None:` first, use `?.`, or give a default with `else`

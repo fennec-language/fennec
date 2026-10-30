@@ -1,9 +1,9 @@
-//! Expressions, from lowest precedence to highest: arrow functions, conditional expressions,
-//! `or`, `and`, `not`, comparisons, `+ -`, `* / // %`, unary minus, `**`, then calls,
-//! attributes and indexing.
+//! Expressions, from lowest precedence to highest: arrow functions and `match`; conditional
+//! expressions and `else` defaults; `or`; `and`; `not`; comparisons; `+ -`; `* / // %`;
+//! unary minus; `**`; then calls, attributes, indexing, `?` and `?.`.
 
 use super::Parser;
-use crate::ast::{Arg, BinOp, Expr, ExprKind, FStrPart, UnaryOp};
+use crate::ast::{Arg, BinOp, CompKind, Expr, ExprKind, FStrPart, UnaryOp};
 use crate::diagnostic::Diagnostic;
 use crate::lexer::lex;
 use crate::span::Span;
@@ -11,30 +11,37 @@ use crate::token::{FPart, Kw, Punct, Tok};
 
 impl Parser {
     pub(super) fn expr(&mut self) -> Result<Expr, Diagnostic> {
+        if self.at_match() {
+            return self.match_expr();
+        }
         if let Some(lambda) = self.lambda()? {
             return Ok(lambda);
         }
-        let then = self.or_expr()?;
-        if !self.eat_kw(Kw::If) {
-            return Ok(then);
-        }
-        let cond = self.or_expr()?;
-        if !self.eat_kw(Kw::Else) {
-            return Err(
-                Diagnostic::new("a conditional expression needs `else`", self.span())
-                    .with_help("write `a if condition else b`"),
-            );
-        }
-        let otherwise = self.expr()?;
-        let span = then.span.to(otherwise.span);
-        Ok(Expr {
-            kind: ExprKind::Cond {
-                then: Box::new(then),
+        let value = self.or_expr()?;
+        if self.eat_kw(Kw::If) {
+            let cond = self.or_expr()?;
+            if !self.eat_kw(Kw::Else) {
+                return Err(Diagnostic::new("a conditional expression needs `else`", self.span())
+                    .with_help("write `a if condition else b`"));
+            }
+            let otherwise = self.expr()?;
+            let span = value.span.to(otherwise.span);
+            let kind = ExprKind::Cond {
+                then: Box::new(value),
                 cond: Box::new(cond),
                 otherwise: Box::new(otherwise),
-            },
-            span,
-        })
+            };
+            return Ok(Expr { kind, span });
+        }
+        if self.eat_kw(Kw::Else) {
+            let default = self.expr()?;
+            let span = value.span.to(default.span);
+            return Ok(Expr {
+                kind: ExprKind::Else { value: Box::new(value), default: Box::new(default) },
+                span,
+            });
+        }
+        Ok(value)
     }
 
     /// `x => body` or `(a, b) => body`.
@@ -56,13 +63,7 @@ impl Parser {
         };
         let body = self.expr()?;
         let span = start.to(body.span);
-        Ok(Some(Expr {
-            kind: ExprKind::Lambda {
-                params,
-                body: Box::new(body),
-            },
-            span,
-        }))
+        Ok(Some(Expr { kind: ExprKind::Lambda { params, body: Box::new(body) }, span }))
     }
 
     /// Looks ahead for `(a, b) =>`, returning the names and how many tokens they take.
@@ -85,7 +86,7 @@ impl Parser {
         (self.peek_at(at + 1) == &Tok::P(Punct::FatArrow)).then_some((params, at + 2))
     }
 
-    fn or_expr(&mut self) -> Result<Expr, Diagnostic> {
+    pub(super) fn or_expr(&mut self) -> Result<Expr, Diagnostic> {
         let mut lhs = self.and_expr()?;
         while self.eat_kw(Kw::Or) {
             let rhs = self.and_expr()?;
@@ -108,13 +109,7 @@ impl Parser {
         if self.eat_kw(Kw::Not) {
             let expr = self.not_expr()?;
             let span = start.to(expr.span);
-            return Ok(Expr {
-                kind: ExprKind::Unary {
-                    op: UnaryOp::Not,
-                    expr: Box::new(expr),
-                },
-                span,
-            });
+            return Ok(Expr { kind: ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(expr) }, span });
         }
         self.comparison()
     }
@@ -136,26 +131,20 @@ impl Parser {
     }
 
     fn comparison_op(&mut self) -> Option<BinOp> {
-        let op = match self.peek() {
-            Tok::P(Punct::EqEq) => BinOp::Eq,
-            Tok::P(Punct::NotEq) => BinOp::NotEq,
-            Tok::P(Punct::Lt) => BinOp::Lt,
-            Tok::P(Punct::LtEq) => BinOp::LtEq,
-            Tok::P(Punct::Gt) => BinOp::Gt,
-            Tok::P(Punct::GtEq) => BinOp::GtEq,
-            Tok::Kw(Kw::In) => BinOp::In,
-            Tok::Kw(Kw::Not) if self.peek_at(1) == &Tok::Kw(Kw::In) => {
-                self.pos += 2;
-                return Some(BinOp::NotIn);
-            }
-            Tok::Kw(Kw::Is) if self.peek_at(1) == &Tok::Kw(Kw::Not) => {
-                self.pos += 2;
-                return Some(BinOp::IsNot);
-            }
-            Tok::Kw(Kw::Is) => BinOp::Is,
+        let (op, used) = match (self.peek(), self.peek_at(1)) {
+            (Tok::P(Punct::EqEq), _) => (BinOp::Eq, 1),
+            (Tok::P(Punct::NotEq), _) => (BinOp::NotEq, 1),
+            (Tok::P(Punct::Lt), _) => (BinOp::Lt, 1),
+            (Tok::P(Punct::LtEq), _) => (BinOp::LtEq, 1),
+            (Tok::P(Punct::Gt), _) => (BinOp::Gt, 1),
+            (Tok::P(Punct::GtEq), _) => (BinOp::GtEq, 1),
+            (Tok::Kw(Kw::In), _) => (BinOp::In, 1),
+            (Tok::Kw(Kw::Not), Tok::Kw(Kw::In)) => (BinOp::NotIn, 2),
+            (Tok::Kw(Kw::Is), Tok::Kw(Kw::Not)) => (BinOp::IsNot, 2),
+            (Tok::Kw(Kw::Is), _) => (BinOp::Is, 1),
             _ => return None,
         };
-        self.pos += 1;
+        self.pos += used;
         Some(op)
     }
 
@@ -194,13 +183,7 @@ impl Parser {
         if self.eat_p(Punct::Minus) {
             let expr = self.unary()?;
             let span = start.to(expr.span);
-            return Ok(Expr {
-                kind: ExprKind::Unary {
-                    op: UnaryOp::Neg,
-                    expr: Box::new(expr),
-                },
-                span,
-            });
+            return Ok(Expr { kind: ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(expr) }, span });
         }
         let base = self.postfix()?;
         if self.eat_p(Punct::StarStar) {
@@ -213,40 +196,46 @@ impl Parser {
     fn postfix(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.atom()?;
         loop {
-            if self.eat_p(Punct::LParen) {
+            expr = if self.eat_p(Punct::LParen) {
                 let args = self.call_args()?;
                 let span = expr.span.to(self.expect_p(Punct::RParen)?);
-                expr = Expr {
-                    kind: ExprKind::Call {
-                        callee: Box::new(expr),
-                        args,
-                    },
-                    span,
-                };
-            } else if self.eat_p(Punct::Dot) {
+                Expr { kind: ExprKind::Call { callee: Box::new(expr), args }, span }
+            } else if self.at_p(Punct::Dot)
+                || (self.at_p(Punct::Question) && self.peek_at(1) == &Tok::P(Punct::Dot))
+            {
+                let optional = self.eat_p(Punct::Question);
+                self.advance();
                 let name = self.name("a name after `.`")?;
                 let span = expr.span.to(self.prev_span());
-                expr = Expr {
-                    kind: ExprKind::Attr {
-                        object: Box::new(expr),
-                        name,
-                    },
-                    span,
-                };
+                Expr { kind: ExprKind::Attr { object: Box::new(expr), name, optional }, span }
             } else if self.eat_p(Punct::LBracket) {
-                let index = self.expr()?;
-                let span = expr.span.to(self.expect_p(Punct::RBracket)?);
-                expr = Expr {
-                    kind: ExprKind::Index {
-                        object: Box::new(expr),
-                        index: Box::new(index),
-                    },
-                    span,
-                };
+                self.index(expr)?
+            } else if self.eat_p(Punct::Question) {
+                let context = if self.eat_kw(Kw::From) { Some(Box::new(self.postfix()?)) } else { None };
+                let span = expr.span.to(self.prev_span());
+                Expr { kind: ExprKind::Try { value: Box::new(expr), context }, span }
             } else {
                 return Ok(expr);
-            }
+            };
         }
+    }
+
+    /// `object[index]` or a slice `object[start:end]`, after the `[`.
+    fn index(&mut self, object: Expr) -> Result<Expr, Diagnostic> {
+        let start = if self.at_p(Punct::Colon) { None } else { Some(Box::new(self.expr()?)) };
+        let slice_end = if self.eat_p(Punct::Colon) {
+            Some(if self.at_p(Punct::RBracket) { None } else { Some(Box::new(self.expr()?)) })
+        } else {
+            None
+        };
+        let span = object.span.to(self.expect_p(Punct::RBracket)?);
+        let object = Box::new(object);
+        let kind = match (slice_end, start) {
+            (Some(end), start) => ExprKind::Slice { object, start, end },
+            (None, Some(index)) => ExprKind::Index { object, index },
+            (None, None) => return Err(self.unexpected("an index")),
+        };
+        Ok(Expr { kind, span })
     }
 
     /// Arguments up to (not including) `)`. A single argument followed by `for` is a generator
@@ -264,7 +253,7 @@ impl Parser {
             };
             let mut value = self.expr()?;
             if args.is_empty() && name.is_none() && !is_mut && self.at_kw(Kw::For) {
-                value = self.comprehension(value)?;
+                value = self.comprehension(CompKind::Generator, value, None)?;
             }
             args.push(Arg { name, is_mut, value });
             if !self.eat_p(Punct::Comma) {
@@ -274,29 +263,22 @@ impl Parser {
         Ok(args)
     }
 
-    /// The `for var in iter if cond` part of a comprehension, after its element.
-    fn comprehension(&mut self, elem: Expr) -> Result<Expr, Diagnostic> {
+    /// The `for names in iter if cond` part of a comprehension, after its element.
+    fn comprehension(&mut self, kind: CompKind, elem: Expr, value: Option<Expr>) -> Result<Expr, Diagnostic> {
         self.advance();
-        let var = self.name("a loop variable")?;
-        if !self.eat_kw(Kw::In) {
-            return Err(self.unexpected("`in`"));
-        }
+        let names = self.loop_names()?;
         let iter = self.or_expr()?;
-        let cond = if self.eat_kw(Kw::If) {
-            Some(Box::new(self.or_expr()?))
-        } else {
-            None
-        };
+        let cond = if self.eat_kw(Kw::If) { Some(Box::new(self.or_expr()?)) } else { None };
         let span = elem.span.to(self.prev_span());
-        Ok(Expr {
-            kind: ExprKind::ListComp {
-                elem: Box::new(elem),
-                var,
-                iter: Box::new(iter),
-                cond,
-            },
-            span,
-        })
+        let kind = ExprKind::Comprehension {
+            kind,
+            elem: Box::new(elem),
+            value: value.map(Box::new),
+            names,
+            iter: Box::new(iter),
+            cond,
+        };
+        Ok(Expr { kind, span })
     }
 
     fn atom(&mut self) -> Result<Expr, Diagnostic> {
@@ -311,12 +293,10 @@ impl Parser {
             Tok::Kw(Kw::False) => ExprKind::Bool(false),
             Tok::Kw(Kw::None) => ExprKind::None,
             Tok::Name(name) => ExprKind::Name(name),
-            Tok::P(Punct::LParen) => {
-                let inner = self.expr()?;
-                self.expect_p(Punct::RParen)?;
-                return Ok(inner);
-            }
+            Tok::P(Punct::Dot) => ExprKind::Variant(self.name("an enum case after `.`")?),
+            Tok::P(Punct::LParen) => return self.parenthesized(span),
             Tok::P(Punct::LBracket) => return self.list(span),
+            Tok::P(Punct::LBrace) => return self.braces(span),
             Tok::Kw(Kw::Reserved(word)) => {
                 self.pos -= 1;
                 return Err(self.reserved(word));
@@ -329,7 +309,25 @@ impl Parser {
                 ));
             }
         };
-        Ok(Expr { kind, span })
+        Ok(Expr { kind, span: span.to(self.prev_span()) })
+    }
+
+    /// `(expr)`, or a tuple: `()`, `(a,)`, `(a, b)`.
+    fn parenthesized(&mut self, start: Span) -> Result<Expr, Diagnostic> {
+        let mut items = Vec::new();
+        let mut trailing_comma = false;
+        while !self.at_p(Punct::RParen) {
+            items.push(self.expr()?);
+            trailing_comma = self.eat_p(Punct::Comma);
+            if !trailing_comma {
+                break;
+            }
+        }
+        let span = start.to(self.expect_p(Punct::RParen)?);
+        if items.len() == 1 && !trailing_comma {
+            return Ok(items.into_iter().next().unwrap_or_else(|| unreachable_tuple(span)));
+        }
+        Ok(Expr { kind: ExprKind::Tuple(items), span })
     }
 
     fn list(&mut self, start: Span) -> Result<Expr, Diagnostic> {
@@ -337,12 +335,9 @@ impl Parser {
         while !self.at_p(Punct::RBracket) {
             let item = self.expr()?;
             if items.is_empty() && self.at_kw(Kw::For) {
-                let comprehension = self.comprehension(item)?;
+                let comprehension = self.comprehension(CompKind::List, item, None)?;
                 let span = start.to(self.expect_p(Punct::RBracket)?);
-                return Ok(Expr {
-                    span,
-                    ..comprehension
-                });
+                return Ok(Expr { span, ..comprehension });
             }
             items.push(item);
             if !self.eat_p(Punct::Comma) {
@@ -350,23 +345,51 @@ impl Parser {
             }
         }
         let span = start.to(self.expect_p(Punct::RBracket)?);
-        Ok(Expr {
-            kind: ExprKind::List(items),
-            span,
-        })
+        Ok(Expr { kind: ExprKind::List(items), span })
+    }
+
+    /// `{}` (an empty dict), `{k: v, ...}`, `{a, b}`, or a dict or set comprehension.
+    fn braces(&mut self, start: Span) -> Result<Expr, Diagnostic> {
+        if self.at_p(Punct::RBrace) {
+            let span = start.to(self.advance().span);
+            return Ok(Expr { kind: ExprKind::Dict(Vec::new()), span });
+        }
+        let first = self.expr()?;
+        let is_dict = self.eat_p(Punct::Colon);
+        let first_value = if is_dict { Some(self.expr()?) } else { None };
+        if self.at_kw(Kw::For) {
+            let kind = if is_dict { CompKind::Dict } else { CompKind::Set };
+            let comprehension = self.comprehension(kind, first, first_value)?;
+            let span = start.to(self.expect_p(Punct::RBrace)?);
+            return Ok(Expr { span, ..comprehension });
+        }
+        let kind = if let Some(value) = first_value {
+            let mut pairs = vec![(first, value)];
+            while self.eat_p(Punct::Comma) && !self.at_p(Punct::RBrace) {
+                let key = self.expr()?;
+                self.expect_p(Punct::Colon)?;
+                pairs.push((key, self.expr()?));
+            }
+            ExprKind::Dict(pairs)
+        } else {
+            let mut items = vec![first];
+            while self.eat_p(Punct::Comma) && !self.at_p(Punct::RBrace) {
+                items.push(self.expr()?);
+            }
+            ExprKind::Set(items)
+        };
+        let span = start.to(self.expect_p(Punct::RBrace)?);
+        Ok(Expr { kind, span })
     }
 }
 
 fn binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
     let span = lhs.span.to(rhs.span);
-    Expr {
-        kind: ExprKind::Binary {
-            op,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-        },
-        span,
-    }
+    Expr { kind: ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span }
+}
+
+fn unreachable_tuple(span: Span) -> Expr {
+    Expr { kind: ExprKind::Tuple(Vec::new()), span }
 }
 
 fn fstring_parts(parts: Vec<FPart>) -> Result<Vec<FStrPart>, Diagnostic> {
@@ -378,10 +401,7 @@ fn fstring_parts(parts: Vec<FPart>) -> Result<Vec<FStrPart>, Diagnostic> {
                 if source.trim().is_empty() {
                     return Err(Diagnostic::new(
                         "this f-string has an empty `{}`",
-                        Span {
-                            start: offset,
-                            end: offset + 1,
-                        },
+                        Span { start: offset, end: offset + 1 },
                     )
                     .with_help("put an expression inside, or write `{{` for a literal brace"));
                 }

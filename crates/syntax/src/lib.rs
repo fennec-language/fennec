@@ -8,8 +8,9 @@ mod span;
 mod token;
 
 pub use ast::{
-    Arg, BinOp, Expr, ExprKind, FStrPart, FnDef, Module, Param, Stmt, StmtKind, TypeExpr, UnaryOp,
+    Arg, BinOp, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Import, Interface, Item, MatchArm,
+    Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
 };
 pub use diagnostic::Diagnostic;
-pub use parser::parse;
+pub use parser::{parse, parse_repl};
 pub use span::Span;

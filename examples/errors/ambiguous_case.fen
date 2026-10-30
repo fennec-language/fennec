@@ -1,0 +1,10 @@
+enum Light:
+    Red
+    Green
+
+enum Team:
+    Red
+    Blue
+
+def main(stdout: Stdout):
+    stdout.print(.Red)

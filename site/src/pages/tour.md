@@ -8,7 +8,7 @@ description: A walk through Fennec's proposed syntax and semantics, from values 
 
 <p class="lede">If you can read Python, you can read Fennec. What's different is underneath: everything is a value, types are checked before anything runs, errors can't be ignored, and there are no references to manage.</p>
 
-> **Fennec is in early design.** Everything on this page is proposed syntax, and it will change as real programs push on it.
+> **Fennec is in early design.** Most of this page already runs in the interpreter (`fennec run`, `fennec test` and `fennec repl`); the checks it describes happen at runtime until the type checker lands. Concurrency, `noalloc` proofs and C interop come later. The syntax will still change as real programs push on it.
 
 ## Hello
 

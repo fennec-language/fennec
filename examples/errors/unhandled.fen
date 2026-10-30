@@ -1,0 +1,11 @@
+error Oops:
+    reason: str
+
+def risky(n: int):
+    if n > 1:
+        fail Oops("too big")
+    n
+
+def main(stdout: Stdout):
+    risky(3)
+    stdout.print("done")

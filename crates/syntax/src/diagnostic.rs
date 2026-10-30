@@ -12,11 +12,7 @@ pub struct Diagnostic {
 
 impl Diagnostic {
     pub fn new(message: impl Into<String>, span: Span) -> Self {
-        Diagnostic {
-            message: message.into(),
-            span,
-            help: None,
-        }
+        Diagnostic { message: message.into(), span, help: None }
     }
 
     #[must_use]
@@ -31,28 +27,17 @@ impl Diagnostic {
         let before = source.get(..start).unwrap_or("");
         let line_number = before.matches('\n').count() + 1;
         let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
-        let line_end = source
-            .get(start..)
-            .and_then(|rest| rest.find('\n'))
-            .map_or(source.len(), |at| start + at);
+        let line_end =
+            source.get(start..).and_then(|rest| rest.find('\n')).map_or(source.len(), |at| start + at);
         let line = source.get(line_start..line_end).unwrap_or("");
-        let column = source
-            .get(line_start..start)
-            .map_or(0, |text| text.chars().count());
-        let end = usize::try_from(self.span.end)
-            .unwrap_or(start)
-            .clamp(start, line_end);
-        let width = source
-            .get(start..end)
-            .map_or(1, |text| text.chars().count())
-            .max(1);
+        let column = source.get(line_start..start).map_or(0, |text| text.chars().count());
+        let end = usize::try_from(self.span.end).unwrap_or(start).clamp(start, line_end);
+        let width = source.get(start..end).map_or(1, |text| text.chars().count()).max(1);
 
         let gutter = line_number.to_string();
         let pad = " ".repeat(gutter.len());
-        let help = self
-            .help
-            .as_ref()
-            .map_or_else(String::new, |help| format!("{pad} |\n{pad} = help: {help}\n"));
+        let help =
+            self.help.as_ref().map_or_else(String::new, |help| format!("{pad} |\n{pad} = help: {help}\n"));
         format!(
             "error: {message}\n{pad}--> {path}:{line_number}:{col}\n{pad} |\n{gutter} | {line}\n{pad} | {indent}{carets}\n{help}",
             message = self.message,

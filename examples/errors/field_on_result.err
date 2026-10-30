@@ -1,0 +1,7 @@
+error: this is the result of something that can fail
+  --> examples/errors/field_on_result.fen:13:18
+   |
+13 |     stdout.print(find("Ash").name)
+   |                  ^^^^^^^^^^^^^^^^
+   |
+   = help: get the value out with `?`, `else`, or `match` first

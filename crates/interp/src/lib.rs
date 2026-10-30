@@ -2,15 +2,24 @@
 //! It exists to run real programs while the typed bytecode interpreter and native
 //! compilers are built.
 
+mod access;
 mod builtins;
 mod call;
+mod collections;
 mod eval;
 mod exec;
 mod format;
 mod interp;
+mod matching;
 mod methods;
 mod ops;
+mod place;
+mod prelude;
+mod scan;
 mod scope;
+mod testing;
+mod types;
 mod value;
 
-pub use interp::run;
+pub use interp::{Interp, run};
+pub use testing::TestOutcome;

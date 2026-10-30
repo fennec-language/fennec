@@ -1,0 +1,8 @@
+Ok()
+Err(OutOfRange(distance=10.0))
+90
+Vec3(x=1.0, y=4.0, z=0.0)
+75
+Err(TargetGone(target=Id(0)))
+1 None
+75

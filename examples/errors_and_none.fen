@@ -1,0 +1,47 @@
+error NotFound:
+    name: str
+
+error TooWeak:
+    level: int
+
+struct Player:
+    name: str
+    level = 1
+
+def find(players: list[Player], name: str) -> Player?:
+    for player in players:
+        if player.name == name:
+            return player
+    None
+
+def require(players: list[Player], name: str):
+    player = find(players, name)
+    if player is None:
+        fail NotFound(name)
+    player
+
+def challenge(players: list[Player], name: str):
+    player = require(players, name)?
+    if player.level < 5:
+        fail TooWeak(player.level)
+    f"{player.name} accepts the challenge"
+
+def main(stdout: Stdout):
+    players = [Player(name="Ash", level=7), Player(name="Kit")]
+
+    stdout.print(find(players, "Kit")?.level)
+    stdout.print(find(players, "Vex")?.level)
+    stdout.print(find(players, "Vex")?.level else 0)
+
+    for name in ["Ash", "Kit", "Vex"]:
+        match challenge(players, name):
+            case Ok(message): stdout.print(message)
+            case TooWeak(level): stdout.print(f"{name} is only level {level}")
+            case Err(error): stdout.print(f"no luck: {error}")
+
+    nobody = Player(name="nobody", level=-1)
+    level = (require(players, "Vex") else nobody).level
+    stdout.print(level)
+    found = require(players, "Ash").expect("Ash was added above")
+    stdout.print(found.name)
+    stdout.print(challenge(players, "Kit") == Err(TooWeak(level=1)))

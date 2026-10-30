@@ -27,13 +27,12 @@ pub(crate) enum Tok {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum FPart {
     Text(String),
-    Expr {
-        source: String,
-        offset: u32,
-        spec: Option<String>,
-    },
+    Expr { source: String, offset: u32, spec: Option<String> },
 }
 
+/// Hard keywords. `struct`, `enum`, `error`, `test`, `interface`, `type`, `match`, `case` and
+/// `where` are soft: they're keywords only where a declaration or `match` can start, so they
+/// stay usable as names, as in Python.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kw {
     Def,
@@ -55,6 +54,15 @@ pub(crate) enum Kw {
     True,
     False,
     None,
+    Fail,
+    Yield,
+    With,
+    As,
+    Import,
+    From,
+    Export,
+    Noalloc,
+    Assert,
     /// A keyword the language has planned but this version doesn't support yet.
     Reserved(&'static str),
 }
@@ -81,6 +89,15 @@ impl Kw {
             "True" => Kw::True,
             "False" => Kw::False,
             "None" => Kw::None,
+            "fail" => Kw::Fail,
+            "yield" => Kw::Yield,
+            "with" => Kw::With,
+            "as" => Kw::As,
+            "import" => Kw::Import,
+            "from" => Kw::From,
+            "export" => Kw::Export,
+            "noalloc" => Kw::Noalloc,
+            "assert" => Kw::Assert,
             _ => {
                 return RESERVED
                     .iter()
@@ -111,33 +128,21 @@ impl Kw {
             Kw::True => "True",
             Kw::False => "False",
             Kw::None => "None",
+            Kw::Fail => "fail",
+            Kw::Yield => "yield",
+            Kw::With => "with",
+            Kw::As => "as",
+            Kw::Import => "import",
+            Kw::From => "from",
+            Kw::Export => "export",
+            Kw::Noalloc => "noalloc",
+            Kw::Assert => "assert",
             Kw::Reserved(word) => word,
         }
     }
 }
 
-const RESERVED: [&str; 20] = [
-    "as",
-    "assert",
-    "case",
-    "enum",
-    "error",
-    "export",
-    "extern",
-    "fail",
-    "from",
-    "import",
-    "interface",
-    "match",
-    "noalloc",
-    "struct",
-    "test",
-    "type",
-    "unsafe",
-    "where",
-    "with",
-    "yield",
-];
+const RESERVED: [&str; 2] = ["extern", "unsafe"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Punct {

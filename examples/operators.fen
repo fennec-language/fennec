@@ -1,0 +1,41 @@
+struct Money:
+    cents: int
+
+    def +(self, other: Money):
+        Money(cents=self.cents + other.cents)
+
+    def <(self, other: Money):
+        self.cents < other.cents
+
+struct Grid:
+    width: int
+    cells: list[int]
+
+    def [](self, at: (int, int)):
+        x, y = at
+        self.cells[y * self.width + x]
+
+    def []=(mut self, at: (int, int), value: int):
+        x, y = at
+        self.cells[y * self.width + x] = value
+
+    def iter(self):
+        for cell in self.cells:
+            yield cell
+
+struct File:
+    name: str
+
+    def del(self):
+        pass
+
+def main(stdout: Stdout):
+    total = Money(cents=150) + Money(cents=275)
+    stdout.print(total, total > Money(cents=400), max([Money(cents=5), Money(cents=9)]))
+
+    mut grid = Grid(width=2, cells=[0, 0, 0, 0])
+    grid[(1, 1)] = 7
+    stdout.print(grid[(1, 1)], sum(cell for cell in grid))
+
+    with File(name="save.dat") as file:
+        stdout.print(f"writing {file.name}")

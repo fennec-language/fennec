@@ -1,0 +1,28 @@
+enum Shape:
+    Circle(radius: float)
+    Rect(width: float, height: float)
+    Point
+
+def area(shape: Shape):
+    match shape:
+        case .Circle(radius): PI * radius * radius
+        case .Rect(width, height): width * height
+        case .Point: 0.0
+
+def describe(shape: Shape):
+    kind = match shape:
+        case .Circle(_): "round"
+        case .Rect(width, height):
+            if width == height:
+                "square"
+            else:
+                "rectangle"
+        case _: "tiny"
+    f"a {kind} shape with area {area(shape):.2f}"
+
+def main(stdout: Stdout):
+    shapes = [.Circle(radius=1.0), Shape.Rect(2.0, 3.0), .Rect(width=2.0, height=2.0), .Point]
+    for shape in shapes:
+        stdout.print(describe(shape))
+    stdout.print(sum(area(shape) for shape in shapes) > 13.0)
+    stdout.print(shapes[1])

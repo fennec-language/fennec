@@ -1,0 +1,45 @@
+error ConfigError:
+    message: str
+
+error SettingsUnreadable:
+    path: str
+
+struct Score:
+    value: int where value >= 0
+
+def parse_score(text: str):
+    if not text.isdigit():
+        fail ConfigError(f"\"{text}\" isn't a number")
+    Score(value=int(text))?
+
+def load_scores(lines: list[str]):
+    [parse_score(line)? for line in lines]
+
+def read_settings(fs: Fs, path: str):
+    text = fs.read_text(path)? from SettingsUnreadable(path)
+    text.strip()
+
+def counter_from(start: int):
+    def next_after(n: int):
+        n + start
+    [next_after(n) for n in range(3)]
+
+def countdown(n: int):
+    mut at = n
+    while at > 0:
+        yield at
+        at -= 1
+
+def main(stdout: Stdout, fs: Fs):
+    stdout.print(load_scores(["3", "14", "15"]))
+    stdout.print(load_scores(["3", "x", "15"]))
+    stdout.print(Score(value=5))
+    stdout.print(counter_from(10))
+    stdout.print(countdown(3), sum(countdown(4)))
+
+    match read_settings(fs, "/no/such/fennec/settings.toml"):
+        case Ok(text): stdout.print(text)
+        case SettingsUnreadable(path): stdout.print(f"couldn't read {path}")
+
+    by_length = sorted(["bramble", "kit", "ash"], key=(name) => (len(name), name))
+    stdout.print(by_length)

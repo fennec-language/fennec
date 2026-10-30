@@ -8,19 +8,22 @@ description: Where Fennec is today, what gets built first, and the design questi
 
 <p class="lede">Fennec is in early design. The plan is to start with a small, solid core, then add each feature when real programs need it.</p>
 
-## Now: design and the first slice
+## Now: the interpreter runs most of the language
 
-- A first interpreter that runs simple programs: functions, `if`/`elif`/`else`, loops, lists, comprehensions, f-strings, `mut` and Fennec's error messages. Every example in the repository's `examples/` folder is a test.
-- This site, describing the language as it's currently designed.
-- A written specification of the core language.
-- A short guide for AI models, the same one that will ship with the compiler.
-- The AI evaluation suite: tasks for models to solve in Fennec, so syntax decisions can be tested before the compiler exists.
+- `fennec run`, `fennec test` (including property tests that shrink failures) and `fennec repl`.
+- Names and `mut`, functions with inferred returns, nested functions, arrow functions.
+- Structs with defaults, methods, named constructors and `where` rules; enums and `match`; operators with `def +` and `def []`.
+- Errors with `error`, `fail`, `?`, `else`, `match` and `from`; optional values with `None`, `?.` and `else`.
+- Lists, dicts, sets, tuples, comprehensions, slices, generators, `with`, `IdMap` and `Vec3`.
+- Values without references: copies are independent, and changes happen in place without copying when nothing else shares the value.
+- Every example in the repository's `examples/` folder is a test, including the error messages.
 
-## v0.1: the core runs
+## v0.1: checked before it runs
 
-The first milestone is running the examples on this site.
+The next milestone moves Fennec's checks from runtime to compile time.
 
-- Parser, type checker and formatter.
+- The type checker: inferred types, exhaustive `match`, and errors and `None` that can't be ignored.
+- The formatter and the language's lints.
 - The intermediate representation, designed for native code from the start.
 - The interpreter.
 - Names and `mut`, `def` with inferred return types, structs with defaults, named constructors and `where`, `enum` and `match`.

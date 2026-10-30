@@ -1,0 +1,5 @@
+struct Player:
+    level: int where level >= 1
+
+def main(stdout: Stdout):
+    stdout.print(Player(level=0))

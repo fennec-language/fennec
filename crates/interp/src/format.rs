@@ -1,7 +1,7 @@
 //! Turning values into text: how `stdout.print` shows them, and f-string format specs like
 //! `{coins:,}` and `{health:.1f}`.
 
-use crate::value::Value;
+use crate::value::{Instance, Value};
 
 /// The text `stdout.print` and `str()` produce.
 pub(crate) fn display(value: &Value) -> String {
@@ -11,7 +11,7 @@ pub(crate) fn display(value: &Value) -> String {
     }
 }
 
-/// The text a value shows inside a list: strings are quoted.
+/// The text a value shows inside a collection, or when the REPL echoes it: strings are quoted.
 pub(crate) fn repr(value: &Value) -> String {
     match value {
         Value::Unit => String::new(),
@@ -21,28 +21,53 @@ pub(crate) fn repr(value: &Value) -> String {
         Value::Int(n) => n.to_string(),
         Value::Float(x) => float(*x),
         Value::Str(text) => format!("{text:?}"),
-        Value::List(items) => format!("[{}]", items.iter().map(repr).collect::<Vec<_>>().join(", ")),
-        Value::Function(name) => format!("<function {name}>"),
+        Value::List(items) => format!("[{}]", join(items.iter())),
+        Value::Tuple(items) if items.len() == 1 => format!("({},)", join(items.iter())),
+        Value::Tuple(items) => format!("({})", join(items.iter())),
+        Value::Set(items) if items.is_empty() => "set()".to_owned(),
+        Value::Set(items) => format!("{{{}}}", join(items.iter())),
+        Value::Dict(pairs) => {
+            let pairs: Vec<String> =
+                pairs.iter().map(|(key, value)| format!("{}: {}", repr(key), repr(value))).collect();
+            format!("{{{}}}", pairs.join(", "))
+        }
+        Value::Instance(instance) => instance_repr(instance),
+        Value::Ok(inner) => format!("Ok({})", repr(inner)),
+        Value::Err(inner) => format!("Err({})", repr(inner)),
+        Value::IdMap(map) => format!("IdMap([{}])", join(map.entries().map(|(_, value)| value))),
+        Value::Id(id) => format!("Id({})", id.slot),
+        Value::Type(name) => format!("<type {name}>"),
+        Value::Function(function) => format!("<function {}>", function.def.name),
         Value::Builtin(name) => format!("<builtin {name}>"),
         Value::Lambda(_) => "<function>".to_owned(),
-        Value::Stdout => "<stdout>".to_owned(),
+        Value::Capability(_) => format!("<{}>", value.type_name()),
     }
 }
 
+fn join<'a>(items: impl Iterator<Item = &'a Value>) -> String {
+    items.map(repr).collect::<Vec<_>>().join(", ")
+}
+
+fn instance_repr(instance: &Instance) -> String {
+    let name = match &instance.case {
+        Some(case) => format!("{}.{case}", instance.type_name),
+        None => instance.type_name.to_string(),
+    };
+    if instance.fields.is_empty() && instance.case.is_some() {
+        return name;
+    }
+    let fields: Vec<String> =
+        instance.fields.iter().map(|(field, value)| format!("{field}={}", repr(value))).collect();
+    format!("{name}({})", fields.join(", "))
+}
+
 /// Floats print like Python's: always with a decimal point, as short as round-trips.
-#[expect(
-    clippy::float_cmp,
-    reason = "checking for a whole number is an exact comparison"
-)]
+#[expect(clippy::float_cmp, reason = "checking for a whole number is an exact comparison")]
 pub(crate) fn float(x: f64) -> String {
     if x.is_nan() {
         "nan".to_owned()
     } else if x.is_infinite() {
-        if x > 0.0 {
-            "inf".to_owned()
-        } else {
-            "-inf".to_owned()
-        }
+        if x > 0.0 { "inf".to_owned() } else { "-inf".to_owned() }
     } else if x == x.trunc() && x.abs() < 1e16 {
         format!("{x:.1}")
     } else {
@@ -57,9 +82,8 @@ pub(crate) fn with_spec(value: &Value, spec: &str) -> Result<String, String> {
     let (precision, kind) = match rest.strip_prefix('.') {
         Some(rest) => {
             let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-            let precision = digits
-                .parse::<usize>()
-                .map_err(|_| format!("`{spec}` needs a number after `.`"))?;
+            let precision =
+                digits.parse::<usize>().map_err(|_| format!("`{spec}` needs a number after `.`"))?;
             (Some(precision), rest.get(digits.len()..).unwrap_or(""))
         }
         None => (None, rest),
@@ -71,10 +95,7 @@ pub(crate) fn with_spec(value: &Value, spec: &str) -> Result<String, String> {
         (Value::Float(x), "" | "f", None) => float(*x),
         (other, _, _) if spec.is_empty() => display(other),
         (other, _, _) => {
-            return Err(format!(
-                "the format `{spec}` doesn't apply to a {}",
-                other.type_name()
-            ));
+            return Err(format!("the format `{spec}` doesn't apply to a {}", other.type_name()));
         }
     };
     Ok(if comma { thousands(&text) } else { text })
@@ -82,9 +103,8 @@ pub(crate) fn with_spec(value: &Value, spec: &str) -> Result<String, String> {
 
 fn thousands(number: &str) -> String {
     let (sign, digits) = number.strip_prefix('-').map_or(("", number), |rest| ("-", rest));
-    let (whole, fraction) = digits
-        .split_once('.')
-        .map_or((digits, None), |(whole, fraction)| (whole, Some(fraction)));
+    let (whole, fraction) =
+        digits.split_once('.').map_or((digits, None), |(whole, fraction)| (whole, Some(fraction)));
     let mut grouped = String::new();
     for (at, c) in whole.chars().enumerate() {
         if at > 0 && (whole.len() - at) % 3 == 0 {

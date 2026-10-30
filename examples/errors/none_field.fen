@@ -1,0 +1,6 @@
+struct Weapon:
+    damage: int
+
+def main(stdout: Stdout):
+    weapon = None
+    stdout.print(weapon.damage)

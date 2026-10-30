@@ -8,7 +8,7 @@
 
 Fennec is a safe, compiled language for games and tools, designed so that the easy way to write something is also the readable way and the fast way, for people and for the AI they work with.
 
-> **Status: early design.** A first interpreter runs simple programs; most of the language described on the website isn't implemented yet, and the syntax will change.
+> **Status: early design.** The interpreter runs most of the language described on the website. The type checker, native compilers and concurrency come next, and the syntax will still change.
 
 **Read more at [seashell86.github.io/fennec](https://seashell86.github.io/fennec/):**
 
@@ -37,13 +37,21 @@ total_health = sum(enemy.health for enemy in alive)
 
 ## Try it
 
-The first slice of the compiler runs real programs: functions, `if`/`elif`/`else`, loops, lists, comprehensions, f-strings, `mut`, and Fennec's error messages. It's a simple interpreter for now; the typed bytecode interpreter and native compilers come next.
+The interpreter runs most of the language on the website: structs, enums, `match`, errors with `fail` and `?`, optional values, comprehensions, generators, `with`, operators, tests and property tests. Fennec's checks happen at runtime until the type checker lands.
 
 ```bash
-cargo run -q -p fennec -- run examples/fizzbuzz.fen
+cargo run -q -p fennec -- run examples/game.fen
 ```
 
-Every program in [`examples/`](examples) is a test: it must print exactly its `.out` file, and every program in [`examples/errors/`](examples/errors) must fail with exactly its `.err` file.
+```bash
+cargo run -q -p fennec -- test examples/testing.fen
+```
+
+```bash
+cargo run -q -p fennec -- repl
+```
+
+Every program in [`examples/`](examples) is a test: it must print exactly its `.out` file and pass its own `test` blocks, and every program in [`examples/errors/`](examples/errors) must fail with exactly its `.err` message.
 
 ## Repository layout
 

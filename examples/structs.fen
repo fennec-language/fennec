@@ -1,0 +1,37 @@
+from std.math import Vec3
+
+struct Enemy:
+    name: str
+    position = Vec3.zero
+    health = 100
+
+    def at(name: str, position: Vec3):
+        Enemy(name=name, position=position)
+
+    def is_alive(self):
+        self.health > 0
+
+    def take_damage(mut self, amount: int):
+        self.health -= amount
+
+def main(stdout: Stdout):
+    mut ash = Enemy.at("Ash", Vec3(x=3.0, y=4.0))
+    stdout.print(ash)
+    stdout.print(ash.position.length())
+
+    mut copy = ash
+    copy.take_damage(30)
+    stdout.print(ash.health, copy.health)
+
+    ash.take_damage(120)
+    stdout.print(ash.is_alive(), ash.health)
+
+    ash.position.x = 10.0
+    stdout.print(ash.position)
+
+    healed = replace(ash, health=50)
+    stdout.print(healed.health, ash.health)
+
+    velocity = Vec3(x=1.0, y=2.0, z=0.0)
+    stdout.print(ash.position + velocity * 2.0)
+    stdout.print(ash == copy, copy == replace(copy))

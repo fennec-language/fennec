@@ -1,244 +1,181 @@
-//! Methods on built-in values: `stdout.print`, string methods, and list methods. Methods
-//! that change a list need it held in a `mut` name.
+//! Method calls: user-defined methods, named constructors, and methods on built-in values.
+//! Methods that change a built-in value need it held in a `mut` place.
 
 use std::cmp::Ordering;
-use std::rc::Rc;
 
-use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Span};
+use fennec_syntax::{Arg, Diagnostic, Expr, Span};
 
+use crate::access::might_be_none;
 use crate::call::CallArg;
-use crate::interp::Interp;
+use crate::eval::unhandled_result;
+use crate::interp::{Interp, TypeKind};
+use crate::ops;
 use crate::value::Value;
-use crate::{format, ops};
-
-const CHANGES_LIST: [&str; 8] = [
-    "append", "clear", "extend", "insert", "pop", "remove", "reverse", "sort",
-];
 
 impl Interp<'_> {
     pub(crate) fn method_call(
         &mut self,
         object: &Expr,
         method: &str,
+        optional: bool,
         args: &[Arg],
         span: Span,
     ) -> Result<Value, Diagnostic> {
         let receiver = self.eval(object)?;
-        let args = self.eval_args(args)?;
-        if matches!(receiver, Value::List(_)) && CHANGES_LIST.contains(&method) {
-            let what =
-                format!("`{method}` changes the list, so call it on a mut name, like `items.{method}(...)`");
-            self.check_mut_place(object, &what)?;
+        match &receiver {
+            Value::None if optional => return Ok(Value::None),
+            Value::None => return Err(might_be_none(object.span)),
+            Value::Type(type_name) => return self.static_call(type_name, method, args, span),
+            Value::Ok(_) | Value::Err(_) if method == "expect" => {
+                let args = self.eval_args(args)?;
+                return expect(receiver, &args, span);
+            }
+            Value::Ok(_) | Value::Err(_) => return Err(unhandled_result(object.span)),
+            Value::Instance(instance) => {
+                let function =
+                    self.type_info(&instance.type_name).and_then(|info| info.methods.get(method).cloned());
+                return match function {
+                    Some(function) => {
+                        drop(receiver);
+                        self.call_method(object, &function, args, span)
+                    }
+                    None => Err(no_method(&receiver, method, span)),
+                };
+            }
+            _ => {}
+        }
+        if changes_in_place(&receiver, method) {
+            let what = format!(
+                "`{method}` changes it, so call it on something held in a mut name, like `items.{method}(...)`"
+            );
+            let place = self.mut_place(object, &what)?;
             drop(receiver);
-            let ExprKind::Name(name) = &object.kind else {
-                return Err(Diagnostic::new(what, object.span));
-            };
-            return self.change_list(name, method, args, span);
+            let args = self.eval_args(args)?;
+            let mut value = self.take(&place)?;
+            let result = self.change_in_place(&mut value, method, args, span);
+            self.put(&place, value)?;
+            return result;
         }
-        match receiver {
-            Value::Stdout => self.stdout_method(method, args, span),
-            Value::Str(text) => str_method(&text, method, &plain_args(args, method, span)?, span),
-            other => Err(no_method(&other, method, span)),
-        }
+        let args = self.eval_args(args)?;
+        self.read_method(&receiver, method, args, span)
     }
 
-    fn stdout_method(&mut self, method: &str, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
-        let ending = match method {
-            "print" => "\n",
-            "write" => "",
-            _ => return Err(no_method(&Value::Stdout, method, span)),
-        };
-        let text = plain_args(args, method, span)?
-            .iter()
-            .map(format::display)
-            .collect::<Vec<_>>()
-            .join(" ");
-        write!(self.out, "{text}{ending}")
-            .map_err(|err| Diagnostic::new(format!("couldn't write output: {err}"), span))?;
-        Ok(Value::Unit)
-    }
-
-    fn change_list(
+    /// `Type.name(...)`: an enum case, or a named constructor.
+    fn static_call(
         &mut self,
-        name: &str,
+        type_name: &str,
         method: &str,
-        args: Vec<CallArg>,
+        args: &[Arg],
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        let Some(binding) = self.frame.get_mut(name) else {
-            return Err(Diagnostic::new(format!("`{name}` doesn't exist"), span));
-        };
-        let Value::List(mut items) = std::mem::replace(&mut binding.value, Value::Unit) else {
-            return Err(Diagnostic::new(format!("`{name}` isn't a list"), span));
-        };
-        let result = self.apply_list_change(Rc::make_mut(&mut items), method, args, span);
-        if let Some(binding) = self.frame.get_mut(name) {
-            binding.value = Value::List(items);
+        let info = self.type_info(type_name);
+        let args = self.eval_args(args)?;
+        if info.as_ref().is_some_and(|info| {
+            info.kind == TypeKind::Enum && info.def.cases.iter().any(|case| case.name == method)
+        }) {
+            return self.construct_variant(Some(type_name), method, args, span);
         }
-        result
+        match info.and_then(|info| info.methods.get(method).cloned()) {
+            Some(function) if !function.def.takes_self() => self.call_user(&function, args, span),
+            Some(_) => Err(Diagnostic::new(format!("`{method}` needs a `{type_name}` to call it on"), span)),
+            None => Err(Diagnostic::new(format!("`{type_name}` has nothing called `{method}`"), span)),
+        }
     }
 
-    fn apply_list_change(
-        &mut self,
-        items: &mut Vec<Value>,
-        method: &str,
-        args: Vec<CallArg>,
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
-        let (args, key) = split_key(args, method)?;
-        if key.is_some() && method != "sort" {
-            return Err(Diagnostic::new(format!("`{method}` doesn't take `key`"), span));
-        }
-        match (method, args.as_slice()) {
-            ("append", [value]) => items.push(value.clone()),
-            ("pop", []) => {
-                return items
-                    .pop()
-                    .ok_or_else(|| Diagnostic::new("can't pop from an empty list", span));
-            }
-            ("pop", [Value::Int(at)]) => return Ok(items.remove(ops::position(*at, items.len(), span)?)),
-            ("insert", [Value::Int(at), value]) => {
-                let at = usize::try_from(*at)
-                    .ok()
-                    .filter(|&at| at <= items.len())
-                    .ok_or_else(|| {
-                        Diagnostic::new(
-                            format!("can't insert at {at} in a list of length {}", items.len()),
-                            span,
-                        )
-                    })?;
-                items.insert(at, value.clone());
-            }
-            ("extend", [Value::List(more)]) => items.extend(more.iter().cloned()),
-            ("clear", []) => items.clear(),
-            ("reverse", []) => items.reverse(),
-            ("remove", [value]) => {
-                let at = items.iter().position(|item| item == value).ok_or_else(|| {
-                    Diagnostic::new(format!("{} isn't in the list", format::repr(value)), span)
-                })?;
-                items.remove(at);
-            }
-            ("sort", []) => self.sort_values(items, key.as_ref(), span)?,
-            _ => return Err(bad_args(method, span)),
-        }
-        Ok(Value::Unit)
-    }
-
-    /// Sorts in place, by `key` when given. Values that can't be compared are an error.
+    /// Sorts in place, by `key` when given, stably. Types with their own `def <` sort by it.
     pub(crate) fn sort_values(
         &mut self,
         items: &mut Vec<Value>,
         key: Option<&Value>,
         span: Span,
     ) -> Result<(), Diagnostic> {
-        let keys = match key {
-            Some(key) => items
-                .iter()
-                .map(|item| self.call_value(key, vec![CallArg::plain(item.clone(), span)], span))
-                .collect::<Result<Vec<_>, _>>()?,
-            None => items.clone(),
-        };
-        let mut pairs: Vec<(Value, Value)> = keys.into_iter().zip(items.drain(..)).collect();
-        let mut failure = None;
-        pairs.sort_by(|(a, _), (b, _)| {
-            ops::compare(a, b, span).unwrap_or_else(|err| {
-                failure.get_or_insert(err);
-                Ordering::Equal
-            })
-        });
-        items.extend(pairs.into_iter().map(|(_, item)| item));
-        failure.map_or(Ok(()), Err)
-    }
-}
-
-/// Splits off a `key=` argument; any other named or `mut` argument is an error.
-pub(crate) fn split_key(
-    args: Vec<CallArg>,
-    function: &str,
-) -> Result<(Vec<Value>, Option<Value>), Diagnostic> {
-    let mut values = Vec::with_capacity(args.len());
-    let mut key = None;
-    for arg in args {
-        match arg.name.as_deref() {
-            Some("key") => key = Some(arg.value),
-            Some(other) => {
-                return Err(Diagnostic::new(
-                    format!("`{function}` has no parameter called `{other}`"),
-                    arg.span,
-                ));
-            }
-            None if arg.mut_place.is_some() => {
-                return Err(Diagnostic::new(
-                    format!("`{function}` doesn't change its arguments, so don't pass `mut`"),
-                    arg.span,
-                ));
-            }
-            None => values.push(arg.value),
+        let mut keyed = Vec::with_capacity(items.len());
+        for item in items.drain(..) {
+            let key = match key {
+                Some(key) => self.call_value(key, vec![CallArg::plain(item.clone(), span)], span)?,
+                None => item.clone(),
+            };
+            keyed.push((key, item));
         }
+        let sorted = self.merge_sort(keyed, span)?;
+        items.extend(sorted.into_iter().map(|(_, item)| item));
+        Ok(())
     }
-    Ok((values, key))
-}
 
-fn plain_args(args: Vec<CallArg>, method: &str, span: Span) -> Result<Vec<Value>, Diagnostic> {
-    let (values, key) = split_key(args, method)?;
-    match key {
-        Some(_) => Err(Diagnostic::new(format!("`{method}` doesn't take `key`"), span)),
-        None => Ok(values),
-    }
-}
-
-fn str_method(text: &str, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-    let words = |parts: Vec<&str>| Value::list(parts.into_iter().map(Value::str).collect());
-    Ok(match (method, args) {
-        ("upper", []) => Value::str(&text.to_uppercase()),
-        ("lower", []) => Value::str(&text.to_lowercase()),
-        ("strip", []) => Value::str(text.trim()),
-        ("lstrip", []) => Value::str(text.trim_start()),
-        ("rstrip", []) => Value::str(text.trim_end()),
-        ("split", []) => words(text.split_whitespace().collect()),
-        ("split", [Value::Str(sep)]) if !sep.is_empty() => words(text.split(sep.as_ref()).collect()),
-        ("startswith", [Value::Str(prefix)]) => Value::Bool(text.starts_with(prefix.as_ref())),
-        ("endswith", [Value::Str(suffix)]) => Value::Bool(text.ends_with(suffix.as_ref())),
-        ("replace", [Value::Str(from), Value::Str(to)]) => Value::str(&text.replace(from.as_ref(), to)),
-        ("join", [Value::List(items)]) => {
-            let parts = items
-                .iter()
-                .map(|item| match item {
-                    Value::Str(part) => Ok(part.as_ref()),
-                    other => Err(Diagnostic::new(
-                        format!("`join` needs a list of str, but it has a {}", other.type_name()),
-                        span,
-                    )
-                    .with_help("convert the items first: [str(x) for x in items]")),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Value::str(&parts.join(text))
+    fn merge_sort(
+        &mut self,
+        mut items: Vec<(Value, Value)>,
+        span: Span,
+    ) -> Result<Vec<(Value, Value)>, Diagnostic> {
+        if items.len() <= 1 {
+            return Ok(items);
         }
-        _ if [
-            "upper",
-            "lower",
-            "strip",
-            "lstrip",
-            "rstrip",
-            "split",
-            "startswith",
-            "endswith",
-            "replace",
-            "join",
-        ]
-        .contains(&method) =>
+        let right = items.split_off(items.len() / 2);
+        let (left, right) = (self.merge_sort(items, span)?, self.merge_sort(right, span)?);
+        let mut merged = Vec::with_capacity(left.len() + right.len());
+        let (mut left, mut right) = (left.into_iter().peekable(), right.into_iter().peekable());
+        while let (Some(a), Some(b)) = (left.peek(), right.peek()) {
+            let take_right = self.order(&b.0, &a.0, span)? == Ordering::Less;
+            merged.extend(if take_right { right.next() } else { left.next() });
+        }
+        merged.extend(left);
+        merged.extend(right);
+        Ok(merged)
+    }
+
+    /// Orders two values, using a type's own `def <` when it has one.
+    pub(crate) fn order(&mut self, a: &Value, b: &Value, span: Span) -> Result<Ordering, Diagnostic> {
+        if let Value::Instance(instance) = a
+            && let Some(less) =
+                self.type_info(&instance.type_name).and_then(|info| info.methods.get("<").cloned())
         {
-            return Err(bad_args(method, span));
+            if self.call_with_values(&less, vec![a.clone(), b.clone()], span)? == Value::Bool(true) {
+                return Ok(Ordering::Less);
+            }
+            let greater =
+                self.call_with_values(&less, vec![b.clone(), a.clone()], span)? == Value::Bool(true);
+            return Ok(if greater { Ordering::Greater } else { Ordering::Equal });
         }
-        _ => return Err(no_method(&Value::str(text), method, span)),
-    })
+        ops::compare(a, b, span)
+    }
 }
 
-fn bad_args(method: &str, span: Span) -> Diagnostic {
-    Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span)
+fn expect(result: Value, args: &[CallArg], span: Span) -> Result<Value, Diagnostic> {
+    let reason = match args {
+        [CallArg { value: Value::Str(reason), .. }] if !reason.trim().is_empty() => reason.to_string(),
+        _ => {
+            return Err(Diagnostic::new("`expect` needs a reason this can't fail", span)
+                .with_help("write it as a string, like `.expect(\"the file was just written\")`"));
+        }
+    };
+    match result {
+        Value::Ok(value) => Ok(value.as_ref().clone()),
+        Value::Err(error) => Err(Diagnostic::new(
+            format!(
+                "this was expected to succeed ({reason}), but it failed: {}",
+                crate::format::repr(&error)
+            ),
+            span,
+        )),
+        other => Ok(other),
+    }
 }
 
-fn no_method(value: &Value, method: &str, span: Span) -> Diagnostic {
+/// Whether calling `method` on `value` changes it.
+fn changes_in_place(value: &Value, method: &str) -> bool {
+    let methods: &[&str] = match value {
+        Value::List(_) => {
+            &["append", "clear", "extend", "insert", "pop", "remove", "remove_where", "reverse", "sort"]
+        }
+        Value::Dict(_) => &["clear", "pop"],
+        Value::Set(_) => &["add", "clear", "discard", "remove"],
+        Value::IdMap(_) => &["clear", "insert", "modify", "remove", "remove_where"],
+        _ => &[],
+    };
+    methods.contains(&method)
+}
+
+pub(crate) fn no_method(value: &Value, method: &str, span: Span) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("a {} has no method `{method}`", value.type_name()), span);
     match method {
         "len" | "length" | "size" | "count" => diagnostic.with_help("use `len(x)`"),
@@ -247,6 +184,7 @@ fn no_method(value: &Value, method: &str, span: Span) -> Diagnostic {
         "toUpperCase" | "to_uppercase" => diagnostic.with_help("use `upper()`"),
         "toLowerCase" | "to_lowercase" => diagnostic.with_help("use `lower()`"),
         "log" | "println" => diagnostic.with_help("use `stdout.print(...)`"),
+        "copy" | "clone" => diagnostic.with_help("values are copied automatically when assigned: `b = a`"),
         _ => diagnostic,
     }
 }

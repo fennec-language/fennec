@@ -1,0 +1,7 @@
+enum Light:
+    Red
+    Green
+
+def main(stdout: Stdout):
+    match Light.Green:
+        case .Red: stdout.print("stop")

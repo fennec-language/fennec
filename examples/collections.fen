@@ -1,0 +1,36 @@
+def main(stdout: Stdout):
+    point = (3, 4)
+    x, y = point
+    stdout.print(point, x + y)
+
+    quotient, remainder = divmod(17, 5)
+    stdout.print(quotient, remainder)
+
+    hp = {"ash": 70, "kit": 40}
+    mut roster = hp
+    roster["vex"] = 90
+    roster["kit"] += 5
+    stdout.print(hp)
+    stdout.print(roster, len(roster), "vex" in roster)
+    stdout.print(roster.get("nobody"), roster.get("nobody", 0))
+
+    for name, health in roster.items():
+        stdout.print(f"{name}: {health}")
+
+    strong = {name: health for name, health in roster.items() if health > 50}
+    stdout.print(strong)
+
+    mut seen = {"fire", "ice"}
+    seen.add("fire")
+    seen.add("storm")
+    stdout.print(len(seen), "ice" in seen)
+    stdout.print({n % 3 for n in range(10)})
+
+    letters = "fennec"
+    stdout.print(letters[1:4], letters[-3:], [1, 2, 3, 4][:2])
+    for at, name in enumerate(["a", "b"]):
+        stdout.print(at, name)
+    stdout.print(list(zip([1, 2], ["one", "two"])))
+
+def divmod(a: int, b: int):
+    (a // b, a % b)

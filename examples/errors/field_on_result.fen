@@ -1,0 +1,13 @@
+error Missing:
+    name: str
+
+struct Player:
+    name: str
+
+def find(name: str):
+    if name == "":
+        fail Missing(name)
+    Player(name=name)
+
+def main(stdout: Stdout):
+    stdout.print(find("Ash").name)

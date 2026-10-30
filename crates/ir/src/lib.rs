@@ -8,9 +8,11 @@
 //! need nothing looked up later. Overflow, dividing by zero and so on are the operator's
 //! meaning: each backend has to end the program the same way, at the instruction's span.
 //!
-//! Lowering grows in slices. So far it handles functions over ints, floats, bools and strs:
-//! operators, names, `if`, `while`, `return` and direct calls. A function using anything
-//! else is listed in [`Program::not_lowered`], with why.
+//! Lowering grows in slices. So far it handles functions over ints, floats, bools, strs and
+//! the program's own structs: operators, names, `if`, `while`, `for` over a `range`,
+//! `return`, direct calls, building structs, and reading and changing their fields. Structs
+//! are values, so copying one copies it. A function using anything else is listed in
+//! [`Program::not_lowered`], with why.
 
 mod lower;
 mod print;
@@ -25,8 +27,16 @@ pub use validate::validate;
 /// A program's functions: those lowered so far, and those that couldn't be yet.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Program {
+    pub structs: Vec<StructDef>,
     pub functions: Vec<Function>,
     pub not_lowered: Vec<NotLowered>,
+}
+
+/// A struct of the program, with its fields' types in the order they're written.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<(String, Type)>,
 }
 
 /// A function that isn't lowered yet, by its key in the typed tree, and what stopped it.
@@ -95,6 +105,24 @@ pub enum InstKind {
         op: BinOp,
         lhs: Operand,
         rhs: Operand,
+    },
+    /// A new struct, with a value for each field in the order they're written.
+    Make {
+        dest: LocalId,
+        type_name: String,
+        fields: Vec<Operand>,
+    },
+    GetField {
+        dest: LocalId,
+        object: Operand,
+        field: String,
+    },
+    /// Changes a field of a struct held in a local, following `path`: `["pos", "x"]` is
+    /// `object.pos.x`.
+    SetField {
+        object: LocalId,
+        path: Vec<String>,
+        value: Operand,
     },
     /// A direct call, by the callee's key. `dest` is `None` when nothing keeps the result.
     Call {

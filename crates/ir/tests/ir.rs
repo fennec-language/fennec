@@ -160,7 +160,10 @@ fn names_in_sibling_blocks_are_different_locals() {
 #[test]
 fn what_isnt_lowered_yet_says_why() {
     let source = "struct Point:
-    x: int
+    x: int = 0
+
+struct Checked:
+    x: int where x > 0
 
 def main(stdout: Stdout):
     stdout.print(1)
@@ -169,13 +172,23 @@ def first(items: list[int]) -> int:
     items[0]
 
 def make() -> Point:
-    Point(1)
+    Point()
 
-def size(n: int) -> int:
-    total = 0
-    for i in range(n):
+def checked() -> Checked:
+    Checked(1)
+
+def letters() -> int:
+    for c in \"abc\":
         pass
-    total
+    1
+
+def stride(n: int) -> int:
+    for i in range(0, n, 2):
+        pass
+    1
+
+def grow(mut point: Point):
+    point.x = 1
 
 def calls_first() -> int:
     first([1])
@@ -183,15 +196,152 @@ def calls_first() -> int:
     let program = lowered(source).unwrap();
     let why: Vec<String> =
         program.not_lowered.iter().map(|skipped| format!("{}: {}", skipped.function, skipped.why)).collect();
+    let over = "it has a `for` loop over something other than a `range` stepping by 1 or -1";
     assert_eq!(
         why,
         [
-            "main: `stdout` is Stdout",
-            "first: `items` is list[int]",
-            "make: it gives back Point",
-            "size: it has a `for` loop",
-            "calls_first: `first` takes something other than plain values",
+            "main: `stdout` is Stdout".to_owned(),
+            "first: `items` is list[int]".to_owned(),
+            "make: it leaves a field of `Point` to its default".to_owned(),
+            "checked: it gives back Checked".to_owned(),
+            format!("letters: {over}"),
+            format!("stride: {over}"),
+            "grow: `point` is a `mut` parameter".to_owned(),
+            "calls_first: `first` takes something other than plain values".to_owned(),
         ]
+    );
+}
+
+#[test]
+fn structs_are_built_read_and_changed() {
+    let source = "struct Vec2:
+    x: float
+    y: float
+
+struct Body:
+    pos: Vec2
+    mass: float
+
+def moved(body: Body, by: float) -> Body:
+    mut next = body
+    next.pos.x = body.pos.x + by
+    next.mass *= 2.0
+    next
+";
+    let program = lowered(source).unwrap();
+    assert_eq!(
+        program.to_string(),
+        "struct Vec2
+  x: float
+  y: float
+struct Body
+  pos: Vec2
+  mass: float
+fn moved(_0, _1) -> Body
+  local _0 body: Body
+  local _1 by: float
+  local _2 next: Body
+  local _3: Vec2
+  local _4: float
+  local _5: float
+  local _6: float
+  local _7: float
+  bb0:
+    _2 = _0
+    _3 = _0.pos
+    _4 = _3.x
+    _5 = _4 + _1
+    _2.pos.x = _5
+    _6 = _2.mass
+    _7 = _6 * 2.0
+    _2.mass = _7
+    return _2
+
+"
+    );
+}
+
+#[test]
+fn methods_take_their_object_first_and_arguments_land_in_their_fields() {
+    let source = "struct Point:
+    x: int
+    y: int
+
+    def origin() -> Point:
+        Point(y=0, x=0)
+
+    def sum(self) -> int:
+        self.x + self.y
+
+def total() -> int:
+    Point.origin().sum()
+";
+    assert_eq!(
+        printed(source, "Point.origin").unwrap(),
+        "fn Point.origin() -> Point
+  local _0: Point
+  bb0:
+    _0 = make Point(0, 0)
+    return _0
+"
+    );
+    assert_eq!(
+        printed(source, "total").unwrap(),
+        "fn total() -> int
+  local _0: Point
+  local _1: int
+  bb0:
+    _0 = call Point.origin()
+    _1 = call Point.sum(_0)
+    return _1
+"
+    );
+}
+
+#[test]
+fn for_counts_in_a_local_of_its_own() {
+    let source = "def total(n: int) -> int:
+    mut sum = 0
+    for i in range(n, 0, -1):
+        if i == 3: continue
+        sum += i
+    sum
+";
+    assert_eq!(
+        printed(source, "total").unwrap(),
+        "fn total(_0) -> int
+  local _0 n: int
+  local _1 sum: int
+  local _2: int
+  local _3: int
+  local _4: bool
+  local _5 i: int
+  local _6: bool
+  bb0:
+    _1 = 0
+    _2 = _0
+    _3 = 0
+    jump bb1
+  bb1:
+    _4 = _2 > _3
+    branch _4 bb2 bb4
+  bb2:
+    _5 = _2
+    _6 = _5 == 3
+    branch _6 bb6 bb7
+  bb3:
+    _2 = _2 - 1
+    jump bb1
+  bb4:
+    return _1
+  bb5:
+    _1 = _1 + _5
+    jump bb3
+  bb6:
+    jump bb3
+  bb7:
+    jump bb5
+"
     );
 }
 
@@ -209,7 +359,7 @@ fn function(locals: Vec<Type>, end: Terminator) -> Function {
 #[test]
 fn the_validator_finds_malformed_ir() {
     let problems = |function: Function| {
-        validate(&Program { functions: vec![function], not_lowered: Vec::new() }).unwrap_err()
+        validate(&Program { functions: vec![function], ..Program::default() }).unwrap_err()
     };
     assert_eq!(
         problems(function(Vec::new(), Terminator::Return(Some(Operand::Local(LocalId(0)))))),

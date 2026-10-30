@@ -62,7 +62,49 @@ impl Check<'_> {
                 self.operand(value, wanted.as_ref(), "unary operator");
             }
             InstKind::Binary { dest, op, lhs, rhs } => self.binary(inst, *dest, *op, (lhs, rhs)),
+            InstKind::Make { dest, type_name, fields } => self.make(*dest, type_name, fields),
+            InstKind::GetField { dest, object, field } => {
+                let wanted = self.local(*dest);
+                self.operand(object, None, "object");
+                let found = self.function.type_of(object).and_then(|ty| self.field(&ty, field));
+                if found.is_none() || found != wanted {
+                    self.problems.push(format!("`{inst}` reads the wrong field or type"));
+                }
+            }
+            InstKind::SetField { object, path, value } => {
+                let mut ty = self.local(*object);
+                for field in path {
+                    ty = ty.and_then(|ty| self.field(&ty, field));
+                }
+                if ty.is_none() {
+                    self.problems.push(format!("`{inst}` changes a field that doesn't exist"));
+                }
+                self.operand(value, ty.as_ref(), "field value");
+            }
             InstKind::Call { dest, function, args } => self.call(*dest, function, args),
+        }
+    }
+
+    /// The type of a field of a struct type.
+    fn field(&self, ty: &Type, field: &str) -> Option<Type> {
+        let Type::Named(name) = ty else { return None };
+        let def = self.program.structs.iter().find(|def| def.name == *name)?;
+        def.fields.iter().find(|(written, _)| written == field).map(|(_, ty)| ty.clone())
+    }
+
+    fn make(&mut self, dest: LocalId, type_name: &str, fields: &[Operand]) {
+        if self.local(dest) != Some(Type::Named(type_name.to_owned())) {
+            self.problems.push(format!("keeps a new `{type_name}` in the wrong type"));
+        }
+        let Some(def) = self.program.structs.iter().find(|def| def.name == type_name) else {
+            self.problems.push(format!("makes `{type_name}`, which doesn't exist"));
+            return;
+        };
+        if fields.len() != def.fields.len() {
+            self.problems.push(format!("makes `{type_name}` with {} fields", fields.len()));
+        }
+        for (value, (_, ty)) in fields.iter().zip(&def.fields) {
+            self.operand(value, Some(ty), "field value");
         }
     }
 
@@ -73,7 +115,11 @@ impl Check<'_> {
         self.operand(rhs, left.as_ref(), "right side");
         let Some(left) = left else { return };
         let wanted = match op {
-            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => Some(Type::Bool),
+            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
+                if matches!(left, Type::Int | Type::Float | Type::Bool | Type::Str) =>
+            {
+                Some(Type::Bool)
+            }
             BinOp::Div if left == Type::Int => Some(Type::Float),
             BinOp::Add if left == Type::Str => Some(Type::Str),
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow

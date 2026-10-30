@@ -80,9 +80,11 @@ struct Interface:
     methods: list[FnDef]
     span: Span
 
-## Methods added to a type outside its declaration. `span` covers `extend Name`.
+## Methods added to a type outside its declaration. `span` covers `extend Name[T]`.
 struct Extension:
     name: str
+    ## A generic type's parameters, like `T` in `extend list[T: Eq]:`.
+    generics: list[Generic]
     methods: list[FnDef]
     span: Span
 

@@ -15,6 +15,8 @@ use crate::load::{File, is_std};
 struct Kit {
     files: Vec<(String, String, BTreeSet<String>)>,
     owners: HashMap<String, usize>,
+    /// The enums with each case name, and the file each is in.
+    cases: HashMap<String, Vec<(String, usize)>>,
 }
 
 impl Kit {
@@ -91,10 +93,15 @@ pub(crate) fn resolve(files: &mut [File], errors: &mut Vec<Diagnostic>) {
 
 /// Finds what each file defines, reporting names defined in two files.
 fn gather(files: &[File], errors: &mut Vec<Diagnostic>) -> Kit {
-    let mut kit = Kit { files: Vec::new(), owners: HashMap::new() };
+    let mut kit = Kit { files: Vec::new(), owners: HashMap::new(), cases: HashMap::new() };
     for (at, file) in files.iter().enumerate() {
         let mut names = BTreeSet::new();
         for item in &file.module.items {
+            if let Item::Enum(def) = item {
+                for case in &def.cases {
+                    kit.cases.entry(case.name.clone()).or_default().push((def.name.clone(), at));
+                }
+            }
             let Some((name, span)) = defined(item) else { continue };
             match kit.owners.get(name) {
                 Some(&owner) if owner == at => errors.push(
@@ -315,7 +322,7 @@ impl Resolver<'_> {
     }
 
     fn expr(&mut self, expr: &mut Expr) {
-        if !self.collecting && self.member(expr) {
+        if !self.collecting && (self.member(expr) || self.named_case(expr)) {
             return;
         }
         let span = expr.span;
@@ -388,6 +395,38 @@ impl Resolver<'_> {
                     self.stmts(&mut arm.body);
                 }
             }
+        }
+    }
+
+    /// Writes the enum into a leading-dot case when only one enum this file can see has a
+    /// case by that name. Returns whether it did.
+    fn named_case(&self, expr: &mut Expr) -> bool {
+        let ExprKind::Variant(case) = &expr.kind else { return false };
+        let Some(owner) = self.only_visible(case) else { return false };
+        fennec_syntax::visit::name_enum(expr, &owner);
+        true
+    }
+
+    /// The one enum this file can see with a case called `case`, when enums in other files
+    /// have a case by that name too. A leading-dot case looks only at the enums its file
+    /// declares or imports, so a file the kit adds can't make it ambiguous.
+    fn only_visible(&self, case: &str) -> Option<String> {
+        let owners = self.kit.cases.get(case)?;
+        if owners.len() < 2 {
+            return None;
+        }
+        let visible: Vec<&String> = owners
+            .iter()
+            .filter(|(owner, file)| {
+                *file == self.file
+                    || self.imported.get(owner) == Some(file)
+                    || self.modules.values().any(|module| module == file)
+            })
+            .map(|(owner, _)| owner)
+            .collect();
+        match visible.as_slice() {
+            [only] => Some((*only).clone()),
+            _ => None,
         }
     }
 

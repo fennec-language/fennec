@@ -44,7 +44,15 @@ impl FnCx<'_> {
     ) {
         match &target.kind {
             ExprKind::Name(name) => {
-                let ty = self.expr(value);
+                let expected = match written {
+                    Some(written) => self.written_type(written),
+                    None if op.is_none() => self.declared_type(name),
+                    None => None,
+                };
+                let ty = match &expected {
+                    Some(expected) => self.expr_as(value, expected),
+                    None => self.expr(value),
+                };
                 match written {
                     Some(written) => {
                         self.declare_written(name, written, &ty, (target.span, value.span), declare_mut);
@@ -69,7 +77,7 @@ impl FnCx<'_> {
                 self.mut_place(target, "this can't be assigned to");
                 let current = self.place_type(target);
                 self.record(target.span, &current);
-                let mut ty = self.expr(value);
+                let mut ty = if op.is_none() { self.expr_as(value, &current) } else { self.expr(value) };
                 if let Some(op) = op {
                     ty = self.binary(op, &current, &ty, target.span, (target.span, value.span));
                 }

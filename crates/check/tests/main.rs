@@ -6,6 +6,7 @@ mod calls;
 mod constants;
 mod errors;
 mod generics;
+mod leading_dot;
 mod library;
 mod mutation;
 mod names;

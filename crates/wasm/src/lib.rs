@@ -139,9 +139,9 @@ impl Capped {
 
 /// Parses and type-checks a program, as the CLI does before running anything.
 fn checked(source: &str) -> Result<Module, Report> {
-    let module =
+    let mut module =
         fennec_syntax::parse(source).map_err(|diagnostic| Report::default().failed(source, &diagnostic))?;
-    fennec_check::check(&module).map_err(|diagnostics| {
+    fennec_check::check_and_resolve(&mut module).map_err(|diagnostics| {
         let rendered: Vec<String> =
             diagnostics.iter().map(|diagnostic| diagnostic.render(PATH, source)).collect();
         let mut report = Report::default();

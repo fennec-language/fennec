@@ -172,7 +172,26 @@ impl Type {
     pub(crate) fn method_owner(&self) -> Option<&str> {
         match self {
             Type::Str => Some("str"),
+            Type::List(_) => Some("list"),
             other => other.type_name(),
+        }
+    }
+
+    /// A generic built-in type with its arguments, like `list[T]`, for the methods the
+    /// standard library gives it.
+    pub(crate) fn built_in_generic(name: &str, args: &[Type]) -> Option<Type> {
+        match (name, args) {
+            ("list", [item]) => Some(Type::list(item.clone())),
+            _ => None,
+        }
+    }
+
+    /// The arguments of a generic type: `int` in `list[int]` or in `Deque[int]`.
+    pub(crate) fn type_args(&self) -> Vec<Type> {
+        match self {
+            Type::Generic(_, args) => args.clone(),
+            Type::List(item) => vec![item.as_ref().clone()],
+            _ => Vec::new(),
         }
     }
 

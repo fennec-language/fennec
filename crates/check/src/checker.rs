@@ -33,6 +33,9 @@ pub(crate) struct Checker {
     pub(crate) vars: Vec<Slot>,
     /// The typed tree, by function.
     pub(crate) typed: BTreeMap<String, Body>,
+    /// The enum chosen for each leading-dot case that more than one enum has, by the span
+    /// of the case, as the type expected where it's written decided.
+    pub(crate) cases: BTreeMap<(u32, u32), String>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
@@ -72,6 +75,7 @@ impl Checker {
             locals: BTreeMap::new(),
             vars: Vec::new(),
             typed: BTreeMap::new(),
+            cases: BTreeMap::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
@@ -123,7 +127,8 @@ impl Checker {
                 })
                 .collect();
             let signatures = Signatures { functions, structs, locals };
-            return Ok(Checked { signatures, types: Types { functions: self.typed } });
+            let types = Types { functions: self.typed };
+            return Ok(Checked { signatures, types, cases: self.cases });
         }
         let mut diagnostics = self.diagnostics;
         diagnostics.sort_by(|a, b| (a.span.start, &a.message).cmp(&(b.span.start, &b.message)));
@@ -235,7 +240,7 @@ impl Checker {
                 name: param.name.clone(),
                 ty: match (&param.ty, &entry.owner) {
                     (Some(ty), _) => self.program.resolve_in(ty, &generics).unwrap_or(Type::Unknown),
-                    (None, Some(owner)) => self.program.self_type(owner),
+                    (None, Some(owner)) => self.program.method_self_type(entry, owner),
                     (None, None) => Type::Unknown,
                 },
                 is_mut: param.is_mut,
@@ -261,7 +266,7 @@ impl Checker {
         if let Some(State::Done(signature)) = self.states.get(key) {
             self.previous.insert(key.to_owned(), known_errors(signature.clone()));
         }
-        let entry = FnEntry { def: def.clone(), owner: None, prelude, inherited };
+        let entry = FnEntry { def: def.clone(), owner: None, prelude, inherited, extension: Vec::new() };
         self.program.functions.insert(key.to_owned(), entry);
         self.check_with(key, captured);
     }

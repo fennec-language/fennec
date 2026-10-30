@@ -1,0 +1,6 @@
+# A kit with two enums that share case names, told apart by where each case is written.
+name = "cases"
+version = "0.1.0"
+fennec = "0.0.1"
+
+[dependencies]

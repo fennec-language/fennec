@@ -4,8 +4,10 @@
 use std::process::ExitCode;
 
 pub(crate) fn test(path: &str) -> ExitCode {
-    let Some(program) = crate::load(path, fennec_kit::Entry::Everything) else { return ExitCode::FAILURE };
-    if !crate::run::check(&program) {
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Everything) else {
+        return ExitCode::FAILURE;
+    };
+    if !crate::run::check(&mut program) {
         return ExitCode::FAILURE;
     }
     let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);

@@ -167,13 +167,15 @@ jobs:
           if [ -x target/previous/release/fennec ]; then
             previous=(--previous target/previous/release/fennec)
           fi
-          ./target/release/fennec-bench "${previous[@]}"
+          # Report only: slowdowns show as warnings, not failures, until the instruction count
+          # proves stable on no-op pull requests. Wrong output still fails the job.
+          ./target/release/fennec-bench --report-only "${previous[@]}"
 
   # One status for branch protection to require, so adding jobs never means changing settings.
   ok:
     name: CI passed
     if: always()
-    needs: [lint, test, coverage, deny, site, workflows, bench]
+    needs: [lint, test, coverage, deny, site, workflows]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

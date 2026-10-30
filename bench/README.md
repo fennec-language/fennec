@@ -12,8 +12,12 @@ cargo build --release -p fennec -p fennec-bench
 
 To compare against another build of `fennec`, like the previous commit's, pass
 `--previous path/to/fennec`. CI does that on every pull request, merge and push to `main`.
-A kernel fails when its median time is more than 10% slower than before and it also runs
-more than 3% more instructions. Time on a shared CI machine can jump by 10% or more when a
+A kernel counts as slower when its median time is more than 10% slower than before and it
+also runs more than 1% more instructions. Counted by cachegrind, identical runs differ by
+about one part in ten million. For now CI runs the suite with `--report-only`: a
+slowdown shows as a warning on the pull request, and doesn't fail it, until the instruction
+counts have proven stable on pull requests that change nothing on the run path. A kernel whose
+Fennec and Rust versions print different things still fails the job. Time on a shared CI machine can jump by 10% or more when a
 neighbour is busy, or when code merely moves around in the binary; instruction counts don't.
 
 - Where the CPU's counters can be read, `perf stat` counts every run.

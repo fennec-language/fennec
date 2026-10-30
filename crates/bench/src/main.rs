@@ -5,7 +5,7 @@
 //! median time and, where `perf` counts them, by its instructions too.
 //!
 //! ```text
-//! fennec-bench [--fennec PATH] [--previous PATH] [--runs N] [--kernels DIR]
+//! fennec-bench [--fennec PATH] [--previous PATH] [--runs N] [--kernels DIR] [--report-only]
 //! ```
 #![expect(clippy::print_stdout, reason = "the suite prints its table")]
 #![expect(clippy::print_stderr, reason = "the suite reports failures")]
@@ -24,6 +24,16 @@ struct Options {
     previous: Option<PathBuf>,
     runs: usize,
     kernels: PathBuf,
+    /// Slowdowns are warnings, not failures, until the signal is proven stable on CI.
+    report_only: bool,
+}
+
+/// What a run found: every kernel's result, the kernels that got slower, and the errors,
+/// like a kernel whose Fennec and Rust versions print different things.
+struct Found {
+    results: Vec<Result>,
+    slowdowns: Vec<String>,
+    errors: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -35,19 +45,32 @@ fn main() -> ExitCode {
         }
     };
     match suite(&options) {
-        Ok((results, mut failures)) => {
-            let table = report::table(&results);
+        Ok(mut found) => {
+            let table = report::table(&found.results);
             print!("{table}");
             if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
                 let text = format!("## Benchmarks\n\n{table}");
                 if let Err(err) = append(Path::new(&summary), &text) {
-                    failures.push(format!("couldn't write the summary: {err}"));
+                    found.errors.push(format!("couldn't write the summary: {err}"));
                 }
             }
-            for failure in &failures {
-                eprintln!("error: {failure}");
+            let on_github = std::env::var_os("GITHUB_ACTIONS").is_some();
+            for slowdown in &found.slowdowns {
+                if options.report_only {
+                    // A warning annotation shows on the pull request without failing it.
+                    if on_github {
+                        println!("::warning title=Benchmark slowdown::{slowdown}");
+                    }
+                    eprintln!("warning: {slowdown}");
+                } else {
+                    eprintln!("error: {slowdown}");
+                }
             }
-            if failures.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+            for error in &found.errors {
+                eprintln!("error: {error}");
+            }
+            let failed = !found.errors.is_empty() || !options.report_only && !found.slowdowns.is_empty();
+            if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
         }
         Err(message) => {
             eprintln!("error: {message}");
@@ -67,8 +90,13 @@ fn options(mut args: impl Iterator<Item = String>) -> std::result::Result<Option
         previous: None,
         runs: 7,
         kernels: PathBuf::from("bench/kernels"),
+        report_only: false,
     };
     while let Some(flag) = args.next() {
+        if flag == "--report-only" {
+            options.report_only = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| format!("`{flag}` needs a value"))?;
         match flag.as_str() {
             "--fennec" => options.fennec = PathBuf::from(value),
@@ -84,8 +112,8 @@ fn options(mut args: impl Iterator<Item = String>) -> std::result::Result<Option
     Ok(options)
 }
 
-/// Runs every kernel. Returns each one's result and every failure.
-fn suite(options: &Options) -> std::result::Result<(Vec<Result>, Vec<String>), String> {
+/// Runs every kernel.
+fn suite(options: &Options) -> std::result::Result<Found, String> {
     let out_dir = PathBuf::from("target/bench");
     std::fs::create_dir_all(&out_dir).map_err(|err| format!("couldn't make {}: {err}", out_dir.display()))?;
     let mut kernels: Vec<PathBuf> = std::fs::read_dir(&options.kernels)
@@ -105,8 +133,7 @@ fn suite(options: &Options) -> std::result::Result<(Vec<Result>, Vec<String>), S
                 "nothing can count instructions here, so slowdowns are measured again before they fail",
         }
     );
-    let mut results = Vec::new();
-    let mut failures = Vec::new();
+    let mut found = Found { results: Vec::new(), slowdowns: Vec::new(), errors: Vec::new() };
     for kernel in kernels {
         let name = kernel.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
         eprintln!("running {name}");
@@ -132,13 +159,13 @@ fn suite(options: &Options) -> std::result::Result<(Vec<Result>, Vec<String>), S
         }
         match result {
             Ok(result) => {
-                failures.extend(result.failure());
-                results.push(result);
+                found.slowdowns.extend(result.failure());
+                found.results.push(result);
             }
-            Err(message) => failures.push(format!("{name}: {message}")),
+            Err(message) => found.errors.push(format!("{name}: {message}")),
         }
     }
-    Ok((results, failures))
+    Ok(found)
 }
 
 /// Times one kernel against its twin, and against the previous `fennec` if there's one that

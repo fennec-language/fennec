@@ -376,14 +376,10 @@ fn str_method(text: &str, method: &str, args: &[Value], span: Span) -> Result<Va
         ("rstrip", []) => Value::str(text.trim_end()),
         ("split", []) => words(text.split_whitespace().collect()),
         ("split", [Value::Str(sep)]) if !sep.is_empty() => words(text.split(sep.as_ref()).collect()),
-        ("lines", []) => words(text.lines().collect()),
-        ("startswith", [Value::Str(prefix)]) => Value::Bool(text.starts_with(prefix.as_ref())),
-        ("endswith", [Value::Str(suffix)]) => Value::Bool(text.ends_with(suffix.as_ref())),
         ("replace", [Value::Str(from), Value::Str(to)]) => Value::str(&text.replace(from.as_ref(), to)),
         ("find", [Value::Str(part)]) => text.find(part.as_ref()).map_or(Value::None, |at| {
             Value::Int(i64::try_from(text.get(..at).map_or(0, |b| b.chars().count())).unwrap_or(0))
         }),
-        ("isdigit", []) => Value::Bool(!text.is_empty() && text.chars().all(|c| c.is_ascii_digit())),
         ("join", [items]) => {
             let items = match items {
                 Value::List(items) | Value::Tuple(items) | Value::Set(items) => items.as_ref().clone(),
@@ -407,11 +403,9 @@ fn str_method(text: &str, method: &str, args: &[Value], span: Span) -> Result<Va
                 .collect::<Result<Vec<_>, _>>()?;
             Value::str(&parts.join(text))
         }
-        (
-            "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "split" | "lines" | "startswith" | "endswith"
-            | "replace" | "find" | "isdigit",
-            _,
-        ) => return Err(wrong_args(method, span)),
+        ("upper" | "lower" | "strip" | "lstrip" | "rstrip" | "split" | "replace" | "find", _) => {
+            return Err(wrong_args(method, span));
+        }
         _ => return Err(no_method(&Value::str(text), method, span)),
     })
 }

@@ -1,0 +1,7 @@
+error: `fail` needs an error, but this is a Problem
+ --> examples/errors/fail_without_error.fen:6:14
+  |
+6 |         fail Problem("negative")
+  |              ^^^^^^^^^^^^^^^^^^^
+  |
+  = help: declare error types with `error`, like `error NotFound:`

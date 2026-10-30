@@ -43,7 +43,7 @@ pub(crate) fn binary(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Va
         BinOp::Is | BinOp::IsNot => is_none(op, &lhs, &rhs, span),
         BinOp::In => contains(&rhs, &lhs, span).map(Value::Bool),
         BinOp::NotIn => contains(&rhs, &lhs, span).map(|found| Value::Bool(!found)),
-        BinOp::And | BinOp::Or => logic(op, &lhs, &rhs, span),
+        // `and` and `or` never get here: they short-circuit, so `Interp::eval` runs them.
         _ => arithmetic(op, lhs, rhs, span),
     }
 }
@@ -55,16 +55,6 @@ fn is_none(op: BinOp, lhs: &Value, rhs: &Value, span: Span) -> Result<Value, Dia
         );
     }
     Ok(Value::Bool((*lhs == Value::None) == (op == BinOp::Is)))
-}
-
-fn logic(op: BinOp, lhs: &Value, rhs: &Value, span: Span) -> Result<Value, Diagnostic> {
-    match (lhs, rhs) {
-        (Value::Bool(a), Value::Bool(b)) => {
-            Ok(Value::Bool(if op == BinOp::And { *a && *b } else { *a || *b }))
-        }
-        _ => Err(Diagnostic::new(format!("`{}` needs bools on both sides", op.symbol()), span)
-            .with_help("Fennec has no truthiness: compare explicitly, like `count > 0`")),
-    }
 }
 
 fn arithmetic(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Value, Diagnostic> {
@@ -96,9 +86,9 @@ fn int_arithmetic(op: BinOp, a: i64, b: i64, span: Span) -> Result<Value, Diagno
         BinOp::Mul => a.checked_mul(b),
         BinOp::Div => return Ok(Value::Float(to_float(a) / to_float(b))),
         BinOp::FloorDiv => {
-            a.checked_div_euclid(b).map(|q| if b < 0 && a.rem_euclid(b) != 0 { q + 1 } else { q })
+            a.checked_div_euclid(b).map(|q| if b.is_negative() && a.rem_euclid(b) != 0 { q - 1 } else { q })
         }
-        BinOp::Mod => a.checked_rem_euclid(b).map(|r| if b < 0 && r != 0 { r + b } else { r }),
+        BinOp::Mod => a.checked_rem_euclid(b).map(|r| if b.is_negative() && r != 0 { r + b } else { r }),
         BinOp::Pow => {
             let exponent = u32::try_from(b).map_err(|_| {
                 Diagnostic::new("an int can only be raised to a non-negative power", span)

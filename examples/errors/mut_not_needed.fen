@@ -1,0 +1,6 @@
+def total(scores: list[int]):
+    sum(scores)
+
+def main(stdout: Stdout):
+    mut scores = [1, 2]
+    stdout.print(total(mut scores))

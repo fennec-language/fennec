@@ -1,0 +1,5 @@
+error: the dict has no key "vex"
+ --> examples/errors/change_missing_key.fen:3:5
+  |
+3 |     hp["vex"] += 5
+  |     ^^^^^^^^^

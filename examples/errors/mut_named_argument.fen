@@ -1,0 +1,6 @@
+def add(mut items: list[int], item: int):
+    items.append(item)
+
+def main(stdout: Stdout):
+    mut numbers = [1]
+    add(mut items=numbers, item=2)

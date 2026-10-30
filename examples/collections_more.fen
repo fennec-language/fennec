@@ -1,0 +1,73 @@
+from std.game import IdMap
+
+def describe(result: Result[str, IoError]):
+    match result:
+        case Ok(text): f"read {len(text)} characters"
+        case Err(_): "couldn't do it"
+
+def main(stdout: Stdout, fs: Fs):
+    # Lists.
+    mut items = [3, 1, 4, 1, 5]
+    stdout.print(items.index(4), items.index(9), items.count(1), items.count(7))
+    stdout.print(items.pop(0), items)
+    stdout.print(items[0:2], (1, 2, 3)[1:], (1, 2, 3)[-2:-1])
+    items.extend([9, 2])
+    items.remove(1)
+    stdout.print(items)
+    items.reverse()
+    stdout.print(items)
+    items.sort()
+    stdout.print(items)
+    items.sort(key=n => -n)
+    stdout.print(items)
+    items.remove_where(n => n > 4)
+    stdout.print(items)
+    items.clear()
+    stdout.print(items)
+
+    # Dicts.
+    mut hp = {"ash": 70, "kit": 40, "vex": 90}
+    stdout.print(hp["kit"], hp.get("vex"), hp.keys(), hp.values())
+    stdout.print(hp.pop("kit"), hp, "vex" in hp, "kit" in hp)
+    hp.clear()
+    stdout.print(hp, hp.get("ash"))
+
+    # Sets.
+    mut seen = {"fire", "ice"}
+    seen.add("ice")
+    seen.add("storm")
+    seen.discard("ice")
+    seen.discard("mud")
+    seen.remove("fire")
+    stdout.print(seen)
+    seen.clear()
+    stdout.print(seen)
+
+    # IdMap.
+    mut enemies = IdMap[str]()
+    first = enemies.insert("ash")
+    enemies.insert("kit")
+    enemies.insert("vex")
+    for id, name in enemies.items():
+        stdout.print(name, id == first)
+    stdout.print(len(enemies.ids()), enemies[first])
+    enemies.remove_where(name => name.startswith("k"))
+    stdout.print(enemies.values())
+    enemies.clear()
+    stdout.print(enemies.values(), enemies.get(first))
+
+    # Strings.
+    text = "  fire ice  "
+    stdout.print(f"[{text.lstrip()}]", f"[{text.rstrip()}]")
+    stdout.print("one\ntwo".lines(), "a,b,,c".split(","), "fennec".startswith("fen"))
+    stdout.print("fennec".replace("n", "N"), "fennec".find("nec"), "fennec".find("fox"), "äbc".find("c"))
+    stdout.print("nec" in "fennec", "fox" in "fennec", "fox" not in "fennec")
+    stdout.write("no newline, ")
+    stdout.write("then one\n")
+
+    # Files. Paths in a folder that doesn't exist fail without touching the disk.
+    stdout.print(fs.exists("no/such/folder/save.txt"))
+    stdout.print(describe(fs.read_text("no/such/folder/save.txt")))
+    match fs.write_text("no/such/folder/save.txt", "saved"):
+        case Ok(_): stdout.print("wrote it")
+        case Err(_): stdout.print("couldn't write it")

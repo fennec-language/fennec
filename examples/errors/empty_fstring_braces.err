@@ -1,0 +1,7 @@
+error: this f-string has an empty `{}`
+ --> examples/errors/empty_fstring_braces.fen:2:28
+  |
+2 |     stdout.print(f"score: {}")
+  |                            ^
+  |
+  = help: put an expression inside, or write `{{` for a literal brace

@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    mut a = 1
+    mut b = 2
+    a, b += 1

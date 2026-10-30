@@ -1,0 +1,5 @@
+error: the format `.2f` doesn't apply to a list
+ --> examples/errors/format_spec_mismatch.fen:3:21
+  |
+3 |     stdout.print(f"{names:.2f}")
+  |                     ^^^^^

@@ -1,0 +1,5 @@
+error: `upper` was called with the wrong arguments
+ --> examples/errors/str_method_arguments.fen:2:18
+  |
+2 |     stdout.print("fennec".upper("loudly"))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^

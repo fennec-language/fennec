@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    match 3:
+        case +3: stdout.print("three")
+        case _: stdout.print("not three")

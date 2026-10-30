@@ -1,0 +1,7 @@
+error: this is the result of something that can fail
+  --> examples/errors/method_on_result.fen:10:18
+   |
+10 |     stdout.print(parse("12").bit_length())
+   |                  ^^^^^^^^^^^
+   |
+   = help: get the value out with `?`, `else`, or `match` first

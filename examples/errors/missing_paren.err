@@ -1,0 +1,5 @@
+error: expected `)`, found `stdout`
+ --> examples/errors/missing_paren.fen:3:5
+  |
+3 |     stdout.print(3)
+  |     ^^^^^^

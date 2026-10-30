@@ -1,0 +1,5 @@
+error: can't use `*` on a list and a list
+ --> examples/errors/multiply_lists.fen:2:18
+  |
+2 |     stdout.print([1, 2] * [3])
+  |                  ^^^^^^^^^^^^

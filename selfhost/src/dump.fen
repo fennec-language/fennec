@@ -6,13 +6,21 @@ from span import Span, Diagnostic
 from token import FPart, Tok
 from lexer import lex
 from parser import parse
-from ast import Module, Item, FnDef, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from check.checker import check
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
 
 ## Every token in `source`, one per line, or the error that stopped the lexer.
 def dump_tokens(source: str) -> str:
     match lex(source, 0):
         case Ok(tokens):
             "".join(f"{token.span.start}..{token.span.end} {describe_tok(token.tok)}\n" for token in tokens)
+        case Err(diagnostic): dump_error(diagnostic)
+
+## What the checker finds in `source`, checked against the standard library's modules:
+## every diagnostic, or the parse error that stopped it first. Nothing when it checks.
+def dump_check(source: str, library: list[Module]) -> str:
+    match parse(source):
+        case Ok(module): "".join(dump_error(diagnostic) for diagnostic in check(module, library))
         case Err(diagnostic): dump_error(diagnostic)
 
 ## A diagnostic as the dumps show it: its span and message, then its help on a second line.
@@ -128,6 +136,7 @@ struct Tree:
 
     def write_function(mut self, function: FnDef):
         self.open(f"def {function.name}", function.span)
+        self.write_generics(function.generics)
         for param in function.params:
             self.write_param(param)
         ret = function.ret
@@ -137,6 +146,14 @@ struct Tree:
             self.close()
         self.write_stmts(function.body)
         self.close()
+
+    ## Type parameters, each with the interfaces it's bound to.
+    def write_generics(mut self, generics: list[Generic]):
+        for generic in generics:
+            self.open(f"generic {generic.name}", generic.span)
+            for bound in generic.bounds:
+                self.write_type_expr(bound)
+            self.close()
 
     def write_param(mut self, param: Param):
         mut label = f"param {param.name}"
@@ -158,6 +175,7 @@ struct Tree:
 
     def write_type_def(mut self, kind: str, type_def: TypeDef):
         self.open(f"{kind} {type_def.name}", type_def.span)
+        self.write_generics(type_def.generics)
         for field in type_def.fields:
             self.write_field(field)
         for case in type_def.cases:
@@ -176,7 +194,7 @@ struct Tree:
         self.close()
 
     ## A line saying what `expr` is for, with `expr` under it, when there is one.
-    def labelled(mut self, label: str, expr: Expr?) -> nothing:
+    def labelled(mut self, label: str, expr: Expr?):
         if expr is None:
             return
         self.open(label, None)
@@ -362,7 +380,7 @@ struct Tree:
             case _: return
         self.close()
 
-    def write_arg(mut self, arg: Arg) -> nothing:
+    def write_arg(mut self, arg: Arg):
         mut label = "arg"
         if arg.is_mut:
             label += " mut"

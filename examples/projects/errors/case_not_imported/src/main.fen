@@ -2,6 +2,9 @@ from inventory import take
 
 def main(stdout: Stdout):
     match take("rope"):
-        case Ok(item): stdout.print(item)
-        case OutOfStock(item): stdout.print(f"no {item} left")
-        case Err(error): stdout.print(error)
+        case Ok(item):
+            stdout.print(item)
+        case OutOfStock(item):
+            stdout.print(f"no {item} left")
+        case Err(error):
+            stdout.print(error)

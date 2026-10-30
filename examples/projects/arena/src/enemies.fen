@@ -8,8 +8,10 @@ pub enum Rank:
 
     pub def label(self) -> str:
         match self:
-            case .Grunt: "grunt"
-            case .Boss: "boss"
+            case .Grunt:
+                "grunt"
+            case .Boss:
+                "boss"
 
 pub struct Enemy:
     pub name: str

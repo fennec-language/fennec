@@ -43,7 +43,6 @@ def main(stdout: Stdout):
 
     mut counts = [1, 2, 3, 4]
     for mut n in counts:
-        if n == 3:
-            break
+        if n == 3: break
         n *= 10
     stdout.print(counts)

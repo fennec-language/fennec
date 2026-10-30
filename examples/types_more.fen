@@ -40,13 +40,11 @@ struct Player:
         f"hi, {self.name}"
 
 def find(name: str) -> Player?:
-    if name == "Kit":
-        return Player(name="Kit")
+    if name == "Kit": return Player(name="Kit")
     None
 
 def parse(text: str):
-    if not text.isdigit():
-        return Err(f"{text} isn't a number")
+    if not text.isdigit(): return Err(f"{text} isn't a number")
     Ok(int(text))
 
 def call(make: () -> int) -> int:
@@ -89,30 +87,11 @@ def main(stdout: Stdout):
     stdout.print(
         call(() => 42),
         combine((a, b) => a + b, 2, 3),
-        combine(
-            (
-                first,
-                second,
-            ) => second,
-            1,
-            2,
-        ),
+        combine((first, second) => second, 1, 2),
     )
 
     # Collections can end with a comma.
-    stdout.print(
-        {
-            "a": 1,
-        },
-        {
-            1,
-            2,
-        },
-        [
-            1,
-        ],
-        (1,),
-    )
+    stdout.print({"a": 1}, {1, 2}, [1], (1,))
 
     # A function can return a result it made itself.
     stdout.print(parse("12"), parse("twelve"))

@@ -9,10 +9,8 @@ struct Path:
 
     ## This path with `part` added. A `part` that starts with `/` replaces the path.
     def join(self, part: str) -> Path:
-        if part.startswith("/") or self.text == "":
-            return Path(part)
-        if self.text.endswith("/"):
-            return Path(self.text + part)
+        if part.startswith("/") or self.text == "": return Path(part)
+        if self.text.endswith("/"): return Path(self.text + part)
         Path(self.text + "/" + part)
 
     ## Whether the path starts at the root, `/`.
@@ -26,31 +24,27 @@ struct Path:
     ## The last part: `fox.png` for `assets/fox.png`.
     def name(self) -> str:
         parts = self.parts()
-        if len(parts) == 0:
-            return ""
+        if len(parts) == 0: return ""
         parts[-1]
 
     ## What follows the name's last `.`, without the dot: `png` for `fox.png`. Empty for
     ## names like `notes` and `.hidden`.
     def extension(self) -> str:
         pieces = self.name().split(".")
-        if len(pieces) < 2 or (len(pieces) == 2 and pieces[0] == ""):
-            return ""
+        if len(pieces) < 2 or (len(pieces) == 2 and pieces[0] == ""): return ""
         pieces[-1]
 
     ## The name without its extension: `fox` for `fox.png`.
     def stem(self) -> str:
         name = self.name()
         extension = self.extension()
-        if extension == "":
-            return name
+        if extension == "": return name
         name[:len(name) - len(extension) - 1]
 
     ## The path without its last part: `assets` for `assets/fox.png`, and `.` for `fox.png`.
     def parent(self) -> Path:
         parts = self.parts()
-        if len(parts) == 0:
-            return self.rebuild([])
+        if len(parts) == 0: return self.rebuild([])
         self.rebuild(parts[:len(parts) - 1])
 
     ## The same path written simply: `a/./b/../c` becomes `a/c`. A `..` that would go above
@@ -69,8 +63,6 @@ struct Path:
     ## `parts` joined by `/`, starting at the root when this path does.
     def rebuild(self, parts: list[str]) -> Path:
         text = "/".join(parts)
-        if self.is_absolute():
-            return Path("/" + text)
-        if text == "":
-            return Path(".")
+        if self.is_absolute(): return Path("/" + text)
+        if text == "": return Path(".")
         Path(text)

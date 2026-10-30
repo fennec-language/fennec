@@ -38,9 +38,7 @@ pub fn format(source: &str) -> Result<String, Error> {
     let comments = comments::Comments::attach(source, &lexed.tokens, &lexed.comments);
     let mut driver = blocks::Driver::new(source, &lexed.tokens, comments);
     driver.run();
-    let newline =
-        if source.split('\n').next().is_some_and(|line| line.ends_with('\r')) { "\r\n" } else { "\n" };
-    let formatted = output::render(&driver.writer.lines, newline);
+    let formatted = output::render(&driver.writer.lines);
     check_same(source, &before, &formatted)?;
     Ok(formatted)
 }
@@ -49,13 +47,29 @@ pub fn format(source: &str) -> Result<String, Error> {
 /// formatter, so the file is left alone.
 fn check_same(source: &str, before: &fennec_syntax::Module, formatted: &str) -> Result<(), Error> {
     let after = fennec_syntax::parse(formatted).map_err(|_| Error::WouldChange("meaning"))?;
-    if without_spans(before) != without_spans(&after) {
+    if without_spans(&imports_sorted(before)) != without_spans(&imports_sorted(&after)) {
         return Err(Error::WouldChange("meaning"));
     }
     if comment_texts(source) != comment_texts(formatted) {
         return Err(Error::WouldChange("comments"));
     }
     Ok(())
+}
+
+/// A module with its imports first and sorted, names included, since their order means
+/// nothing.
+fn imports_sorted(module: &fennec_syntax::Module) -> fennec_syntax::Module {
+    let (mut imports, rest): (Vec<_>, Vec<_>) =
+        module.items.iter().cloned().partition(|item| matches!(item, fennec_syntax::Item::Import(_)));
+    for item in &mut imports {
+        if let fennec_syntax::Item::Import(import) = item {
+            import.names.sort();
+            import.span = fennec_syntax::Span::default();
+        }
+    }
+    imports.sort_by_key(|item| format!("{item:?}"));
+    imports.extend(rest);
+    fennec_syntax::Module { items: imports }
 }
 
 /// A syntax tree written out with every position left out, so trees from differently laid
@@ -75,12 +89,19 @@ pub fn without_spans(module: &fennec_syntax::Module) -> String {
     out
 }
 
+/// Every comment, as the formatter writes it, sorted: sorting imports moves their comments.
 fn comment_texts(source: &str) -> Vec<String> {
-    fennec_syntax::lex_source(source)
+    let mut texts: Vec<String> = fennec_syntax::lex_source(source)
         .map(|lexed| {
-            lexed.comments.iter().map(|span| comments::text(source, *span).trim_end().to_owned()).collect()
+            lexed
+                .comments
+                .iter()
+                .map(|span| layout::spaced(comments::text(source, *span).trim_end()))
+                .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    texts.sort();
+    texts
 }
 
 #[cfg(test)]
@@ -104,8 +125,8 @@ mod tests {
     }
 
     #[test]
-    fn comments_are_listed_word_for_word() {
-        assert_eq!(comment_texts("# one  \nx = 1  #two\n"), ["# one", "#two"]);
+    fn comments_are_listed_sorted_with_their_space_after_the_hash() {
+        assert_eq!(comment_texts("x = 1  #two\n# one  \n"), ["# one", "# two"]);
         assert_eq!(comment_texts("x = 1\n"), Vec::<String>::new());
     }
 

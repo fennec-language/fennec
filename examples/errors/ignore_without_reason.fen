@@ -1,6 +1,5 @@
 def save(path: str):
-    if path == "":
-        fail IoError("there's nowhere to save")
+    if path == "": fail IoError("there's nowhere to save")
 
 def main(stdout: Stdout):
     ignore(save("slot1"), "  ")

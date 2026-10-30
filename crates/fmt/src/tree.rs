@@ -1,7 +1,7 @@
 //! A logical line as a tree of bracket groups, so the layout can break the outermost
 //! group that doesn't fit. Comments inside brackets are kept in the tree where they were.
 
-use crate::spacing::{Bracket, Tok};
+use crate::spacing::{Bracket, Spacing, Tok};
 use fennec_syntax::TokenKind;
 
 pub(crate) enum Node<'a> {
@@ -9,6 +9,8 @@ pub(crate) enum Node<'a> {
         text: &'a str,
         space: bool,
         width: usize,
+        /// How loosely it binds as a binary operator, or 0.
+        precedence: u8,
     },
     Group(Group<'a>),
     /// A comment in the middle of a line. A trailing one ends its line; an own-line one
@@ -29,12 +31,23 @@ pub(crate) struct Group<'a> {
     pub(crate) items: Vec<Item<'a>>,
     /// Own-line comments before the closing bracket.
     pub(crate) dangling: Vec<&'a str>,
-    /// Whether the source ends the list with a comma.
-    pub(crate) trailing_comma: bool,
-    /// Whether a comma can be added after the last item when the list is broken.
-    pub(crate) comma_allowed: bool,
+    /// When the last item gets a comma after it.
+    pub(crate) comma: Comma,
     /// The width written on one line, or None if it must break.
     pub(crate) flat: Option<usize>,
+    /// Whether every item is a plain literal, so a broken list fills its lines.
+    pub(crate) literals: bool,
+}
+
+/// When a list's last item gets a comma after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Comma {
+    /// Never, because the parser wouldn't take one there: after a comprehension, or in an index.
+    Never,
+    /// When the list is broken across lines.
+    WhenBroken,
+    /// Always, even on one line: a one-item tuple, where the comma makes it a tuple.
+    Always,
 }
 
 /// One element of a group, or a whole logical line.
@@ -55,9 +68,27 @@ pub(crate) struct Line<'t, 'a> {
     pub(crate) space: &'t [bool],
     /// What each opening bracket is for.
     pub(crate) brackets: &'t [Option<Bracket>],
+    /// How loosely each binary operator binds, or 0.
+    pub(crate) precedence: &'t [u8],
 }
 
-impl<'a> Line<'_, 'a> {
+impl<'t, 'a> Line<'t, 'a> {
+    pub(crate) fn new(
+        toks: &'t [Tok<'a>],
+        leading: &'t [&'t [&'a str]],
+        trailing: &'t [Option<&'a str>],
+        spacing: &'t Spacing,
+    ) -> Self {
+        Line {
+            toks,
+            leading,
+            trailing,
+            space: &spacing.space,
+            brackets: &spacing.brackets,
+            precedence: &spacing.precedence,
+        }
+    }
+
     fn text(&self, at: usize) -> &'a str {
         self.toks.get(at).map_or("", |tok| tok.text)
     }
@@ -80,22 +111,106 @@ impl<'a> Line<'_, 'a> {
 
     /// The line cut in two before token `at`.
     pub(crate) fn split_at(&self, at: usize) -> (Self, Self) {
-        let cut = |tokens: usize| tokens.min(at);
-        let (toks, rest_toks) = self.toks.split_at(cut(self.toks.len()));
-        let (leading, rest_leading) = self.leading.split_at(cut(self.leading.len()));
-        let (trailing, rest_trailing) = self.trailing.split_at(cut(self.trailing.len()));
-        let (space, rest_space) = self.space.split_at(cut(self.space.len()));
-        let (brackets, rest_brackets) = self.brackets.split_at(cut(self.brackets.len()));
+        fn cut<T>(slice: &[T], at: usize) -> (&[T], &[T]) {
+            slice.split_at(at.min(slice.len()))
+        }
+        let (toks, rest_toks) = cut(self.toks, at);
+        let (leading, rest_leading) = cut(self.leading, at);
+        let (trailing, rest_trailing) = cut(self.trailing, at);
+        let (space, rest_space) = cut(self.space, at);
+        let (brackets, rest_brackets) = cut(self.brackets, at);
+        let (precedence, rest_precedence) = cut(self.precedence, at);
         (
-            Line { toks, leading, trailing, space, brackets },
+            Line { toks, leading, trailing, space, brackets, precedence },
             Line {
                 toks: rest_toks,
                 leading: rest_leading,
                 trailing: rest_trailing,
                 space: rest_space,
                 brackets: rest_brackets,
+                precedence: rest_precedence,
             },
         )
+    }
+
+    /// The line laid out to fit in `room`: as it is if it fits, or else with its expression
+    /// wrapped in parentheses when that's what lets it break across lines.
+    pub(crate) fn shaped(&self, room: usize) -> Item<'a> {
+        let item = self.build();
+        if item.flat.is_none_or(|width| width <= room) {
+            return item;
+        }
+        self.wrap_range().map_or(item, |(from, to)| self.wrapped(from, to))
+    }
+
+    /// The expression a too-long statement can wrap in parentheses: an assignment's value,
+    /// what follows `return`, `assert`, `fail` or `yield`, or the condition of an `if` or
+    /// `while`. Only one with an operator to break at, and nothing that reads oddly split.
+    fn wrap_range(&self) -> Option<(usize, usize)> {
+        let mut depth = 0_usize;
+        let depths: Vec<usize> = self
+            .toks
+            .iter()
+            .map(|tok| {
+                let before = depth;
+                match tok.text {
+                    "(" | "[" | "{" if tok.kind == TokenKind::Punct => depth += 1,
+                    ")" | "]" | "}" if tok.kind == TokenKind::Punct => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+                before.min(depth)
+            })
+            .collect();
+        let top = |at: usize| depths.get(at) == Some(&0);
+        let first = self.toks.first()?;
+        let len = self.toks.len();
+        let (from, to) = match first.text {
+            "return" | "assert" | "fail" | "yield" if first.kind == TokenKind::Keyword => (1, len),
+            "if" | "elif" | "while" if first.kind == TokenKind::Keyword => {
+                (1, len.checked_sub(1).filter(|&last| self.text(last) == ":")?)
+            }
+            _ => {
+                let assign =
+                    (0..len).find(|&at| top(at) && self.is_punct_in(at, &["=", "+=", "-=", "*=", "/="]))?;
+                (assign + 1, len)
+            }
+        };
+        let range = from..to;
+        let operator = range.clone().any(|at| top(at) && self.precedence.get(at).is_some_and(|&p| p > 0));
+        let blocked = range
+            .clone()
+            .any(|at| top(at) && matches!(self.text(at), "if" | "else" | "for" | "=>" | "match"));
+        let one_group = self.opens(from) && (from + 1..to).all(|at| !top(at) || at + 1 == to);
+        (operator && !blocked && !one_group && from < to).then_some((from, to))
+    }
+
+    fn is_punct_in(&self, at: usize, texts: &[&str]) -> bool {
+        self.toks.get(at).is_some_and(|tok| tok.kind == TokenKind::Punct && texts.contains(&tok.text))
+    }
+
+    /// The line with tokens `from..to` wrapped in parentheses that have to break.
+    fn wrapped(&self, from: usize, to: usize) -> Item<'a> {
+        let (mut head, _) = self.item(0, from, false);
+        let (mut inner, _) = self.item(from, to, false);
+        let (tail, _) = self.item(to, self.toks.len(), false);
+        inner.leading.clear();
+        inner.trailing.clear();
+        head.leading.clear();
+        head.trailing.clear();
+        head.nodes.push(Node::Group(Group {
+            space: from > 0,
+            open: "(",
+            close: ")",
+            open_comment: None,
+            items: vec![inner],
+            dangling: Vec::new(),
+            comma: Comma::Never,
+            flat: None,
+            literals: false,
+        }));
+        head.nodes.extend(tail.nodes);
+        head.flat = None;
+        head
     }
 
     /// The whole line as one item. The first token's leading comments and the last token's
@@ -132,7 +247,13 @@ impl<'a> Line<'_, 'a> {
                 close
             } else {
                 let text = self.text(at);
-                item.nodes.push(Node::Token { text, space: self.space(at), width: text.chars().count() });
+                let precedence = self.precedence.get(at).copied().unwrap_or(0);
+                item.nodes.push(Node::Token {
+                    text,
+                    space: self.space(at),
+                    width: text.chars().count(),
+                    precedence,
+                });
                 at
             };
             at = last + 1;
@@ -169,12 +290,13 @@ impl<'a> Line<'_, 'a> {
             open_comment: self.trailing(open),
             items: Vec::new(),
             dangling: Vec::new(),
-            trailing_comma: false,
-            comma_allowed: false,
+            comma: Comma::Never,
             flat: None,
+            literals: false,
         };
         let mut at = open + 1;
         let mut has_for = false;
+        let mut ends_with_comma = false;
         while at < end && !self.closes(at) {
             let (mut item, stop) = self.item(at, end, true);
             has_for |= item.nodes.iter().any(|node| matches!(node, Node::Token { text: "for", .. }));
@@ -183,11 +305,11 @@ impl<'a> Line<'_, 'a> {
                 group.dangling.extend(item.leading);
                 break;
             }
-            group.trailing_comma = false;
+            ends_with_comma = false;
             if self.is_punct(at, ",") {
                 item.trailing.extend(self.leading(at).iter().copied());
                 item.trailing.extend(self.trailing(at));
-                group.trailing_comma = true;
+                ends_with_comma = true;
                 at += 1;
             }
             group.items.push(item);
@@ -195,20 +317,48 @@ impl<'a> Line<'_, 'a> {
         group.dangling.extend_from_slice(self.leading(at));
         group.close = self.text(at);
         let bracket = self.brackets.get(open).copied().flatten().unwrap_or(Bracket::Paren);
-        group.comma_allowed = comma_allowed(bracket, group.items.len(), group.trailing_comma, has_for);
-        let single_tuple = bracket == Bracket::Paren && group.items.len() == 1;
-        let magic = group.trailing_comma && !single_tuple;
-        group.flat = if magic { None } else { group_flat(&group) };
+        group.comma = comma(bracket, group.items.len(), ends_with_comma, has_for);
+        group.flat = group_flat(&group);
+        group.literals = group.items.len() > 1 && group.items.iter().all(is_literal);
         (group, at)
     }
 }
 
-/// Whether a comma may follow the last item, so the list can end with one when broken.
-fn comma_allowed(bracket: Bracket, items: usize, trailing_comma: bool, has_for: bool) -> bool {
-    match bracket {
+/// The longest string, quotes included, that counts as a plain literal for filling lines.
+const SHORT_STRING: usize = 20;
+
+/// Whether an item is a plain literal: a number, possibly negative, `True`, `False`, `None`, or
+/// a short string.
+fn is_literal(item: &Item<'_>) -> bool {
+    let plain = |text: &str| {
+        text.starts_with(|c: char| c.is_ascii_digit())
+            || matches!(text, "True" | "False" | "None")
+            || text.starts_with('"') && text.chars().count() <= SHORT_STRING
+    };
+    item.leading.is_empty()
+        && item.trailing.is_empty()
+        && match item.nodes.as_slice() {
+            [Node::Token { text, .. }] => plain(text),
+            [Node::Token { text: "-", .. }, Node::Token { text, .. }] => {
+                text.starts_with(|c: char| c.is_ascii_digit())
+            }
+            _ => false,
+        }
+}
+
+/// When a list's last item gets a comma: when it's broken, wherever the parser takes one.
+fn comma(bracket: Bracket, items: usize, ends_with_comma: bool, has_for: bool) -> Comma {
+    let allowed = match bracket {
         Bracket::Call | Bracket::Params | Bracket::Literal => !has_for,
-        Bracket::Paren => items > 1 || trailing_comma,
-        Bracket::LambdaParams | Bracket::Index | Bracket::Generics => trailing_comma,
+        Bracket::Paren => items > 1 || ends_with_comma,
+        Bracket::LambdaParams | Bracket::Index | Bracket::Generics => ends_with_comma,
+    };
+    if bracket == Bracket::Paren && items == 1 && ends_with_comma {
+        Comma::Always
+    } else if allowed {
+        Comma::WhenBroken
+    } else {
+        Comma::Never
     }
 }
 
@@ -228,7 +378,7 @@ fn group_flat(group: &Group<'_>) -> Option<usize> {
     if group.open_comment.is_some() || !group.dangling.is_empty() {
         return None;
     }
-    let mut width = group.open.len() + group.close.len() + usize::from(group.trailing_comma);
+    let mut width = group.open.len() + group.close.len() + usize::from(group.comma == Comma::Always);
     for (at, item) in group.items.iter().enumerate() {
         if !item.leading.is_empty() || !item.trailing.is_empty() {
             return None;

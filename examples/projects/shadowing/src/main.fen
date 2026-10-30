@@ -12,9 +12,12 @@ def main(stdout: Stdout):
     for step in [10]:
         stdout.print(step)
     match tools.find([7, 8], 8):
-        case Ok(index): stdout.print(f"found at {index}")
-        case tools.Missing(value): stdout.print(f"{value} is missing")
-        case Err(error): stdout.print(error)
+        case Ok(index):
+            stdout.print(f"found at {index}")
+        case tools.Missing(value):
+            stdout.print(f"{value} is missing")
+        case Err(error):
+            stdout.print(error)
     stdout.print(scaled(3, 4))
 
 def scaled(first: int, scale: int) -> int:

@@ -2,8 +2,10 @@ from std.game import IdMap
 
 def describe(result: Result[str, IoError]):
     match result:
-        case Ok(text): f"read {len(text)} characters"
-        case Err(_): "couldn't do it"
+        case Ok(text):
+            f"read {len(text)} characters"
+        case Err(_):
+            "couldn't do it"
 
 def main(stdout: Stdout, fs: Fs):
     # Lists.
@@ -74,5 +76,7 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print(fs.exists("no/such/folder/save.txt"))
     stdout.print(describe(fs.read_text("no/such/folder/save.txt")))
     match fs.write_text("no/such/folder/save.txt", "saved"):
-        case Ok(_): stdout.print("wrote it")
-        case Err(_): stdout.print("couldn't write it")
+        case Ok(_):
+            stdout.print("wrote it")
+        case Err(_):
+            stdout.print("couldn't write it")

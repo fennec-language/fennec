@@ -5,8 +5,7 @@ struct Player:
     name: str
 
 def find(name: str):
-    if name == "":
-        fail Missing(name)
+    if name == "": fail Missing(name)
     Player(name=name)
 
 def main(stdout: Stdout):

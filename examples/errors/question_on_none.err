@@ -1,7 +1,7 @@
 error: `?` needs a result, but this is a Player?
-  --> examples/errors/question_on_none.fen:11:14
+  --> examples/errors/question_on_none.fen:10:14
    |
-11 |     player = find(players, name)?
+10 |     player = find(players, name)?
    |              ^^^^^^^^^^^^^^^^^^^
    |
    = help: `?` passes errors up, not None: give a default with `else`, or check with `if x is None:`

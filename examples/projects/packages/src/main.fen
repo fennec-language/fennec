@@ -1,9 +1,9 @@
 ## `import world.physics` binds `world`, `from world import weather` binds `weather`, and
 ## `from world.physics import gravity` binds `gravity`, as in Python.
 
-import world.physics
 from world import weather
 from world.physics import gravity
+import world.physics
 
 def main(stdout: Stdout):
     stdout.print(world.physics.fall(2.0), gravity())

@@ -2,8 +2,7 @@ struct Problem:
     reason: str
 
 def check(n: int):
-    if n < 0:
-        fail Problem("negative")
+    if n < 0: fail Problem("negative")
     n
 
 def main(stdout: Stdout):

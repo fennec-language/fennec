@@ -25,6 +25,10 @@ impl CallArg {
     pub(crate) fn plain(value: Value, span: Span) -> Self {
         CallArg { name: None, value, mut_place: None, literal: false, span }
     }
+
+    pub(crate) fn named(name: &str, value: Value, span: Span) -> Self {
+        CallArg { name: Some(name.to_owned()), ..CallArg::plain(value, span) }
+    }
 }
 
 impl Interp<'_> {

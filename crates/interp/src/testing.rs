@@ -182,7 +182,7 @@ impl Interp<'_> {
             for field in &fields {
                 if let Some(field_ty) = &field.ty {
                     let value = self.generate(field_ty, rng, depth + 1)?;
-                    args.push(CallArg { name: Some(field.name.clone()), ..CallArg::plain(value, ty.span) });
+                    args.push(CallArg::named(&field.name, value, ty.span));
                 }
             }
             let built = match case {

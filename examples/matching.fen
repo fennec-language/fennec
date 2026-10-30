@@ -58,6 +58,11 @@ def main(stdout: Stdout):
             case (): stdout.print("no numbers")
             case _: stdout.print("three numbers")
 
+    # A plain name never matches an error, so a forgotten error can't pass as a value.
+    match Err("broken"):
+        case value: stdout.print(f"got {value}")
+        case _: stdout.print("an error")
+
     # A dotted case never looks inside an error.
     match Err(Shape.Point):
         case .Point: stdout.print("a point")

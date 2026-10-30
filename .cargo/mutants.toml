@@ -4,3 +4,4 @@
 # mutation in `fennec-syntax` or `fennec-interp` has to be checked against the whole
 # workspace's tests, not only the tests of the crate it is in.
 test_workspace = true
+

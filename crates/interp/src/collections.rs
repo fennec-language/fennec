@@ -64,6 +64,7 @@ impl Interp<'_> {
         match receiver {
             Value::Capability(Capability::Stdout) => self.stdout_method(method, &args, span),
             Value::Capability(Capability::Fs) => self.fs_method(method, &args, span),
+            Value::Capability(Capability::Clock) => self.clock_method(method, &args, span),
             Value::Str(text) => str_method(text, method, &args, span),
             Value::List(items) => match (method, args.as_slice()) {
                 ("index", [value]) => items
@@ -114,7 +115,7 @@ impl Interp<'_> {
     fn fs_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
         let io_error = |interp: &mut Self, err: std::io::Error| {
             interp
-                .make_error("IoError", vec![("reason", Value::str(&err.to_string()))], span)
+                .make_value("IoError", vec![("reason", Value::str(&err.to_string()))], span)
                 .map(|error| Value::Err(Rc::new(error)))
         };
         let paths: Vec<Value> = args.iter().map(path_text).collect();
@@ -132,6 +133,26 @@ impl Interp<'_> {
             }
             ("exists" | "read_text" | "write_text", _) => Err(wrong_args(method, span)),
             _ => Err(no_method(&Value::Capability(Capability::Fs), method, span)),
+        }
+    }
+
+    /// `clock.now()` reads the monotonic clock; `clock.sleep(duration)` waits.
+    fn clock_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+        match (method, args) {
+            ("now", []) => {
+                let nanos = i64::try_from(clock_start().elapsed().as_nanos()).unwrap_or(i64::MAX);
+                self.make_value("Instant", vec![("nanos", Value::Int(nanos))], span)
+            }
+            ("sleep", [Value::Instance(duration)]) if duration.type_name.as_ref() == "Duration" => {
+                let nanos = match duration.field("nanos") {
+                    Some(Value::Int(nanos)) => u64::try_from(*nanos).unwrap_or(0),
+                    _ => 0,
+                };
+                std::thread::sleep(std::time::Duration::from_nanos(nanos));
+                Ok(Value::Unit)
+            }
+            ("now" | "sleep", _) => Err(wrong_args(method, span)),
+            _ => Err(no_method(&Value::Capability(Capability::Clock), method, span)),
         }
     }
 
@@ -317,6 +338,12 @@ impl Interp<'_> {
             other => Err(Diagnostic::new(format!("a {} can't be called", other.type_name()), span)),
         }
     }
+}
+
+/// When the monotonic clock started: the first time any program read it.
+fn clock_start() -> std::time::Instant {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *START.get_or_init(std::time::Instant::now)
 }
 
 fn lookup(pairs: &[(Value, Value)], key: &Value) -> Option<Value> {

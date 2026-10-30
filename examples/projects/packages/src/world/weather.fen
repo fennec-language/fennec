@@ -1,0 +1,4 @@
+## Tomorrow's weather, by day number.
+
+def forecast(day: int) -> str:
+    ["sun", "rain", "fog"][day % 3]

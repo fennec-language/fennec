@@ -60,6 +60,7 @@ impl Lexer<'_> {
                 '#' => self.skip_comment(),
                 '"' => self.string(start)?,
                 'f' if self.peek(1) == Some('"') => self.fstring(start)?,
+                'r' if self.peek(1) == Some('"') => self.raw_string(start)?,
                 '0'..='9' => self.number(start)?,
                 c if c.is_ascii_alphabetic() || c == '_' => self.word(start),
                 _ => self.punct(start)?,
@@ -255,6 +256,25 @@ impl Lexer<'_> {
         Ok(())
     }
 
+    /// `r"..."`: backslashes are kept as written, for patterns like `r"\d+"`.
+    fn raw_string(&mut self, start: usize) -> Result<(), Diagnostic> {
+        self.pos += 2;
+        let mut text = String::new();
+        loop {
+            match self.peek(0) {
+                None | Some('\n') => return Err(self.unterminated(start)),
+                Some('"') => break,
+                Some(c) => {
+                    text.push(c);
+                    self.pos += 1;
+                }
+            }
+        }
+        self.pos += 1;
+        self.push(Tok::Str(text), start);
+        Ok(())
+    }
+
     fn unterminated(&self, start: usize) -> Diagnostic {
         Diagnostic::new("this string never ends", Span::new(start, start + 1).shifted(self.base))
             .with_help("close it with `\"` on the same line")
@@ -276,7 +296,9 @@ impl Lexer<'_> {
                     format!("`\\{other}` isn't an escape Fennec knows"),
                     self.span(at),
                 )
-                .with_help("the escapes are \\n, \\t, \\r, \\0, \\\\ and \\\""));
+                .with_help(
+                    "the escapes are \\n, \\t, \\r, \\0, \\\\ and \\\"; to keep backslashes as written, use a raw string like r\"\\d+\"",
+                ));
             }
         };
         self.pos += 1;

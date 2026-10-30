@@ -1,0 +1,5 @@
+error: can't choose from an empty list
+ --> examples/errors/random_choice_empty.fen:4:5
+  |
+4 |     rng.choice(names)
+  |     ^^^^^^^^^^^^^^^^^

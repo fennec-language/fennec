@@ -200,9 +200,10 @@ impl Loader {
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Import(import) if !is_std(import) => Some((import.module.clone(), import.span)),
+                Item::Import(import) if !is_std(import) => Some(self.imported_modules(import)),
                 _ => None,
             })
+            .flatten()
             .collect();
         self.files.push(File { name: name.to_owned(), shown, module });
         self.stack.push(name.to_owned());
@@ -211,6 +212,25 @@ impl Loader {
             self.visit(&module.join("."), &real, shown, Some(span));
         }
         self.stack.pop();
+    }
+
+    /// The modules an import loads. `from game import physics` loads `game/physics.fen` when
+    /// there is one, as in Python, and otherwise takes `physics` from `game.fen`.
+    fn imported_modules(&self, import: &Import) -> Vec<(Vec<String>, Span)> {
+        let mut modules = Vec::new();
+        let mut from_parent = import.names.is_empty();
+        for name in &import.names {
+            let submodule: Vec<String> = import.module.iter().chain([name]).cloned().collect();
+            if self.module_path(&submodule).0.is_file() {
+                modules.push((submodule, import.span));
+            } else {
+                from_parent = true;
+            }
+        }
+        if from_parent {
+            modules.push((import.module.clone(), import.span));
+        }
+        modules
     }
 
     /// Checks names across the files and merges them into one module.

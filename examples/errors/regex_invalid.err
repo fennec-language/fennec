@@ -1,0 +1,7 @@
+error: this pattern isn't valid: this `(` is never closed
+ --> examples/errors/regex_invalid.fen:4:18
+  |
+4 |     stat = Regex(r"(\w+)=(\d+")
+  |                  ^^^^^^^^^^^^^
+  |
+  = help: the problem is at character 6 of the pattern

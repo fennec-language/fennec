@@ -71,8 +71,8 @@ pub(crate) struct FnCx<'c> {
     pub(crate) yields: Vec<Type>,
     /// The type parameters in scope, with the interface each has to fit.
     pub(crate) generics: Vec<(String, Option<String>)>,
-    /// Whether anything was reported, so types left open are consequences, not news.
-    pub(crate) failed: bool,
+    /// How many problems were reported. Types left open after one are consequences, not news.
+    pub(crate) reported: usize,
     /// Every expression's type and every declared name's, as they're found.
     exprs: Vec<(Span, Type)>,
     names: Vec<(Span, String, Type)>,
@@ -96,7 +96,7 @@ impl<'c> FnCx<'c> {
             errors: Vec::new(),
             yields: Vec::new(),
             generics: Vec::new(),
-            failed: false,
+            reported: 0,
             exprs: Vec::new(),
             names: Vec::new(),
             first_var,
@@ -118,9 +118,9 @@ impl<'c> FnCx<'c> {
             .collect();
         let mut all: Vec<Type> = exprs.values().chain(names.values()).cloned().collect();
         all.extend(extra.iter().cloned());
-        if !self.failed {
-            for (_, span, hole) in self.checker.open_since(self.first_var, &all) {
-                self.error(unsettled(&hole, span));
+        if self.reported == 0 {
+            for (_, span, hole, name) in self.checker.open_since(self.first_var, &all) {
+                self.error(unsettled(&hole, span, name.as_deref()));
             }
         }
         let checker = &mut *self.checker;
@@ -196,7 +196,8 @@ impl<'c> FnCx<'c> {
             cx.joined(&values, def.span, "returns")
         };
         let errors = cx.errors.clone();
-        let error = if errors.is_empty() { Type::Unknown } else { cx.joined(&errors, def.span, "fails with") };
+        let error =
+            if errors.is_empty() { Type::Unknown } else { cx.joined(&errors, def.span, "fails with") };
         let (value, error) = (cx.checker.settled(&value), cx.checker.settled(&error));
         cx.finish(&[value.clone(), error.clone()]);
         BodyType { value, error, suggestion }
@@ -269,10 +270,12 @@ impl<'c> FnCx<'c> {
             let expected = cx.checker.field_type(type_name, None, &field.name);
             let Some(default) = &field.default else { continue };
             let actual = cx.expr(default);
-            if field.ty.is_some() && !cx.checker.fits(&expected, &actual) {
+            if !cx.checker.fits(&expected, &actual) {
                 let what = format!("`{}`", field.name);
                 cx.error(crate::messages::mismatch(&what, &expected, &actual, default.span));
             }
+            // A field whose type its default doesn't show has been reported already.
+            cx.reported += usize::from(expected == Type::Unknown);
         }
         let rules: Vec<&Expr> = def.fields.iter().filter_map(|field| field.rule.as_ref()).collect();
         if !rules.is_empty() {
@@ -298,7 +301,7 @@ impl<'c> FnCx<'c> {
 
     pub(crate) fn error(&mut self, diagnostic: Diagnostic) {
         if self.report {
-            self.failed = true;
+            self.reported += 1;
             self.checker.diagnostics.push(diagnostic);
         }
     }
@@ -325,7 +328,10 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn declare_as(&mut self, name: &str, ty: Type, is_mut: bool, origin: Origin, at: Span) {
-        self.declare_with(name, ty.clone(), ty, is_mut, origin, at);
+        self.declare_with(
+            Binding { name: name.to_owned(), ty: ty.clone(), declared: ty, is_mut, origin },
+            at,
+        );
     }
 
     /// Declares a name by assigning to it. A name first given `None` holds an optional of a
@@ -335,23 +341,16 @@ impl<'c> FnCx<'c> {
             Type::None => Type::Optional(Box::new(self.checker.fresh(at, Hole::None))),
             other => other,
         };
-        self.declare_with(name, ty, declared, is_mut, Origin::Local, at);
+        self.declare_with(Binding { name: name.to_owned(), ty, declared, is_mut, origin: Origin::Local }, at);
     }
 
     /// Declares a name with the type it was declared with, and what it holds now.
-    pub(crate) fn declare_with(
-        &mut self,
-        name: &str,
-        ty: Type,
-        declared: Type,
-        is_mut: bool,
-        origin: Origin,
-        at: Span,
-    ) {
-        if !name.contains('.') {
-            self.names.push((at, name.to_owned(), declared.clone()));
+    pub(crate) fn declare_with(&mut self, binding: Binding, at: Span) {
+        if !binding.name.contains('.') {
+            self.checker.name_vars(&binding.declared, &binding.name);
+            self.names.push((at, binding.name.clone(), binding.declared.clone()));
         }
-        self.bind(Binding { name: name.to_owned(), ty, declared, is_mut, origin });
+        self.bind(binding);
     }
 
     /// A name from around a nested function, which it can read.

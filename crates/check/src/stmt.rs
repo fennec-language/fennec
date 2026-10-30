@@ -185,7 +185,14 @@ impl FnCx<'_> {
         if forever { Flow::exit() } else { Flow::unit() }
     }
 
-    fn for_stmt(&mut self, names: &[String], is_mut: bool, iter: &Expr, body: &[Stmt], span: fennec_syntax::Span) {
+    fn for_stmt(
+        &mut self,
+        names: &[String],
+        is_mut: bool,
+        iter: &Expr,
+        body: &[Stmt],
+        span: fennec_syntax::Span,
+    ) {
         if is_mut {
             self.mut_place(iter, "`for mut` changes each item, so loop over something held in a mut name");
         }
@@ -230,7 +237,8 @@ impl FnCx<'_> {
             )),
             Type::Unknown => {}
             Type::Var(_) => {
-                let parts: Vec<Type> = (0..count).map(|_| self.checker.fresh(span, crate::infer::Hole::Unpacked)).collect();
+                let parts: Vec<Type> =
+                    (0..count).map(|_| self.checker.fresh(span, crate::infer::Hole::Unpacked)).collect();
                 let tuple = Type::Tuple(parts.clone());
                 self.checker.fits(ty, &tuple);
                 return parts;

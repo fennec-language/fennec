@@ -59,7 +59,10 @@ fn return_types_that_cannot_be_told_are_reported() {
         ),
         ("def f(n: int):\n    [(n, n), (n,)]\n", "this list mixes a (int, int) and a (int) @ [(n, n), (n,)]"),
         ("def f(n: int):\n    [[n], 'a']\n", "this list mixes a list[int] and a str @ [[n], \"a\"]"),
-        ("def f(n: int):\n    for i in [n]:\n        return 1\n", "`f` returns an int and nothing @ def f(n: int)"),
+        (
+            "def f(n: int):\n    for i in [n]:\n        return 1\n",
+            "`f` returns an int and nothing @ def f(n: int)",
+        ),
     ];
     for (program, expected) in cases {
         assert_eq!(problems(program), [expected], "{program}");

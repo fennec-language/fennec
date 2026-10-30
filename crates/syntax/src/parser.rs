@@ -5,7 +5,9 @@ mod expr;
 mod pattern;
 mod stmt;
 
-use crate::ast::{Case, Field, FnDef, Generic, Import, Interface, Item, Module, Param, TestDef, TypeDef, TypeExpr};
+use crate::ast::{
+    Case, Field, FnDef, Generic, Import, Interface, Item, Module, Param, TestDef, TypeDef, TypeExpr,
+};
 use crate::diagnostic::Diagnostic;
 use crate::lexer::lex;
 use crate::span::Span;

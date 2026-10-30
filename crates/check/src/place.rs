@@ -3,7 +3,7 @@
 
 use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, Span, TypeExpr};
 
-use crate::function::{FnCx, Origin};
+use crate::function::{Binding, FnCx, Origin};
 use crate::messages::mismatch;
 use crate::types::{Type, a};
 
@@ -43,7 +43,9 @@ impl FnCx<'_> {
             ExprKind::Name(name) => {
                 let ty = self.expr(value);
                 match written {
-                    Some(written) => self.declare_written(name, written, &ty, (target.span, value.span), declare_mut),
+                    Some(written) => {
+                        self.declare_written(name, written, &ty, (target.span, value.span), declare_mut);
+                    }
                     None => self.assign_name(name, target.span, op, ty, declare_mut),
                 }
             }
@@ -57,7 +59,8 @@ impl FnCx<'_> {
                 }
             }
             ExprKind::Index { object, index } if self.has_set_index(object) => {
-                self.set_index(object, index, value);
+                let held = self.set_index(object, index, value);
+                self.record(target.span, &held);
             }
             _ => {
                 self.mut_place(target, "this can't be assigned to");
@@ -87,7 +90,14 @@ impl FnCx<'_> {
     }
 
     /// `name: type = value`, which declares a name with its type written.
-    fn declare_written(&mut self, name: &str, written: &TypeExpr, ty: &Type, spans: (Span, Span), is_mut: bool) {
+    fn declare_written(
+        &mut self,
+        name: &str,
+        written: &TypeExpr,
+        ty: &Type,
+        spans: (Span, Span),
+        is_mut: bool,
+    ) {
         let (at, value) = spans;
         if self.lookup(name).is_some() {
             self.error(
@@ -100,7 +110,9 @@ impl FnCx<'_> {
         if !self.checker.fits(&declared, ty) {
             self.error(mismatch(&format!("`{name}`"), &declared, ty, value));
         }
-        self.declare_with(name, ty.clone(), declared, is_mut, Origin::Local, at);
+        let binding =
+            Binding { name: name.to_owned(), ty: ty.clone(), declared, is_mut, origin: Origin::Local };
+        self.declare_with(binding, at);
         self.record(at, &self.checker.settled(ty));
     }
 
@@ -131,8 +143,11 @@ impl FnCx<'_> {
         if !self.checker.fits(&declared, &ty) {
             let declared = self.checker.settled(&declared);
             self.error(
-                Diagnostic::new(format!("`{name}` holds {}, so it can't be given {}", a(&declared), a(&ty)), span)
-                    .with_help(format!("a name keeps one type: use a new name for {}", a(&ty))),
+                Diagnostic::new(
+                    format!("`{name}` holds {}, so it can't be given {}", a(&declared), a(&ty)),
+                    span,
+                )
+                .with_help(format!("a name keeps one type: use a new name for {}", a(&ty))),
             );
             return;
         }
@@ -148,12 +163,13 @@ impl FnCx<'_> {
         }
     }
 
-    /// `grid[at] = value` on a type with its own `def []=`.
-    fn set_index(&mut self, object: &Expr, index: &Expr, value: &Expr) {
+    /// `grid[at] = value` on a type with its own `def []=`. Returns the type of the value it
+    /// takes.
+    fn set_index(&mut self, object: &Expr, index: &Expr, value: &Expr) -> Type {
         let ty = self.expr(object);
-        let Type::Named(name) = ty else { return };
-        let Some((key, _)) = self.checker.program.method(&name, "[]=") else { return };
-        let Some(signature) = self.checker.signature(&key) else { return };
+        let Type::Named(name) = ty else { return Type::Unknown };
+        let Some((key, _)) = self.checker.program.method(&name, "[]=") else { return Type::Unknown };
+        let Some(signature) = self.checker.signature(&key) else { return Type::Unknown };
         if signature.params.first().is_some_and(|param| param.is_mut) {
             self.mut_place(object, "`[]=` changes its value, so call it on something held in a mut name");
         }
@@ -164,5 +180,6 @@ impl FnCx<'_> {
                 self.check_arg(param, &actual, arg.span);
             }
         }
+        signature.params.get(2).map_or(Type::Unknown, |param| param.ty.clone())
     }
 }

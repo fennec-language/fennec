@@ -1,0 +1,21 @@
+interface Damageable:
+    def damage(mut self, amount: int)
+
+struct Enemy:
+    health = 100
+
+    def damage(mut self, amount: int):
+        self.health -= amount
+
+struct Rock:
+    weight = 10
+
+def hit_all(mut targets: list[Damageable]):
+    for mut target in targets:
+        target.damage(5)
+
+def main(stdout: Stdout):
+    mut enemies = [Enemy()]
+    hit_all(mut enemies)
+    mut rocks = [Rock()]
+    hit_all(mut rocks)

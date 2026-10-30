@@ -1,0 +1,7 @@
+error: can't tell the type of `n`
+ --> examples/errors/arrow_alone.fen:2:14
+  |
+2 |     double = n => n * 2
+  |              ^^^^^^^^^^
+  |
+  = help: pass the arrow function straight to a call that gives it values, like `sorted(items, key=x => ...)`, or write a nested `def` with its parameters' types

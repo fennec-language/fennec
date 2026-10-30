@@ -116,12 +116,30 @@ impl Program {
         self.resolve_within(written, generics, ALIAS_DEPTH)
     }
 
-    fn resolve_within(&self, written: &TypeExpr, generics: &[String], depth: usize) -> Result<Type, Diagnostic> {
+    fn resolve_within(
+        &self,
+        written: &TypeExpr,
+        generics: &[String],
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
         let name = written.name.as_str();
         let builtin = matches!(
             name,
-            "int" | "float" | "bool" | "str" | "Path" | "None" | "list" | "SoaList" | "set" | "dict" | "tuple"
-                | "Id" | "IdMap" | "Stdout" | "Fs"
+            "int"
+                | "float"
+                | "bool"
+                | "str"
+                | "Path"
+                | "None"
+                | "list"
+                | "SoaList"
+                | "set"
+                | "dict"
+                | "tuple"
+                | "Id"
+                | "IdMap"
+                | "Stdout"
+                | "Fs"
         );
         let declared = generics.iter().any(|generic| generic == name)
             || self.interfaces.contains_key(name)
@@ -165,7 +183,10 @@ impl Program {
             name => match (self.aliases.get(name), depth.checked_sub(1)) {
                 (Some(alias), Some(depth)) => self.resolve_within(alias, generics, depth)?,
                 _ => {
-                    return Err(Diagnostic::new(format!("the type alias `{name}` refers to itself"), written.span));
+                    return Err(Diagnostic::new(
+                        format!("the type alias `{name}` refers to itself"),
+                        written.span,
+                    ));
                 }
             },
         };

@@ -1,0 +1,7 @@
+error: `Rock` isn't `Damageable`: it has no `damage` method
+  --> examples/errors/not_an_interface_fit.fen:21:5
+   |
+21 |     hit_all(mut rocks)
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = help: give `Rock` the method `def damage(mut self, amount: int)`

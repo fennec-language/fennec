@@ -1,0 +1,7 @@
+error: this list mixes an int and a float
+ --> examples/errors/mixed_list.fen:2:14
+  |
+2 |     scores = [10, 7.5, 3]
+  |              ^^^^^^^^^^^^
+  |
+  = help: ints and floats don't mix: write whole floats with a decimal point, like `10.0`, or convert with float(...)

@@ -100,7 +100,7 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
 /// A type for the start of a sentence: `Enemy` for a named type, "a list" for the others.
 pub(crate) fn describe(ty: &Type) -> String {
     match ty {
-        Type::Named(name) => format!("`{name}`"),
+        Type::Named(name) | Type::Param(name) => format!("`{name}`"),
         other => article(&other.kind()),
     }
 }

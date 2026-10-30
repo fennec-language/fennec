@@ -123,7 +123,11 @@ impl Type {
     /// The types directly inside this one.
     pub(crate) fn children(&self) -> Vec<&Type> {
         match self {
-            Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Id(inner) | Type::IdMap(inner) => {
+            Type::List(inner)
+            | Type::Set(inner)
+            | Type::Optional(inner)
+            | Type::Id(inner)
+            | Type::IdMap(inner) => {
                 vec![inner]
             }
             Type::Dict(a, b) | Type::Result(a, b) => vec![a, b],

@@ -348,7 +348,10 @@ impl FnCx<'_> {
             "min" | "max" => items(self),
             "sum" => {
                 let item = items(self);
-                if !matches!(self.checker.settled(&item), Type::Int | Type::Float | Type::Unknown | Type::Var(_)) {
+                if !matches!(
+                    self.checker.settled(&item),
+                    Type::Int | Type::Float | Type::Unknown | Type::Var(_)
+                ) {
                     let message = format!("`sum` adds numbers, but these are {}s", item.kind());
                     self.error(Diagnostic::new(message, span));
                 }

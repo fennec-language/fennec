@@ -130,9 +130,11 @@ impl FnCx<'_> {
             let bound = if self.checker.program.interfaces.contains_key(&name) {
                 Some(name.clone())
             } else {
-                written.iter().flatten().find(|generic| generic.name == name).and_then(|generic| {
-                    generic.bound.as_ref().map(|bound| bound.name.clone())
-                })
+                written
+                    .iter()
+                    .flatten()
+                    .find(|generic| generic.name == name)
+                    .and_then(|generic| generic.bound.as_ref().map(|bound| bound.name.clone()))
             };
             let var = self.checker.fresh(span, crate::infer::Hole::TypeParam(name.clone()));
             chosen.push((name, bound, var));
@@ -143,11 +145,8 @@ impl FnCx<'_> {
                 _ => None,
             })
         };
-        let params = signature
-            .params
-            .iter()
-            .map(|param| ParamType { ty: fill(&param.ty), ..param.clone() })
-            .collect();
+        let params =
+            signature.params.iter().map(|param| ParamType { ty: fill(&param.ty), ..param.clone() }).collect();
         let returns = fill(&signature.returns);
         (Signature { params, returns, ..signature.clone() }, chosen)
     }
@@ -159,20 +158,25 @@ impl FnCx<'_> {
             if !ty.is_known() {
                 continue;
             }
-            if let Err(why) = self.fits_interface(&ty, interface) {
-                self.error(Diagnostic::new(format!("{} isn't `{interface}`: {why}", show(&ty)), span));
+            if let Err((why, fix)) = self.fits_interface(&ty, interface) {
+                self.error(
+                    Diagnostic::new(format!("{} isn't `{interface}`: {why}", show(&ty)), span).with_help(fix),
+                );
             }
         }
     }
 
-    /// Whether a type has every method an interface asks for, or why not.
-    pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), String> {
+    /// Whether a type has every method an interface asks for, or why not and what to do.
+    pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
         if let Type::Param(name) = ty {
             let bound = self.bound_of(name);
             return if bound.as_deref() == Some(interface) {
                 Ok(())
             } else {
-                Err(format!("say `{name}: {interface}` where `{name}` is declared"))
+                Err((
+                    format!("`{name}` could be any type"),
+                    format!("write `{name}: {interface}` where `{name}` is declared"),
+                ))
             };
         }
         let methods = self.checker.program.interfaces.get(interface).map(|found| found.methods.clone());
@@ -181,7 +185,8 @@ impl FnCx<'_> {
                 Type::Named(name) => self.checker.program.method(name, &wanted.name).map(|(key, _)| key),
                 _ => None,
             };
-            let Some(key) = found else { return Err(format!("it has no `{}` method", wanted.name)) };
+            let fix = format!("give {} the method `{}`", show(ty), signature_text(&wanted));
+            let Some(key) = found else { return Err((format!("it has no `{}` method", wanted.name), fix)) };
             let Some(actual) = self.checker.signature(&key) else { continue };
             let expected = self.interface_method(interface, &wanted, ty);
             let fits = actual.params.len() == expected.params.len()
@@ -190,7 +195,7 @@ impl FnCx<'_> {
                 })
                 && self.checker.fits(&expected.returns, &actual.returns);
             if !fits {
-                return Err(format!("its `{}` method doesn't match the interface's", wanted.name));
+                return Err((format!("its `{}` method doesn't match `{interface}`'s", wanted.name), fix));
             }
         }
         Ok(())
@@ -206,7 +211,12 @@ impl FnCx<'_> {
 
     /// The signature an interface gives a method, for a value of type `owner`. A method that
     /// doesn't write its return type gives back nothing.
-    pub(crate) fn interface_method(&mut self, interface: &str, method: &fennec_syntax::FnDef, owner: &Type) -> Signature {
+    pub(crate) fn interface_method(
+        &mut self,
+        interface: &str,
+        method: &fennec_syntax::FnDef,
+        owner: &Type,
+    ) -> Signature {
         let resolve = |cx: &mut Self, ty: &TypeExpr| match cx.checker.program.resolve(ty) {
             Ok(Type::Param(name)) if name == interface => owner.clone(),
             Ok(ty) => ty,
@@ -351,7 +361,10 @@ impl FnCx<'_> {
                 Some(interface) => format!("`{interface}` has no `{method}` method; add it to the interface"),
                 None => format!("bind `{name}` to an interface that has it, like `{name}: HasLength`"),
             };
-            return self.unusable(Diagnostic::new(no_method(&owner, method, span).message, span).with_help(help), args);
+            return self.unusable(
+                Diagnostic::new(no_method(&owner, method, span).message, span).with_help(help),
+                args,
+            );
         };
         let signature = self.interface_method(&interface, &def, &owner);
         if signature.params.first().is_some_and(|param| param.is_mut) {
@@ -442,12 +455,14 @@ impl FnCx<'_> {
 
     /// `IdMap[Enemy]()`, `SoaList[Particle]()` and `Path("...")`.
     fn construct_builtin(&mut self, type_name: &str, item: Option<&Expr>, args: &[Arg], span: Span) -> Type {
+        let has_item = item.is_some();
         let item = match item.map(|item| (&item.kind, item.span)) {
             Some((ExprKind::Name(name), at)) => {
                 self.resolve(&TypeExpr { name: name.clone(), args: Vec::new(), optional: false, span: at })
             }
             Some((_, at)) => {
-                let message = format!("write the type `{type_name}` holds as a name, like `{type_name}[Enemy]`");
+                let message =
+                    format!("write the type `{type_name}` holds as a name, like `{type_name}[Enemy]`");
                 self.error(Diagnostic::new(message, at));
                 Type::Unknown
             }
@@ -455,8 +470,8 @@ impl FnCx<'_> {
         };
         let types: Vec<Type> = args.iter().map(|arg| self.arg_value(arg, &[])).collect();
         match (type_name, types.as_slice()) {
-            ("IdMap", []) => Type::IdMap(Box::new(item)),
-            ("SoaList", []) => Type::list(item),
+            ("IdMap", []) if has_item => Type::IdMap(Box::new(item)),
+            ("SoaList", []) if has_item => Type::list(item),
             ("Path", [Type::Str | Type::Unknown]) => Type::Str,
             _ => {
                 self.error(crate::messages::wrong_args(type_name, span));
@@ -558,10 +573,27 @@ impl FnCx<'_> {
     }
 }
 
+/// A method's signature as it's written: `def damage(mut self, amount: int)`.
+fn signature_text(def: &fennec_syntax::FnDef) -> String {
+    let params: Vec<String> = def
+        .params
+        .iter()
+        .map(|param| {
+            let prefix = if param.is_mut { "mut " } else { "" };
+            match &param.ty {
+                Some(ty) => format!("{prefix}{}: {}", param.name, crate::program::written(ty)),
+                None => format!("{prefix}{}", param.name),
+            }
+        })
+        .collect();
+    let ret = def.ret.as_ref().map(|ret| format!(" -> {}", crate::program::written(ret))).unwrap_or_default();
+    format!("def {}({}){ret}", def.name, params.join(", "))
+}
+
 /// A type for a message: `Rock`, or "an int".
 fn show(ty: &Type) -> String {
     match ty {
-        Type::Named(name) => format!("`{name}`"),
+        Type::Named(name) | Type::Param(name) => format!("`{name}`"),
         other => a(other),
     }
 }

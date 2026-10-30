@@ -44,7 +44,8 @@ impl FnCx<'_> {
             Pattern::Literal(literal) => {
                 let ty = self.expr(literal);
                 if !self.checker.fits(&value, &ty) && !self.checker.fits(&ty, &value) {
-                    let message = format!("this case can't match: the value is {}, and this is {}", a(&value), a(&ty));
+                    let message =
+                        format!("this case can't match: the value is {}, and this is {}", a(&value), a(&ty));
                     self.error(Diagnostic::new(message, literal.span));
                 }
             }

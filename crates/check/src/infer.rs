@@ -36,20 +36,24 @@ pub(crate) struct Slot {
     pub(crate) value: Option<Type>,
     pub(crate) span: Span,
     pub(crate) hole: Hole,
+    /// The name it was first given to, for suggesting where to write its type.
+    pub(crate) name: Option<String>,
 }
 
 impl Checker {
     /// A new type variable.
     pub(crate) fn fresh(&mut self, span: Span, hole: Hole) -> Type {
         let id = u32::try_from(self.vars.len()).unwrap_or(u32::MAX);
-        self.vars.push(Slot { value: None, span, hole });
+        self.vars.push(Slot { value: None, span, hole, name: None });
         Type::Var(id)
     }
 
     /// A type with every settled variable replaced by what it was settled to.
     pub(crate) fn settled(&self, ty: &Type) -> Type {
         ty.map(&mut |part| match part {
-            Type::Var(id) => self.slot(*id).and_then(|slot| slot.value.as_ref()).map(|value| self.settled(value)),
+            Type::Var(id) => {
+                self.slot(*id).and_then(|slot| slot.value.as_ref()).map(|value| self.settled(value))
+            }
             _ => None,
         })
     }
@@ -127,7 +131,9 @@ impl Checker {
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) => {
                 Type::Dict(Box::new(self.join(k1, k2)?), Box::new(self.join(v1, v2)?))
             }
-            (Type::Result(v1, e1), Type::Result(v2, e2)) => Type::result(self.join(v1, v2)?, self.join(e1, e2)?),
+            (Type::Result(v1, e1), Type::Result(v2, e2)) => {
+                Type::result(self.join(v1, v2)?, self.join(e1, e2)?)
+            }
             (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
                 let mut items = Vec::new();
                 for (a, b) in a.iter().zip(b) {
@@ -161,9 +167,23 @@ impl Checker {
         Some(Type::Errors(names))
     }
 
+    /// Notes that the variables in a type were given to a name, for messages about them.
+    pub(crate) fn name_vars(&mut self, ty: &Type, name: &str) {
+        let settled = self.settled(ty);
+        settled.map(&mut |part| {
+            if let Type::Var(id) = part
+                && let Some(slot) = usize::try_from(*id).ok().and_then(|at| self.vars.get_mut(at))
+                && slot.name.is_none()
+            {
+                slot.name = Some(name.to_owned());
+            }
+            None
+        });
+    }
+
     /// The variables made since `first` that nothing settled, with where each was made.
-    pub(crate) fn open_since(&self, first: usize, types: &[Type]) -> Vec<(u32, Span, Hole)> {
-        let mut open: Vec<(u32, Span, Hole)> = Vec::new();
+    pub(crate) fn open_since(&self, first: usize, types: &[Type]) -> Vec<(u32, Span, Hole, Option<String>)> {
+        let mut open: Vec<(u32, Span, Hole, Option<String>)> = Vec::new();
         for ty in types {
             let settled = self.settled(ty);
             settled.map(&mut |part| {
@@ -172,41 +192,36 @@ impl Checker {
                     && !open.iter().any(|(seen, ..)| seen == id)
                     && let Some(slot) = self.slot(*id)
                 {
-                    open.push((*id, slot.span, slot.hole.clone()));
+                    open.push((*id, slot.span, slot.hole.clone(), slot.name.clone()));
                 }
                 None
             });
         }
-        open.sort_by_key(|(_, span, _)| (span.start, span.end));
+        open.sort_by_key(|(_, span, ..)| (span.start, span.end));
         open
     }
 }
 
-/// What to say about a variable nothing settled.
-pub(crate) fn unsettled(hole: &Hole, span: Span) -> Diagnostic {
+/// What to say about a variable nothing settled. `name` is the name it was given to.
+pub(crate) fn unsettled(hole: &Hole, span: Span, name: Option<&str>) -> Diagnostic {
+    let named = |example: &str, written: &str| match name {
+        Some(name) => format!("write the type with the name, like `{name}: {written}`"),
+        None => format!("write the type with the name, like `{example}: {written}`"),
+    };
     let (message, help) = match hole {
-        Hole::EmptyList => ("can't tell what this empty list holds", "write the type where it's named, like `items: list[int] = []`"),
-        Hole::EmptySet => ("can't tell what this empty set holds", "write the type where it's named, like `seen: set[str] = set()`"),
-        Hole::EmptyDict => (
-            "can't tell what this empty dict holds",
-            "write the type where it's named, like `scores: dict[str, int] = {}`",
-        ),
-        Hole::None => (
-            "can't tell what this holds when it isn't None",
-            "write the type where it's named, like `target: Enemy? = None`",
-        ),
+        Hole::EmptyList => ("can't tell what this empty list holds", named("items", "list[int] = []")),
+        Hole::EmptySet => ("can't tell what this empty set holds", named("seen", "set[str] = set()")),
+        Hole::EmptyDict => ("can't tell what this empty dict holds", named("scores", "dict[str, int] = {}")),
+        Hole::None => ("can't tell what this holds when it isn't None", named("target", "Enemy? = None")),
         Hole::OkError => (
             "can't tell what error this result could hold",
-            "write the function's return type, or use the result where its error type is known",
+            "use it where its error type is known, like the value of a function that fails".to_owned(),
         ),
         Hole::ErrValue => (
             "can't tell what value this result could hold",
-            "write the function's return type, or use the result where its value type is known",
+            "use it where its value type is known, like the value of a function that returns one".to_owned(),
         ),
-        Hole::Unpacked => (
-            "can't tell what these names hold",
-            "write the type of what's unpacked where it's named, like `pairs: list[(str, int)] = []`",
-        ),
+        Hole::Unpacked => ("can't tell what these names hold", named("pairs", "list[(str, int)] = []")),
         Hole::TypeParam(name) => {
             return Diagnostic::new(format!("can't tell what `{name}` is in this call"), span)
                 .with_help("pass values that show it, or write the type where the result is named");

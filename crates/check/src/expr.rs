@@ -28,34 +28,14 @@ impl FnCx<'_> {
             ExprKind::Str(_) => Type::Str,
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::None => Type::None,
-            ExprKind::FStr(parts) => {
-                for part in parts {
-                    if let FStrPart::Expr { expr, .. } = part {
-                        self.expr(expr);
-                    }
-                }
-                Type::Str
-            }
+            ExprKind::FStr(_)
+            | ExprKind::List(_)
+            | ExprKind::Set(_)
+            | ExprKind::Tuple(_)
+            | ExprKind::Dict(_)
+            | ExprKind::Comprehension { .. } => self.written_out(expr),
             ExprKind::Name(name) => self.name(name, span),
             ExprKind::Variant(name) => self.construct_variant(None, name, &[], span),
-            ExprKind::List(items) => Type::list(self.join_items(items, span, Hole::EmptyList, "list")),
-            ExprKind::Set(items) => Type::Set(Box::new(self.join_items(items, span, Hole::EmptySet, "set"))),
-            ExprKind::Tuple(items) => Type::Tuple(items.iter().map(|item| self.expr(item)).collect()),
-            ExprKind::Dict(pairs) => {
-                let (keys, values): (Vec<Expr>, Vec<Expr>) = pairs.iter().cloned().unzip();
-                let key = self.join_items(&keys, span, Hole::EmptyDict, "dict's keys");
-                let value = self.join_items(&values, span, Hole::EmptyDict, "dict's values");
-                Type::Dict(Box::new(key), Box::new(value))
-            }
-            ExprKind::Comprehension { kind, elem, value, names, iter, cond } => {
-                let parts = (elem.as_ref(), value.as_deref(), cond.as_deref());
-                let (elem, value) = self.comprehension(parts, names, iter, span);
-                match kind {
-                    CompKind::List | CompKind::Generator => Type::list(elem),
-                    CompKind::Set => Type::Set(Box::new(elem)),
-                    CompKind::Dict => Type::Dict(Box::new(elem), Box::new(value)),
-                }
-            }
             ExprKind::Unary { op, expr: inner } => self.unary(*op, inner, span),
             ExprKind::Binary { op: op @ (BinOp::And | BinOp::Or), lhs, rhs } => {
                 self.condition(lhs, op.symbol());
@@ -105,6 +85,44 @@ impl FnCx<'_> {
         }
     }
 
+    /// An f-string, or a collection written out or built by a comprehension.
+    fn written_out(&mut self, expr: &Expr) -> Type {
+        let span = expr.span;
+        match &expr.kind {
+            ExprKind::FStr(parts) => {
+                for part in parts {
+                    if let FStrPart::Expr { expr, .. } = part {
+                        self.expr(expr);
+                    }
+                }
+                Type::Str
+            }
+            ExprKind::List(items) => {
+                Type::list(self.join_items(items, span, Hole::EmptyList, "this list mixes"))
+            }
+            ExprKind::Set(items) => {
+                Type::Set(Box::new(self.join_items(items, span, Hole::EmptySet, "this set mixes")))
+            }
+            ExprKind::Tuple(items) => Type::Tuple(items.iter().map(|item| self.expr(item)).collect()),
+            ExprKind::Dict(pairs) => {
+                let (keys, values): (Vec<Expr>, Vec<Expr>) = pairs.iter().cloned().unzip();
+                let key = self.join_items(&keys, span, Hole::EmptyDict, "this dict's keys mix");
+                let value = self.join_items(&values, span, Hole::EmptyDict, "this dict's values mix");
+                Type::Dict(Box::new(key), Box::new(value))
+            }
+            ExprKind::Comprehension { kind, elem, value, names, iter, cond } => {
+                let parts = (elem.as_ref(), value.as_deref(), cond.as_deref());
+                let (elem, value) = self.comprehension(parts, names, iter, span);
+                match kind {
+                    CompKind::List | CompKind::Generator => Type::list(elem),
+                    CompKind::Set => Type::Set(Box::new(elem)),
+                    CompKind::Dict => Type::Dict(Box::new(elem), Box::new(value)),
+                }
+            }
+            _ => Type::Unknown,
+        }
+    }
+
     /// The type of the items of a list, set or dict written out: what they all fit, or a
     /// type still to be worked out when there are none.
     fn join_items(&mut self, items: &[Expr], span: Span, hole: Hole, what: &str) -> Type {
@@ -112,7 +130,7 @@ impl FnCx<'_> {
         if types.is_empty() {
             return self.checker.fresh(span, hole);
         }
-        self.join_or_report(&types, span, &format!("this {what} mixes"))
+        self.join_or_report(&types, span, what)
     }
 
     /// What values from several places all fit, or `Unknown` after reporting that they
@@ -128,10 +146,12 @@ impl FnCx<'_> {
                 kinds.push(kind);
             }
         }
-        self.error(
-            Diagnostic::new(format!("{what} {}", kinds.join(" and ")), span)
-                .with_help("Fennec values have one type: convert them to one, or use an enum for different kinds"),
-        );
+        let help = if kinds.iter().all(|kind| kind == "an int" || kind == "a float") {
+            "ints and floats don't mix: write whole floats with a decimal point, like `10.0`, or convert with float(...)"
+        } else {
+            "a value has one type: convert these to one, or make an enum with a case for each"
+        };
+        self.error(Diagnostic::new(format!("{what} {}", kinds.join(" and ")), span).with_help(help));
         Type::Unknown
     }
 
@@ -292,7 +312,8 @@ impl FnCx<'_> {
             self.call_operator(&key, right, right_span);
             return;
         }
-        let orderable = |ty: &Type| matches!(ty, Type::Int | Type::Float | Type::Str | Type::Tuple(_) | Type::List(_));
+        let orderable =
+            |ty: &Type| matches!(ty, Type::Int | Type::Float | Type::Str | Type::Tuple(_) | Type::List(_));
         match (left, right) {
             (Type::Unknown, _) | (_, Type::Unknown) => {}
             (Type::Int, Type::Float) | (Type::Float, Type::Int) => self.error(
@@ -385,8 +406,11 @@ impl FnCx<'_> {
             Type::Named(type_name) => match self.checker.program.type_info(type_name).map(|info| info.kind) {
                 Some(TypeKind::Enum) => {
                     self.error(
-                        Diagnostic::new(format!("`{type_name}` is an enum, so its fields depend on its case"), span)
-                            .with_help("get them with `match`, like `case .Circle(radius):`"),
+                        Diagnostic::new(
+                            format!("`{type_name}` is an enum, so its fields depend on its case"),
+                            span,
+                        )
+                        .with_help("get them with `match`, like `case .Circle(radius):`"),
                     );
                     Type::Unknown
                 }
@@ -520,7 +544,8 @@ impl FnCx<'_> {
             return item.clone();
         }
         if at.is_some() {
-            let message = format!("this tuple has {} items, so there's no item {}", items.len(), at.unwrap_or(0));
+            let message =
+                format!("this tuple has {} items, so there's no item {}", items.len(), at.unwrap_or(0));
             self.error(Diagnostic::new(message, index.span));
             return Type::Unknown;
         }
@@ -528,8 +553,11 @@ impl FnCx<'_> {
             return joined;
         }
         self.error(
-            Diagnostic::new("a tuple whose items have different types needs its index written as a number", index.span)
-                .with_help("write it like `pair[0]`, or unpack it: `first, second = pair`"),
+            Diagnostic::new(
+                "a tuple whose items have different types needs its index written as a number",
+                index.span,
+            )
+            .with_help("write it like `pair[0]`, or unpack it: `first, second = pair`"),
         );
         Type::Unknown
     }
@@ -561,16 +589,14 @@ impl FnCx<'_> {
             Some(ExprKind::Int(n)) => usize::try_from(*n).ok().map(|n| n.min(items.len())),
             Some(_) => None,
         };
-        match (bound(start, 0), bound(end, items.len())) {
-            (Some(from), Some(to)) => Type::Tuple(items.get(from..to.max(from)).unwrap_or_default().to_vec()),
-            _ => {
-                self.error(
-                    Diagnostic::new("a tuple's slice needs its positions written as numbers", span)
-                        .with_help("write it like `triple[1:]`"),
-                );
-                Type::Unknown
-            }
+        if let (Some(from), Some(to)) = (bound(start, 0), bound(end, items.len())) {
+            return Type::Tuple(items.get(from..to.max(from)).unwrap_or_default().to_vec());
         }
+        self.error(
+            Diagnostic::new("a tuple's slice needs its positions written as numbers", span)
+                .with_help("write it like `triple[1:]`"),
+        );
+        Type::Unknown
     }
 
     /// The type of each item when looping over a value.
@@ -612,7 +638,8 @@ impl FnCx<'_> {
                 Some(Type::List(item)) => *item,
                 Some(Type::Unknown) | None => Type::Unknown,
                 Some(other) => {
-                    let message = format!("`{name}.iter` gives back {}, so it can't be looped over", a(&other));
+                    let message =
+                        format!("`{name}.iter` gives back {}, so it can't be looped over", a(&other));
                     self.error(Diagnostic::new(message, span).with_help("make `iter` yield its items"));
                     Type::Unknown
                 }

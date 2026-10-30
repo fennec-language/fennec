@@ -107,7 +107,8 @@ impl Checker {
     /// type parameters bound to something that isn't an interface.
     fn check_declarations(&mut self) {
         let mut problems = Vec::new();
-        let functions = self.program.functions.values().filter(|entry| !entry.prelude).map(|entry| &entry.def);
+        let functions =
+            self.program.functions.values().filter(|entry| !entry.prelude).map(|entry| &entry.def);
         let methods = self.program.interfaces.values().flat_map(|interface| &interface.methods);
         for def in functions.chain(methods) {
             let generics: Vec<String> = def.generics.iter().map(|generic| generic.name.clone()).collect();

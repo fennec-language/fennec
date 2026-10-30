@@ -16,7 +16,7 @@ mod report;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use measure::{Program, build_twin, perf_report, time_together};
+use measure::{Program, build_twin, count_with_valgrind, perf_report, time_together, valgrind_available};
 use report::Result;
 
 struct Options {
@@ -95,25 +95,40 @@ fn suite(options: &Options) -> std::result::Result<(Vec<Result>, Vec<String>), S
         .collect();
     kernels.sort();
     let count = perf_report(&out_dir);
-    if count.is_some() {
-        eprintln!("counting instructions with perf");
-    } else {
-        eprintln!("perf can't count instructions here, so slowdowns are measured again before they fail");
-    }
+    let valgrind = count.is_none() && valgrind_available();
+    eprintln!(
+        "{}",
+        match (&count, valgrind) {
+            (Some(_), _) => "counting instructions with perf",
+            (None, true) => "counting instructions with Valgrind to confirm slowdowns",
+            (None, false) =>
+                "nothing can count instructions here, so slowdowns are measured again before they fail",
+        }
+    );
     let mut results = Vec::new();
     let mut failures = Vec::new();
     for kernel in kernels {
         let name = kernel.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
         eprintln!("running {name}");
         let mut result = run_kernel(&kernel, &out_dir, options.runs, options, count.as_deref());
-        // Without instruction counts, a slowdown is measured again, three times as long,
-        // before it fails, so one busy moment on the machine doesn't fail the suite.
-        if let Ok(slower) = &result
+        if let Ok(slower) = &mut result
             && slower.failure().is_some()
             && slower.instructions.is_none()
         {
-            eprintln!("measuring {name} again");
-            result = run_kernel(&kernel, &out_dir, options.runs * 3, options, count.as_deref());
+            if valgrind {
+                // A slowdown with no instruction count is confirmed by counting both
+                // versions' instructions, once each: the count doesn't wobble like time does.
+                eprintln!("counting {name}'s instructions");
+                let fennec =
+                    |command: &Path| Program { command: command.to_path_buf(), args: kernel_args(&kernel) };
+                slower.instructions = count_with_valgrind(&fennec(&options.fennec));
+                slower.previous_instructions =
+                    options.previous.as_deref().and_then(|previous| count_with_valgrind(&fennec(previous)));
+            } else {
+                // Otherwise it's measured again, three times as long, before it fails.
+                eprintln!("measuring {name} again");
+                result = run_kernel(&kernel, &out_dir, options.runs * 3, options, count.as_deref());
+            }
         }
         match result {
             Ok(result) => {
@@ -137,10 +152,7 @@ fn run_kernel(
 ) -> std::result::Result<Result, String> {
     let name = kernel.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     let twin = build_twin(&kernel.with_extension("rs"), out_dir)?;
-    let fennec = |command: &Path| Program {
-        command: command.to_path_buf(),
-        args: vec!["run".to_owned(), "--jit".to_owned(), kernel.to_string_lossy().into_owned()],
-    };
+    let fennec = |command: &Path| Program { command: command.to_path_buf(), args: kernel_args(kernel) };
     let mut programs = vec![Program { command: twin, args: Vec::new() }, fennec(&options.fennec)];
     if let Some(previous) = &options.previous {
         // A previous `fennec` that can't run a new kernel just isn't compared on it.
@@ -163,4 +175,9 @@ fn run_kernel(
         previous_instructions: previous.and_then(|previous| previous.instructions),
         fell_back: ours.notes.contains("using the interpreter"),
     })
+}
+
+/// How `fennec` runs a kernel: natively, with the JIT.
+fn kernel_args(kernel: &Path) -> Vec<String> {
+    vec!["run".to_owned(), "--jit".to_owned(), kernel.to_string_lossy().into_owned()]
 }

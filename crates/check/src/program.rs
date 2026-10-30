@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use fennec_syntax::{FnDef, Item, Module, TestDef, TypeDef, TypeExpr};
+use fennec_syntax::{Diagnostic, FnDef, Import, Imported, Item, Module, TestDef, TypeDef, TypeExpr};
 
 use crate::types::Type;
 
@@ -38,6 +38,10 @@ pub(crate) struct Program {
     /// Builtins that exist only once imported, like `loads` from `std.json`, by the name
     /// they're imported under.
     pub(crate) imports: BTreeMap<String, String>,
+    /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
+    pub(crate) modules: BTreeMap<String, &'static str>,
+    /// Imports of modules or names that don't exist.
+    pub(crate) import_problems: Vec<Diagnostic>,
     aliases: BTreeMap<String, TypeExpr>,
 }
 
@@ -59,16 +63,31 @@ impl Program {
                     self.aliases.insert(name.clone(), ty.clone());
                 }
                 Item::Test(test) => self.tests.push(test.clone()),
-                Item::Import(import) => {
-                    let Some(module) = import.module.last() else { continue };
-                    for name in &import.names {
-                        let builtin = format!("{module}.{name}");
-                        if crate::builtins::is_builtin(&builtin) {
-                            self.imports.insert(name.clone(), builtin);
-                        }
+                Item::Import(import) => self.add_import(import),
+                Item::Interface(_) | Item::Stmt(_) => {}
+            }
+        }
+    }
+
+    fn add_import(&mut self, import: &Import) {
+        let imported = match fennec_syntax::std_import(import) {
+            Ok(imported) => imported,
+            Err(problem) => {
+                self.import_problems.push(problem);
+                return;
+            }
+        };
+        for item in imported {
+            match item {
+                Imported::Module { alias, module } => {
+                    self.modules.insert(alias, module);
+                }
+                Imported::Name { name, module } => {
+                    let builtin = format!("{module}.{name}");
+                    if crate::builtins::is_builtin(&builtin) {
+                        self.imports.insert(name, builtin);
                     }
                 }
-                Item::Interface(_) | Item::Stmt(_) => {}
             }
         }
     }

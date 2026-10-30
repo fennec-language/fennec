@@ -31,6 +31,11 @@ impl Interp<'_> {
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Result<Value, Diagnostic> {
         match &callee.kind {
             ExprKind::Attr { object, name, optional } => {
+                if let Some(member) = self.module_member(object, name, callee.span) {
+                    let function = self.lookup(&member?, callee.span)?;
+                    let args = self.eval_args(args)?;
+                    return self.call_value(&function, args, span);
+                }
                 return self.method_call(object, name, *optional, args, span);
             }
             ExprKind::Variant(name) => {

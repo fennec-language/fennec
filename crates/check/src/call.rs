@@ -6,6 +6,7 @@ use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Span, TypeExpr};
 
 use crate::ParamType;
 use crate::builtins;
+use crate::expr::Member;
 use crate::function::FnCx;
 use crate::messages::{might_be_none, mismatch, no_method, unhandled_result};
 use crate::program::TypeKind;
@@ -26,7 +27,16 @@ impl FnCx<'_> {
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
         match &callee.kind {
             ExprKind::Attr { object, name, optional } => {
-                return self.method_call(object, name, *optional, args, span);
+                return match self.module_member(object, name, callee.span) {
+                    Some(Member::Name(member)) => {
+                        self.call(&Expr { kind: ExprKind::Name(member), span: callee.span }, args, span)
+                    }
+                    Some(Member::Missing) => {
+                        self.ignore_args(args);
+                        Type::Unknown
+                    }
+                    None => self.method_call(object, name, *optional, args, span),
+                };
             }
             ExprKind::Variant(name) => return self.construct_variant(None, name, args, span),
             ExprKind::Index { object, index } => {

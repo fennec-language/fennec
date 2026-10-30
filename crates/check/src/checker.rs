@@ -42,12 +42,13 @@ impl Checker {
             }
         }
         program.add(module, false);
+        let diagnostics = std::mem::take(&mut program.import_problems);
         Checker {
             program,
             states: BTreeMap::new(),
             fields: BTreeMap::new(),
             locals: BTreeMap::new(),
-            diagnostics: Vec::new(),
+            diagnostics,
         }
     }
 

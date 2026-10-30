@@ -10,6 +10,14 @@ use crate::program::TypeKind;
 use crate::stmt::{not_none, path};
 use crate::types::{Type, article, join, join_all};
 
+/// What `module.name` means, when `module` is an imported module.
+pub(crate) enum Member {
+    /// The name to look up instead, like `json.loads` or `Path`.
+    Name(String),
+    /// The module has nothing by that name, which has been reported.
+    Missing,
+}
+
 impl FnCx<'_> {
     pub(crate) fn expr(&mut self, expr: &Expr) -> Type {
         let span = expr.span;
@@ -107,11 +115,32 @@ impl FnCx<'_> {
         if name == "PI" {
             return Type::Float;
         }
+        if let Some(module) = self.checker.program.modules.get(name) {
+            self.error(fennec_syntax::module_as_value(name, module, span));
+            return Type::Unknown;
+        }
         let imported = self.checker.program.imports.contains_key(name);
         if !self.checker.program.is_type_name(name) && !builtins::is_builtin(name) && !imported {
             self.error(unknown_name(name, span));
         }
         Type::Unknown
+    }
+
+    /// For `json.loads` where `json` is an imported module, the name it means: a module
+    /// function like `json.loads`, or a name like `Path` that's available everywhere. A name
+    /// the module doesn't have is reported here.
+    pub(crate) fn module_member(&mut self, object: &Expr, name: &str, span: Span) -> Option<Member> {
+        let ExprKind::Name(alias) = &object.kind else { return None };
+        if self.lookup(alias).is_some() {
+            return None;
+        }
+        let module = *self.checker.program.modules.get(alias)?;
+        if let Err(problem) = fennec_syntax::std_member(module, name, span) {
+            self.error(problem);
+            return Some(Member::Missing);
+        }
+        let qualified = format!("{module}.{name}");
+        Some(Member::Name(if builtins::is_builtin(&qualified) { qualified } else { name.to_owned() }))
     }
 
     /// A name used as a type, like `Enemy` in `Enemy.at(...)`, rather than as a value.
@@ -234,6 +263,11 @@ impl FnCx<'_> {
     }
 
     fn attr(&mut self, object: &Expr, name: &str, optional: bool, span: Span) -> Type {
+        match self.module_member(object, name, span) {
+            Some(Member::Name(member)) => return self.name(&member, span),
+            Some(Member::Missing) => return Type::Unknown,
+            None => {}
+        }
         if let Some(type_name) = self.as_type_name(object) {
             return self.type_attr(type_name, name, span);
         }

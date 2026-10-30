@@ -84,3 +84,39 @@ fn paths_have_their_methods() {
         ]
     );
 }
+
+#[test]
+fn modules_are_imported_whole() {
+    let program = "
+        stdout.print(json.dumps(json.loads('1')?), toml.dumps({'a': 1}), path.Path('a').name())
+        stdout.print(math.sqrt(2.0) + math.PI)
+    ";
+    let imports = "import std.json\nfrom std import toml, path\nimport std.math";
+    assert_eq!(with_imports(imports, program), Vec::<String>::new());
+    let program = "
+        stdout.print(json.parse('1'), json, json.dumps(1) + 1, path.Path(1))
+    ";
+    assert_eq!(
+        with_imports("import std.json\nimport std.path", program),
+        [
+            "`std.json` has nothing called `parse` @ json.parse",
+            "`json` is a module, so use one of its names, like `json.loads` @ json",
+            "can't use `+` on a str and an int @ json.dumps(1) + 1",
+            "`text` should be a str, but this is an int @ 1",
+        ]
+    );
+}
+
+#[test]
+fn imports_name_modules_and_names_that_exist() {
+    let main = "stdout.print(1)";
+    assert_eq!(with_imports("import std", main), ["import a module from std, not std itself @ import std"]);
+    assert_eq!(
+        with_imports("from std import jsn", main),
+        ["there's no module called `std.jsn` @ from std import jsn"]
+    );
+    assert_eq!(
+        with_imports("from std.json import parse", main),
+        ["`std.json` has nothing called `parse` @ from std.json import parse"]
+    );
+}

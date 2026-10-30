@@ -194,8 +194,22 @@ with db.transaction() as mut tx:
 **What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs` and `Clock`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the Python builtins, like `len`, `range` and `abs`.
 *Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
 
-**Imports bind names exactly as in Python.** `import std.json` binds `std`, and the call is `std.json.loads(...)`. `from std import json` binds `json`, for `json.loads(...)`. `from std.json import loads` binds `loads`. A kit's own modules follow the same rule: `import game.physics` binds `game`, and `from game import physics` binds `physics`. Writing `json.loads` after `import std.json` is an error whose help suggests `from std import json`. There's no `import *`, and no `import ... as` yet.
+**Imports bind names exactly as in Python.** `import std.json` binds `std`, and the call is `std.json.loads(...)`. `from std import json` binds `json`, for `json.loads(...)`. `from std.json import loads` binds `loads`. A kit's own modules follow the same rule: `import game.physics` binds `game`, and `from game import physics` binds `physics`. Writing `json.loads` after `import std.json` is an error whose help suggests `from std import json`. There's no `import *`.
 *Why:* It's one rule that Python developers and AI models already know, and an import never binds a name behind your back. Earlier, `import std.json` also bound `json`, which Python doesn't do.
+
+**`as` renames an import, in both of Python's forms.**
+```fennec
+from std.json import loads as json_loads
+from std.toml import loads as toml_loads
+import game.world.physics as physics
+```
+- The descriptive-names lint covers aliases: `import std.json as j` is flagged like a variable named `j`.
+- A module's own name has one spelling. `import std.json as json` has a fix that rewrites it to `from std import json`, which means the same.
+- An alias can't take a name the language provides everywhere, such as `len`, `Ok` or `Stdout`.
+- An alias to the same name (`from std import json as json`), or importing one thing twice under two names, is a lint.
+- `pub import x as y` re-exports under a new name, which helps a kit rename part of its API.
+
+*Why:* Two modules with the same function names, like `std.json` and `std.toml`, or two kits with a `utils` module, need a way out other than full paths everywhere. Python developers and AI write `as` without thinking, so refusing it only causes errors. Aliases are resolved at compile time and cost nothing.
 
 **Two modules can have functions with the same name.** Without an import, `loads` doesn't exist, and the error says which modules have it.
 *Why:* `std.json` and `std.toml` both have `loads` and `dumps`, as in Python, so the name alone can't say which format is meant.

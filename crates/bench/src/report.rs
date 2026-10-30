@@ -10,9 +10,10 @@ pub(crate) const JIT_TARGET: f64 = 0.8;
 /// several runs on a shared CI machine still wobbles by several percent.
 pub(crate) const NOISE: f64 = 0.10;
 
-/// How many more instructions than the previous commit a kernel may run. Counts barely move
-/// between runs of the same code, but the runtime's hash seeds differ from run to run.
-pub(crate) const INSTRUCTION_NOISE: f64 = 0.03;
+/// How many more instructions than the previous commit a kernel may run. Counted by
+/// cachegrind, identical runs differ by about one part in ten million, even with the
+/// runtime's hash seeds changing from run to run, so 1% leaves a wide margin.
+pub(crate) const INSTRUCTION_NOISE: f64 = 0.01;
 
 /// One kernel's timings.
 #[derive(Clone, Debug)]
@@ -168,7 +169,7 @@ mod tests {
 
     #[test]
     fn a_slowdown_fails_only_when_the_instructions_agree() {
-        assert_eq!(counted(120, 100, 1_020, 1_000).failure(), None, "the machine was busy");
+        assert_eq!(counted(120, 100, 1_005, 1_000).failure(), None, "the machine was busy");
         assert_eq!(counted(105, 100, 2_000, 1_000).failure(), None, "within the time noise");
         let failure = counted(120, 100, 1_100, 1_000).failure().unwrap();
         assert_eq!(

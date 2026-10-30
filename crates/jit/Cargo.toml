@@ -14,9 +14,13 @@ cranelift-frontend.workspace = true
 cranelift-jit.workspace = true
 cranelift-module.workspace = true
 cranelift-native.workspace = true
+cranelift-object.workspace = true
 fennec-check.workspace = true
 fennec-interp.workspace = true
 fennec-syntax.workspace = true
+
+[dev-dependencies]
+fennec-runtime.workspace = true
 
 [lints.rust]
 # The one crate allowed unsafe code: calling the machine code it generates. Every

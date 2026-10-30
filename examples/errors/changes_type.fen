@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    mut health = 100
+    health = "full"
+    stdout.print(health)

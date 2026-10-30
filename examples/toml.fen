@@ -1,5 +1,45 @@
 from std import toml
 
+struct Kit:
+    name: str
+    version: str
+    fennec: str
+    description: str
+    authors: list[str]
+    license: str
+    capabilities: list[str]
+    released: str
+
+struct Dependency:
+    version: str
+    path = ""
+
+struct Bin:
+    name: str
+    main: str
+
+struct Release:
+    profile: bool
+    budget_mb: int
+    scale: float
+
+struct Build:
+    release: Release
+
+## A `kit.toml`.
+struct Manifest:
+    kit: Kit
+    dependencies: dict[str, Dependency]
+    bin: list[Bin]
+    build: Build
+
+## The kinds of value TOML knows.
+struct Sample:
+    speed = 0
+    angle = 0.0
+    at = ""
+    empty: list[int] = []
+
 struct Window:
     title = "Fox Run"
     width = 1280
@@ -22,7 +62,7 @@ def kit_toml():
         "released = 2026-10-30",
         "",
         "[dependencies]",
-        "vecmath = \"1.2\"",
+        "vecmath = { version = \"1.2\" }",
         "sprites = { version = \"0.4\", path = \"../sprites\" }",
         "",
         "[[bin]]",
@@ -40,25 +80,27 @@ def kit_toml():
     ])
 
 def describe(text: str):
-    match toml.loads(text):
-        case Ok(table): f"read {table}"
+    match toml.loads[Sample](text):
+        case Ok(sample): f"read {sample}"
         case ParseError(message): f"couldn't read it: {message}"
 
 def main(stdout: Stdout):
-    kit = toml.loads(kit_toml())?
-    stdout.print(kit["kit"]["name"], kit["kit"]["version"], "for Fennec", kit["kit"]["fennec"])
-    stdout.print(kit["kit"]["description"])
-    stdout.print(kit["kit"]["authors"], kit["kit"]["released"])
-    for name, version in kit["dependencies"].items():
-        stdout.print("needs", name, version)
-    for bin in kit["bin"]:
-        stdout.print(bin["name"], "starts at", bin["main"])
-    stdout.print(kit["build"]["release"])
+    manifest = toml.loads[Manifest](kit_toml())?
+    stdout.print(manifest.kit.name, manifest.kit.version, "for Fennec", manifest.kit.fennec)
+    stdout.print(manifest.kit.description)
+    stdout.print(manifest.kit.authors, manifest.kit.released)
+    for name, dependency in manifest.dependencies.items():
+        stdout.print("needs", name, dependency.version)
+        if dependency.path != "":
+            stdout.print("  from", dependency.path)
+    for bin in manifest.bin:
+        stdout.print(bin.name, "starts at", bin.main)
+    stdout.print(manifest.build.release)
 
-    stdout.write(toml.dumps(kit))
+    stdout.write(toml.dumps(manifest))
     stdout.print("---")
     stdout.write(toml.dumps(Window()))
-    stdout.print(toml.loads(toml.dumps(kit))? == kit)
+    stdout.print(toml.loads[Manifest](toml.dumps(manifest))? == manifest)
 
     stdout.print(describe("speed = 0x10\nangle = -0.5\nat = 07:30:00\nempty = []"))
     stdout.print(describe("name = \"fox\"\nname = \"kit\""))

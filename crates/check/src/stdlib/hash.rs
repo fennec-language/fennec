@@ -3,7 +3,7 @@
 use super::{Function, Module, no_checks, no_methods, takes};
 use crate::function::FnCx;
 use crate::messages::mismatch;
-use crate::types::{Type, accepts};
+use crate::types::Type;
 use fennec_syntax::Span;
 
 pub(crate) const MODULE: Module = Module {
@@ -24,7 +24,7 @@ fn result(cx: &mut FnCx<'_>, name: &str, plain: &[(Type, Span)], _: Span) -> Typ
         _ => ["the context", "the key material"],
     };
     for ((ty, at), what) in plain.iter().zip(what) {
-        if !accepts(&Type::Str, ty) {
+        if !cx.checker.fits(&Type::Str, ty) {
             cx.error(mismatch(what, &Type::Str, ty, *at));
         }
     }

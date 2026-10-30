@@ -15,19 +15,26 @@ pub(crate) const MODULE: Module = Module {
     construct,
 };
 
-fn result(_: &mut FnCx<'_>, _: &str, _: &[(Type, Span)], _: Span) -> Type {
+/// `re.is_regex(pattern)`: whether some text is a pattern.
+fn result(cx: &mut FnCx<'_>, _: &str, plain: &[(Type, Span)], _: Span) -> Type {
+    if let Some((ty, at)) = plain.first()
+        && !cx.checker.fits(&Type::Str, ty)
+    {
+        cx.error(crate::messages::mismatch("the pattern", &Type::Str, ty, *at));
+    }
     Type::Bool
 }
 
 fn method(type_name: &str, name: &str) -> Option<Method> {
     let found = || Type::named("Match");
-    match (type_name, name) {
-        ("Regex", "match" | "fullmatch" | "search") => Some(reads(Type::optional(found()), 1, 1)),
-        ("Regex", "find_all") => Some(reads(Type::list(found()), 1, 1)),
-        ("Regex", "replace") => Some(reads(Type::Str, 2, 2)),
-        ("Regex", "split") => Some(reads(Type::list(Type::Str), 1, 1)),
-        _ => None,
-    }
+    let text = || Type::Str;
+    Some(match (type_name, name) {
+        ("Regex", "match" | "fullmatch" | "search") => reads(&[text()], Type::optional(found())),
+        ("Regex", "find_all") => reads(&[text()], Type::list(found())),
+        ("Regex", "replace") => reads(&[text(), text()], text()),
+        ("Regex", "split") => reads(&[text()], Type::list(text())),
+        _ => return None,
+    })
 }
 
 /// A `Regex` written with a literal pattern: a pattern that isn't valid is a mistake in the

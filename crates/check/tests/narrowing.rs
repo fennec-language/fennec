@@ -148,10 +148,6 @@ fn narrowing_ends_with_the_code_it_guards() {
 #[test]
 fn question_mark_optional_chaining_and_else_unwrap() {
     let program = "
-        def a(name: str):
-            player = find(name)?
-            player.name
-
         def b(name: str):
             damage = find(name)?.weapon?.damage else 0
             damage + 1
@@ -164,15 +160,17 @@ fn question_mark_optional_chaining_and_else_unwrap() {
             player.name.upper()
             find(name)?.name.upper()
 
-        def e():
-            nothing = None
-            stdout_less = nothing?.name
-            more = nothing else 1
-            more + 1
+        def e(name: str):
+            player = find(name)?
+            player.name
     ";
     assert_eq!(
         problems(&format!("{FIND}\n{}", crate::dedent(program))),
-        ["this might be None @ find(name)?.name", "this might be None @ find(name)?.name",]
+        [
+            "this might be None @ find(name)?.name",
+            "this might be None @ find(name)?.name",
+            "`?` needs a result, but this is a Player? @ find(name)",
+        ]
     );
 }
 
@@ -290,6 +288,7 @@ fn match_binds_the_fields_of_each_case() {
         [
             "can't use `+` on a str and an int @ label + count",
             "this pattern has 2 parts, but the value has 1 fields @ case .Circle(radius, extra): 1\n",
+            "this pattern is a tuple, but the value is an int @ case (a, b): a\n",
             "can't use `+` on a str and an int @ name + 1",
             "can't mix int and float in `+` @ value + 1.5",
         ]
@@ -396,8 +395,10 @@ fn match_cases_bind_typed_values() {
         [
             "can't use `+` on an int and a str @ value + \"a\"",
             "can't use `+` on an Oops and an int @ error + 1",
+            "`T` isn't a type @ T",
             "can't mix int and float in `+` @ r + 1",
             "can't mix int and float in `+` @ dotted + 1",
+            "this pattern has 3 parts, but the value has 2, so it can't match @ case (a, b, c): c\n",
         ]
     );
 }

@@ -1,7 +1,7 @@
 error: `ignore` needs a reason the result doesn't matter
- --> examples/errors/ignore_without_reason.fen:2:5
+ --> examples/errors/ignore_without_reason.fen:6:5
   |
-2 |     ignore(Ok(3), "  ")
-  |     ^^^^^^^^^^^^^^^^^^^
+6 |     ignore(save("slot1"), "  ")
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = help: like `ignore(save(fs, game), "autosave is best effort")`

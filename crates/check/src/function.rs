@@ -5,19 +5,23 @@
 //! afterwards. Where paths through the code meet again, after an `if` or a loop, a name holds
 //! whatever it held on any path that gets there.
 
-use fennec_syntax::{Diagnostic, Expr, FnDef, Span, StmtKind, TestDef};
+use fennec_syntax::{Diagnostic, Expr, FnDef, Generic, Span, StmtKind, TestDef};
 
 use crate::ParamType;
 use crate::checker::Checker;
 use crate::effects;
+use crate::infer::{Hole, unsettled};
 use crate::messages::not_mut;
 use crate::stmt::not_none;
-use crate::types::{Type, accepts, join, join_all};
+use crate::types::Type;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Binding {
     pub(crate) name: String,
+    /// What it holds here, which can be narrower than `declared`: not None after a check.
     pub(crate) ty: Type,
+    /// The type it was declared with. Every value given to it has to fit.
+    pub(crate) declared: Type,
     pub(crate) is_mut: bool,
     pub(crate) origin: Origin,
 }
@@ -65,10 +69,23 @@ pub(crate) struct FnCx<'c> {
     pub(crate) returns: Vec<Type>,
     pub(crate) errors: Vec<Type>,
     pub(crate) yields: Vec<Type>,
+    /// The type parameters in scope, with the interfaces each has to fit.
+    pub(crate) generics: Vec<Generic>,
+    /// How many problems were reported. Types left open after one are consequences, not news.
+    pub(crate) reported: usize,
+    /// Types filled in for type parameters that weren't worked out when they were used,
+    /// with the bounds they have to fit and where.
+    pub(crate) pending_bounds: Vec<(Type, Vec<String>, Span)>,
+    /// Every expression's type and every declared name's, as they're found.
+    exprs: Vec<(Span, Type)>,
+    names: Vec<(Span, String, Type)>,
+    /// The first type variable this check made.
+    first_var: usize,
 }
 
 impl<'c> FnCx<'c> {
     fn new(checker: &'c mut Checker, key: &str, name: &str, report: bool) -> Self {
+        let first_var = checker.vars.len();
         FnCx {
             checker,
             key: key.to_owned(),
@@ -81,7 +98,52 @@ impl<'c> FnCx<'c> {
             returns: Vec::new(),
             errors: Vec::new(),
             yields: Vec::new(),
+            generics: Vec::new(),
+            pending_bounds: Vec::new(),
+            reported: 0,
+            exprs: Vec::new(),
+            names: Vec::new(),
+            first_var,
         }
+    }
+
+    /// Ends a check: settles every type found, reports what nothing settled, and keeps the
+    /// types under `key` in the typed tree. `extra` are more types that have to be settled,
+    /// like the function's return type.
+    pub(crate) fn finish(mut self, extra: &[Type]) {
+        self.check_pending_bounds();
+        // An expression looked at twice, like an argument peeked at first, keeps the type
+        // it got last.
+        let exprs: std::collections::BTreeMap<(u32, u32), Type> =
+            self.exprs.iter().map(|(span, ty)| ((span.start, span.end), ty.clone())).collect();
+        let names: std::collections::BTreeMap<((u32, u32), String), Type> = self
+            .names
+            .iter()
+            .map(|(span, name, ty)| (((span.start, span.end), name.clone()), ty.clone()))
+            .collect();
+        let mut all: Vec<Type> = exprs.values().chain(names.values()).cloned().collect();
+        all.extend(extra.iter().cloned());
+        if self.reported == 0 {
+            for (_, span, hole, name) in self.checker.open_since(self.first_var, &all) {
+                self.error(unsettled(&hole, span, name.as_deref()));
+            }
+        }
+        let checker = &mut *self.checker;
+        let body = checker.typed.entry(self.key.clone()).or_default();
+        for (span, ty) in std::mem::take(&mut self.exprs) {
+            body.exprs.insert((span.start, span.end), ty);
+        }
+        for (span, name, ty) in std::mem::take(&mut self.names) {
+            checker.note_local(&self.key, &name, &ty);
+            if let Some(body) = checker.typed.get_mut(&self.key) {
+                body.names.insert(((span.start, span.end), name), ty);
+            }
+        }
+    }
+
+    /// Records an expression's type for the typed tree.
+    pub(crate) fn record(&mut self, span: Span, ty: &Type) {
+        self.exprs.push((span, ty.clone()));
     }
 
     pub(crate) fn check_function(
@@ -93,15 +155,17 @@ impl<'c> FnCx<'c> {
         report: bool,
     ) -> BodyType {
         let mut cx = FnCx::new(checker, key, &def.name, report);
-        cx.declared = def.ret.as_ref().map(|ret| cx.checker.program.resolve(ret));
+        let entry = cx.checker.program.functions.get(key);
+        cx.generics = entry.map(|entry| cx.checker.program.generics_of(entry)).unwrap_or_default();
+        cx.declared = def.ret.as_ref().map(|ret| cx.resolve(ret));
         let effects = effects::of_body(&def.body);
         (cx.generator, cx.fallible) = (effects.yields, effects.fails);
         for binding in captured {
-            cx.declare_as(&binding.name, binding.ty, false, Origin::Captured);
+            cx.capture(binding);
         }
         cx.push(false);
-        for param in params {
-            cx.declare_as(&param.name, param.ty.clone(), param.is_mut, Origin::Param);
+        for (param, written) in params.iter().zip(&def.params) {
+            cx.declare_as(&param.name, param.ty.clone(), param.is_mut, Origin::Param, written.span);
         }
         let flow = cx.stmts(&def.body, true);
         // A body that always leaves early has an unknown value, which fits any type.
@@ -112,24 +176,72 @@ impl<'c> FnCx<'c> {
             cx.check_return(&declared, &flow.ty, last.span);
         }
         let mut values = cx.returns.clone();
-        if !flow.exits {
+        // A function that leaves with a bare `return` gives back nothing, so the value its
+        // last line happens to have is dropped.
+        let bare = !values.is_empty() && values.iter().all(|ty| *ty == Type::Unit);
+        if !flow.exits && bare {
+            if let (Type::Result(..), Some(last)) = (cx.checker.settled(&flow.ty), def.body.last()) {
+                cx.error(crate::messages::unhandled(last.span));
+            }
+            values.push(Type::Unit);
+        } else if !flow.exits {
             values.push(flow.ty);
         }
-        let suggestion = join_all(values.iter().filter(|ty| **ty != Type::Unknown));
+        let known: Vec<Type> = values.iter().filter(|ty| **ty != Type::Unknown).cloned().collect();
+        let suggestion = cx.checker.join_all(&known).unwrap_or(Type::Unknown);
         let value = if cx.generator {
-            Type::list(join_all(&cx.yields))
+            let yields = cx.yields.clone();
+            Type::list(cx.joined(&yields, def.span, "yields"))
+        } else if let Some(declared) = &cx.declared {
+            // Each value given back was checked against it already.
+            declared.clone()
         } else if values.is_empty() {
-            Type::Unknown
+            // A body that never finishes, like `while True:` with no `break`, gives nothing.
+            Type::Unit
         } else {
-            join_all(&values)
+            cx.joined(&values, def.span, "returns")
         };
-        BodyType { value, error: join_all(&cx.errors), suggestion }
+        let errors = cx.errors.clone();
+        let error =
+            if errors.is_empty() { Type::Unknown } else { cx.joined(&errors, def.span, "fails with") };
+        let (value, error) = (cx.checker.settled(&value), cx.checker.settled(&error));
+        cx.finish(&[value.clone(), error.clone()]);
+        BodyType { value, error, suggestion }
+    }
+
+    /// Joins what a function gives back from several places, reporting values that don't
+    /// fit together.
+    fn joined(&mut self, types: &[Type], span: Span, verb: &str) -> Type {
+        if let Some(joined) = self.checker.join_all(types) {
+            return joined;
+        }
+        let kinds: Vec<String> = types.iter().map(|ty| crate::types::a(&self.checker.settled(ty))).collect();
+        let mut distinct = kinds.clone();
+        distinct.dedup();
+        self.error(
+            Diagnostic::new(format!("`{}` {verb} {}", self.name, distinct.join(" and ")), span)
+                .with_help("give back one type everywhere, or write the return type to say which"),
+        );
+        Type::Unknown
+    }
+
+    /// A written type, with this function's type parameters in scope.
+    pub(crate) fn resolve(&mut self, written: &fennec_syntax::TypeExpr) -> Type {
+        let names: Vec<String> = self.generics.iter().map(|generic| generic.name.clone()).collect();
+        match self.checker.program.resolve_in(written, &names) {
+            Ok(ty) => ty,
+            Err(problem) => {
+                self.error(problem);
+                Type::Unknown
+            }
+        }
     }
 
     /// Checks a value returned from a function whose return type is written.
     pub(crate) fn check_return(&mut self, declared: &Type, actual: &Type, span: Span) {
+        let actual = self.checker.settled(actual);
         let passed_through = self.fallible && matches!(actual, Type::Result(..));
-        if self.generator || passed_through || accepts(declared, actual) {
+        if self.generator || passed_through || self.checker.fits(declared, &actual) {
             return;
         }
         let diagnostic = if actual.maybe_none() && !declared.maybe_none() {
@@ -137,7 +249,7 @@ impl<'c> FnCx<'c> {
         } else if matches!(actual, Type::Result(..)) {
             crate::messages::unhandled_result(span)
         } else {
-            let (declared, actual) = (crate::types::a(declared), crate::types::a(actual));
+            let (declared, actual) = (crate::types::a(declared), crate::types::a(&actual));
             Diagnostic::new(format!("`{}` returns {declared}, but this is {actual}", self.name), span)
                 .with_help(format!("return {declared}, or change the return type"))
         };
@@ -145,52 +257,59 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn check_test(checker: &'c mut Checker, test: &TestDef) {
-        let mut cx = FnCx::new(checker, "test", "test", true);
+        let key = format!("test \"{}\"", test.name);
+        let mut cx = FnCx::new(checker, &key, "test", true);
         for input in &test.inputs {
-            let ty = input.ty.as_ref().map_or(Type::Unknown, |ty| cx.checker.program.resolve(ty));
-            cx.declare(&input.name, ty, input.is_mut);
+            let ty = input.ty.as_ref().map_or(Type::Unknown, |ty| cx.resolve(ty));
+            cx.declare(&input.name, ty, input.is_mut, input.span);
         }
         cx.stmts(&test.body, false);
+        cx.finish(&[]);
     }
 
     /// Checks a type's field defaults against their types, and its `where` rules.
     pub(crate) fn check_fields(checker: &'c mut Checker, type_name: &str) {
         let Some(info) = checker.program.type_info(type_name) else { return };
         let def = info.def.clone();
-        let mut cx = FnCx::new(checker, type_name, type_name, true);
+        let report = !info.prelude;
+        let mut cx = FnCx::new(checker, &format!("fields of {type_name}"), type_name, report);
+        cx.generics.clone_from(&def.generics);
         for field in &def.fields {
+            let expected = cx.checker.field_type(type_name, None, &field.name);
             let Some(default) = &field.default else { continue };
             let actual = cx.expr(default);
-            if let Some(written) = &field.ty {
-                let expected = cx.checker.program.resolve(written);
-                if !accepts(&expected, &actual) {
-                    let what = format!("`{}`", field.name);
-                    cx.error(crate::messages::mismatch(&what, &expected, &actual, default.span));
-                }
+            if !cx.checker.fits(&expected, &actual) {
+                let what = format!("`{}`", field.name);
+                cx.error(crate::messages::mismatch(&what, &expected, &actual, default.span));
             }
+            // A field whose type its default doesn't show has been reported already.
+            cx.reported += usize::from(expected == Type::Unknown);
         }
         let rules: Vec<&Expr> = def.fields.iter().filter_map(|field| field.rule.as_ref()).collect();
-        if rules.is_empty() {
-            return;
+        if !rules.is_empty() {
+            cx.push(false);
+            for field in &def.fields {
+                let ty = cx.checker.field_type(type_name, None, &field.name);
+                cx.declare(&field.name, ty, false, field.span);
+            }
+            for rule in rules {
+                cx.condition(rule, "where");
+            }
         }
-        cx.push(false);
-        for field in &def.fields {
-            let ty = cx.checker.field_type(type_name, None, &field.name);
-            cx.declare(&field.name, ty, false);
-        }
-        for rule in rules {
-            cx.condition(rule, "where");
-        }
+        cx.finish(&[]);
     }
 
     /// The type of a field's default, without reporting anything: that happens once, when
     /// the type's fields are checked.
     pub(crate) fn type_of_default(checker: &'c mut Checker, default: &Expr) -> Type {
-        FnCx::new(checker, "", "", false).expr(default)
+        let mut cx = FnCx::new(checker, "", "", false);
+        let ty = cx.expr(default);
+        cx.checker.settled(&ty)
     }
 
     pub(crate) fn error(&mut self, diagnostic: Diagnostic) {
         if self.report {
+            self.reported += 1;
             self.checker.diagnostics.push(diagnostic);
         }
     }
@@ -211,16 +330,45 @@ impl<'c> FnCx<'c> {
         self.scopes.pop();
     }
 
-    pub(crate) fn declare(&mut self, name: &str, ty: Type, is_mut: bool) {
-        self.declare_as(name, ty, is_mut, Origin::Local);
+    /// Declares a name made at `at`: by an assignment, a loop, a pattern or a parameter.
+    pub(crate) fn declare(&mut self, name: &str, ty: Type, is_mut: bool, at: Span) {
+        self.declare_as(name, ty, is_mut, Origin::Local, at);
     }
 
-    pub(crate) fn declare_as(&mut self, name: &str, ty: Type, is_mut: bool, origin: Origin) {
-        if !name.contains('.') {
-            self.checker.note_local(&self.key, name, &ty);
+    pub(crate) fn declare_as(&mut self, name: &str, ty: Type, is_mut: bool, origin: Origin, at: Span) {
+        self.declare_with(
+            Binding { name: name.to_owned(), ty: ty.clone(), declared: ty, is_mut, origin },
+            at,
+        );
+    }
+
+    /// Declares a name by assigning to it. A name first given `None` holds an optional of a
+    /// type still to be worked out, from what's given to it later.
+    pub(crate) fn declare_assigned(&mut self, name: &str, ty: Type, is_mut: bool, at: Span) {
+        let declared = match self.checker.settled(&ty) {
+            Type::None => Type::Optional(Box::new(self.checker.fresh(at, Hole::None))),
+            other => other,
+        };
+        self.declare_with(Binding { name: name.to_owned(), ty, declared, is_mut, origin: Origin::Local }, at);
+    }
+
+    /// Declares a name with the type it was declared with, and what it holds now.
+    pub(crate) fn declare_with(&mut self, binding: Binding, at: Span) {
+        if !binding.name.contains('.') {
+            self.checker.name_vars(&binding.declared, &binding.name);
+            self.names.push((at, binding.name.clone(), binding.declared.clone()));
         }
+        self.bind(binding);
+    }
+
+    /// A name from around a nested function, which it can read.
+    fn capture(&mut self, binding: Binding) {
+        self.bind(Binding { is_mut: false, origin: Origin::Captured, ..binding });
+    }
+
+    fn bind(&mut self, binding: Binding) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.bindings.push(Binding { name: name.to_owned(), ty, is_mut, origin });
+            scope.bindings.push(binding);
         }
     }
 
@@ -255,6 +403,11 @@ impl<'c> FnCx<'c> {
             Origin::Local | Origin::Captured => return not_mut(name, span),
         };
         Diagnostic::new(format!("`{name}` isn't mut"), span).with_help(help)
+    }
+
+    /// The type a name was declared with.
+    pub(crate) fn declared_type(&mut self, name: &str) -> Option<Type> {
+        self.binding_mut(name).map(|binding| binding.declared.clone())
     }
 
     /// What a name holds, and whether it can be changed from here.
@@ -304,14 +457,17 @@ impl<'c> FnCx<'c> {
     /// Where paths meet: each name holds what it held on any of them.
     pub(crate) fn merge(&mut self, paths: &[Vec<Type>]) {
         let Some((first, rest)) = paths.split_first() else { return };
-        let merged: Vec<Type> = first
-            .iter()
-            .enumerate()
-            .map(|(at, ty)| {
-                rest.iter()
-                    .fold(ty.clone(), |ty, path| path.get(at).map_or(ty.clone(), |other| join(&ty, other)))
-            })
-            .collect();
+        let declared: Vec<Type> =
+            self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|b| b.declared.clone())).collect();
+        let mut merged = Vec::new();
+        for (at, ty) in first.iter().enumerate() {
+            let mut ty = ty.clone();
+            for other in rest.iter().filter_map(|path| path.get(at)) {
+                let fallback = declared.get(at).cloned().unwrap_or(Type::Unknown);
+                ty = self.checker.join(&ty, other).unwrap_or(fallback);
+            }
+            merged.push(ty);
+        }
         self.restore(&merged);
     }
 
@@ -321,7 +477,7 @@ impl<'c> FnCx<'c> {
         for path in not_none(cond, true).into_iter().chain(not_none(cond, false)) {
             if path.contains('.') && self.lookup(&path).is_none() {
                 let ty = self.path_type(&path);
-                self.declare(&path, ty, false);
+                self.declare(&path, ty, false, cond.span);
             }
         }
     }
@@ -353,10 +509,17 @@ impl<'c> FnCx<'c> {
     /// Records that these names aren't None.
     pub(crate) fn narrow(&mut self, names: &[String]) {
         for name in names {
-            if let Some(binding) = self.binding_mut(name)
-                && binding.ty.maybe_none()
-            {
-                binding.ty = binding.ty.without_none();
+            let Some(binding) = self.binding_mut(name) else { continue };
+            let (ty, declared) = (binding.ty.clone(), binding.declared.clone());
+            let narrowed = match self.checker.settled(&ty) {
+                // Known to be None here, so a path where it isn't can't be reached; it
+                // holds whatever else it could.
+                Type::None => self.checker.settled(&declared).without_none(),
+                ty if ty.maybe_none() => ty.without_none(),
+                _ => continue,
+            };
+            if let Some(binding) = self.binding_mut(name) {
+                binding.ty = narrowed;
             }
         }
     }

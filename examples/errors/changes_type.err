@@ -1,0 +1,7 @@
+error: `health` holds an int, so it can't be given a str
+ --> examples/errors/changes_type.fen:3:5
+  |
+3 |     health = "full"
+  |     ^^^^^^
+  |
+  = help: a name keeps one type: use a new name for a str

@@ -42,7 +42,7 @@ fn removing_from_an_id_map_might_find_nothing() {
 fn builtins_give_back_their_types() {
     plus_one("", "ignore([1].index(1), 'fine')", "can't use `+` on a nothing and an int");
     plus_one("", "Ok(1)", "this is the result of something that can fail");
-    plus_one("", "Err(1)", "this is the result of something that can fail");
+    plus_one("", "Err(IoError('x'))", "this is the result of something that can fail");
     plus_one("", "list(set([1.5]))[0]", "can't mix int and float in `+`");
     assert_eq!(in_main("stdout.print(list(set())[0] + 1)"), Vec::<String>::new());
 }
@@ -115,7 +115,12 @@ fn arguments_to_anything_are_checked() {
     ";
     assert_eq!(
         in_main(program),
-        ["`missing` doesn't exist @ missing", "`also_missing` doesn't exist @ also_missing"]
+        [
+            "an int can't be called @ value",
+            "`missing` doesn't exist @ missing",
+            "can't tell the type of `n` @ n => n",
+            "`also_missing` doesn't exist @ also_missing",
+        ]
     );
 }
 
@@ -228,7 +233,7 @@ fn capabilities_and_errors_need_no_import() {
                 case IoError(reason): reason
 
         def main(stdout: Stdout, fs: Fs, clock: Clock):
-            stdout.print(read(fs, 'a.txt'), Err(InvalidValue('no')), Err(ParseError('no', 1, 1)), clock.now())
+            stdout.print(read(fs, 'a.txt'), InvalidValue('no'), ParseError('no', 1, 1), clock.now())
     ";
     assert_eq!(problems(program), Vec::<String>::new());
 }

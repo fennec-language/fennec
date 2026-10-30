@@ -31,8 +31,6 @@ def main(stdout: Stdout):
     right.insert("kit")
     stdout.print(left == right)
 
-    # Types, functions and capabilities are equal only to themselves.
-    stdout.print(Light == Light, Light == Coin, square == square, square == cube)
-    stdout.print(len == len, len == max)
-    double = n => n * 2
-    stdout.print(double == double, double == (n => n * 2))
+    # Functions are equal only to themselves. Types and builtins aren't values, and arrow
+    # functions are only passed straight to calls, so neither is ever compared.
+    stdout.print(square == square, square == cube)

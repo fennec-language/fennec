@@ -87,7 +87,7 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
     if actual.maybe_none() && !expected.maybe_none() {
         return might_be_none(span);
     }
-    if matches!(actual, Type::Result(..)) {
+    if matches!(actual, Type::Result(..)) && !matches!(expected, Type::Result(..)) {
         return unhandled_result(span);
     }
     let diagnostic =
@@ -106,7 +106,7 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
 /// A type for the start of a sentence: `Enemy` for a named type, "a list" for the others.
 pub(crate) fn describe(ty: &Type) -> String {
     match ty {
-        Type::Named(name) => format!("`{name}`"),
+        Type::Named(name) | Type::Param(name) => format!("`{name}`"),
         other => article(&other.kind()),
     }
 }

@@ -289,6 +289,8 @@ struct Parser:
             self.name("a type parameter")?
             if self.eat_punct(":"):
                 self.type_expr()?
+                while self.eat_punct("&"):
+                    self.type_expr()?
             if not self.eat_punct(","):
                 break
         self.expect_punct("]")?
@@ -358,6 +360,10 @@ struct Parser:
                 if not self.eat_punct(","):
                     break
             self.expect_punct(")")?
+            # `(int, str) -> bool`: a function type, its return type last.
+            if self.eat_punct("->"):
+                args.append(self.type_expr()?)
+                return TypeExpr(name="->", args=args, optional=False, span=start.to(self.prev_span()))
             name = "tuple"
         else:
             name = self.name("a type")?
@@ -439,13 +445,21 @@ struct Parser:
         target = self.expr()?
         if not is_name_expr(target):
             fail Diagnostic(message="`mut` declares a new name, like `mut count = 0`", span=target.span)
+        mut ty: TypeExpr? = None
+        if self.eat_punct(":"):
+            ty = self.type_expr()?
         self.expect_punct("=")?
         value = self.expr()?
-        .Assign(target, None, value, True)
+        .Assign(target, None, value, True, ty)
 
     ## An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
     def expr_or_assign(mut self) -> StmtKind:
         mut target = self.expr()?
+        if is_name_expr(target) and self.eat_punct(":"):
+            ty = self.type_expr()?
+            self.expect_punct("=")?
+            value = self.expr()?
+            return .Assign(target, None, value, False, ty)
         if self.at_punct(","):
             mut items = [target]
             while self.eat_punct(","):
@@ -460,7 +474,7 @@ struct Parser:
         if not is_assignable(target, op is None):
             fail Diagnostic(message="this can't be assigned to", span=target.span)
         value = self.expr()?
-        .Assign(target, op, value, False)
+        .Assign(target, op, value, False, None)
 
     def if_stmt(mut self) -> Stmt:
         start = self.advance().span
@@ -670,9 +684,19 @@ struct Parser:
 
     ## `object[index]` or a slice `object[start:end]`, after the `[`.
     def index(mut self, object: Expr) -> Expr:
-        mut start = None
+        mut start: Expr? = None
         if not self.at_punct(":"):
-            start = self.expr()?
+            first = self.expr()?
+            start = first
+            # `object[a, b]` indexes with the tuple `(a, b)`.
+            if self.at_punct(","):
+                mut items = [first]
+                while self.eat_punct(",") and not self.at_punct("]"):
+                    items.append(self.expr()?)
+                mut span = self.prev_span()
+                for item in items:
+                    span = span.to(item.span)
+                start = Expr(kind=ExprKind.Tuple(items), span=span)
         is_slice = self.eat_punct(":")
         mut end = None
         if is_slice and not self.at_punct("]"):

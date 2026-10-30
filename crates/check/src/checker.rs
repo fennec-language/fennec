@@ -4,15 +4,16 @@
 //! directly or through others, so it has to have its return type written; until it's done,
 //! its written signature stands in.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use fennec_syntax::{Diagnostic, FnDef, Module};
+use fennec_syntax::{Diagnostic, FnDef, Generic, Module};
 
 use crate::effects::{self, Effects};
 use crate::function::{Binding, FnCx};
+use crate::infer::Slot;
 use crate::program::{FnEntry, Program, TypeKind, written};
 use crate::types::Type;
-use crate::{ParamType, Signature, Signatures};
+use crate::{Body, Checked, ParamType, Signature, Signatures, Types};
 
 enum State {
     /// Being checked now. `recursive` is set when it's needed before it's done.
@@ -30,8 +31,27 @@ pub(crate) struct Checker {
     /// The type of each name in each function, keyed `function/name`; `Unknown` for a name
     /// that holds different types in different places.
     locals: BTreeMap<String, Type>,
+    /// Type variables, by number: what each was settled to, and where it was made.
+    pub(crate) vars: Vec<Slot>,
+    /// The typed tree, by function.
+    pub(crate) typed: BTreeMap<String, Body>,
+    /// The functions being checked, innermost last.
+    checking: Vec<String>,
+    /// Functions that used a signature that may still grow: one being checked, so its
+    /// errors aren't all known yet, or one waiting here itself. They're checked again.
+    revisit: BTreeSet<String>,
+    /// What each function to check again gave back last time, for calls to it while it's
+    /// being checked again.
+    previous: BTreeMap<String, Signature>,
+    /// The functions that used each function's signature, so they're checked again when it
+    /// changes.
+    callers: BTreeMap<String, BTreeSet<String>>,
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
+
+/// How many times functions in a cycle of calls are checked again before the errors they
+/// can fail with stop growing.
+const REVISITS: usize = 16;
 
 impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
@@ -50,17 +70,25 @@ impl Checker {
             states: BTreeMap::new(),
             fields: BTreeMap::new(),
             locals: BTreeMap::new(),
+            vars: Vec::new(),
+            typed: BTreeMap::new(),
+            checking: Vec::new(),
+            revisit: BTreeSet::new(),
+            previous: BTreeMap::new(),
+            callers: BTreeMap::new(),
             diagnostics,
         }
     }
 
-    pub(crate) fn run(mut self) -> Result<Signatures, Vec<Diagnostic>> {
+    pub(crate) fn run(mut self) -> Result<Checked, Vec<Diagnostic>> {
+        self.check_declarations();
         let keys: Vec<String> = self.program.functions.keys().cloned().collect();
         for key in &keys {
             if !self.states.contains_key(key) {
                 self.check_function(key);
             }
         }
+        self.revisit_cycles();
         for test in self.program.tests.clone() {
             FnCx::check_test(&mut self, &test);
         }
@@ -74,8 +102,12 @@ impl Checker {
         for name in user_types {
             FnCx::check_fields(&mut self, &name);
         }
+        let structs = self.structs();
+        self.settle_typed();
         if self.diagnostics.is_empty() {
-            let structs = self.structs();
+            self.unknowns_left();
+        }
+        if self.diagnostics.is_empty() {
             let locals = std::mem::take(&mut self.locals);
             let functions = self
                 .states
@@ -85,7 +117,8 @@ impl Checker {
                     State::Checking { .. } => None,
                 })
                 .collect();
-            return Ok(Signatures { functions, structs, locals });
+            let signatures = Signatures { functions, structs, locals };
+            return Ok(Checked { signatures, types: Types { functions: self.typed } });
         }
         let mut diagnostics = self.diagnostics;
         diagnostics.sort_by(|a, b| (a.span.start, &a.message).cmp(&(b.span.start, &b.message)));
@@ -93,14 +126,69 @@ impl Checker {
         Err(diagnostics)
     }
 
+    /// Reports types written in signatures and interfaces that don't mean anything, and
+    /// type parameters bound to something that isn't an interface.
+    fn check_declarations(&mut self) {
+        let mut problems = Vec::new();
+        for entry in self.program.functions.values().filter(|entry| !entry.prelude) {
+            let generics = self.program.generics_of(entry);
+            let names: Vec<String> = generics.iter().map(|generic| generic.name.clone()).collect();
+            let def = &entry.def;
+            let written = def.params.iter().filter_map(|param| param.ty.as_ref()).chain(def.ret.as_ref());
+            problems.extend(written.filter_map(|ty| self.program.resolve_in(ty, &names).err()));
+            problems.extend(self.bad_bounds(&def.generics));
+        }
+        for interface in self.program.interfaces.values() {
+            for def in &interface.methods {
+                let written = def.params.iter().filter_map(|param| param.ty.as_ref()).chain(def.ret.as_ref());
+                problems.extend(written.filter_map(|ty| self.program.resolve(ty).err()));
+            }
+        }
+        for info in self.program.types.values().filter(|info| !info.prelude) {
+            problems.extend(self.bad_bounds(&info.def.generics));
+        }
+        self.diagnostics.extend(problems);
+    }
+
+    /// Bounds that aren't interfaces, as in `T: Enemy`.
+    fn bad_bounds(&self, generics: &[Generic]) -> Vec<Diagnostic> {
+        generics
+            .iter()
+            .flat_map(|generic| &generic.bounds)
+            .filter(|bound| !self.program.is_interface(&bound.name))
+            .map(|bound| {
+                Diagnostic::new(format!("`{}` isn't an interface", bound.name), bound.span).with_help(
+                    "a type parameter can be bound to an interface, like `T: Ordered` or `T: Shape`",
+                )
+            })
+            .collect()
+    }
+
     /// A function's signature, checking its body first if that's the only way to know its
     /// return type.
     pub(crate) fn signature(&mut self, key: &str) -> Option<Signature> {
         let has_return_type = self.program.functions.get(key)?.def.ret.is_some();
+        if let Some(caller) = self.checking.last() {
+            let caller = self.outermost(caller);
+            self.callers.entry(self.outermost(key)).or_default().insert(caller);
+        }
         match self.states.get_mut(key) {
-            Some(State::Done(signature)) => return Some(signature.clone()),
+            Some(State::Done(signature)) => {
+                let signature = signature.clone();
+                if self.revisit.contains(&self.outermost(key)) {
+                    self.mark_stale();
+                }
+                return Some(signature);
+            }
             Some(State::Checking { recursive }) => {
+                // When it's checked again, what it gave back last time stands in, so it
+                // doesn't need its return type written any more than the first time.
+                if let Some(previous) = self.previous.get(key).cloned() {
+                    self.mark_stale();
+                    return Some(previous);
+                }
                 *recursive |= !has_return_type;
+                self.mark_stale();
                 return self.declared(key);
             }
             None => self.check_function(key),
@@ -111,10 +199,18 @@ impl Checker {
         }
     }
 
+    /// The return type written in a function's signature, or `Unknown` if none is.
+    fn written_return(&self, key: &str) -> Type {
+        let Some(entry) = self.program.functions.get(key) else { return Type::Unknown };
+        let generics = self.generic_names(entry);
+        let written = entry.def.ret.as_ref().map(|ret| self.program.resolve_in(ret, &generics));
+        written.and_then(Result::ok).unwrap_or(Type::Unknown)
+    }
+
     /// A signature from what's written: the return type is unknown if it isn't written.
     fn declared(&self, key: &str) -> Option<Signature> {
         let entry = self.program.functions.get(key)?;
-        let returned = entry.def.ret.as_ref().map_or(Type::Unknown, |ret| self.program.resolve(ret));
+        let returned = self.written_return(key);
         let effects = effects::of_body(&entry.def.body);
         Some(Signature {
             params: self.params(entry),
@@ -124,7 +220,12 @@ impl Checker {
         })
     }
 
+    fn generic_names(&self, entry: &FnEntry) -> Vec<String> {
+        self.program.generics_of(entry).into_iter().map(|generic| generic.name).collect()
+    }
+
     fn params(&self, entry: &FnEntry) -> Vec<ParamType> {
+        let generics = self.generic_names(entry);
         entry
             .def
             .params
@@ -132,8 +233,8 @@ impl Checker {
             .map(|param| ParamType {
                 name: param.name.clone(),
                 ty: match (&param.ty, &entry.owner) {
-                    (Some(ty), _) => self.program.resolve(ty),
-                    (None, Some(owner)) => Type::named(owner),
+                    (Some(ty), _) => self.program.resolve_in(ty, &generics).unwrap_or(Type::Unknown),
+                    (None, Some(owner)) => self.program.self_type(owner),
                     (None, None) => Type::Unknown,
                 },
                 is_mut: param.is_mut,
@@ -146,8 +247,16 @@ impl Checker {
     }
 
     /// Checks a function defined inside another, which can read the names around it.
-    pub(crate) fn check_nested(&mut self, key: &str, def: &FnDef, captured: Vec<Binding>, prelude: bool) {
-        self.program.functions.insert(key.to_owned(), FnEntry { def: def.clone(), owner: None, prelude });
+    pub(crate) fn check_nested(
+        &mut self,
+        key: &str,
+        def: &FnDef,
+        captured: Vec<Binding>,
+        prelude: bool,
+        inherited: Vec<Generic>,
+    ) {
+        let entry = FnEntry { def: def.clone(), owner: None, prelude, inherited };
+        self.program.functions.insert(key.to_owned(), entry);
         self.check_with(key, captured);
     }
 
@@ -157,9 +266,16 @@ impl Checker {
         let Some(mut signature) = self.declared(key) else { return };
         self.states.insert(key.to_owned(), State::Checking { recursive: false });
         let effects = effects::of_body(&def.body);
+        self.checking.push(key.to_owned());
         let body = FnCx::check_function(self, key, &def, &signature.params, captured, !prelude);
-        let value = def.ret.as_ref().map_or(body.value, |ret| self.program.resolve(ret));
-        signature.returns = wrap(value, body.error, effects);
+        self.checking.pop();
+        let value = match &def.ret {
+            Some(_) => self.written_return(key),
+            None => body.value,
+        };
+        // Anything still open in what it gives back has been reported, and callers
+        // mustn't settle it.
+        signature.returns = forget_vars(&wrap(value, body.error, effects));
         if let Some(State::Checking { recursive: true }) = self.states.get(key)
             && def.ret.is_none()
             && !prelude
@@ -167,6 +283,74 @@ impl Checker {
             self.diagnostics.push(needs_return_type(&def, &body.suggestion));
         }
         self.states.insert(key.to_owned(), State::Done(signature));
+    }
+
+    /// Notes that the function being checked used a signature that may still grow.
+    fn mark_stale(&mut self) {
+        if let Some(caller) = self.checking.last() {
+            let outermost = self.outermost(caller);
+            self.revisit.insert(outermost);
+        }
+    }
+
+    /// The function a nested function is in, all the way out: nested functions are checked
+    /// again with the function around them, which gives them the names they read.
+    fn outermost(&self, key: &str) -> String {
+        let mut key = key.to_owned();
+        while let Some(entry) = self.program.functions.get(&key)
+            && entry.owner.is_none()
+            && let Some((outer, _)) = key.rsplit_once('.')
+        {
+            key = outer.to_owned();
+        }
+        key
+    }
+
+    /// Checks again the functions that used signatures that were still growing, until a
+    /// round changes none of them. A call cycle's errors are then every error any function
+    /// in it can fail with.
+    fn revisit_cycles(&mut self) {
+        let mut keys = std::mem::take(&mut self.revisit);
+        let mut pending: Vec<String> = keys.iter().cloned().collect();
+        while let Some(key) = pending.pop() {
+            for caller in self.callers.get(&key).into_iter().flatten() {
+                if keys.insert(caller.clone()) {
+                    pending.push(caller.clone());
+                }
+            }
+        }
+        for _ in 0..REVISITS {
+            if keys.is_empty() {
+                return;
+            }
+            let mut before = Vec::new();
+            for key in &keys {
+                if let Some(State::Done(signature)) = self.states.remove(key) {
+                    before.push(signature.clone());
+                    self.previous.insert(key.clone(), known_errors(signature));
+                }
+                let prefix = format!("{key}/");
+                self.locals.retain(|name, _| !name.starts_with(&prefix));
+            }
+            for key in &keys {
+                if !self.states.contains_key(key) {
+                    self.check_function(key);
+                }
+            }
+            let after: Vec<Signature> = keys
+                .iter()
+                .filter_map(|key| match self.states.get(key) {
+                    Some(State::Done(signature)) => Some(signature.clone()),
+                    _ => None,
+                })
+                .collect();
+            // Functions marked while being checked again belong to the same cycles, unless
+            // they're new.
+            keys.extend(std::mem::take(&mut self.revisit));
+            if before == after {
+                return;
+            }
+        }
     }
 
     /// The type of a field of a struct, error or enum case, from its written type or default.
@@ -186,16 +370,92 @@ impl Checker {
             return Type::Unknown;
         };
         self.fields.insert(key.clone(), None);
+        let report = !info.prelude;
         let ty = match (&found.ty, &found.default) {
-            (Some(ty), _) => self.program.resolve(ty),
-            (None, Some(default)) => match FnCx::type_of_default(self, default) {
-                Type::None => Type::Unknown,
-                ty => ty,
+            (Some(ty), _) => match self.program.resolve_in(ty, &self.program.type_params(owner)) {
+                Ok(ty) => ty,
+                Err(problem) => {
+                    self.diagnostics.push(problem);
+                    Type::Unknown
+                }
             },
+            (None, Some(default)) => {
+                let ty = FnCx::type_of_default(self, default);
+                if ((!ty.is_known() && ty != Type::Unknown) || ty == Type::None) && report {
+                    self.diagnostics.push(field_needs_type(&found.name, &ty, default.span));
+                }
+                if ty == Type::None { Type::Unknown } else { forget_vars(&ty) }
+            }
             (None, None) => Type::Unknown,
         };
         self.fields.insert(key, Some(ty.clone()));
         ty
+    }
+
+    /// Settles every type in the typed tree, now that every function has been checked.
+    fn settle_typed(&mut self) {
+        let mut typed = std::mem::take(&mut self.typed);
+        for body in typed.values_mut() {
+            for ty in body.exprs.values_mut().chain(body.names.values_mut()) {
+                *ty = self.settled(ty);
+            }
+        }
+        self.typed = typed;
+        let locals = std::mem::take(&mut self.locals);
+        self.locals = locals.into_iter().map(|(key, ty)| (key, self.settled(&ty))).collect();
+    }
+
+    /// The last line of defense: an expression in the program whose type still isn't known,
+    /// though nothing was reported, is reported now. Only the innermost such expressions
+    /// are, since what's around them is unknown because of them.
+    fn unknowns_left(&mut self) {
+        let prelude: Vec<String> = self
+            .program
+            .functions
+            .iter()
+            .filter(|(_, entry)| entry.prelude)
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut unknown: Vec<(u32, u32)> = self
+            .typed
+            .iter()
+            .filter(|(key, _)| !prelude.contains(key))
+            .flat_map(|(_, body)| body.exprs.iter())
+            .filter(|(_, ty)| !ty.is_known())
+            .map(|(span, _)| *span)
+            .collect();
+        unknown.sort_unstable();
+        unknown.dedup();
+        let innermost: Vec<(u32, u32)> = unknown
+            .iter()
+            .filter(|outer| {
+                !unknown.iter().any(|inner| inner != *outer && outer.0 <= inner.0 && inner.1 <= outer.1)
+            })
+            .copied()
+            .collect();
+        let unknown_signatures: Vec<Diagnostic> = self
+            .states
+            .iter()
+            .filter_map(|(key, state)| match state {
+                State::Done(signature) if !prelude.contains(key) => Some((key, signature)),
+                _ => None,
+            })
+            .filter(|(_, signature)| {
+                !signature.returns.is_known() || signature.params.iter().any(|param| !param.ty.is_known())
+            })
+            .filter_map(|(key, _)| self.program.functions.get(key))
+            .map(|entry| {
+                Diagnostic::new(format!("can't work out the types of `{}`", entry.def.name), entry.def.span)
+                    .with_help("write its parameters' types and its return type")
+            })
+            .collect();
+        self.diagnostics.extend(unknown_signatures);
+        for (start, end) in innermost {
+            self.diagnostics.push(
+                Diagnostic::new("can't work out the type of this", fennec_syntax::Span { start, end })
+                    .with_help("name it with its type written, like `value: int = ...`"),
+            );
+        }
     }
 
     /// Records the type a function's name holds, for compilers to use.
@@ -243,6 +503,40 @@ impl Checker {
     pub(crate) fn is_error_type(&self, ty: &Type) -> bool {
         self.program.kind_of(ty) == Some(TypeKind::Error)
     }
+}
+
+/// A signature with the errors it couldn't tell yet left out, for calls to it while it's
+/// checked again: what's known so far, which grows to the whole set.
+fn known_errors(signature: Signature) -> Signature {
+    let returns = match signature.returns {
+        Type::Result(value, error) if !error.is_known() => {
+            let error = match *error {
+                Type::Errors(names) => Type::Errors(names),
+                Type::Named(name) => Type::Named(name),
+                _ => Type::Errors(Vec::new()),
+            };
+            Type::Result(value, Box::new(error))
+        }
+        other => other,
+    };
+    Signature { returns, ..signature }
+}
+
+/// A type with every variable left in it replaced by `Unknown`, for keeping in a signature
+/// or a field's type, where no later check may settle it.
+fn forget_vars(ty: &Type) -> Type {
+    ty.map(&mut |part| matches!(part, Type::Var(_)).then_some(Type::Unknown))
+}
+
+fn field_needs_type(name: &str, ty: &Type, span: fennec_syntax::Span) -> Diagnostic {
+    let example = match ty {
+        Type::List(_) => format!("{name}: list[int] = []"),
+        Type::Dict(..) => format!("{name}: dict[str, int] = {{}}"),
+        Type::Set(_) => format!("{name}: set[int] = set()"),
+        _ => format!("{name}: Enemy? = None"),
+    };
+    Diagnostic::new(format!("can't tell the type of `{name}` from its default"), span)
+        .with_help(format!("write its type, like `{example}`"))
 }
 
 /// What a call gives back, from what the body gives back.

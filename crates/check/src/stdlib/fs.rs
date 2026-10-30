@@ -8,15 +8,16 @@ pub(crate) const MODULE: Module =
     Module { functions: &[], result: no_functions, method, construct: no_checks };
 
 fn method(type_name: &str, name: &str) -> Option<Method> {
-    let can_fail = |value: Type| Type::result(value, Type::named("IoError"));
-    let (returns, arity) = match (type_name, name) {
-        ("Fs", "exists") => (Type::Bool, 1),
-        ("Fs", "read_text") => (can_fail(Type::Str), 1),
-        ("Fs", "write_text") => (can_fail(Type::Unit), 2),
-        ("Fs", "list_dir") => (can_fail(Type::list(Type::named("Path"))), 1),
-        ("Fs", "make_dir" | "remove") => (can_fail(Type::Unit), 1),
-        ("Fs", "metadata") => (can_fail(Type::named("Metadata")), 1),
+    let io = |value: Type| Type::result(value, Type::named("IoError"));
+    // A path is a `str` here, and the checker takes a `Path` wherever `Fs` takes one.
+    let path = || Type::Str;
+    Some(match (type_name, name) {
+        ("Fs", "exists") => reads(&[path()], Type::Bool),
+        ("Fs", "read_text") => reads(&[path()], io(Type::Str)),
+        ("Fs", "write_text") => reads(&[path(), Type::Str], io(Type::Unit)),
+        ("Fs", "list_dir") => reads(&[path()], io(Type::list(Type::named("Path")))),
+        ("Fs", "make_dir" | "remove") => reads(&[path()], io(Type::Unit)),
+        ("Fs", "metadata") => reads(&[path()], io(Type::named("Metadata"))),
         _ => return None,
-    };
-    Some(reads(returns, arity, arity))
+    })
 }

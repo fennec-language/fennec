@@ -81,7 +81,7 @@ impl Interp<'_> {
         self.step(stmt.span)?;
         match &stmt.kind {
             StmtKind::Expr(expr) => Ok(Flow::Normal(self.eval(expr)?)),
-            StmtKind::Assign { target, op, value, declare_mut } => {
+            StmtKind::Assign { target, op, value, declare_mut, .. } => {
                 self.assign(target, *op, value, *declare_mut)?;
                 Ok(Flow::Normal(Value::Unit))
             }

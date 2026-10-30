@@ -15,28 +15,62 @@ fn module_functions_need_importing() {
         stdout.print(loads('1')?)
     ";
     assert_eq!(with_imports("", program), ["`loads` doesn't exist @ loads"]);
+    let program = "
+        stdout.print(loads[int]('1')?)
+    ";
     assert_eq!(with_imports("from std.json import loads", program), Vec::<String>::new());
 }
 
 #[test]
-fn reading_gives_back_a_result() {
+fn reading_gives_back_a_result_of_the_type_asked_for() {
     let program = "
-        stdout.print(loads('1') + 1)
-        stdout.print(loads('a = 1')? + 1)
-        stdout.print(loads('1') else 0)
+        stdout.print(loads[int]('1') + 1)
+        stdout.print(loads[dict[str, int]]('a = 1')? + 1)
+        stdout.print(loads[int]('1') else 0)
     ";
-    let unhandled = "this is the result of something that can fail @ loads('1') + 1".replace('\'', "\"");
-    assert_eq!(with_imports("from std.json import loads", program), [unhandled.as_str()]);
+    let unhandled = "this is the result of something that can fail @ loads[int]('1') + 1".replace('\'', "\"");
+    assert_eq!(
+        with_imports("from std.json import loads", program),
+        [unhandled.as_str(), "can't use `+` on a dict and an int @ loads[dict[str, int]](\"a = 1\")? + 1"]
+    );
     assert_eq!(
         with_imports("from std.toml import loads", program),
-        [unhandled.as_str(), "can't use `+` on a dict and an int @ loads(\"a = 1\")? + 1"]
+        [
+            unhandled.as_str(),
+            "a TOML document is a table, so it's read as a dict or a struct, not an int @ int",
+            "can't use `+` on a dict and an int @ loads[dict[str, int]](\"a = 1\")? + 1",
+            "a TOML document is a table, so it's read as a dict or a struct, not an int @ int",
+        ]
+    );
+}
+
+#[test]
+fn reading_needs_a_type_the_format_can_hold() {
+    let program = "
+        a = loads('1')
+        b = loads[set[int]]('[1]')
+        c = loads[dict[int, str]]('{}')
+        d = loads[Id[Player]]('1')
+        e = loads[Player]('{}')
+        f = loads[3]('1')
+    ";
+    let declarations = "from std.json import loads\nfrom std.game import Id\n\nstruct Player:\n    name: str\n    friends: list[Player]\n";
+    assert_eq!(
+        with_imports(declarations, program),
+        [
+            "`json.loads` needs the type to read @ loads('1')".replace('\'', "\"").as_str(),
+            "JSON can't hold a set @ set[int]",
+            "JSON can't hold a dict @ dict[int, str]",
+            "JSON can't hold an Id @ Id[Player]",
+            "write the type to read in brackets, like `json.loads[Settings]` @ 3",
+        ]
     );
 }
 
 #[test]
 fn json_and_toml_are_called_the_right_way() {
     let program = "
-        a = loads(1)
+        a = loads[int](1)
         b = dumps()
         c = dumps([1], indent='2')
         d = dumps([1], width=2)
@@ -50,7 +84,7 @@ fn json_and_toml_are_called_the_right_way() {
             "`json.dumps` was called with the wrong arguments @ dumps()",
             "`indent` should be an int, but this is a str @ \"2\"",
             "`json.dumps` has no parameter called `width` @ 2",
-            "JSON can't hold a set @ {1, 2}",
+            "JSON can't hold a set @ dumps({1, 2})",
         ]
     );
     let program = "
@@ -88,7 +122,7 @@ fn paths_have_their_methods() {
 #[test]
 fn modules_are_imported_whole() {
     let program = "
-        stdout.print(json.dumps(json.loads('1')?), toml.dumps({'a': 1}), path.Path('a').name())
+        stdout.print(json.dumps(json.loads[int]('1')?), toml.dumps({'a': 1}), path.Path('a').name())
         stdout.print(math.sqrt(2.0) + math.PI)
     ";
     let imports = "from std import json, toml, path, math";
@@ -110,7 +144,7 @@ fn modules_are_imported_whole() {
 #[test]
 fn imports_bind_names_the_way_python_does() {
     // `import std.json` binds `std`; `from std import toml` binds `toml`.
-    let program = "stdout.print(std.json.dumps(1), toml.dumps({'a': 1}), loads('2')?)";
+    let program = "stdout.print(std.json.dumps(1), toml.dumps({'a': 1}), loads[int]('2')?)";
     let imports = "import std.json\nfrom std import toml\nfrom std.json import loads";
     assert_eq!(with_imports(imports, program), Vec::<String>::new());
     let program = "stdout.print(json.dumps(1), std.toml.dumps(1), std.json, std)";

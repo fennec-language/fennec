@@ -87,14 +87,15 @@ impl Writer {
         let follows = following_widths(&item.nodes, rest);
         for (at, node) in item.nodes.iter().enumerate() {
             match node {
+                // An item starts its line, where `space` writes nothing.
                 Node::Token { text, space, width } => {
-                    if *space && at > 0 {
+                    if *space {
                         self.space();
                     }
                     self.text(text, *width);
                 }
                 Node::Group(group) => {
-                    if group.space && at > 0 {
+                    if group.space {
                         self.space();
                     }
                     let follow = follows.get(at).copied().unwrap_or(0);

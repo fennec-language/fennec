@@ -66,20 +66,19 @@ impl<'s, 't> Driver<'s, 't> {
         let tokens = self.tokens;
         let mut offset = 0;
         for chunk in tokens.split_inclusive(|token| token.kind == TokenKind::Newline) {
-            for (index, token) in chunk.iter().enumerate() {
+            let before_break = chunk.iter().take_while(|token| token.kind != TokenKind::Newline);
+            for (index, token) in before_break.enumerate() {
                 let at = offset + index;
                 match token.kind {
-                    TokenKind::Newline => {}
                     TokenKind::Indent => {
                         let width =
                             tokens.get(at + 1).map_or(0, |next| self.comments.column(next.span.start));
                         let kind = std::mem::replace(&mut self.pending, BlockKind::Other);
                         self.blocks.push(Block::new(width, kind));
                     }
+                    // Dedents never outnumber indents, so the top level is never popped.
                     TokenKind::Dedent => {
-                        if self.blocks.len() > 1 {
-                            self.blocks.pop();
-                        }
+                        self.blocks.pop();
                     }
                     TokenKind::Eof => self.end_of_file(at),
                     _ => {
@@ -218,19 +217,12 @@ impl<'s, 't> Driver<'s, 't> {
     }
 }
 
-/// Whether a line is a declaration that gets blank lines around it: a function, type or test
-/// at the top level, or a method in a type.
+/// Whether a line is a declaration that gets blank lines around it: anything with a body at
+/// the top level, where only declarations have one, or a method in a type.
 fn is_item(toks: &[Tok<'_>], kind: BlockKind) -> bool {
-    let mut words = toks.iter().skip_while(|tok| matches!(tok.text, "export" | "noalloc"));
-    let (Some(first), second) = (words.next(), words.next()) else { return false };
-    let is_def = first.kind == TokenKind::Keyword && first.text == "def";
-    let is_declaration = first.kind == TokenKind::Name
-        && matches!(first.text, "struct" | "enum" | "error" | "interface" | "test")
-        && second.is_some_and(|second| matches!(second.kind, TokenKind::Name | TokenKind::Str));
-    let has_body = top_level_colon(toks);
     match kind {
-        BlockKind::TopLevel => has_body && (is_def || is_declaration),
-        BlockKind::TypeBody => has_body && is_def,
+        BlockKind::TopLevel => top_level_colon(toks),
+        BlockKind::TypeBody => top_level_colon(toks) && toks.iter().any(|tok| tok.text == "def"),
         BlockKind::MatchBody | BlockKind::Other => false,
     }
 }
@@ -251,11 +243,8 @@ fn write(writer: &mut Writer, item: &Item<'_>, level: usize, comment: Option<&st
 fn body_colon(toks: &[Tok<'_>], kind: BlockKind) -> Option<usize> {
     let mut words = toks.iter().skip_while(|tok| matches!(tok.text, "export" | "noalloc"));
     let first = words.next()?;
-    let opens_block = match first.kind {
-        TokenKind::Keyword => matches!(first.text, "def" | "if" | "elif" | "else" | "while" | "for" | "with"),
-        TokenKind::Name => first.text == "case" && kind == BlockKind::MatchBody,
-        _ => false,
-    };
+    let opens_block = matches!(first.text, "def" | "if" | "elif" | "else" | "while" | "for" | "with")
+        || first.text == "case" && kind == BlockKind::MatchBody;
     if !opens_block {
         return None;
     }

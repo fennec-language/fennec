@@ -20,3 +20,11 @@ dependencies = [
 [[package]]
 name = "fennec-syntax"
 version = "0.0.1"
+
+[[package]]
+name = "fennec-wasm"
+version = "0.0.1"
+dependencies = [
+ "fennec-interp",
+ "fennec-syntax",
+]

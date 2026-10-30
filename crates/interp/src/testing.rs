@@ -35,6 +35,7 @@ impl Interp<'_> {
 
     fn run_test(&mut self, test: &TestDef) -> TestOutcome {
         let name = test.name.clone();
+        self.refill_steps();
         if test.inputs.is_empty() {
             return TestOutcome { name, failure: self.run_case(test, Vec::new()).err(), cases: 1 };
         }
@@ -85,7 +86,8 @@ impl Interp<'_> {
         mut failure: Diagnostic,
     ) -> (Inputs, Diagnostic) {
         let mut attempts = 0;
-        'improving: while attempts < SHRINK_ATTEMPTS {
+        // Once the step budget is spent every input fails, so shrinking would only mislead.
+        'improving: while attempts < SHRINK_ATTEMPTS && self.steps_left != Some(0) {
             for at in 0..inputs.len() {
                 let Some((_, value)) = inputs.get(at) else { continue };
                 for candidate in simpler(value) {

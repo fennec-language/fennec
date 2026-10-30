@@ -64,10 +64,11 @@ Every program in [`examples/`](examples) is a test: it must print exactly its `.
 - `crates/syntax`: the lexer (with Python-style indentation), parser and syntax tree.
 - `crates/interp`: the interpreter.
 - `crates/fennec`: the `fennec` command.
+- `crates/wasm`: the interpreter as WebAssembly, for the website's [playground](https://seashell86.github.io/fennec/playground/).
 - `examples/`: example programs, which double as the test suite.
 - `site/`: the website, built with [Astro](https://astro.build) and deployed to GitHub Pages on every push to `main`.
 
-The compiler has no dependencies beyond Rust's standard library, so it builds in seconds. To work on the site, from the repository root (Node's version is pinned in `.node-version` for fnm):
+The compiler has no dependencies beyond Rust's standard library, so it builds in seconds. To work on the site, from the repository root (Node's version is pinned in `.node-version` for fnm; `dev` and `build` also compile the playground's WebAssembly):
 
 ```bash
 npm --prefix site install

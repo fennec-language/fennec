@@ -52,6 +52,10 @@ impl Interp<'_> {
             }
             _ => {}
         }
+        if let Some(function) = self.built_in_method(&receiver, method) {
+            drop(receiver);
+            return self.call_method(object, &function, args, span);
+        }
         if changes_in_place(&receiver, method) {
             let what = format!(
                 "`{method}` changes it, so call it on something held in a mut name, like `items.{method}(...)`"

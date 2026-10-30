@@ -105,7 +105,6 @@ fn operators_work_on_the_types_they_are_defined_for() {
             "can't use `+` on a str and an int @ \"a\" + 1",
             "can't use `-` on a list and a list @ [1] - [2]",
             "can't use `+` on a bool and a bool @ True + True",
-            "can't use `*` on a str and an int @ \"a\" * 2",
             "can't negate a str @ -\"a\"",
             "can't negate a bool @ -True",
             "can't use `-` on a str and a str @ \"a\" - \"b\"",
@@ -307,4 +306,21 @@ fn sum_and_comprehensions_keep_item_types() {
         stdout.print(sum(n * 2 for n in [1]) + 1.0, {n for n in [1]}, totals)
     ";
     assert_eq!(in_main(program), ["can't mix int and float in `+` @ sum(n * 2 for n in [1]) + 1.0"]);
+}
+
+#[test]
+fn text_repeats_with_its_own_operator() {
+    let program = "
+        def main(stdout: Stdout):
+            repeated = 'ab' * 3
+            stdout.print(repeated + 1, 'ab' * 'c', 3 * 'ab')
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "can't use `+` on a str and an int @ repeated + 1",
+            "`times` should be an int, but this is a str @ \"c\"",
+            "can't use `*` on an int and a str @ 3 * \"ab\"",
+        ]
+    );
 }

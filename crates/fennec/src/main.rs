@@ -25,6 +25,7 @@ fn main() -> ExitCode {
         ["run", "--jit", path] => on_big_stack(run::run_jit, path),
         ["test", path] => on_big_stack(test::test, path),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
+        ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),
         ["--version" | "-V"] => {
             println!("🦊 fennec {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -44,6 +45,21 @@ fn on_big_stack(command: fn(&str) -> ExitCode, path: &str) -> ExitCode {
     } else {
         eprintln!("error: the interpreter stopped unexpectedly");
         ExitCode::FAILURE
+    }
+}
+
+/// `fennec dev tokens <file>`: a hidden command that prints a dump of the front end's work,
+/// for comparing with the self-hosted front end in `selfhost/`.
+fn dev(dump: fn(&str) -> String, path: &str) -> ExitCode {
+    match std::fs::read_to_string(path) {
+        Ok(source) => {
+            print!("{}", dump(&source));
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: couldn't read {path}: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 

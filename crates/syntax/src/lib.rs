@@ -2,6 +2,8 @@
 
 mod ast;
 mod diagnostic;
+#[doc(hidden)]
+pub mod dump;
 mod lexer;
 mod parser;
 mod prelude;

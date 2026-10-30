@@ -207,7 +207,7 @@ impl Checker {
         written.and_then(Result::ok).unwrap_or(Type::Unknown)
     }
 
-    /// A signature from what's written: the return type is unknown if it isn't written.
+    /// A signature from what's written, for a function still being checked.
     fn declared(&self, key: &str) -> Option<Signature> {
         let entry = self.program.functions.get(key)?;
         let returned = self.written_return(key);
@@ -255,6 +255,11 @@ impl Checker {
         prelude: bool,
         inherited: Vec<Generic>,
     ) {
+        // Checked again with the function around it: what it gave back last time stands in
+        // for calls to itself.
+        if let Some(State::Done(signature)) = self.states.get(key) {
+            self.previous.insert(key.to_owned(), known_errors(signature.clone()));
+        }
         let entry = FnEntry { def: def.clone(), owner: None, prelude, inherited };
         self.program.functions.insert(key.to_owned(), entry);
         self.check_with(key, captured);
@@ -269,17 +274,20 @@ impl Checker {
         self.checking.push(key.to_owned());
         let body = FnCx::check_function(self, key, &def, &signature.params, captured, !prelude);
         self.checking.pop();
+        let recursive = matches!(self.states.get(key), Some(State::Checking { recursive: true }));
+        // No arrow means it gives back nothing. A call to it from inside itself stood in as
+        // unknown, so a body that gives back nothing else gives back nothing; one that gives
+        // back a value has to write its return type.
+        let gives_back = !matches!(self.settled(&body.value), Type::Unit | Type::Unknown);
         let value = match &def.ret {
             Some(_) => self.written_return(key),
+            None if recursive && !gives_back => Type::Unit,
             None => body.value,
         };
         // Anything still open in what it gives back has been reported, and callers
         // mustn't settle it.
         signature.returns = forget_vars(&wrap(value, body.error, effects));
-        if let Some(State::Checking { recursive: true }) = self.states.get(key)
-            && def.ret.is_none()
-            && !prelude
-        {
+        if recursive && def.ret.is_none() && !prelude && gives_back {
             self.diagnostics.push(needs_return_type(&def, &body.suggestion));
         }
         self.states.insert(key.to_owned(), State::Done(signature));

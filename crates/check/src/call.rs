@@ -86,7 +86,7 @@ impl FnCx<'_> {
                 if let Some(builtin) = self.checker.program.imported(name, callee.span).cloned() {
                     return self.call_builtin(&builtin, args, span);
                 }
-                if name == "len" || builtins::is_builtin(name) {
+                if matches!(name.as_str(), "len" | "abs") || builtins::is_builtin(name) {
                     return self.call_global(name, callee, args, span);
                 }
             }
@@ -377,26 +377,27 @@ impl FnCx<'_> {
         signature.returns
     }
 
-    /// A global function, or `len(x)`, which isn't one.
+    /// A global function, or `len(x)` or `abs(x)`, which aren't ones.
     fn call_global(&mut self, name: &str, callee: &Expr, args: &[Arg], span: Span) -> Type {
-        if name == "len" {
-            self.len_function(callee, args, span)
+        if matches!(name, "len" | "abs") {
+            self.method_as_function(name, callee, args, span)
         } else {
             self.call_builtin(name, args, span)
         }
     }
 
-    /// `len(x)`, which Fennec doesn't have: a length is the value's own method, `x.len()`.
-    /// The fix moves it there.
-    fn len_function(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
-        let mut diagnostic = Diagnostic::new("`len` is a method: write `x.len()`", span).with_help(
+    /// `len(x)` or `abs(x)`, which Fennec doesn't have: these ask a value about itself, so
+    /// they're its own methods, `x.len()` and `x.abs()`. The fix moves them there.
+    fn method_as_function(&mut self, name: &str, callee: &Expr, args: &[Arg], span: Span) -> Type {
+        let mut diagnostic = Diagnostic::new(format!("`{name}` is a method: write `x.{name}()`"), span).with_help(
             "the global functions are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`",
         );
+        let mut value_type = Type::Unknown;
         if let [arg] = args
             && arg.name.is_none()
             && !arg.is_mut
         {
-            self.expr(&arg.value);
+            value_type = self.expr(&arg.value);
             let value = arg.value.span;
             // A dict or set gets parentheses too, since `{{` in an f-string is a brace.
             let grouped = matches!(
@@ -408,10 +409,12 @@ impl FnCx<'_> {
                     | ExprKind::Cond { .. }
                     | ExprKind::Else { .. }
                     | ExprKind::Lambda { .. }
-                    | ExprKind::Int(_)
-                    | ExprKind::Float(_)
             );
-            let (open, close) = if grouped { ("(", ").len()") } else { ("", ".len()") };
+            let (open, close) = if grouped {
+                ("(".to_owned(), format!(").{name}()"))
+            } else {
+                (String::new(), format!(".{name}()"))
+            };
             diagnostic = diagnostic
                 .with_fix(Span { start: callee.span.start, end: value.start }, open)
                 .with_fix(Span { start: value.end, end: span.end }, close);
@@ -419,7 +422,7 @@ impl FnCx<'_> {
             self.ignore_args(args);
         }
         self.error(diagnostic);
-        Type::Int
+        if name == "len" { Type::Int } else { value_type }
     }
 
     /// Whether a method from a conditional extension, like `count` from

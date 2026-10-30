@@ -205,10 +205,10 @@ fn methods_of_built_in_values_check_their_arguments() {
 #[test]
 fn builtins_check_what_they_are_given() {
     assert_eq!(
-        in_main("stdout.print(sum(['a']), abs('a'), int([1]), range(1.5), round(1.5, 'a'))"),
+        in_main("stdout.print(sum(['a']), 'a'.abs(), int([1]), range(1.5), round(1.5, 'a'))"),
         [
             "`sum` adds numbers, but these are strs @ sum([\"a\"])",
-            "`abs` takes a number, but this is a str @ abs(\"a\")",
+            "a str has no method `abs` @ \"a\".abs()",
             "`int` converts a number or text, not a list[int] @ [1]",
             "`range` takes one to three ints @ range(1.5)",
             "`round` takes a number, but this is a float @ round(1.5, \"a\")",

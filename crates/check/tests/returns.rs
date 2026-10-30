@@ -225,3 +225,31 @@ fn len_is_a_method_and_its_fix_moves_it_there() {
         ["a length is a method: write `x.len()`, or `x => x.len()` to pass it"]
     );
 }
+
+#[test]
+fn abs_is_a_method_and_its_fix_moves_it_there() {
+    let program = "
+        def main(stdout: Stdout):
+            x = -2
+            stdout.print(abs(x), abs(-3), abs(x * 2 if x > 0 else 1), abs(x).abs())
+    ";
+    assert_eq!(
+        fixed(program),
+        dedent(
+            "
+            def main(stdout: Stdout):
+                x = -2
+                stdout.print(x.abs(), (-3).abs(), (x * 2 if x > 0 else 1).abs(), x.abs().abs())
+            "
+        )
+    );
+    // The error doesn't hide what the value is.
+    assert_eq!(
+        problems_as_written("def main(stdout: Stdout):\n    stdout.print(abs(1) + 'a')"),
+        ["`abs` is a method: write `x.abs()` @ abs(1)", "can't use `+` on an int and a str @ abs(1) + \"a\""]
+    );
+    assert_eq!(
+        helps("def main(stdout: Stdout):\n    stdout.print(sorted([1], key=abs))"),
+        ["a size is a method: write `x.abs()`, or `x => x.abs()` to pass it"]
+    );
+}

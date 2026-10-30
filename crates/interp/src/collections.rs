@@ -61,6 +61,16 @@ impl Interp<'_> {
             ));
         }
         let args = plain(args, method, span)?;
+        match (receiver, method, args.as_slice()) {
+            (Value::Int(n), "abs", []) => {
+                return n
+                    .checked_abs()
+                    .map(Value::Int)
+                    .ok_or_else(|| Diagnostic::new("this overflows an int", span));
+            }
+            (Value::Float(x), "abs", []) => return Ok(Value::Float(x.abs())),
+            _ => {}
+        }
         if method == "len" && args.is_empty() {
             // Every collection knows its length, and so do a tuple and the arguments.
             return match receiver {

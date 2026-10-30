@@ -1,7 +1,7 @@
-error: `len` is a name the language provides everywhere
+error: `sum` is a name the language provides everywhere
  --> examples/projects/errors/alias_taken/src/main.fen:1:1
   |
-1 | from enemies import count, spawn as len
+1 | from enemies import count, spawn as sum
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = help: pick another name after `as`

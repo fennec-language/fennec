@@ -126,11 +126,12 @@ impl Cache {
     }
 
     /// Removes the folders of other versions that cleanup emptied.
+    /// This version's folders stay, even empty: a command may be about to write into one.
     fn remove_empty_versions(&self) {
         let Ok(versions) = std::fs::read_dir(&self.root) else { return };
         for version in versions.flatten().map(|entry| entry.path()) {
             if version.is_dir() && version.file_name().is_some_and(|name| name != VERSION) {
-                remove_if_empty(&version);
+                remove_empty_folders(&version);
             }
         }
     }
@@ -151,15 +152,15 @@ fn files(dir: &Path, current: bool, found: &mut Vec<Entry>) {
     }
 }
 
-/// Removes a folder whose folders hold no files, and returns whether it did.
-fn remove_if_empty(dir: &Path) -> bool {
-    let Ok(listing) = std::fs::read_dir(dir) else { return false };
-    let mut empty = true;
-    for item in listing.flatten() {
-        let path = item.path();
-        empty &= path.is_dir() && remove_if_empty(&path);
+/// Removes the folders under `dir` that hold no files, then `dir` itself if it's empty. A
+/// folder that still holds something can't be removed, so that's simply skipped.
+fn remove_empty_folders(dir: &Path) {
+    if let Ok(listing) = std::fs::read_dir(dir) {
+        for path in listing.flatten().map(|item| item.path()).filter(|path| path.is_dir()) {
+            remove_empty_folders(&path);
+        }
     }
-    empty && std::fs::remove_dir(dir).is_ok()
+    let _ = std::fs::remove_dir(dir);
 }
 
 /// The cleanup lock: a file only one cleanup can create. Dropping it releases it.
@@ -178,8 +179,7 @@ impl Lock {
                 Ok(_) => return Ok(Some(Lock { path: path.to_path_buf() })),
                 Err(err) if err.kind() == ErrorKind::AlreadyExists => {
                     let age = std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
-                    let stale = age.and_then(|time| time.elapsed().ok()).is_some_and(|age| age > STALE_LOCK);
-                    if !stale {
+                    if !age.and_then(|time| time.elapsed().ok()).is_some_and(is_stale) {
                         return Ok(None);
                     }
                     let _ = std::fs::remove_file(path);
@@ -191,8 +191,25 @@ impl Lock {
     }
 }
 
+/// Whether a cleanup lock this old was left by a cleanup that died.
+fn is_stale(age: Duration) -> bool {
+    age > STALE_LOCK
+}
+
 impl Drop for Lock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_stale;
+    use std::time::Duration;
+
+    #[test]
+    fn a_lock_is_stale_after_ten_minutes() {
+        assert!(!is_stale(Duration::from_secs(600)));
+        assert!(is_stale(Duration::from_secs(601)));
     }
 }

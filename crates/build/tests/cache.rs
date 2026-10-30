@@ -51,6 +51,11 @@ fn a_cache_under_its_cap_is_left_alone() {
     let cache = Cache::new(&home);
     entry(&cache.path("functions", "a"), 100, 10).unwrap();
     assert_eq!(cache.cleanup(1_000).unwrap(), Cleanup { size: 100, ..Cleanup::default() });
+    assert_eq!(
+        cache.cleanup(100).unwrap(),
+        Cleanup { size: 100, ..Cleanup::default() },
+        "exactly at the cap"
+    );
     assert!(cache.path("functions", "a").exists());
     std::fs::remove_dir_all(&home).unwrap();
 }
@@ -74,6 +79,11 @@ fn cleanup_drops_old_versions_then_the_least_recently_used() {
     assert!(cache.path("functions", "middle").exists());
     assert!(cache.path("functions", "newest").exists());
     assert!(!home.join("cache").join("cleanup.lock").exists(), "the lock is released");
+
+    // Emptying this version's folders leaves them, since a command may be writing into one.
+    cache.cleanup(0).unwrap();
+    assert!(!cache.path("functions", "newest").exists());
+    assert!(home.join("cache").join(VERSION).join("functions").is_dir());
     std::fs::remove_dir_all(&home).unwrap();
 }
 
@@ -90,5 +100,20 @@ fn a_cleanup_already_running_is_left_to_finish() {
     // A lock left for over ten minutes was left by a cleanup that died.
     entry(&lock, 0, 3_600).unwrap();
     assert_eq!(cache.cleanup(100).unwrap().removed, 1);
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cache_that_cant_be_written_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = home("read-only").unwrap();
+    let cache = Cache::new(&home);
+    entry(&cache.path("functions", "a"), 500, 10).unwrap();
+    let root = home.join("cache");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let cleanup = cache.cleanup(100);
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(cleanup.is_err(), "taking the lock failed, so cleanup can't be said to have run: {cleanup:?}");
     std::fs::remove_dir_all(&home).unwrap();
 }

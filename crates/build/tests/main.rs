@@ -137,6 +137,9 @@ fn snapshots_are_stored_and_read_back() {
     assert_eq!(load(&home, &program), Snapshot::default());
     save(&home, &program, &snapshot).unwrap();
     assert_eq!(load(&home, &program), snapshot);
+    let other = home.join("other.fen");
+    std::fs::write(&other, "def other():\n    pass\n").unwrap();
+    assert_eq!(load(&home, &other), Snapshot::default(), "each program has its own snapshot");
     assert_eq!(Snapshot::from_text(&snapshot.to_text()), Some(snapshot.clone()));
     assert_eq!(Snapshot::from_text("file nothex game.fen\n"), None);
     assert_eq!(Snapshot::from_text("  0000 def stray\n"), None);

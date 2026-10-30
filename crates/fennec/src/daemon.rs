@@ -127,6 +127,11 @@ mod unix {
     /// How often the daemon checks the cache against its cap.
     const CLEANUP_EVERY: Duration = Duration::from_secs(300);
 
+    /// Whether it's time to check the cache: at first, then every `CLEANUP_EVERY`.
+    pub(super) fn cleanup_due(since_last: Option<Duration>) -> bool {
+        since_last.is_none_or(|elapsed| elapsed > CLEANUP_EVERY)
+    }
+
     #[expect(clippy::cast_precision_loss, reason = "a size shown to one decimal place")]
     fn megabytes(bytes: u64) -> String {
         format!("{:.1} MB", bytes as f64 / 1_000_000.0)
@@ -224,7 +229,7 @@ mod unix {
                     }
                     // The daemon owns the cache, so it keeps it under its cap, in time when
                     // nothing else is going on.
-                    if last_cleanup.is_none_or(|last| last.elapsed() > CLEANUP_EVERY) {
+                    if cleanup_due(last_cleanup.map(|last| last.elapsed())) {
                         let _ = cache.cleanup(Cache::cap());
                         last_cleanup = Some(Instant::now());
                     }
@@ -300,5 +305,17 @@ mod unix {
     pub(super) fn serve(_: &Path) -> ExitCode {
         eprintln!("error: the build daemon isn't available on this platform yet");
         ExitCode::FAILURE
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::time::Duration;
+
+    #[test]
+    fn the_cache_is_checked_at_first_and_then_every_five_minutes() {
+        assert!(super::unix::cleanup_due(None));
+        assert!(!super::unix::cleanup_due(Some(Duration::from_secs(300))));
+        assert!(super::unix::cleanup_due(Some(Duration::from_secs(301))));
     }
 }

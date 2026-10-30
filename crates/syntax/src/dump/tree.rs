@@ -59,6 +59,7 @@ impl Tree {
             }
             Item::Extend(extension) => {
                 self.node(&format!("extend {}", extension.name), Some(extension.span), |tree| {
+                    tree.generics(&extension.generics);
                     for method in &extension.methods {
                         tree.function(method);
                     }

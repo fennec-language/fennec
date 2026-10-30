@@ -202,3 +202,43 @@ fn extensions_add_methods_to_the_programs_own_types() {
         ]
     );
 }
+
+#[test]
+fn a_generic_types_extension_names_its_parameters_and_bounds_make_it_conditional() {
+    let program = "
+        struct Box[T]:
+            item: T
+
+        struct Point:
+            x = 0
+
+        extend Box[U]:
+            pass
+
+        extend Point[T]:
+            pass
+
+        extend Box[T: Eq]:
+            def holds(self, item: T) -> bool:
+                self.item == item
+
+        extend Box[T: Enemy]:
+            pass
+
+        def main(stdout: Stdout):
+            stdout.print(Box(item=1).holds(1) + 1, Box(item=() => 1).holds(() => 2))
+            stdout.print([1, 2].count(2) + 'a', [1].index(1) + 1)
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "`Box` is generic, so its extension names its type parameters @ extend Box[U]",
+            "`Point` isn't generic, so its extension takes no type parameters @ extend Point[T]",
+            "`Enemy` isn't an interface @ Enemy",
+            "can't use `+` on a bool and an int @ Box(item=1).holds(1) + 1",
+            "`holds` needs `T` to fit `Eq`, but here `T` is a () -> int @ Box(item=() => 1).holds(() => 2)",
+            "can't use `+` on an int and a str @ [1, 2].count(2) + \"a\"",
+            "this might be None @ [1].index(1)",
+        ]
+    );
+}

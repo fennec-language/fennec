@@ -17,6 +17,8 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
         "null" | "nil" | "none" | "undefined" => diagnostic.with_help("write `None`"),
         "lambda" => diagnostic.with_help("write an arrow function: `x => x * 2`"),
         "raise" => diagnostic.with_help("Fennec has no exceptions: write `fail SomeError(...)`"),
+        "ord" => diagnostic.with_help("a character's code is a method: write `c.code()`"),
+        "chr" => diagnostic.with_help("make a character from its code with `str.from_code(n)`"),
         _ => match crate::builtins::modules_with(name).as_slice() {
             [] => diagnostic,
             modules @ [module, ..] => diagnostic.with_help(format!(

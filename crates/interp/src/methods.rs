@@ -26,6 +26,10 @@ impl Interp<'_> {
             Value::None if optional => return Ok(Value::None),
             Value::None => return Err(might_be_none(object.span)),
             Value::Type(type_name) => return self.static_call(type_name, method, args, span),
+            Value::Builtin("str") if method == "from_code" => {
+                let args = crate::collections::plain(self.eval_args(args)?, method, span)?;
+                return self.char_from_code(&args, span);
+            }
             Value::Ok(_) | Value::Err(_) if method == "expect" => {
                 let args = self.eval_args(args)?;
                 return expect(receiver, &args, span);

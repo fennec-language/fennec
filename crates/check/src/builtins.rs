@@ -172,6 +172,8 @@ fn str_method(name: &str) -> Option<Method> {
         "find" => reads(&[text], Type::optional(Type::Int)),
         "join" => reads(&[Type::list(Type::Str)], Type::Str),
         "encode" => reads(&[], Type::Bytes),
+        "code" => reads(&[], Type::Int),
+        "codes" => reads(&[], Type::list(Type::Int)),
         _ => return None,
     })
 }
@@ -353,7 +355,12 @@ impl FnCx<'_> {
                     let message = format!("`{name}` converts a number or text, not {}", a(&first));
                     self.error(Diagnostic::new(message, at));
                 }
-                if name == "int" { Type::Int } else { Type::Float }
+                let number = if name == "int" { Type::Int } else { Type::Float };
+                // Text might not be a number, so reading one can fail.
+                if self.checker.settled(&first) == Type::Str {
+                    return Type::result(number, Type::named("InvalidValue"));
+                }
+                number
             }
             "round" | "abs" => self.math(name, &types, span),
             _ => self.collection_builtin(name, plain, span),
@@ -428,6 +435,20 @@ impl FnCx<'_> {
             }
             _ => Type::Unknown,
         }
+    }
+
+    /// `str.from_code(n)`: the character with a code, which fails for a number that isn't one.
+    pub(crate) fn char_from_code(&mut self, args: &[Arg], span: Span) -> Type {
+        let plain = self.builtin_args("from_code", args, &[], &[], span);
+        match plain.as_slice() {
+            [(code, at)] => {
+                if !self.checker.fits(&Type::Int, code) {
+                    self.error(mismatch("the code", &Type::Int, code, *at));
+                }
+            }
+            _ => self.error(wrong_args("from_code", span)),
+        }
+        Type::result(Type::Str, Type::named("InvalidValue"))
     }
 
     /// `replace(value, field=new, ...)`: a copy with some fields changed.

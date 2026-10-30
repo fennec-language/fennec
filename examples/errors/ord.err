@@ -1,0 +1,7 @@
+error: `ord` doesn't exist
+ --> examples/errors/ord.fen:2:18
+  |
+2 |     stdout.print(ord("A"))
+  |                  ^^^
+  |
+  = help: a character's code is a method: write `c.code()`

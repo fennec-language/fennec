@@ -93,7 +93,7 @@ impl Tree {
                 tree.param(param);
             }
             if let Some(ret) = &function.ret {
-                tree.node("returns", None, |tree| tree.type_expr(ret));
+                tree.node("returns", function.arrow, |tree| tree.type_expr(ret));
             }
             tree.stmts(&function.body);
         });

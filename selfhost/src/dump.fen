@@ -146,7 +146,7 @@ struct Tree:
             self.write_param(param)
         ret = function.ret
         if ret is not None:
-            self.open("returns", None)
+            self.open("returns", function.arrow)
             self.write_type_expr(ret)
             self.close()
         self.write_stmts(function.body)

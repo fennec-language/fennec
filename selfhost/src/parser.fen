@@ -365,9 +365,19 @@ struct Parser:
                 break
         self.expect_punct(")")?
         mut ret = None
+        mut arrow = None
         if self.eat_punct("->"):
+            arrow = self.prev_span()
             ret = self.type_expr()?
-        FnDef(name=name, generics=generics, params=params, ret=ret, body=[], span=start.to(self.prev_span()))
+        FnDef(
+            name=name,
+            generics=generics,
+            params=params,
+            ret=ret,
+            arrow=arrow,
+            body=[],
+            span=start.to(self.prev_span()),
+        )
 
     def param(mut self) -> Param:
         start = self.span()

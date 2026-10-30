@@ -8,7 +8,7 @@ inside
 closing the door
 outside
 None hi, Kit True False
-42 5
+42 5 2
 {"a": 1} {1, 2} [1] (1,)
 Ok(12) Err("twelve isn't a number")
 True False False True

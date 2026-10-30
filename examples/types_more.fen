@@ -76,7 +76,11 @@ def main(stdout: Stdout):
     # Arrow functions can take no arguments, or several.
     answer = () => 42
     add = (a, b) => a + b
-    stdout.print(answer(), add(2, 3))
+    pick = (
+        first,
+        second,
+    ) => second
+    stdout.print(answer(), add(2, 3), pick(1, 2))
 
     # Collections can end with a comma.
     stdout.print({"a": 1,}, {1, 2,}, [1,], (1,))

@@ -42,6 +42,8 @@ pub struct Report {
     pub leftover_frames: usize,
     /// Boxed values' blocks no one released: none, when the run succeeds.
     pub leftover_boxes: usize,
+    /// How many functions' machine code came from the cache rather than being compiled.
+    pub cached: usize,
 }
 
 /// Compiles `module` to native code and runs its `main`, writing what it prints to `out`.
@@ -51,7 +53,20 @@ pub fn run(module: &Module, out: &mut dyn Write) -> Result<(), JitError> {
 
 /// Like `run`, handing `main` the command-line arguments and standard input in `inputs`.
 pub fn run_with_inputs(module: &Module, out: &mut dyn Write, inputs: Inputs) -> Result<(), JitError> {
-    report_with_inputs(module, out, inputs).map(|_| ())
+    report_with_inputs(module, out, inputs, None).map(|_| ())
+}
+
+/// Like `run_with_inputs`, reusing machine code from `cache` and storing what it compiles
+/// there, so the next run skips code generation for every function that's unchanged.
+/// `program` names the program, like its absolute path: each program's code is kept together.
+pub fn run_cached(
+    module: &Module,
+    out: &mut dyn Write,
+    inputs: Inputs,
+    cache: &fennec_build::Cache,
+    program: &str,
+) -> Result<Report, JitError> {
+    report_with_inputs(module, out, inputs, Some((cache, program)))
 }
 
 /// The stack the program runs on. It's only reserved, not used, until calls nest deeply.
@@ -67,14 +82,19 @@ const NATIVE_STACK_BYTES: usize = 1 << 28;
 /// its calls may nest: it compares the stack pointer against a limit, which costs almost
 /// nothing per call.
 pub fn run_with_report(module: &Module, out: &mut dyn Write) -> Result<Report, JitError> {
-    report_with_inputs(module, out, Inputs::default())
+    report_with_inputs(module, out, Inputs::default(), None)
 }
 
-fn report_with_inputs(module: &Module, out: &mut dyn Write, inputs: Inputs) -> Result<Report, JitError> {
+fn report_with_inputs(
+    module: &Module,
+    out: &mut dyn Write,
+    inputs: Inputs,
+    cache: Option<(&fennec_build::Cache, &str)>,
+) -> Result<Report, JitError> {
     let ran = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_BYTES)
-            .spawn_scoped(scope, || compile_and_run(module, inputs))
+            .spawn_scoped(scope, || compile_and_run(module, inputs, cache))
             .map(std::thread::ScopedJoinHandle::join)
     });
     let (output, report) = match ran {
@@ -95,7 +115,11 @@ fn report_with_inputs(module: &Module, out: &mut dyn Write, inputs: Inputs) -> R
 
 /// Compiles and runs a program on the current thread, giving back what it printed and how
 /// it went.
-fn compile_and_run(module: &Module, inputs: Inputs) -> Result<(Vec<u8>, Result<Report, JitError>), JitError> {
+fn compile_and_run(
+    module: &Module,
+    inputs: Inputs,
+    cache: Option<(&fennec_build::Cache, &str)>,
+) -> Result<(Vec<u8>, Result<Report, JitError>), JitError> {
     let here = 0_u8;
     let stack_limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
     let signatures = fennec_check::check(module).map_err(|diagnostics| {
@@ -109,7 +133,7 @@ fn compile_and_run(module: &Module, inputs: Inputs) -> Result<(Vec<u8>, Result<R
         types::Program::from_module(module, &prelude, &signatures).map_err(JitError::Unsupported)?;
 
     let (entry, tables, compilation) =
-        lower::compile(&program, &signatures, stack_limit).map_err(JitError::Unsupported)?;
+        lower::compile(&program, &signatures, stack_limit, cache).map_err(JitError::Unsupported)?;
     let result = runtime::execute(&entry, module, tables, inputs).map_err(JitError::Failed)?;
     let report = match result.failure {
         Some(failure) => Err(JitError::Failed(failure)),
@@ -125,6 +149,7 @@ fn compile_and_run(module: &Module, inputs: Inputs) -> Result<(Vec<u8>, Result<R
             leftover_temps: result.leftovers.temps,
             leftover_frames: result.leftovers.frames,
             leftover_boxes: result.leftovers.boxes,
+            cached: compilation.cached,
         }),
     };
     Ok((result.output, report))
@@ -170,7 +195,7 @@ pub fn fallbacks(module: &Module) -> Result<Vec<Note>, Diagnostic> {
     let prelude: Vec<Module> =
         fennec_syntax::prelude().filter_map(|source| fennec_syntax::parse_prelude(source).ok()).collect();
     let program = types::Program::from_module(module, &prelude, &signatures)?;
-    let (_, _, compilation) = lower::compile(&program, &signatures, 0)?;
+    let (_, _, compilation) = lower::compile(&program, &signatures, 0, None)?;
     let whole = |function: &str, what: String| Note {
         function: function.to_owned(),
         span: definition(module, function).unwrap_or_default(),

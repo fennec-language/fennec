@@ -173,3 +173,34 @@ fn math_compiles_to_machine_code_however_it_is_imported() {
     assert_eq!(String::from_utf8_lossy(&out), "4.5 2\n");
     assert_eq!((report.handed_over, report.with_frames), (0, 0), "math should be plain machine code");
 }
+
+#[test]
+fn a_second_run_reuses_every_function_and_an_edit_compiles_only_that_function() {
+    let home = std::env::temp_dir().join(format!("fennec-examples-cache-{}", std::process::id()));
+    let cache = fennec_build::Cache::new(&home);
+    // What a native run through the cache printed, and how many functions came from it.
+    let cached_run = |source: &str, cache: &fennec_build::Cache| {
+        let module = fennec_syntax::parse(source).unwrap();
+        let mut out = Vec::new();
+        let inputs = fennec_interp::Inputs::default();
+        let report = fennec_jit::run_cached(&module, &mut out, inputs, cache, "cached.fen").unwrap();
+        (String::from_utf8_lossy(&out).into_owned(), report.cached)
+    };
+    let program = |greeting: &str| {
+        format!(
+            "def double(x: int) -> int:\n    x * 2\n\ndef greet(name: str) -> str:\n    \"{greeting}, \" + name\n\n\
+            def main(stdout: Stdout):\n    stdout.print(greet(\"kit\"), double(21))\n"
+        )
+    };
+    let (first, none) = cached_run(&program("hello"), &cache);
+    let (second, all) = cached_run(&program("hello"), &cache);
+    let (edited, rest) = cached_run(&program("hi there"), &cache);
+    let _ = fs::remove_dir_all(&home);
+    assert_eq!(
+        (first.as_str(), second.as_str(), edited.as_str()),
+        ("hello, kit 42\n", "hello, kit 42\n", "hi there, kit 42\n")
+    );
+    assert_eq!(none, 0, "the first run finds nothing");
+    assert!(all >= 3, "the second run reuses every function, but reused {all}");
+    assert_eq!(rest, all - 1, "the edit compiles only the edited function");
+}

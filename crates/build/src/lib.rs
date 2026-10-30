@@ -14,7 +14,7 @@ mod tree;
 
 pub use cache::{Cache, Cleanup, DEFAULT_CAP, VERSION};
 pub use changes::{Change, Kind, changes};
-pub use functions::{CompiledFunction, FunctionKey, Relocation};
+pub use functions::{CompiledFunction, FunctionKey, Relocation, decode_pack, encode_pack};
 pub use snapshot::{FileRecord, Run, Snapshot};
 pub use store::{fennec_home, load, save};
 pub use tree::{definitions, tree_hash};

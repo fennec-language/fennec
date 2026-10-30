@@ -2,10 +2,13 @@
 //! stored, and looking it up.
 //!
 //! A function's machine code is reused only when everything it was compiled from is the same.
-//! Its key covers its own syntax tree, the signatures and layouts of what it uses, the bodies
-//! of the functions it inlined, the Fennec version and the target. The code refers to
-//! everything outside itself by symbol name, never by address, so it's the same in every run;
-//! the JIT fills in the addresses when it loads it.
+//! The JIT lowers every function each run, which is quick, and keys its machine code by the
+//! lowered IR, written with everything it refers to named rather than numbered, plus the
+//! Fennec version and the target. The code refers to everything outside itself by symbol
+//! name, never by address, so it's the same in every run; the JIT fills in the addresses when
+//! it loads it.
+
+use std::collections::HashMap;
 
 use fennec_blake3::{Hash, Hasher};
 
@@ -18,7 +21,8 @@ pub struct FunctionKey {
 }
 
 impl FunctionKey {
-    /// A key for a function compiled by this Fennec for `target`, like the ISA and its flags.
+    /// A key for a function compiled by this Fennec for `target`: the CPU and every code
+    /// generation setting, written out.
     pub fn new(target: &str) -> Self {
         let mut key =
             FunctionKey { hasher: Hasher::new_derive_key("fennec build cache 2026-10-30 function key") };
@@ -27,25 +31,10 @@ impl FunctionKey {
         key
     }
 
-    /// The function's own syntax tree, as `tree_hash` gives it.
+    /// The function's lowered IR, with what it refers to written by name.
     #[must_use]
-    pub fn tree(mut self, hash: &Hash) -> Self {
-        self.part(b'f', hash.as_bytes());
-        self
-    }
-
-    /// A signature or layout the function uses, like a callee's parameter types or a
-    /// struct's fields, written out in full.
-    #[must_use]
-    pub fn uses(mut self, signature: &str) -> Self {
-        self.part(b'u', signature.as_bytes());
-        self
-    }
-
-    /// The tree hash of a function whose body was inlined into this one.
-    #[must_use]
-    pub fn inlines(mut self, hash: &Hash) -> Self {
-        self.part(b'i', hash.as_bytes());
+    pub fn ir(mut self, text: &str) -> Self {
+        self.part(b'i', text.as_bytes());
         self
     }
 
@@ -166,22 +155,55 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The name of a function's entry in the cache: spread over 256 folders by the key's first
-/// byte, so no folder grows huge.
-fn entry_name(key: &Hash) -> String {
-    let hex = key.to_hex();
-    format!("{}/{hex}.bin", hex.get(..2).unwrap_or("00"))
+/// The first bytes of a pack, then the format's version.
+const PACK_MAGIC: &[u8; 4] = b"FNPK";
+
+/// The name of a program's pack: a hash of what names the program, like its absolute path.
+fn pack_name(program: &str) -> String {
+    format!("{}.bin", fennec_blake3::hash(program.as_bytes()).to_hex())
+}
+
+/// Every function one program compiled to, stored together, so a run reads one file and
+/// writes one, however many functions it has. Each function is still found by its own key.
+pub fn encode_pack(functions: &[(Hash, CompiledFunction)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(PACK_MAGIC);
+    out.extend_from_slice(&FORMAT.to_le_bytes());
+    out.extend_from_slice(&u32::try_from(functions.len()).unwrap_or(u32::MAX).to_le_bytes());
+    for (key, function) in functions {
+        out.extend_from_slice(key.as_bytes());
+        put_bytes(&mut out, &function.encode());
+    }
+    out
+}
+
+/// Reads a pack written by `encode_pack`. A damaged pack reads as empty, so every function in
+/// it is compiled again.
+pub fn decode_pack(bytes: &[u8]) -> HashMap<Hash, CompiledFunction> {
+    let mut reader = Reader { rest: bytes };
+    let read = |reader: &mut Reader<'_>| -> Option<HashMap<Hash, CompiledFunction>> {
+        if reader.take(4)? != PACK_MAGIC || reader.u32()? != FORMAT {
+            return None;
+        }
+        let count = reader.u32()?;
+        let mut functions = HashMap::new();
+        for _ in 0..count {
+            let key = Hash(reader.take(32)?.try_into().ok()?);
+            functions.insert(key, CompiledFunction::decode(reader.bytes()?)?);
+        }
+        reader.rest.is_empty().then_some(functions)
+    };
+    read(&mut reader).unwrap_or_default()
 }
 
 impl Cache {
-    /// The machine code stored for a function's key, marking it as just used. None if there's
-    /// none, or what's stored is damaged.
-    pub fn compiled(&self, key: &Hash) -> Option<CompiledFunction> {
-        self.read("functions", &entry_name(key)).and_then(|bytes| CompiledFunction::decode(&bytes))
+    /// The functions `program` compiled to last time, by key, marking its pack as used.
+    pub fn pack(&self, program: &str) -> HashMap<Hash, CompiledFunction> {
+        self.read("packs", &pack_name(program)).map(|bytes| decode_pack(&bytes)).unwrap_or_default()
     }
 
-    /// Stores a function's machine code under its key.
-    pub fn store_compiled(&self, key: &Hash, function: &CompiledFunction) -> std::io::Result<()> {
-        self.write("functions", &entry_name(key), &function.encode())
+    /// Stores every function `program` compiled to this time, replacing its last pack.
+    pub fn store_pack(&self, program: &str, functions: &[(Hash, CompiledFunction)]) -> std::io::Result<()> {
+        self.write("packs", &pack_name(program), &encode_pack(functions))
     }
 }

@@ -48,12 +48,11 @@ pub(super) fn define_entry(
     ctx: &mut cranelift_codegen::Context,
     builder_ctx: &mut FunctionBuilderContext,
     shared: &Shared,
-    (main, ret): (FuncId, Ty),
+    (name, (main, ret)): (&str, (FuncId, Ty)),
     span: Span,
 ) -> Result<FuncId, Diagnostic> {
     let sig = module.make_signature();
-    let id =
-        module.declare_function("fennec_entry", Linkage::Local, &sig).map_err(|err| internal(err, span))?;
+    let id = module.declare_function(name, Linkage::Local, &sig).map_err(|err| internal(err, span))?;
     ctx.func.signature = sig;
     let mut b = FunctionBuilder::new(&mut ctx.func, builder_ctx);
     let block = b.create_block();
@@ -99,11 +98,11 @@ pub(super) fn declare_all(
             .map_err(|err| internal(err, span))?;
         shared.helpers.insert(helper, id);
     }
-    for (at, function) in
-        program.functions.iter().enumerate().filter(|(_, function)| !skipped.contains(&function.key))
-    {
+    for function in program.functions.iter().filter(|function| !skipped.contains(&function.key)) {
         let sig = signature(module, function);
-        let name = format!("fennec_user_{at}");
+        // Named by the function, not its place, so adding a function elsewhere leaves the
+        // machine code of everything that calls this one the same.
+        let name = format!("fennec_user_{}", super::symbols::digest(&function.key));
         let id = module.declare_function(&name, Linkage::Local, &sig).map_err(|err| internal(err, span))?;
         let params =
             function.params.iter().map(|param| (param.name.clone(), param.ty, param.is_mut)).collect();

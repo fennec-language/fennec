@@ -1,4 +1,5 @@
-//! Which functions a run can reach, starting from `main`, so the JIT compiles only those.
+//! Which functions a run can reach, starting from `main` or the tests it runs, so the JIT
+//! compiles only those.
 //! Skipping a function is always safe: if one is called after all, through the
 //! interpreter, say, the interpreter runs it.
 //!
@@ -21,8 +22,12 @@ pub(crate) struct Mentions {
     members: HashSet<String>,
 }
 
-/// The keys of the functions reachable from `main`, and everything their code mentions.
-pub(crate) fn reachable(functions: &[Function<'_>], modules: &[&Module]) -> (HashSet<String>, Mentions) {
+/// The keys of the functions reachable from `roots`, and everything their code mentions.
+pub(crate) fn reachable(
+    functions: &[Function<'_>],
+    modules: &[&Module],
+    roots: &[String],
+) -> (HashSet<String>, Mentions) {
     let types: Vec<&TypeDef> = modules
         .iter()
         .flat_map(|module| &module.items)
@@ -34,7 +39,7 @@ pub(crate) fn reachable(functions: &[Function<'_>], modules: &[&Module]) -> (Has
     let mut reached: HashSet<String> = HashSet::new();
     let mut seen_types: HashSet<String> = HashSet::new();
     let mut mentions = Mentions::default();
-    mentions.names.insert("main".to_owned());
+    mentions.names.extend(roots.iter().cloned());
     loop {
         let before = reached.len() + seen_types.len();
         for (method, given) in fennec_syntax::given() {
@@ -50,7 +55,9 @@ pub(crate) fn reachable(functions: &[Function<'_>], modules: &[&Module]) -> (Has
             }
         }
         for function in functions {
-            if reached.contains(&function.key) || !is_mentioned(&function.key, &mentions) {
+            // A test's name may have a dot in it, so a root is never taken for a method.
+            let wanted = roots.contains(&function.key) || is_mentioned(&function.key, &mentions);
+            if reached.contains(&function.key) || !wanted {
                 continue;
             }
             if function.prelude

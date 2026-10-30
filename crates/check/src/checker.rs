@@ -174,6 +174,19 @@ impl Checker {
             .collect()
     }
 
+    /// A test with no inputs has a signature like a function's, under its key in the typed
+    /// tree, so a compiler can treat it as one. It gives back nothing, or an error.
+    pub(crate) fn record_test(&mut self, key: String, body: &[fennec_syntax::Stmt]) {
+        let effects = effects::of_body(body);
+        let signature = Signature {
+            params: Vec::new(),
+            returns: Type::Unit,
+            can_fail: effects.fails,
+            generator: effects.yields,
+        };
+        self.states.insert(key, State::Done(signature));
+    }
+
     /// A function's signature, checking its body first if that's the only way to know its
     /// return type.
     pub(crate) fn signature(&mut self, key: &str) -> Option<Signature> {

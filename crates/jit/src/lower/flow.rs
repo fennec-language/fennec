@@ -164,9 +164,7 @@ impl Lowerer<'_, '_> {
     /// Records a name the runtime already created in the frame.
     fn bind_object(&mut self, name: &str) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope
-                .locals
-                .insert(name.to_owned(), super::Local { var: None, ty: Ty::Obj, is_mut: false, list: None });
+            scope.locals.insert(name.to_owned(), super::Local { var: None, ty: Ty::Obj, is_mut: false });
         }
     }
 

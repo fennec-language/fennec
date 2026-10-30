@@ -1,16 +1,46 @@
-//! List comprehensions made natively: `[item for x in range(...)]` for a name that holds a
-//! packed list. The runtime makes the list with every item zero, and native code fills it.
+//! Lists made natively for a name that holds a native list: `[a, b, c]`, and comprehensions
+//! `[item for x in range(...)]`. The runtime makes the list with every item zero, and
+//! native code fills it.
 
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, types};
 use fennec_syntax::{CompKind, Diagnostic, Expr, ExprKind};
 
 use super::Lowerer;
+use super::expr::Lowered;
 use super::fallback::expr_names;
+use super::lists::LIST_ITEMS;
 use crate::helpers::Helper;
-use crate::types::Ty;
+use crate::types::{ListItem, Ty};
 
 impl Lowerer<'_, '_> {
+    /// `[a, b, c]` made natively, when the name it's for holds a native list, or `None`.
+    /// Items are worked out in order, as the interpreter does.
+    pub(super) fn list_literal_for(
+        &mut self,
+        name: &str,
+        value: &Expr,
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let (ExprKind::List(items), Some(ty @ Ty::List(item))) = (&value.kind, self.checked_ty(name)) else {
+            return Ok(None);
+        };
+        let mut lowered = Vec::with_capacity(items.len());
+        for each in items {
+            let (value, from) = self.expr(each)?;
+            lowered.push(self.convert(value, from, item.ty(), each.span)?);
+        }
+        let element = self.element(item.ty())?;
+        let count = self.int(i64::try_from(items.len()).unwrap_or(0));
+        let list = self.help(Helper::ListNew, &[element, count])?;
+        let stride = self.stride(item.ty())?;
+        for (at, value) in lowered.into_iter().enumerate() {
+            let offset = i64::try_from(at).unwrap_or(0) * stride + LIST_ITEMS;
+            let address = self.b.ins().iadd_imm_s(list, offset);
+            self.store_item(address, item.ty(), (Some(value), item.ty()), value_span(items, at))?;
+        }
+        Ok(Some((Some(list), ty)))
+    }
+
     /// Declares `name` as `[item for x in range(...)]` natively, when it holds a packed list
     /// of ints, floats or bools. Gives back `false`, having done nothing, when it can't.
     pub(super) fn packed_comprehension(
@@ -34,7 +64,12 @@ impl Lowerer<'_, '_> {
         {
             return Ok(false);
         }
-        let Some(item @ (Ty::Int | Ty::Float | Ty::Bool)) = self.checked_list(name) else { return Ok(false) };
+        let Some(Ty::List(list_item @ (ListItem::Int | ListItem::Float | ListItem::Bool))) =
+            self.checked_ty(name)
+        else {
+            return Ok(false);
+        };
+        let item = list_item.ty();
         // An item that refers to the name sees what it held before, so leave that to the
         // interpreter.
         let mut mentioned = Vec::new();
@@ -56,8 +91,8 @@ impl Lowerer<'_, '_> {
         let difference = self.b.ins().isub(end, start);
         let count = self.b.ins().smax(difference, zero);
         let element = self.element(item)?;
-        let made = self.help(Helper::Zeroed, &[element, count])?;
-        self.declare(name, Some(made), Ty::Obj, is_mut, value)?;
+        let made = self.help(Helper::ListNew, &[element, count])?;
+        self.declare(name, Some(made), Ty::List(list_item), is_mut, value)?;
         if !is_zero(elem) {
             self.fill(name, item, (var, start, count), elem)?;
         }
@@ -100,6 +135,10 @@ impl Lowerer<'_, '_> {
         self.b.switch_to_block(exit);
         Ok(())
     }
+}
+
+fn value_span(items: &[Expr], at: usize) -> fennec_syntax::Span {
+    items.get(at).map(|item| item.span).unwrap_or_default()
 }
 
 /// Whether an item is a zero the runtime's new list already holds.

@@ -32,7 +32,11 @@ impl Lowerer<'_, '_> {
                     Ok((Some(self.read_place(&place)), local.ty))
                 }
                 Some(
-                    local @ super::Local { ty: Ty::Boxed(_) | Ty::Str | Ty::Dict(..), var: Some(var), .. },
+                    local @ super::Local {
+                        ty: Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_),
+                        var: Some(var),
+                        ..
+                    },
                 ) => {
                     let value = self.b.use_var(var);
                     Ok((Some(self.borrow(value)), local.ty))
@@ -116,6 +120,7 @@ impl Lowerer<'_, '_> {
                 return self.help(Helper::StrFromValue, &[handle, start, end]);
             }
             Ty::Dict(key, value) => return self.handle_to_dict(handle, key, value, span),
+            Ty::List(item) => return self.handle_to_list(handle, item, span),
             Ty::Unit | Ty::Cap(_) => {
                 return Err(unsupported(&format!("using a value as {}", to.name()), span));
             }
@@ -145,7 +150,7 @@ impl Lowerer<'_, '_> {
                 let address = value.ok_or_else(|| unsupported("this value", span))?;
                 return self.box_to_handle(address, id);
             }
-            Ty::Str | Ty::Dict(..) => {
+            Ty::Str | Ty::Dict(..) | Ty::List(_) => {
                 let address = value.ok_or_else(|| unsupported("this value", span))?;
                 return self.box_to_handle(address, 0);
             }

@@ -590,7 +590,7 @@ impl Lowerer<'_, '_> {
                 self.call_helper(Helper::StrPrint, &[address])?;
                 return self.consume(Some(address), ty);
             }
-            Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) => {
+            Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) | Ty::List(_) => {
                 let handle = self.handle_of(value, ty, expr.span)?;
                 return self.call_helper(Helper::PrintValue, &[handle]).map(|_| ());
             }

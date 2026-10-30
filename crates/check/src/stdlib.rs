@@ -47,6 +47,7 @@ macro_rules! modules {
 }
 
 modules! {
+    fs,
     json,
     math,
     random,
@@ -81,6 +82,11 @@ pub(crate) fn construct(cx: &mut FnCx<'_>, type_name: &str, args: &[Arg]) {
 /// A function that takes `arity` plain values.
 const fn takes(name: &'static str, arity: (usize, usize)) -> Function {
     Function { name, arity, named: &[], needs_values: true }
+}
+
+/// For a module with no functions, which is never called.
+fn no_functions(_: &mut FnCx<'_>, _: &str, _: &[(Type, Span)], _: Span) -> Type {
+    Type::Unknown
 }
 
 /// For a module whose types have no methods written in Rust.

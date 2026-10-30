@@ -132,9 +132,6 @@ fn str_method(name: &str) -> Option<Method> {
 fn named_method(type_name: &str, name: &str) -> Option<Method> {
     match (type_name, name) {
         ("Stdout", "print" | "write") => Some(reads(Type::Unit, 0, usize::MAX)),
-        ("Fs", "exists") => Some(reads(Type::Bool, 1, 1)),
-        ("Fs", "read_text") => Some(reads(Type::result(Type::Str, Type::named("IoError")), 1, 1)),
-        ("Fs", "write_text") => Some(reads(Type::result(Type::Unit, Type::named("IoError")), 2, 2)),
         ("Clock", "now") => Some(reads(Type::named("Instant"), 0, 0)),
         ("Clock", "sleep") => Some(reads(Type::Unit, 1, 1)),
         _ => stdlib::method(type_name, name),

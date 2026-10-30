@@ -273,6 +273,47 @@ fn scratch(name: &str) -> std::io::Result<PathBuf> {
 }
 
 #[test]
+fn fs_makes_lists_and_removes_files_and_folders() {
+    let dir = scratch("fs").unwrap();
+    std::fs::write(dir.join("main.fen"), PROGRAM_WITH_FILES).unwrap();
+    for engine in [&["run", "main.fen"][..], &["run", "--jit", "main.fen"]] {
+        let output = fennec_in(&dir, engine, "").unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert_eq!(
+            text(&output.stdout),
+            "Ok() Ok() True\n\
+             [\"saves/slots/a.txt\", \"saves/slots/b.txt\"] ay\n\
+             3 True False False True\n\
+             a folder has to be empty to remove\n\
+             False [Path(text=\"./main.fen\")]\n"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A program that changes files, which runs in a folder of its own.
+const PROGRAM_WITH_FILES: &str = r#"from std.path import Path
+
+def main(stdout: Stdout, fs: Fs):
+    slots = Path("saves") / "slots"
+    stdout.print(fs.make_dir(slots), fs.make_dir(slots), fs.exists(slots))
+    fs.write_text(slots / "b.txt", "bee")?
+    fs.write_text("saves/slots/a.txt", "ay")?
+    stdout.print([path.text for path in fs.list_dir(slots)?], fs.read_text(slots / "a.txt")?)
+    found = fs.metadata(slots / "b.txt")?
+    folder = fs.metadata(slots)?
+    stdout.print(found.size, found.is_file, found.is_dir, folder.is_file, folder.is_dir)
+    match fs.remove("saves"):
+        case Ok(_): stdout.print("removed a folder that isn't empty")
+        case IoError(_): stdout.print("a folder has to be empty to remove")
+    for path in fs.list_dir(slots)?:
+        fs.remove(path)?
+    fs.remove(slots)?
+    fs.remove("saves")?
+    stdout.print(fs.exists("saves"), fs.list_dir(".")?)
+"#;
+
+#[test]
 fn fmt_check_passes_on_the_examples() {
     let output = fennec(&["fmt", "--check", "examples"], "").unwrap();
     assert!(output.status.success(), "{}{}", text(&output.stdout), text(&output.stderr));

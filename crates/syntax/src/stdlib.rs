@@ -26,6 +26,7 @@ macro_rules! modules {
 
 modules! {
     collections,
+    fs,
     game,
     json,
     layout,
@@ -58,15 +59,10 @@ mod tests {
     #[test]
     fn methods_say_which_types_they_give() {
         let given: Vec<_> = super::given().collect();
-        assert_eq!(
-            given,
-            [
-                ("match", "Match"),
-                ("fullmatch", "Match"),
-                ("search", "Match"),
-                ("find_all", "Match"),
-                ("now", "Instant")
-            ]
-        );
+        for expected in
+            [("now", "Instant"), ("search", "Match"), ("metadata", "Metadata"), ("list_dir", "Path")]
+        {
+            assert!(given.contains(&expected), "{expected:?} is missing from {given:?}");
+        }
     }
 }

@@ -112,30 +112,6 @@ impl Interp<'_> {
         Ok(Value::Unit)
     }
 
-    fn fs_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-        let io_error = |interp: &mut Self, err: std::io::Error| {
-            interp
-                .make_value("IoError", vec![("reason", Value::str(&err.to_string()))], span)
-                .map(|error| Value::Err(Rc::new(error)))
-        };
-        let paths: Vec<Value> = args.iter().map(path_text).collect();
-        match (method, paths.as_slice()) {
-            ("exists", [Value::Str(path)]) => Ok(Value::Bool(std::path::Path::new(path.as_ref()).exists())),
-            ("read_text", [Value::Str(path)]) => match std::fs::read_to_string(path.as_ref()) {
-                Ok(text) => Ok(Value::Ok(Rc::new(Value::str(&text)))),
-                Err(err) => io_error(self, err),
-            },
-            ("write_text", [Value::Str(path), Value::Str(text)]) => {
-                match std::fs::write(path.as_ref(), text.as_bytes()) {
-                    Ok(()) => Ok(Value::Ok(Rc::new(Value::Unit))),
-                    Err(err) => io_error(self, err),
-                }
-            }
-            ("exists" | "read_text" | "write_text", _) => Err(wrong_args(method, span)),
-            _ => Err(no_method(&Value::Capability(Capability::Fs), method, span)),
-        }
-    }
-
     /// `clock.now()` reads the monotonic clock; `clock.sleep(duration)` waits.
     fn clock_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
         match (method, args) {
@@ -398,14 +374,4 @@ fn str_method(text: &str, method: &str, args: &[Value], span: Span) -> Result<Va
         ) => return Err(wrong_args(method, span)),
         _ => return Err(no_method(&Value::str(text), method, span)),
     })
-}
-
-/// A `Path`'s text, so `fs` methods take a `Path` or a `str`.
-fn path_text(value: &Value) -> Value {
-    match value {
-        Value::Instance(instance) if instance.type_name.as_ref() == "Path" => {
-            instance.field("text").cloned().unwrap_or_else(|| value.clone())
-        }
-        other => other.clone(),
-    }
 }

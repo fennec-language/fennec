@@ -234,6 +234,27 @@ fn capabilities_and_errors_need_no_import() {
 }
 
 #[test]
+fn file_system_methods_give_back_their_types() {
+    let program = "
+        def main(stdout: Stdout, fs: Fs):
+            found = fs.metadata('a')?
+            paths = fs.list_dir('.')?
+            stdout.print(found.size + 'a', found.is_dir + 1, paths[0].name() + 1, fs.remove('a') + 1)
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "can't use `+` on an int and a str @ found.size + \"a\"",
+            "can't use `+` on a bool and an int @ found.is_dir + 1",
+            "can't use `+` on a str and an int @ paths[0].name() + 1",
+            "this is the result of something that can fail @ fs.remove(\"a\") + 1",
+        ]
+    );
+    let program = "def main(stdout: Stdout, fs: Fs):\n    stdout.print(fs.list_dir())";
+    assert_eq!(problems(program), ["`list_dir` was called with the wrong arguments @ fs.list_dir()"]);
+}
+
+#[test]
 fn a_regex_search_might_find_nothing() {
     let program = "stdout.print(Regex(r'a').search('b').text)";
     assert_eq!(in_main_after(IMPORTS, program), ["this might be None @ Regex(r\"a\").search(\"b\").text"]);

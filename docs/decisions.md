@@ -79,6 +79,9 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **`Clock` and `Random` are capabilities,** passed in like `Stdout` and `Fs`.
 *Why:* Pass a fixed clock and a seeded `Random` and a game or test runs the same way every time.
 
+**Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit, in the debugger, with `fennec replay`.
+*Why:* A player's crash report becomes a replay file you can step through. The determinism rules above make it almost free.
+
 ## Speed
 
 **The target is enforced.** Every program in the benchmark suite also exists as idiomatic code in the fastest established systems language. CI fails if a benchmark runs more than 3% slower than that twin, or slower than the previous run. The fix for a failure goes into the compiler, never into tricks in the benchmark.
@@ -113,6 +116,9 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 **Builtins work on anything; methods belong to a type.** Builtins work on any value that fits an interface and never change it: `len`, `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`. Methods are specific to a type or change the value: `xs.append(x)`, `d.keys()`, `s.split(",")`, `mut xs.sort()`. A type supports a builtin by having the method, such as `def len(self)`. The language server offers the builtins that apply after `xs.`.
 *Why:* Builtins read well with comprehensions (`sum(e.health for e in enemies)`), and Python users and AI already write them. Python mostly follows this split; Fennec always does.
+
+**Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They're erased at compile time, so they cost nothing at run time. The syntax is still open.
+*Why:* Game code mixes up degrees and radians, and world and screen space, constantly. F# has had units since 2009, and no mainstream language has followed.
 
 **An enum fits an interface when every case does.** The compiler writes the `match`, so `total(targets)` works on a list of a `Target` enum whose cases are all `Damageable`.
 *Why:* Lists of mixed types stay static, since the `match` compiles to a jump table, with nothing extra to write.
@@ -154,6 +160,15 @@ A big app that wants walls between its own parts splits into local kits in one w
 **f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay.
 *Why:* `{x=}` is what people want when debugging; `!r` has no meaning without Python's `repr`.
 
+## Toolchain
+
+**The installed `fennec` is a small launcher.** It reads the version a kit asks for, `fennec = "0.4.2"` in `kit.toml`, with no separate version file. On first use it fetches exactly that toolchain into `~/.fennec/toolchains/0.4.2/`, verifies its checksum and signature, records the toolchain's hash in `kit.lock`, and hands off to it.
+- `fennec toolchain list`, `install`, `remove` and `default` manage toolchains.
+- It never updates itself or fetches "latest" without being asked.
+- Single-file scripts outside a kit use the default toolchain.
+
+*Why:* Every project gets its own Fennec version without anyone thinking about it, and teammates, CI and AI agents all build with exactly the same toolchain. It's also what makes lints pinned to a kit's Fennec version work.
+
 ## Tooling
 
 Every tool ships in the `fennec` binary and has no configuration unless a setting is unavoidable.
@@ -164,19 +179,55 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 - `fennec test`: tests, property tests and the examples in doc comments.
 - `fennec doc`: documentation from `##` comments.
 - `fennec explain`: the long explanation of any error or lint.
+- `fennec search`: finds functions by type, locally and on the Den. `fennec search "Path -> str"` lists every function with that shape.
+- `fennec diff`: a semantic diff. It reports renames with their updated call sites, moved functions, changed bodies and API changes with the version bump they need, instead of lines added and removed. A GitHub Action posts it on every pull request.
+- `fennec replay`: replays a recorded run, as described under Determinism.
 - The language server: inlay hints for inferred types and error sets, hover docs, go to definition, rename, and lint fixes as code actions (including "make this `pub`"). It reuses the compiler's queries and cache.
+- Cost hints: the language server shows each line's copies, allocations and reference-count changes inline, the way it shows inferred types.
 - The copies lint, as above.
 
-*Why:* Inferred types and error sets need to be visible to be trusted, and a fixed style plus automatic fixes means AI and people write the same code.
+*Why:* Inferred types and error sets need to be visible to be trusted, and a fixed style plus automatic fixes means AI and people write the same code. Cost hints show what code costs while it's written, not after a profiler finds it.
+
+**Every breaking change ships with its own fix.** No language change that breaks code lands unless `fennec fix` rewrites old code to match.
+*Why:* Upgrading Fennec should never be a project.
+
+## For AI
+
+**The toolchain ships an MCP server.** Through it, an AI agent can search by type, read docs, run `fennec check` and run snippets in the sandboxed interpreter.
+*Why:* AI's most common failure is calling functions that don't exist. Ground truth from the compiler and the Den replaces guessing.
+
+**Diagnostics are structured.** `fennec check --json` gives every error and lint with its location and any fix as an edit a tool can apply.
+
+**Docs come in plain Markdown too.** Every documented item has its own versioned Markdown page, with an `llms.txt` index for each kit and for the language.
+
+**`fennec context <kit>` fits a kit in a prompt.** It prints every `pub` signature with the first line of its doc comment.
+
+**The language reference is executable.** Every example in it is a test, the way `examples/` already is, so the reference can't drift from the language.
+
+## Readable by default
+
+These are default lints, and the Den requires them.
+
+- A `##` doc comment on every `pub` item.
+- At least one tested example on every `pub` function.
+- Descriptive names. One-letter and abbreviated names are flagged, except a short allowlist: `i`, `j`, `k`, `n`, `x`, `y`, `z`, `dt`, `id`.
+- Limits on nesting depth and function length, as lints rather than language rules.
+
+*Why:* Examples are the best documentation for people and AI alike, and they're tests too. Code that reads well is code AI writes well.
 
 ## Kits on the Den
 
-**Publishing requires** that the kit is formatted, passes the default lints, passes its tests and doc examples, and has a `##` doc comment on every `pub` item. `fennec publish` refuses otherwise. Each lint exception needs a written reason, and the reasons are shown on the kit's page.
+**Publishing requires** that the kit is formatted, passes the default lints, passes its tests and doc examples, and meets the rules under Readable by default. `fennec publish` refuses otherwise. Each lint exception needs a written reason, and the reasons are shown on the kit's page.
 
 **Shown, not required:** test coverage, mutation score and benchmarks, as scores on the kit's page.
 *Why:* A required coverage percentage gets gamed with tests that check nothing. A visible mutation score exposes that.
 
 **The Den checks for itself.** Publishing goes through OIDC trusted publishing, so the CI run that ran the checks is attested. The Den re-runs formatting and lints in wasm, which is safe and fast because kits have no build scripts.
+
+**Breaking dependents is caught before release.** Before a new version is published, the Den runs the tests of every kit that depends on it against that version and reports which ones break.
+*Why:* An author learns "this release breaks 14 kits" before releasing it, not from bug reports.
+
+**The Den can be searched by type,** through `fennec search` and its website.
 
 **Lints are pinned to the kit's Fennec version.** A lint added in Fennec 0.5 never blocks a patch release of a kit written for 0.4.
 
@@ -187,10 +238,32 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 
 **The tree-walking interpreter stays simple and correct, not fast.** It runs the REPL, the playground, compile-time evaluation and the sandbox, and it's the reference the JIT is tested against: every example must give the same output on both.
 
-**One cache, shared per machine, keyed by content.**
-- Each compiled function is stored under a hash of its body and the signatures of what it calls. A change inside a function that leaves its signature alone doesn't recompile its callers.
-- Entries are written to a temporary file and renamed into place, so readers never see half an entry and the normal path takes no locks. A lock is taken only while old entries are being cleaned up.
-- The JIT, release builds and the language server share the cache through the query-based compiler.
+The JIT, release builds and the language server all share one build engine and cache, described under Builds.
+
+## Builds
+
+**The unit of work is the function, keyed by its content.** A function's key is a hash of its own syntax tree plus the signatures of what it uses, not their bodies. A caller depends on a callee's body only if it inlined that callee. A change inside a function that leaves its signature alone recompiles nothing else.
+
+**Results are pure.** Cache keys never include paths, timestamps or environment variables, and every key includes the compiler version. Builds are deterministic, so each function of a kit compiles once per machine, ever.
+
+**There's one cache per machine,** `~/.fennec/cache`. It has a size cap, and old entries are cleaned up. Entries are written to a temporary file and renamed into place, so readers never see half an entry and the normal path takes no locks; a lock is taken only during cleanup.
+- There's no build folder inside each project. Development runs compile straight from the cache with the JIT, and only `fennec build --release` writes an executable.
+
+**Work runs in parallel on every core,** one function at a time per core.
+
+**One engine stays running.** A background daemon serves the compiler, checker, formatter and language server from the same queries. It hot-reloads changed functions into a running program.
+
+**Caches can be shared** between machines and CI. Results from elsewhere are used only when they're signed or verified locally.
+
+**Release builds use LLVM with whole-program optimization,** cached per function where possible.
+
+*Why:* These avoid what makes builds slow elsewhere: large compilation units, build scripts and macros that run code, a build folder in every project that grows to gigabytes, and separate engines for the compiler and the editor.
+
+**Hashing works in two layers.**
+1. A BLAKE3 hash of each file's bytes. An unchanged file isn't even parsed again, and timestamps are never used, so switching branches or cloning in CI doesn't rebuild anything.
+2. A hash of each function's syntax tree that leaves out positions and comments. Reformatting, editing comments and moving code around recompile nothing. Positions are kept separately for error messages.
+
+BLAKE3 is written in-house rather than taken as a dependency, and checked against the official test vectors.
 
 ## Sandboxing
 
@@ -227,6 +300,7 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 - How closures longer than one line should look, beyond nested functions.
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.
+- The syntax for units of measure.
 - The file extension (currently `.fen`).
 - These security proposals:
   - `Net`, `Env` and `Process` as capabilities.

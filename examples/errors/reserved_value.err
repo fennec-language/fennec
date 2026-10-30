@@ -4,4 +4,4 @@ error: `extern` is part of Fennec's design but isn't supported yet
 2 |     stdout.print(extern)
   |                  ^^^^^^
   |
-  = help: see what's coming at https://seashell86.github.io/fennec/roadmap/
+  = help: see what's coming at https://fennec-lang.dev/roadmap/

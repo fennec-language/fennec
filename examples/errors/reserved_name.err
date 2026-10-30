@@ -4,4 +4,4 @@ error: `unsafe` is part of Fennec's design but isn't supported yet
 1 | def greet(unsafe: str):
   |           ^^^^^^
   |
-  = help: see what's coming at https://seashell86.github.io/fennec/roadmap/
+  = help: see what's coming at https://fennec-lang.dev/roadmap/

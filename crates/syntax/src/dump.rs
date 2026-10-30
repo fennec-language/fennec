@@ -93,12 +93,23 @@ pub(crate) fn quoted(text: &str) -> String {
     out
 }
 
-/// A float the way Fennec prints one: with a decimal point when it's whole.
+/// A float the way Fennec prints one, as `fennec_interp::format::float` does: with a decimal
+/// point when it's whole, and with an exponent when it's very large or very small.
 #[expect(clippy::float_cmp, reason = "checking for a whole number is an exact comparison")]
 pub(crate) fn float(x: f64) -> String {
     if x.is_infinite() {
-        if x > 0.0 { "inf".to_owned() } else { "-inf".to_owned() }
-    } else if x == x.trunc() && x.abs() < 1e16 {
+        if x.is_sign_positive() { "inf".to_owned() } else { "-inf".to_owned() }
+    } else if x != 0.0 && !(1e-4..1e16).contains(&x.abs()) {
+        let text = format!("{x:e}");
+        match text.split_once('e') {
+            Some((mantissa, exponent)) => {
+                let (sign, digits) =
+                    exponent.strip_prefix('-').map_or(("+", exponent), |digits| ("-", digits));
+                format!("{mantissa}e{sign}{digits:0>2}")
+            }
+            None => text,
+        }
+    } else if x == x.trunc() {
         format!("{x:.1}")
     } else {
         format!("{x}")

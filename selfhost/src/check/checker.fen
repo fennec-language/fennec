@@ -72,7 +72,21 @@ struct Checker:
     ## not its parameters' types, as the Rust checker does.
     def check_function(mut self, function: FnDef, generics: list[Generic]):
         self.check_written(function.ret, generic_names(generics))
+        self.check_arrow(function)
         self.check_body(function.body, generics)
+
+    ## `-> None` or `-> nothing`: no arrow already means a `def` gives back nothing.
+    def check_arrow(mut self, function: FnDef):
+        ret = function.ret
+        arrow = function.arrow
+        if ret is None or arrow is None:
+            return
+        if ret.name in ["None", "nothing"] and len(ret.args) == 0 and not ret.optional:
+            self.diagnostics.append(Diagnostic(
+                message=f"`{function.name}` gives back nothing, so it has no arrow",
+                span=arrow.to(ret.span),
+                help="a `def` with no `->` gives back nothing: remove the arrow and what follows it",
+            ))
 
     def check_fields(mut self, fields: list[Field], generics: list[str]):
         for field in fields:

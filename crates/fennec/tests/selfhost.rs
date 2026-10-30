@@ -221,6 +221,10 @@ const CHECK_CASES: &[(&str, &str)] = &[
         "struct Box[T]:\n    item: T\n    other: U\n\n    def get(self) -> T:\n        self.item\n\ndef outer[T](x: T) -> T:\n    def inner(y: Nope) -> T:\n        y\n    names: list[T] = []\n    x\n",
     ),
     (
+        "arrows_to_nothing",
+        "def a() -> None:\n    pass\n\ndef b(x: int) -> nothing:\n    pass\n\ndef c() -> None?:\n    None\n\nstruct S:\n    def m(self) -> None:\n        def inner() -> nothing:\n            pass\n        inner()\n\ninterface I:\n    def q(self) -> None\n",
+    ),
+    (
         "written_places",
         "from std import collections\nimport std.json\n\nerror Oops:\n    why: Reason\n\nstruct S:\n    q: collections.Deque[int]\n    r: collections.Nope\n\ndef main(stdout: Stdout):\n    a: Mystery = 1\n    match a:\n        case _:\n            b: Unknown2 = 2\n    if True:\n        c: Gone = 3\n\ntest \"t\" for n: Nada:\n    d: Nothing2 = 4\n",
     ),
@@ -453,6 +457,7 @@ const CHECK_KINDS: &[&str] = &[
     "refers to itself",
     "isn't an interface",
     "is an interface, not a type",
+    "so it has no arrow",
 ];
 
 /// The Rust checker's diagnostics of the kinds in `CHECK_KINDS`, as `fennec dev check`

@@ -22,6 +22,8 @@ struct FnDef:
     generics: list[Generic]
     params: list[Param]
     ret: TypeExpr?
+    ## Where the `->` is, when there is one.
+    arrow: Span?
     body: list[Stmt]
     span: Span
 

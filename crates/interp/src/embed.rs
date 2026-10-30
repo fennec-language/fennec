@@ -16,6 +16,9 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
 
+pub mod aot;
+pub mod checks;
+pub mod codec;
 pub mod heap;
 pub mod lists;
 pub mod objects;
@@ -51,6 +54,25 @@ pub struct Tables {
     pub ascii: Box<[u64]>,
     /// The address of each string literal's block, by its text.
     pub literals: HashMap<String, i64>,
+}
+
+impl Tables {
+    /// The tables an executable carries: everything but the blocks made while compiling,
+    /// which it makes again when it starts.
+    #[must_use]
+    pub fn clone_for_image(&self) -> Tables {
+        Tables {
+            names: self.names.clone(),
+            strings: self.strings.clone(),
+            exprs: self.exprs.clone(),
+            stmts: self.stmts.clone(),
+            patterns: self.patterns.clone(),
+            elements: self.elements.clone(),
+            shapes: self.shapes.clone(),
+            str_shape: self.str_shape,
+            ..Tables::default()
+        }
+    }
 }
 
 /// Collects what the program prints.

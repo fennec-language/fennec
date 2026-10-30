@@ -2,6 +2,7 @@
 #![expect(clippy::print_stdout, reason = "the command line prints its results")]
 #![expect(clippy::print_stderr, reason = "the command line reports errors")]
 
+mod aot;
 mod changes;
 mod fmt;
 mod repl;
@@ -13,6 +14,7 @@ use std::process::ExitCode;
 const USAGE: &str = "usage:
   fennec run [path]         run a kit's main, or a single .fen file's
   fennec run --jit [path]   run it as native code (still in progress)
+  fennec build [path] [-o out]  compile it to a standalone executable
   fennec test [path]        run a kit's tests, or a single file's
   fennec new <name>         start a kit in a new folder
   fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
@@ -32,6 +34,10 @@ fn main() -> ExitCode {
         ["run", "--jit"] => on_big_stack(run::run_jit, "."),
         ["run", "--jit", path] => on_big_stack(run::run_jit, path),
         ["run", path] => on_big_stack(run::run, path),
+        ["build"] => aot::build(".", None),
+        ["build", "-o", output] => aot::build(".", Some(output)),
+        ["build", path] => aot::build(path, None),
+        ["build", path, "-o", output] => aot::build(path, Some(output)),
         ["test"] => on_big_stack(test::test, "."),
         ["test", path] => on_big_stack(test::test, path),
         ["new", path] => new(path),

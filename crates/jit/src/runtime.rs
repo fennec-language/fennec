@@ -2,14 +2,11 @@
 //! checks report. Everything else native code calls is in `fennec_interp::embed`.
 
 use fennec_interp::embed::{self, Tables};
-use fennec_syntax::{Diagnostic, Module, Span};
+use fennec_syntax::{Diagnostic, Module};
 
-pub(crate) const OVERFLOW: i64 = 1;
-pub(crate) const DIVISION_BY_ZERO: i64 = 2;
-pub(crate) const ZERO_STEP: i64 = 3;
-pub(crate) const TOO_DEEP: i64 = 4;
-pub(crate) const NEGATIVE_SQRT: i64 = 5;
-pub(crate) const NOT_AN_INT: i64 = 6;
+pub(crate) use fennec_interp::embed::checks::{
+    DIVISION_BY_ZERO, NEGATIVE_SQRT, NOT_AN_INT, OVERFLOW, TOO_DEEP, ZERO_STEP,
+};
 
 /// A compiled program's entry point.
 pub(crate) struct Entry {
@@ -34,28 +31,4 @@ pub(crate) fn execute(entry: &Entry, module: &Module, tables: Tables) -> Result<
     main();
     let (output, failure, leftovers) = embed::finish();
     Ok(Outcome { output, failure, leftovers })
-}
-
-/// Called by native code when one of its own checks fails.
-pub(crate) extern "C" fn fail(code: i64, start: i64, end: i64) {
-    let span = Span { start: u32::try_from(start).unwrap_or(0), end: u32::try_from(end).unwrap_or(0) };
-    embed::fail_with(match code {
-        OVERFLOW => Diagnostic::new("this calculation overflows an int", span)
-            .with_help("ints are 64-bit; check the values involved, or use floats for very large numbers"),
-        DIVISION_BY_ZERO => Diagnostic::new("division by zero", span),
-        NEGATIVE_SQRT => Diagnostic::new("can't take the square root of a negative number", span),
-        NOT_AN_INT => Diagnostic::new("can't turn a float into an int", span),
-        TOO_DEEP => {
-            Diagnostic::new("calls nested too deeply", span).with_help("check for recursion that never stops")
-        }
-        _ => Diagnostic::new("`range` can't step by 0", span),
-    });
-}
-
-pub(crate) extern "C" fn sin(x: f64) -> f64 {
-    x.sin()
-}
-
-pub(crate) extern "C" fn cos(x: f64) -> f64 {
-    x.cos()
 }

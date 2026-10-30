@@ -2,9 +2,7 @@
 //! where they are. Each takes and returns only plain numbers.
 
 use cranelift_codegen::ir::types::{F64, I8, I64, Type};
-use fennec_interp::embed::{eval, heap, io, lists, names, objects, strings, temps};
-
-use crate::runtime;
+use fennec_interp::embed::{checks, eval, heap, io, lists, names, objects, strings, temps};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Helper {
@@ -373,7 +371,7 @@ impl Helper {
             return address;
         }
         match self {
-            Helper::Fail => runtime::fail as *const u8,
+            Helper::Fail => checks::fail as *const u8,
             Helper::AtCall => eval::at_call as *const u8,
             Helper::Enter => names::enter as *const u8,
             Helper::Leave => names::leave as *const u8,
@@ -437,8 +435,8 @@ impl Helper {
             Helper::PutItem => objects::put_item as *const u8,
             Helper::Entries => objects::entries as *const u8,
             Helper::MakeInstance => objects::make_instance as *const u8,
-            Helper::Sin => runtime::sin as *const u8,
-            Helper::Cos => runtime::cos as *const u8,
+            Helper::Sin => checks::sin as *const u8,
+            Helper::Cos => checks::cos as *const u8,
             Helper::Pack => lists::pack as *const u8,
             Helper::Address => lists::address as *const u8,
             Helper::Length => lists::length as *const u8,
@@ -491,5 +489,16 @@ impl Helper {
             Helper::StrPrint => strings::print as *const u8,
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_runtime_library_exports_every_helper() {
+        for helper in super::ALL {
+            let symbol = helper.shape().symbol;
+            assert!(fennec_runtime::SYMBOLS.contains(&symbol), "the runtime library doesn't export {symbol}");
+        }
     }
 }

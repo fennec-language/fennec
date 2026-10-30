@@ -49,12 +49,14 @@ cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"
 cranelift-module = "=0.137.0"
 cranelift-native = "=0.137.0"
+cranelift-object = "=0.137.0"
 fennec-blake3 = { path = "crates/blake3" }
 fennec-build = { path = "crates/build" }
 fennec-check = { path = "crates/check" }
 fennec-fmt = { path = "crates/fmt" }
 fennec-jit = { path = "crates/jit" }
 fennec-interp = { path = "crates/interp" }
+fennec-runtime = { path = "crates/runtime" }
 fennec-kit = { path = "crates/kit" }
 fennec-re = { path = "crates/re" }
 fennec-syntax = { path = "crates/syntax" }

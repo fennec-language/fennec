@@ -117,3 +117,33 @@ fn compile_and_run(module: &Module) -> Result<(Vec<u8>, Result<Report, JitError>
     };
     Ok((result.output, report))
 }
+
+/// A program compiled to an object file for an executable, and how it compiled.
+#[derive(Debug)]
+pub struct Built {
+    /// The object file. Linked against the runtime library, it's the program's executable.
+    pub object: Vec<u8>,
+    /// The functions and methods the interpreter in the runtime runs, which couldn't be
+    /// compiled.
+    pub interpreted: Vec<String>,
+    /// How many operations the program's functions hand to the interpreter one at a time.
+    pub handed_over: usize,
+}
+
+/// Compiles a program ahead of time, to an object file with a C `main` that runs it.
+/// `sources` are the files it was read from, which the executable carries to show where
+/// failures happen.
+pub fn build(module: &Module, sources: &fennec_syntax::Sources) -> Result<Built, Diagnostic> {
+    let signatures = fennec_check::check(module).map_err(|diagnostics| {
+        diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default()))
+    })?;
+    let prelude: Vec<Module> =
+        fennec_syntax::prelude().filter_map(|source| fennec_syntax::parse_prelude(source).ok()).collect();
+    let program = types::Program::from_module(module, &prelude, &signatures)?;
+    let image = lower::object::Written { module, sources };
+    let (object, compilation) = lower::object::compile_object(&program, &signatures, &image)?;
+    let mut interpreted = compilation.interpreted;
+    interpreted.extend(program.excluded);
+    interpreted.sort();
+    Ok(Built { object, interpreted, handed_over: compilation.handed_over })
+}

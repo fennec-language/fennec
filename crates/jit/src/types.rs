@@ -8,7 +8,7 @@ use fennec_syntax::{Diagnostic, FnDef, Item, Module, Span, StmtKind};
 use crate::layout::Layouts;
 
 /// How native code holds a value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Ty {
     Int,
     Float,

@@ -61,7 +61,7 @@ impl Lowerer<'_, '_> {
             ExprKind::Call { callee, args } => self.call(expr, callee, args),
             ExprKind::Match { subject, arms } => self.match_value(subject, arms, span),
             ExprKind::Attr { object, name, optional } => self.read_field(expr, object, name, *optional),
-            ExprKind::Index { object, index } => self.read_index(expr, object, index),
+            ExprKind::Index { object, index } => self.read_index_or_packed(expr, object, index),
             _ => self.fallback(expr),
         }
     }

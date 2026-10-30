@@ -15,24 +15,26 @@ mod expr;
 mod fallback;
 mod flow;
 mod inline;
+mod lists;
+mod module;
 mod objects;
 mod stmt;
 mod structs;
 
 use std::collections::{HashMap, HashSet};
 
-use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, MemFlagsData, Value, types};
-use cranelift_codegen::settings::{self, Configurable};
+use cranelift_codegen::ir::{Block, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_jit::JITModule;
+use cranelift_module::{FuncId, Module};
 use fennec_interp::embed::{self, Tables};
 use fennec_syntax::{Diagnostic, Span};
 
-use crate::helpers::{self, Helper};
+use crate::helpers::Helper;
 use crate::layout::Layouts;
 use crate::runtime::Entry;
 use crate::types::{Function, Program, Ty, unsupported};
+use module::{declare_all, define_entry, new_module, returns_changes, signature};
 
 /// The message of the internal diagnostic that asks for a function to be lowered again,
 /// this time with a frame.
@@ -104,27 +106,6 @@ pub(crate) fn compile(
     }
 }
 
-fn new_module(span: Span) -> Result<JITModule, Diagnostic> {
-    let mut flags = settings::builder();
-    flags.set("opt_level", "speed").map_err(|err| internal(err, span))?;
-    // The stack limit lives in a register of its own for the whole run, so checking it
-    // before a call is one comparison. The register is one compiled Rust code preserves.
-    flags.set("enable_pinned_reg", "true").map_err(|err| internal(err, span))?;
-    // Cranelift's own checks of the code the JIT gives it find bugs in the JIT, not in the
-    // program, so only test builds pay for them.
-    let verify = if cfg!(debug_assertions) { "true" } else { "false" };
-    flags.set("enable_verifier", verify).map_err(|err| internal(err, span))?;
-    let isa = cranelift_native::builder()
-        .map_err(|err| internal(err, span))?
-        .finish(settings::Flags::new(flags))
-        .map_err(|err| internal(err, span))?;
-    let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-    for helper in helpers::ALL {
-        builder.symbol(helper.shape().symbol, helper.address());
-    }
-    Ok(JITModule::new(builder))
-}
-
 type Attempt = Result<(Entry, Tables, (usize, usize)), (String, Diagnostic)>;
 
 /// One try at compiling the program, skipping some functions. On failure, the name of the
@@ -185,88 +166,6 @@ fn attempt(
     Ok((Entry { code, _module: module }, shared.tables, (shared.with_frames, shared.handed_over)))
 }
 
-/// The entry point: calls `main`, and fails the way the interpreter does if `main` gives
-/// back a failure.
-fn define_entry(
-    module: &mut JITModule,
-    ctx: &mut cranelift_codegen::Context,
-    builder_ctx: &mut FunctionBuilderContext,
-    shared: &Shared,
-    (main, ret): (FuncId, Ty),
-    span: Span,
-) -> Result<FuncId, Diagnostic> {
-    let sig = module.make_signature();
-    let id =
-        module.declare_function("fennec_entry", Linkage::Local, &sig).map_err(|err| internal(err, span))?;
-    ctx.func.signature = sig;
-    let mut b = FunctionBuilder::new(&mut ctx.func, builder_ctx);
-    let block = b.create_block();
-    b.switch_to_block(block);
-    b.seal_block(block);
-    let callee = module.declare_func_in_func(main, b.func);
-    // The pinned register belongs to whoever called this; keep its value to put back.
-    let saved = b.ins().get_pinned_reg(types::I64);
-    let limit = b.ins().iconst(types::I64, shared.stack_limit);
-    b.ins().set_pinned_reg(limit);
-    let call = b.ins().call(callee, &[]);
-    let result = b.inst_results(call).first().copied();
-    if let (Ty::Obj, Some(result), Some(check)) = (ret, result, shared.helpers.get(&Helper::MainResult)) {
-        let check = module.declare_func_in_func(*check, b.func);
-        let start = b.ins().iconst(types::I64, i64::from(span.start));
-        let end = b.ins().iconst(types::I64, i64::from(span.end));
-        b.ins().call(check, &[result, start, end]);
-    }
-    b.ins().set_pinned_reg(saved);
-    b.ins().return_(&[]);
-    let config = module.target_config();
-    b.finalize(config);
-    module.define_function(id, ctx).map_err(|err| internal(err, span))?;
-    module.clear_context(ctx);
-    Ok(id)
-}
-
-/// Declares the runtime helpers and every function being compiled.
-fn declare_all(
-    module: &mut JITModule,
-    shared: &mut Shared,
-    program: &Program<'_>,
-    skipped: &HashSet<String>,
-) -> Result<(), Diagnostic> {
-    let span = program.main_span;
-    for helper in helpers::ALL {
-        let shape = helper.shape();
-        let mut sig = module.make_signature();
-        sig.params.extend(shape.params.iter().copied().map(AbiParam::new));
-        sig.returns.extend(shape.results.iter().copied().map(AbiParam::new));
-        let id = module
-            .declare_function(shape.symbol, Linkage::Import, &sig)
-            .map_err(|err| internal(err, span))?;
-        shared.helpers.insert(helper, id);
-    }
-    for (at, function) in
-        program.functions.iter().enumerate().filter(|(_, function)| !skipped.contains(&function.key))
-    {
-        let sig = signature(module, function);
-        let name = format!("fennec_user_{at}");
-        let id = module.declare_function(&name, Linkage::Local, &sig).map_err(|err| internal(err, span))?;
-        let params =
-            function.params.iter().map(|param| (param.name.clone(), param.ty, param.is_mut)).collect();
-        let takes_self = function.def.params.first().is_some_and(|param| param.is_self);
-        let inline = inline::inline_body(function);
-        if takes_self && let Some((owner, method)) = function.key.rsplit_once('.') {
-            shared
-                .methods
-                .entry(method.to_owned())
-                .or_default()
-                .push((owner.to_owned(), function.key.clone()));
-        }
-        shared
-            .compiled
-            .insert(function.key.clone(), Compiled { id, params, ret: function.ret, takes_self, inline });
-    }
-    Ok(())
-}
-
 fn abi(ty: Ty) -> Option<types::Type> {
     match ty {
         Ty::Int | Ty::Obj | Ty::Struct(_) => Some(types::I64),
@@ -274,40 +173,6 @@ fn abi(ty: Ty) -> Option<types::Type> {
         Ty::Bool => Some(types::I8),
         Ty::Unit | Ty::Stdout | Ty::Fs => None,
     }
-}
-
-/// A compiled function's machine signature: for a function giving back a plain struct,
-/// where to put it; each parameter's value (the address of a struct, and for a `mut`
-/// object, also the caller's name for it); then the result and each `mut` number's final
-/// value.
-fn signature(module: &JITModule, function: &Function<'_>) -> cranelift_codegen::ir::Signature {
-    let mut sig = module.make_signature();
-    if matches!(function.ret, Ty::Struct(_)) {
-        sig.params.push(AbiParam::new(types::I64));
-    }
-    for param in &function.params {
-        sig.params.extend(abi(param.ty).map(AbiParam::new));
-        if param.is_mut && param.ty == Ty::Obj {
-            sig.params.push(AbiParam::new(types::I64));
-        }
-    }
-    if !matches!(function.ret, Ty::Struct(_)) {
-        sig.returns.extend(abi(function.ret).map(AbiParam::new));
-    }
-    for param in &function.params {
-        if param.is_mut && returns_changes(param.ty) {
-            sig.returns.extend(abi(param.ty).map(AbiParam::new));
-        }
-    }
-    // Last, whether it failed: a register the caller tests, cheaper than loading the flag.
-    sig.returns.push(AbiParam::new(types::I8));
-    sig
-}
-
-/// Whether a `mut` parameter of this kind gives its final value back as a result: numbers
-/// do; objects and plain structs are changed where the caller holds them.
-fn returns_changes(ty: Ty) -> bool {
-    !matches!(ty, Ty::Obj | Ty::Struct(_))
 }
 
 struct Cx<'a> {
@@ -405,6 +270,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         failed_flag,
         pending: Vec::new(),
         leaves_of: HashMap::new(),
+        elements: HashMap::new(),
         leaf_vars: HashMap::new(),
     };
     lowerer.prologue(&params)?;
@@ -420,6 +286,8 @@ pub(crate) struct Local {
     var: Option<Variable>,
     ty: Ty,
     is_mut: bool,
+    /// For a name holding a list native code packed: the kind of its items.
+    list: Option<Ty>,
 }
 
 #[derive(Default)]
@@ -473,6 +341,8 @@ pub(crate) struct Lowerer<'a, 'f> {
     signatures: &'a fennec_check::Signatures,
     /// Where a function giving back a plain struct puts it.
     dest: Option<Value>,
+    /// The kinds of packed list items registered with the runtime, by their number there.
+    elements: HashMap<Ty, i64>,
     /// The leaves of each struct value kept in registers.
     leaves_of: HashMap<Value, Vec<Value>>,
     /// The leaf variables of each struct name kept in registers, by the name's variable.
@@ -504,6 +374,9 @@ impl Lowerer<'_, '_> {
             if param.ty == Ty::Obj {
                 let value = value.ok_or_else(|| internal("missing parameter", span))?;
                 self.declare_object(&param.name, value, param.is_mut)?;
+                if let Some(item) = self.checked_list(&param.name) {
+                    self.pack_name(&param.name, item)?;
+                }
                 if param.is_mut {
                     let caller = values.next().ok_or_else(|| internal("missing parameter", span))?;
                     let var = self.b.declare_var(types::I64);
@@ -612,7 +485,7 @@ impl Lowerer<'_, '_> {
         if helper.can_fail() {
             self.check_failed();
         }
-        if helper.shape().results == [types::I64] {
+        if helper.makes_temporary() {
             self.dirty = true;
         }
         Ok(result)
@@ -662,7 +535,7 @@ impl Lowerer<'_, '_> {
             var
         });
         if let Some(scope) = self.scopes.last_mut() {
-            scope.locals.insert(name.to_owned(), Local { var, ty, is_mut });
+            scope.locals.insert(name.to_owned(), Local { var, ty, is_mut, list: None });
         }
     }
 
@@ -673,7 +546,7 @@ impl Lowerer<'_, '_> {
         let is_mut_flag = self.b.ins().iconst(types::I8, i64::from(is_mut));
         self.call_helper(Helper::Declare, &[id, handle, is_mut_flag])?;
         if let Some(scope) = self.scopes.last_mut() {
-            scope.locals.insert(name.to_owned(), Local { var: None, ty: Ty::Obj, is_mut });
+            scope.locals.insert(name.to_owned(), Local { var: None, ty: Ty::Obj, is_mut, list: None });
         }
         Ok(())
     }

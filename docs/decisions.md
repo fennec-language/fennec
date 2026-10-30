@@ -145,15 +145,21 @@ This replaces the earlier rules that return types are inferred, and that recursi
 **Built-in types are ordinary structs in the standard library.** `int`, `float`, `str`, `list` and `dict` are structs in `std`, with methods and the interfaces they satisfy written like any other type's. Only machine-level operations, such as adding two machine integers or loading from memory, are intrinsics the compiler provides.
 *Why:* There's no second kind of type that only the compiler can make. A user type does everything a built-in one does, by the same means.
 
-**Generic builtins are ordinary generic functions that call a method.** `abs`, `len`, `min`, `max`, `sum` and the like are written in `std`:
+**Generic builtins are ordinary generic functions that call an interface's method.** `abs`, `len`, `min`, `max`, `sum` and the like are written in `std`:
 ```fennec
-def abs[T: Signed](x: T) -> T:
-    return x.abs()
-```
-A user type joins in by defining the method.
+interface Signed:
+    def abs(self) -> Self
 
-**Builtins work on anything; methods belong to a type.** Builtins work on any value that fits an interface and never change it: `len`, `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`. Methods are specific to a type or change the value: `xs.append(x)`, `d.keys()`, `s.split(",")`, `mut xs.sort()`. A type supports a builtin by having the method, such as `def len(self)`. The language server offers the builtins that apply after `xs.`.
-*Why:* Builtins read well with comprehensions (`sum(e.health for e in enemies)`), and Python users and AI already write them. Python mostly follows this split; Fennec always does.
+def abs[T: Signed](x: T) -> T:
+    return Signed.abs(x)
+```
+A user type joins in by defining the method, written with its interface's name: `def Signed.abs(self) -> Money:`. The method is reached only through the global, so `money.abs()` is an ordinary "no such method" error, and `abs(money)` is the one way to call it.
+
+**`Buffer[T]` is the one public building block for memory.** It's safe, bounds-checked, growable and reference-counted. It allocates, reads and writes a slot, grows, and says whether it's unique, which is what copy-on-write needs. `list`, `dict` and `str` are written in Fennec on top of it, and any program can use it the same way.
+*Why:* The built-in collections need no machinery a program can't use, so a game's own pool or ring buffer is built from the same safe piece.
+
+**Global functions are a short, fixed set, as in Python; everything else is a method.** The globals are for operations across many types: `len`, `abs`, `min`, `max`, `sum`, `sorted`, `str`, `int` and `float`, plus `any`, `all`, `enumerate`, `zip` and `range` for iterating. There's one way to call each operation. `len(xs)` is the only way to get a length, and `xs.len()` is an ordinary "no such method" error, with no special fix. Everything specific to a type is a method: `xs.append(x)`, `d.keys()`, `s.split(",")`, `mut xs.sort()`. The language server offers the globals that apply after `xs.`.
+*Why:* These are Python's own globals, so people and AI already write them, and they read well with comprehensions (`sum(e.health for e in enemies)`). A fixed set means no one has to guess which operations are global.
 
 **No global function serves only one type.** A builtin has to work across types, through an interface, or be a type's constructor, like `int(...)`, `float(...)` and `range(...)`. An operation on one type is a method. So a character's code is `"A".code()`, not Python's `ord("A")`, and `ord(c)` is an error whose fix writes `c.code()`.
 *Why:* Global functions that only fit one type crowd the namespace, can't be extended by other types, and hide where an operation lives.
@@ -180,14 +186,28 @@ extend Parser:
     def parse_expr(mut self) -> Expr:
         ...
 ```
-An extension adds methods only, never fields, so a type's shape stays in its declaration. It works only on the kit's own types, never another kit's or the standard library's. Two methods with the same name on one type are an error, wherever they're written. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
+An extension adds methods only, never fields, so a type's shape stays in its declaration. It works only on the kit's own types, never another kit's or the standard library's; the standard library extends its own types the same way.
+
+**A generic type's extension names its type parameter, and a bound makes it conditional,** as in Swift:
+```fennec
+extend list[T]:
+    def first(self) -> T?: ...
+
+extend list[T: Eq]:
+    def count(self, x: T) -> int: ...
+    def index(self, x: T) -> int?: ...
+
+extend list[T: Ordered]:
+    def sort(mut self): ...
+```
+`count` exists only on lists whose elements can be compared with `==`, and `sort` only on lists whose elements can be ordered. Two methods with the same name on one type are an error, wherever they're written. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
 *Why:* A type that many responsibilities attach to, like a parser, an interpreter or a game's `World`, is otherwise one huge file, or its methods become free functions with noisier calls. Swift, C#, Kotlin, Go and Rust all let a type's methods live in several files. Keeping it to the kit's own types means no one can change a type they don't own.
 
 **Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They're erased at compile time, so they cost nothing at run time. The syntax is still open.
 *Why:* Game code mixes up degrees and radians, and world and screen space, constantly. F# has had units since 2009, and no mainstream language has followed.
 
 **They're called interfaces, not protocols.** `interface Shape:` declares one, and a type fits it by having its methods, with nothing to declare.
-*Why:* Go and TypeScript, the best-known languages where types fit by their methods alone, both say `interface`, and it's the word people and AI reach for first. Python's `typing.Protocol` is a library class most code never uses, and Swift's protocols need a declared conformance, which is the opposite of Fennec's rule. Python's informal sense, like the iterator protocol, is still fine for describing `def len` and `def []`.
+*Why:* Go and TypeScript, the best-known languages where types fit by their methods alone, both say `interface`, and it's the word people and AI reach for first. Python's `typing.Protocol` is a library class most code never uses, and Swift's protocols need a declared conformance, which is the opposite of Fennec's rule. Python's informal sense, like the iterator protocol, is still fine for describing `def Sized.len` and `def []`.
 
 **An enum fits an interface when every case does.** The compiler writes the `match`, so `total(targets)` works on a list of a `Target` enum whose cases are all `Damageable`.
 *Why:* Lists of mixed types stay static, since the `match` compiles to a jump table, with nothing extra to write.
@@ -209,6 +229,8 @@ Type arguments are inferred at calls; `largest[int](xs)` is allowed when they ca
 *Why:* Development builds compile once per generic function instead of once per type, which keeps them fast to build. Release builds get full speed, without paying in binary size for copies that are identical anyway. This replaces the earlier rule that generics are compiled per type in every build.
 
 **Mixed types are an `enum`; open sets are function values.** A list that holds different types is a list of an enum: each element is inline with a one-byte tag, and `match` compiles to a jump table. When other kits must be able to add kinds, as with plugins, a struct with function fields does it, and a call through a function value is the only run-time dispatch a program can ask for. Generic code shared in development builds is the compiler's choice, and release builds compile it away.
+
+**`Self` in an interface's method means the type that fits it.** `interface Signed: def abs(self) -> Self` says `abs` returns the same type it's called on: a `Money` for a `Money`.
 
 **`Eq`, `Hash`, `Ordered` and `Format` are built-in interfaces,** satisfied automatically wherever the automatic `==`, hashing, ordering and printing apply.
 

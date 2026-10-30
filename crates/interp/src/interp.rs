@@ -36,6 +36,8 @@ pub(crate) struct TypeInfo {
 /// A running Fennec program: its declarations, the current call's names, and its output.
 pub struct Interp<'out> {
     pub(crate) functions: HashMap<String, Rc<Callable>>,
+    /// The constants at the top level of the program, by name.
+    pub(crate) constants: HashMap<String, crate::constants::Constant>,
     pub(crate) types: HashMap<String, Rc<TypeInfo>>,
     /// Builtins that exist only once imported, by the name they're imported under.
     pub(crate) imports: HashMap<String, &'static str>,
@@ -77,6 +79,7 @@ impl<'out> Interp<'out> {
     pub fn with_output(out: Box<dyn Write + 'out>) -> Result<Self, Diagnostic> {
         let mut interp = Interp {
             functions: HashMap::new(),
+            constants: HashMap::new(),
             types: HashMap::new(),
             imports: HashMap::new(),
             prelude_imports: HashMap::new(),
@@ -161,6 +164,10 @@ impl<'out> Interp<'out> {
                     self.imports.extend(functions);
                 }
                 Item::Test(test) => self.tests.push(test.clone()),
+                Item::Const { name, value, .. } => {
+                    let waiting = crate::constants::Constant::Waiting(Rc::new(value.clone()));
+                    self.constants.insert(name.clone(), waiting);
+                }
                 Item::Interface(_) | Item::TypeAlias { .. } => {}
                 Item::Stmt(stmt) => statements.push(stmt.clone()),
             }
@@ -181,7 +188,10 @@ impl<'out> Interp<'out> {
     pub fn run_program(&mut self, module: &Module) -> Result<(), Diagnostic> {
         let statements = self.load(module)?;
         if let Some(stmt) = statements.first() {
-            return Err(Diagnostic::new("only declarations can go at the top level of a file", stmt.span));
+            return Err(Diagnostic::new(
+                "only declarations and constants can go at the top level of a file",
+                stmt.span,
+            ));
         }
         self.run_main()
     }

@@ -20,6 +20,14 @@ pub enum Item {
         ty: TypeExpr,
         span: Span,
     },
+    /// `NAME = value` at the top level of a file: a name that never changes, with its value
+    /// computed before the program runs. `NAME: type = value` writes its type.
+    Const {
+        name: String,
+        ty: Option<TypeExpr>,
+        value: Expr,
+        span: Span,
+    },
     Import(Import),
     Test(TestDef),
     /// A statement at the top level, which only the REPL accepts.

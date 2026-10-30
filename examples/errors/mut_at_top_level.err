@@ -1,0 +1,7 @@
+error: there's no `mut` at the top level of a file, so there's no state shared between functions
+ --> examples/errors/mut_at_top_level.fen:1:1
+  |
+1 | mut score = 0
+  | ^^^^^^^^^^^^^
+  |
+  = help: make it a constant by leaving out `mut`, or keep the state in `main` and pass it on

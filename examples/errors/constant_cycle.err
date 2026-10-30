@@ -1,0 +1,7 @@
+error: `WIDTH` depends on itself
+ --> examples/errors/constant_cycle.fen:1:1
+  |
+1 | WIDTH = HEIGHT * 2
+  | ^^^^^^^^^^^^^^^^^^
+  |
+  = help: a constant's value can't use the constant, even through other constants

@@ -155,11 +155,7 @@ struct Parser:
                     return self.declaration(word)?
             case _: pass
         stmt = self.stmt()?
-        fail Diagnostic(
-            message="only declarations can go at the top level of a file",
-            span=stmt.span,
-            help="put this code inside `def main(stdout: Stdout):`",
-        )
+        constant(stmt)?
 
     def is_declaration(self, word: str) -> bool:
         if word in ["struct", "enum", "error", "interface"]:
@@ -1042,3 +1038,24 @@ def fstring_parts(parts: list[FPart]) -> list[FStrPart]:
                     fail parser.unexpected("`}`")
                 parsed.append(FStrPart.Code(expr, spec))
     parsed
+
+## A statement at the top level of a file, which has to be a constant: `NAME = value`.
+def constant(stmt: Stmt) -> Item:
+    match stmt.kind:
+        case .Assign(target, op, value, declare_mut, ty):
+            if declare_mut:
+                fail Diagnostic(
+                    message="there's no `mut` at the top level of a file, so there's no state shared between functions",
+                    span=stmt.span,
+                    help="make it a constant by leaving out `mut`, or keep the state in `main` and pass it on",
+                )
+            if op is None:
+                match target.kind:
+                    case .Name(name): return .Const(name, ty, value, stmt.span)
+                    case _: fail Diagnostic(message="a constant is one name, like `LIMIT = 10`", span=target.span)
+        case _: pass
+    fail Diagnostic(
+        message="only declarations and constants can go at the top level of a file",
+        span=stmt.span,
+        help="put this code inside `def main(stdout: Stdout):`",
+    )

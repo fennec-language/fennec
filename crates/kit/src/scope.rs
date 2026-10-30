@@ -124,7 +124,7 @@ fn defined(item: &Item) -> Option<(&str, Span)> {
         Item::Function(def) => Some((&def.name, def.span)),
         Item::Struct(def) | Item::Enum(def) | Item::Error(def) => Some((&def.name, def.span)),
         Item::Interface(interface) => Some((&interface.name, interface.span)),
-        Item::TypeAlias { name, span, .. } => Some((name, *span)),
+        Item::TypeAlias { name, span, .. } | Item::Const { name, span, .. } => Some((name, *span)),
         Item::Import(_) | Item::Test(_) | Item::Stmt(_) => None,
     }
 }
@@ -188,6 +188,13 @@ impl Resolver<'_> {
                 }
             }
             Item::TypeAlias { ty, .. } => self.ty(ty),
+            Item::Const { ty, value, .. } => {
+                for collecting in [true, false] {
+                    self.start(collecting, &[]);
+                    self.optional_ty(ty.as_mut());
+                    self.expr(value);
+                }
+            }
             Item::Test(test) => {
                 for collecting in [true, false] {
                     self.start(collecting, &[]);

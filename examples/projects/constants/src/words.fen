@@ -1,0 +1,11 @@
+## The words Fennec keeps for itself. A constant is computed once, before the program runs.
+KEYWORDS = {"def", "if", "elif", "else", "for", "while", "return"}
+
+## The longest a name may be.
+LONGEST = 32
+
+## Each keyword's length, worked out from the set above.
+LENGTHS = {word: len(word) for word in KEYWORDS}
+
+def is_keyword(word: str) -> bool:
+    word in KEYWORDS

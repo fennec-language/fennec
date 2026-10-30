@@ -6,7 +6,8 @@ mod pattern;
 mod stmt;
 
 use crate::ast::{
-    Case, Field, FnDef, Generic, Import, Interface, Item, Module, Param, TestDef, TypeDef, TypeExpr,
+    Case, ExprKind, Field, FnDef, Generic, Import, Interface, Item, Module, Param, Stmt, StmtKind, TestDef,
+    TypeDef, TypeExpr,
 };
 use crate::diagnostic::Diagnostic;
 use crate::lexer::lex;
@@ -176,15 +177,10 @@ impl Parser {
                 break;
             }
             let item = self.item()?;
-            if let Item::Stmt(stmt) = &item
-                && !allow_statements
-            {
-                return Err(Diagnostic::new(
-                    "only declarations can go at the top level of a file",
-                    stmt.span,
-                )
-                .with_help("put this code inside `def main(stdout: Stdout):`"));
-            }
+            let item = match item {
+                Item::Stmt(stmt) if !allow_statements => constant(stmt)?,
+                item => item,
+            };
             items.push(item);
         }
         Ok(Module { items })
@@ -490,6 +486,24 @@ impl Parser {
         }
         let optional = self.eat_p(Punct::Question);
         Ok(TypeExpr { name, args, optional, span: start.to(self.prev_span()) })
+    }
+}
+
+/// A statement at the top level of a file, which has to be a constant: `NAME = value`.
+fn constant(stmt: Stmt) -> Result<Item, Diagnostic> {
+    let span = stmt.span;
+    match stmt.kind {
+        StmtKind::Assign { target, op: None, value, declare_mut: false, ty } => match target.kind {
+            ExprKind::Name(name) => Ok(Item::Const { name, ty, value, span }),
+            _ => Err(Diagnostic::new("a constant is one name, like `LIMIT = 10`", target.span)),
+        },
+        StmtKind::Assign { declare_mut: true, .. } => Err(Diagnostic::new(
+            "there's no `mut` at the top level of a file, so there's no state shared between functions",
+            span,
+        )
+        .with_help("make it a constant by leaving out `mut`, or keep the state in `main` and pass it on")),
+        _ => Err(Diagnostic::new("only declarations and constants can go at the top level of a file", span)
+            .with_help("put this code inside `def main(stdout: Stdout):`")),
     }
 }
 

@@ -1,0 +1,4 @@
+mut score = 0
+
+def main(stdout: Stdout):
+    stdout.print(score)

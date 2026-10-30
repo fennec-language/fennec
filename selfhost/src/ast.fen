@@ -13,6 +13,8 @@ enum Item:
     Error(type_def: TypeDef)
     Interface(interface: Interface)
     TypeAlias(name: str, ty: TypeExpr, span: Span)
+    ## `NAME = value` at the top level of a file: a name that never changes.
+    Const(name: str, ty: TypeExpr?, value: Expr, span: Span)
     Import(imported: Import)
     Test(test: TestDef)
 

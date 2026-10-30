@@ -42,6 +42,8 @@ pub(crate) enum Capability {
     Stdout,
     Fs,
     Clock,
+    Args,
+    Stdin,
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +191,8 @@ impl Value {
             Value::Capability(Capability::Stdout) => "Stdout".to_owned(),
             Value::Capability(Capability::Fs) => "Fs".to_owned(),
             Value::Capability(Capability::Clock) => "Clock".to_owned(),
+            Value::Capability(Capability::Args) => "Args".to_owned(),
+            Value::Capability(Capability::Stdin) => "Stdin".to_owned(),
         }
     }
 }

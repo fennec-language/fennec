@@ -59,6 +59,8 @@ pub struct Interp<'out> {
     step_limit: Option<u64>,
     files: bool,
     clock: bool,
+    /// The command-line arguments and standard input `main` can receive.
+    pub(crate) given: crate::inputs::Given,
 }
 
 /// Runs `module`'s `main`, writing what it prints to `out`.
@@ -91,6 +93,7 @@ impl<'out> Interp<'out> {
             step_limit: None,
             files: true,
             clock: true,
+            given: crate::inputs::Inputs::default().into(),
         };
         for source in fennec_syntax::prelude() {
             let module = fennec_syntax::parse_prelude(source)?;
@@ -224,6 +227,8 @@ impl<'out> Interp<'out> {
                     .with_help("where this runs, `main` can only receive `stdout: Stdout`"));
                 }
                 "Clock" if self.clock => Capability::Clock,
+                "Args" => Capability::Args,
+                "Stdin" => Capability::Stdin,
                 "Clock" => {
                     return Err(Diagnostic::new(
                         "`main` can't receive `Clock` here: there's no clock",
@@ -233,7 +238,9 @@ impl<'out> Interp<'out> {
                 }
                 other => {
                     return Err(Diagnostic::new(format!("`main` can't receive a `{other}`"), param.span)
-                        .with_help("`main` can receive `stdout: Stdout`, `fs: Fs` and `clock: Clock`"));
+                        .with_help(
+                            "`main` can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `args: Args` and `stdin: Stdin`",
+                        ));
                 }
             }));
         }

@@ -313,6 +313,26 @@ fn reading_numbers_from_text_can_fail_and_characters_have_codes() {
 }
 
 #[test]
+fn arguments_and_input_are_text() {
+    let program = "
+        def main(stdout: Stdout, args: Args, stdin: Stdin):
+            stdout.print([arg + 1 for arg in args], args[0] + 1, len(args) + 'a', args.program + 1)
+            stdout.print(stdin.lines()[0] + 1, args['a'])
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "can't use `+` on a str and an int @ arg + 1",
+            "can't use `+` on a str and an int @ args[0] + 1",
+            "can't use `+` on an int and a str @ len(args) + \"a\"",
+            "can't use `+` on a str and an int @ args.program + 1",
+            "can't use `+` on a str and an int @ stdin.lines()[0] + 1",
+            "an index must be an int, not a str @ \"a\"",
+        ]
+    );
+}
+
+#[test]
 fn a_regex_search_might_find_nothing() {
     let program = "stdout.print(Regex(r'a').search('b').text)";
     assert_eq!(in_main_after(IMPORTS, program), ["this might be None @ Regex(r\"a\").search(\"b\").text"]);

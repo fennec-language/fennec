@@ -39,6 +39,7 @@ fn main() -> ExitCode {
         ["fmt", rest @ ..] => fmt::fmt(rest),
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
+        ["dev", "check", path] => dev(check_dump, path),
         ["dev", "changes"] => changes::changes("."),
         ["dev", "changes", path] => changes::changes(path),
         ["--version" | "-V"] => {
@@ -63,8 +64,8 @@ fn on_big_stack(command: fn(&str) -> ExitCode, path: &str) -> ExitCode {
     }
 }
 
-/// `fennec dev tokens <file>` and `fennec dev tree <file>`: hidden commands that print a dump
-/// of the front end's work, for comparing with the self-hosted front end in `selfhost/`.
+/// `fennec dev tokens|tree|check <file>`: hidden commands that print a dump of the front end's
+/// work, for comparing with the self-hosted front end in `selfhost/`.
 fn dev(dump: fn(&str) -> String, path: &str) -> ExitCode {
     match std::fs::read_to_string(path) {
         Ok(source) => {
@@ -75,6 +76,18 @@ fn dev(dump: fn(&str) -> String, path: &str) -> ExitCode {
             eprintln!("error: couldn't read {path}: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// What the type checker finds in a file, in the dumps' text: every diagnostic, or the
+/// parse error that stopped it first. Nothing when the file checks.
+fn check_dump(source: &str) -> String {
+    match fennec_syntax::parse(source) {
+        Ok(module) => match fennec_check::check(&module) {
+            Ok(_) => String::new(),
+            Err(diagnostics) => diagnostics.iter().map(fennec_syntax::dump::error).collect(),
+        },
+        Err(diagnostic) => fennec_syntax::dump::error(&diagnostic),
     }
 }
 

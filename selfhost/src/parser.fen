@@ -5,7 +5,7 @@
 from span import Span, Diagnostic
 from token import FPart, Tok, Token, is_reserved
 from lexer import byte_length, lex
-from ast import Module, Item, FnDef, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
 
 ## Parses a whole `.fen` file, where only declarations may sit at the top level.
 def parse(source: str) -> Module:
@@ -77,6 +77,11 @@ struct Parser:
     def eat_punct(mut self, text: str) -> bool:
         self.eat(.Punct(text))
 
+    ## Skips `pub` before a declaration or field. It matters only between kits.
+    def eat_pub(mut self):
+        if self.at_soft("pub") and (is_name(self.peek_at(1)) or is_keyword_tok(self.peek_at(1))):
+            self.advance()
+
     def eat_keyword(mut self, word: str) -> bool:
         self.eat(.Keyword(word))
 
@@ -133,14 +138,16 @@ struct Parser:
         Module(items=items)
 
     def item(mut self) -> Item:
-        # `export` and `noalloc` are accepted; visibility and allocation checks come with the type checker.
+        # `pub`, `export` and `noalloc` are accepted. Inside a kit everything is visible, and
+        # allocation checks come later.
+        self.eat_pub()
         self.eat_keyword("export")
         if self.eat_keyword("noalloc") and not self.at_keyword("def"):
             fail Diagnostic(message="`noalloc` goes right before `def`", span=self.span())
         match self.peek():
             case .Keyword(word):
                 if word == "def":
-                    return .Function(self.function()?)
+                    return Item.Function(self.function()?)
                 if word == "from" or word == "import":
                     return .Import(self.import_names()?)
             case .Name(word):
@@ -181,12 +188,15 @@ struct Parser:
 
     def type_def(mut self, start: Span, is_enum: bool) -> TypeDef:
         name = self.name("a type name")?
-        self.generic_params()?
+        generics = self.generic_params()?
         span = start.to(self.prev_span())
         self.expect_punct(":")?
         self.expect_block_start()?
-        mut type_def = TypeDef(name=name, span=span)
+        mut type_def = TypeDef(name=name, generics=generics, span=span)
         while not self.eat(.Dedent) and not self.at(.Eof):
+            # Enum cases come with their enum and have no `pub` of their own.
+            if not is_enum or self.peek_at(1) == .Keyword("def"):
+                self.eat_pub()
             if self.at_keyword("def"):
                 type_def.methods.append(self.function()?)
             elif self.eat_keyword("pass"):
@@ -280,20 +290,24 @@ struct Parser:
         self.end_line()?
         Import(module=module, names=names, span=span)
 
-    ## `[T, U: Shape]` after a function or type name. Generic parameters are checked by the
-    ## type checker, so the parser only needs to skip them.
-    def generic_params(mut self):
+    ## `[T, U: Shape & Eq]` after a function or type name.
+    def generic_params(mut self) -> list[Generic]:
+        mut generics = []
         if not self.eat_punct("["):
-            return
+            return generics
         while True:
-            self.name("a type parameter")?
+            start = self.span()
+            name = self.name("a type parameter")?
+            mut bounds = []
             if self.eat_punct(":"):
-                self.type_expr()?
+                bounds.append(self.type_expr()?)
                 while self.eat_punct("&"):
-                    self.type_expr()?
+                    bounds.append(self.type_expr()?)
+            generics.append(Generic(name=name, bounds=bounds, span=start.to(self.prev_span())))
             if not self.eat_punct(","):
                 break
         self.expect_punct("]")?
+        generics
 
     def function(mut self) -> FnDef:
         mut function = self.signature()?
@@ -320,7 +334,7 @@ struct Parser:
         self.advance()
         if name == "[]" and self.eat_punct("="):
             name = "[]="
-        self.generic_params()?
+        generics = self.generic_params()?
         self.expect_punct("(")?
         mut params = []
         while not self.at_punct(")"):
@@ -331,7 +345,7 @@ struct Parser:
         mut ret = None
         if self.eat_punct("->"):
             ret = self.type_expr()?
-        FnDef(name=name, params=params, ret=ret, body=[], span=start.to(self.prev_span()))
+        FnDef(name=name, generics=generics, params=params, ret=ret, body=[], span=start.to(self.prev_span()))
 
     def param(mut self) -> Param:
         start = self.span()
@@ -366,7 +380,10 @@ struct Parser:
                 return TypeExpr(name="->", args=args, optional=False, span=start.to(self.prev_span()))
             name = "tuple"
         else:
+            # `physics.Body`, a type from a module imported whole.
             name = self.name("a type")?
+            while self.eat_punct("."):
+                name += "." + self.name("a type")?
         if self.eat_punct("["):
             args.append(self.type_expr()?)
             while self.eat_punct(","):
@@ -765,8 +782,8 @@ struct Parser:
     ## `True`, `False` or `None`, after the keyword. Any other keyword can't start a value.
     def keyword_atom(mut self, word: str, span: Span) -> ExprKind:
         match word:
-            case "True": .Bool(True)
-            case "False": .Bool(False)
+            case "True": ExprKind.Bool(True)
+            case "False": ExprKind.Bool(False)
             case "None": .Nothing
             case _:
                 if is_reserved(word):
@@ -860,6 +877,12 @@ struct Parser:
             case .Name(name):
                 if name == "_":
                     return .Wildcard
+                if self.at_punct("."):
+                    # `physics.Hit(amount)`: a case from a module imported whole.
+                    mut dotted = name
+                    while self.eat_punct("."):
+                        dotted += "." + self.name("a name")?
+                    return Pattern.Variant(dotted, False, self.pattern_args()?)
                 if name[0] >= "A" and name[0] <= "Z":
                     return Pattern.Variant(name, False, self.pattern_args()?)
                 .Bind(name)
@@ -868,7 +891,7 @@ struct Parser:
             case .Str(text): literal(ExprKind.Str(text), token.span)
             case .Keyword(word):
                 if word == "True" or word == "False":
-                    return literal(.Bool(word == "True"), token.span)
+                    return literal(ExprKind.Bool(word == "True"), token.span)
                 if word == "None":
                     return literal(.Nothing, token.span)
                 self.pos -= 1
@@ -912,6 +935,11 @@ struct Parser:
 def is_name(tok: Tok) -> bool:
     match tok:
         case .Name(_): True
+        case _: False
+
+def is_keyword_tok(tok: Tok) -> bool:
+    match tok:
+        case .Keyword(_): True
         case _: False
 
 def is_str(tok: Tok) -> bool:

@@ -70,6 +70,19 @@ fn dev_reports_a_missing_file() {
 }
 
 #[test]
+fn dev_check_dumps_the_checkers_diagnostics() {
+    let clean = fennec(&["dev", "check", "examples/hello.fen"], "").unwrap();
+    assert!(clean.status.success());
+    assert_eq!(text(&clean.stdout), "");
+    let several = fennec(&["dev", "check", "examples/errors/several.fen"], "").unwrap();
+    let dump = text(&several.stdout);
+    assert!(dump.starts_with("error 82..94 `enemy` isn't mut\n"), "{dump}");
+    assert_eq!(dump.lines().filter(|line| line.starts_with("error ")).count(), 3);
+    let broken = fennec(&["dev", "check", "examples/errors/tabs.fen"], "").unwrap();
+    assert!(text(&broken.stdout).starts_with("error 26..27 tabs aren't allowed\n"));
+}
+
+#[test]
 fn test_lists_each_test_and_a_summary() {
     let output = fennec(&["test", "examples/testing.fen"], "").unwrap();
     assert!(output.status.success());

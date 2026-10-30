@@ -1,0 +1,238 @@
+## A program's declarations: its functions, methods, types and aliases, together with the
+## standard library's. Function bodies are looked at later, one function at a time.
+## Mirrors `crates/check/src/program.rs`.
+
+from span import Span, Diagnostic
+from ast import Module, Item, FnDef, Generic, TypeDef, TypeExpr, Interface, Import, TestDef
+from check.types import Type, optional_type
+
+enum TypeKind:
+    StructKind
+    EnumKind
+    ErrorKind
+
+struct TypeInfo:
+    kind: TypeKind
+    type_def: TypeDef
+    ## Whether it comes from the standard library rather than the program.
+    prelude: bool
+
+struct FnEntry:
+    function: FnDef
+    ## The type a method belongs to.
+    owner: str?
+    prelude: bool
+    ## The type parameters of the functions a nested function is defined in.
+    inherited: list[Generic] = []
+
+## How deeply type aliases may refer to each other, which also stops an alias naming itself.
+def alias_depth() -> int:
+    16
+
+## The interfaces every type that can fits automatically.
+def built_in_interfaces() -> list[str]:
+    ["Eq", "Hashable", "Ordered", "Format"]
+
+def built_in_types() -> list[str]:
+    [
+        "int",
+        "float",
+        "bool",
+        "str",
+        "None",
+        "nothing",
+        "list",
+        "SoaList",
+        "set",
+        "dict",
+        "tuple",
+        "Id",
+        "IdMap",
+        "Stdout",
+        "Fs",
+        "Clock",
+        "Result",
+        "->",
+    ]
+
+## Every declaration in a program, keyed the way the signature table is: `name` for a
+## function, `Type.name` for a method.
+struct Program:
+    types: dict[str, TypeInfo] = {}
+    functions: dict[str, FnEntry] = {}
+    tests: list[TestDef] = []
+    interfaces: dict[str, Interface] = {}
+    ## Imported standard library modules, by the name they're used under: `json` after
+    ## `from std import json`, `std.json` after `import std.json`.
+    modules: list[str] = []
+    aliases: dict[str, TypeExpr] = {}
+
+    def add(mut self, module: Module, prelude: bool):
+        for item in module.items:
+            match item:
+                case .Function(function):
+                    self.functions[function.name] = FnEntry(
+                        function=function,
+                        owner=None,
+                        prelude=prelude,
+                    )
+                case .Struct(type_def): self.add_type(type_def, .StructKind, prelude)
+                case .Enum(type_def): self.add_type(type_def, .EnumKind, prelude)
+                case .Error(type_def): self.add_type(type_def, .ErrorKind, prelude)
+                case .TypeAlias(name, ty, _): self.aliases[name] = ty
+                case .Test(test): self.tests.append(test)
+                case .Interface(interface): self.interfaces[interface.name] = interface
+                case .Import(imported):
+                    if not prelude:
+                        self.add_import(imported)
+
+    def add_import(mut self, imported: Import):
+        if len(imported.module) == 1 and imported.module[0] == "std":
+            self.modules += imported.names
+        elif len(imported.module) == 2 and imported.module[0] == "std" and len(imported.names) == 0:
+            self.modules.append(".".join(imported.module))
+
+    def add_type(mut self, type_def: TypeDef, kind: TypeKind, prelude: bool):
+        for method in type_def.methods:
+            entry = FnEntry(function=method, owner=type_def.name, prelude=prelude)
+            self.functions[f"{type_def.name}.{method.name}"] = entry
+        self.types[type_def.name] = TypeInfo(kind=kind, type_def=type_def, prelude=prelude)
+
+    ## Whether a name is an interface: one the program declares, or a built-in one.
+    def is_interface(self, name: str) -> bool:
+        name in self.interfaces or name in built_in_interfaces()
+
+    ## A type's type parameters, in order: `T` for `Deque[T]`.
+    def type_params(self, name: str) -> list[str]:
+        if name not in self.types:
+            return []
+        [generic.name for generic in self.types[name].type_def.generics]
+
+    ## The type parameters in scope in a function: its type's, then the functions it's
+    ## defined in, then its own.
+    def generics_of(self, entry: FnEntry) -> list[Generic]:
+        mut generics = []
+        owner = entry.owner
+        if owner is not None and owner in self.types:
+            generics += self.types[owner].type_def.generics
+        generics + entry.inherited + entry.function.generics
+
+    ## The type a written type means, with these type parameters in scope.
+    def resolve_in(self, written: TypeExpr, generics: list[str]) -> Type:
+        self.resolve_within(written, generics, alias_depth())?
+
+    def resolve_within(self, written: TypeExpr, generics: list[str], depth: int) -> Type:
+        name = self.through_module(written.name)
+        if self.is_interface(name):
+            fail interface_as_type(name, written.span)
+        builtin = name in built_in_types()
+        if not builtin and name not in generics and name not in self.types and name not in self.aliases:
+            fail unknown_type(name, written.span)
+        wanted = self.type_arg_count(name, len(written.args))
+        if len(written.args) != wanted:
+            fail wrong_type_args(written, wanted)
+        mut args = []
+        for arg in written.args:
+            args.append(self.resolve_within(arg, generics, depth)?)
+        mut ty = Type.Unknown
+        if builtin:
+            ty = builtin_type(name, args)
+        elif name in generics:
+            ty = Type.Param(name)
+        elif name in self.types and len(args) > 0:
+            ty = Type.Generic(name, args)
+        elif name in self.types:
+            ty = Type.Named(name)
+        else:
+            if depth == 0:
+                fail Diagnostic(
+                    message=f"the type alias `{name}` refers to itself",
+                    span=written.span,
+                )
+            ty = self.resolve_within(self.aliases[name], generics, depth - 1)?
+        optional_type(ty) if written.optional else ty
+
+    ## `Deque` for `std.collections.Deque` or `collections.Deque`, through an imported module.
+    def through_module(self, name: str) -> str:
+        parts = name.split(".")
+        if len(parts) < 2:
+            return name
+        member = parts[-1]
+        path = ".".join(parts[:-1])
+        if path in self.modules and member in self.types:
+            return member
+        name
+
+    ## How many types a type takes in brackets. A tuple takes however many it's given, and
+    ## a function type at least its return type.
+    def type_arg_count(self, name: str, given: int) -> int:
+        if name == "->":
+            return max(given, 1)
+        if name in ["list", "set", "SoaList", "Id", "IdMap"]:
+            return 1
+        if name in ["dict", "Result"]:
+            return 2
+        if name == "tuple":
+            return given
+        len(self.type_params(name))
+
+def builtin_type(name: str, args: list[Type]) -> Type:
+    match name:
+        case "int": Type.Int
+        case "float": Type.Float
+        case "bool": Type.Bool
+        case "str": Type.Str
+        case "None": Type.NoneType
+        case "nothing": Type.Unit
+        case "list": Type.List(args[0])
+        case "SoaList": Type.List(args[0])
+        case "set": Type.Set(args[0])
+        case "dict": Type.Dict(args[0], args[1])
+        case "Result": Type.Result(args[0], args[1])
+        case "tuple": Type.Tuple(args)
+        case "->": Type.Arrow(args[:-1], args[-1])
+        case "Id": Type.Id(args[0])
+        case "IdMap": Type.IdMap(args[0])
+        case _: Type.Named(name)
+
+## An interface written where a type goes, as in `list[Shape]`.
+def interface_as_type(name: str, span: Span) -> Diagnostic:
+    Diagnostic(
+        message=f"`{name}` is an interface, not a type",
+        span=span,
+        help=f"take a type parameter that fits it, like `def f[T: {name}](items: list[T])`, or use an enum for a mix of types",
+    )
+
+def wrong_type_args(written: TypeExpr, wanted: int) -> Diagnostic:
+    name = written.name
+    mut example = name
+    if name == "dict":
+        example = "dict[str, int]"
+    elif name == "Result":
+        example = "Result[int, IoError]"
+    elif name in ["list", "set", "SoaList"]:
+        example = f"{name}[int]"
+    elif name in ["Id", "IdMap"]:
+        example = f"{name}[Enemy]"
+    mut message = f"`{name}` doesn't take types in brackets"
+    if wanted == 1:
+        message = f"`{name}` needs 1 type in brackets"
+    elif wanted > 1:
+        message = f"`{name}` needs {wanted} types in brackets"
+    Diagnostic(message=message, span=written.span, help=f"write it like `{example}`")
+
+def unknown_type(name: str, span: Span) -> Diagnostic:
+    mut help = f"declare it, like `struct {name}:`, or check the spelling"
+    if name in ["f32", "f64", "double"]:
+        help = "write `float`"
+    elif name in ["i32", "i64", "usize", "long"]:
+        help = "write `int`"
+    elif name in ["string", "String"]:
+        help = "write `str`"
+    elif name in ["boolean", "Bool"]:
+        help = "write `bool`"
+    elif name in ["List", "Dict", "Set"]:
+        help = f"write `{name.lower()}`"
+    elif name == "Optional":
+        help = "write `?` after the type, like `Enemy?`"
+    Diagnostic(message=f"`{name}` isn't a type", span=span, help=help)

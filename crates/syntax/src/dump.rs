@@ -37,7 +37,7 @@ pub fn tree(source: &str) -> String {
 }
 
 /// A diagnostic as the dumps show it: its span and message, then its help on a second line.
-pub(crate) fn error(diagnostic: &Diagnostic) -> String {
+pub fn error(diagnostic: &Diagnostic) -> String {
     let mut text =
         format!("error {}..{} {}\n", diagnostic.span.start, diagnostic.span.end, diagnostic.message);
     if let Some(help) = &diagnostic.help {

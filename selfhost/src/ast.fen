@@ -18,9 +18,17 @@ enum Item:
 
 struct FnDef:
     name: str
+    ## Type parameters, like `T` in `def first[T](items: list[T]) -> T`.
+    generics: list[Generic]
     params: list[Param]
     ret: TypeExpr?
     body: list[Stmt]
+    span: Span
+
+## A type parameter, with the interfaces its types have to fit: `T`, or `T: Shape & Eq`.
+struct Generic:
+    name: str
+    bounds: list[TypeExpr]
     span: Span
 
 struct Param:
@@ -41,6 +49,8 @@ struct TypeExpr:
 ## A struct, an error, or an enum. Enums have cases; structs and errors have fields.
 struct TypeDef:
     name: str
+    ## Type parameters, like `T` in `struct Deque[T]:`.
+    generics: list[Generic]
     fields: list[Field] = []
     cases: list[Case] = []
     methods: list[FnDef] = []

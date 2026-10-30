@@ -5,8 +5,8 @@ use std::fmt::Write as _;
 
 use super::{float, quoted};
 use crate::ast::{
-    Arg, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Item, MatchArm, Module, Param, Pattern,
-    Stmt, StmtKind, TypeDef, TypeExpr, UnaryOp,
+    Arg, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Generic, Item, MatchArm, Module, Param,
+    Pattern, Stmt, StmtKind, TypeDef, TypeExpr, UnaryOp,
 };
 use crate::span::Span;
 
@@ -81,6 +81,7 @@ impl Tree {
 
     fn function(&mut self, function: &FnDef) {
         self.node(&format!("def {}", function.name), Some(function.span), |tree| {
+            tree.generics(&function.generics);
             for param in &function.params {
                 tree.param(param);
             }
@@ -89,6 +90,17 @@ impl Tree {
             }
             tree.stmts(&function.body);
         });
+    }
+
+    /// Type parameters, each with the interfaces it's bound to.
+    fn generics(&mut self, generics: &[Generic]) {
+        for generic in generics {
+            self.node(&format!("generic {}", generic.name), Some(generic.span), |tree| {
+                for bound in &generic.bounds {
+                    tree.type_expr(bound);
+                }
+            });
+        }
     }
 
     fn param(&mut self, param: &Param) {
@@ -116,6 +128,7 @@ impl Tree {
 
     fn type_def(&mut self, kind: &str, def: &TypeDef) {
         self.node(&format!("{kind} {}", def.name), Some(def.span), |tree| {
+            tree.generics(&def.generics);
             for field in &def.fields {
                 tree.field(field);
             }

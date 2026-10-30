@@ -5,8 +5,8 @@ import { defineConfig } from 'astro/config';
 const fennec = JSON.parse(readFileSync(new URL('./src/fennec.tmLanguage.json', import.meta.url), 'utf8'));
 
 export default defineConfig({
-  site: 'https://seashell86.github.io',
-  base: '/fennec/',
+  site: 'https://fennec-lang.dev',
+  base: '/',
   trailingSlash: 'always',
   markdown: {
     shikiConfig: {

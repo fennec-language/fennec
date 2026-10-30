@@ -8,7 +8,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 
 <p class="lede">Fennec comes with batteries included, like Python. Where Python has a module for something, Fennec's usually has the same name.</p>
 
-> **Planned.** The standard library grows alongside the compiler. See the [roadmap](/fennec/roadmap/) for what comes when.
+> **Planned.** The standard library grows alongside the compiler. See the [roadmap](/roadmap/) for what comes when.
 
 ## What's in it
 

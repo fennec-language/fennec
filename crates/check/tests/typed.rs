@@ -108,7 +108,20 @@ fn values_in(stmts: &[Stmt], found: &mut Vec<Expr>) {
 /// Whether an expression names a type, like `Vec3` in `Vec3.zero()`, or a module, like
 /// `json` in `json.dumps(...)` or `std.json` in `std.json.dumps(...)`.
 fn is_type_name(expr: &Expr) -> bool {
-    const MODULES: [&str; 9] = ["std", "json", "toml", "path", "collections", "random", "time", "re", "math"];
+    const MODULES: [&str; 12] = [
+        "std",
+        "json",
+        "toml",
+        "path",
+        "collections",
+        "random",
+        "time",
+        "re",
+        "math",
+        "hash",
+        "game",
+        "layout",
+    ];
     match &expr.kind {
         ExprKind::Name(name) => name.starts_with(char::is_uppercase) || MODULES.contains(&name.as_str()),
         ExprKind::Attr { object, .. } => is_type_name(object),

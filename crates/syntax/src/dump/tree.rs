@@ -300,7 +300,7 @@ impl Tree {
                 self.node(&format!("binary {}", op.symbol()), span, |tree| {
                     tree.expr(lhs);
                     tree.expr(rhs);
-                })
+                });
             }
             ExprKind::Cond { then, cond, otherwise } => self.node("cond", span, |tree| {
                 tree.expr(then);

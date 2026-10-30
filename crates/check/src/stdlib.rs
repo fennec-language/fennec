@@ -47,6 +47,7 @@ macro_rules! modules {
 }
 
 modules! {
+    hash,
     json,
     math,
     random,

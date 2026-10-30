@@ -216,6 +216,7 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 name = "fennec"
 version = "0.0.1"
 dependencies = [
+ "fennec-build",
  "fennec-check",
  "fennec-fmt",
  "fennec-interp",
@@ -227,6 +228,14 @@ dependencies = [
 [[package]]
 name = "fennec-blake3"
 version = "0.0.1"
+
+[[package]]
+name = "fennec-build"
+version = "0.0.1"
+dependencies = [
+ "fennec-blake3",
+ "fennec-syntax",
+]
 
 [[package]]
 name = "fennec-check"

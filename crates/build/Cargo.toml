@@ -1,0 +1,22 @@
+[package]
+name = "fennec-build"
+description = "Fennec's build engine: content hashes of files and definitions, and what changed between runs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+# The tests are one binary, tests/main.rs, not one per file.
+autotests = false
+
+[[test]]
+name = "build"
+path = "tests/main.rs"
+
+[dependencies]
+fennec-blake3.workspace = true
+fennec-syntax.workspace = true
+
+[lints]
+workspace = true

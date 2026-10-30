@@ -95,6 +95,7 @@ fn compile_and_run(module: &Module) -> Result<(Vec<u8>, Result<Report, JitError>
         .collect();
     let program =
         types::Program::from_module(module, &prelude, &signatures).map_err(JitError::Unsupported)?;
+
     let (entry, tables, compilation) =
         lower::compile(&program, &signatures, stack_limit).map_err(JitError::Unsupported)?;
     let result = runtime::execute(&entry, module, tables).map_err(JitError::Failed)?;

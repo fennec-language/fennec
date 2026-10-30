@@ -119,7 +119,6 @@ impl<'m> Program<'m> {
                 layouts.add_defaults(def);
             }
         }
-        let used = crate::reach::used_types(module, prelude);
         let mut functions = Vec::new();
         let mut excluded = Vec::new();
         let mut main_span = None;
@@ -144,9 +143,6 @@ impl<'m> Program<'m> {
                     add(def, def.name.clone(), from_prelude);
                 }
                 Item::Struct(ty) | Item::Enum(ty) | Item::Error(ty) => {
-                    if from_prelude && !used.contains(&ty.name) {
-                        continue;
-                    }
                     for method in &ty.methods {
                         add(method, format!("{}.{}", ty.name, method.name), from_prelude);
                     }
@@ -157,6 +153,11 @@ impl<'m> Program<'m> {
         }
         let main_span = main_span
             .ok_or_else(|| Diagnostic::new("this program has no `main` function", Span::default()))?;
+        // Compile only what a run can reach from `main`.
+        let modules: Vec<&Module> = prelude.iter().chain(std::iter::once(module)).collect();
+        let (reached, mentions) = crate::reach::reachable(&functions, &modules);
+        functions.retain(|function| reached.contains(&function.key));
+        excluded.retain(|key| crate::reach::is_mentioned(key, &mentions));
         if !functions.iter().any(|function| function.def.name == "main") {
             return Err(unsupported("this `main`", main_span));
         }

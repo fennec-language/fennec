@@ -170,17 +170,16 @@ impl Lowerer<'_, '_> {
     /// The compiled methods with this name that take `self` and `count` other arguments,
     /// with the type each belongs to.
     fn methods_named(&self, method: &str, count: usize) -> Vec<(String, String)> {
-        let mut found: Vec<(String, String)> = self
-            .shared
-            .compiled
+        let candidates = self.shared.methods.get(method).map_or(&[][..], Vec::as_slice);
+        let mut found: Vec<(String, String)> = candidates
             .iter()
-            .filter(|(key, compiled)| {
-                compiled.takes_self
-                    && compiled.params.len() == count + 1
-                    && compiled.params.iter().skip(1).all(|(_, _, is_mut)| !is_mut)
-                    && key.rsplit_once('.').is_some_and(|(_, name)| name == method)
+            .filter(|(_, key)| {
+                self.shared.compiled.get(key).is_some_and(|compiled| {
+                    compiled.params.len() == count + 1
+                        && compiled.params.iter().skip(1).all(|(_, _, is_mut)| !is_mut)
+                })
             })
-            .filter_map(|(key, _)| key.rsplit_once('.').map(|(owner, _)| (owner.to_owned(), key.clone())))
+            .cloned()
             .collect();
         found.sort();
         found

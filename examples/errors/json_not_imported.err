@@ -1,0 +1,7 @@
+error: `dumps` doesn't exist
+ --> examples/errors/json_not_imported.fen:2:18
+  |
+2 |     stdout.print(dumps([1, 2, 3]))
+  |                  ^^^^^
+  |
+  = help: import it from std.json or std.toml, like `from std.json import dumps`

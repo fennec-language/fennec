@@ -380,14 +380,21 @@ pub mod temps {
         })
     }
 
-    /// Fails the program the way the interpreter does when `main` gives back a failure.
+    /// Fails the program the way the interpreter does when `main` gives back a failure. The
+    /// result is the last temporary, so it's dropped, leaving none behind.
     pub extern "C" fn main_result(value: i64, start: i64, end: i64) {
-        attempt(|state: &mut State| match state.temp(value) {
-            Value::Err(error) => Err(Diagnostic::new(
-                format!("`main` failed: {}", crate::format::repr(&error)),
-                span(start, end),
-            )),
-            _ => Ok(()),
+        attempt(|state: &mut State| {
+            let result = state.take(value);
+            if let Ok(at) = usize::try_from(value) {
+                state.temps.truncate(at);
+            }
+            match result {
+                Value::Err(error) => Err(Diagnostic::new(
+                    format!("`main` failed: {}", crate::format::repr(&error)),
+                    span(start, end),
+                )),
+                _ => Ok(()),
+            }
         });
     }
 

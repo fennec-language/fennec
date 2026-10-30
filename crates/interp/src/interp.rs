@@ -37,6 +37,10 @@ pub(crate) struct TypeInfo {
 pub struct Interp<'out> {
     pub(crate) functions: HashMap<String, Rc<Callable>>,
     pub(crate) types: HashMap<String, Rc<TypeInfo>>,
+    /// Builtins that exist only once imported, by the name they're imported under.
+    pub(crate) imports: HashMap<String, &'static str>,
+    /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
+    pub(crate) modules: HashMap<String, &'static str>,
     pub(crate) tests: Vec<TestDef>,
     pub(crate) frame: Frame,
     pub(crate) depth: usize,
@@ -67,6 +71,8 @@ impl<'out> Interp<'out> {
         let mut interp = Interp {
             functions: HashMap::new(),
             types: HashMap::new(),
+            imports: HashMap::new(),
+            modules: HashMap::new(),
             tests: Vec::new(),
             frame: Frame::new(),
             depth: 0,
@@ -131,7 +137,11 @@ impl<'out> Interp<'out> {
                 Item::Struct(def) => self.register_type(def, TypeKind::Struct),
                 Item::Enum(def) => self.register_type(def, TypeKind::Enum),
                 Item::Error(def) => self.register_type(def, TypeKind::Error),
-                Item::Import(import) => prelude::check_import(import)?,
+                Item::Import(import) => {
+                    let (modules, functions) = prelude::check_import(import)?;
+                    self.modules.extend(modules);
+                    self.imports.extend(functions);
+                }
                 Item::Test(test) => self.tests.push(test.clone()),
                 Item::Interface(_) | Item::TypeAlias { .. } => {}
                 Item::Stmt(stmt) => statements.push(stmt.clone()),

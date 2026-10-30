@@ -63,6 +63,7 @@ fn work_dir(test: &str) -> std::io::Result<PathBuf> {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "`fennec build` doesn't link executables on Windows yet")]
 fn examples_build_to_executables_that_print_their_expected_output() {
     assert!(ensure_runtime().unwrap(), "couldn't build the runtime library");
     let work = work_dir("examples").unwrap();
@@ -78,6 +79,7 @@ fn examples_build_to_executables_that_print_their_expected_output() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "`fennec build` doesn't link executables on Windows yet")]
 fn failing_examples_fail_the_same_way_as_executables() {
     assert!(ensure_runtime().unwrap(), "couldn't build the runtime library");
     let work = work_dir("errors").unwrap();

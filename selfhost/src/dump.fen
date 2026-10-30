@@ -404,6 +404,7 @@ struct Tree:
     def write_arm(mut self, arm: MatchArm):
         self.open("arm", arm.span)
         self.write_pattern(arm.pattern)
+        self.labelled("guard", arm.guard)
         self.write_stmts(arm.body)
         self.close()
 
@@ -414,6 +415,7 @@ struct Tree:
             case .Literal(expr): self.labelled("pattern literal", expr)
             case .Variant(name, dotted, args): self.write_patterns("pattern " + ("." if dotted else "") + name, args)
             case .Tuple(items): self.write_patterns("pattern tuple", items)
+            case .Or(alternatives): self.write_patterns("pattern or", alternatives)
 
     def write_patterns(mut self, label: str, patterns: list[Pattern]):
         self.open(label, None)

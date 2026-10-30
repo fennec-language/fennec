@@ -268,7 +268,7 @@ total = sum(hit.damage for hit in hits)                    # no allocation
 strongest = max(alive, key=enemy => enemy.health)
 ```
 
-- Python's global functions come along: `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`, `range`. A length is a method: `items.len()`.
+- Python's looping builtins come along: `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`, `range`. Questions about one value are methods: `xs.len()`, `x.abs()`.
 - A `dict` keeps insertion order, so iterating it is always deterministic.
 - Changing a collection while looping over it is a compile error. Use `remove_where`, or collect what to change first:
 

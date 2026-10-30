@@ -26,13 +26,30 @@ extend Parser:
                 fail self.unexpected("`case`")
             arm_start = self.advance().span
             pattern = self.pattern()?
+            guard = self.guard()?
             self.expect_punct(":")?
             body = self.block()?
-            arms.append(MatchArm(pattern=pattern, body=body, span=arm_start.to(self.prev_span())))
+            arms.append(MatchArm(pattern=pattern, guard=guard, body=body, span=arm_start.to(self.prev_span())))
         self.block_ended = True
         Expr(kind=.Match(subject, arms), span=start.to(self.prev_span()))
 
+    ## `if condition` after a `case`'s pattern, if there is one.
+    def guard(mut self) -> Expr?:
+        if self.eat_keyword("if"):
+            return self.expr()?
+        None
+
+    ## A pattern, or several separated by `|`, any of which matches.
     def pattern(mut self) -> Pattern:
+        first = self.one_pattern()?
+        if not self.at_punct("|"):
+            return first
+        mut alternatives = [first]
+        while self.eat_punct("|"):
+            alternatives.append(self.one_pattern()?)
+        .Or(alternatives)
+
+    def one_pattern(mut self) -> Pattern:
         token = self.advance()
         match token.tok:
             case .Name(name):

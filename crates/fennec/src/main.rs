@@ -4,6 +4,7 @@
 
 mod aot;
 mod changes;
+mod daemon;
 mod fmt;
 mod repl;
 mod run;
@@ -12,13 +13,14 @@ mod test;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
-  fennec run [path]         run a kit's main, or a single .fen file's
+  fennec run [path] [args]  run a kit's main, or a single .fen file's, passing it args
   fennec run --jit [path]   run it as native code (still in progress)
   fennec build [path] [-o out]  compile it to a standalone executable
   fennec test [path]        run a kit's tests, or a single file's
   fennec new <name>         start a kit in a new folder
   fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
   fennec fmt --check        list the files that aren't formatted, and fail if any aren't
+  fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
   fennec repl               try Fennec interactively
   fennec --version          show the version
 
@@ -30,10 +32,10 @@ const STACK_BYTES: usize = 512 * 1024 * 1024;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["run"] => on_big_stack(run::run, "."),
-        ["run", "--jit"] => on_big_stack(run::run_jit, "."),
-        ["run", "--jit", path] => on_big_stack(run::run_jit, path),
-        ["run", path] => on_big_stack(run::run, path),
+        ["run"] => run(false, ".", &[]),
+        ["run", "--jit"] => run(true, ".", &[]),
+        ["run", "--jit", path, arguments @ ..] => run(true, path, arguments),
+        ["run", path, arguments @ ..] => run(false, path, arguments),
         ["build"] => aot::build(".", None),
         ["build", "-o", output] => aot::build(".", Some(output)),
         ["build", path] => aot::build(path, None),
@@ -46,6 +48,7 @@ fn main() -> ExitCode {
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["dev", "check", path] => dev(check_dump, path),
+        ["daemon", action] => daemon::command(action),
         ["dev", "changes"] => changes::changes("."),
         ["dev", "changes", path] => changes::changes(path),
         ["--version" | "-V"] => {
@@ -61,7 +64,18 @@ fn main() -> ExitCode {
 
 fn on_big_stack(command: fn(&str) -> ExitCode, path: &str) -> ExitCode {
     let path = path.to_owned();
-    let worker = std::thread::Builder::new().stack_size(STACK_BYTES).spawn(move || command(&path));
+    big_stack(move || command(&path))
+}
+
+/// `fennec run [--jit] [path] [args]`: runs a program, handing it the arguments after its path.
+fn run(jit: bool, path: &str, arguments: &[&str]) -> ExitCode {
+    let path = path.to_owned();
+    let arguments: Vec<String> = arguments.iter().map(|arg| (*arg).to_owned()).collect();
+    big_stack(move || run::run(&path, jit, &arguments))
+}
+
+fn big_stack(command: impl FnOnce() -> ExitCode + Send + 'static) -> ExitCode {
+    let worker = std::thread::Builder::new().stack_size(STACK_BYTES).spawn(command);
     if let Ok(Ok(code)) = worker.map(std::thread::JoinHandle::join) {
         code
     } else {

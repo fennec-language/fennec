@@ -13,6 +13,7 @@ mod types;
 
 use std::io::Write;
 
+use fennec_interp::Inputs;
 use fennec_syntax::{Diagnostic, Module, Span};
 
 /// Why a program didn't run natively.
@@ -46,6 +47,11 @@ pub fn run(module: &Module, out: &mut dyn Write) -> Result<(), JitError> {
     run_with_report(module, out).map(|_| ())
 }
 
+/// Like `run`, handing `main` the command-line arguments and standard input in `inputs`.
+pub fn run_with_inputs(module: &Module, out: &mut dyn Write, inputs: Inputs) -> Result<(), JitError> {
+    report_with_inputs(module, out, inputs).map(|_| ())
+}
+
 /// The stack the program runs on. It's only reserved, not used, until calls nest deeply.
 const STACK_BYTES: usize = 1 << 30;
 
@@ -59,10 +65,14 @@ const NATIVE_STACK_BYTES: usize = 1 << 28;
 /// its calls may nest: it compares the stack pointer against a limit, which costs almost
 /// nothing per call.
 pub fn run_with_report(module: &Module, out: &mut dyn Write) -> Result<Report, JitError> {
+    report_with_inputs(module, out, Inputs::default())
+}
+
+fn report_with_inputs(module: &Module, out: &mut dyn Write, inputs: Inputs) -> Result<Report, JitError> {
     let ran = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_BYTES)
-            .spawn_scoped(scope, || compile_and_run(module))
+            .spawn_scoped(scope, || compile_and_run(module, inputs))
             .map(std::thread::ScopedJoinHandle::join)
     });
     let (output, report) = match ran {
@@ -83,7 +93,7 @@ pub fn run_with_report(module: &Module, out: &mut dyn Write) -> Result<Report, J
 
 /// Compiles and runs a program on the current thread, giving back what it printed and how
 /// it went.
-fn compile_and_run(module: &Module) -> Result<(Vec<u8>, Result<Report, JitError>), JitError> {
+fn compile_and_run(module: &Module, inputs: Inputs) -> Result<(Vec<u8>, Result<Report, JitError>), JitError> {
     let here = 0_u8;
     let stack_limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
     let signatures = fennec_check::check(module).map_err(|diagnostics| {
@@ -98,7 +108,7 @@ fn compile_and_run(module: &Module) -> Result<(Vec<u8>, Result<Report, JitError>
 
     let (entry, tables, compilation) =
         lower::compile(&program, &signatures, stack_limit).map_err(JitError::Unsupported)?;
-    let result = runtime::execute(&entry, module, tables).map_err(JitError::Failed)?;
+    let result = runtime::execute(&entry, module, tables, inputs).map_err(JitError::Failed)?;
     let report = match result.failure {
         Some(failure) => Err(JitError::Failed(failure)),
         None => Ok(Report {

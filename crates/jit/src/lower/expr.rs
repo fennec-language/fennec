@@ -155,8 +155,9 @@ impl Lowerer<'_, '_> {
                 let address = value.ok_or_else(|| unsupported("this value", span))?;
                 return self.box_to_handle(address, 0);
             }
-            Ty::Cap(_) => {
-                return Err(unsupported(&format!("using {} as a value", ty.name()), span));
+            Ty::Cap(cap) => {
+                let kind = self.int(cap.kind());
+                return self.help(Helper::Capability, &[kind]);
             }
         };
         let value = value.ok_or_else(|| unsupported("this value", span))?;

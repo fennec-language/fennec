@@ -53,7 +53,13 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     let Some(Image { module, sources, tables, literals }) = Image::from_bytes(bytes) else {
         return (Vec::new(), "error: this executable's program is damaged\n".to_owned());
     };
-    if let Err(failure) = super::start(&module, tables) {
+    let mut arguments = std::env::args();
+    let inputs = crate::Inputs {
+        program: arguments.next().unwrap_or_default(),
+        arguments: arguments.collect(),
+        stdin: Box::new(std::io::BufReader::new(std::io::stdin())),
+    };
+    if let Err(failure) = super::start(&module, tables, inputs) {
         return (Vec::new(), sources.render(&failure));
     }
     LITERALS.set(literals);

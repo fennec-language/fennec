@@ -114,6 +114,7 @@ export! {
     fennec_str_compare(a0: i64, a1: i64) -> i64 => strings::compare(a0, a1);
     fennec_str_contains(a0: i64, a1: i64) -> i8 => strings::contains(a0, a1);
     fennec_str_print(a0: i64) => strings::print(a0);
+    fennec_capability(a0: i64) -> i64 => temps::capability(a0);
     fennec_aot_image(a0: i64) => aot::image(a0);
     fennec_aot_failed_flag() -> i64 => aot::failed_flag();
     fennec_aot_ascii() -> i64 => aot::ascii();

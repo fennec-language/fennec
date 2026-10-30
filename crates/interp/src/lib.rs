@@ -11,6 +11,7 @@ mod eval;
 mod exec;
 mod format;
 mod formats;
+mod inputs;
 mod interp;
 mod matching;
 mod methods;
@@ -26,5 +27,6 @@ mod types;
 mod value;
 
 pub use format::float as format_float;
+pub use inputs::Inputs;
 pub use interp::{Interp, run};
 pub use testing::TestOutcome;

@@ -52,6 +52,8 @@ def built_in_types() -> list[str]:
         "Stdout",
         "Fs",
         "Clock",
+        "Args",
+        "Stdin",
         "Result",
         "->",
     ]

@@ -4,9 +4,9 @@
 
 use std::fmt::Write as _;
 use std::fs;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Small sources that reach the lexer's error paths and edge cases.
 const LEX_CASES: &[(&str, &str)] = &[
@@ -280,7 +280,7 @@ fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
 }
 
 /// Runs the self-hosted front end on every file in `corpus` with `mode`, returning what it
-/// printed. It reads its work from `inputs.txt` in the folder it runs in.
+/// printed. It reads its work from standard input.
 fn selfhost(work: &Path, mode: &str, corpus: &[PathBuf], engine: &[&str]) -> Result<String, String> {
     let mut inputs = String::new();
     if mode == "check" {
@@ -294,14 +294,21 @@ fn selfhost(work: &Path, mode: &str, corpus: &[PathBuf], engine: &[&str]) -> Res
     for path in corpus {
         let _ = writeln!(inputs, "{mode} {}", path.display());
     }
-    fs::write(work.join("inputs.txt"), inputs).map_err(|err| err.to_string())?;
-    let output = Command::new(env!("CARGO_BIN_EXE_fennec"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fennec"))
         .arg("run")
         .args(engine)
         .arg(repo().join("selfhost"))
         .current_dir(work)
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|err| err.to_string())?;
+    // It reads every line before it writes anything, so writing all of them first can't stall.
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(inputs.as_bytes()).map_err(|err| err.to_string())?;
+    }
+    let output = child.wait_with_output().map_err(|err| err.to_string())?;
     if !output.status.success() {
         return Err(format!(
             "the self-hosted front end failed:\n{}",

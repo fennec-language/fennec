@@ -26,6 +26,7 @@ pub(crate) enum Helper {
     Bool,
     None,
     Unit,
+    Capability,
     Str,
     ToInt,
     ToFloat,
@@ -94,7 +95,7 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 86] = [
+pub(crate) const ALL: [Helper; 87] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -115,6 +116,7 @@ pub(crate) const ALL: [Helper; 86] = [
     Helper::Bool,
     Helper::None,
     Helper::Unit,
+    Helper::Capability,
     Helper::Str,
     Helper::ToInt,
     Helper::ToFloat,
@@ -220,6 +222,7 @@ impl Helper {
             Helper::Bool => shape("fennec_bool", &[I8], &[I64]),
             Helper::None => shape("fennec_none", &[], &[I64]),
             Helper::Unit => shape("fennec_unit", &[], &[I64]),
+            Helper::Capability => shape("fennec_capability", &[I64], &[I64]),
             Helper::Str => shape("fennec_str", &[I64], &[I64]),
             Helper::ToInt => shape("fennec_to_int", &[I64, I64, I64], &[I64]),
             Helper::ToFloat => shape("fennec_to_float", &[I64, I64, I64], &[F64]),
@@ -391,6 +394,7 @@ impl Helper {
             Helper::Bool => temps::bool as *const u8,
             Helper::None => temps::none as *const u8,
             Helper::Unit => temps::unit as *const u8,
+            Helper::Capability => temps::capability as *const u8,
             Helper::Str => temps::str as *const u8,
             Helper::ToInt => temps::to_int as *const u8,
             Helper::ToFloat => temps::to_float as *const u8,

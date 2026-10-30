@@ -125,10 +125,24 @@ pub fn failed_flag() -> usize {
     FAILED.with(|flag| flag.as_ptr().addr())
 }
 
-/// Sets up the runtime to run `module` with `tables`, replacing any earlier run's.
-pub fn start(module: &Module, mut tables: Tables) -> Result<(), Diagnostic> {
+/// The capability native code means by `kind`: 0 for `Stdout`, 1 for `Fs`, 2 for `Clock`,
+/// 3 for `Args` and 4 for `Stdin`.
+fn capability(kind: i64) -> Capability {
+    match kind {
+        0 => Capability::Stdout,
+        1 => Capability::Fs,
+        3 => Capability::Args,
+        4 => Capability::Stdin,
+        _ => Capability::Clock,
+    }
+}
+
+/// Sets up the runtime to run `module` with `tables` and `inputs`, replacing any earlier
+/// run's.
+pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Result<(), Diagnostic> {
     let output = Output::default();
     let mut interp = Interp::with_output(Box::new(output.clone()))?;
+    interp.give(inputs);
     interp.load(module)?;
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
     FAILED.set(0);
@@ -331,16 +345,11 @@ pub mod names {
     }
 
     /// Declares a capability `main` was given, so interpreted code can use it: 0 for
-    /// `Stdout`, 1 for `Fs`, 2 for `Clock`.
+    /// `Stdout`, 1 for `Fs`, 2 for `Clock`, 3 for `Args` and 4 for `Stdin`.
     pub extern "C" fn declare_capability(name: i64, kind: i64) {
         with(|state| {
             let name = state.name(name);
-            let capability = match kind {
-                0 => super::Capability::Stdout,
-                1 => super::Capability::Fs,
-                _ => super::Capability::Clock,
-            };
-            state.interp.frame.declare(&name, Value::Capability(capability), false);
+            state.interp.frame.declare(&name, Value::Capability(super::capability(kind)), false);
         });
     }
 }
@@ -378,6 +387,12 @@ pub mod temps {
 
     pub extern "C" fn bool(b: i8) -> i64 {
         with(|state| state.push(Value::Bool(b != 0)))
+    }
+
+    /// A capability as a value, for code that passes one on, like `len(args)`. `kind` is
+    /// as for `declare_capability`.
+    pub extern "C" fn capability(kind: i64) -> i64 {
+        with(|state| state.push(Value::Capability(super::capability(kind))))
     }
 
     /// Nothing: what a function without a value gives back.

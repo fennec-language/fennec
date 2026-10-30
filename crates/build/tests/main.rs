@@ -2,6 +2,7 @@
 //! reusing unchanged files, reporting changes, and storing snapshots.
 
 mod cache;
+mod functions;
 
 use std::collections::BTreeMap;
 

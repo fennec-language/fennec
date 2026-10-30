@@ -12,6 +12,7 @@
 mod boxes;
 mod call;
 mod codegen;
+mod dicts;
 mod enums;
 mod expr;
 mod fallback;
@@ -229,7 +230,7 @@ pub(super) fn compile_functions(
 
 fn abi(ty: Ty) -> Option<types::Type> {
     match ty {
-        Ty::Int | Ty::Obj | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str => Some(types::I64),
+        Ty::Int | Ty::Obj | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) => Some(types::I64),
         Ty::Float => Some(types::F64),
         Ty::Bool => Some(types::I8),
         Ty::Unit | Ty::Cap(_) => None,

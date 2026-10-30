@@ -111,6 +111,14 @@ impl Heap {
         i64::try_from(address).unwrap_or(0)
     }
 
+    /// Takes a block out of the heap for reuse, leaving the blocks it refers to as they are:
+    /// for a block whose contents moved to a new one.
+    pub(super) fn discard(&mut self, address: u64) {
+        if let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(&at)) {
+            self.recycle(block);
+        }
+    }
+
     pub(crate) fn block(&self, address: u64) -> Option<&[u64]> {
         self.blocks.get(&usize::try_from(address).ok()?).map(AsRef::as_ref)
     }
@@ -221,6 +229,9 @@ fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec
 fn children(state: &State, block: &[u64]) -> Vec<u64> {
     if is_text(state, block) {
         return Vec::new();
+    }
+    if super::dicts::is_dict(state, block) {
+        return super::dicts::children(state, block);
     }
     let Some(shape) = shape_of(state, block) else { return Vec::new() };
     let fields = block.get(HEADER_WORDS..).unwrap_or_default();
@@ -334,6 +345,9 @@ pub(super) fn read_block(state: &mut State, address: u64) -> Value {
         state.heap.texts.insert(at, Rc::clone(&text));
         return Value::Str(text);
     }
+    if super::dicts::is_dict(state, &block) {
+        return super::dicts::read(state, &block);
+    }
     let Some(shape) = shape_of(state, &block) else { return Value::None };
     let mut words = block.get(HEADER_WORDS..).unwrap_or_default().iter();
     read(state, &shape, &mut words)
@@ -394,6 +408,9 @@ pub extern "C" fn from_value(value: i64, shape: i64, start: i64, end: i64) -> i6
 }
 
 fn write_block(state: &mut State, shape: usize, value: &Value) -> Option<i64> {
+    if u64::try_from(shape).ok()? > state.tables.str_shape {
+        return super::dicts::write(state, u64::try_from(shape).ok()?, value);
+    }
     let element = state.tables.shapes.get(shape).cloned()?;
     let mut words = vec![1, u64::try_from(shape).ok()?];
     write(state, &element, value, &mut words)?;
@@ -440,7 +457,7 @@ pub extern "C" fn equal(a: i64, b: i64) -> i8 {
     with(|state| i8::from(same(state, u64::try_from(a).unwrap_or(0), u64::try_from(b).unwrap_or(0))))
 }
 
-fn same(state: &State, a: u64, b: u64) -> bool {
+pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
     if a == b {
         return true;
     }
@@ -453,6 +470,9 @@ fn same(state: &State, a: u64, b: u64) -> bool {
         let length = left.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
         let text = TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + length.div_ceil(8);
         return left.get(1..4) == right.get(1..4) && left.get(text.clone()) == right.get(text);
+    }
+    if super::dicts::is_dict(state, left) {
+        return super::dicts::equal(state, left, right);
     }
     if left.len() != right.len() {
         return false;

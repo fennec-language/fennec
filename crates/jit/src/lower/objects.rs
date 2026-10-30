@@ -120,6 +120,9 @@ impl Lowerer<'_, '_> {
             let at = self.convert(at, at_ty, Ty::Int, index.span)?;
             return self.string_index(text, at, expr.span);
         }
+        if let (Some(dict), Ty::Dict(key, value)) = (value, ty) {
+            return self.read_dict(dict, (key, value), index, expr.span);
+        }
         self.note(expr.span, "the runtime indexes an object");
         let object = self.handle_of(value, ty, expr.span)?;
         let (value, ty) = self.expr(index)?;

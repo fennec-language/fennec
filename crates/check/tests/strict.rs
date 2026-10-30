@@ -385,9 +385,9 @@ fn functions_that_call_each_other_share_their_errors() {
 }
 
 #[test]
-fn a_function_that_gives_back_nothing_writes_nothing() {
+fn a_function_with_no_arrow_gives_back_nothing_even_when_it_calls_itself() {
     let program = "
-        def countdown(stdout: Stdout, n: int) -> nothing:
+        def countdown(stdout: Stdout, n: int):
             if n > 0:
                 stdout.print(n)
                 countdown(stdout, n - 1)

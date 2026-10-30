@@ -167,7 +167,7 @@ struct Tree:
             self.write_type_expr(ty)
         self.close()
 
-    def write_type_expr(mut self, ty: TypeExpr) -> nothing:
+    def write_type_expr(mut self, ty: TypeExpr):
         self.open(f"type {ty.name}" + ("?" if ty.optional else ""), ty.span)
         for arg in ty.args:
             self.write_type_expr(arg)
@@ -207,7 +207,7 @@ struct Tree:
             self.write_field(field)
         self.close()
 
-    def write_stmts(mut self, stmts: list[Stmt]) -> nothing:
+    def write_stmts(mut self, stmts: list[Stmt]):
         for stmt in stmts:
             self.write_stmt(stmt)
 
@@ -281,11 +281,11 @@ struct Tree:
                 return
         self.close()
 
-    def write_exprs(mut self, exprs: list[Expr]) -> nothing:
+    def write_exprs(mut self, exprs: list[Expr]):
         for expr in exprs:
             self.write_expr(expr)
 
-    def write_expr(mut self, expr: Expr) -> nothing:
+    def write_expr(mut self, expr: Expr):
         span = expr.span
         match expr.kind:
             case .Int(value): self.spanned(f"int {value}", span)
@@ -321,7 +321,7 @@ struct Tree:
             case _: self.write_compound(expr)
 
     ## A node holding a list of expressions.
-    def group(mut self, label: str, span: Span, items: list[Expr]) -> nothing:
+    def group(mut self, label: str, span: Span, items: list[Expr]):
         self.open(label, span)
         self.write_exprs(items)
         self.close()
@@ -395,7 +395,7 @@ struct Tree:
         self.write_stmts(arm.body)
         self.close()
 
-    def write_pattern(mut self, pattern: Pattern) -> nothing:
+    def write_pattern(mut self, pattern: Pattern):
         match pattern:
             case .Wildcard: self.line("pattern _")
             case .Bind(name): self.line(f"pattern bind {name}")

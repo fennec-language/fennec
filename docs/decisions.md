@@ -160,6 +160,16 @@ def literal(tok: Tok) -> ExprKind:
 Only with no expected type is a name shared by two enums ambiguous, and the error lists them. The search covers only the enums a file can see: its own and those it imports.
 *Why:* The type is usually right there, as in Swift. Otherwise adding an unrelated file could break code that never imports it.
 
+**`extend` adds methods to a type from another file of the same kit.**
+```fennec
+# parser/expr.fen
+extend Parser:
+    def parse_expr(mut self) -> Expr:
+        ...
+```
+An extension adds methods only, never fields, so a type's shape stays in its declaration. It works only on the kit's own types, never another kit's or the standard library's. Two methods with the same name on one type are an error, wherever they're written. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
+*Why:* A type that many responsibilities attach to, like a parser, an interpreter or a game's `World`, is otherwise one huge file, or its methods become free functions with noisier calls. Swift, C#, Kotlin, Go and Rust all let a type's methods live in several files. Keeping it to the kit's own types means no one can change a type they don't own.
+
 **Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They're erased at compile time, so they cost nothing at run time. The syntax is still open.
 *Why:* Game code mixes up degrees and radians, and world and screen space, constantly. F# has had units since 2009, and no mainstream language has followed.
 
@@ -502,7 +512,6 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 
 ## Still open
 
-- `extend`, adding methods to a kit's own type from another file: deferred. What a value can do stays visible where its type is declared, which also gives agents one place to look, so a large type stays one file with marked sections. Revisit only if a real type gets painful in one file, around a couple of thousand lines. Adding it later breaks no code.
 - How a type marks that its finishing method must be called.
 - Decorators. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.
 - Whether independent writes, not just reads, should overlap automatically.

@@ -12,6 +12,7 @@ mod span;
 mod stdlib;
 mod token;
 mod trivia;
+pub mod visit;
 
 pub use ast::{
     Arg, BinOp, Case, CompKind, Expr, ExprKind, Extension, FStrPart, Field, FnDef, Generic, Import,

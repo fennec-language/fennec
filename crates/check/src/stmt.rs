@@ -40,6 +40,9 @@ impl FnCx<'_> {
         let mut flow = Flow::unit();
         for (at, stmt) in stmts.iter().enumerate() {
             let last = at + 1 == stmts.len();
+            if last && used && matches!(stmt.kind, StmtKind::Expr(_)) {
+                self.expecting = self.tail.clone();
+            }
             let this = self.stmt(stmt, last && used);
             if matches!(stmt.kind, StmtKind::Expr(_))
                 && !(last && used)
@@ -71,7 +74,12 @@ impl FnCx<'_> {
                 Flow::unit()
             }
             StmtKind::Return(value) => {
-                let ty = value.as_ref().map_or(Type::Unit, |value| self.expr(value));
+                let declared = self.declared.clone().filter(|_| !self.generator);
+                let ty = match (value, &declared) {
+                    (Some(value), Some(declared)) => self.expr_as(value, declared),
+                    (Some(value), None) => self.expr(value),
+                    (None, _) => Type::Unit,
+                };
                 if let (Some(declared), Some(value)) = (self.declared.clone(), value) {
                     self.check_return(&declared, &ty, value.span);
                 }

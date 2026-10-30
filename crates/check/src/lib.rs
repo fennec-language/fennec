@@ -18,6 +18,7 @@ mod call;
 mod checker;
 mod constants;
 mod effects;
+mod expect;
 mod expr;
 mod extend;
 mod function;
@@ -51,11 +52,29 @@ pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
     checker::Checker::new(module).run()
 }
 
+/// Checks a parsed module, then writes into it the enum of each leading-dot case whose name
+/// more than one enum has, as the type expected where it's written decided: `.Int(value)`
+/// given back as an `ExprKind` becomes `ExprKind.Int(value)`. Running a module needs this,
+/// since what runs it doesn't know types.
+pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
+    let checked = check_typed(module)?;
+    if !checked.cases.is_empty() {
+        fennec_syntax::visit::exprs_mut(module, &mut |expr| {
+            if let Some(owner) = checked.cases.get(&(expr.span.start, expr.span.end)) {
+                fennec_syntax::visit::name_enum(expr, owner);
+            }
+        });
+    }
+    Ok(checked.signatures)
+}
+
 /// Everything a check works out about a program that has no mistakes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Checked {
     pub signatures: Signatures,
     pub types: Types,
+    /// The enum the expected type chose for each leading-dot case more than one enum has.
+    cases: BTreeMap<(u32, u32), String>,
 }
 
 /// The typed tree: the type of every expression and every declared name in a program,

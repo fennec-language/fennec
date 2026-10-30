@@ -9,3 +9,8 @@ LENGTHS = {word: len(word) for word in KEYWORDS}
 
 def is_keyword(word: str) -> bool:
     word in KEYWORDS
+
+test "constants can be read from tests":
+    assert is_keyword("def")
+    assert not is_keyword("main")
+    assert LENGTHS["return"] == 6

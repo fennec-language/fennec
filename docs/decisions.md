@@ -188,13 +188,16 @@ with db.transaction() as mut tx:
 
 ## Standard library
 
-**Names live in their modules.** `std.collections`, `std.random`, `std.time` and `std.re` provide nothing until they're imported: `from std.random import Random`, or `from std import random` and then `random.Random(seed=42)`. Using a name without its import is reported with the import to add. `Clock` is the exception: it's a capability, which `main` names like `Stdout` and `Fs`. The other modules' types, like `Vec3`, `IdMap` and `Path`, are still available everywhere until they move over too.
+**Names live in their modules.** A standard library module provides nothing until it's imported: `from std.math import Vec3, sqrt`, or `from std import math` and then `math.Vec3` and `math.sqrt(x)`. That's every module so far: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`. Using a name without its import is reported with the import to add.
 *Why:* A file's imports show everything it uses from the standard library, as in Python.
+
+**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs` and `Clock`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the Python builtins, like `len`, `range` and `abs`.
+*Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
 
 **Imports bind names exactly as in Python.** `import std.json` binds `std`, and the call is `std.json.loads(...)`. `from std import json` binds `json`, for `json.loads(...)`. `from std.json import loads` binds `loads`. A kit's own modules follow the same rule: `import game.physics` binds `game`, and `from game import physics` binds `physics`. Writing `json.loads` after `import std.json` is an error whose help suggests `from std import json`. There's no `import *`, and no `import ... as` yet.
 *Why:* It's one rule that Python developers and AI models already know, and an import never binds a name behind your back. Earlier, `import std.json` also bound `json`, which Python doesn't do.
 
-**Some modules' functions exist only once imported.** Without an import, `loads` doesn't exist, and the error says which modules have it. Other standard library names, like `Path` and `sqrt`, work everywhere for now.
+**Two modules can have functions with the same name.** Without an import, `loads` doesn't exist, and the error says which modules have it.
 *Why:* `std.json` and `std.toml` both have `loads` and `dumps`, as in Python, so the name alone can't say which format is meant.
 
 **JSON and TOML read into plain values.** Objects and tables become dicts in the order written, arrays become lists, and TOML's dates and times stay strings as written. The checker doesn't know the shape of text it hasn't seen, so the values' types are unknown and checked as they're used. Writing takes dicts, lists, tuples and structs. Typed reading, `loads[Settings](text)`, comes later.

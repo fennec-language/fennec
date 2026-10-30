@@ -76,6 +76,8 @@ struct Shared {
     with_frames: usize,
     handed_over: usize,
     stack_limit: i64,
+    /// The imported standard library modules, like `math`.
+    modules: HashSet<String>,
 }
 
 fn internal(err: impl std::fmt::Debug, span: Span) -> Diagnostic {
@@ -131,6 +133,7 @@ fn attempt(
         with_frames: 0,
         handed_over: 0,
         stack_limit,
+        modules: program.modules.clone(),
     };
     declare_all(&mut module, &mut shared, program, skipped).map_err(fatal)?;
     let mut ctx = module.make_context();

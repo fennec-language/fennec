@@ -19,20 +19,18 @@ const MODULES: [(&str, &[&str]); 10] = [
     ("re", &["Regex", "Match", "is_regex"]),
 ];
 
-/// Modules whose types, like `Deque`, exist only once imported. The older modules' names
-/// are still available everywhere.
-const IMPORTED_ONLY: [&str; 4] = ["collections", "random", "time", "re"];
+/// Names that a module provides but that are available everywhere too. `Clock` is a
+/// capability, which `main` names like `Stdout` and `Fs`. `ParseError` is an error, like
+/// `IoError`, that code matches on without importing where it came from.
+const EVERYWHERE: [&str; 2] = ["Clock", "ParseError"];
 
-/// The module a type that has to be imported comes from, like `collections` for `Deque`.
-/// `Clock` is left out: it's a capability, which `main` names like `Stdout` and `Fs`.
+/// The module a type or constant that has to be imported comes from, like `collections`
+/// for `Deque`. Functions are builtins named `module.function`, which are imported apart.
 pub fn importable_type(name: &str) -> Option<&'static str> {
-    if name == "Clock" || !name.starts_with(|c: char| c.is_ascii_uppercase()) {
+    if EVERYWHERE.contains(&name) || !name.starts_with(|c: char| c.is_ascii_uppercase()) {
         return None;
     }
-    MODULES
-        .iter()
-        .find(|(module, names)| IMPORTED_ONLY.contains(module) && names.contains(&name))
-        .map(|(module, _)| *module)
+    MODULES.iter().find(|(_, names)| names.contains(&name)).map(|(module, _)| *module)
 }
 
 /// What an import brings in.

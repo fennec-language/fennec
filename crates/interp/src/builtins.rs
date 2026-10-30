@@ -12,24 +12,26 @@ use crate::interp::Interp;
 use crate::value::Value;
 use crate::{format, ops, random};
 
-/// The builtins, and the functions of `std.json` and `std.toml`, which have to be imported.
+/// The builtins, and the functions of modules like `std.json`, which have to be imported.
 const NAMES: [&str; 35] = [
     "Err",
     "Ok",
     "abs",
     "all",
     "any",
-    "ceil",
-    "cos",
     "enumerate",
     "float",
-    "floor",
     "ignore",
     "int",
     "json.dumps",
     "json.loads",
     "len",
     "list",
+    "math.ceil",
+    "math.cos",
+    "math.floor",
+    "math.sin",
+    "math.sqrt",
     "max",
     "min",
     "parallel",
@@ -42,9 +44,7 @@ const NAMES: [&str; 35] = [
     "reversed",
     "round",
     "set",
-    "sin",
     "sorted",
-    "sqrt",
     "str",
     "sum",
     "toml.dumps",
@@ -144,7 +144,9 @@ impl Interp<'_> {
                 let scale = 10_f64.powi(i32::try_from(*places).unwrap_or(0));
                 Ok(Value::Float((x * scale).round_ties_even() / scale))
             }
-            ("sqrt" | "floor" | "ceil" | "sin" | "cos", [value]) => math(name, value, span),
+            ("math.sqrt" | "math.floor" | "math.ceil" | "math.sin" | "math.cos", [value]) => {
+                math(name, value, span)
+            }
             _ => self.collection_builtin(name, values, key.as_ref(), span),
         }
     }
@@ -292,10 +294,10 @@ fn math(name: &str, value: &Value, span: Span) -> Result<Value, Diagnostic> {
         }
     };
     match name {
-        "floor" => to_int(&Value::Float(x.floor()), span),
-        "ceil" => to_int(&Value::Float(x.ceil()), span),
-        "sin" => Ok(Value::Float(x.sin())),
-        "cos" => Ok(Value::Float(x.cos())),
+        "math.floor" => to_int(&Value::Float(x.floor()), span),
+        "math.ceil" => to_int(&Value::Float(x.ceil()), span),
+        "math.sin" => Ok(Value::Float(x.sin())),
+        "math.cos" => Ok(Value::Float(x.cos())),
         _ if x < 0.0 => Err(Diagnostic::new("can't take the square root of a negative number", span)),
         _ => Ok(Value::Float(x.sqrt())),
     }

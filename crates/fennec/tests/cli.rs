@@ -184,6 +184,17 @@ fn repl_echoes_values_and_keeps_definitions() {
 }
 
 #[test]
+fn repl_says_which_module_to_import_from() {
+    let output = fennec(&["repl"], "sqrt(2.0)\nloads(\"1\")\nexit\n").unwrap();
+    let errors = text(&output.stderr);
+    assert!(errors.contains("import it from std.math, like `from std.math import sqrt`"), "{errors}");
+    assert!(
+        errors.contains("import it from std.json or std.toml, like `from std.json import loads`"),
+        "{errors}"
+    );
+}
+
+#[test]
 fn repl_continues_open_brackets_past_blank_lines() {
     let output = fennec(&["repl"], "[1,\n\n2]\n\nexit\n").unwrap();
     assert!(output.status.success());

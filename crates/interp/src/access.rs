@@ -102,6 +102,7 @@ impl Interp<'_> {
             Value::Str(text) => {
                 text.chars().map(|c| (None, Value::str(c.encode_utf8(&mut [0; 4])))).collect()
             }
+            Value::Bytes(data) => data.iter().map(|byte| (None, Value::Int(i64::from(*byte)))).collect(),
             Value::IdMap(map) => {
                 map.entries().map(|(id, item)| (Some(Value::Id(id)), item.clone())).collect()
             }

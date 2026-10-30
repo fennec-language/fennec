@@ -21,6 +21,10 @@ pub(crate) fn repr(value: &Value) -> String {
         Value::Int(n) => n.to_string(),
         Value::Float(x) => float(*x),
         Value::Str(text) => format!("{text:?}"),
+        Value::Bytes(data) => {
+            let numbers: Vec<String> = data.iter().map(u8::to_string).collect();
+            format!("bytes([{}])", numbers.join(", "))
+        }
         Value::List(items) => format!("[{}]", join(items.iter())),
         Value::Packed(packed) => repr(&packed.unpack()),
         Value::Tuple(items) if items.len() == 1 => format!("({},)", join(items.iter())),

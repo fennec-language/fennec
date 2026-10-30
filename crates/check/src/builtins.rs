@@ -12,12 +12,13 @@ use crate::types::{Type, a, article};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 23] = [
+const BUILTINS: [(&str, usize, usize); 24] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("abs", 1, 1),
     ("all", 1, 1),
     ("any", 1, 1),
+    ("bytes", 0, 1),
     ("enumerate", 1, 1),
     ("float", 1, 1),
     ("ignore", 2, 2),
@@ -99,6 +100,7 @@ fn method(ty: &Type, name: &str) -> Option<Method> {
         Type::Dict(key, value) => dict_method(key, value, name),
         Type::IdMap(item) => id_map_method(item, name),
         Type::Str => str_method(name),
+        Type::Bytes => bytes_method(name),
         Type::Named(type_name) => named_method(type_name, name),
         _ => None,
     }
@@ -169,8 +171,14 @@ fn str_method(name: &str) -> Option<Method> {
         "replace" => reads(&[text.clone(), text], Type::Str),
         "find" => reads(&[text], Type::optional(Type::Int)),
         "join" => reads(&[Type::list(Type::Str)], Type::Str),
+        "encode" => reads(&[], Type::Bytes),
         _ => return None,
     })
+}
+
+/// `data.decode()` reads UTF-8 text, and fails on bytes that aren't.
+fn bytes_method(name: &str) -> Option<Method> {
+    (name == "decode").then(|| reads(&[], Type::result(Type::Str, Type::named("InvalidValue"))))
 }
 
 /// Methods of capabilities, and of standard library types that are written in Rust.
@@ -213,7 +221,7 @@ impl FnCx<'_> {
             if as_path || self.checker.fits(expected, actual) {
                 continue;
             }
-            if path {
+            if path && *expected == Type::Str {
                 let message =
                     format!("`{name}` takes a path, as a str or a `Path`, but this is {}", a(actual));
                 self.error(Diagnostic::new(message, *at));
@@ -326,6 +334,14 @@ impl FnCx<'_> {
                 Type::list(Type::Int)
             }
             "str" => Type::Str,
+            "bytes" => {
+                if let Some((items, at)) = plain.first()
+                    && !self.checker.fits(&Type::list(Type::Int), items)
+                {
+                    self.error(mismatch("`bytes`'s argument", &Type::list(Type::Int), items, *at));
+                }
+                Type::Bytes
+            }
             "ignore" => {
                 if !plain.get(1).is_some_and(|(reason, _)| self.checker.fits(&Type::Str, reason)) {
                     self.error(wrong_args(name, span));
@@ -471,6 +487,7 @@ fn peek_item(ty: &Type) -> Type {
             items.first().cloned().unwrap_or(Type::Unknown)
         }
         Type::Str => Type::Str,
+        Type::Bytes => Type::Int,
         _ => Type::Unknown,
     }
 }

@@ -1,0 +1,5 @@
+error: a byte is an int from 0 to 255, not 256
+ --> examples/errors/byte_out_of_range.fen:3:18
+  |
+3 |     stdout.print(bytes(levels))
+  |                  ^^^^^^^^^^^^^

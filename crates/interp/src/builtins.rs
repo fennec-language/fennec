@@ -12,7 +12,8 @@ use crate::interp::Interp;
 use crate::value::Value;
 use crate::{format, ops};
 
-const NAMES: [&str; 27] = [
+/// The builtins, and the functions of `std.json` and `std.toml`, which have to be imported.
+const NAMES: [&str; 31] = [
     "Err",
     "Ok",
     "abs",
@@ -25,6 +26,8 @@ const NAMES: [&str; 27] = [
     "floor",
     "ignore",
     "int",
+    "json.dumps",
+    "json.loads",
     "len",
     "list",
     "max",
@@ -40,10 +43,12 @@ const NAMES: [&str; 27] = [
     "sqrt",
     "str",
     "sum",
+    "toml.dumps",
+    "toml.loads",
 ];
 
 /// Built-in types that can be called or indexed, like `IdMap[Enemy]()`.
-const TYPES: [&str; 4] = ["Id", "IdMap", "Path", "SoaList"];
+const TYPES: [&str; 3] = ["Id", "IdMap", "SoaList"];
 
 /// The longest list `range` will build, until ranges become lazy.
 const MAX_RANGE: usize = 10_000_000;
@@ -53,6 +58,15 @@ const INT_LIMIT: f64 = 9_223_372_036_854_775_808.0;
 
 pub(crate) fn named(name: &str) -> Option<&'static str> {
     NAMES.iter().copied().find(|builtin| *builtin == name).or_else(|| (name == "zip").then_some("zip"))
+}
+
+/// The modules with a function of this name, like `json` and `toml` for `loads`.
+pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
+    NAMES
+        .iter()
+        .filter_map(|builtin| builtin.split_once('.').filter(|(_, function)| *function == name))
+        .map(|(module, _)| module)
+        .collect()
 }
 
 pub(crate) fn is_type(name: &str) -> bool {
@@ -86,6 +100,9 @@ impl Interp<'_> {
         }
         if name == "replace" {
             return Interp::replace(args, span);
+        }
+        if name.starts_with("json.") || name.starts_with("toml.") {
+            return self.format_builtin(name, args, span);
         }
         let (values, key) = split_key(args, name)?;
         if key.is_some() && !matches!(name, "min" | "max" | "sorted") {

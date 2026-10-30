@@ -1,0 +1,5 @@
+error: index 3 is out of range for length 3
+ --> examples/errors/index_out_of_range.fen:4:18
+  |
+4 |     stdout.print(levels[3])
+  |                  ^^^^^^^^^

@@ -98,4 +98,4 @@ def main(stdout: Stdout):
     kit = enemies.insert("kit")
     stdout.print(enemies.get(ash), enemies[kit])
 
-    stdout.print(SoaList(), len(SoaList()), Path("save.txt"))
+    stdout.print(SoaList(), len(SoaList()))

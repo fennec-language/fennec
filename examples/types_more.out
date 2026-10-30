@@ -13,4 +13,4 @@ None hi, Kit True False
 Ok(12) Err("twelve isn't a number")
 True False False True
 None kit
-[] 0 save.txt
+[] 0

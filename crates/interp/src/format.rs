@@ -22,6 +22,7 @@ pub(crate) fn repr(value: &Value) -> String {
         Value::Float(x) => float(*x),
         Value::Str(text) => format!("{text:?}"),
         Value::List(items) => format!("[{}]", join(items.iter())),
+        Value::Packed(packed) => repr(&packed.unpack()),
         Value::Tuple(items) if items.len() == 1 => format!("({},)", join(items.iter())),
         Value::Tuple(items) => format!("({})", join(items.iter())),
         Value::Set(items) if items.is_empty() => "set()".to_owned(),

@@ -74,6 +74,9 @@ impl Lowerer<'_, '_> {
             }
             StmtKind::If { branches, otherwise } => self.if_stmt(branches, otherwise.as_deref()),
             StmtKind::While { cond, body } => self.while_loop(cond, body),
+            StmtKind::For { names, is_mut, iter, body } if self.for_packed(names, iter, body, *is_mut)? => {
+                Ok(())
+            }
             StmtKind::For { names, is_mut: false, iter, body } => self.for_loop(names, iter, body),
             StmtKind::Return(value) => {
                 let (value, ty) = match value {
@@ -144,6 +147,25 @@ impl Lowerer<'_, '_> {
                 }
             },
             ExprKind::Tuple(names) => self.unpack(names, value, target.span),
+            ExprKind::Index { object, index } if let Some((name, item)) = self.packed(object) => {
+                let span = target.span.to(value.span);
+                let new = match op {
+                    Some(op) => {
+                        let combined = Expr {
+                            kind: ExprKind::Binary {
+                                op,
+                                lhs: Box::new(target.clone()),
+                                rhs: Box::new(value.clone()),
+                            },
+                            span,
+                        };
+                        self.expr(&combined)?
+                    }
+                    None => self.expr(value)?,
+                };
+                let address = self.item_address(&name, item, index, true, target.span)?;
+                self.store_item(address, item, new, span)
+            }
             _ if let Some((place, id, field)) = self.struct_target(target)? => {
                 let span = target.span.to(value.span);
                 let new = match op {
@@ -190,7 +212,11 @@ impl Lowerer<'_, '_> {
         match ty {
             Ty::Obj => {
                 let handle = value.ok_or_else(|| unsupported("this value", source.span))?;
-                self.declare_object(name, handle, is_mut)
+                self.declare_object(name, handle, is_mut)?;
+                match self.checked_list(name) {
+                    Some(item) => self.pack_name(name, item),
+                    None => Ok(()),
+                }
             }
             Ty::Struct(id) => {
                 let from = value.ok_or_else(|| unsupported("this value", source.span))?;

@@ -83,6 +83,18 @@ impl Lowerer<'_, '_> {
     }
 
     /// `object[index]`.
+    pub(super) fn read_index_or_packed(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        index: &Expr,
+    ) -> Result<Lowered, Diagnostic> {
+        if let Some((name, item)) = self.packed(object) {
+            return self.read_packed(&name, item, index, expr.span);
+        }
+        self.read_index(expr, object, index)
+    }
+
     pub(super) fn read_index(
         &mut self,
         expr: &Expr,

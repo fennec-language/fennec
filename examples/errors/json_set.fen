@@ -1,0 +1,4 @@
+from std.json import dumps
+
+def main(stdout: Stdout):
+    stdout.print(dumps({"tags": [{"fast", "small"}]}))

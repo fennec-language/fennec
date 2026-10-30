@@ -44,6 +44,7 @@ def built_in_types() -> list[str]:
         "nothing",
         "list",
         "SoaList",
+        "Iterator",
         "set",
         "dict",
         "tuple",
@@ -169,7 +170,7 @@ struct Program:
     def type_arg_count(self, name: str, given: int) -> int:
         if name == "->":
             return max(given, 1)
-        if name in ["list", "set", "SoaList", "Id", "IdMap"]:
+        if name in ["list", "set", "SoaList", "Iterator", "Id", "IdMap"]:
             return 1
         if name in ["dict", "Result"]:
             return 2
@@ -188,6 +189,8 @@ def builtin_type(name: str, args: list[Type]) -> Type:
         case "nothing": Type.Unit
         case "list": Type.List(args[0])
         case "SoaList": Type.List(args[0])
+        # A generator gives back an `Iterator[T]`, a list of what it yields.
+        case "Iterator": Type.List(args[0])
         case "set": Type.Set(args[0])
         case "dict": Type.Dict(args[0], args[1])
         case "Result": Type.Result(args[0], args[1])

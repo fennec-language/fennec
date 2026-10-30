@@ -25,7 +25,7 @@ fn methods_of_built_in_values_give_back_their_types() {
     plus_one(setup, "'a'.startswith('a')", "can't use `+` on a bool and an int");
     plus_one(setup, "[1].count(1) / 2", "can't mix int and float in `+`");
     plus_one(setup, "pool.modify(id, n => n)", "can't use `+` on a bool and an int");
-    plus_one(setup, "stdout.write('a')", "can't use `+` on a nothing and an int");
+    plus_one(setup, "stdout.write('a')", "can't use `+` on nothing and an int");
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn removing_from_an_id_map_might_find_nothing() {
 
 #[test]
 fn builtins_give_back_their_types() {
-    plus_one("", "ignore([1].index(1), 'fine')", "can't use `+` on a nothing and an int");
+    plus_one("", "ignore([1].index(1), 'fine')", "can't use `+` on nothing and an int");
     plus_one("", "Ok(1)", "this is the result of something that can fail");
     plus_one("", "Err(IoError('x'))", "this is the result of something that can fail");
     plus_one("", "list(set([1.5]))[0]", "can't mix int and float in `+`");

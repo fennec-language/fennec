@@ -3,6 +3,7 @@
 #![expect(clippy::print_stderr, reason = "the command line reports errors")]
 
 mod changes;
+mod fix;
 mod fmt;
 mod repl;
 mod run;
@@ -17,6 +18,7 @@ const USAGE: &str = "usage:
   fennec new <name>         start a kit in a new folder
   fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
   fennec fmt --check        list the files that aren't formatted, and fail if any aren't
+  fennec fix [path]         make the fixes the type checker suggests, in a kit or a .fen file
   fennec repl               try Fennec interactively
   fennec --version          show the version
 
@@ -37,6 +39,8 @@ fn main() -> ExitCode {
         ["new", path] => new(path),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
         ["fmt", rest @ ..] => fmt::fmt(rest),
+        ["fix"] => fix::fix("."),
+        ["fix", path] => fix::fix(path),
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["dev", "check", path] => dev(check_dump, path),

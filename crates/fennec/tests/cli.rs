@@ -106,8 +106,7 @@ fn fennec_on(command: &str, name: &str, source: &str) -> std::io::Result<Output>
 fn run_stops_runaway_recursion_with_an_error() {
     // The interpreter runs on a big stack so that the depth limit, not a stack overflow,
     // is what stops a program that recurses forever.
-    let source =
-        "def forever(n: int) -> int:\n    forever(n + 1)\n\ndef main(stdout: Stdout):\n    forever(0)\n";
+    let source = "def forever(n: int) -> int:\n    forever(n + 1)\n\ndef main(stdout: Stdout):\n    stdout.print(forever(0))\n";
     let output = fennec_on("run", "forever", source).unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(text(&output.stderr).starts_with("error: calls nested too deeply"));
@@ -587,4 +586,33 @@ fn dev_changes_reports_what_changed_since_the_last_run() {
         text(&broken.stderr)
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn fix_writes_in_return_types_and_removes_arrows_to_none() {
+    let dir = std::env::temp_dir().join(format!("fennec-cli-{}-fix", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("fix.fen");
+    let source = "def square(n: int):\n    n * n\n\ndef greet(stdout: Stdout) -> None:\n    stdout.print(square(3))\n\ndef main(stdout: Stdout):\n    greet(stdout)\n";
+    std::fs::write(&program, source).unwrap();
+    let output = fennec(&["fix", &program.to_string_lossy()], "").unwrap();
+    let fixed = std::fs::read_to_string(&program).unwrap();
+    let again = fennec(&["fix", &program.to_string_lossy()], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(text(&output.stdout).starts_with("fixed "));
+    assert_eq!(
+        fixed,
+        "def square(n: int) -> int:\n    n * n\n\ndef greet(stdout: Stdout):\n    stdout.print(square(3))\n\ndef main(stdout: Stdout):\n    greet(stdout)\n"
+    );
+    assert!(again.status.success() && again.stdout.is_empty());
+}
+
+#[test]
+fn fix_reports_what_it_cant_fix() {
+    let output =
+        fennec_on("fix", "unfixable", "def main(stdout: Stdout):\n    stdout.print(1 + True)\n").unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("can't use `+`") && stderr.contains("no fix"), "{stderr}");
 }

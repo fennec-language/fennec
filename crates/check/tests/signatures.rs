@@ -268,7 +268,7 @@ fn field_types_come_from_their_types_or_defaults() {
 }
 
 #[test]
-fn recursive_functions_that_give_back_a_value_write_their_return_type() {
+fn recursive_functions_give_back_what_their_arrow_says() {
     let program = "
         def fib(n: int):
             if n < 2:
@@ -277,38 +277,12 @@ fn recursive_functions_that_give_back_a_value_write_their_return_type() {
 
         def fact(n: int) -> int:
             1 if n <= 1 else n * fact(n - 1)
-
-        def ping(n: int):
-            pong(n)
-
-        def pong(n: int):
-            if n > 0:
-                return ping(n - 1)
-            'done'
-
-        def walk(mut items: list[int], label: str?):
-            walk(mut items, label)
-
-        def outer():
-            def inner(n: int):
-                inner(n)
-            inner(1)
     ";
     assert_eq!(
-        problems(program),
-        [
-            "`fib` calls itself, so its return type has to be written @ def fib(n: int)",
-            "`ping` calls itself, so its return type has to be written @ def ping(n: int)",
-        ]
+        crate::problems_as_written(program),
+        ["`fib` gives back an int, so its return type has to be written @ def fib(n: int)"]
     );
-    assert_eq!(
-        helps(program),
-        [
-            "write it after the parameters: `def fib(n: int) -> int:`",
-            "write it after the parameters: `def ping(n: int) -> str:`",
-        ]
-    );
-    assert_eq!(returns(program, "fact"), Err(problems(program)));
+    assert_eq!(returns(program, "fact"), Ok(Type::Int));
     // No arrow means it gives back nothing, which needs nothing written.
     let program = "
         def walk(mut items: list[int], label: str?):
@@ -398,10 +372,10 @@ fn values_from_several_places_combine() {
                 fail Other('x')
             [1].index(n)
 
-        def c(n: int):
+        def c(n: int) -> int?:
             if n > 0:
-                return a(n)
-            b(n)
+                return a(n)?
+            b(n)?
 
         def d(n: int) -> int:
             if n > 1:

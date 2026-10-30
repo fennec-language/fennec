@@ -12,7 +12,7 @@ struct Particle:
             self.vx = -self.vx
             self.hits += 1
 
-    def +(self, other: Particle):
+    def +(self, other: Particle) -> Particle:
         Particle(x=self.x + other.x, vx=self.vx + other.vx, hits=self.hits + other.hits)
 
 struct Swarm:
@@ -24,7 +24,7 @@ struct Swarm:
                 p.step(0.5)
 
     # Stops at the first particle that has bounced, after nudging it.
-    def nudge_first_bounced(mut self):
+    def nudge_first_bounced(mut self) -> bool:
         for mut p in self.particles:
             if p.hits > 0:
                 p.x = 0.0

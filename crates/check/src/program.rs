@@ -191,7 +191,7 @@ impl Program {
         }
         let wanted = match name {
             "->" => written.args.len().max(1),
-            "list" | "set" | "SoaList" | "Id" | "IdMap" => 1,
+            "list" | "set" | "SoaList" | "Id" | "IdMap" | "Iterator" => 1,
             "dict" | "Result" => 2,
             "tuple" => written.args.len(),
             name => self.type_params(name).len(),
@@ -215,7 +215,8 @@ impl Program {
             // What a function gives back when it gives back nothing, for writing the return
             // type of one that calls itself.
             "nothing" => Type::Unit,
-            "list" | "SoaList" => Type::List(arg()),
+            // A generator gives back an `Iterator[T]`, a list of what it yields.
+            "list" | "SoaList" | "Iterator" => Type::List(arg()),
             "set" => Type::Set(arg()),
             "dict" => Type::Dict(arg(), arg()),
             "Result" => Type::Result(arg(), arg()),
@@ -242,6 +243,14 @@ impl Program {
             },
         };
         Ok(if written.optional { Type::optional(ty) } else { ty })
+    }
+
+    /// Whether a program can write a type's name where it is: it's built in, declared in the
+    /// program, or imported from the standard library.
+    pub(crate) fn can_name(&self, name: &str) -> bool {
+        fennec_syntax::importable_type(name).is_none()
+            || self.types.get(name).is_some_and(|info| !info.prelude)
+            || self.imported_types.contains(name)
     }
 
     /// Whether a name is an interface: one the program declares, or a built-in one.
@@ -292,9 +301,9 @@ impl Program {
 /// The interfaces every type that can fits automatically.
 pub(crate) const BUILT_IN_INTERFACES: [&str; 4] = ["Eq", "Hashable", "Ordered", "Format"];
 
-const BUILT_IN_TYPES: [&str; 19] = [
+const BUILT_IN_TYPES: [&str; 20] = [
     "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "set", "dict", "tuple",
-    "Id", "IdMap", "Stdout", "Fs", "Clock", "Result", "->",
+    "Id", "IdMap", "Stdout", "Fs", "Clock", "Result", "Iterator", "->",
 ];
 
 /// An interface written where a type goes, as in `list[Shape]`.
@@ -332,6 +341,14 @@ fn unknown_type(name: &str, span: Span) -> Diagnostic {
         "Optional" => diagnostic.with_help("write `?` after the type, like `Enemy?`"),
         _ => diagnostic.with_help(format!("declare it, like `struct {name}:`, or check the spelling")),
     }
+}
+
+/// The return type a `def` writes. `-> None` counts as none, since no arrow already means it
+/// gives back nothing; it's reported, with a fix that removes it.
+pub(crate) fn written_ret(def: &FnDef) -> Option<&TypeExpr> {
+    def.ret.as_ref().filter(|ret| {
+        !(matches!(ret.name.as_str(), "None" | "nothing") && ret.args.is_empty() && !ret.optional)
+    })
 }
 
 /// A written type as source text, for suggesting a fix.

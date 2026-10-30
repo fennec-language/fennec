@@ -224,6 +224,34 @@ fn every_example_is_fully_typed() {
     }
 }
 
+/// The checker doesn't report problems in the standard library, so this holds it to the
+/// rule it holds programs to: a `def` that gives back a value writes its return type.
+#[test]
+fn the_standard_library_writes_every_return_type() {
+    let (_, checked) = checked("def main(stdout: Stdout):\n    pass\n").unwrap();
+    for source in fennec_syntax::prelude() {
+        let module = fennec_syntax::parse_prelude(source).unwrap();
+        for item in &module.items {
+            let (owner, defs) = match item {
+                Item::Function(def) => (None, std::slice::from_ref(def)),
+                Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                    (Some(&def.name), def.methods.as_slice())
+                }
+                _ => continue,
+            };
+            for def in defs.iter().filter(|def| def.ret.is_none()) {
+                let key = owner.map_or_else(|| def.name.clone(), |owner| format!("{owner}.{}", def.name));
+                let returns = &checked.signatures.get(&key).unwrap().returns;
+                let nothing = match returns {
+                    Type::Result(value, _) => **value == Type::Unit,
+                    other => *other == Type::Unit,
+                };
+                assert!(nothing, "`{key}` gives back {returns:?} with no arrow");
+            }
+        }
+    }
+}
+
 #[test]
 fn the_standard_library_is_fully_typed() {
     let (_, checked) = checked("def main(stdout: Stdout):\n    pass\n").unwrap();

@@ -13,12 +13,12 @@ def find(players: list[Player], name: str) -> Player?:
         if player.name == name: return player
     None
 
-def require(players: list[Player], name: str):
+def require(players: list[Player], name: str) -> Player:
     player = find(players, name)
     if player is None: fail NotFound(name)
     player
 
-def challenge(players: list[Player], name: str):
+def challenge(players: list[Player], name: str) -> str:
     player = require(players, name)?
     if player.level < 5: fail TooWeak(player.level)
     f"{player.name} accepts the challenge"

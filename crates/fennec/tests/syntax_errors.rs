@@ -27,3 +27,22 @@ fn syntax_errors_say_what_was_expected_and_found() {
         assert_eq!(error.as_deref(), Some(message), "{source}");
     }
 }
+
+#[test]
+fn lexer_errors_point_at_one_character() {
+    let cases = [
+        ("x =\t1", 3, "tabs aren't allowed"),
+        ("x = \"open", 4, "this string never ends"),
+        ("x = f\"{}\"", 7, "this f-string has an empty `{}`"),
+    ];
+    for (source, at, message) in cases {
+        let error = fennec_syntax::parse(&format!("{source}\n"))
+            .err()
+            .map(|diagnostic| (diagnostic.message, diagnostic.span));
+        assert_eq!(
+            error,
+            Some((message.to_owned(), fennec_syntax::Span { start: at, end: at + 1 })),
+            "{source}"
+        );
+    }
+}

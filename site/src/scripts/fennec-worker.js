@@ -35,7 +35,7 @@ function describe(error) {
     return "error: the program ran out of stack\n  = help: the browser's stack is small; check for recursion that goes deep\n";
   }
   if (error instanceof WebAssembly.RuntimeError) {
-    return `error: the interpreter stopped unexpectedly (${error.message})\n  = help: this is a bug in Fennec; please report it at https://github.com/seashell86/fennec/issues\n`;
+    return `error: the interpreter stopped unexpectedly (${error.message})\n  = help: this is a bug in Fennec; please report it at https://github.com/fennec-language/fennec/issues\n`;
   }
   return `error: couldn't start the interpreter: ${error.message}\n`;
 }

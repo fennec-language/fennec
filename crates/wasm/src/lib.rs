@@ -357,10 +357,15 @@ mod tests {
 
     #[test]
     fn type_checks_before_running() {
-        let report = run("def main(stdout: Stdout):\n    stdout.print(\"ran\")\n    x: int = \"text\"\n");
+        let source = "def area(width: float, height: float):\n    width * height\n\ndef main(stdout: Stdout):\n    stdout.print(\"ran\")\n    stdout.print(area(width=2.0))\n";
+        let report = run(source);
         assert!(!report.ok);
+        // Nothing ran: the checker stopped it, so "ran" was never printed.
         assert_eq!(report.parts.len(), 1, "{:?}", report.parts);
-        assert!(report.parts[0].1.contains("--> playground.fen:3:"), "{:?}", report.parts);
+        let (stream, error) = &report.parts[0];
+        assert_eq!(*stream, Stream::Err);
+        assert!(error.starts_with("error: `area` is missing its `height` argument\n"), "{error}");
+        assert!(error.contains("--> playground.fen:6:18"), "{error}");
     }
 
     #[test]

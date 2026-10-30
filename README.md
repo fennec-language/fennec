@@ -65,7 +65,7 @@ Every program in [`examples/`](examples) is a test: it must print exactly its `.
 - `crates/check`: the type checker, which also infers every function's signature.
 - `crates/interp`: the interpreter.
 - `crates/fennec`: the `fennec` command.
-- `crates/wasm`: the interpreter as WebAssembly, for the website's [playground](https://seashell86.github.io/fennec/playground/).
+- `crates/wasm`: the interpreter as WebAssembly, for the website's [playground](https://fennec-lang.dev/playground/).
 - `examples/`: example programs, which double as the test suite.
 - `site/`: the website, built with [Astro](https://astro.build) and deployed to GitHub Pages on every push to `main`.
 

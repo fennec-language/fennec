@@ -28,6 +28,10 @@ Each module under `std` has its own files, so modules added in parallel don't to
 
 Then add the module's name to the `modules!` list in each crate's `stdlib.rs`, one line each.
 
+## Changing the lexer, parser or checker
+
+`selfhost/` is Fennec's front end written in Fennec, and a test checks that it matches the Rust one exactly. A change to `crates/syntax` or `crates/check` usually needs the same change in `selfhost/`. "Changing the front end" in [selfhost/README.md](selfhost/README.md) says where.
+
 ## The bar a change has to clear
 
 CI runs all of this on every pull request, and a change merges only when it all passes:

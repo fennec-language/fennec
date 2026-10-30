@@ -60,6 +60,19 @@ impl Lowerer<'_, '_> {
             Ty::Int => Element::Int,
             Ty::Float => Element::Float,
             Ty::Bool => Element::Bool,
+            Ty::Struct(id) if self.cases(id)?.is_some() => {
+                let layout = self.layout(id)?;
+                let mut cases = Vec::new();
+                for case in self.cases(id)?.unwrap_or_default() {
+                    let mut fields = Vec::with_capacity(case.fields.len());
+                    for field in &case.fields {
+                        fields.push((std::rc::Rc::from(field.name.as_str()), self.describe(field.ty)?));
+                    }
+                    cases.push((std::rc::Rc::from(case.name.as_str()), fields));
+                }
+                let words = usize::try_from(layout.size / WORD).unwrap_or(0);
+                Element::Enum { name: std::rc::Rc::from(layout.name.as_str()), cases, words }
+            }
             Ty::Struct(id) => {
                 let layout = self.layout(id)?;
                 let mut fields = Vec::with_capacity(layout.fields.len());

@@ -2,11 +2,16 @@
 //! with no `where` rules. Native code keeps them in memory it owns, laid out field after
 //! field, 8 bytes each, a nested struct in line. Every other struct is an object the runtime
 //! holds.
+//!
+//! Plain enums, whose cases hold only such values, are kept the same way: a word for the
+//! case's number, then the case's fields, padded to the biggest case. Every word of an enum
+//! is a machine int: floats keep their bits and bools are 0 or 1, and words a case doesn't
+//! use are 0. So two enum values are equal exactly when their words are.
 
 use std::collections::HashMap;
 
 use fennec_check::{Signatures, Type};
-use fennec_syntax::{Expr, TypeDef};
+use fennec_syntax::{Expr, TypeDef, TypeExpr};
 
 use crate::types::{Cap, Ty};
 
@@ -22,60 +27,158 @@ pub(crate) struct Field {
     pub(crate) default: Option<Expr>,
 }
 
-pub(crate) struct Layout {
+/// One case of a plain enum: its name, and its fields, each at its offset from the start
+/// of the enum's value.
+pub(crate) struct Case {
     pub(crate) name: String,
     pub(crate) fields: Vec<Field>,
+}
+
+pub(crate) struct Layout {
+    pub(crate) name: String,
+    /// A struct's fields. An enum's are its words, the case's number first, all ints.
+    pub(crate) fields: Vec<Field>,
     pub(crate) size: u32,
+    /// An enum's cases, in the order they're written; `None` for a struct.
+    pub(crate) cases: Option<Vec<Case>>,
 }
 
 #[derive(Default)]
 pub(crate) struct Layouts {
     by_name: HashMap<String, u32>,
     all: Vec<Layout>,
+    /// Every enum with a case of each name, plain or not, for `.Circle` without its type.
+    owners: HashMap<String, Vec<String>>,
+}
+
+/// What laying out types needs to see: the checker's structs, and the enums as written.
+struct Sources<'s> {
+    signatures: &'s Signatures,
+    enums: HashMap<&'s str, &'s TypeDef>,
 }
 
 impl Layouts {
-    /// The layouts of every plain struct the checker knows, the standard library's included.
-    pub(crate) fn new(signatures: &Signatures, names: impl Iterator<Item = String>) -> Layouts {
+    /// The layouts of every plain struct the checker knows and every plain enum, the
+    /// standard library's included.
+    pub(crate) fn new<'s>(
+        signatures: &'s Signatures,
+        names: impl Iterator<Item = String>,
+        enums: impl Iterator<Item = &'s TypeDef>,
+    ) -> Layouts {
+        let sources = Sources { signatures, enums: enums.map(|def| (def.name.as_str(), def)).collect() };
         let mut layouts = Layouts::default();
-        for name in names {
-            layouts.add(signatures, &name, &mut Vec::new());
+        for def in sources.enums.values() {
+            for case in &def.cases {
+                layouts.owners.entry(case.name.clone()).or_default().push(def.name.clone());
+            }
+        }
+        let mut enum_names: Vec<&str> = sources.enums.keys().copied().collect();
+        enum_names.sort_unstable();
+        for name in names.chain(enum_names.into_iter().map(str::to_owned)) {
+            layouts.add(&sources, &name, &mut Vec::new());
         }
         layouts
     }
 
-    /// Lays out a struct if it's plain, after the plain structs inside it. `visiting` stops
-    /// a struct that contains itself.
-    fn add(&mut self, signatures: &Signatures, name: &str, visiting: &mut Vec<String>) -> Option<u32> {
+    /// Lays out a struct or enum if it's plain, after the plain types inside it. `visiting`
+    /// stops a type that contains itself.
+    fn add(&mut self, sources: &Sources<'_>, name: &str, visiting: &mut Vec<String>) -> Option<u32> {
         if let Some(id) = self.by_name.get(name) {
             return Some(*id);
         }
-        let structure = signatures.structure(name)?;
-        if structure.rules || visiting.iter().any(|seen| seen == name) {
+        if visiting.iter().any(|seen| seen == name) {
             return None;
         }
         visiting.push(name.to_owned());
-        let mut fields = Vec::with_capacity(structure.fields.len());
-        let mut offset = 0;
-        for (field, ty) in &structure.fields {
-            let (ty, size) = match ty {
-                Type::Int => (Ty::Int, WORD),
-                Type::Float => (Ty::Float, WORD),
-                Type::Bool => (Ty::Bool, WORD),
-                Type::Named(inner) => {
-                    let id = self.add(signatures, inner, visiting)?;
-                    (Ty::Struct(id), self.get(id)?.size)
+        let layout = match sources.signatures.structure(name) {
+            Some(structure) if !structure.rules => {
+                let mut fields = Vec::with_capacity(structure.fields.len());
+                for (field, ty) in &structure.fields {
+                    fields.push((field.clone(), self.field_ty(sources, ty, visiting)?, None));
                 }
-                _ => return None,
-            };
-            fields.push(Field { name: field.clone(), ty, offset, default: None });
-            offset += size;
-        }
+                let (fields, size) = self.place_fields(fields, 0)?;
+                Layout { name: name.to_owned(), fields, size: size.max(WORD), cases: None }
+            }
+            Some(_) => return None,
+            None => self.enum_layout(sources, name, visiting)?,
+        };
         visiting.pop();
         let id = u32::try_from(self.all.len()).ok()?;
-        self.all.push(Layout { name: name.to_owned(), fields, size: offset.max(WORD) });
+        self.all.push(layout);
         self.by_name.insert(name.to_owned(), id);
         Some(id)
+    }
+
+    /// Lays out a plain enum: the case's number, then the biggest case's worth of words.
+    fn enum_layout(
+        &mut self,
+        sources: &Sources<'_>,
+        name: &str,
+        visiting: &mut Vec<String>,
+    ) -> Option<Layout> {
+        let def = sources.enums.get(name)?;
+        if def.cases.is_empty() {
+            return None;
+        }
+        let mut cases = Vec::with_capacity(def.cases.len());
+        let mut size = WORD;
+        for case in &def.cases {
+            let mut fields = Vec::with_capacity(case.fields.len());
+            for field in &case.fields {
+                if field.rule.is_some() {
+                    return None;
+                }
+                let ty = written_type(field.ty.as_ref()?)?;
+                fields.push((
+                    field.name.clone(),
+                    self.field_ty(sources, &ty, visiting)?,
+                    field.default.clone(),
+                ));
+            }
+            let (fields, end) = self.place_fields(fields, WORD)?;
+            size = size.max(end);
+            cases.push(Case { name: case.name.clone(), fields });
+        }
+        let words = size / WORD;
+        let fields = (0..words)
+            .map(|word| Field { name: format!("\0{word}"), ty: Ty::Int, offset: word * WORD, default: None })
+            .collect();
+        Some(Layout { name: name.to_owned(), fields, size, cases: Some(cases) })
+    }
+
+    /// How a plain field is held, laying out the type it names first.
+    fn field_ty(&mut self, sources: &Sources<'_>, ty: &Type, visiting: &mut Vec<String>) -> Option<Ty> {
+        Some(match ty {
+            Type::Int => Ty::Int,
+            Type::Float => Ty::Float,
+            Type::Bool => Ty::Bool,
+            Type::Named(inner) => Ty::Struct(self.add(sources, inner, visiting)?),
+            _ => return None,
+        })
+    }
+
+    /// Places fields one after another from `start`, giving back where they end.
+    fn place_fields(&self, fields: Vec<(String, Ty, Option<Expr>)>, start: u32) -> Option<(Vec<Field>, u32)> {
+        let mut placed = Vec::with_capacity(fields.len());
+        let mut offset = start;
+        for (name, ty, default) in fields {
+            let size = match ty {
+                Ty::Struct(id) => self.get(id)?.size,
+                _ => WORD,
+            };
+            placed.push(Field { name, ty, offset, default });
+            offset += size;
+        }
+        Some((placed, offset))
+    }
+
+    /// The enum a case without its type, like `.Circle`, belongs to, when exactly one enum
+    /// has a case of that name.
+    pub(crate) fn owner(&self, case: &str) -> Option<&str> {
+        match self.owners.get(case)?.as_slice() {
+            [owner] => Some(owner),
+            _ => None,
+        }
     }
 
     /// Records the defaults a struct's definition gives its fields.
@@ -116,4 +219,19 @@ impl Layouts {
             _ => Ty::Obj,
         }
     }
+}
+
+/// The type a field's written type names, when it's a plain one: a number, a bool, or a
+/// struct or enum by name.
+fn written_type(written: &TypeExpr) -> Option<Type> {
+    if written.optional || !written.args.is_empty() {
+        return None;
+    }
+    Some(match written.name.as_str() {
+        "int" => Type::Int,
+        "float" => Type::Float,
+        "bool" => Type::Bool,
+        "str" | "list" | "dict" | "set" | "tuple" | "Id" | "IdMap" => return None,
+        name => Type::Named(name.to_owned()),
+    })
 }

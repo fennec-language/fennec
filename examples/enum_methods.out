@@ -1,0 +1,12 @@
+Light.Red 1.5
+Light.Green(seconds=30.0) 30.0
+Light.Amber(blinking=False) 1.5
+Light.Amber(blinking=True) 1.5
+Light.Red 1.5
+Light.Green(seconds=2.5) 2.5 True Light.Amber(blinking=False)
+Light.Amber(blinking=True) 1 Junction(at=Cell(row=1, col=2), light=Light.Amber(blinking=False))
+[Light.Green(seconds=30.0), Light.Amber(blinking=False), Light.Amber(blinking=True)]
+False True 4
+300
+yes
+True

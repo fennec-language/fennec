@@ -118,8 +118,13 @@ impl<'m> Program<'m> {
         prelude: &'m [Module],
         signatures: &Signatures,
     ) -> Result<Self, Diagnostic> {
-        let mut layouts = Layouts::new(signatures, signatures.structures().map(str::to_owned));
-        for item in prelude.iter().chain(std::iter::once(module)).flat_map(|module| &module.items) {
+        let items = || prelude.iter().chain(std::iter::once(module)).flat_map(|module| &module.items);
+        let enums = items().filter_map(|item| match item {
+            Item::Enum(def) => Some(def),
+            _ => None,
+        });
+        let mut layouts = Layouts::new(signatures, signatures.structures().map(str::to_owned), enums);
+        for item in items() {
             if let Item::Struct(def) = item {
                 layouts.add_defaults(def);
             }

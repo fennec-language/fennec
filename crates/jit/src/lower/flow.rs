@@ -17,24 +17,25 @@ pub(super) struct Arm {
 
 impl Lowerer<'_, '_> {
     /// Ends a branch with its value, unless it already left (with `return`, say).
-    pub(super) fn arm_end(&mut self, value: Option<super::Value>, ty: Ty) -> Option<Arm> {
+    pub(super) fn arm_end(&mut self, value: Option<super::Value>, ty: Ty) -> Result<Option<Arm>, Diagnostic> {
         if self.is_dead() {
-            return None;
+            return Ok(None);
         }
         let block = self.b.create_block();
         let ty = if value.is_some() { ty } else { Ty::Unit };
-        // A struct crosses into the merge as an address.
-        let value = match (value, ty) {
-            (Some(value), Ty::Struct(id)) => self.address_of(value, id).ok(),
-            _ => value,
+        // A struct crosses into the merge as its leaves, so it can stay in registers.
+        let values = match (value, ty) {
+            (Some(value), Ty::Struct(id)) => self.leaves(value, id)?,
+            (Some(value), ty) if abi(ty).is_some() => vec![value],
+            _ => Vec::new(),
         };
-        if let (Some(value), Some(abi_ty)) = (value, abi(ty)) {
-            self.b.append_block_param(block, abi_ty);
-            self.b.ins().jump(block, &[value.into()]);
-        } else {
-            self.b.ins().jump(block, &[]);
+        for value in &values {
+            let value_ty = self.b.func.dfg.value_type(*value);
+            self.b.append_block_param(block, value_ty);
         }
-        Some(Arm { block, ty })
+        let args: Vec<_> = values.into_iter().map(Into::into).collect();
+        self.b.ins().jump(block, &args);
+        Ok(Some(Arm { block, ty }))
     }
 
     /// Joins branches into one value. Branches that give the same kind of machine value
@@ -49,23 +50,44 @@ impl Lowerer<'_, '_> {
             Ty::Obj
         };
         let merge = self.b.create_block();
-        let merge_ty = abi(joined);
-        if let Some(abi_ty) = merge_ty {
-            self.b.append_block_param(merge, abi_ty);
+        let merge_tys = match joined {
+            Ty::Struct(id) => {
+                let mut tys = Vec::new();
+                for (_, leaf) in self.leaf_types(id)? {
+                    tys.extend(abi(leaf));
+                }
+                tys
+            }
+            ty => abi(ty).into_iter().collect(),
+        };
+        for ty in &merge_tys {
+            self.b.append_block_param(merge, *ty);
         }
         for arm in arms {
             self.b.switch_to_block(arm.block);
             self.b.seal_block(arm.block);
-            let value = self.b.block_params(arm.block).first().copied();
-            if merge_ty.is_some() {
-                let converted = self.convert(value, arm.ty, joined, span)?;
-                self.b.ins().jump(merge, &[converted.into()]);
-            } else {
-                self.b.ins().jump(merge, &[]);
-            }
+            let params = self.b.block_params(arm.block).to_vec();
+            let value = match arm.ty {
+                Ty::Struct(_) => Some(self.struct_of_leaves(params)),
+                _ => params.first().copied(),
+            };
+            let values = match joined {
+                Ty::Struct(id) => {
+                    let converted = self.convert(value, arm.ty, joined, span)?;
+                    self.leaves(converted, id)?
+                }
+                _ if merge_tys.is_empty() => Vec::new(),
+                _ => vec![self.convert(value, arm.ty, joined, span)?],
+            };
+            let args: Vec<_> = values.into_iter().map(Into::into).collect();
+            self.b.ins().jump(merge, &args);
         }
         self.b.switch_to_block(merge);
-        Ok((self.b.block_params(merge).first().copied(), joined))
+        let params = self.b.block_params(merge).to_vec();
+        Ok(match joined {
+            Ty::Struct(_) => (Some(self.struct_of_leaves(params)), joined),
+            _ => (params.first().copied(), joined),
+        })
     }
 
     pub(super) fn match_value(
@@ -75,6 +97,18 @@ impl Lowerer<'_, '_> {
         span: Span,
     ) -> Result<Lowered, Diagnostic> {
         let (value, ty) = self.expr(subject)?;
+        if matches!(ty, Ty::Int | Ty::Bool | Ty::Struct(_)) {
+            // Arms drop temporaries back to here, keeping the ones made before the match.
+            let mark = if self.frame && self.dirty { Some(self.help(Helper::Mark, &[])?) } else { None };
+            self.bases.extend(mark);
+            let lowered = self.match_native((value, ty), arms, subject.span);
+            if mark.is_some() {
+                self.bases.pop();
+            }
+            if let Some(ends) = lowered? {
+                return self.join(ends, span);
+            }
+        }
         let subject_handle = self.handle_of(value, ty, subject.span)?;
         // The arms' statements drop temporaries back to here, keeping the subject.
         let mark = self.help(Helper::Mark, &[])?;
@@ -114,7 +148,7 @@ impl Lowerer<'_, '_> {
             }
             let (value, ty) = self.tail(&arm.body)?;
             self.close_scope()?;
-            ends.extend(self.arm_end(value, ty));
+            ends.extend(self.arm_end(value, ty)?);
             self.b.switch_to_block(next);
         }
         let [start, end] = self.span_args(span);
@@ -146,10 +180,10 @@ impl Lowerer<'_, '_> {
         self.b.ins().brif(passes, fallback, &[], present, &[]);
         self.b.switch_to_block(fallback);
         let (default_value, default_ty) = self.expr(default)?;
-        let mut arms: Vec<_> = self.arm_end(default_value, default_ty).into_iter().collect();
+        let mut arms: Vec<_> = self.arm_end(default_value, default_ty)?.into_iter().collect();
         self.b.switch_to_block(present);
         let inner = self.help(Helper::Unwrap, &[handle])?;
-        arms.extend(self.arm_end(Some(inner), Ty::Obj));
+        arms.extend(self.arm_end(Some(inner), Ty::Obj)?);
         self.join(arms, default.span)
     }
 

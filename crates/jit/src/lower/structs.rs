@@ -154,6 +154,9 @@ impl<'a> Lowerer<'a, '_> {
     /// A runtime object with a struct's values, for the parts of the program that run there.
     pub(super) fn box_struct(&mut self, value: Value, id: u32, span: Span) -> Result<Value, Diagnostic> {
         let layout = self.layout(id)?;
+        if let Some(cases) = &layout.cases {
+            return self.box_enum(value, id, cases, span);
+        }
         for field in &layout.fields {
             let (field_value, ty) = self.load_field(value, id, field)?;
             let handle = self.handle_of(field_value, ty, span)?;
@@ -168,6 +171,9 @@ impl<'a> Lowerer<'a, '_> {
     /// A runtime object's values as a native struct, failing like the interpreter when it
     /// isn't the struct expected.
     pub(super) fn unbox_struct(&mut self, handle: Value, id: u32, span: Span) -> Result<Value, Diagnostic> {
+        if let Some(cases) = &self.layout(id)?.cases {
+            return self.unbox_enum(handle, id, cases, span);
+        }
         let mut leaves = Vec::new();
         self.unbox_leaves(handle, id, span, &mut leaves)?;
         Ok(self.struct_of_leaves(leaves))
@@ -187,6 +193,10 @@ impl<'a> Lowerer<'a, '_> {
             let [start, end] = self.span_args(span);
             let value = self.help(Helper::Field, &[copy, name, optional, start, end])?;
             match field.ty {
+                Ty::Struct(inner) if self.layout(inner)?.cases.is_some() => {
+                    let unboxed = self.unbox_struct(value, inner, span)?;
+                    leaves.extend(self.leaves(unboxed, inner)?);
+                }
                 Ty::Struct(inner) => self.unbox_leaves(value, inner, span, leaves)?,
                 ty => leaves.push(self.convert(Some(value), Ty::Obj, ty, span)?),
             }
@@ -204,14 +214,37 @@ impl<'a> Lowerer<'a, '_> {
         span: Span,
     ) -> Result<Option<Lowered>, Diagnostic> {
         let layout = self.layout(id)?;
-        let mut supplied: Vec<Option<&Arg>> = vec![None; layout.fields.len()];
+        if layout.cases.is_some() {
+            return Ok(None);
+        }
+        let Some(values) = self.field_values(&layout.fields, args, span)? else { return Ok(None) };
+        let mut leaves = Vec::new();
+        for (field, value) in layout.fields.iter().zip(values) {
+            match field.ty {
+                Ty::Struct(inner) => leaves.extend(self.leaves(value, inner)?),
+                _ => leaves.push(value),
+            }
+        }
+        Ok(Some((Some(self.struct_of_leaves(leaves)), Ty::Struct(id))))
+    }
+
+    /// The value of each field from call arguments, in the order they're written, then
+    /// defaults for the rest, each as its field holds it. `None` when the arguments don't
+    /// line up with the fields.
+    pub(super) fn field_values(
+        &mut self,
+        fields: &[Field],
+        args: &[Arg],
+        span: Span,
+    ) -> Result<Option<Vec<Value>>, Diagnostic> {
+        let mut supplied: Vec<Option<&Arg>> = vec![None; fields.len()];
         let mut next = 0;
         for arg in args {
             if arg.is_mut {
                 return Ok(None);
             }
             let at = if let Some(name) = &arg.name {
-                layout.fields.iter().position(|field| field.name == *name)
+                fields.iter().position(|field| field.name == *name)
             } else {
                 next += 1;
                 Some(next - 1)
@@ -221,15 +254,15 @@ impl<'a> Lowerer<'a, '_> {
                 _ => return Ok(None),
             }
         }
-        if layout.fields.iter().zip(&supplied).any(|(field, arg)| arg.is_none() && field.default.is_none()) {
+        if fields.iter().zip(&supplied).any(|(field, arg)| arg.is_none() && field.default.is_none()) {
             return Ok(None);
         }
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
             values.push((arg, self.expr(&arg.value)?));
         }
-        let mut leaves = Vec::new();
-        for (field, arg) in layout.fields.iter().zip(&supplied) {
+        let mut converted = Vec::with_capacity(fields.len());
+        for (field, arg) in fields.iter().zip(&supplied) {
             let given = arg.and_then(|arg| {
                 values.iter().find(|(given, _)| std::ptr::eq(*given, arg)).map(|(_, value)| *value)
             });
@@ -238,13 +271,9 @@ impl<'a> Lowerer<'a, '_> {
                 (None, Some(default)) => self.expr(default)?,
                 (None, None) => return Err(internal("a field with no value", span)),
             };
-            let value = self.convert(value, ty, field.ty, span)?;
-            match field.ty {
-                Ty::Struct(inner) => leaves.extend(self.leaves(value, inner)?),
-                _ => leaves.push(value),
-            }
+            converted.push(self.convert(value, ty, field.ty, span)?);
         }
-        Ok(Some((Some(self.struct_of_leaves(leaves)), Ty::Struct(id))))
+        Ok(Some(converted))
     }
 
     /// Creates a struct name: a variable for each leaf.

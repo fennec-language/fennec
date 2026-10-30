@@ -1,0 +1,60 @@
+# Enums with methods, enums that come back from the runtime, inside structs and dicts, and
+# changed in place in a list. `match` also takes apart structs and bools natively.
+
+struct Cell:
+    row: int
+    col: int
+
+enum Light:
+    Red
+    Amber(blinking: bool)
+    Green(seconds: float)
+
+    def next(self) -> Light:
+        match self:
+            case .Red: .Green(30.0)
+            case .Green(_): .Amber(False)
+            case .Amber(True): .Red
+            case .Amber(_): .Amber(True)
+
+    def wait(self) -> float:
+        match self:
+            case .Green(seconds): seconds
+            case _: 1.5
+
+    def cycle(mut self):
+        self = self.next()
+
+struct Junction:
+    at: Cell
+    light: Light
+
+def main(stdout: Stdout):
+    mut light = Light.Red
+    for i in range(5):
+        stdout.print(light, light.wait())
+        light.cycle()
+    lights = {"a": Light.Green(2.5), "b": .Amber(True)}
+    got = lights["a"]
+    stdout.print(got, got.wait(), got == .Green(2.5), got.next())
+    junctions = {"j": Junction(at=Cell(1, 2), light=.Amber(False))}
+    j = junctions["j"]
+    stdout.print(j.light.next(), j.at.row, j)
+    mut all = [Light.Red, .Green(1.0), .Amber(False)]
+    for mut l in all:
+        l = l.next()
+    stdout.print(all)
+    all.append(.Green(-0.0))
+    stdout.print(all[-1] == .Green(0.0), all[-1] == .Green(-0.0), len(all))
+    cell = Cell(3, 4)
+    picked = match cell:
+        case Cell(0, c): c
+        case Cell(r, 4): r * 100
+        case _: -1
+    stdout.print(picked)
+    flag = cell.row > 2
+    said = match flag:
+        case True: "yes"
+        case False: "no"
+    stdout.print(said)
+    stdout.print(Junction(at=cell, light=.Red) == Junction(at=Cell(3, 4), light=Light.Red))

@@ -1,0 +1,17 @@
+## Byte ranges into a source file, and the diagnostics that point at them.
+## Mirrors `crates/syntax/src/span.rs` and `diagnostic.rs`.
+
+## A range of bytes in a source file, used to point diagnostics at code.
+struct Span:
+    start: int
+    end: int
+
+    ## The smallest span covering both this one and `other`.
+    def to(self, other: Span) -> Span:
+        Span(start=min(self.start, other.start), end=max(self.end, other.end))
+
+## A problem in a Fennec program: what's wrong, where, and how to fix it.
+error Diagnostic:
+    message: str
+    span: Span
+    help: str? = None

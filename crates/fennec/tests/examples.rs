@@ -19,7 +19,7 @@ const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] =
 
 /// Examples that compile to plain machine code: nothing handed to the interpreter, and no
 /// function needing the runtime's frames.
-const PLAIN_MACHINE_CODE: &[&str] = &["hello.fen", "numbers.fen"];
+const PLAIN_MACHINE_CODE: &[&str] = &["hello.fen", "numbers.fen", "robot.fen"];
 
 /// Checks how an example compiled, and that its run left nothing behind in the runtime.
 fn check_report(name: &str, report: &fennec_jit::Report) {

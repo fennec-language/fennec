@@ -58,11 +58,11 @@ impl Lowerer<'_, '_> {
             self.b.ins().brif(test, then, &[], next, &[]);
             self.b.switch_to_block(then);
             let (value, ty) = self.block_tail(body)?;
-            arms.extend(self.arm_end(value, ty));
+            arms.extend(self.arm_end(value, ty)?);
             self.b.switch_to_block(next);
         }
         let (value, ty) = self.block_tail(otherwise)?;
-        arms.extend(self.arm_end(value, ty));
+        arms.extend(self.arm_end(value, ty)?);
         self.join(arms, otherwise.last().map_or(Span::default(), |stmt| stmt.span))
     }
 

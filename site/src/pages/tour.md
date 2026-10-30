@@ -276,6 +276,26 @@ world.enemies.remove(id)
 world.enemies.get(id)   # None
 ```
 
+## Strings
+
+`str` is UTF-8 text that works like Python's: f-strings with Python's format specs, slicing, `split`, `strip`, `join`, `startswith`, `in` and the rest.
+
+```fennec
+greeting = f"Hello, {name}! You have {coins:,} coins and {health:.1f} HP"
+
+first = name[0]                    # a one-character str
+words = "fire ice storm".split()   # ["fire", "ice", "storm"]
+clean = raw.strip().lower()
+
+mut log = ""
+log += "spawned\n"                 # appends in place
+```
+
+- **Short strings don't allocate.** Up to about 23 bytes, like names and keys, are stored inline.
+- **Indexing is fast.** It's constant-time for ASCII text, and cached for other text.
+- **Slices share memory instead of copying,** so `for line in file.lines():` hands you each line without a copy.
+- **`bytes` is a separate type for binary data.** Text read from outside is checked once: `fs.read_text` fails on invalid UTF-8, and `fs.read_bytes` gives raw bytes.
+
 ## Generators
 
 A function with `yield` produces values one at a time.
@@ -376,6 +396,28 @@ for command in on_explosion(world, blast):
 ```
 
 Every change to the world happens in one visible place, which also makes replays and networking simpler.
+
+## Concurrency
+
+> Planned after v0.1.
+
+There's no `async` or `await`. Code that waits on disk or the network is written as normal functions, and the runtime does other work while it waits. Independent reads overlap automatically:
+
+```fennec
+def load_assets(fs: Fs, manifest: Manifest):
+    textures = load_textures(fs, manifest)?    # these two reads run at the same time
+    sounds = load_sounds(fs, manifest)?
+    Assets(textures=textures, sounds=sounds)
+```
+
+Using several cores takes one word, and the compiler suggests where it's safe and worthwhile:
+
+```fennec
+for mut particle in parallel(particles):
+    particle.position += particle.velocity * dt
+```
+
+Each element is changed by exactly one thread, and results are deterministic. Data races are impossible: values aren't shared, and changing shared state goes through a lock with `with stats.lock() as mut s:`.
 
 ## Capabilities
 

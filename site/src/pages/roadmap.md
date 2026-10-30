@@ -31,10 +31,12 @@ The first milestone is running the examples on this site.
 
 ## v0.2: native speed
 
+- The typed bytecode interpreter.
 - The fast compiler for development builds, with hot functions promoted from the interpreter.
 - The optimizing compiler for release builds.
 - The shared build cache.
 - The benchmark suite and the performance check on every change.
+- Standard library core: `fs`, `path`, `json`, `toml`, `time`, `random`, `re`, `collections`.
 
 ## v0.3: games
 
@@ -42,12 +44,17 @@ The first milestone is running the examples on this site.
 - C interop with `extern`, `ptr[...]`, `def del` and `unsafe`.
 - A platform layer for windows, input, audio and graphics.
 
+## v0.4: concurrency and networking
+
+- Waiting on I/O without `async`: the runtime runs other work, and independent reads overlap automatically.
+- `parallel(...)` loops, with the compiler suggesting where they're safe and worthwhile.
+- Tasks scoped to a `with` block, locks and channels.
+- `http`, `net`, `tls` and `sqlite`.
+
 ## Later
 
-- Parallelism: `parallel(...)` loops, tasks scoped to a `with` block, locks and channels. There will be no `async`/`await`; waiting on I/O lets other tasks run automatically.
-- Views into strings and lists, so streaming text needs no copies.
+- Views into lists that avoid copies, as string slices already do.
 - Contracts with automatic testing, and property tests for every type.
-- Capabilities throughout the standard library.
 - Hot reload.
 - Shared objects with their own identity, if real programs turn out to need them.
 - A Fennec compiler written in Fennec.
@@ -59,6 +66,7 @@ These are still being decided:
 - Whether ID types are written with an alias (`type EnemyId = Id[Enemy]`) or provided automatically (`Enemy.Id`).
 - Whether integer overflow checks stay on in release builds by default. The benchmark suite will decide.
 - How closures longer than one line should look, beyond nested functions.
+- Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.
 - How views into collections are returned from functions without lifetime annotations.
 - The file extension (currently `.fen`).

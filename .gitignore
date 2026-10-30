@@ -4,3 +4,5 @@ site/dist/
 site/.astro/
 .claude/
 target/
+mutants.out/
+mutants.out.old/

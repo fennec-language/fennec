@@ -1,0 +1,6 @@
+# Fennec source, expected outputs and everything else use LF on every platform, so examples
+# compare byte for byte on Windows too.
+* text=auto eol=lf
+*.fen linguist-language=Python
+*.png binary
+*.webp binary

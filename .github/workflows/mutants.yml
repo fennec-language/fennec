@@ -1,0 +1,77 @@
+name: Mutation tests
+
+# cargo-mutants changes the code in small ways (flipping a comparison, returning a default,
+# deleting a statement) and checks that some test fails each time. A change no test notices
+# is a gap in the tests. Pull requests check only the code they change; every week, and on
+# demand, the whole compiler is checked across shards.
+on:
+  pull_request:
+    paths: ["crates/**", "examples/**", "Cargo.*"]
+  schedule:
+    - cron: "17 6 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  changed-code:
+    name: Mutate the changed code
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-mutants@27.1.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Diff against the base branch
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: git diff "$BASE" -- crates > changes.diff
+      - run: cargo mutants --in-diff changes.diff --no-shuffle --timeout 120 --jobs 2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mutants-changed-code
+          path: mutants.out
+          retention-days: 14
+
+  everything:
+    name: Mutate everything (shard ${{ matrix.shard }} of 8)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-mutants@27.1.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo mutants --shard ${{ matrix.shard }}/8 --baseline=skip --timeout 120 --jobs 2
+      - name: List what the tests missed on the run's summary page
+        if: always()
+        run: |
+          {
+            echo "## Mutations no test caught (shard ${{ matrix.shard }})"
+            echo '```'
+            cat mutants.out/missed.txt 2>/dev/null || echo "none"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mutants-shard-${{ matrix.shard }}
+          path: mutants.out
+          retention-days: 14

@@ -1,0 +1,30 @@
+name: Bug report
+description: Something Fennec does that it shouldn't, or doesn't do that it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: program
+    attributes:
+      label: The program
+      description: The smallest Fennec program that shows the problem.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Paste the output or error message.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `fennec --version`, or the commit you built.

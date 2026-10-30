@@ -1,0 +1,24 @@
+[graph]
+all-features = true
+
+[advisories]
+# No ignored advisories. Each entry added here says why it's safe and when it goes.
+ignore = []
+
+[licenses]
+allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
+confidence-threshold = 0.9
+unused-allowed-license = "allow"
+
+[licenses.private]
+# Fennec's own crates aren't published, so their license is checked by review, not here.
+ignore = true
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

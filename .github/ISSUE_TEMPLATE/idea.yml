@@ -1,0 +1,24 @@
+name: Language idea
+description: A change to Fennec's design or syntax.
+labels: [design]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What's hard, unclear, slow or unsafe today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: The proposal
+      description: What you'd change, with a short Fennec example of how it would read.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Trade-offs
+      description: What it costs, and what it would replace.

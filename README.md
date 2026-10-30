@@ -6,6 +6,12 @@
 
 <p align="center"><strong>Fast to write. Fast to build. Fast to run.</strong></p>
 
+<p align="center">
+  <a href="https://github.com/seashell86/fennec/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/seashell86/fennec/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/seashell86/fennec/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/seashell86/fennec/actions/workflows/codeql.yml/badge.svg"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/seashell86/fennec"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/seashell86/fennec/badge"></a>
+</p>
+
 Fennec is a safe, compiled language for games and tools, designed so that the easy way to write something is also the readable way and the fast way, for people and for the AI they work with.
 
 > **Status: early design.** The interpreter runs most of the language described on the website. The type checker, native compilers and concurrency come next, and the syntax will still change.
@@ -70,6 +76,10 @@ npm --prefix site install
 ```bash
 npm --prefix site run dev
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately, as described in [SECURITY.md](SECURITY.md).
 
 ## License
 

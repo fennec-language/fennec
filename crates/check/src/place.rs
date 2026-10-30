@@ -22,6 +22,7 @@ impl FnCx<'_> {
         match root(expr) {
             None => self.error(Diagnostic::new(what, expr.span)),
             Some(name) => {
+                self.forget_fields(name);
                 if let Some((_, false)) = self.lookup(name) {
                     self.error(self.cannot_change(name, expr.span));
                 }
@@ -59,6 +60,7 @@ impl FnCx<'_> {
     }
 
     fn assign_name(&mut self, name: &str, span: Span, op: Option<BinOp>, ty: Type, declare_mut: bool) {
+        self.forget_fields(name);
         let existing = self.lookup(name);
         match (existing, op) {
             (Some(_), _) if declare_mut => self.error(

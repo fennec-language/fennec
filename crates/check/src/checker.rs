@@ -214,12 +214,11 @@ fn needs_return_type(def: &FnDef, suggestion: &Type) -> Diagnostic {
             }
         })
         .collect();
-    let returned = if *suggestion == Type::Unknown { "int".to_owned() } else { suggestion.to_string() };
-    let example = format!("def {}({}) -> {returned}:", def.name, params.join(", "));
+    let signature = format!("def {}({})", def.name, params.join(", "));
     let help = if *suggestion == Type::Unknown {
-        format!("write it after the parameters, like `{example}`")
+        format!("write the type it returns after the parameters: `{signature} -> <type>:`")
     } else {
-        format!("write it after the parameters: `{example}`")
+        format!("write it after the parameters: `{signature} -> {suggestion}:`")
     };
     Diagnostic::new(format!("`{}` calls itself, so its return type has to be written", def.name), def.span)
         .with_help(help)

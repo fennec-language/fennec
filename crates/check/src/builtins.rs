@@ -6,7 +6,7 @@ use fennec_syntax::{Arg, Diagnostic, Expr, Span};
 
 use crate::function::FnCx;
 use crate::messages::{needless_mut, no_method, wrong_args};
-use crate::types::{Type, article, join_all};
+use crate::types::{Type, article, join, join_all};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most).
 const BUILTINS: [(&str, usize, usize); 28] = [
@@ -39,6 +39,9 @@ const BUILTINS: [(&str, usize, usize); 28] = [
     ("sum", 1, 1),
     ("zip", 2, 2),
 ];
+
+/// Builtins whose arguments have to be plain values, not results or optionals.
+const NEEDS_VALUES: [&str; 11] = ["abs", "ceil", "cos", "float", "floor", "int", "len", "range", "round", "sin", "sqrt"];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name)
@@ -151,6 +154,10 @@ impl FnCx<'_> {
         if plain.len() < method.arity.0 || plain.len() > method.arity.1 {
             self.error(wrong_args(name, span));
         }
+        // `table.get(key, default)` gives the default instead of None.
+        if let (Type::Dict(_, value), [_, (default, _)]) = (ty, plain.as_slice()) {
+            return join(value, default);
+        }
         method.returns
     }
 
@@ -211,6 +218,9 @@ impl FnCx<'_> {
     fn builtin_result(&mut self, name: &str, plain: &[(Type, Span)], span: Span) -> Type {
         let types: Vec<Type> = plain.iter().map(|(ty, _)| ty.clone()).collect();
         let (first, at) = plain.first().cloned().unwrap_or((Type::Unknown, span));
+        if NEEDS_VALUES.contains(&name) && !plain.iter().all(|(ty, at)| self.usable(ty, *at)) {
+            return Type::Unknown;
+        }
         let items = |cx: &mut Self| cx.item_type(&first, at);
         match name {
             "Ok" => Type::result(first, Type::Unknown),

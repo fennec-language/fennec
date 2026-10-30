@@ -71,6 +71,24 @@ fn test_fails_when_a_test_fails() {
 }
 
 #[test]
+fn run_reports_every_problem_the_checker_finds_before_running() {
+    let output = fennec(&["run", "examples/errors/several.fen"], "").unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = text(&output.stderr);
+    assert_eq!(stderr.matches("error: ").count(), 3, "{stderr}");
+    assert!(stderr.contains("\n\nerror: can't mix int and float"), "{stderr}");
+}
+
+#[test]
+fn test_checks_the_program_before_running_its_tests() {
+    let output = fennec(&["test", "examples/errors/mut_self.fen"], "").unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(text(&output.stderr).starts_with("error: `self` isn't mut"));
+}
+
+#[test]
 fn repl_echoes_values_and_keeps_definitions() {
     let input = "1 + 2\ndef double(x: int):\n    x * 2\n\ndouble(21)\nprint(1)\nexit\n";
     let output = fennec(&["repl"], input).unwrap();

@@ -125,6 +125,9 @@ impl FnCx<'_> {
     /// `if`, `elif` and `else`. Each branch sees what the conditions before it ruled out,
     /// and afterwards each name holds what it held on any branch that didn't leave early.
     fn if_stmt(&mut self, branches: &[(Expr, Vec<Stmt>)], otherwise: Option<&[Stmt]>, used: bool) -> Flow {
+        for (cond, _) in branches {
+            self.track(cond);
+        }
         let before = self.snapshot();
         let mut ruled_out = Vec::new();
         let mut paths = Vec::new();
@@ -159,6 +162,7 @@ impl FnCx<'_> {
 
     fn while_stmt(&mut self, cond: &Expr, body: &[Stmt]) -> Flow {
         self.condition(cond, "while");
+        self.track(cond);
         let before = self.snapshot();
         self.narrow(&not_none(cond, true));
         self.block(body, false);
@@ -243,11 +247,12 @@ impl FnCx<'_> {
 }
 
 /// The names a condition shows aren't None, when it's `true` or when it's `false`:
-/// `x is not None` when true, `x is None` when false, and `and`, `or` and `not` of those.
+/// `x is not None` when true, `x is None` when false, and `and`, `or` and `not` of those. A
+/// field path like `player.weapon` counts as a name.
 pub(crate) fn not_none(cond: &Expr, when: bool) -> Vec<String> {
     match &cond.kind {
-        ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs } => match (&lhs.kind, &rhs.kind) {
-            (ExprKind::Name(name), ExprKind::None) if (*op == BinOp::IsNot) == when => vec![name.clone()],
+        ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs } => match (path(lhs), &rhs.kind) {
+            (Some(path), ExprKind::None) if (*op == BinOp::IsNot) == when => vec![path],
             _ => Vec::new(),
         },
         ExprKind::Binary { op: BinOp::And, lhs, rhs } if when => {
@@ -258,5 +263,14 @@ pub(crate) fn not_none(cond: &Expr, when: bool) -> Vec<String> {
         }
         ExprKind::Unary { op: UnaryOp::Not, expr } => not_none(expr, !when),
         _ => Vec::new(),
+    }
+}
+
+/// A name, or a path of fields from one: `player.weapon`.
+pub(crate) fn path(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some(name.clone()),
+        ExprKind::Attr { object, name, optional: false } => path(object).map(|object| format!("{object}.{name}")),
+        _ => None,
     }
 }

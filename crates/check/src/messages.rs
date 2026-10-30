@@ -55,11 +55,7 @@ pub(crate) fn not_bool(keyword: &str, ty: &Type, span: Span) -> Diagnostic {
 }
 
 pub(crate) fn no_method(ty: &Type, method: &str, span: Span) -> Diagnostic {
-    let what = match ty {
-        Type::Named(name) => format!("`{name}`"),
-        other => article(&other.kind()),
-    };
-    let diagnostic = Diagnostic::new(format!("{what} has no method `{method}`"), span);
+    let diagnostic = Diagnostic::new(format!("{} has no method `{method}`", describe(ty)), span);
     match method {
         "len" | "length" | "size" | "count" => diagnostic.with_help("use `len(x)`"),
         "push" | "add" => diagnostic.with_help("use `append`"),
@@ -98,5 +94,13 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
             diagnostic.with_help("convert it with int(...), round(...) or floor(...)")
         }
         _ => diagnostic,
+    }
+}
+
+/// A type for the start of a sentence: `Enemy` for a named type, "a list" for the others.
+pub(crate) fn describe(ty: &Type) -> String {
+    match ty {
+        Type::Named(name) => format!("`{name}`"),
+        other => article(&other.kind()),
     }
 }

@@ -5,9 +5,9 @@ use fennec_syntax::{BinOp, CompKind, Diagnostic, Expr, ExprKind, FStrPart, Span,
 
 use crate::builtins;
 use crate::function::FnCx;
-use crate::messages::{might_be_none, unhandled_result, unknown_name};
+use crate::messages::{describe, might_be_none, unhandled_result, unknown_name};
 use crate::program::TypeKind;
-use crate::stmt::not_none;
+use crate::stmt::{not_none, path};
 use crate::types::{Type, article, join, join_all};
 
 impl FnCx<'_> {
@@ -48,6 +48,7 @@ impl FnCx<'_> {
             ExprKind::Unary { op, expr: inner } => self.unary(*op, inner, span),
             ExprKind::Binary { op: op @ (BinOp::And | BinOp::Or), lhs, rhs } => {
                 self.condition(lhs, op.symbol());
+                self.track(lhs);
                 let before = self.snapshot();
                 self.narrow(&not_none(lhs, *op == BinOp::And));
                 self.condition(rhs, op.symbol());
@@ -60,6 +61,7 @@ impl FnCx<'_> {
             }
             ExprKind::Cond { then, cond, otherwise } => {
                 self.condition(cond, "if");
+                self.track(cond);
                 let before = self.snapshot();
                 self.narrow(&not_none(cond, true));
                 let then = self.expr(then);
@@ -190,13 +192,18 @@ impl FnCx<'_> {
             self.error(unhandled_result(span));
             return false;
         }
-        for (ty, span) in [(left, spans.0), (right, spans.1)] {
-            if ty.maybe_none() {
-                self.error(might_be_none(span));
-                return false;
-            }
-        }
-        true
+        self.usable(left, spans.0) && self.usable(right, spans.1)
+    }
+
+    /// Checks a value isn't an unhandled result and can't be None.
+    pub(crate) fn usable(&mut self, ty: &Type, span: Span) -> bool {
+        let problem = match ty {
+            Type::Result(..) => unhandled_result(span),
+            ty if ty.maybe_none() => might_be_none(span),
+            _ => return true,
+        };
+        self.error(problem);
+        false
     }
 
     fn unary(&mut self, op: UnaryOp, inner: &Expr, span: Span) -> Type {
@@ -229,11 +236,18 @@ impl FnCx<'_> {
         if let Some(type_name) = self.as_type_name(object) {
             return self.type_attr(type_name, name, span);
         }
+        // A field path that's been checked for None, like `player.weapon`.
+        if !optional
+            && let Some(path) = path(object)
+            && let Some((ty, _)) = self.lookup(&format!("{path}.{name}"))
+        {
+            return ty;
+        }
         let ty = self.expr(object);
         self.field_of(&ty, name, optional, span)
     }
 
-    fn field_of(&mut self, ty: &Type, name: &str, optional: bool, span: Span) -> Type {
+    pub(crate) fn field_of(&mut self, ty: &Type, name: &str, optional: bool, span: Span) -> Type {
         match ty {
             Type::Unknown => Type::Unknown,
             Type::None if optional => Type::None,
@@ -270,7 +284,7 @@ impl FnCx<'_> {
     }
 
     fn no_field(&mut self, ty: &Type, name: &str, span: Span) -> Type {
-        self.error(Diagnostic::new(format!("{} has no field `{name}`", article(&ty.kind())), span));
+        self.error(Diagnostic::new(format!("{} has no field `{name}`", describe(ty)), span));
         Type::Unknown
     }
 
@@ -418,6 +432,7 @@ impl FnCx<'_> {
         self.bind_names(names, &item, false, iter.span);
         if let Some(cond) = cond {
             self.condition(cond, "if");
+            self.track(cond);
             self.narrow(&not_none(cond, true));
         }
         let elem = self.expr(elem);

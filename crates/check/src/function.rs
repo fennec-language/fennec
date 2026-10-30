@@ -11,6 +11,7 @@ use crate::ParamType;
 use crate::checker::Checker;
 use crate::effects;
 use crate::messages::not_mut;
+use crate::stmt::not_none;
 use crate::types::{Type, accepts, join, join_all};
 
 #[derive(Clone, Debug)]
@@ -310,6 +311,39 @@ impl<'c> FnCx<'c> {
             })
             .collect();
         self.restore(&merged);
+    }
+
+    /// Starts following the field paths a condition checks for None, like `player.weapon`,
+    /// so they can be narrowed like names.
+    pub(crate) fn track(&mut self, cond: &Expr) {
+        for path in not_none(cond, true).into_iter().chain(not_none(cond, false)) {
+            if path.contains('.') && self.lookup(&path).is_none() {
+                let ty = self.path_type(&path);
+                self.declare(&path, ty, false);
+            }
+        }
+    }
+
+    fn path_type(&mut self, path: &str) -> Type {
+        let report = std::mem::replace(&mut self.report, false);
+        let mut fields = path.split('.');
+        let root = fields.next().unwrap_or_default();
+        let mut ty = self.lookup(root).map_or(Type::Unknown, |(ty, _)| ty);
+        for field in fields {
+            ty = self.field_of(&ty, field, false, Span::default());
+        }
+        self.report = report;
+        ty
+    }
+
+    /// Forgets what was learned about a name's fields, because it's changing.
+    pub(crate) fn forget_fields(&mut self, root: &str) {
+        let prefix = format!("{root}.");
+        for binding in self.scopes.iter_mut().flat_map(|scope| scope.bindings.iter_mut()) {
+            if binding.name.starts_with(&prefix) {
+                binding.ty = Type::Unknown;
+            }
+        }
     }
 
     /// Records that these names aren't None.

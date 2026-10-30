@@ -1,0 +1,165 @@
+---
+import '@fontsource-variable/inter';
+import '@fontsource-variable/jetbrains-mono';
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+const base = import.meta.env.BASE_URL;
+const pageTitle = title === 'Fennec' ? 'Fennec: fast to write, fast to build, fast to run' : `${title} · Fennec`;
+const nav = [
+  { href: 'why/', label: 'Why' },
+  { href: 'tour/', label: 'Tour' },
+  { href: 'ai/', label: 'For AI' },
+  { href: 'speed/', label: 'Speed' },
+  { href: 'roadmap/', label: 'Roadmap' },
+];
+const current = Astro.url.pathname;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={new URL(`${base}brand/fennec-logo-512.png`, Astro.site)} />
+    <link rel="icon" type="image/png" sizes="32x32" href={`${base}brand/favicon-32.png`} />
+    <link rel="icon" type="image/png" sizes="64x64" href={`${base}brand/favicon-64.png`} />
+    <link rel="apple-touch-icon" href={`${base}brand/apple-touch-icon.png`} />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <a class="brand" href={base}>
+          <img src={`${base}brand/fennec-logo-96.webp`} alt="" width="32" height="32" />
+          <span>fennec</span>
+        </a>
+        <nav aria-label="Main">
+          {
+            nav.map((item) => (
+              <a href={`${base}${item.href}`} aria-current={current === `${base}${item.href}` ? 'page' : undefined}>
+                {item.label}
+              </a>
+            ))
+          }
+          <a href="https://github.com/seashell86/fennec">GitHub</a>
+        </nav>
+      </div>
+    </header>
+    <main>
+      <slot />
+    </main>
+    <footer class="site-footer">
+      <div class="wrap footer-inner">
+        <div class="footer-brand">
+          <img src={`${base}brand/fennec-logo-96.webp`} alt="" width="28" height="28" />
+          <span>Fennec is in early design. Nothing here is stable yet.</span>
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/seashell86/fennec">GitHub</a>
+          <span>MIT or Apache-2.0</span>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
+
+<style>
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    min-height: 60px;
+    flex-wrap: wrap;
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+    font-size: 1.15rem;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  nav {
+    display: flex;
+    gap: 0.25rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+    max-width: 100%;
+  }
+
+  nav a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.95rem;
+    font-weight: 500;
+    padding: 0.35rem 0.6rem;
+    border-radius: 8px;
+    white-space: nowrap;
+  }
+
+  nav a:hover,
+  nav a[aria-current='page'] {
+    color: var(--text);
+    background: var(--surface);
+  }
+
+  @media (max-width: 640px) {
+    .header-inner {
+      padding-top: 0.5rem;
+      padding-bottom: 0.4rem;
+    }
+    nav {
+      width: 100%;
+      margin: 0 -0.6rem;
+    }
+  }
+
+  .site-footer {
+    margin-top: 5rem;
+    border-top: 1px solid var(--border);
+    padding: 2rem 0 3rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+
+  .footer-inner {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .footer-brand,
+  .footer-links {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .footer-links a {
+    color: var(--muted);
+  }
+</style>

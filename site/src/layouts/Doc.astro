@@ -1,0 +1,75 @@
+---
+import Base from './Base.astro';
+
+const { frontmatter } = Astro.props;
+---
+
+<Base title={frontmatter.title} description={frontmatter.description}>
+  <article class="wrap prose">
+    <slot />
+  </article>
+</Base>
+
+<style>
+  .prose {
+    max-width: calc(var(--prose) + 56px);
+    padding-top: 3rem;
+  }
+
+  .prose :global(h1) {
+    font-size: clamp(2.1rem, 5vw, 2.8rem);
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+    margin: 0 0 1rem;
+  }
+
+  .prose :global(h2) {
+    font-size: 1.55rem;
+    letter-spacing: -0.015em;
+    line-height: 1.25;
+    margin: 3rem 0 0.75rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .prose :global(h3) {
+    font-size: 1.15rem;
+    margin: 2rem 0 0.5rem;
+  }
+
+  .prose :global(p),
+  .prose :global(ul),
+  .prose :global(ol) {
+    margin: 0 0 1rem;
+  }
+
+  .prose :global(li) {
+    margin: 0.3rem 0;
+  }
+
+  .prose :global(pre) {
+    margin: 1.25rem 0 1.5rem;
+  }
+
+  .prose :global(table) {
+    margin: 1.25rem 0 1.5rem;
+  }
+
+  .prose :global(blockquote) {
+    margin: 1.5rem 0;
+    padding: 0.9rem 1.2rem;
+    border-left: 4px solid var(--accent-bright);
+    background: var(--surface);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    color: var(--text);
+  }
+
+  .prose :global(blockquote p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .prose :global(.lede) {
+    font-size: 1.2rem;
+    color: var(--muted);
+  }
+</style>

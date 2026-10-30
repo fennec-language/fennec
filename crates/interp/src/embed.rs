@@ -19,6 +19,7 @@ use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
 pub mod heap;
 pub mod lists;
 pub mod objects;
+pub mod strings;
 
 use std::collections::HashMap;
 
@@ -41,6 +42,15 @@ pub struct Tables {
     pub elements: Vec<Rc<crate::packed::Element>>,
     /// The shapes of boxed values' blocks, by their number.
     pub shapes: Vec<Rc<crate::packed::Element>>,
+    /// The shape number strings' blocks have.
+    pub str_shape: u64,
+    /// Blocks that live for the whole run, like string literals, made while compiling so
+    /// native code can refer to them by address.
+    pub statics: Vec<Box<[u64]>>,
+    /// The addresses of the one-character strings of ASCII, by character, once made.
+    pub ascii: Box<[u64]>,
+    /// The address of each string literal's block, by its text.
+    pub literals: HashMap<String, i64>,
 }
 
 /// Collects what the program prints.
@@ -94,7 +104,7 @@ pub fn failed_flag() -> usize {
 }
 
 /// Sets up the runtime to run `module` with `tables`, replacing any earlier run's.
-pub fn start(module: &Module, tables: Tables) -> Result<(), Diagnostic> {
+pub fn start(module: &Module, mut tables: Tables) -> Result<(), Diagnostic> {
     let output = Output::default();
     let mut interp = Interp::with_output(Box::new(output.clone()))?;
     interp.load(module)?;
@@ -103,7 +113,6 @@ pub fn start(module: &Module, tables: Tables) -> Result<(), Diagnostic> {
     STATE.set(Some(State {
         interp,
         output,
-        tables,
         temps: Vec::new(),
         inputs: Vec::new(),
         bindings: Vec::new(),
@@ -111,7 +120,8 @@ pub fn start(module: &Module, tables: Tables) -> Result<(), Diagnostic> {
         name_ids,
         path: None,
         callers: Vec::new(),
-        heap: heap::Heap::default(),
+        heap: heap::Heap::new(std::mem::take(&mut tables.statics)),
+        tables,
         failure: None,
     }));
     Ok(())
@@ -642,7 +652,7 @@ pub mod io {
     use super::{Span, State, Value, attempt, format, with};
     use fennec_syntax::Diagnostic;
 
-    fn write(state: &mut State, text: &str) -> Result<(), Diagnostic> {
+    pub(super) fn write(state: &mut State, text: &str) -> Result<(), Diagnostic> {
         state
             .interp
             .out

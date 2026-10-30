@@ -2,7 +2,7 @@
 //! where they are. Each takes and returns only plain numbers.
 
 use cranelift_codegen::ir::types::{F64, I8, I64, Type};
-use fennec_interp::embed::{eval, heap, io, lists, names, objects, temps};
+use fennec_interp::embed::{eval, heap, io, lists, names, objects, strings, temps};
 
 use crate::runtime;
 
@@ -80,6 +80,13 @@ pub(crate) enum Helper {
     BoxToValue,
     BoxFromValue,
     BoxEqual,
+    StrFromValue,
+    StrConcat,
+    StrIndex,
+    StrSlice,
+    StrCompare,
+    StrContains,
+    StrPrint,
     Sin,
     Cos,
     Pack,
@@ -89,7 +96,7 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 79] = [
+pub(crate) const ALL: [Helper; 86] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -162,6 +169,13 @@ pub(crate) const ALL: [Helper; 79] = [
     Helper::BoxToValue,
     Helper::BoxFromValue,
     Helper::BoxEqual,
+    Helper::StrFromValue,
+    Helper::StrConcat,
+    Helper::StrIndex,
+    Helper::StrSlice,
+    Helper::StrCompare,
+    Helper::StrContains,
+    Helper::StrPrint,
     Helper::Sin,
     Helper::Cos,
     Helper::Pack,
@@ -259,7 +273,7 @@ impl Helper {
             Helper::Length => shape("fennec_length", &[I64, I64], &[I64]),
             Helper::Push => shape("fennec_push", &[I64, I64], &[I64]),
             Helper::OutOfRange => shape("fennec_out_of_range", &[I64, I64, I64, I64], &[]),
-            // The helpers for enums and boxed values, in `data_shape`.
+            // The helpers for boxed values and strings, in `data_shape`.
             _ => shape("", &[], &[]),
         }
     }
@@ -273,6 +287,12 @@ impl Helper {
                 | Helper::Free
                 | Helper::Unshare
                 | Helper::BoxEqual
+                | Helper::StrConcat
+                | Helper::StrIndex
+                | Helper::StrSlice
+                | Helper::StrCompare
+                | Helper::StrContains
+                | Helper::StrPrint
                 | Helper::AtCall
                 | Helper::Sin
                 | Helper::Cos
@@ -300,6 +320,11 @@ impl Helper {
                     | Helper::Alloc
                     | Helper::Unshare
                     | Helper::BoxFromValue
+                    | Helper::StrFromValue
+                    | Helper::StrConcat
+                    | Helper::StrIndex
+                    | Helper::StrSlice
+                    | Helper::StrCompare
             )
     }
 
@@ -320,6 +345,10 @@ impl Helper {
                 | Helper::MakeVariant
                 | Helper::CaseOf
                 | Helper::BoxFromValue
+                | Helper::StrFromValue
+                | Helper::StrIndex
+                | Helper::StrSlice
+                | Helper::StrPrint
                 | Helper::Address
                 | Helper::Length
                 | Helper::Push
@@ -415,12 +444,12 @@ impl Helper {
             Helper::Length => lists::length as *const u8,
             Helper::Push => lists::push as *const u8,
             Helper::OutOfRange => lists::out_of_range as *const u8,
-            // The helpers for enums and boxed values, in `data_address`.
+            // The helpers for boxed values and strings, in `data_address`.
             _ => std::ptr::null(),
         }
     }
 
-    /// The machine signature of a helper for enums or boxed values.
+    /// The machine signature of a helper for enums, boxed values or strings.
     fn data_shape(self) -> Option<Shape> {
         Some(match self {
             Helper::MakeVariant => shape("fennec_make_variant", &[I64, I64, I64, I64, I64], &[I64]),
@@ -431,11 +460,18 @@ impl Helper {
             Helper::BoxToValue => shape("fennec_box_to_value", &[I64], &[I64]),
             Helper::BoxFromValue => shape("fennec_box_from_value", &[I64, I64, I64, I64], &[I64]),
             Helper::BoxEqual => shape("fennec_box_equal", &[I64, I64], &[I8]),
+            Helper::StrFromValue => shape("fennec_str_from_value", &[I64, I64, I64], &[I64]),
+            Helper::StrConcat => shape("fennec_str_concat", &[I64, I64], &[I64]),
+            Helper::StrIndex => shape("fennec_str_index", &[I64, I64, I64, I64], &[I64]),
+            Helper::StrSlice => shape("fennec_str_slice", &[I64, I64, I64, I64, I64], &[I64]),
+            Helper::StrCompare => shape("fennec_str_compare", &[I64, I64], &[I64]),
+            Helper::StrContains => shape("fennec_str_contains", &[I64, I64], &[I8]),
+            Helper::StrPrint => shape("fennec_str_print", &[I64], &[]),
             _ => return None,
         })
     }
 
-    /// Where a helper for enums or boxed values is.
+    /// Where a helper for enums, boxed values or strings is.
     fn data_address(self) -> Option<*const u8> {
         Some(match self {
             Helper::MakeVariant => objects::make_variant as *const u8,
@@ -446,6 +482,13 @@ impl Helper {
             Helper::BoxToValue => heap::to_value as *const u8,
             Helper::BoxFromValue => heap::from_value as *const u8,
             Helper::BoxEqual => heap::equal as *const u8,
+            Helper::StrFromValue => strings::from_value as *const u8,
+            Helper::StrConcat => strings::concat as *const u8,
+            Helper::StrIndex => strings::index as *const u8,
+            Helper::StrSlice => strings::slice as *const u8,
+            Helper::StrCompare => strings::compare as *const u8,
+            Helper::StrContains => strings::contains as *const u8,
+            Helper::StrPrint => strings::print as *const u8,
             _ => return None,
         })
     }

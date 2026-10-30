@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use fennec_syntax::Diagnostic;
 
-use super::{State, attempt, span, with};
+use super::{State, Tables, attempt, span, with};
 use crate::packed::Element;
 use crate::value::{Instance, Value};
 
@@ -47,12 +47,29 @@ impl Hasher for AddressHasher {
 pub(crate) struct Heap {
     blocks: HashMap<usize, Box<[u64]>, BuildHasherDefault<AddressHasher>>,
     spare: Vec<Vec<Box<[u64]>>>,
+    /// How many of the blocks live for the whole run.
+    statics: usize,
+    /// Strings' text as the interpreter holds it, made once per block.
+    texts: HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>,
 }
+
+/// The owner count of a block that's never freed: retaining and releasing it never get
+/// near zero.
+pub const IMMORTAL: u64 = 1 << 48;
 
 /// How many freed blocks of each size are kept for reuse.
 const SPARE_BLOCKS: usize = 1 << 16;
 
 impl Heap {
+    /// A heap holding the blocks that live for the whole run.
+    pub(crate) fn new(statics: Vec<Box<[u64]>>) -> Heap {
+        let mut heap = Heap { statics: statics.len(), ..Heap::default() };
+        for block in statics {
+            heap.insert(block);
+        }
+        heap
+    }
+
     /// A zeroed block of `words` words, reusing a freed one when there is one.
     fn fresh(&mut self, words: usize) -> Box<[u64]> {
         match self.spare.get_mut(words).and_then(Vec::pop) {
@@ -76,16 +93,16 @@ impl Heap {
     }
 
     pub(crate) fn live(&self) -> usize {
-        self.blocks.len()
+        self.blocks.len().saturating_sub(self.statics)
     }
 
-    fn insert(&mut self, block: Box<[u64]>) -> i64 {
+    pub(crate) fn insert(&mut self, block: Box<[u64]>) -> i64 {
         let address = block.as_ptr().addr();
         self.blocks.insert(address, block);
         i64::try_from(address).unwrap_or(0)
     }
 
-    fn block(&self, address: u64) -> Option<&[u64]> {
+    pub(crate) fn block(&self, address: u64) -> Option<&[u64]> {
         self.blocks.get(&usize::try_from(address).ok()?).map(AsRef::as_ref)
     }
 
@@ -99,10 +116,76 @@ fn shape_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
     state.tables.shapes.get(shape).cloned()
 }
 
+/// Whether a block is a string's.
+pub(super) fn is_text(state: &State, block: &[u64]) -> bool {
+    block.get(1) == Some(&state.tables.str_shape)
+}
+
+/// Words a string's block starts with: its owner count, shape, length in bytes and length
+/// in characters.
+pub const TEXT_HEADER_WORDS: usize = 4;
+
+/// A string's block: owned `count` times, its bytes packed eight to a word.
+pub fn text_block(shape: u64, text: &str, count: u64) -> Box<[u64]> {
+    let bytes = text.as_bytes();
+    let length = |n: usize| u64::try_from(n).unwrap_or(0);
+    let mut block = vec![count, shape, length(bytes.len()), length(text.chars().count())];
+    // Native code reads the first word of text without checking the length.
+    if bytes.is_empty() {
+        block.push(0);
+    }
+    for chunk in bytes.chunks(8) {
+        let mut word = [0; 8];
+        for (to, from) in word.iter_mut().zip(chunk) {
+            *to = *from;
+        }
+        block.push(u64::from_le_bytes(word));
+    }
+    block.into_boxed_slice()
+}
+
+/// A string's text, from its block.
+pub(crate) fn block_text(block: &[u64]) -> String {
+    let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+    let bytes: Vec<u8> = block
+        .get(TEXT_HEADER_WORDS..)
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .take(length)
+        .collect();
+    String::from_utf8(bytes).unwrap_or_default()
+}
+
+/// The address of a string literal's block, made while compiling, which lives for the
+/// whole run.
+pub fn literal(tables: &mut Tables, text: &str) -> i64 {
+    if let Some(address) = tables.literals.get(text) {
+        return *address;
+    }
+    let block = text_block(tables.str_shape, text, IMMORTAL);
+    let address = i64::try_from(block.as_ptr().addr()).unwrap_or(0);
+    tables.statics.push(block);
+    tables.literals.insert(text.to_owned(), address);
+    address
+}
+
+/// The address of a table of the one-character strings of ASCII, by character, made the
+/// first time it's needed.
+pub fn ascii_table(tables: &mut Tables) -> i64 {
+    if tables.ascii.is_empty() {
+        let addresses: Vec<u64> = (0_u8..128)
+            .map(|byte| u64::try_from(literal(tables, &char::from(byte).to_string())).unwrap_or(0))
+            .collect();
+        tables.ascii = addresses.into_boxed_slice();
+    }
+    i64::try_from(tables.ascii.as_ptr().addr()).unwrap_or(0)
+}
+
 /// Where each boxed field of a value sits among its words, from `at`.
 fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<usize>) {
     match element {
-        Element::Boxed(_) => {
+        Element::Boxed(_) | Element::Str => {
             found.push(*at);
             *at += 1;
         }
@@ -126,6 +209,9 @@ fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec
 
 /// The addresses of a block's boxed fields.
 fn children(state: &State, block: &[u64]) -> Vec<u64> {
+    if is_text(state, block) {
+        return Vec::new();
+    }
     let Some(shape) = shape_of(state, block) else { return Vec::new() };
     let fields = block.get(HEADER_WORDS..).unwrap_or_default();
     let mut at = 0;
@@ -160,6 +246,9 @@ pub extern "C" fn free(address: i64) {
             else {
                 continue;
             };
+            if let Ok(at) = usize::try_from(address) {
+                state.heap.texts.remove(&at);
+            }
             for child in children(state, &block) {
                 if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
                     *count = count.saturating_sub(1);
@@ -204,20 +293,29 @@ pub extern "C" fn to_value(address: i64) -> i64 {
     })
 }
 
-fn read_block(state: &State, address: u64) -> Value {
-    let Some(block) = state.heap.block(address) else { return Value::None };
-    let Some(shape) = shape_of(state, block) else { return Value::None };
+pub(super) fn read_block(state: &mut State, address: u64) -> Value {
+    let at = usize::try_from(address).unwrap_or(0);
+    if let Some(text) = state.heap.texts.get(&at) {
+        return Value::Str(Rc::clone(text));
+    }
+    let Some(block) = state.heap.block(address).map(<[u64]>::to_vec) else { return Value::None };
+    if is_text(state, &block) {
+        let text: Rc<str> = Rc::from(block_text(&block));
+        state.heap.texts.insert(at, Rc::clone(&text));
+        return Value::Str(text);
+    }
+    let Some(shape) = shape_of(state, &block) else { return Value::None };
     let mut words = block.get(HEADER_WORDS..).unwrap_or_default().iter();
     read(state, &shape, &mut words)
 }
 
-fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'w u64>) -> Value {
+fn read<'w>(state: &mut State, element: &Element, words: &mut dyn Iterator<Item = &'w u64>) -> Value {
     let word = |words: &mut dyn Iterator<Item = &'w u64>| words.next().copied().unwrap_or(0);
     match element {
         Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
         Element::Float => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
-        Element::Boxed(_) => read_block(state, word(words)),
+        Element::Boxed(_) | Element::Str => read_block(state, word(words)),
         Element::Struct { name, fields } => {
             let fields =
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, words)));
@@ -281,6 +379,7 @@ fn write(state: &mut State, element: &Element, value: &Value, words: &mut Vec<u6
             let address = write_block(state, *shape, value)?;
             words.push(u64::try_from(address).ok()?);
         }
+        (Element::Str, Value::Str(text)) => words.push(u64::try_from(text_address(state, text)).ok()?),
         (Element::Struct { name, fields }, Value::Instance(instance))
             if instance.type_name == *name && instance.case.is_none() && !instance.is_error =>
         {
@@ -319,6 +418,9 @@ fn same(state: &State, a: u64, b: u64) -> bool {
     if left.get(1) != right.get(1) || left.len() != right.len() {
         return false;
     }
+    if is_text(state, left) {
+        return left.get(1..) == right.get(1..);
+    }
     let Some(shape) = shape_of(state, left) else { return false };
     let (left, right) =
         (left.get(HEADER_WORDS..).unwrap_or_default(), right.get(HEADER_WORDS..).unwrap_or_default());
@@ -331,4 +433,16 @@ fn same(state: &State, a: u64, b: u64) -> bool {
             let (Some(x), Some(y)) = (left.get(*at), right.get(*at)) else { return false };
             same(state, *x, *y)
         })
+}
+
+/// A string's block owned once, or a one-character ASCII string's block that lives for the
+/// whole run.
+pub(super) fn text_address(state: &mut State, text: &str) -> i64 {
+    if let [byte] = text.as_bytes()
+        && let Some(address) = state.tables.ascii.get(usize::from(*byte))
+    {
+        return i64::try_from(*address).unwrap_or(0);
+    }
+    let block = text_block(state.tables.str_shape, text, 1);
+    state.heap.insert(block)
 }

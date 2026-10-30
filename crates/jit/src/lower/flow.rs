@@ -99,7 +99,7 @@ impl Lowerer<'_, '_> {
         span: Span,
     ) -> Result<Lowered, Diagnostic> {
         let (value, ty) = self.expr(subject)?;
-        if matches!(ty, Ty::Int | Ty::Bool | Ty::Struct(_) | Ty::Boxed(_)) {
+        if matches!(ty, Ty::Int | Ty::Bool | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str) {
             // Arms drop temporaries back to here, keeping the ones made before the match.
             let mark = if self.frame && self.dirty { Some(self.help(Helper::Mark, &[])?) } else { None };
             self.bases.extend(mark);

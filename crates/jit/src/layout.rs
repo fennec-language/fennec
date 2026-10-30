@@ -96,7 +96,7 @@ impl Layouts {
             .collect();
         loop {
             let fits = |ty: &Type| match ty {
-                Type::Int | Type::Float | Type::Bool => true,
+                Type::Int | Type::Float | Type::Bool | Type::Str => true,
                 Type::Named(name) => self.by_name.contains_key(name) || candidates.contains_key(name),
                 _ => false,
             };
@@ -123,6 +123,7 @@ impl Layouts {
                 Type::Int => Ty::Int,
                 Type::Float => Ty::Float,
                 Type::Bool => Ty::Bool,
+                Type::Str => Ty::Str,
                 Type::Named(name) => match reserved.get(name) {
                     Some(id) => Ty::Boxed(*id),
                     None => Ty::Struct(layouts.id(name)?),
@@ -303,6 +304,7 @@ impl Layouts {
             Type::Float => Ty::Float,
             Type::Bool => Ty::Bool,
             Type::Unit => Ty::Unit,
+            Type::Str => Ty::Str,
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
                 (Some(cap), _) => Ty::Cap(cap),
                 (None, Some(id)) if self.get(id).is_some_and(|layout| layout.boxed) => Ty::Boxed(id),
@@ -324,7 +326,8 @@ fn written_type(written: &TypeExpr) -> Option<Type> {
         "int" => Type::Int,
         "float" => Type::Float,
         "bool" => Type::Bool,
-        "str" | "list" | "dict" | "set" | "tuple" | "Id" | "IdMap" => return None,
+        "str" => Type::Str,
+        "list" | "dict" | "set" | "tuple" | "Id" | "IdMap" => return None,
         name => Type::Named(name.to_owned()),
     })
 }

@@ -20,7 +20,10 @@ impl Lowerer<'_, '_> {
         match pattern {
             Pattern::Wildcard | Pattern::Bind(_) => true,
             Pattern::Literal(expr) => {
-                matches!((&expr.kind, ty), (ExprKind::Int(_), Ty::Int) | (ExprKind::Bool(_), Ty::Bool))
+                matches!(
+                    (&expr.kind, ty),
+                    (ExprKind::Int(_), Ty::Int) | (ExprKind::Bool(_), Ty::Bool) | (ExprKind::Str(_), Ty::Str)
+                )
             }
             Pattern::Variant { name, dotted: false, .. } if name == "Ok" || name == "Err" => false,
             Pattern::Variant { name, dotted, args } => {
@@ -101,13 +104,13 @@ impl Lowerer<'_, '_> {
         match pattern {
             Pattern::Wildcard | Pattern::Bind(_) | Pattern::Tuple(_) => {}
             Pattern::Literal(expr) => {
-                let known = match expr.kind {
-                    ExprKind::Int(n) => n,
-                    ExprKind::Bool(b) => i64::from(b),
+                let found = value.0.ok_or_else(|| internal("a missing value", expr.span))?;
+                let passes = match &expr.kind {
+                    ExprKind::Int(n) => self.b.ins().icmp_imm_s(IntCC::Equal, found, *n),
+                    ExprKind::Bool(b) => self.b.ins().icmp_imm_s(IntCC::Equal, found, i64::from(*b)),
+                    ExprKind::Str(text) => self.equals_literal(found, text)?,
                     _ => return Err(internal("an untestable literal", expr.span)),
                 };
-                let found = value.0.ok_or_else(|| internal("a missing value", expr.span))?;
-                let passes = self.b.ins().icmp_imm_s(IntCC::Equal, found, known);
                 self.pass_or(passes, fail);
                 tested = true;
             }
@@ -153,11 +156,11 @@ impl Lowerer<'_, '_> {
                 if let (Ty::Struct(id), Some(value)) = (ty, value) {
                     return self.declare_struct(name, value, id, false);
                 }
-                if let (Ty::Boxed(_), Some(value), false) = (ty, value, borrows) {
+                if let (true, Some(value), false) = (ty.counted(), value, borrows) {
                     self.retain(value);
                 }
                 self.bind_native(name, ty, value, false);
-                if let (Ty::Boxed(_), true, Some(local)) = (ty, borrows, self.local(name)) {
+                if let (true, true, Some(local)) = (ty.counted(), borrows, self.local(name)) {
                     self.borrowed_names.extend(local.var.map(EntityRef::index));
                 }
                 Ok(())
@@ -194,7 +197,8 @@ impl Lowerer<'_, '_> {
         arms: &[MatchArm],
     ) -> Result<Option<Vec<Arm>>, Diagnostic> {
         let span = written.span;
-        let (Some(value), ty @ (Ty::Int | Ty::Bool | Ty::Struct(_) | Ty::Boxed(_))) = subject else {
+        let (Some(value), ty @ (Ty::Int | Ty::Bool | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str)) = subject
+        else {
             return Ok(None);
         };
         if !arms.iter().all(|arm| self.testable(&arm.pattern, ty)) {
@@ -203,15 +207,14 @@ impl Lowerer<'_, '_> {
         // A boxed subject read from a name that can't change stays alive through the arms,
         // which borrow its fields. Any other is owned here, and let go once an arm has
         // taken what it binds.
-        let borrows =
-            !matches!(ty, Ty::Boxed(_)) || (self.borrowed.contains(&value) && self.fixed_root(written));
+        let borrows = !ty.counted() || (self.borrowed.contains(&value) && self.fixed_root(written));
         // Read a struct's leaves once, so every test and arm sees the value as it was.
         let subject = match ty {
             Ty::Struct(id) => {
                 let leaves = self.leaves(value, id)?;
                 (Some(self.struct_of_leaves(leaves)), ty)
             }
-            Ty::Boxed(_) if !borrows => (Some(self.own(value, ty)), ty),
+            ty if ty.counted() && !borrows => (Some(self.own(value, ty)), ty),
             _ => subject,
         };
         let bodies: Vec<Block> = arms.iter().map(|_| self.b.create_block()).collect();

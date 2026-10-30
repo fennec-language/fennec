@@ -4,11 +4,17 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 ## Values and memory
 
+**Python's sharing is called out.** When code changes `b` after `b = a` and then reads `a`, a lint notes that `a` didn't change, because values are copies.
+*Why:* Fennec looks like Python, and Python shares here. People and AI trained on Python will expect `a` to change too.
+
+**Parameters are borrowed by default.** A parameter that's only read costs no reference-count change, on the way in or out. Reference counts are inserted precisely and dropped at each value's last use. A value with a single owner is reused in place to build its replacement. This is the Perceus approach from Koka, with Lean 4's borrowed parameters.
+*Why:* Reference-count traffic around calls is most of the overhead in naive implementations. These two remove nearly all of it.
+
 **Indexing gives a place, not a copy.** `enemies[i].health -= 1` writes straight into the list. A user-defined `def []` gets a `mut` form that does the same.
 *Why:* Otherwise each change through an index copies the element out and back, or copies the whole list if it's shared.
 
 **A value is moved, not shared, when it isn't used again.** The compiler finds each value's last use and moves it there.
-*Why:* Then nearly every collection has one owner, so copy-on-write's check before each write passes and nothing is copied. The check is a predictable branch the compiler can hoist out of loops.
+*Why:* Then nearly every collection has one owner, so copy-on-write's check before each write passes and nothing is copied. The check is a predictable branch the compiler can hoist out of loops, and deletes entirely when ownership proves the value has one owner.
 
 **Views can't escape.** A `view[T]` (a slice of a list) can be a parameter or a local, but can't be stored in a struct or returned. A function that returns a slice returns a shared slice: one reference-count bump, no copy, the way string slices already work.
 *Why:* Slicing without copies, and without lifetime annotations.
@@ -17,21 +23,75 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 *Why:* A hidden copy in a game loop is a frame-time spike nobody can find.
 
 **Handles are `Id[T]`.** An `Id[Enemy]` is an index plus a generation, made by an `IdMap[Enemy]`. It can't index a map of another type. When its enemy is removed, looking it up fails with `TargetGone` rather than finding whatever reuses the slot. `type EnemyId = Id[Enemy]` is an optional alias, not something the compiler makes for each struct.
-*Why:* With no references, handles are how one value points at another. This is the generational-handle pattern game engines already use, as one generic type rather than a type generated inside every struct.
+*Why:* With no references, handles are how one value points at another. Game engines, compilers, graph libraries and servers use the same generational-handle pattern. Handles are two ints, so they're cheap to copy and can be saved or sent anywhere.
+
+## Allocation
+
+**The runtime owns allocation.** The default allocator is mimalloc, vendored (it's MIT-licensed) and later ported to Fennec. It keeps per-thread lists of free blocks for each size, so allocating and freeing take a few instructions.
+
+**The compiler places short-lived values itself.** A temporary that never leaves its function or loop body goes on the stack or in a bump region, with no call to the allocator. This is limited to values that provably don't escape. Full automatic region inference is known to leak memory.
+
+**Arenas are a scope.** Everything allocated inside `with arena():` is freed at once when the block ends. There are no allocator parameters.
+*Why:* Freeing in bulk is what makes the JVM's allocator fast, and this gets it without a GC. Passing allocators to every function, as Zig does, is a lot of AI pain for little gain.
+
+**`with noalloc():` is checked at compile time.** Allocating anywhere inside the block, including in functions it calls, is a compile error. A lint suggests it where profiling shows heavy allocation.
+
+**Debug builds report allocation.** They show allocations and bytes per frame, find leaks, and can enforce a budget ("this frame allocates under 1 MB").
+
+## Determinism
+
+**Dicts and sets keep insertion order.**
+*Why:* The same program iterates the same way on every run and every machine. Python already does this, so it costs AI nothing.
+
+**Evaluation is always left to right.**
+
+**Floats give the same results on every platform.** There's no fast-math and no automatic fused multiply-add, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `with fast_math():` opts out for one block.
+*Why:* It makes lockstep multiplayer and replays possible. It costs a little, and only in math-heavy code, which can opt out.
+
+**Parallel reductions combine in a fixed order.** How `parallel sum(...)` splits and combines its work depends on the data's size, never the thread count.
+*Why:* Float results don't drift between runs or machines.
+
+**`Clock` and `Random` are capabilities,** passed in like `Stdout` and `Fs`.
+*Why:* Pass a fixed clock and a seeded `Random` and a game or test runs the same way every time.
+
+## Speed
+
+**The target is enforced.** Every program in the benchmark suite also exists as idiomatic Rust. CI fails if a benchmark runs more than 3% slower than its Rust twin, or slower than the previous run. The fix for a failure goes into the compiler, never into tricks in the benchmark.
+
+**Math types are 32-bit.** `Vec3` and the other math types use 32-bit floats, and `float` stays 64-bit.
+*Why:* Twice the SIMD throughput for game math, while `float` stays accurate everywhere else.
+
+**The compiler tells LLVM that names don't alias.** Exclusive `mut` access proves no two names point at the same memory, so every function gets that guarantee for free, as in Rust and Fortran.
+
+**Integer overflow is checked in release builds too.** Wrapping is opt-in: `x.wrapping_add(y)`.
+*Why:* A program that compiles should do what it says. The check costs about 1–2%, and the benchmark suite measures it.
 
 ## Functions and types
+
+**Builtins work on anything; methods belong to a type.** Builtins work on any value that fits an interface and never change it: `len`, `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`. Methods are specific to a type or change the value: `xs.append(x)`, `d.keys()`, `s.split(",")`, `mut xs.sort()`. A type supports a builtin by having the method, such as `def len(self)`. The language server offers the builtins that apply after `xs.`.
+*Why:* Builtins read well with comprehensions (`sum(e.health for e in enemies)`), and Python users and AI already write them. Python mostly follows this split; Fennec always does.
+
+**An enum fits an interface when every case does.** The compiler writes the `match`, so `total(targets)` works on a list of a `Target` enum whose cases are all `Damageable`.
+*Why:* Lists of mixed types stay static, since the `match` compiles to a jump table, with nothing extra to write.
 
 **An interface in a parameter's type means "any type that fits", chosen at compile time.** `def total(xs: list[Damageable])` takes a list of any one type that has the interface's methods. The compiler makes a copy of the function for each type, so calls are static. A list that mixes types is an `enum`.
 *Why:* Errors point at the call ("`Rock` isn't `Damageable`: it has no `damage` method"), not deep inside the function; the function is checked once against the interface; and there's no dynamic dispatch.
 
-**Exported functions declare their return and error types.** They're inferred everywhere else.
-*Why:* Otherwise editing a private helper could silently change a kit's public API. The semver check compares what's declared.
-
-**Closures capture by value.** Only a closure that doesn't escape, one passed straight into a call, can capture a `mut` name, and it changes the original.
+**Closures capture by value.** Only a closure that doesn't escape, one passed straight into a call, can capture a `mut` name, and it changes the original. This replaces the earlier rule that closures can't change captured names at all.
 *Why:* Capturing by value costs one reference-count bump. Capturing a `mut` in a closure that doesn't escape costs a pointer and needs no lifetimes.
 
-**Integer overflow is checked in release builds too.** Wrapping is opt-in: `x.wrapping_add(y)`.
-*Why:* A program that compiles should do what it says. The check costs about 1–2%. The benchmark suite will confirm that.
+## Visibility
+
+**`pub` marks what other kits can use.** Inside a kit, every file and module sees everything. `pub` goes on each `def`, `struct`, `enum`, `error`, `interface`, `type` alias and re-exported `import` that other kits may use, and on each struct field they may see.
+- If every field of a struct is `pub`, other kits get its automatic constructor. Otherwise they build it through its `pub` named constructors.
+- Enum cases and interface methods come with their type and have no `pub` of their own.
+- Writes from another kit still run the field's `where` rules.
+- A `pub` signature can't mention anything that isn't `pub`.
+- `pub` functions declare their return and error types, which the semver check compares. Everything else is inferred.
+- A lint flags `pub` items that no other kit can reach.
+
+A big app that wants walls between its own parts splits into local kits in one workspace.
+*Why:* `pub` appears only where API stability matters, and never in apps. Making every field of a `pub struct` public would make every internal field part of the API, so renaming one would need a major version. Go's capitalization rule would clash with lowercase built-ins and capitalized user types.
 
 ## Concurrency
 
@@ -45,8 +105,8 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 ## Syntax
 
-**Doc comments are `##`.** A `##` comment documents the module, function, struct, field or enum case after it. Code examples in doc comments run as tests. Strings are never documentation, so there are no `"""` docstrings.
-*Why:* One form that works on everything, including fields and enum cases. Nim uses the same thing.
+**Doc comments are `##`, above what they document.** A `##` comment documents the function, struct, field or enum case that follows it, or the module when it's at the top of the file. Examples go in Markdown code fences and check results with `assert`. `fennec test` runs them. There are no `"""` docstrings: strings are never documentation.
+*Why:* One form that works on everything, including fields and enum cases. Fences render properly in `fennec doc`. Nim uses `##` for doc comments too.
 
 **f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay.
 *Why:* `{x=}` is what people want when debugging; `!r` has no meaning without Python's `repr`.
@@ -61,10 +121,21 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 - `fennec test`: tests, property tests and the examples in doc comments.
 - `fennec doc`: documentation from `##` comments.
 - `fennec explain`: the long explanation of any error or lint.
-- The language server: inlay hints for inferred types and error sets, hover docs, go to definition, rename, and lint fixes as code actions. It reuses the compiler's queries and cache.
+- The language server: inlay hints for inferred types and error sets, hover docs, go to definition, rename, and lint fixes as code actions (including "make this `pub`"). It reuses the compiler's queries and cache.
 - The copies lint, as above.
 
 *Why:* Inferred types and error sets need to be visible to be trusted, and a fixed style plus automatic fixes means AI and people write the same code.
+
+## Kits on the Den
+
+**Publishing requires** that the kit is formatted, passes the default lints, passes its tests and doc examples, and has a `##` doc comment on every `pub` item. `fennec publish` refuses otherwise. Each lint exception needs a written reason, and the reasons are shown on the kit's page.
+
+**Shown, not required:** test coverage, mutation score and benchmarks, as scores on the kit's page.
+*Why:* A required coverage percentage gets gamed with tests that check nothing. A visible mutation score exposes that.
+
+**The Den checks for itself.** Publishing goes through OIDC trusted publishing, so the CI run that ran the checks is attested. The Den re-runs formatting and lints in wasm, which is safe and fast because kits have no build scripts.
+
+**Lints are pinned to the kit's Fennec version.** A lint added in Fennec 0.5 never blocks a patch release of a kit written for 0.4.
 
 ## Writing Fennec in Fennec
 
@@ -83,8 +154,14 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 
 ## Still open
 
-- Visibility: everything visible inside a kit with `pub` for what other kits see, or a `_` prefix for private, or both.
+- How a function declares its errors, which `pub` functions must do.
 - How closures longer than one line should look, beyond nested functions.
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.
 - The file extension (currently `.fen`).
+- These security proposals:
+  - `Net`, `Env` and `Process` as capabilities.
+  - Narrowed capabilities like `fs.only("saves/")`.
+  - Each kit's capabilities recorded in `kit.lock`, with any increase needing approval.
+  - Types that make injection impossible: `sql"..."` templates, `Path`, argument lists for commands, escaping HTML templates.
+  - `Secret[str]`, which can't be printed or logged.

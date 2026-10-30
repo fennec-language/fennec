@@ -1,0 +1,18 @@
+from std.path import Path
+
+def main(stdout: Stdout, fs: Fs):
+    saves = Path("saves")
+    slot = saves / "slot1.json"
+    stdout.print(slot.text, slot.name(), slot.stem(), slot.extension())
+    stdout.print(slot.parent().text, slot.parent().parent().text, Path("/").parent().text)
+
+    sprite = Path("assets/sprites/../art/./fox.tar.gz")
+    stdout.print(sprite.name(), sprite.stem(), sprite.extension())
+    stdout.print(sprite.normalize().text, sprite.parts())
+    stdout.print(Path("../../levels/./one").normalize().text, Path("/a/../../b").normalize().text)
+    stdout.print(Path("a/..").normalize().text, Path(".hidden").extension() == "", Path("notes.").stem())
+
+    stdout.print(Path("/home/ash").join("games").join("fox").text, Path("logs/").join("today.txt").text)
+    stdout.print(Path("ignored").join("/etc/hosts").text, Path("/etc").is_absolute(), slot.is_absolute())
+    stdout.print(slot == Path("saves/slot1.json"), slot)
+    stdout.print(fs.exists(Path("/")), fs.exists(Path("/").join("no such place")))

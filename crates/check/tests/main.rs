@@ -4,6 +4,7 @@
 mod builtins;
 mod calls;
 mod errors;
+mod library;
 mod mutation;
 mod names;
 mod narrowing;

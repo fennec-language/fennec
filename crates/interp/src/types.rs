@@ -29,8 +29,7 @@ impl Interp<'_> {
         match (type_name, args.as_slice()) {
             ("IdMap", []) => return Ok(Value::IdMap(Rc::default())),
             ("SoaList", []) => return Ok(Value::list(Vec::new())),
-            ("Path", [CallArg { value: Value::Str(path), .. }]) => return Ok(Value::Str(Rc::clone(path))),
-            ("IdMap" | "SoaList" | "Path" | "Id", _) => {
+            ("IdMap" | "SoaList" | "Id", _) => {
                 return Err(Diagnostic::new(
                     format!("`{type_name}` was called with the wrong arguments"),
                     span,

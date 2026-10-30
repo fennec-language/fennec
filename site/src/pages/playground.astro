@@ -1,0 +1,358 @@
+---
+import Base from '../layouts/Base.astro';
+
+const base = import.meta.env.BASE_URL;
+
+// The playground's examples are the programs the compiler's tests run, so they always work.
+const files = import.meta.glob('../../../examples/*.fen', { query: '?raw', import: 'default', eager: true });
+const source = (name: string) => {
+  const text = files[`../../../examples/${name}.fen`];
+  if (typeof text !== 'string') throw new Error(`examples/${name}.fen is missing`);
+  return text;
+};
+
+const examples = [
+  { name: 'hello', label: 'Hello', code: source('hello') },
+  { name: 'fizzbuzz', label: 'FizzBuzz', code: source('fizzbuzz') },
+  { name: 'structs', label: 'Structs', code: source('structs') },
+  { name: 'enums', label: 'Enums and match', code: source('enums') },
+  { name: 'errors_and_none', label: 'Errors and None', code: source('errors_and_none') },
+  { name: 'strings', label: 'Strings', code: source('strings') },
+  { name: 'game', label: 'A tiny game world', code: source('game') },
+  { name: 'testing', label: 'Tests (press Test)', code: source('testing') },
+  {
+    name: 'forever',
+    label: 'A loop that never ends',
+    code: `def main(stdout: Stdout):
+    mut n = 0
+    while True:
+        n += 1
+`,
+  },
+];
+---
+
+<Base title="Playground" description="Write Fennec and run it in your browser: the interpreter, compiled to WebAssembly.">
+  <section class="wrap playground">
+    <header class="intro">
+      <h1>Playground</h1>
+      <p>
+        Write Fennec and run it right here: this is the same interpreter as the <code>fennec</code> command, compiled to
+        WebAssembly. Programs get <code>stdout</code> but no files, and long runs are stopped.
+      </p>
+    </header>
+
+    <div class="toolbar">
+      <label class="example">
+        <span>Example</span>
+        <select id="example">
+          {examples.map((example) => <option value={example.name}>{example.label}</option>)}
+        </select>
+      </label>
+      <div class="actions">
+        <button class="button primary" id="run" type="button" title="Run main (Ctrl+Enter)">Run</button>
+        <button class="button" id="test" type="button" title="Run the test blocks (Ctrl+Shift+Enter)">Test</button>
+        <button class="button" id="stop" type="button" disabled>Stop</button>
+      </div>
+    </div>
+
+    <div class="panes">
+      <div class="window">
+        <div class="window-bar">
+          <span></span><span></span><span></span>
+          <em>playground.fen</em>
+        </div>
+        <textarea id="editor" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Fennec code">{examples[0]?.code}</textarea>
+      </div>
+      <div class="window">
+        <div class="window-bar">
+          <span></span><span></span><span></span>
+          <em id="status">output</em>
+        </div>
+        <pre id="output" aria-live="polite"><span class="hint">Press Run to run main, or Test to run the tests.</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <script is:inline type="application/json" id="examples" set:html={JSON.stringify(examples).replaceAll('<', '\\u003c')} />
+  <script is:inline type="application/json" id="wasm-url" set:html={JSON.stringify(`${base}fennec.wasm`)} />
+</Base>
+
+<script>
+  /** The longest a run may take, in case the interpreter's own step limit doesn't stop it. */
+  const TIMEOUT_MS = 20_000;
+  const INDENT = '    ';
+
+  type Part = ['out' | 'err', string];
+  type Result = { ok: boolean; parts: Part[] };
+
+  const json = (id: string) => JSON.parse(document.getElementById(id)?.textContent ?? 'null');
+  const examples: { name: string; code: string }[] = json('examples');
+  const wasm: string = json('wasm-url');
+
+  const editor = document.getElementById('editor') as HTMLTextAreaElement;
+  const output = document.getElementById('output') as HTMLPreElement;
+  const status = document.getElementById('status') as HTMLElement;
+  const picker = document.getElementById('example') as HTMLSelectElement;
+  const buttons = {
+    run: document.getElementById('run') as HTMLButtonElement,
+    test: document.getElementById('test') as HTMLButtonElement,
+    stop: document.getElementById('stop') as HTMLButtonElement,
+  };
+
+  let worker: Worker | undefined;
+  let running: { timer: number; started: number } | undefined;
+
+  function startWorker() {
+    worker = new Worker(new URL('../scripts/fennec-worker.js', import.meta.url), { type: 'module' });
+    worker.onmessage = ({ data }: MessageEvent<Result>) => finish(data);
+  }
+
+  function setBusy(busy: boolean) {
+    buttons.run.disabled = busy;
+    buttons.test.disabled = busy;
+    buttons.stop.disabled = !busy;
+  }
+
+  function start(action: 'run' | 'test') {
+    if (running) return;
+    if (!worker) startWorker();
+    setBusy(true);
+    status.textContent = action === 'run' ? 'running…' : 'testing…';
+    output.replaceChildren();
+    running = { timer: window.setTimeout(() => stop(`stopped after ${TIMEOUT_MS / 1000} seconds`), TIMEOUT_MS), started: performance.now() };
+    worker?.postMessage({ action, source: editor.value, wasm });
+  }
+
+  function finish(result: Result) {
+    if (!running) return;
+    const ms = Math.round(performance.now() - running.started);
+    window.clearTimeout(running.timer);
+    running = undefined;
+    setBusy(false);
+    show(result.parts);
+    if (result.parts.length === 0) show([['out', '(no output)\n']], 'hint');
+    status.textContent = `${result.ok ? 'finished' : 'failed'} in ${ms} ms`;
+  }
+
+  // Stopping throws the worker away: it may be busy for a while yet. The next run starts a new one.
+  function stop(reason: string) {
+    if (!running) return;
+    worker?.terminate();
+    worker = undefined;
+    finish({ ok: false, parts: [['err', `error: ${reason}\n`]] });
+  }
+
+  function show(parts: Part[], extra?: string) {
+    for (const [stream, text] of parts) {
+      const span = document.createElement('span');
+      span.className = extra ?? stream;
+      span.textContent = text;
+      output.append(span);
+    }
+  }
+
+  // Fennec indents with four spaces and rejects tabs, so Tab and Enter keep to that.
+  function edit(event: KeyboardEvent) {
+    const { selectionStart: from, selectionEnd: to, value } = editor;
+    const lineStart = value.lastIndexOf('\n', from - 1) + 1;
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault();
+      start(event.shiftKey ? 'test' : 'run');
+    } else if (event.key === 'Tab' && !event.shiftKey && from === to) {
+      event.preventDefault();
+      const column = from - lineStart;
+      insert(' '.repeat(INDENT.length - (column % INDENT.length)));
+    } else if (event.key === 'Tab' && event.shiftKey && from === to) {
+      event.preventDefault();
+      const line = value.slice(lineStart);
+      const remove = line.length - line.replace(/^ {1,4}/, '').length;
+      editor.setRangeText('', lineStart, lineStart + remove, 'end');
+      editor.selectionStart = editor.selectionEnd = Math.max(lineStart, from - remove);
+    } else if (event.key === 'Enter' && from === to) {
+      event.preventDefault();
+      const line = value.slice(lineStart, from);
+      const indent = line.match(/^ */)?.[0] ?? '';
+      insert(`\n${indent}${line.trimEnd().endsWith(':') ? INDENT : ''}`);
+    }
+  }
+
+  // execCommand keeps the browser's undo history; setRangeText is the fallback where it's gone.
+  function insert(text: string) {
+    if (!document.execCommand('insertText', false, text)) {
+      editor.setRangeText(text, editor.selectionStart, editor.selectionEnd, 'end');
+    }
+  }
+
+  picker.addEventListener('change', () => {
+    const example = examples.find(({ name }) => name === picker.value);
+    if (example) editor.value = example.code;
+  });
+  editor.addEventListener('keydown', edit);
+  buttons.run.addEventListener('click', () => start('run'));
+  buttons.test.addEventListener('click', () => start('test'));
+  buttons.stop.addEventListener('click', () => stop('stopped'));
+  // Load the interpreter before the first run, so the first click is quick.
+  startWorker();
+</script>
+
+<style>
+  .playground {
+    padding-top: 3rem;
+  }
+
+  .intro h1 {
+    font-size: clamp(2.1rem, 5vw, 2.8rem);
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+    margin: 0 0 0.75rem;
+  }
+
+  .intro p {
+    color: var(--muted);
+    max-width: var(--prose);
+    margin: 0 0 1.75rem;
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  .example {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.95rem;
+    color: var(--muted);
+  }
+
+  select {
+    font: inherit;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.45rem 0.7rem;
+  }
+
+  .actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  button.button {
+    font: inherit;
+    font-weight: 600;
+    padding: 0.55rem 1.2rem;
+    cursor: pointer;
+  }
+
+  button.button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .panes {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  @media (min-width: 960px) {
+    .panes {
+      grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    }
+  }
+
+  .window {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--code-bg);
+    overflow: hidden;
+    box-shadow: 0 18px 50px -24px rgb(27 26 46 / 0.35);
+  }
+
+  .window-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0.7rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .window-bar span {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--border);
+  }
+
+  .window-bar em {
+    margin-left: 0.6rem;
+    font-style: normal;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  textarea,
+  #output {
+    flex: 1;
+    margin: 0;
+    min-height: 26rem;
+    padding: 1.1rem 1.25rem;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    font-variant-ligatures: none;
+    line-height: 1.6;
+    tab-size: 4;
+    color: var(--text);
+    background: transparent;
+    border: 0;
+  }
+
+  textarea {
+    resize: vertical;
+    white-space: pre;
+    overflow: auto;
+  }
+
+  textarea:focus {
+    outline: 2px solid var(--accent-bright);
+    outline-offset: -2px;
+  }
+
+  #output {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow: auto;
+    max-height: 40rem;
+  }
+
+  #output :global(.err) {
+    color: var(--error);
+  }
+
+  #output :global(.hint) {
+    color: var(--muted);
+  }
+
+  .playground {
+    --error: #b42318;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .playground {
+      --error: #ff8a80;
+    }
+  }
+</style>

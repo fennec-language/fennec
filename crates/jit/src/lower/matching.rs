@@ -40,7 +40,7 @@ impl Lowerer<'_, '_> {
                 args.len() <= fields.len()
                     && args.iter().zip(fields).all(|(arg, field)| self.testable(arg, field.ty))
             }
-            Pattern::Tuple(_) => false,
+            Pattern::Tuple(_) | Pattern::Or(_) => false,
         }
     }
 
@@ -102,7 +102,7 @@ impl Lowerer<'_, '_> {
     ) -> Result<bool, Diagnostic> {
         let mut tested = false;
         match pattern {
-            Pattern::Wildcard | Pattern::Bind(_) | Pattern::Tuple(_) => {}
+            Pattern::Wildcard | Pattern::Bind(_) | Pattern::Tuple(_) | Pattern::Or(_) => {}
             Pattern::Literal(expr) => {
                 let found = value.0.ok_or_else(|| internal("a missing value", expr.span))?;
                 let passes = match &expr.kind {

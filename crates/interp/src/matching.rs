@@ -25,6 +25,14 @@ impl Interp<'_> {
             Pattern::Wildcard => Ok(Some(Vec::new())),
             Pattern::Bind(name) => Ok((!value.is_failure()).then(|| vec![(name.clone(), success.clone())])),
             Pattern::Literal(expr) => Ok((literal(&expr.kind) == *success).then(Vec::new)),
+            Pattern::Or(alternatives) => {
+                for alternative in alternatives {
+                    if let Some(bindings) = self.matches(alternative, value, span)? {
+                        return Ok(Some(bindings));
+                    }
+                }
+                Ok(None)
+            }
             Pattern::Tuple(patterns) => match success {
                 Value::Tuple(items) if items.len() == patterns.len() => self.all_match(patterns, items, span),
                 _ => Ok(None),

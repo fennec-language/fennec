@@ -257,6 +257,15 @@ impl Interp<'_> {
             for (name, bound) in bindings {
                 self.frame.declare(&name, bound, false);
             }
+            // A guard that's false passes the value on to the next case.
+            if let Some(guard) = &arm.guard {
+                let taken = self.eval(guard);
+                if !matches!(taken, Ok(Value::Bool(true))) {
+                    self.frame.pop();
+                    taken?;
+                    continue;
+                }
+            }
             let flow = self.exec_stmts(&arm.body);
             self.frame.pop();
             return match flow? {

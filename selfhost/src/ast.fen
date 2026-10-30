@@ -168,6 +168,8 @@ enum CompKind:
 
 struct MatchArm:
     pattern: Pattern
+    ## `if condition` after the pattern: the arm is taken only when it's true.
+    guard: Expr?
     body: list[Stmt]
     span: Span
 
@@ -178,6 +180,8 @@ enum Pattern:
     ## `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`.
     Variant(name: str, dotted: bool, args: list[Pattern])
     Tuple(items: list[Pattern])
+    ## `.Int(_) | .Float(_)`: any of the alternatives, each binding the same names.
+    Or(alternatives: list[Pattern])
 
 enum FStrPart:
     Text(text: str)

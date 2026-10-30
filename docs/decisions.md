@@ -419,12 +419,19 @@ match tok:
 
 ## Toolchain
 
-**The installed `fennec` is a small launcher.** It reads the version a kit asks for, `fennec = "0.4.2"` in `kit.toml`, with no separate version file. On first use it fetches exactly that toolchain into `~/.fennec/toolchains/0.4.2/`, verifies its checksum and signature, records the toolchain's hash in `kit.lock`, and hands off to it.
+**Each Fennec version is one self-contained `fennec` binary.** It holds `run`, `build`, `fmt`, `test`, the version launcher, and Den search and install, with Cranelift and LLVM linked into it. It needs no system libraries and no separate LLVM download.
+*Why:* Installing Fennec is copying one file, the way Zig works. Nothing on the machine can be missing or the wrong version.
+
+**The binary is also the version launcher.** It reads the version a kit asks for, `fennec = "0.4.2"` in `kit.toml`, with no separate version file. If that isn't the running version, it fetches exactly that version's binary into `~/.fennec/toolchains/0.4.2/` on first use, verifies its checksum and signature, records its hash in `kit.lock`, and hands off to it.
 - `fennec toolchain list`, `install`, `remove` and `default` manage toolchains.
 - It never updates itself or fetches "latest" without being asked.
 - Single-file scripts outside a kit use the default toolchain.
+- `fennec doctor` reports how much disk the toolchains and the cache use, and offers to remove versions no kit uses anymore.
 
 *Why:* Every project gets its own Fennec version without anyone thinking about it, and teammates, CI and AI agents all build with exactly the same toolchain. It's also what makes lints pinned to a kit's Fennec version work.
+
+**Building Fennec itself stays fast.** Only the release packaging of the toolchain links LLVM in, through a build feature CI turns on for each target. Everyday builds of the compiler call a pinned, prebuilt `llc` as a separate program instead.
+*Why:* Linking LLVM into every build of the compiler would make working on Fennec as slow as the builds Fennec exists to avoid.
 
 ## Tooling
 
@@ -532,6 +539,11 @@ These are default lints, and the Den requires them.
 
 **The tree-walking interpreter stays simple and correct, not fast.** It runs the REPL, the playground, compile-time evaluation and the sandbox, and it's the reference the JIT is tested against: every example must give the same output on both.
 
+**`fennec build` makes an executable with Cranelift.** It's the fast build, and the path the self-hosted compiler bootstraps through. `fennec build --release` uses the bundled LLVM at full optimization for small, stripped, portable executables.
+
+**The JIT aims for about 80–85% of the speed of the benchmark suite's twins, and no further.** Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
+*Why:* Development builds are for changing code and seeing it run at once. The 3% target applies to release builds.
+
 The JIT, release builds and the language server all share one build engine and cache, described under Builds.
 
 ## Builds
@@ -549,7 +561,7 @@ The JIT, release builds and the language server all share one build engine and c
 
 **Caches can be shared** between machines and CI. Results from elsewhere are used only when they're signed or verified locally.
 
-**Release builds use LLVM with whole-program optimization,** cached per function where possible.
+**Release builds use the bundled LLVM with whole-program optimization,** cached per function where possible.
 
 *Why:* These avoid what makes builds slow elsewhere: large compilation units, build scripts and macros that run code, a build folder in every project that grows to gigabytes, and separate engines for the compiler and the editor.
 

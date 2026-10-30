@@ -144,7 +144,7 @@ impl Lowerer<'_, '_> {
                 }
             },
             ExprKind::Tuple(names) => self.unpack(names, value, target.span),
-            _ if let Some((address, field)) = self.struct_target(target)? => {
+            _ if let Some((place, id, field)) = self.struct_target(target)? => {
                 let span = target.span.to(value.span);
                 let new = match op {
                     Some(op) => {
@@ -160,7 +160,7 @@ impl Lowerer<'_, '_> {
                     }
                     None => self.expr(value)?,
                 };
-                self.store_field(address, field, new, span)
+                self.write_field(&place, id, field, new, span)
             }
             _ => match self.field_path(target) {
                 Some((root, fields)) if !fields.is_empty() => {
@@ -194,9 +194,7 @@ impl Lowerer<'_, '_> {
             }
             Ty::Struct(id) => {
                 let from = value.ok_or_else(|| unsupported("this value", source.span))?;
-                let own = self.clone_struct(from, id)?;
-                self.bind_native(name, ty, Some(own), is_mut);
-                Ok(())
+                self.declare_struct(name, from, id, is_mut)
             }
             _ => {
                 self.bind_native(name, ty, value, is_mut);
@@ -208,7 +206,7 @@ impl Lowerer<'_, '_> {
     /// How native code holds what the checker says a name in this function holds.
     pub(super) fn checked_ty(&self, name: &str) -> Option<Ty> {
         let signatures = self.signatures;
-        signatures.local(&self.function.key, name).map(|ty| self.layouts.ty(ty))
+        signatures.local(self.current_key(), name).map(|ty| self.layouts.ty(ty))
     }
 
     /// Changes what a name holds.
@@ -226,10 +224,10 @@ impl Lowerer<'_, '_> {
                 let id = self.name_id(name);
                 self.call_helper(Helper::Assign, &[id, handle]).map(|_| ())
             }
-            (Some(var), Ty::Struct(id)) => {
+            (Some(_), Ty::Struct(id)) => {
                 let converted = self.convert(value, ty, Ty::Struct(id), span)?;
-                let own = self.b.use_var(var);
-                self.copy_struct(own, converted, id)
+                let place = self.local_place(local).ok_or_else(|| unsupported("this struct", span))?;
+                self.write_place(&place, converted, id)
             }
             (Some(var), local_ty) => {
                 let converted = self.convert(value, ty, local_ty, span)?;

@@ -45,8 +45,9 @@ pub(crate) extern "C" fn fail(code: i64, start: i64, end: i64) {
         DIVISION_BY_ZERO => Diagnostic::new("division by zero", span),
         NEGATIVE_SQRT => Diagnostic::new("can't take the square root of a negative number", span),
         NOT_AN_INT => Diagnostic::new("can't turn a float into an int", span),
-        TOO_DEEP => Diagnostic::new(format!("calls nested more than {} deep", embed::MAX_DEPTH), span)
-            .with_help("check for recursion that never stops"),
+        TOO_DEEP => {
+            Diagnostic::new("calls nested too deeply", span).with_help("check for recursion that never stops")
+        }
         _ => Diagnostic::new("`range` can't step by 0", span),
     });
 }

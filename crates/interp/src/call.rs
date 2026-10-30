@@ -105,7 +105,7 @@ impl Interp<'_> {
 
     fn enter(&mut self, span: Span) -> Result<Frame, Diagnostic> {
         if self.depth >= MAX_DEPTH {
-            return Err(Diagnostic::new(format!("calls nested more than {MAX_DEPTH} deep"), span)
+            return Err(Diagnostic::new("calls nested too deeply", span)
                 .with_help("check for recursion that never stops"));
         }
         self.depth += 1;

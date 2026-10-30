@@ -30,6 +30,10 @@ impl Lowerer<'_, '_> {
                     let id = self.name_id(name);
                     Ok((Some(self.help(Helper::Get, &[id])?), Ty::Obj))
                 }
+                Some(local @ super::Local { ty: Ty::Struct(_), .. }) => {
+                    let place = self.local_place(local).ok_or_else(|| unsupported("this struct", span))?;
+                    Ok((Some(self.read_place(&place)), local.ty))
+                }
                 Some(local) => Ok((local.var.map(|var| self.b.use_var(var)), local.ty)),
                 None => self.fallback(expr),
             },
@@ -201,6 +205,9 @@ impl Lowerer<'_, '_> {
     }
 
     fn int_arithmetic(&mut self, op: BinOp, a: Value, b: Value, span: Span) -> Option<(Value, Ty)> {
+        if let (BinOp::Add | BinOp::Sub, Some(constant)) = (op, self.constant(b)) {
+            return Some((self.add_constant(op, a, b, constant, span), Ty::Int));
+        }
         let checked = match op {
             BinOp::Add => Some(self.b.ins().sadd_overflow(a, b)),
             BinOp::Sub => Some(self.b.ins().ssub_overflow(a, b)),
@@ -278,6 +285,44 @@ impl Lowerer<'_, '_> {
             _ => return None,
         };
         Some((value, Ty::Float))
+    }
+}
+
+impl Lowerer<'_, '_> {
+    /// The value of an int known while compiling, like the `1` in `n - 1`.
+    fn constant(&self, value: Value) -> Option<i64> {
+        let inst = self.b.func.dfg.value_def(value).inst()?;
+        match self.b.func.dfg.insts[inst] {
+            cranelift_codegen::ir::InstructionData::UnaryImm {
+                opcode: cranelift_codegen::ir::Opcode::Iconst,
+                imm,
+            } => Some(imm.bits()),
+            _ => None,
+        }
+    }
+
+    /// `a + c` or `a - c` for a constant `c`. It overflows exactly when `a` is past a bound
+    /// known while compiling, a cheaper test than the general one.
+    fn add_constant(&mut self, op: BinOp, a: Value, b: Value, constant: i64, span: Span) -> Value {
+        let adds_up = (op == BinOp::Add) == (constant >= 0);
+        let (cc, bound) = if adds_up {
+            (IntCC::SignedGreaterThan, i64::MAX.checked_sub(constant.checked_abs().unwrap_or(i64::MAX)))
+        } else {
+            (IntCC::SignedLessThan, i64::MIN.checked_add(constant.checked_abs().unwrap_or(i64::MAX)))
+        };
+        if let Some(bound) = bound {
+            let overflow = self.b.ins().icmp_imm_s(cc, a, bound);
+            self.fail_if(overflow, runtime::OVERFLOW, span);
+            return if op == BinOp::Add { self.b.ins().iadd(a, b) } else { self.b.ins().isub(a, b) };
+        }
+        // Only `- i64::MIN` lands here; the general check handles it.
+        let (result, overflow) = if op == BinOp::Add {
+            self.b.ins().sadd_overflow(a, b)
+        } else {
+            self.b.ins().ssub_overflow(a, b)
+        };
+        self.fail_if(overflow, runtime::OVERFLOW, span);
+        result
     }
 }
 

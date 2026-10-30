@@ -23,6 +23,11 @@ impl Lowerer<'_, '_> {
         }
         let block = self.b.create_block();
         let ty = if value.is_some() { ty } else { Ty::Unit };
+        // A struct crosses into the merge as an address.
+        let value = match (value, ty) {
+            (Some(value), Ty::Struct(id)) => self.address_of(value, id).ok(),
+            _ => value,
+        };
         if let (Some(value), Some(abi_ty)) = (value, abi(ty)) {
             self.b.append_block_param(block, abi_ty);
             self.b.ins().jump(block, &[value.into()]);

@@ -80,9 +80,6 @@ thread_local! {
     static FAILED: Cell<u8> = const { Cell::new(0) };
 }
 
-/// How deep native calls may nest before the program is stopped.
-pub const MAX_DEPTH: i64 = 1000;
-
 /// Where this thread's failure flag lives, for native code to read. Code compiled for one
 /// thread must run on that thread.
 pub fn failed_flag() -> usize {

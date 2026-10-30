@@ -43,8 +43,46 @@ pub fn run(module: &Module, out: &mut dyn Write) -> Result<(), JitError> {
     run_with_report(module, out).map(|_| ())
 }
 
+/// The stack the program runs on. It's only reserved, not used, until calls nest deeply.
+const STACK_BYTES: usize = 1 << 30;
+
+/// How much of the stack native calls may use, leaving the rest for the runtime and the
+/// interpreter, which native code calls into.
+const NATIVE_STACK_BYTES: usize = 1 << 28;
+
 /// Like `run`, also reporting how the program compiled and what the run left behind.
+///
+/// The program runs on a thread of its own with a big stack, so native code knows how deep
+/// its calls may nest: it compares the stack pointer against a limit, which costs almost
+/// nothing per call.
 pub fn run_with_report(module: &Module, out: &mut dyn Write) -> Result<Report, JitError> {
+    let ran = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn_scoped(scope, || compile_and_run(module))
+            .map(std::thread::ScopedJoinHandle::join)
+    });
+    let (output, report) = match ran {
+        Ok(Ok(result)) => result?,
+        Ok(Err(panic)) => std::panic::resume_unwind(panic),
+        Err(err) => {
+            return Err(JitError::Unsupported(Diagnostic::new(
+                format!("couldn't start the JIT's thread: {err}"),
+                Span::default(),
+            )));
+        }
+    };
+    out.write_all(&output).and_then(|()| out.flush()).map_err(|err| {
+        JitError::Failed(Diagnostic::new(format!("couldn't write output: {err}"), Span::default()))
+    })?;
+    report
+}
+
+/// Compiles and runs a program on the current thread, giving back what it printed and how
+/// it went.
+fn compile_and_run(module: &Module) -> Result<(Vec<u8>, Result<Report, JitError>), JitError> {
+    let here = 0_u8;
+    let stack_limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
     let signatures = fennec_check::check(module).map_err(|diagnostics| {
         JitError::Unsupported(
             diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default())),
@@ -55,12 +93,9 @@ pub fn run_with_report(module: &Module, out: &mut dyn Write) -> Result<Report, J
     let program =
         types::Program::from_module(module, &prelude, &signatures).map_err(JitError::Unsupported)?;
     let (entry, tables, compilation) =
-        lower::compile(&program, &signatures).map_err(JitError::Unsupported)?;
+        lower::compile(&program, &signatures, stack_limit).map_err(JitError::Unsupported)?;
     let result = runtime::execute(&entry, module, tables).map_err(JitError::Failed)?;
-    out.write_all(&result.output).and_then(|()| out.flush()).map_err(|err| {
-        JitError::Failed(Diagnostic::new(format!("couldn't write output: {err}"), program.main_span))
-    })?;
-    match result.failure {
+    let report = match result.failure {
         Some(failure) => Err(JitError::Failed(failure)),
         None => Ok(Report {
             interpreted: {
@@ -74,5 +109,6 @@ pub fn run_with_report(module: &Module, out: &mut dyn Write) -> Result<Report, J
             leftover_temps: result.leftovers.temps,
             leftover_frames: result.leftovers.frames,
         }),
-    }
+    };
+    Ok((result.output, report))
 }

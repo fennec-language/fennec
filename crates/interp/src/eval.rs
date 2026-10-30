@@ -109,7 +109,7 @@ impl Interp<'_> {
     }
 
     /// For `json.loads` where `json` is an imported module, the name it means: a module
-    /// function like `json.loads`, or a name like `Path` that's available everywhere.
+    /// function like `json.loads`, or a type like `Path`.
     pub(crate) fn module_member(
         &self,
         object: &Expr,

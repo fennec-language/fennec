@@ -50,6 +50,8 @@ Names belong to the block they're created in. A name created inside an `if`, `fo
 Parameters have types. Return types are inferred, and the last expression in a function is its value.
 
 ```fennec
+from std.math import PI
+
 def area(radius: float):
     PI * radius * radius                  # returns float
 
@@ -104,6 +106,8 @@ defaults = Config()            # every field has a default
 A method without `self` is a named constructor, for anything the automatic one can't do:
 
 ```fennec
+from std.math import Vec3
+
 struct Enemy:
     position: Vec3
     health = 100
@@ -133,6 +137,8 @@ Equality, hashing and printing work automatically for any type whose fields supp
 Everything in Fennec is a value. Assigning or passing something gives the receiver its own independent version, so nothing can change your data behind your back. There are no references, pointers or lifetimes to manage.
 
 ```fennec
+from std.math import Vec3
+
 a = Vec3(x=1.0, y=2.0, z=3.0)
 mut b = a
 b.x = 10.0   # a.x is still 1.0
@@ -182,6 +188,8 @@ for mut enemy in enemies:
 An `enum` is one of several cases, each with its own data. `match` must handle every case.
 
 ```fennec
+from std.math import PI
+
 enum Shape:
     Circle(radius: f32)
     Rect(width: f32, height: f32)
@@ -215,6 +223,8 @@ damage = player.weapon?.damage else 1   # use 1 if there's no weapon
 There are no exceptions. An error is a value a function returns when it fails, and you can't use the result without dealing with it.
 
 ```fennec
+from std.path import Path
+
 error NotFound:
     path: Path
 
@@ -266,9 +276,11 @@ strongest = max(alive, key=enemy => enemy.health)
 world.enemies.remove_where(enemy => enemy.health <= 0)
 ```
 
-- `IdMap` stores things that come and go, like enemies or bullets. Inserting returns an `Id`, and a stale `Id` safely finds nothing, even after its slot is reused.
+- `IdMap`, from `std.game`, stores things that come and go, like enemies or bullets. Inserting returns an `Id`, and a stale `Id` safely finds nothing, even after its slot is reused.
 
 ```fennec
+from std.game import Id
+
 type EnemyId = Id[Enemy]
 
 id = world.enemies.insert(Enemy.spawn())
@@ -364,6 +376,8 @@ position += velocity * dt
 A type matches an interface by having its methods. There's nothing to declare.
 
 ```fennec
+from std.math import PI
+
 interface Shape:
     def area(self) -> f32
 
@@ -384,6 +398,8 @@ Generics are resolved at compile time, so calls go straight to the right functio
 With no references, a callback can't hold on to the world and change it later. Instead, handlers return what should happen, and the main loop applies it:
 
 ```fennec
+from std.math import Vec3
+
 enum Command:
     Spawn(enemy: Enemy)
     Damage(target: EnemyId, amount: int)
@@ -438,6 +454,8 @@ Signatures show what code can do, and tests pass in fakes like an in-memory file
 Tests live next to the code they test.
 
 ```fennec
+from std.math import PI
+
 test "a unit circle's area is pi":
     assert area(.Circle(radius=1.0)) == PI
 
@@ -451,6 +469,7 @@ The second test is a property test: Fennec generates inputs for any type, shrink
 
 ```fennec
 from std.layout import SoaList
+from std.math import Vec3
 
 struct Particle:
     position: Vec3

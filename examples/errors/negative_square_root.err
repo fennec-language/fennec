@@ -1,5 +1,5 @@
 error: can't take the square root of a negative number
- --> examples/errors/negative_square_root.fen:2:18
+ --> examples/errors/negative_square_root.fen:4:18
   |
-2 |     stdout.print(sqrt(-1.0))
+4 |     stdout.print(sqrt(-1.0))
   |                  ^^^^^^^^^^

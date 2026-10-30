@@ -7,9 +7,9 @@ use fennec_syntax::{Diagnostic, Import, Imported};
 pub(crate) const SOURCES: [&str; fennec_syntax::PRELUDE.len()] = fennec_syntax::PRELUDE;
 
 /// What an import brings in: modules by the name they're used under, like `json`, and
-/// module functions by the name they're imported under, like `loads` for `json.loads`. Other
-/// standard library names are available everywhere for now, so importing them only has to
-/// be correct.
+/// module functions by the name they're imported under, like `loads` for `json.loads`. Types
+/// and constants, like `Vec3` and `PI`, are always there at run time: the type checker
+/// reports one used without its import, so here importing them only has to be correct.
 pub(crate) type Brought = (Vec<(String, &'static str)>, Vec<(String, &'static str)>);
 
 pub(crate) fn check_import(import: &Import) -> Result<Brought, Diagnostic> {

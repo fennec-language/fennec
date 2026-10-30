@@ -38,6 +38,8 @@ fn habits_from_other_languages_get_a_hint() {
 #[test]
 fn functions_types_builtins_and_constants_exist_everywhere() {
     let program = "
+        from std.math import PI, sqrt
+
         def double(n: int):
             n * 2
 

@@ -1,4 +1,4 @@
-from std.random import random_int, random_float, random_choice
+from std.random import random_choice, random_float, random_int
 
 ## A seeded random number generator. The same seed gives the same numbers in the same order
 ## on every machine, so games replay and tests repeat exactly. It's SplitMix64: fast, and

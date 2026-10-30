@@ -1,7 +1,7 @@
 error: `OutOfStock` is defined in examples/projects/errors/case_not_imported/src/inventory.fen, which this file doesn't import
- --> examples/projects/errors/case_not_imported/src/main.fen:6:9
+ --> examples/projects/errors/case_not_imported/src/main.fen:7:9
   |
-6 |         case OutOfStock(item): stdout.print(f"no {item} left")
-  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+7 |         case OutOfStock(item):
+  |         ^^^^^^^^^^^^^^^^^^^^^^
   |
   = help: add `from inventory import OutOfStock` at the top of this file

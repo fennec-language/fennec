@@ -1,8 +1,9 @@
 ## Checks on the game's numbers. Nothing imports this file, so only `fennec test` loads it.
 
 from std.math import Vec3
-from enemies import spawn
+
 from combat.damage import hit
+from enemies import spawn
 
 test "a boss survives a full hit":
     mut boss = spawn("boss", Vec3.zero, 250)

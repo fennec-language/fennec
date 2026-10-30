@@ -2,8 +2,7 @@ error NotANumber:
     text: str
 
 def parse(text: str):
-    if not text.isdigit():
-        fail NotANumber(text)
+    if not text.isdigit(): fail NotANumber(text)
     int(text)
 
 def main(stdout: Stdout):

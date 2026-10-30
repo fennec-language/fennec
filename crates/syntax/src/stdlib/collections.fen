@@ -28,15 +28,13 @@ struct Deque[T]:
 
     ## Removes the item at the back and gives it back, or None when the deque is empty.
     def pop(mut self) -> T?:
-        if self.count == 0:
-            return None
+        if self.count == 0: return None
         self.count -= 1
         self.slots[(self.head + self.count) % len(self.slots)]
 
     ## Removes the item at the front and gives it back, or None when the deque is empty.
     def popleft(mut self) -> T?:
-        if self.count == 0:
-            return None
+        if self.count == 0: return None
         item = self.slots[self.head]
         self.head = (self.head + 1) % len(self.slots)
         self.count -= 1
@@ -44,14 +42,12 @@ struct Deque[T]:
 
     ## The item at the front, or None when the deque is empty.
     def first(self) -> T?:
-        if self.count == 0:
-            return None
+        if self.count == 0: return None
         self.slots[self.head]
 
     ## The item at the back, or None when the deque is empty.
     def last(self) -> T?:
-        if self.count == 0:
-            return None
+        if self.count == 0: return None
         self.slots[(self.head + self.count - 1) % len(self.slots)]
 
     def clear(mut self):
@@ -69,8 +65,7 @@ struct Deque[T]:
     ## Makes room for one more item, doubling the slots when they're full. `filler` fills
     ## the new slots.
     def make_room(mut self, filler: T):
-        if self.count < len(self.slots):
-            return
+        if self.count < len(self.slots): return
         mut slots = self.items()
         for _ in range(len(slots) + 1):
             slots.append(filler)
@@ -98,15 +93,13 @@ struct Heap[T: Ordered]:
         mut at = len(self.items) - 1
         while at > 0:
             parent = (at - 1) // 2
-            if not self.items[at] < self.items[parent]:
-                break
+            if not self.items[at] < self.items[parent]: break
             self.swap(at, parent)
             at = parent
 
     ## Removes the smallest item and gives it back, or None when the heap is empty.
     def pop(mut self) -> T?:
-        if len(self.items) == 0:
-            return None
+        if len(self.items) == 0: return None
         smallest = self.items[0]
         last = self.items.pop()
         if len(self.items) > 0:
@@ -116,8 +109,7 @@ struct Heap[T: Ordered]:
 
     ## The smallest item, or None when the heap is empty.
     def peek(self) -> T?:
-        if len(self.items) == 0:
-            return None
+        if len(self.items) == 0: return None
         self.items[0]
 
     def clear(mut self):
@@ -128,13 +120,11 @@ struct Heap[T: Ordered]:
         mut at = start
         while True:
             left = 2 * at + 1
-            if left >= len(self.items):
-                break
+            if left >= len(self.items): break
             mut child = left
             if left + 1 < len(self.items) and self.items[left + 1] < self.items[left]:
                 child = left + 1
-            if not self.items[child] < self.items[at]:
-                break
+            if not self.items[child] < self.items[at]: break
             self.swap(at, child)
             at = child
 
@@ -164,16 +154,14 @@ struct PriorityQueue[T, P: Ordered]:
     ## is empty.
     def pop(mut self) -> T?:
         entry = self.heap.pop()
-        if entry is None:
-            return None
+        if entry is None: return None
         priority, order = entry
         self.waiting.pop(order)
 
     ## The item with the lowest priority, or None when the queue is empty.
     def peek(self) -> T?:
         entry = self.heap.peek()
-        if entry is None:
-            return None
+        if entry is None: return None
         priority, order = entry
         self.waiting[order]
 

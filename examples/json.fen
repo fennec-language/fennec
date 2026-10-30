@@ -15,8 +15,10 @@ struct Player:
 
 def describe(text: str):
     match json.loads[list[float]](text):
-        case Ok(numbers): f"read {json.dumps(numbers)}"
-        case ParseError(message): f"couldn't read it: {message}"
+        case Ok(numbers):
+            f"read {json.dumps(numbers)}"
+        case ParseError(message):
+            f"couldn't read it: {message}"
 
 def main(stdout: Stdout):
     text = "\n".join([
@@ -54,4 +56,5 @@ def main(stdout: Stdout):
     match json.loads[list[int]]("[\n  1,\n  oops\n]"):
         case ParseError(_, line, column):
             stdout.print(f"the problem is on line {line}, column {column}")
-        case Ok(value): stdout.print(value)
+        case Ok(value):
+            stdout.print(value)

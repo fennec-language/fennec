@@ -1,7 +1,7 @@
 error: this might be None
- --> examples/errors/index_none.fen:8:18
+ --> examples/errors/index_none.fen:7:18
   |
-8 |     stdout.print(find([[1], [2, 3]], 3)[0])
+7 |     stdout.print(find([[1], [2, 3]], 3)[0])
   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = help: check with `if x is None:` first, use `?.`, or give a default with `else`

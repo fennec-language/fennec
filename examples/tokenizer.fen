@@ -19,24 +19,39 @@ def is_letter(c: str) -> bool:
 
 def digit(c: str) -> int:
     match c:
-        case "0": 0
-        case "1": 1
-        case "2": 2
-        case "3": 3
-        case "4": 4
-        case "5": 5
-        case "6": 6
-        case "7": 7
-        case "8": 8
-        case _: 9
+        case "0":
+            0
+        case "1":
+            1
+        case "2":
+            2
+        case "3":
+            3
+        case "4":
+            4
+        case "5":
+            5
+        case "6":
+            6
+        case "7":
+            7
+        case "8":
+            8
+        case _:
+            9
 
 def describe(token: Token) -> str:
     match token.tok:
-        case .Name("def"): "keyword def"
-        case .Name(text): "name " + text
-        case .Number(value): f"number {value}"
-        case .Op(text): "op " + text
-        case .Text(body): "text " + body + " (" + str(len(body)) + " chars)"
+        case .Name("def"):
+            "keyword def"
+        case .Name(text):
+            "name " + text
+        case .Number(value):
+            f"number {value}"
+        case .Op(text):
+            "op " + text
+        case .Text(body):
+            "text " + body + " (" + str(len(body)) + " chars)"
 
 def tokenize(source: str) -> list[Token]:
     mut tokens = []

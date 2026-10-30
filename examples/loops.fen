@@ -1,18 +1,15 @@
 def first_square_over(limit: int):
     mut n = 1
     while True:
-        if n * n > limit:
-            return n
+        if n * n > limit: return n
         n += 1
 
 def main(stdout: Stdout):
     stdout.print(first_square_over(50))
     mut odds = []
     for n in range(20):
-        if n % 2 == 0:
-            continue
-        if n > 9:
-            break
+        if n % 2 == 0: continue
+        if n > 9: break
         odds.append(n)
     stdout.print(odds)
     for countdown in range(3, 0, -1):

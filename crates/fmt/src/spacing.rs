@@ -66,6 +66,9 @@ pub(crate) struct Spacing {
     pub(crate) space: Vec<bool>,
     /// What each opening bracket is for.
     pub(crate) brackets: Vec<Option<Bracket>>,
+    /// How loosely each binary operator binds, for breaking long expressions before the
+    /// loosest: 1 for `or`, up to 6 for `**`, and 0 for anything else.
+    pub(crate) precedence: Vec<u8>,
 }
 
 pub(crate) fn analyze(toks: &[Tok<'_>], block: BlockKind) -> Spacing {
@@ -73,7 +76,11 @@ pub(crate) fn analyze(toks: &[Tok<'_>], block: BlockKind) -> Spacing {
         toks,
         stack: Vec::new(),
         roles: Vec::with_capacity(toks.len()),
-        spacing: Spacing { space: Vec::with_capacity(toks.len()), brackets: vec![None; toks.len()] },
+        spacing: Spacing {
+            space: Vec::with_capacity(toks.len()),
+            brackets: vec![None; toks.len()],
+            precedence: Vec::with_capacity(toks.len()),
+        },
         declares_type: declares_type(toks),
         in_def_name: false,
         block,
@@ -124,7 +131,26 @@ impl<'a> Analyzer<'_, 'a> {
             self.in_def_name = true;
         }
         self.spacing.space.push(space);
+        self.spacing.precedence.push(self.precedence(at, tok, role, prev));
         self.roles.push(role);
+    }
+
+    /// How loosely the token at `at` binds as a binary operator, or 0. `not in` and `is not`
+    /// count once, at their first word.
+    fn precedence(&self, at: usize, tok: Tok<'_>, role: Role, prev: Option<Role>) -> u8 {
+        let binary = prev.is_some_and(ends_operand);
+        let next = self.tok(at + 1).map_or("", |next| next.text);
+        match (role, tok.text) {
+            (Role::Keyword, "or") => 1,
+            (Role::Keyword, "and") => 2,
+            (Role::Keyword, "in" | "is") if binary => 3,
+            (Role::Keyword, "not") if binary && next == "in" => 3,
+            (Role::Operator, "==" | "!=" | "<" | "<=" | ">" | ">=") => 3,
+            (Role::Operator, "+" | "-") => 4,
+            (Role::Operator, "*" | "/" | "//" | "%") => 5,
+            (Role::Operator, "**") => 6,
+            _ => 0,
+        }
     }
 
     fn role(&mut self, at: usize, tok: Tok<'_>, prev: Option<Role>, block: BlockKind) -> Role {

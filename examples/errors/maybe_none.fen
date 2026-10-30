@@ -3,8 +3,7 @@ struct Player:
 
 def find(players: list[Player], name: str) -> Player?:
     for player in players:
-        if player.name == name:
-            return player
+        if player.name == name: return player
     None
 
 def main(stdout: Stdout):

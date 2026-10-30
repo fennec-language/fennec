@@ -1,4 +1,4 @@
-from std.collections import Deque, Heap, PriorityQueue, Counter
+from std.collections import Counter, Deque, Heap, PriorityQueue
 
 ## Steps from `start` to every square of a grid, by breadth-first search. `#` is a wall.
 def distances(grid: list[str], start: (int, int)) -> dict[(int, int), int]:
@@ -7,8 +7,7 @@ def distances(grid: list[str], start: (int, int)) -> dict[(int, int), int]:
     frontier.append(start)
     while len(frontier) > 0:
         here = frontier.popleft()
-        if here is None:
-            break
+        if here is None: break
         x, y = here
         for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             next = (x + dx, y + dy)
@@ -25,8 +24,7 @@ def drain(heap: Heap[int]) -> list[int]:
     mut items = []
     while True:
         item = left.pop()
-        if item is None:
-            return items
+        if item is None: return items
         items.append(item)
 
 test "a heap gives back its items in order" for items: list[int]:

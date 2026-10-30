@@ -1,5 +1,5 @@
-from std.math import Vec3
 from std.game import Id, IdMap
+from std.math import Vec3
 
 type EnemyId = Id[Enemy]
 
@@ -27,11 +27,9 @@ noalloc def step(mut world: World, dt: float):
 
 export def attack(mut world: World, target: EnemyId):
     mut enemy = world.enemies.get(target)
-    if enemy is None:
-        fail TargetGone(target)
+    if enemy is None: fail TargetGone(target)
     distance = (enemy.position - world.player).length()
-    if distance > 5.0:
-        fail OutOfRange(distance)
+    if distance > 5.0: fail OutOfRange(distance)
     enemy.take_damage(10)
     world.enemies[target] = enemy
 

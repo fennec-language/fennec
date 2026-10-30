@@ -4,5 +4,7 @@ enum Shape:
 
 def main(stdout: Stdout):
     match Shape.Circle(1.0):
-        case .Circle(radius, color): stdout.print(radius, color)
-        case _: stdout.print("something else")
+        case .Circle(radius, color):
+            stdout.print(radius, color)
+        case _:
+            stdout.print("something else")

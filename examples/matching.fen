@@ -5,43 +5,61 @@ enum Shape:
 
 def name_int(n: int):
     match n:
-        case 0: "zero"
-        case -1: "minus one"
-        case _: "something else"
+        case 0:
+            "zero"
+        case -1:
+            "minus one"
+        case _:
+            "something else"
 
 def name_float(x: float):
     match x:
-        case 0.5: "a half"
-        case -0.5: "minus a half"
-        case _: "something else"
+        case 0.5:
+            "a half"
+        case -0.5:
+            "minus a half"
+        case _:
+            "something else"
 
 def name_str(text: str):
     match text:
-        case "fox": "a fox"
-        case _: "not a fox"
+        case "fox":
+            "a fox"
+        case _:
+            "not a fox"
 
 def name_bool(b: bool):
     match b:
-        case True: "yes"
-        case False: "no"
+        case True:
+            "yes"
+        case False:
+            "no"
 
 def name_maybe(n: int?):
     match n:
-        case None: "nothing"
-        case _: "something"
+        case None:
+            "nothing"
+        case _:
+            "something"
 
 def outcome(result: Result[int, str]):
     match result:
-        case Ok(0): "nothing"
-        case Ok(_): "something"
-        case Err(): "failed"
+        case Ok(0):
+            "nothing"
+        case Ok(_):
+            "something"
+        case Err():
+            "failed"
 
 def width(shape: Shape):
     match shape:
         # A pattern can name fewer fields than the case has.
-        case .Rect(width): f"{width} wide"
-        case .Point: "a point"
-        case _: "no width"
+        case .Rect(width):
+            f"{width} wide"
+        case .Point:
+            "a point"
+        case _:
+            "no width"
 
 def main(stdout: Stdout):
     stdout.print(
@@ -60,24 +78,33 @@ def main(stdout: Stdout):
     # A tuple pattern has as many parts as the tuple it matches.
     pair = (0, 4)
     match pair:
-        case (0, y): stdout.print(f"on the y axis at {y}")
-        case (x, y): stdout.print(f"at {x}, {y}")
+        case (0, y):
+            stdout.print(f"on the y axis at {y}")
+        case (x, y):
+            stdout.print(f"at {x}, {y}")
     triple = (2, 3, 1)
     match triple:
-        case (0, y, _): stdout.print(f"on the y axis at {y}")
-        case _: stdout.print("three numbers")
+        case (0, y, _):
+            stdout.print(f"on the y axis at {y}")
+        case _:
+            stdout.print("three numbers")
     empty = ()
     match empty:
-        case (): stdout.print("no numbers")
+        case ():
+            stdout.print("no numbers")
 
     # A plain name never matches an error, so a forgotten error can't pass as a value.
     broken: Result[int, str] = Err("broken")
     match broken:
-        case value: stdout.print(f"got {value}")
-        case _: stdout.print("an error")
+        case value:
+            stdout.print(f"got {value}")
+        case _:
+            stdout.print("an error")
 
     # A dotted case never looks inside an error.
     pointless: Result[Shape, Shape] = Err(Shape.Point)
     match pointless:
-        case .Point: stdout.print("a point")
-        case _: stdout.print("an error")
+        case .Point:
+            stdout.print("a point")
+        case _:
+            stdout.print("an error")

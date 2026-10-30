@@ -3,7 +3,7 @@ def main(stdout: Stdout):
     stdout.print([score * 2 for score in scores])
     stdout.print([score for score in scores if score > 10])
     stdout.print(
-        f"total {sum(scores)}, best {max(scores)}, worst {min(scores)}, count {len(scores)}",
+        f"total {sum(scores)}, best {max(scores)}, worst {min(scores)}, count {scores.len()}",
     )
     stdout.print(sum(score * score for score in scores))
     stdout.print(any(score > 30 for score in scores), all(score > 5 for score in scores))
@@ -12,13 +12,13 @@ def main(stdout: Stdout):
     queue.append("fire")
     queue.append("ice")
     queue.insert(0, "earth")
-    stdout.print(queue, len(queue))
+    stdout.print(queue, queue.len())
     stdout.print(queue.pop(), queue)
 
     names = ["vex", "ash", "kit", "bramble"]
     stdout.print(sorted(names))
-    stdout.print(sorted(names, key=name => len(name)))
-    stdout.print(max(names, key=name => len(name)))
+    stdout.print(sorted(names, key=name => name.len()))
+    stdout.print(max(names, key=name => name.len()))
     stdout.print(names[0], names[-1], "kit" in names, "fox" not in names)
 
     mut grid = [0, 0, 0]

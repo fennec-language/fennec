@@ -16,7 +16,7 @@ def doubled(xs: list[int]) -> list[int]:
     return out
 
 def nudge(mut points: list[Point]):
-    for i in range(len(points)):
+    for i in range(points.len()):
         points[i].x += 1.0
 
 def main(stdout: Stdout):
@@ -24,7 +24,7 @@ def main(stdout: Stdout):
     copy = xs
     xs[0] = 100
     xs.append(4)
-    stdout.print(xs, copy, len(xs), len(copy))
+    stdout.print(xs, copy, xs.len(), copy.len())
 
     mut shared = [7]
     alias = shared
@@ -40,7 +40,7 @@ def main(stdout: Stdout):
     mut total = 0
     for v in many:
         total += v
-    stdout.print(len(many), total, many[-1], many[500])
+    stdout.print(many.len(), total, many[-1], many[500])
 
     mut points = [Point(x=0.0, y=1.0), Point(x=2.0, y=3.0)]
     before = points

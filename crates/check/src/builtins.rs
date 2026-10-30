@@ -12,7 +12,7 @@ use crate::types::{Type, a, article};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 24] = [
+const BUILTINS: [(&str, usize, usize); 23] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("abs", 1, 1),
@@ -23,7 +23,6 @@ const BUILTINS: [(&str, usize, usize); 24] = [
     ("float", 1, 1),
     ("ignore", 2, 2),
     ("int", 1, 1),
-    ("len", 1, 1),
     ("list", 1, 1),
     ("max", 1, usize::MAX),
     ("min", 1, usize::MAX),
@@ -40,7 +39,7 @@ const BUILTINS: [(&str, usize, usize); 24] = [
 ];
 
 /// Builtins whose arguments have to be plain values, not results or optionals.
-const NEEDS_VALUES: [&str; 6] = ["abs", "float", "int", "len", "range", "round"];
+const NEEDS_VALUES: [&str; 5] = ["abs", "float", "int", "range", "round"];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name) || stdlib::function(name).is_some()
@@ -94,6 +93,20 @@ impl Method {
 }
 
 fn method(ty: &Type, name: &str) -> Option<Method> {
+    // Every collection knows its length, and so does a tuple.
+    let sized = matches!(
+        ty,
+        Type::List(_)
+            | Type::Set(_)
+            | Type::Dict(..)
+            | Type::IdMap(_)
+            | Type::Str
+            | Type::Bytes
+            | Type::Tuple(_)
+    );
+    if sized && name == "len" {
+        return Some(reads(&[], Type::Int));
+    }
     match ty {
         Type::List(item) => list_method(item, name),
         Type::Set(item) => set_method(item, name),
@@ -182,6 +195,7 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
     Some(match (type_name, name) {
         ("Stdout", "print" | "write") => reads(&[], Type::Unit).any_args(),
         ("Clock", "now") => reads(&[], Type::named("Instant")),
+        ("Args", "len") => reads(&[], Type::Int),
         ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
         ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),
         _ => return stdlib::method(type_name, name),
@@ -314,19 +328,6 @@ impl FnCx<'_> {
         match name {
             "Ok" => Type::result(first, self.checker.fresh(span, Hole::OkError)),
             "Err" => Type::result(self.checker.fresh(span, Hole::ErrValue), first),
-            "len" => {
-                let has_len =
-                    first.type_name().is_some_and(|name| self.checker.program.method(name, "len").is_some());
-                let args = first == Type::named("Args");
-                let sized = first.is_collection()
-                    || has_len
-                    || args
-                    || matches!(first, Type::Tuple(_) | Type::IdMap(_));
-                if !sized && first.is_known() {
-                    self.error(Diagnostic::new(format!("{} has no length", article(&first.kind())), span));
-                }
-                Type::Int
-            }
             "range" => {
                 if !types.iter().all(|ty| self.checker.fits(&Type::Int, ty)) {
                     self.error(Diagnostic::new("`range` takes one to three ints", span));

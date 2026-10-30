@@ -156,7 +156,12 @@ impl Lowerer<'_, '_> {
             return Ok(hoisted.length);
         }
         let list = self.b.use_var(self.list_var(name)?);
-        Ok(self.b.ins().load(types::I64, MemFlagsData::trusted(), list, LIST_LENGTH))
+        Ok(self.length_of_list(list))
+    }
+
+    /// How many items a list has.
+    pub(super) fn length_of_list(&mut self, list: Value) -> Value {
+        self.b.ins().load(types::I64, MemFlagsData::trusted(), list, LIST_LENGTH)
     }
 
     /// The address of `list[index]`, failing like the interpreter for an index past either

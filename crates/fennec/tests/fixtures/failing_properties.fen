@@ -29,16 +29,16 @@ test "floats stay small" for x: float:
     assert x < 2.0
 
 test "words are short" for word: str:
-    assert len(word) < 3
+    assert word.len() < 3
 
 test "lists are short" for items: list[int]:
-    assert len(items) < 2
+    assert items.len() < 2
 
 test "grids are short" for grid: list[list[str]]:
-    assert len(grid) < 3
+    assert grid.len() < 3
 
 test "deep lists are short" for deep: list[list[list[list[int]]]]:
-    assert len(deep) < 2
+    assert deep.len() < 2
 
 test "deep tuples are small" for deep: (((list[int], int), int), int):
     first, a = deep
@@ -47,7 +47,7 @@ test "deep tuples are small" for deep: (((list[int], int), int), int):
     assert n < 100
 
 test "nested rows are short" for outer: Outer:
-    assert len(outer.inner.rows) < 2
+    assert outer.inner.rows.len() < 2
 
 test "flags and numbers" for pair: (bool, int):
     flag, number = pair

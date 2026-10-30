@@ -199,7 +199,7 @@ fn generic_types_fill_in_their_parameters() {
                 self.items.append(item)
 
             def top(self) -> T?:
-                if len(self.items) == 0:
+                if self.items.len() == 0:
                     return None
                 self.items[-1]
 

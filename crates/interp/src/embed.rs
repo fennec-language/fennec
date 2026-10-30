@@ -420,7 +420,7 @@ pub mod temps {
         with(|state| state.push(Value::Bool(b != 0)))
     }
 
-    /// A capability as a value, for code that passes one on, like `len(args)`. `kind` is
+    /// A capability as a value, for code that passes one on, like `args.len()`. `kind` is
     /// as for `declare_capability`.
     pub extern "C" fn capability(kind: i64) -> i64 {
         with(|state| state.push(Value::Capability(super::capability(kind))))

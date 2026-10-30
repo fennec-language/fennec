@@ -439,7 +439,7 @@ impl FnCx<'_> {
             (UnaryOp::Not, _) => {
                 self.error(
                     Diagnostic::new(format!("`not` needs a bool, but this is {}", article(&ty.kind())), span)
-                        .with_help("Fennec has no truthiness: compare explicitly, like `len(items) == 0`"),
+                        .with_help("Fennec has no truthiness: compare explicitly, like `items.len() == 0`"),
                 );
                 Type::Bool
             }

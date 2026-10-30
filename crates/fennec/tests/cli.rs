@@ -239,8 +239,9 @@ fn repl_says_which_module_to_import_from() {
 
 #[test]
 fn repl_says_how_to_write_ord_and_chr() {
-    let output = fennec(&["repl"], "ord(\"A\")\nchr(65)\n\"A\".code()\nexit\n").unwrap();
+    let output = fennec(&["repl"], "ord(\"A\")\nchr(65)\n\"A\".code()\nlen([1])\nexit\n").unwrap();
     let errors = text(&output.stderr);
+    assert!(errors.contains("a length is a method: write `x.len()`"), "{errors}");
     assert!(errors.contains("a character's code is a method: write `c.code()`"), "{errors}");
     assert!(errors.contains("make a character from its code with `str.from_code(n)`"), "{errors}");
     assert!(text(&output.stdout).contains("65\n"));
@@ -256,7 +257,7 @@ fn repl_continues_open_brackets_past_blank_lines() {
 #[test]
 fn repl_keeps_going_after_errors() {
     let input = "mut xs = [1]\ndef add(mut items: list[int], item: int):\n    items.append(item)\n\n\
-                 add(mut xs)\nxs\nlen(mut xs)\nxs\nstdout.print(\"hello\")\nif True:\n    5\n\nbreak\n";
+                 add(mut xs)\nxs\nsorted(mut xs)\nxs\nstdout.print(\"hello\")\nif True:\n    5\n\nbreak\n";
     let output = fennec(&["repl"], input).unwrap();
     assert!(output.status.success());
     // A failed call puts back what was passed with `mut`, and only expressions are echoed.
@@ -269,7 +270,7 @@ fn repl_keeps_going_after_errors() {
         errors,
         [
             "error: `add` is missing its `item` argument",
-            "error: `len` doesn't change its arguments, so don't pass `mut`",
+            "error: `sorted` doesn't change its arguments, so don't pass `mut`",
             "error: there's no function or loop here to leave",
         ]
     );
@@ -735,6 +736,22 @@ fn dev_fallbacks_says_when_everything_is_native() {
 }
 
 #[test]
+fn a_loop_that_only_indexes_a_list_and_takes_its_length_stays_native() {
+    let dir = scratch("hoisted").unwrap();
+    let program = dir.join("total.fen");
+    std::fs::write(
+        &program,
+        "def total(xs: list[int]) -> int:\n    mut sum_of = 0\n    for i in range(xs.len()):\n        \
+         sum_of += xs[i]\n    sum_of\n\ndef main(stdout: Stdout):\n    stdout.print(total([i for i in range(10)]))\n",
+    )
+    .unwrap();
+    let output = fennec(&["dev", "fallbacks", program.to_str().unwrap()], "").unwrap();
+    let printed = text(&output.stdout);
+    assert!(!printed.contains("total.fen:4:"), "{printed}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn dev_fallbacks_lists_what_isnt_native_hot_loops_first() {
     // A dict of lists isn't native yet.
     let dir = scratch("fallbacks").unwrap();
@@ -742,7 +759,7 @@ fn dev_fallbacks_lists_what_isnt_native_hot_loops_first() {
     std::fs::write(
         &program,
         "def main(stdout: Stdout):\n    mut groups: dict[int, list[int]] = {}\n    for i in range(10):\n        \
-         groups[i % 3] = groups.get(i % 3, []) + [i]\n    stdout.print(len(groups))\n",
+         groups[i % 3] = groups.get(i % 3, []) + [i]\n    stdout.print(groups.len())\n",
     )
     .unwrap();
     let output = fennec(&["dev", "fallbacks", program.to_str().unwrap()], "").unwrap();

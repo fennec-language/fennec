@@ -18,7 +18,7 @@ code does instead, and links the issue where it's being decided or fixed.
 - **Settled: there was no way to get a character's UTF-8 length.** Spans count bytes, but
   strings index by character, so the lexer needs each character's byte width. It used to
   compare against the first character of each width (`ࠀ` is U+0800, `𐀀` is U+10000), which
-  got DEL (U+007F) wrong. Since #93 it's `len(c.encode())`. (#65)
+  got DEL (U+007F) wrong. Since #93 it's `c.encode().len()`. (#65)
 - **Indexing a string walks it from the start**, so `source[i]` in a loop is quadratic. The
   lexer turns the source into a list of one-character strings with `list(source)` and
   indexes that, and rebuilds text with `"".join(chars[start:end])`. (#65)

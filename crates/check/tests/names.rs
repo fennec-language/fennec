@@ -47,7 +47,7 @@ fn functions_types_builtins_and_constants_exist_everywhere() {
             x = 0
 
         def main(stdout: Stdout):
-            stdout.print(later(), double(2), Point(), len([1]), PI, sqrt(2.0), zip([1], [2]))
+            stdout.print(later(), double(2), Point(), [1].len(), PI, sqrt(2.0), zip([1], [2]))
             stdout.print(Point.x if False else 0)
 
         def later():
@@ -123,7 +123,7 @@ fn nested_functions_see_the_names_before_them() {
 fn arrow_function_parameters_exist_inside_them() {
     let program = "
         names = ['a']
-        stdout.print(sorted(names, key=name => len(name)), max(names, key=(name) => size))
+        stdout.print(sorted(names, key=name => name.len()), max(names, key=(name) => size))
     ";
     assert_eq!(in_main(program), ["`size` doesn't exist @ size"]);
 }
@@ -132,8 +132,8 @@ fn arrow_function_parameters_exist_inside_them() {
 fn test_inputs_are_names_in_the_test() {
     let program = "
         test \"reversing\" for items: list[int]:
-            assert len(items) >= 0
-            assert len(missing) >= 0
+            assert items.len() >= 0
+            assert missing.len() >= 0
     ";
     assert_eq!(problems(program), ["`missing` doesn't exist @ missing"]);
 }

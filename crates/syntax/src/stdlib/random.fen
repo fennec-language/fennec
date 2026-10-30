@@ -32,7 +32,7 @@ struct Random:
 
     ## Puts `items` in a random order.
     def shuffle[T](mut self, mut items: list[T]):
-        for at in range(len(items) - 1, 0, -1):
+        for at in range(items.len() - 1, 0, -1):
             other = self.randint(0, at)
             item = items[at]
             items[at] = items[other]

@@ -136,7 +136,7 @@ struct Tree:
                 self.close()
             case .Import(imported):
                 mut label = "import " + ".".join(imported.module)
-                if len(imported.names) > 0:
+                if imported.names.len() > 0:
                     label += ": " + ", ".join(imported.names)
                 self.spanned(label, imported.span)
             case .Test(test):

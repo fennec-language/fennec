@@ -53,10 +53,10 @@ fn truthiness_hints_say_what_to_write() {
     assert_eq!(
         helps(program),
         [
-            "Fennec has no truthiness: write `len(x) > 0`",
+            "Fennec has no truthiness: write `x.len() > 0`",
             "Fennec has no truthiness: write `x is None` or `x is not None`",
             "Fennec has no truthiness: compare explicitly, like `count > 0`",
-            "Fennec has no truthiness: compare explicitly, like `len(items) == 0`",
+            "Fennec has no truthiness: compare explicitly, like `items.len() == 0`",
         ]
     );
 }
@@ -66,7 +66,7 @@ fn where_rules_are_conditions() {
     let program = "
         struct Player:
             level: int where level
-            name = '' where len(name) >= 0
+            name = '' where name.len() >= 0
     ";
     assert_eq!(problems(program), ["`where` needs a bool, but this is an int @ level"]);
 }
@@ -244,7 +244,7 @@ fn unpacking_needs_the_right_number_of_values() {
 #[test]
 fn builtins_give_back_the_right_types() {
     let cases = [
-        ("len([1]) + 1.0", "can't mix int and float in `+` @ len([1]) + 1.0"),
+        ("[1].len() + 1.0", "can't mix int and float in `+` @ [1].len() + 1.0"),
         ("str(1) + 1", "can't use `+` on a str and an int @ str(1) + 1"),
         ("int(1.5) + 1.0", "can't mix int and float in `+` @ int(1.5) + 1.0"),
         ("int('1') + 1", "this is the result of something that can fail @ int(\"1\") + 1"),

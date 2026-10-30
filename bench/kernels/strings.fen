@@ -8,4 +8,4 @@ def main(stdout: Stdout):
     for c in text:
         if c == " ":
             spaces += 1
-    stdout.print(len(text), spaces)
+    stdout.print(text.len(), spaces)

@@ -9,11 +9,11 @@ use fennec_syntax::{BinOp, Diagnostic, Span};
 use crate::call::CallArg;
 use crate::collections::split_key;
 use crate::interp::Interp;
-use crate::value::{Capability, Value};
+use crate::value::Value;
 use crate::{format, ops, stdlib};
 
 /// The builtins. Standard library functions, like `json.loads`, are in `stdlib`.
-const NAMES: [&str; 23] = [
+const NAMES: [&str; 22] = [
     "Err",
     "Ok",
     "abs",
@@ -24,7 +24,6 @@ const NAMES: [&str; 23] = [
     "float",
     "ignore",
     "int",
-    "len",
     "list",
     "max",
     "min",
@@ -93,18 +92,6 @@ impl Interp<'_> {
         if let Some(module) = stdlib::module_of(name) {
             return (module.call)(self, name, args, span);
         }
-        if let ([arg], "len") = (args.as_slice(), name)
-            && let Value::Instance(instance) = &arg.value
-            && let Some(len) =
-                self.type_info(&instance.type_name).and_then(|info| info.methods.get("len").cloned())
-        {
-            return self.call_with_values(&len, vec![arg.value.clone()], span);
-        }
-        if let ([arg], "len") = (args.as_slice(), name)
-            && arg.value == Value::Capability(Capability::Args)
-        {
-            return Ok(Value::Int(i64::try_from(self.arguments().len()).unwrap_or(i64::MAX)));
-        }
         let (values, key) = split_key(args, name)?;
         if key.is_some() && !matches!(name, "min" | "max" | "sorted") {
             return Err(Diagnostic::new(format!("`{name}` doesn't take `key`"), span));
@@ -118,7 +105,6 @@ impl Interp<'_> {
             ("ignore", [_, Value::Str(reason)]) if !reason.trim().is_empty() => Ok(Value::Unit),
             ("ignore", _) => Err(Diagnostic::new("`ignore` needs a reason the result doesn't matter", span)
                 .with_help("like `ignore(save(fs, game), \"autosave is best effort\")`")),
-            ("len", [value]) => length(value, span),
             ("range", _) => range(&values, span),
             ("str", [value]) => Ok(Value::str(&format::display(value))),
             ("int" | "float", [Value::Str(text)]) => self.parse_number(name, text, span),
@@ -268,7 +254,7 @@ impl Interp<'_> {
     }
 }
 
-fn length(value: &Value, span: Span) -> Result<Value, Diagnostic> {
+pub(crate) fn length(value: &Value, span: Span) -> Result<Value, Diagnostic> {
     let len = match value {
         Value::List(items) | Value::Tuple(items) | Value::Set(items) => items.len(),
         Value::Dict(pairs) => pairs.len(),

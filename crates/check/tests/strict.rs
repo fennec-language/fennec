@@ -17,7 +17,7 @@ fn empty_collections_take_their_type_from_later_use() {
         seen.add(1)
         mut grid = []
         grid.append([1.5])
-        stdout.print(names[0].upper(), scores['Ash'] + 1, len(seen), grid[0][0] * 2.0)
+        stdout.print(names[0].upper(), scores['Ash'] + 1, seen.len(), grid[0][0] * 2.0)
     ";
     assert_eq!(in_main(program), Vec::<String>::new());
     let program = "def f(n: int) -> list[str]:\n    if n > 0:\n        return []\n    ['a']\n";
@@ -29,7 +29,7 @@ fn empty_collections_take_their_type_from_later_use() {
 #[test]
 fn empty_collections_nothing_settles_need_their_type_written() {
     assert_eq!(
-        in_main("mut names = []\nstdout.print(len(names))\nscores = {}\nseen = set()"),
+        in_main("mut names = []\nstdout.print(names.len())\nscores = {}\nseen = set()"),
         [
             "can't tell what this empty list holds @ []",
             "can't tell what this empty dict holds @ {}",
@@ -124,7 +124,7 @@ fn values_from_several_places_have_to_fit_together() {
 fn a_bare_return_drops_the_value_of_the_last_line() {
     let program = "
         def f(items: list[int]):
-            if len(items) == 0:
+            if items.len() == 0:
                 return
             items.index(1)
     ";
@@ -227,13 +227,13 @@ fn arrow_functions_are_passed_straight_to_what_calls_them() {
         in_main("double = n => n * 2\nstdout.print(double(2))"),
         ["can't tell the type of `n` @ n => n * 2"]
     );
-    assert_eq!(in_main("stdout.print(sorted(['a'], key=name => len(name)))"), Vec::<String>::new());
+    assert_eq!(in_main("stdout.print(sorted(['a'], key=name => name.len()))"), Vec::<String>::new());
 }
 
 #[test]
 fn only_functions_can_be_called() {
     assert_eq!(in_main("n = 3\nstdout.print(n(1))"), ["an int can't be called @ n"]);
-    assert_eq!(in_main("stdout.print(len)"), ["`len` can only be called @ len"]);
+    assert_eq!(in_main("stdout.print(sum)"), ["`sum` can only be called @ sum"]);
 }
 
 #[test]

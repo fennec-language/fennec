@@ -6,22 +6,22 @@ extend str:
 
     ## Whether the text starts with `prefix`.
     def startswith(self, prefix: str) -> bool:
-        len(prefix) <= len(self) and self[:len(prefix)] == prefix
+        prefix.len() <= self.len() and self[:prefix.len()] == prefix
 
     ## Whether the text ends with `suffix`.
     def endswith(self, suffix: str) -> bool:
-        size = len(self)
-        len(suffix) <= size and self[size - len(suffix):] == suffix
+        size = self.len()
+        suffix.len() <= size and self[size - suffix.len():] == suffix
 
     ## Whether the text is one or more of the digits 0 to 9.
     def isdigit(self) -> bool:
-        len(self) > 0 and all(c >= "0" and c <= "9" for c in self)
+        self.len() > 0 and all(c >= "0" and c <= "9" for c in self)
 
     ## The text's lines, without their endings, `\n` or `\r\n`. A last line ending adds no
     ## empty line after it.
     def lines(self) -> list[str]:
         parts = self.split("\n")
-        last = len(parts) - 1
+        last = parts.len() - 1
         mut found = []
         for at, part in enumerate(parts):
             if at == last:

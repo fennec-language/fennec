@@ -17,7 +17,7 @@ def bump(mut counts: dict[str, int], word: str):
 
 def main(stdout: Stdout):
     counts = tally("the fox and the hound and the fennec".split())
-    stdout.print(counts, total(counts), len(counts))
+    stdout.print(counts, total(counts), counts.len())
     for word, count in counts.items():
         if count > 1:
             stdout.print(word, count)
@@ -26,7 +26,7 @@ def main(stdout: Stdout):
     for i in range(1_000):
         squares[i * 7 % 1_000] = i * i
     stdout.print(
-        len(squares),
+        squares.len(),
         squares[7],
         squares[993],
         50 in squares,
@@ -60,7 +60,7 @@ def main(stdout: Stdout):
     ratios["third"] = 1.0 / 3.0
     stdout.print(flags, ratios, flags[2], ratios["half"] * 2.0)
     removed = squares.pop(7)
-    stdout.print(removed, len(squares), 7 in squares)
+    stdout.print(removed, squares.len(), 7 in squares)
     mut seen: dict[str, int] = {}
     bump(mut seen, "fox")
     bump(mut seen, "fox")

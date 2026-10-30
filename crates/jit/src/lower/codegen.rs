@@ -141,7 +141,7 @@ mod tests {
     /// Uses a string literal, names and strings the runtime numbers, a dict the interpreter
     /// handles, and a match: everything the program numbers as a whole, or this run does.
     const TARGET: &str = "def target(name: str) -> int:\n    counts = {name: 1, \"fox\": 2}\n    \
-        if name == \"fennec\": return counts[name]\n    match len(name):\n        case 3:\n            7\n        \
+        if name == \"fennec\": return counts[name]\n    match name.len():\n        case 3:\n            7\n        \
         case _:\n            counts.get(\"fox\", 0)\n";
 
     #[test]

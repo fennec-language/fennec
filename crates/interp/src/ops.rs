@@ -21,7 +21,7 @@ pub(crate) fn unary(op: UnaryOp, value: Value, span: Span) -> Result<Value, Diag
         (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
         (UnaryOp::Not, other) => {
             Err(Diagnostic::new(format!("`not` needs a bool, but this is a {}", other.type_name()), span)
-                .with_help("Fennec has no truthiness: compare explicitly, like `len(items) == 0`"))
+                .with_help("Fennec has no truthiness: compare explicitly, like `items.len() == 0`"))
         }
         (UnaryOp::Neg, other) => Err(Diagnostic::new(format!("can't negate a {}", other.type_name()), span)),
     }

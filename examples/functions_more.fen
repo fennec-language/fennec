@@ -42,5 +42,5 @@ def main(stdout: Stdout, fs: Fs):
         case SettingsUnreadable(path):
             stdout.print(f"couldn't read {path}")
 
-    by_length = sorted(["bramble", "kit", "ash"], key=(name) => (len(name), name))
+    by_length = sorted(["bramble", "kit", "ash"], key=(name) => (name.len(), name))
     stdout.print(by_length)

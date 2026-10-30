@@ -18,6 +18,7 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
         "lambda" => diagnostic.with_help("write an arrow function: `x => x * 2`"),
         "raise" => diagnostic.with_help("Fennec has no exceptions: write `fail SomeError(...)`"),
         "ord" => diagnostic.with_help("a character's code is a method: write `c.code()`"),
+        "len" => diagnostic.with_help("a length is a method: write `x.len()`, or `x => x.len()` to pass it"),
         "chr" => diagnostic.with_help("make a character from its code with `str.from_code(n)`"),
         _ => match crate::builtins::modules_with(name).as_slice() {
             [] => diagnostic,
@@ -52,7 +53,7 @@ pub(crate) fn unhandled(span: Span) -> Diagnostic {
 /// A condition that isn't a bool: Fennec has no truthiness.
 pub(crate) fn not_bool(keyword: &str, ty: &Type, span: Span) -> Diagnostic {
     let help = if ty.is_collection() {
-        "Fennec has no truthiness: write `len(x) > 0`"
+        "Fennec has no truthiness: write `x.len() > 0`"
     } else if ty.maybe_none() {
         "Fennec has no truthiness: write `x is None` or `x is not None`"
     } else {
@@ -65,7 +66,7 @@ pub(crate) fn not_bool(keyword: &str, ty: &Type, span: Span) -> Diagnostic {
 pub(crate) fn no_method(ty: &Type, method: &str, span: Span) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("{} has no method `{method}`", describe(ty)), span);
     match method {
-        "len" | "length" | "size" | "count" => diagnostic.with_help("use `len(x)`"),
+        "length" | "size" | "count" => diagnostic.with_help("use `.len()`"),
         "push" | "add" => diagnostic.with_help("use `append`"),
         "trim" => diagnostic.with_help("use `strip()`"),
         "toUpperCase" | "to_uppercase" => diagnostic.with_help("use `upper()`"),

@@ -92,7 +92,7 @@ fn question_mark_else_and_match_get_the_value_out() {
             c = (player('x')?).name.upper()
             d = match risky(n):
                 case Ok(value): value + 1
-                case Oops(why): len(why)
+                case Oops(why): why.len()
                 case Err(error): 0
             e = risky(n).expect('small') + 1
             a + b + d + e
@@ -185,7 +185,7 @@ fn files_can_fail_to_read() {
 #[test]
 fn builtins_need_values_not_results() {
     assert_eq!(
-        with_risky("stdout.print(len(names()), abs(risky(1)))"),
+        with_risky("stdout.print(names().len(), abs(risky(1)))"),
         [
             "this is the result of something that can fail @ names()",
             "this is the result of something that can fail @ risky(1)",

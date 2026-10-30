@@ -1,0 +1,11 @@
+## Building a long string piece by piece, then scanning it.
+
+def main(stdout: Stdout):
+    mut text = ""
+    for i in range(20_000):
+        text += "fennec " if i % 3 == 0 else "fox "
+    mut spaces = 0
+    for c in text:
+        if c == " ":
+            spaces += 1
+    stdout.print(len(text), spaces)

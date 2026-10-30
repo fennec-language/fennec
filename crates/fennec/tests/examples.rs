@@ -162,3 +162,13 @@ fn the_jit_runs_examples_exactly_like_the_interpreter() {
     })
     .unwrap();
 }
+
+#[test]
+fn math_compiles_to_machine_code_however_it_is_imported() {
+    let source = "import std.math\nfrom std import math\nfrom std.math import sqrt\n\ndef main(stdout: Stdout):\n    x = 2.25\n    stdout.print(sqrt(x) + math.sqrt(x) + std.math.sqrt(x), math.floor(x))\n";
+    let module = fennec_syntax::parse(source).unwrap();
+    let mut out = Vec::new();
+    let report = fennec_jit::run_with_report(&module, &mut out).unwrap();
+    assert_eq!(String::from_utf8_lossy(&out), "4.5 2\n");
+    assert_eq!((report.handed_over, report.with_frames), (0, 0), "math should be plain machine code");
+}

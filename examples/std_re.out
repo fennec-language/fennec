@@ -1,0 +1,14 @@
+Command(verb="take", target="arrows", count=3)
+Command(verb="open", target="door", count=1)
+None
+hp 30 0 5
+mp 7 6 10
+xp 1250 11 18
+gold 99 19 26
+hp: 30 mp: 7 xp: 1250 gold: 99
+["sword", "shield", "bow", "arrows"]
+Match(text="colour", start=5, end=11, groups=[])
+[0, 11]
+[0-9]+ finds ["1", "22"]
+[0-9+ -> this pattern isn't valid: this `[` is never closed (at character 0)
+None

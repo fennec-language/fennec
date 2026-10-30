@@ -252,7 +252,7 @@ impl<'a> Lowerer<'a, '_> {
         };
         for (arg, (_, to, _)) in args.iter().zip(params.iter().skip(1)) {
             let (value, from) = self.expr(&arg.value)?;
-            if !matches!(to, Ty::Stdout | Ty::Fs) {
+            if !matches!(to, Ty::Cap(_)) {
                 values.push(self.convert(value, from, *to, arg.value.span)?);
             }
         }

@@ -9,7 +9,7 @@ use super::Lowerer;
 use super::expr::Lowered;
 use crate::helpers::Helper;
 use crate::runtime;
-use crate::types::Ty;
+use crate::types::{Cap, Ty};
 
 impl Lowerer<'_, '_> {
     pub(super) fn call(&mut self, expr: &Expr, callee: &Expr, args: &[Arg]) -> Result<Lowered, Diagnostic> {
@@ -17,7 +17,7 @@ impl Lowerer<'_, '_> {
         if let ExprKind::Attr { object, name, optional: false } = &callee.kind
             && (name == "print" || name == "write")
             && plain
-            && matches!(&object.kind, ExprKind::Name(object) if self.local(object).is_some_and(|local| local.ty == Ty::Stdout))
+            && matches!(&object.kind, ExprKind::Name(object) if self.local(object).is_some_and(|local| local.ty == Ty::Cap(Cap::Stdout)))
         {
             self.print(args, name == "print")?;
             return Ok((None, Ty::Unit));
@@ -38,16 +38,18 @@ impl Lowerer<'_, '_> {
         {
             return Ok((Some(self.list_length(&list, item)?), Ty::Int));
         }
-        if let ExprKind::Attr { object, name, optional: false } = &callee.kind
-            && let Some(Ty::Struct(id)) = self.static_ty(object)
-            && let Some(result) = self.call_struct_method(expr, object, id, name, args)?
-        {
-            return Ok(result);
+        if let Some(name) = self.std_member(callee) {
+            if let Some(id) = self.layouts.id(name)
+                && let Some(result) = self.construct(id, args, expr.span)?
+            {
+                return Ok(result);
+            }
+            if plain && let Some(result) = self.builtin(name, callee, args, expr.span)? {
+                return Ok(result);
+            }
+            return self.fallback(expr);
         }
-        if let ExprKind::Attr { object, name, optional: false } = &callee.kind
-            && let Some(Ty::Boxed(id)) = self.static_ty(object)
-            && let Some(result) = self.call_boxed_method(object, id, name, args, expr.span)?
-        {
+        if let Some(result) = self.call_typed_method(expr, callee, args)? {
             return Ok(result);
         }
         if let Some((id, at)) = self.named_case(callee)
@@ -82,11 +84,36 @@ impl Lowerer<'_, '_> {
             if let Some(result) = self.call_compiled(name, args, expr.span)? {
                 return Ok(result);
             }
-            if plain && let Some(result) = self.builtin(name, args, expr.span)? {
+            if plain && let Some(result) = self.builtin(name, callee, args, expr.span)? {
                 return Ok(result);
             }
         }
         self.fallback(expr)
+    }
+
+    /// For `math.sqrt` where `math` is an imported module, or `std.math.sqrt` after
+    /// `import std.math`, the name after the last dot.
+    fn std_member<'e>(&self, callee: &'e Expr) -> Option<&'e str> {
+        let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return None };
+        let alias = fennec_syntax::dotted(object)?;
+        let first = alias.split('.').next().unwrap_or_default();
+        (self.local(first).is_none() && self.shared.modules.contains(&alias)).then_some(name.as_str())
+    }
+
+    /// `value.method(args)` on a plain struct or boxed value whose type is known here: a
+    /// direct native call to its type's method.
+    fn call_typed_method(
+        &mut self,
+        expr: &Expr,
+        callee: &Expr,
+        args: &[Arg],
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return Ok(None) };
+        match self.static_ty(object) {
+            Some(Ty::Struct(id)) => self.call_struct_method(expr, object, id, name, args),
+            Some(Ty::Boxed(id)) => self.call_boxed_method(object, id, name, args, expr.span),
+            _ => Ok(None),
+        }
     }
 
     /// Which argument goes to each parameter, or `None` when they don't line up, which the
@@ -134,7 +161,7 @@ impl Lowerer<'_, '_> {
         for ((arg, (_, ty, is_mut)), lowered) in arranged.iter().zip(&params).zip(lowered) {
             match (lowered, is_mut, &arg.value.kind) {
                 (Some((value, from)), _, _) => {
-                    if !matches!(ty, Ty::Stdout | Ty::Fs) {
+                    if !matches!(ty, Ty::Cap(_)) {
                         values.push(self.convert(value, from, *ty, arg.value.span)?);
                     }
                 }
@@ -165,7 +192,7 @@ impl Lowerer<'_, '_> {
         let mut values = self.addresses_for(&params, values)?;
         let dest = self.dest_for(ret)?;
         values.splice(0..0, dest);
-        let mut results = self.raw_call(id, &values, span).into_iter();
+        let mut results = self.raw_call(id, &values, self.is_prelude(name), span).into_iter();
         // The callee only borrowed its boxed arguments.
         for (value, ty) in used {
             self.consume(Some(value), ty)?;
@@ -197,10 +224,10 @@ impl Lowerer<'_, '_> {
                 *is_mut && self.local(local).is_some_and(|local| local.ty == *ty && local.is_mut)
             }
             (_, true) => false,
-            (ExprKind::Name(local), false) if matches!(ty, Ty::Stdout | Ty::Fs) => {
+            (ExprKind::Name(local), false) if matches!(ty, Ty::Cap(_)) => {
                 self.local(local).is_some_and(|local| local.ty == *ty)
             }
-            (_, false) => !is_mut && !matches!(ty, Ty::Stdout | Ty::Fs),
+            (_, false) => !is_mut && !matches!(ty, Ty::Cap(_)),
         })
     }
 
@@ -234,7 +261,7 @@ impl Lowerer<'_, '_> {
         let used = Self::boxed_args(&params, &values);
         let mut values = self.addresses_for(&params, values)?;
         values.splice(0..0, dest);
-        let mut results = self.raw_call(id, &values, span).into_iter();
+        let mut results = self.raw_call(id, &values, self.is_prelude(key), span).into_iter();
         for (value, ty) in used {
             self.consume(Some(value), ty)?;
         }
@@ -251,9 +278,21 @@ impl Lowerer<'_, '_> {
         Ok(((value, ret), results.collect()))
     }
 
+    /// Whether a compiled function is from the standard library.
+    fn is_prelude(&self, key: &str) -> bool {
+        self.shared.compiled.get(key).is_some_and(|compiled| compiled.prelude)
+    }
+
     /// Calls a compiled function, after checking the stack has room for it: calls nested
-    /// too deeply fail at the call, like the interpreter's, instead of crashing.
-    fn raw_call(&mut self, id: cranelift_module::FuncId, values: &[Value], span: Span) -> Vec<Value> {
+    /// too deeply fail at the call, like the interpreter's, instead of crashing. `prelude`
+    /// says it's a standard library function.
+    fn raw_call(
+        &mut self,
+        id: cranelift_module::FuncId,
+        values: &[Value],
+        prelude: bool,
+        span: Span,
+    ) -> Vec<Value> {
         // Fail cleanly, at the call, before the stack runs out.
         let stack = self.b.ins().get_stack_pointer(self.pointer);
         let too_deep =
@@ -263,13 +302,40 @@ impl Lowerer<'_, '_> {
         let call = self.b.ins().call(callee, values);
         let mut results = self.b.inst_results(call).to_vec();
         if let Some(failed) = results.pop() {
-            self.leave_if(failed);
+            if prelude {
+                self.leave_at_call_if(failed, span);
+            } else {
+                self.leave_if(failed);
+            }
         }
         results
     }
 
+    /// Leaves the function if the call at `span` failed. A failure inside the standard
+    /// library is reported at the program's call to it.
+    fn leave_at_call_if(&mut self, failed: Value, span: Span) {
+        let site = self.site(span);
+        let at_call = self.shared.helpers.get(&Helper::AtCall).copied();
+        let (Some(id), false) = (at_call, site.in_prelude()) else {
+            self.leave_if(failed);
+            return;
+        };
+        let fail = self.b.create_block();
+        self.b.set_cold_block(fail);
+        let ok = self.b.create_block();
+        self.b.ins().brif(failed, fail, &[], ok, &[]);
+        self.b.switch_to_block(fail);
+        self.b.seal_block(fail);
+        let [start, end] = self.span_args(site);
+        let callee = self.module.declare_func_in_func(id, self.b.func);
+        self.b.ins().call(callee, &[start, end]);
+        self.b.ins().jump(self.bail, &[]);
+        self.b.switch_to_block(ok);
+        self.b.seal_block(ok);
+    }
+
     /// Struct arguments in memory, as a real call takes them. Values are in the order the
-    /// call passes them, with nothing for `Stdout` and `Fs`, and a caller's name after a
+    /// call passes them, with nothing for capabilities, and a caller's name after a
     /// `mut` object.
     fn addresses_for(
         &mut self,
@@ -279,7 +345,7 @@ impl Lowerer<'_, '_> {
         let mut kinds = Vec::new();
         for (_, ty, is_mut) in params {
             match ty {
-                Ty::Stdout | Ty::Fs => {}
+                Ty::Cap(_) => {}
                 Ty::Obj if *is_mut => kinds.extend([Ty::Obj, Ty::Int]),
                 ty => kinds.push(*ty),
             }
@@ -300,7 +366,7 @@ impl Lowerer<'_, '_> {
         let mut kinds = Vec::new();
         for (_, ty, is_mut) in params {
             match ty {
-                Ty::Stdout | Ty::Fs => {}
+                Ty::Cap(_) => {}
                 Ty::Obj if *is_mut => kinds.extend([(Ty::Obj, true), (Ty::Int, true)]),
                 ty => kinds.push((*ty, *is_mut)),
             }
@@ -353,7 +419,7 @@ impl Lowerer<'_, '_> {
         let mut values = vec![receiver];
         for (arg, (_, to, _)) in args.iter().zip(params.iter().skip(1)) {
             let (value, from) = self.expr(&arg.value)?;
-            if !matches!(to, Ty::Stdout | Ty::Fs) {
+            if !matches!(to, Ty::Cap(_)) {
                 values.push(self.convert(value, from, *to, arg.value.span)?);
             }
         }
@@ -379,8 +445,15 @@ impl Lowerer<'_, '_> {
         Ok(Some(result))
     }
 
-    /// Builtins on numbers that compile to a few instructions.
-    fn builtin(&mut self, name: &str, args: &[Arg], span: Span) -> Result<Option<Lowered>, Diagnostic> {
+    /// Builtins on numbers that compile to a few instructions. `callee` is the name as
+    /// written, like `sqrt` or `math.sqrt`.
+    fn builtin(
+        &mut self,
+        name: &str,
+        callee: &Expr,
+        args: &[Arg],
+        span: Span,
+    ) -> Result<Option<Lowered>, Diagnostic> {
         let known = matches!(
             name,
             "abs" | "min" | "max" | "float" | "int" | "sqrt" | "floor" | "ceil" | "sin" | "cos" | "len"
@@ -418,9 +491,10 @@ impl Lowerer<'_, '_> {
                 self.math(name, x, span)?
             }
             _ => {
-                let callee = Expr { kind: ExprKind::Name(name.to_owned()), span };
-                let call =
-                    Expr { kind: ExprKind::Call { callee: Box::new(callee), args: args.to_vec() }, span };
+                let call = Expr {
+                    kind: ExprKind::Call { callee: Box::new(callee.clone()), args: args.to_vec() },
+                    span,
+                };
                 return self.interpret_call(&call, &values).map(Some);
             }
         };
@@ -515,7 +589,7 @@ impl Lowerer<'_, '_> {
                 let handle = self.handle_of(value, ty, expr.span)?;
                 return self.call_helper(Helper::PrintValue, &[handle]).map(|_| ());
             }
-            Ty::Stdout | Ty::Fs => {
+            Ty::Cap(_) => {
                 let fallback = self.fallback(expr)?;
                 let handle = self.handle_of(fallback.0, fallback.1, expr.span)?;
                 return self.call_helper(Helper::PrintValue, &[handle]).map(|_| ());

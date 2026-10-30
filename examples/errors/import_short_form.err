@@ -1,0 +1,7 @@
+error: `json` doesn't exist
+ --> examples/errors/import_short_form.fen:4:18
+  |
+4 |     stdout.print(json.dumps([1, 2]))
+  |                  ^^^^
+  |
+  = help: `import std.json` binds `std`, so write `std.json.loads`, or import it with `from std import json`

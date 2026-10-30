@@ -119,7 +119,19 @@ impl FnCx<'_> {
             self.error(fennec_syntax::module_as_value(name, module, span));
             return Type::Unknown;
         }
-        let imported = self.checker.program.imports.contains_key(name);
+        let modules = &self.checker.program.modules;
+        if let Some((path, module)) =
+            modules.iter().find(|(path, _)| path.split_once('.').is_some_and(|(package, _)| package == name))
+        {
+            let problem = fennec_syntax::module_as_value(path, module, span);
+            self.error(problem);
+            return Type::Unknown;
+        }
+        if modules.contains_key(&format!("std.{name}")) {
+            self.error(fennec_syntax::short_module(name, span));
+            return Type::Unknown;
+        }
+        let imported = self.checker.program.imported(name, span).is_some();
         if !self.checker.program.is_type_name(name) && !builtins::is_builtin(name) && !imported {
             self.error(unknown_name(name, span));
         }
@@ -127,14 +139,25 @@ impl FnCx<'_> {
     }
 
     /// For `json.loads` where `json` is an imported module, the name it means: a module
-    /// function like `json.loads`, or a name like `Path` that's available everywhere. A name
-    /// the module doesn't have is reported here.
+    /// function like `json.loads`, or a type like `Path`. A name the module doesn't have is
+    /// reported here.
     pub(crate) fn module_member(&mut self, object: &Expr, name: &str, span: Span) -> Option<Member> {
-        let ExprKind::Name(alias) = &object.kind else { return None };
-        if self.lookup(alias).is_some() {
+        let alias = fennec_syntax::dotted(object)?;
+        if self.lookup(alias.split('.').next().unwrap_or_default()).is_some() {
             return None;
         }
-        let module = *self.checker.program.modules.get(alias)?;
+        let modules = &self.checker.program.modules;
+        let Some(&module) = modules.get(&alias) else {
+            // `std.toml` after `import std.json`, which binds `std` but not `std.toml`.
+            let path = format!("{alias}.{name}");
+            let package = format!("{alias}.");
+            if !modules.keys().any(|bound| bound.starts_with(&package)) {
+                return None;
+            }
+            let problem = fennec_syntax::package_member(&path, modules.get(&path).copied(), span);
+            self.error(problem);
+            return Some(Member::Missing);
+        };
         if let Err(problem) = fennec_syntax::std_member(module, name, span) {
             self.error(problem);
             return Some(Member::Missing);
@@ -143,16 +166,23 @@ impl FnCx<'_> {
         Some(Member::Name(if builtins::is_builtin(&qualified) { qualified } else { name.to_owned() }))
     }
 
-    /// A name used as a type, like `Enemy` in `Enemy.at(...)`, rather than as a value.
+    /// A name used as a type, like `Enemy` in `Enemy.at(...)` or `game.IdMap` in
+    /// `game.IdMap[Enemy]()`, rather than as a value.
     pub(crate) fn as_type_name<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
-        match &expr.kind {
-            ExprKind::Name(name)
-                if self.lookup(name).is_none() && self.checker.program.is_type_name(name) =>
-            {
-                Some(name)
+        let name = match &expr.kind {
+            ExprKind::Name(name) => name,
+            ExprKind::Attr { object, name, optional: false } => {
+                let alias = fennec_syntax::dotted(object)?;
+                if self.lookup(alias.split('.').next().unwrap_or_default()).is_some() {
+                    return None;
+                }
+                let module = self.checker.program.modules.get(&alias)?;
+                fennec_syntax::std_member(module, name, expr.span).ok()?;
+                name
             }
-            _ => None,
-        }
+            _ => return None,
+        };
+        (self.lookup(name).is_none() && self.checker.program.is_type_name(name)).then_some(name.as_str())
     }
 
     /// An operator on two values. `spans` are the two sides', for pointing at one of them.

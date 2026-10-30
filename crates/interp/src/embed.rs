@@ -309,11 +309,15 @@ pub mod names {
     }
 
     /// Declares a capability `main` was given, so interpreted code can use it: 0 for
-    /// `Stdout`, 1 for `Fs`.
+    /// `Stdout`, 1 for `Fs`, 2 for `Clock`.
     pub extern "C" fn declare_capability(name: i64, kind: i64) {
         with(|state| {
             let name = state.name(name);
-            let capability = if kind == 0 { super::Capability::Stdout } else { super::Capability::Fs };
+            let capability = match kind {
+                0 => super::Capability::Stdout,
+                1 => super::Capability::Fs,
+                _ => super::Capability::Clock,
+            };
             state.interp.frame.declare(&name, Value::Capability(capability), false);
         });
     }
@@ -507,8 +511,18 @@ pub mod temps {
 /// Running the parts of a program that native code hands to the interpreter.
 pub mod eval {
     use super::{State, Value, attempt, span, with};
+    use crate::call::at_call as repoint;
     use crate::exec::Flow;
     use fennec_syntax::Diagnostic;
+
+    /// Reports a failure inside the standard library where the program called it.
+    pub extern "C" fn at_call(start: i64, end: i64) {
+        with(|state| {
+            if let Some(failure) = state.failure.take() {
+                state.failure = Some(repoint(failure, span(start, end)));
+            }
+        });
+    }
 
     /// The hidden name native code passes its `index`th input under.
     pub fn input_name(index: usize) -> String {
@@ -536,7 +550,7 @@ pub mod eval {
             let expr = usize::try_from(id).ok().and_then(|id| state.tables.exprs.get(id)).cloned();
             let expr = expr.ok_or_else(|| Diagnostic::new("the JIT lost an expression", span(start, end)))?;
             bind_inputs(state);
-            let result = state.interp.eval(&expr);
+            let result = state.interp.eval(&expr).map_err(|failure| repoint(failure, span(start, end)));
             state.interp.frame.pop();
             let value = match result {
                 Err(diagnostic) if diagnostic.message == crate::interp::PASSING_UP => {
@@ -555,7 +569,7 @@ pub mod eval {
             let stmt = usize::try_from(id).ok().and_then(|id| state.tables.stmts.get(id)).cloned();
             let stmt = stmt.ok_or_else(|| Diagnostic::new("the JIT lost a statement", span(start, end)))?;
             bind_inputs(state);
-            let result = state.interp.exec(&stmt);
+            let result = state.interp.exec(&stmt).map_err(|failure| repoint(failure, span(start, end)));
             state.interp.frame.pop();
             match result {
                 Err(diagnostic) if diagnostic.message == crate::interp::PASSING_UP => {

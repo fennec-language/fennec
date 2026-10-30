@@ -10,37 +10,41 @@ use crate::call::CallArg;
 use crate::collections::split_key;
 use crate::interp::Interp;
 use crate::value::Value;
-use crate::{format, ops};
+use crate::{format, ops, random};
 
-/// The builtins, and the functions of `std.json` and `std.toml`, which have to be imported.
-const NAMES: [&str; 31] = [
+/// The builtins, and the functions of modules like `std.json`, which have to be imported.
+const NAMES: [&str; 35] = [
     "Err",
     "Ok",
     "abs",
     "all",
     "any",
-    "ceil",
-    "cos",
     "enumerate",
     "float",
-    "floor",
     "ignore",
     "int",
     "json.dumps",
     "json.loads",
     "len",
     "list",
+    "math.ceil",
+    "math.cos",
+    "math.floor",
+    "math.sin",
+    "math.sqrt",
     "max",
     "min",
     "parallel",
+    "random.random_choice",
+    "random.random_float",
+    "random.random_int",
     "range",
+    "re.is_regex",
     "replace",
     "reversed",
     "round",
     "set",
-    "sin",
     "sorted",
-    "sqrt",
     "str",
     "sum",
     "toml.dumps",
@@ -104,6 +108,13 @@ impl Interp<'_> {
         if name.starts_with("json.") || name.starts_with("toml.") {
             return self.format_builtin(name, args, span);
         }
+        if let ([arg], "len") = (args.as_slice(), name)
+            && let Value::Instance(instance) = &arg.value
+            && let Some(len) =
+                self.type_info(&instance.type_name).and_then(|info| info.methods.get("len").cloned())
+        {
+            return self.call_with_values(&len, vec![arg.value.clone()], span);
+        }
         let (values, key) = split_key(args, name)?;
         if key.is_some() && !matches!(name, "min" | "max" | "sorted") {
             return Err(Diagnostic::new(format!("`{name}` doesn't take `key`"), span));
@@ -116,7 +127,11 @@ impl Interp<'_> {
             ("ignore", _) => Err(Diagnostic::new("`ignore` needs a reason the result doesn't matter", span)
                 .with_help("like `ignore(save(fs, game), \"autosave is best effort\")`")),
             ("len", [value]) => length(value, span),
+            ("re.is_regex", [Value::Str(pattern)]) => Ok(Value::Bool(self.regex(pattern).is_ok())),
             ("range", _) => range(&values, span),
+            ("random.random_int" | "random.random_float" | "random.random_choice", _) => {
+                random::draw(name, &values, span)
+            }
             ("str", [value]) => Ok(Value::str(&format::display(value))),
             ("int", [value]) => to_int(value, span),
             ("float", [value]) => to_float(value, span),
@@ -129,7 +144,9 @@ impl Interp<'_> {
                 let scale = 10_f64.powi(i32::try_from(*places).unwrap_or(0));
                 Ok(Value::Float((x * scale).round_ties_even() / scale))
             }
-            ("sqrt" | "floor" | "ceil" | "sin" | "cos", [value]) => math(name, value, span),
+            ("math.sqrt" | "math.floor" | "math.ceil" | "math.sin" | "math.cos", [value]) => {
+                math(name, value, span)
+            }
             _ => self.collection_builtin(name, values, key.as_ref(), span),
         }
     }
@@ -277,10 +294,10 @@ fn math(name: &str, value: &Value, span: Span) -> Result<Value, Diagnostic> {
         }
     };
     match name {
-        "floor" => to_int(&Value::Float(x.floor()), span),
-        "ceil" => to_int(&Value::Float(x.ceil()), span),
-        "sin" => Ok(Value::Float(x.sin())),
-        "cos" => Ok(Value::Float(x.cos())),
+        "math.floor" => to_int(&Value::Float(x.floor()), span),
+        "math.ceil" => to_int(&Value::Float(x.ceil()), span),
+        "math.sin" => Ok(Value::Float(x.sin())),
+        "math.cos" => Ok(Value::Float(x.cos())),
         _ if x < 0.0 => Err(Diagnostic::new("can't take the square root of a negative number", span)),
         _ => Ok(Value::Float(x.sqrt())),
     }

@@ -2,8 +2,10 @@
 //! machine values; every other value is an object the runtime holds, which native code
 //! refers to by a handle. Return types come from the type checker.
 
+use std::collections::HashSet;
+
 use fennec_check::Signatures;
-use fennec_syntax::{Diagnostic, FnDef, Item, Module, Span, StmtKind};
+use fennec_syntax::{Diagnostic, FnDef, Imported, Item, Module, Span, StmtKind};
 
 use crate::layout::Layouts;
 
@@ -15,10 +17,8 @@ pub(crate) enum Ty {
     Bool,
     /// Nothing at all: what a function without a value returns.
     Unit,
-    /// The `stdout` capability, which needs nothing at run time.
-    Stdout,
-    /// The `fs` capability, which needs nothing at run time either.
-    Fs,
+    /// A capability, like `stdout`, which needs nothing at run time.
+    Cap(Cap),
     /// Anything else, held by the runtime.
     Obj,
     /// A plain struct, in memory native code owns, which it refers to by address. The
@@ -43,12 +43,47 @@ impl Ty {
             Ty::Float => "float",
             Ty::Bool => "bool",
             Ty::Unit => "nothing",
-            Ty::Stdout => "Stdout",
-            Ty::Fs => "Fs",
+            Ty::Cap(cap) => cap.name(),
             Ty::Obj => "value",
             Ty::Struct(_) => "struct",
             Ty::Boxed(_) => "boxed value",
             Ty::Str => "str",
+        }
+    }
+}
+
+/// The capabilities `main` can be given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Cap {
+    Stdout,
+    Fs,
+    Clock,
+}
+
+impl Cap {
+    pub(crate) fn named(name: &str) -> Option<Cap> {
+        match name {
+            "Stdout" => Some(Cap::Stdout),
+            "Fs" => Some(Cap::Fs),
+            "Clock" => Some(Cap::Clock),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Cap::Stdout => "Stdout",
+            Cap::Fs => "Fs",
+            Cap::Clock => "Clock",
+        }
+    }
+
+    /// How the runtime tells capabilities apart.
+    pub(crate) fn kind(self) -> i64 {
+        match self {
+            Cap::Stdout => 0,
+            Cap::Fs => 1,
+            Cap::Clock => 2,
         }
     }
 }
@@ -77,6 +112,9 @@ pub(crate) struct Program<'m> {
     /// Functions and methods the JIT doesn't try to compile, like generators.
     pub(crate) excluded: Vec<String>,
     pub(crate) main_span: Span,
+    /// The standard library modules the program imports, by the name it uses them under,
+    /// like `math` in `math.sqrt(x)` or `std.math` in `std.math.sqrt(x)`.
+    pub(crate) modules: HashSet<String>,
 }
 
 pub(crate) fn unsupported(what: &str, span: Span) -> Diagnostic {
@@ -145,7 +183,20 @@ impl<'m> Program<'m> {
         if !functions.iter().any(|function| function.def.name == "main") {
             return Err(unsupported("this `main`", main_span));
         }
-        Ok(Program { functions, layouts, excluded, main_span })
+        let modules = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Import(import) => fennec_syntax::std_import(import).ok(),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|imported| match imported {
+                Imported::Module { alias, .. } => Some(alias),
+                Imported::Name { .. } => None,
+            })
+            .collect();
+        Ok(Program { functions, layouts, excluded, main_span, modules })
     }
 }
 

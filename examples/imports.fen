@@ -1,0 +1,25 @@
+## The three ways to import, as in Python.
+
+# `import std.collections` binds `std`: write `std.collections.Deque`.
+import std.collections
+
+# `from std import random` binds `random`: write `random.Random`.
+from std import random
+
+# `from std.re import Regex` binds `Regex` itself.
+from std.re import Regex
+
+def first_word(text: str) -> str:
+    found = Regex(r"\w+").search(text)
+    found?.text else ""
+
+def main(stdout: Stdout):
+    mut queue = std.collections.Deque()
+    queue.append("ash")
+    queue.append("kit")
+    stdout.print(queue.popleft(), len(queue))
+
+    mut rng = random.Random(seed=7)
+    stdout.print(rng.randint(1, 6))
+
+    stdout.print(first_word("  hello world"))

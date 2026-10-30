@@ -122,7 +122,7 @@ impl Lowerer<'_, '_> {
                 let [start, end] = self.span_args(span);
                 return self.help(Helper::StrFromValue, &[handle, start, end]);
             }
-            Ty::Unit | Ty::Stdout | Ty::Fs => {
+            Ty::Unit | Ty::Cap(_) => {
                 return Err(unsupported(&format!("using a value as {}", to.name()), span));
             }
         };
@@ -155,7 +155,7 @@ impl Lowerer<'_, '_> {
                 let address = value.ok_or_else(|| unsupported("this value", span))?;
                 return self.box_to_handle(address, 0);
             }
-            Ty::Stdout | Ty::Fs => {
+            Ty::Cap(_) => {
                 return Err(unsupported(&format!("using {} as a value", ty.name()), span));
             }
         };

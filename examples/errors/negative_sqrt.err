@@ -1,5 +1,5 @@
 error: can't take the square root of a negative number
- --> examples/errors/negative_sqrt.fen:2:5
+ --> examples/errors/negative_sqrt.fen:4:5
   |
-2 |     sqrt(squared)
-  |     ^^^^^^^^^^^^^
+4 |     math.sqrt(squared)
+  |     ^^^^^^^^^^^^^^^^^^

@@ -113,6 +113,11 @@ impl Lowerer<'_, '_> {
         index: &Expr,
     ) -> Result<Lowered, Diagnostic> {
         let (value, ty) = self.expr(object)?;
+        if let (Some(text), Ty::Str) = (value, ty) {
+            let (at, at_ty) = self.expr(index)?;
+            let at = self.convert(at, at_ty, Ty::Int, index.span)?;
+            return self.string_index(text, at, expr.span);
+        }
         let object = self.handle_of(value, ty, expr.span)?;
         let (value, ty) = self.expr(index)?;
         let index = self.handle_of(value, ty, expr.span)?;
@@ -271,7 +276,7 @@ impl Lowerer<'_, '_> {
             // Each type's arm uses the arguments, so a boxed one becomes an object once.
             let (value, ty) = self.expr(&arg.value)?;
             lowered.push(match ty {
-                Ty::Boxed(_) => (Some(self.handle_of(value, ty, arg.value.span)?), Ty::Obj),
+                ty if ty.counted() => (Some(self.handle_of(value, ty, arg.value.span)?), Ty::Obj),
                 _ => (value, ty),
             });
         }

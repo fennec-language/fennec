@@ -22,6 +22,7 @@ mod matching;
 mod module;
 mod objects;
 mod stmt;
+mod strings;
 mod structs;
 
 use std::collections::{HashMap, HashSet};
@@ -73,6 +74,8 @@ struct Shared {
     tables: Tables,
     names: HashMap<String, i64>,
     strings: HashMap<String, i64>,
+    /// The text of each string literal, by its block's address.
+    literal_texts: HashMap<i64, String>,
     /// The compiled methods that take `self`, by method name, with each one's type.
     methods: HashMap<String, Vec<(String, String)>>,
     with_frames: usize,
@@ -129,12 +132,14 @@ fn attempt(
         tables: Tables::default(),
         names: HashMap::new(),
         strings: HashMap::new(),
+        literal_texts: HashMap::new(),
         methods: HashMap::new(),
         with_frames: 0,
         handed_over: 0,
         stack_limit,
     };
     shared.tables.shapes = boxes::shapes(&program.layouts);
+    shared.tables.str_shape = u64::try_from(program.layouts.len()).unwrap_or(0);
     declare_all(&mut module, &mut shared, program, skipped).map_err(fatal)?;
     let mut ctx = module.make_context();
     let mut builder_ctx = FunctionBuilderContext::new();
@@ -173,7 +178,7 @@ fn attempt(
 
 fn abi(ty: Ty) -> Option<types::Type> {
     match ty {
-        Ty::Int | Ty::Obj | Ty::Struct(_) | Ty::Boxed(_) => Some(types::I64),
+        Ty::Int | Ty::Obj | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str => Some(types::I64),
         Ty::Float => Some(types::F64),
         Ty::Bool => Some(types::I8),
         Ty::Unit | Ty::Stdout | Ty::Fs => None,
@@ -404,8 +409,9 @@ impl Lowerer<'_, '_> {
                 }
             } else {
                 self.bind_native(&param.name, param.ty, value, param.is_mut);
-                // A parameter can't change, and the caller keeps its value alive.
-                if let (Ty::Boxed(_), Some(local)) = (param.ty, self.local(&param.name)) {
+                // A parameter that can't change borrows what the caller keeps alive; a `mut`
+                // one is handed over for the call and given back, so it's never let go here.
+                if let (true, Some(local)) = (param.ty.counted(), self.local(&param.name)) {
                     self.borrowed_names.extend(local.var.map(EntityRef::index));
                 }
             }

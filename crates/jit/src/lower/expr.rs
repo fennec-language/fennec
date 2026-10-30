@@ -20,10 +20,7 @@ impl Lowerer<'_, '_> {
             ExprKind::Int(n) => Ok((Some(self.int(*n)), Ty::Int)),
             ExprKind::Float(x) => Ok((Some(self.b.ins().f64const(*x)), Ty::Float)),
             ExprKind::Bool(b) => Ok((Some(self.b.ins().iconst(types::I8, i64::from(*b))), Ty::Bool)),
-            ExprKind::Str(text) => {
-                let id = self.string_id(text);
-                Ok((Some(self.help(Helper::Str, &[id])?), Ty::Obj))
-            }
+            ExprKind::Str(text) => Ok(self.literal(text)),
             ExprKind::None => Ok((Some(self.help(Helper::None, &[])?), Ty::Obj)),
             ExprKind::Name(name) => match self.local(name) {
                 Some(local) if local.ty == Ty::Obj => {
@@ -34,7 +31,7 @@ impl Lowerer<'_, '_> {
                     let place = self.local_place(local).ok_or_else(|| unsupported("this struct", span))?;
                     Ok((Some(self.read_place(&place)), local.ty))
                 }
-                Some(local @ super::Local { ty: Ty::Boxed(_), var: Some(var), .. }) => {
+                Some(local @ super::Local { ty: Ty::Boxed(_) | Ty::Str, var: Some(var), .. }) => {
                     let value = self.b.use_var(var);
                     Ok((Some(self.borrow(value)), local.ty))
                 }
@@ -57,6 +54,9 @@ impl Lowerer<'_, '_> {
                 if let Some(result) = self.binary(*op, left, right, span) {
                     return Ok(result);
                 }
+                if let Some(result) = self.string_binary(*op, left, right)? {
+                    return Ok(result);
+                }
                 match self.struct_equality(*op, left, right)? {
                     Some(result) => Ok(result),
                     None => self.object_binary(*op, left, right, span),
@@ -76,6 +76,18 @@ impl Lowerer<'_, '_> {
             ExprKind::Match { subject, arms } => self.match_value(subject, arms, span),
             ExprKind::Attr { object, name, optional } => self.read_field(expr, object, name, *optional),
             ExprKind::Index { object, index } => self.read_index_or_packed(expr, object, index),
+            ExprKind::Slice { object, start, end } if self.static_ty(object) == Some(Ty::Str) => {
+                let (text, _) = self.expr(object)?;
+                let text = text.ok_or_else(|| unsupported("this string", span))?;
+                let mut bounds = [None, None];
+                for (bound, written) in bounds.iter_mut().zip([start, end]) {
+                    if let Some(written) = written {
+                        let (value, ty) = self.expr(written)?;
+                        *bound = Some(self.convert(value, ty, Ty::Int, written.span)?);
+                    }
+                }
+                self.string_slice(text, bounds, span)
+            }
             _ => self.fallback(expr),
         }
     }
@@ -106,6 +118,10 @@ impl Lowerer<'_, '_> {
             Ty::Obj => return Ok(handle),
             Ty::Struct(id) => return self.unbox_struct(handle, id, span),
             Ty::Boxed(id) => return self.handle_to_box(handle, id, span),
+            Ty::Str => {
+                let [start, end] = self.span_args(span);
+                return self.help(Helper::StrFromValue, &[handle, start, end]);
+            }
             Ty::Unit | Ty::Stdout | Ty::Fs => {
                 return Err(unsupported(&format!("using a value as {}", to.name()), span));
             }
@@ -134,6 +150,10 @@ impl Lowerer<'_, '_> {
             Ty::Boxed(id) => {
                 let address = value.ok_or_else(|| unsupported("this value", span))?;
                 return self.box_to_handle(address, id);
+            }
+            Ty::Str => {
+                let address = value.ok_or_else(|| unsupported("this value", span))?;
+                return self.box_to_handle(address, 0);
             }
             Ty::Stdout | Ty::Fs => {
                 return Err(unsupported(&format!("using {} as a value", ty.name()), span));
@@ -309,7 +329,7 @@ impl Lowerer<'_, '_> {
 
 impl Lowerer<'_, '_> {
     /// The value of an int known while compiling, like the `1` in `n - 1`.
-    fn constant(&self, value: Value) -> Option<i64> {
+    pub(super) fn constant(&self, value: Value) -> Option<i64> {
         let inst = self.b.func.dfg.value_def(value).inst()?;
         match self.b.func.dfg.insts[inst] {
             cranelift_codegen::ir::InstructionData::UnaryImm {

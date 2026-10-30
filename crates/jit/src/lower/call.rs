@@ -212,32 +212,43 @@ impl Lowerer<'_, '_> {
         values: Vec<Value>,
         span: Span,
     ) -> Result<Lowered, Diagnostic> {
-        let compiled = self.shared.compiled.get(key).map(|compiled| (compiled.id, compiled.ret));
-        let (id, ret) = compiled.ok_or_else(|| super::internal("unknown function", span))?;
         if let Some(body) = self.inlinable(key) {
             return self.inline_call(key, &body, values, None, span);
         }
+        self.call_key_changing(key, values, span).map(|(result, _)| result)
+    }
+
+    /// Calls a compiled function by its key, natively, giving back its result and the final
+    /// values of its `mut` parameters that it gives back.
+    pub(super) fn call_key_changing(
+        &mut self,
+        key: &str,
+        values: Vec<Value>,
+        span: Span,
+    ) -> Result<(Lowered, Vec<Value>), Diagnostic> {
+        let compiled = self.shared.compiled.get(key).map(|compiled| (compiled.id, compiled.ret));
+        let (id, ret) = compiled.ok_or_else(|| super::internal("unknown function", span))?;
         let params =
             self.shared.compiled.get(key).map(|compiled| compiled.params.clone()).unwrap_or_default();
         let dest = self.dest_for(ret)?;
         let used = Self::boxed_args(&params, &values);
         let mut values = self.addresses_for(&params, values)?;
         values.splice(0..0, dest);
-        let results = self.raw_call(id, &values, span);
+        let mut results = self.raw_call(id, &values, span).into_iter();
         for (value, ty) in used {
             self.consume(Some(value), ty)?;
         }
         let value = if dest.is_some() {
             dest
         } else if super::abi(ret).is_some() {
-            results.first().copied()
+            results.next()
         } else {
             None
         };
         if ret == Ty::Obj {
             self.dirty = true;
         }
-        Ok((value, ret))
+        Ok(((value, ret), results.collect()))
     }
 
     /// Calls a compiled function, after checking the stack has room for it: calls nested
@@ -290,15 +301,16 @@ impl Lowerer<'_, '_> {
         for (_, ty, is_mut) in params {
             match ty {
                 Ty::Stdout | Ty::Fs => {}
-                Ty::Obj if *is_mut => kinds.extend([Ty::Obj, Ty::Int]),
-                ty => kinds.push(*ty),
+                Ty::Obj if *is_mut => kinds.extend([(Ty::Obj, true), (Ty::Int, true)]),
+                ty => kinds.push((*ty, *is_mut)),
             }
         }
+        // A `mut` argument isn't let go: the callee gives it back.
         kinds
             .into_iter()
             .zip(values)
-            .filter(|(ty, _)| matches!(ty, Ty::Boxed(_)))
-            .map(|(ty, value)| (*value, ty))
+            .filter(|((ty, is_mut), _)| ty.counted() && !is_mut)
+            .map(|((ty, _), value)| (*value, ty))
             .collect()
     }
 
@@ -371,7 +383,7 @@ impl Lowerer<'_, '_> {
     fn builtin(&mut self, name: &str, args: &[Arg], span: Span) -> Result<Option<Lowered>, Diagnostic> {
         let known = matches!(
             name,
-            "abs" | "min" | "max" | "float" | "int" | "sqrt" | "floor" | "ceil" | "sin" | "cos"
+            "abs" | "min" | "max" | "float" | "int" | "sqrt" | "floor" | "ceil" | "sin" | "cos" | "len"
         );
         if !known || self.shared.compiled.contains_key(name) {
             return Ok(None);
@@ -390,6 +402,7 @@ impl Lowerer<'_, '_> {
                 (self.b.ins().select(negative, negated, *x), Ty::Int)
             }
             ("abs", [(Some(x), Ty::Float)]) => (self.b.ins().fabs(*x), Ty::Float),
+            ("len", [(Some(text), Ty::Str)]) => (self.string_length(*text)?, Ty::Int),
             ("min" | "max", [(Some(a), Ty::Int), (Some(b), Ty::Int)]) => {
                 (if name == "min" { self.b.ins().smin(*a, *b) } else { self.b.ins().smax(*a, *b) }, Ty::Int)
             }
@@ -493,6 +506,11 @@ impl Lowerer<'_, '_> {
             Ty::Bool => Helper::PrintBool,
             Ty::Obj => Helper::PrintValue,
             Ty::Unit => return Ok(()),
+            Ty::Str => {
+                let address = value.ok_or_else(|| super::internal("a missing string", expr.span))?;
+                self.call_helper(Helper::StrPrint, &[address])?;
+                return self.consume(Some(address), ty);
+            }
             Ty::Struct(_) | Ty::Boxed(_) => {
                 let handle = self.handle_of(value, ty, expr.span)?;
                 return self.call_helper(Helper::PrintValue, &[handle]).map(|_| ());

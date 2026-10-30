@@ -58,7 +58,7 @@ impl<'a> Lowerer<'a, '_> {
     /// A value something will keep: a new owner for a borrowed boxed value, under a value
     /// of its own, so it's known to be owned.
     pub(super) fn own(&mut self, value: Value, ty: Ty) -> Value {
-        if matches!(ty, Ty::Boxed(_)) && self.borrowed.contains(&value) {
+        if ty.counted() && self.borrowed.contains(&value) {
             self.retain(value);
             return self.b.ins().iadd_imm_s(value, 0);
         }
@@ -68,7 +68,7 @@ impl<'a> Lowerer<'a, '_> {
     /// Done with a value: an owned boxed value is released.
     pub(super) fn consume(&mut self, value: Option<Value>, ty: Ty) -> Result<(), Diagnostic> {
         match (value, ty) {
-            (Some(value), Ty::Boxed(_)) if !self.borrowed.contains(&value) => self.release(value),
+            (Some(value), ty) if ty.counted() && !self.borrowed.contains(&value) => self.release(value),
             _ => Ok(()),
         }
     }
@@ -84,7 +84,7 @@ impl<'a> Lowerer<'a, '_> {
         let mut owned: Vec<_> = scope
             .locals
             .values()
-            .filter(|local| matches!(local.ty, Ty::Boxed(_)))
+            .filter(|local| local.ty.counted())
             .filter_map(|local| local.var)
             .filter(|var| !self.borrowed_names.contains(&var.index()))
             .collect();
@@ -180,7 +180,7 @@ impl<'a> Lowerer<'a, '_> {
         }
         let value = self.read_words(&words, field.ty)?;
         let borrowed = self.borrowed.contains(&object);
-        if matches!(field.ty, Ty::Boxed(_)) {
+        if field.ty.counted() {
             if borrowed {
                 self.borrow(value);
             } else {
@@ -229,19 +229,38 @@ impl<'a> Lowerer<'a, '_> {
         if !compiled.takes_self
             || params.len() != args.len() + 1
             || args.iter().any(|arg| arg.name.is_some() || arg.is_mut)
-            || params.iter().any(|(_, _, is_mut)| *is_mut)
+            || params.iter().skip(1).any(|(_, _, is_mut)| *is_mut)
         {
             return Ok(None);
         }
-        let (receiver, ty) = self.expr(object)?;
-        let mut values = vec![self.convert(receiver, ty, Ty::Boxed(id), object.span)?];
+        // A method that changes `self` changes the name it's called on, which it gives back.
+        let changes = match (params.first(), &object.kind) {
+            (Some((_, _, true)), fennec_syntax::ExprKind::Name(name)) => match self.local(name) {
+                Some(super::Local { var: Some(var), is_mut: true, ty, .. }) if ty == Ty::Boxed(id) => {
+                    Some(var)
+                }
+                _ => return Ok(None),
+            },
+            (Some((_, _, true)), _) => return Ok(None),
+            _ => None,
+        };
+        let mut values = if let Some(var) = changes {
+            vec![self.b.use_var(var)]
+        } else {
+            let (receiver, ty) = self.expr(object)?;
+            vec![self.convert(receiver, ty, Ty::Boxed(id), object.span)?]
+        };
         for (arg, (_, to, _)) in args.iter().zip(params.iter().skip(1)) {
             let (value, from) = self.expr(&arg.value)?;
             if !matches!(to, Ty::Stdout | Ty::Fs) {
                 values.push(self.convert(value, from, *to, arg.value.span)?);
             }
         }
-        self.call_key(&key, values, span).map(Some)
+        let (result, given_back) = self.call_key_changing(&key, values, span)?;
+        if let (Some(var), Some(changed)) = (changes, given_back.first()) {
+            self.b.def_var(var, *changed);
+        }
+        Ok(Some(result))
     }
 
     /// The name and field an assignment like `node.value = 1` changes, when the name holds
@@ -275,7 +294,9 @@ impl<'a> Lowerer<'a, '_> {
         let fields = self.unshare(var)?;
         let offset = i32::try_from(field.offset).unwrap_or(0);
         let old = match field.ty {
-            Ty::Boxed(_) => Some(self.b.ins().load(types::I64, MemFlagsData::trusted(), fields, offset)),
+            ty if ty.counted() => {
+                Some(self.b.ins().load(types::I64, MemFlagsData::trusted(), fields, offset))
+            }
             _ => None,
         };
         let mut words = Vec::new();
@@ -293,6 +314,7 @@ impl<'a> Lowerer<'a, '_> {
     /// A runtime object with a boxed value's value. An owned value is let go after.
     pub(super) fn box_to_handle(&mut self, value: Value, id: u32) -> Result<Value, Diagnostic> {
         let handle = self.help(Helper::BoxToValue, &[value])?;
+        // Strings and boxed values are let go the same way.
         self.consume(Some(value), Ty::Boxed(id))?;
         Ok(handle)
     }
@@ -330,6 +352,7 @@ pub(crate) fn shapes(layouts: &Layouts) -> Vec<Rc<Element>> {
                 layouts.get(id).filter(|layout| layout.boxed).and_then(|_| describe(layouts, Ty::Struct(id)));
             Rc::new(described.unwrap_or(Element::Int))
         })
+        .chain(std::iter::once(Rc::new(Element::Str)))
         .collect()
 }
 
@@ -346,6 +369,7 @@ pub(crate) fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Float => Element::Float,
         Ty::Bool => Element::Bool,
         Ty::Boxed(id) => Element::Boxed(usize::try_from(id).ok()?),
+        Ty::Str => Element::Str,
         Ty::Struct(id) => {
             let layout = layouts.get(id)?;
             let name = Rc::from(layout.name.as_str());

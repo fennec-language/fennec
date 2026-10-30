@@ -1,0 +1,129 @@
+//! Strings for native code. A string is a block in the heap (see `heap`): its owner count,
+//! its shape, its length in bytes and in characters, then its UTF-8 bytes. Strings never
+//! change, so copies always share a block. Native code reads lengths and ASCII characters
+//! itself; everything that makes a new string, or needs to walk UTF-8, happens here.
+
+use fennec_syntax::Diagnostic;
+
+use super::heap::{block_text, text_address};
+use super::{State, attempt, span, with};
+use crate::value::Value;
+
+/// A string's text, when the address is a string's block.
+fn text(state: &State, address: i64) -> Option<String> {
+    let block = state.heap.block(u64::try_from(address).ok()?)?;
+    super::heap::is_text(state, block).then(|| block_text(block))
+}
+
+fn lost(start: i64, end: i64) -> Diagnostic {
+    Diagnostic::new("the JIT lost a string", span(start, end))
+        .with_help("this is a bug in Fennec; run without `--jit` and please report it")
+}
+
+/// A string block owned once with a temporary's text, failing like the interpreter when
+/// it isn't a string.
+pub extern "C" fn from_value(value: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| match state.temp(value) {
+        Value::Str(text) => Ok(text_address(state, &text)),
+        other => Err(Diagnostic::new(
+            format!("expected a str here, but this is a {}", other.type_name()),
+            span(start, end),
+        )),
+    })
+}
+
+/// `a + b`.
+pub extern "C" fn concat(a: i64, b: i64) -> i64 {
+    with(|state| {
+        let joined = format!("{}{}", text(state, a).unwrap_or_default(), text(state, b).unwrap_or_default());
+        text_address(state, &joined)
+    })
+}
+
+/// `text[at]`, a string of one character, counting characters as the interpreter does.
+pub extern "C" fn index(address: i64, at: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let whole = text(state, address).ok_or_else(|| lost(start, end))?;
+        let at = crate::ops::index(&Value::str(&whole), &Value::Int(at), span(start, end))?;
+        match at {
+            Value::Str(one) => Ok(text_address(state, &one)),
+            _ => Err(lost(start, end)),
+        }
+    })
+}
+
+/// A string block's bytes, and its length in characters.
+fn bytes(state: &State, address: i64) -> Option<(Vec<u8>, usize)> {
+    let block = state.heap.block(u64::try_from(address).ok()?)?;
+    if !super::heap::is_text(state, block) {
+        return None;
+    }
+    let length = usize::try_from(*block.get(2)?).ok()?;
+    let chars = usize::try_from(*block.get(3)?).ok()?;
+    let words = block.get(super::heap::TEXT_HEADER_WORDS..)?;
+    Some((words.iter().flat_map(|word| word.to_le_bytes()).take(length).collect(), chars))
+}
+
+/// The bytes `from..to` of an ASCII string's block, copying only those.
+fn ascii_part(state: &State, address: i64, from: i64, to: i64) -> Option<String> {
+    let block = state.heap.block(u64::try_from(address).ok()?)?;
+    let (length, chars) = (*block.get(2)?, *block.get(3)?);
+    if !super::heap::is_text(state, block) || length != chars {
+        return None;
+    }
+    let length = i64::try_from(length).ok()?;
+    // Python's clamping: negative positions count from the end, and both ends stay inside.
+    let bound = |at: i64, missing: i64| {
+        let at = if at == i64::MIN { missing } else { at };
+        let at = if at < 0 { at + length } else { at };
+        usize::try_from(at.clamp(0, length)).unwrap_or(0)
+    };
+    let (from, to) = (bound(from, 0), bound(to, length));
+    let words = block.get(super::heap::TEXT_HEADER_WORDS..)?;
+    let part: Vec<u8> = (from..to.max(from))
+        .filter_map(|at| words.get(at / 8).and_then(|word| word.to_le_bytes().get(at % 8).copied()))
+        .collect();
+    String::from_utf8(part).ok()
+}
+
+/// `text[from:to]`, where a missing end is `i64::MIN`.
+pub extern "C" fn slice(address: i64, from: i64, to: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        if let Some(part) = ascii_part(state, address, from, to) {
+            return Ok(text_address(state, &part));
+        }
+        let (all, _) = bytes(state, address).ok_or_else(|| lost(start, end))?;
+        let whole = Value::str(&String::from_utf8(all).unwrap_or_default());
+        let bound = |at: i64| (at != i64::MIN).then_some(Value::Int(at));
+        let (from, to) = (bound(from), bound(to));
+        match crate::ops::slice(&whole, from.as_ref(), to.as_ref(), span(start, end))? {
+            Value::Str(part) => Ok(text_address(state, &part)),
+            _ => Err(lost(start, end)),
+        }
+    })
+}
+
+/// How two strings order: -1, 0 or 1, comparing bytes as the interpreter does.
+pub extern "C" fn compare(a: i64, b: i64) -> i64 {
+    with(|state| match bytes(state, a).unwrap_or_default().0.cmp(&bytes(state, b).unwrap_or_default().0) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    })
+}
+
+/// `part in text`.
+pub extern "C" fn contains(whole: i64, part: i64) -> i8 {
+    with(|state| {
+        let whole = text(state, whole).unwrap_or_default();
+        i8::from(whole.contains(text(state, part).unwrap_or_default().as_str()))
+    })
+}
+
+/// Prints a string as `stdout.print` shows it.
+pub extern "C" fn print(address: i64) {
+    attempt(|state: &mut State| {
+        let printed = text(state, address).unwrap_or_default();
+        super::io::write(state, &printed)
+    });
+}

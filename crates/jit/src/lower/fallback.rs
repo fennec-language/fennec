@@ -332,7 +332,7 @@ impl Lowerer<'_, '_> {
                 None => local.var.map(|var| self.b.use_var(var)),
             };
             // The name keeps its own value.
-            if let (Ty::Boxed(_), Some(value)) = (local.ty, value) {
+            if let (true, Some(value)) = (local.ty.counted(), value) {
                 self.borrow(value);
             }
             let handle = self.handle_of(value, local.ty, Span::default())?;
@@ -356,7 +356,7 @@ impl Lowerer<'_, '_> {
             let value = self.convert(Some(handle), Ty::Obj, local.ty, span)?;
             if let (Ty::Struct(id), Some(place)) = (local.ty, self.local_place(local)) {
                 self.write_place(&place, value, id)?;
-            } else if let Ty::Boxed(_) = local.ty {
+            } else if local.ty.counted() {
                 let old = self.b.use_var(var);
                 self.b.def_var(var, value);
                 self.release(old)?;

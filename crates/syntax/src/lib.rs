@@ -5,9 +5,9 @@ mod diagnostic;
 mod lexer;
 mod modules;
 mod parser;
-mod prelude;
 mod sources;
 mod span;
+mod stdlib;
 mod token;
 
 pub use ast::{
@@ -20,6 +20,6 @@ pub use modules::{
     std_import,
 };
 pub use parser::{parse, parse_at, parse_prelude, parse_repl};
-pub use prelude::PRELUDE;
 pub use sources::Sources;
 pub use span::Span;
+pub use stdlib::{given, prelude};

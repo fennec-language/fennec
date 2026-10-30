@@ -14,16 +14,6 @@ use fennec_syntax::{BinOp, Expr, ExprKind, FStrPart, Item, Module, Pattern, Stmt
 
 use crate::types::Function;
 
-/// Standard library types a program gets values of without naming them, by the method
-/// that gives one back.
-const GIVEN: [(&str, &str); 5] = [
-    ("now", "Instant"),
-    ("match", "Match"),
-    ("fullmatch", "Match"),
-    ("search", "Match"),
-    ("find_all", "Match"),
-];
-
 /// The names code mentions: plain names, names after a dot, and operators' method names.
 #[derive(Default)]
 pub(crate) struct Mentions {
@@ -47,7 +37,7 @@ pub(crate) fn reachable(functions: &[Function<'_>], modules: &[&Module]) -> (Has
     mentions.names.insert("main".to_owned());
     loop {
         let before = reached.len() + seen_types.len();
-        for (method, given) in GIVEN {
+        for (method, given) in fennec_syntax::given() {
             if mentions.members.contains(method) {
                 mentions.names.insert(given.to_owned());
             }

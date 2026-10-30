@@ -91,7 +91,7 @@ impl Lowerer<'_, '_> {
         let mut handover = Handover::default();
         let value = self.input(value, &mut handover)?;
         let target = Self::keep(target, &mut handover);
-        let stmt = Stmt { kind: StmtKind::Assign { target, op, value, declare_mut }, span };
+        let stmt = Stmt { kind: StmtKind::Assign { target, op, value, declare_mut, ty: None }, span };
         self.run_stmt(stmt, handover, span)
     }
 

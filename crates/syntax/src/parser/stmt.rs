@@ -84,14 +84,21 @@ impl Parser {
         if !matches!(target.kind, ExprKind::Name(_)) {
             return Err(Diagnostic::new("`mut` declares a new name, like `mut count = 0`", target.span));
         }
+        let ty = if self.eat_p(Punct::Colon) { Some(self.type_expr()?) } else { None };
         self.expect_p(Punct::Assign)?;
         let value = self.expr()?;
-        Ok(StmtKind::Assign { target, op: None, value, declare_mut: true })
+        Ok(StmtKind::Assign { target, op: None, value, declare_mut: true, ty })
     }
 
     /// An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
     fn expr_or_assign(&mut self) -> Result<StmtKind, Diagnostic> {
         let mut target = self.expr()?;
+        if matches!(target.kind, ExprKind::Name(_)) && self.eat_p(Punct::Colon) {
+            let ty = Some(self.type_expr()?);
+            self.expect_p(Punct::Assign)?;
+            let value = self.expr()?;
+            return Ok(StmtKind::Assign { target, op: None, value, declare_mut: false, ty });
+        }
         if self.at_p(Punct::Comma) {
             let mut items = vec![target];
             while self.eat_p(Punct::Comma) {
@@ -120,7 +127,7 @@ impl Parser {
             return Err(Diagnostic::new("this can't be assigned to", target.span));
         }
         let value = self.expr()?;
-        Ok(StmtKind::Assign { target, op, value, declare_mut: false })
+        Ok(StmtKind::Assign { target, op, value, declare_mut: false, ty: None })
     }
 
     fn if_stmt(&mut self) -> Result<Stmt, Diagnostic> {

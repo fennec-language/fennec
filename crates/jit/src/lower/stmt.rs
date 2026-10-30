@@ -76,7 +76,7 @@ impl Lowerer<'_, '_> {
                 let (value, ty) = self.expr(expr)?;
                 self.consume(value, ty)
             }
-            StmtKind::Assign { target, op, value, declare_mut } => {
+            StmtKind::Assign { target, op, value, declare_mut, .. } => {
                 self.assign(target, *op, value, *declare_mut)
             }
             StmtKind::If { branches, otherwise } => self.if_stmt(branches, otherwise.as_deref()),

@@ -15,14 +15,12 @@ fn return_types_come_from_the_last_expression_and_returns() {
         ("def f(n: int):\n    x = n\n", Type::Unit),
         ("def f(n: int):\n    pass\n", Type::Unit),
         ("def f(n: int):\n    [n]\n", list(Type::Int)),
-        ("def f(n: int):\n    []\n", list(Type::Unknown)),
         ("def f(n: int):\n    (n, 'a')\n", Type::Tuple(vec![Type::Int, Type::Str])),
         ("def f(n: int):\n    {n: 'a'}\n", Type::Dict(Box::new(Type::Int), Box::new(Type::Str))),
         ("def f(n: int):\n    {n}\n", Type::Set(Box::new(Type::Int))),
         ("def f(n: int):\n    if n > 0:\n        return n\n    0\n", Type::Int),
         ("def f(n: int):\n    if n > 0:\n        return n\n    None\n", optional(Type::Int)),
         ("def f(n: int):\n    if n > 0:\n        return None\n    n\n", optional(Type::Int)),
-        ("def f(n: int):\n    if n > 0:\n        return n\n    'a'\n", Type::Unknown),
         ("def f(n: int):\n    if n > 0:\n        'a'\n    else:\n        'b'\n", Type::Str),
         ("def f(n: int):\n    if n > 0:\n        'a'\n", Type::Unit),
         ("def f(n: int):\n    while True:\n        return n\n", Type::Int),
@@ -42,13 +40,32 @@ fn return_types_come_from_the_last_expression_and_returns() {
             "def f(n: int):\n    [{n: n}, {n: n}]\n",
             list(Type::Dict(Box::new(Type::Int), Box::new(Type::Int))),
         ),
-        ("def f(n: int):\n    [(n, n), (n,)]\n", list(Type::Unknown)),
         ("def f(n: int):\n    [None, None]\n", list(Type::None)),
         ("def f(n: int):\n    [[1].index(n), [1].index(n), None]\n", list(optional(Type::Int))),
         ("def f(n: int):\n    match n:\n        case 1: return 'a'\n        case _: 'b'\n", Type::Str),
     ];
     for (program, expected) in cases {
         assert_eq!(returns(program, "f"), Ok(expected), "{program}");
+    }
+}
+
+#[test]
+fn return_types_that_cannot_be_told_are_reported() {
+    let cases = [
+        ("def f(n: int):\n    []\n", "can't tell what this empty list holds @ []"),
+        (
+            "def f(n: int):\n    if n > 0:\n        return n\n    'a'\n",
+            "`f` returns an int and a str @ def f(n: int)",
+        ),
+        ("def f(n: int):\n    [(n, n), (n,)]\n", "this list mixes a (int, int) and a (int) @ [(n, n), (n,)]"),
+        ("def f(n: int):\n    [[n], 'a']\n", "this list mixes a list[int] and a str @ [[n], \"a\"]"),
+        (
+            "def f(n: int):\n    for i in [n]:\n        return 1\n",
+            "`f` returns an int and nothing @ def f(n: int)",
+        ),
+    ];
+    for (program, expected) in cases {
+        assert_eq!(problems(program), [expected], "{program}");
     }
 }
 
@@ -86,11 +103,12 @@ fn functions_that_can_fail_return_results() {
     ";
     let oops = named("Oops");
     assert_eq!(returns(program, "a"), Ok(result(Type::Int, oops.clone())));
-    assert_eq!(returns(program, "b"), Ok(result(Type::Int, Type::Unknown)));
+    let both = Type::Errors(vec!["Oops".to_owned(), "Other".to_owned()]);
+    assert_eq!(returns(program, "b"), Ok(result(Type::Int, both)));
     assert_eq!(returns(program, "c"), Ok(result(Type::Int, oops.clone())));
     assert_eq!(returns(program, "d"), Ok(result(Type::Int, oops.clone())));
     assert_eq!(returns(program, "e"), Ok(result(Type::Int, oops.clone())));
-    assert_eq!(returns(program, "g"), Ok(result(Type::Unknown, oops)));
+    assert_eq!(returns(program, "g"), Ok(result(Type::Unit, oops)));
     let signatures = check(program).unwrap();
     assert!(signatures.get("a").unwrap().can_fail);
     assert!(!signatures.get("d").unwrap().can_fail);
@@ -153,10 +171,10 @@ fn written_types_resolve() {
         type Things = list[Thing]
         type Loop = Loop
 
-        def f(a: int?, b: list[str], c: set[int], d: dict[str, int], e: (int, str), g: Id[Thing], h: IdMap[Thing], i: Path, j: Things, k: T, l: Loop, m: SoaList[Thing], n: None, o: bool, p: float, q: Fs, r: list):
+        def f(a: int?, b: list[str], c: set[int], d: dict[str, int], e: (int, str), g: Id[Thing], h: IdMap[Thing], i: Path, j: Things, m: SoaList[Thing], n: None, o: bool, p: float, q: Fs):
             pass
     ";
-    let signatures = check(program).unwrap();
+    let signatures = check(program).map_err(|problems| problems.join("; ")).unwrap();
     let types: Vec<Type> = signatures.get("f").unwrap().params.iter().map(|param| param.ty.clone()).collect();
     assert_eq!(
         types,
@@ -170,14 +188,51 @@ fn written_types_resolve() {
             Type::IdMap(Box::new(named("Thing"))),
             named("Path"),
             list(named("Thing")),
-            Type::Unknown,
-            Type::Unknown,
             list(named("Thing")),
             Type::None,
             Type::Bool,
             Type::Float,
             named("Fs"),
-            list(Type::Unknown),
+        ]
+    );
+}
+
+#[test]
+fn written_types_have_to_mean_something() {
+    let program = "
+        type Loop = Loop
+
+        interface Shape:
+            def area(self) -> f32
+
+        def f(k: T, l: Loop, r: list, d: dict[str], s: str[int], u: Enemy?) -> String:
+            pass
+
+        def g[T: Thing](t: T):
+            pass
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "the type alias `Loop` refers to itself @ Loop",
+            "`f32` isn't a type @ f32",
+            "`T` isn't a type @ T",
+            "`list` needs 1 type in brackets @ list",
+            "`dict` needs 2 types in brackets @ dict[str]",
+            "`str` doesn't take types in brackets @ str[int]",
+            "`Enemy` isn't a type @ Enemy?",
+            "`String` isn't a type @ String",
+            "`Thing` isn't an interface @ Thing",
+        ]
+    );
+    assert_eq!(
+        helps("def f(a: f32, b: string, c: List[int], d: Optional[int], e: Enemy):\n    pass\n"),
+        [
+            "write `float`",
+            "write `str`",
+            "write `list`",
+            "write `?` after the type, like `Enemy?`",
+            "declare it, like `struct Enemy:`, or check the spelling",
         ]
     );
 }
@@ -203,6 +258,7 @@ fn field_types_come_from_their_types_or_defaults() {
     assert_eq!(
         problems(program),
         [
+            "can't tell the type of `weapon` from its default @ None",
             "`count` should be an int, but this is a str @ 'wrong'".replace('\'', "\"").as_str(),
             "can't mix int and float in `+` @ c.volume + 1",
             "can't use `+` on a bool and an int @ c.fullscreen + 1",
@@ -251,7 +307,7 @@ fn recursive_functions_write_their_return_type() {
         helps(program),
         [
             "write it after the parameters: `def fib(n: int) -> int:`",
-            "write the type it returns after the parameters: `def ping(n: int) -> <type>:`",
+            "write it after the parameters: `def ping(n: int) -> str:`",
             "write the type it returns after the parameters: `def walk(mut items: list[int], label: str?) -> <type>:`",
             "write the type it returns after the parameters: `def inner(n: int) -> <type>:`",
         ]
@@ -313,7 +369,6 @@ fn values_from_several_places_combine() {
             "def f(n: int):\n    [{n: n}, {None: n}]\n",
             list(Type::Dict(Box::new(optional(Type::Int)), Box::new(Type::Int))),
         ),
-        ("def f(n: int):\n    [[n], 'a']\n", list(Type::Unknown)),
     ];
     for (program, expected) in cases {
         assert_eq!(returns(program, "f"), Ok(expected), "{program}");
@@ -345,7 +400,8 @@ fn values_from_several_places_combine() {
                 fail Oops('x')
             a(n)
     ";
-    assert_eq!(returns(program, "c"), Ok(result(optional(Type::Int), Type::Unknown)));
+    let both = Type::Errors(vec!["Oops".to_owned(), "Other".to_owned()]);
+    assert_eq!(returns(program, "c"), Ok(result(optional(Type::Int), both)));
     assert_eq!(returns(program, "d"), Ok(result(Type::Int, named("Oops"))));
 }
 

@@ -46,6 +46,24 @@ impl Interp<'_> {
                 let args = self.eval_args(args)?;
                 return self.construct_variant(None, name, args, span);
             }
+            ExprKind::Index { object, index }
+                if matches!(object.kind, ExprKind::Name(_) | ExprKind::Attr { .. }) =>
+            {
+                let function = self.eval(object)?;
+                match (&function, index.as_type()) {
+                    (Value::Builtin(name), Some(ty)) if matches!(*name, "json.loads" | "toml.loads") => {
+                        let args = self.eval_args(args)?;
+                        return self.typed_loads(name, &ty, args, span);
+                    }
+                    // Types in brackets after a generic function or type, as in `largest[int](xs)`
+                    // or `Deque[int]()`, matter only to the type checker.
+                    (Value::Function(_) | Value::Type(_), _) => {
+                        let args = self.eval_args(args)?;
+                        return self.call_value(&function, args, span);
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
         let function = self.eval(callee)?;

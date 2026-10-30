@@ -1,0 +1,7 @@
+error: can't tell what this empty list holds
+ --> examples/errors/empty_list.fen:2:17
+  |
+2 |     mut names = []
+  |                 ^^
+  |
+  = help: write the type with the name, like `names: list[int] = []`

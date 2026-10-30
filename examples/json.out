@@ -13,10 +13,13 @@ True True
     "d"
   ]
 }
-[1, "two", 3.0, null, [4, 5], {"6": [], "7": {}}]
+[1, "two", 3.0, null, [4, 5], {"6": [6], "7": []}]
 "quotes \" and \\ and\nnew lines"
+été
 True
-read [1, 2500.0, -0.5, "é"]
+1.0 ["w", "a", "s", "d"]
+read [1.0, 2500.0, -0.5]
+couldn't read it: `[1]` should be a float, but it's a str
 couldn't read it: expected a value, but found `]`, at line 1, column 7
 couldn't read it: expected `:` after the key, but found `2`, at line 2, column 6
 couldn't read it: this string never ends, at line 1, column 1

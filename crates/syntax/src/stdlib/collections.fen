@@ -80,7 +80,7 @@ struct Deque[T]:
 ## A binary min-heap: `pop` gives back the smallest item. Items are compared with `<`, so
 ## they can be numbers, strings, tuples, or structs with `def <`. For the largest first,
 ## push negated numbers, or use a `PriorityQueue` with negated priorities.
-struct Heap[T]:
+struct Heap[T: Ordered]:
     items: list[T] = []
 
     ## A heap holding `items`.
@@ -145,15 +145,19 @@ struct Heap[T]:
 
 ## A queue where items come out lowest priority first, and items with the same priority
 ## come out in the order they went in. For highest first, negate the priorities.
-struct PriorityQueue[T, P]:
-    heap: Heap[(P, int, T)] = Heap()
+struct PriorityQueue[T, P: Ordered]:
+    ## Each item's priority and the order it was pushed in, smallest first. Items wait in
+    ## `waiting` by that order, so they needn't have an order themselves.
+    heap: Heap[(P, int)] = Heap()
+    waiting: dict[int, T] = {}
     pushed = 0
 
     def len(self) -> int:
         self.heap.len()
 
     def push(mut self, item: T, priority: P):
-        self.heap.push((priority, self.pushed, item))
+        self.heap.push((priority, self.pushed))
+        self.waiting[self.pushed] = item
         self.pushed += 1
 
     ## Removes the item with the lowest priority and gives it back, or None when the queue
@@ -162,19 +166,19 @@ struct PriorityQueue[T, P]:
         entry = self.heap.pop()
         if entry is None:
             return None
-        priority, order, item = entry
-        item
+        priority, order = entry
+        self.waiting.pop(order)
 
     ## The item with the lowest priority, or None when the queue is empty.
     def peek(self) -> T?:
         entry = self.heap.peek()
         if entry is None:
             return None
-        priority, order, item = entry
-        item
+        priority, order = entry
+        self.waiting[order]
 
 ## Counts how many times each item appears. Items keep the order they were first counted in.
-struct Counter[T]:
+struct Counter[T: Hashable]:
     counts: dict[T, int] = {}
 
     ## A counter of `items`.

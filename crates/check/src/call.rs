@@ -8,9 +8,11 @@ use crate::ParamType;
 use crate::builtins;
 use crate::expr::Member;
 use crate::function::FnCx;
-use crate::messages::{might_be_none, mismatch, unhandled_result};
+use crate::generic::Chosen;
+use crate::infer::Hole;
+use crate::messages::{might_be_none, mismatch, no_method, unhandled_result};
 use crate::program::TypeKind;
-use crate::types::{Type, accepts};
+use crate::types::{Type, a};
 
 /// A method call: `object.method(args)`.
 #[derive(Clone, Copy)]
@@ -19,6 +21,14 @@ struct MethodCall<'a> {
     method: &'a str,
     args: &'a [Arg],
     span: Span,
+}
+
+/// What's being built: a type, or one case of an enum, with the types filled in for the
+/// type's parameters.
+struct Target<'a> {
+    name: &'a str,
+    case: Option<&'a str>,
+    given: Vec<(String, Type)>,
 }
 
 const MUT_ARG: &str = "only a name, or a field or item of one, can be passed with `mut`";
@@ -41,11 +51,27 @@ impl FnCx<'_> {
             ExprKind::Variant(name) => return self.construct_variant(None, name, args, span),
             ExprKind::Index { object, index } => {
                 if let Some(type_name) = self.as_type_name(object) {
+                    if self.checker.program.type_info(type_name).is_some() {
+                        let types = self.types_in(index);
+                        return self.construct_with(type_name, (args, &types), span);
+                    }
                     return self.construct_builtin(type_name, Some(index), args, span);
+                }
+                if let ExprKind::Name(name) = &object.kind
+                    && self.lookup(name).is_none()
+                    && self.checker.program.functions.contains_key(name)
+                {
+                    let types = self.types_in(index);
+                    self.record(object.span, &Type::Function(name.clone()));
+                    return self.call_with_types(name, name, (args, &types), span);
+                }
+                if let Some(builtin) = self.loads(object) {
+                    return self.typed_loads(&builtin, index, args, span);
                 }
             }
             ExprKind::Name(name) if self.lookup(name).is_none() => {
                 if self.checker.program.functions.contains_key(name) {
+                    self.record(callee.span, &Type::Function(name.clone()));
                     return self.call_function(name, name, args, span);
                 }
                 if self.checker.program.is_type_name(name) {
@@ -60,12 +86,44 @@ impl FnCx<'_> {
             }
             _ => {}
         }
-        if let Type::Function(key) = self.expr(callee) {
-            let name = key.rsplit('.').next().unwrap_or_default().to_owned();
-            return self.call_function(&key, &name, args, span);
+        match self.expr(callee) {
+            Type::Function(key) => {
+                let name = key.rsplit('.').next().unwrap_or_default().to_owned();
+                self.call_function(&key, &name, args, span)
+            }
+            Type::Arrow(params, returns) => {
+                let params: Vec<ParamType> = params
+                    .into_iter()
+                    .enumerate()
+                    .map(|(at, ty)| ParamType { name: format!("argument {}", at + 1), ty, is_mut: false })
+                    .collect();
+                self.bind_args("this function", &params, args, span);
+                *returns
+            }
+            Type::Unknown => {
+                self.ignore_args(args);
+                Type::Unknown
+            }
+            other => {
+                let message = format!("{} can't be called", a(&other));
+                self.unusable(Diagnostic::new(message, callee.span), args)
+            }
         }
-        self.ignore_args(args);
-        Type::Unknown
+    }
+
+    /// `json.loads` or `toml.loads`, imported by module or by name, without being called.
+    fn loads(&mut self, callee: &Expr) -> Option<String> {
+        let builtin = match &callee.kind {
+            ExprKind::Attr { object, name, .. } => match self.module_member(object, name, callee.span)? {
+                Member::Name(member) => member,
+                Member::Missing => return None,
+            },
+            ExprKind::Name(name) if self.lookup(name).is_none() => {
+                self.checker.program.imported(name, callee.span)?.clone()
+            }
+            _ => return None,
+        };
+        matches!(builtin.as_str(), "json.loads" | "toml.loads").then_some(builtin)
     }
 
     /// An argument's type. An arrow function gets its parameters' types from `params`.
@@ -74,7 +132,7 @@ impl FnCx<'_> {
             self.mut_place(&arg.value, MUT_ARG);
         }
         match &arg.value.kind {
-            ExprKind::Lambda { params: names, body } => self.lambda(names, body, params),
+            ExprKind::Lambda { params: names, body } => self.lambda(names, body, params, arg.value.span),
             _ => self.expr(&arg.value),
         }
     }
@@ -87,11 +145,26 @@ impl FnCx<'_> {
     }
 
     pub(crate) fn call_function(&mut self, key: &str, name: &str, args: &[Arg], span: Span) -> Type {
+        self.call_with_types(key, name, (args, &[]), span)
+    }
+
+    /// Calls a function, with the types for its type parameters that are written in
+    /// brackets, as in `largest[int](xs)`.
+    pub(crate) fn call_with_types(
+        &mut self,
+        key: &str,
+        name: &str,
+        given: (&[Arg], &[Type]),
+        span: Span,
+    ) -> Type {
+        let (args, types) = given;
         let Some(signature) = self.checker.signature(key) else {
             self.ignore_args(args);
             return Type::Unknown;
         };
+        let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
         self.bind_args(name, &signature.params, args, span);
+        self.check_bounds(chosen, span);
         signature.returns
     }
 
@@ -101,14 +174,20 @@ impl FnCx<'_> {
         let mut unmatched_args = false;
         let mut next = 0;
         for arg in args {
-            let ty = self.arg_value(arg, &[]);
             let at = if let Some(name) = &arg.name {
                 params.iter().position(|param| &param.name == name)
             } else {
                 next += 1;
                 Some(next - 1)
             };
-            let Some((at, param)) = at.and_then(|at| params.get(at).map(|param| (at, param))) else {
+            let found = at.and_then(|at| params.get(at).map(|param| (at, param)));
+            // An arrow function passed for a function parameter receives its parameters' types.
+            let receives = match found.map(|(_, param)| self.checker.settled(&param.ty)) {
+                Some(Type::Arrow(receives, _)) => receives,
+                _ => Vec::new(),
+            };
+            let ty = self.arg_value(arg, &receives);
+            let Some((at, param)) = found else {
                 let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();
                 self.error(unmatched(function, ("parameter", "argument"), &names, arg));
                 unmatched_args = true;
@@ -152,14 +231,16 @@ impl FnCx<'_> {
 
     /// Checks an argument's type fits its parameter.
     pub(crate) fn check_arg(&mut self, param: &ParamType, actual: &Type, span: Span) {
-        if !accepts(&param.ty, actual) {
-            self.error(mismatch(&format!("`{}`", param.name), &param.ty, actual, span));
+        if !self.checker.fits(&param.ty, actual) {
+            let expected = self.checker.settled(&param.ty);
+            self.error(mismatch(&format!("`{}`", param.name), &expected, actual, span));
         }
     }
 
-    /// An operator defined by a type, like `def +` or `def []`, called with one argument.
-    pub(crate) fn call_operator(&mut self, key: &str, arg: &Type, span: Span) -> Type {
-        let Some(signature) = self.checker.signature(key) else { return Type::Unknown };
+    /// An operator defined by a value's type, like `def +` or `def []`, called with one
+    /// argument.
+    pub(crate) fn call_operator(&mut self, receiver: &Type, key: &str, arg: &Type, span: Span) -> Type {
+        let Some(signature) = self.method_signature(receiver, key) else { return Type::Unknown };
         if let Some(param) = signature.params.get(1) {
             self.check_arg(param, arg, span);
         }
@@ -188,22 +269,47 @@ impl FnCx<'_> {
                 value.as_ref().clone()
             }
             Type::Result(..) => self.unusable(unhandled_result(object.span), args),
-            Type::Named(name) if self.checker.program.type_info(name).is_some() => {
+            Type::Named(name) | Type::Generic(name, _) if self.checker.program.type_info(name).is_some() => {
                 match self.checker.program.method(name, method) {
                     Some((key, entry)) => {
                         let takes_self = entry.def.takes_self();
-                        self.call_method(call, &key, takes_self)
+                        self.call_method(call, ty, (&key, takes_self))
                     }
                     // Methods written in Rust, like `Regex`'s.
                     None => self.builtin_method(object, ty, method, args, span),
                 }
             }
-            Type::Unknown => {
+            Type::Param(name) => self.interface_call(call, name),
+            Type::Unknown | Type::Var(_) => {
                 self.ignore_args(args);
                 Type::Unknown
             }
             _ => self.builtin_method(object, ty, method, args, span),
         }
+    }
+
+    /// A method called on a value of a type parameter, which has the methods of its
+    /// interfaces and no others.
+    fn interface_call(&mut self, call: &MethodCall<'_>, name: &str) -> Type {
+        let MethodCall { object, method, args, span } = *call;
+        let owner = Type::Param(name.to_owned());
+        let Some((_, def)) = self.bound_method(name, method) else {
+            let help = match self.bounds_of(name).as_slice() {
+                [] => format!("bind `{name}` to an interface that has it, like `{name}: HasLength`"),
+                bounds => {
+                    format!("`{}` has no `{method}` method; add it to the interface", bounds.join("` or `"))
+                }
+            };
+            let message = no_method(&owner, method, span).message;
+            return self.unusable(Diagnostic::new(message, span).with_help(help), args);
+        };
+        let signature = self.interface_method(&def, &owner);
+        if signature.params.first().is_some_and(|param| param.is_mut) {
+            let what = format!("`{method}` changes its value, so call it on something held in a mut name");
+            self.mut_place(object, &what);
+        }
+        self.bind_args(method, signature.params.get(1..).unwrap_or_default(), args, span);
+        signature.returns
     }
 
     /// Reports why a value can't be used, still checking the arguments.
@@ -224,10 +330,12 @@ impl FnCx<'_> {
         }
     }
 
-    /// Calls a method on a value. A `mut self` method needs its value in a mut place.
-    fn call_method(&mut self, call: &MethodCall<'_>, key: &str, takes_self: bool) -> Type {
+    /// Calls a method on a value of type `receiver`. A `mut self` method needs its value in
+    /// a mut place.
+    fn call_method(&mut self, call: &MethodCall<'_>, receiver: &Type, method_key: (&str, bool)) -> Type {
         let MethodCall { object, method, args, span } = *call;
-        let Some(signature) = self.checker.signature(key) else {
+        let (key, takes_self) = method_key;
+        let Some(signature) = self.method_signature(receiver, key) else {
             self.ignore_args(args);
             return Type::Unknown;
         };
@@ -262,8 +370,29 @@ impl FnCx<'_> {
         }
     }
 
+    /// The types written in brackets after a generic function or type: `int` in
+    /// `largest[int]`, `str, int` in `Pair[str, int]`.
+    fn types_in(&mut self, index: &Expr) -> Vec<Type> {
+        let written = match &index.kind {
+            ExprKind::Tuple(items) => items.iter().map(Expr::as_type).collect::<Option<Vec<_>>>(),
+            _ => index.as_type().map(|ty| vec![ty]),
+        };
+        let Some(written) = written else {
+            self.error(Diagnostic::new("write types in the brackets, like `[int]`", index.span));
+            return Vec::new();
+        };
+        written.iter().map(|ty| self.resolve(ty)).collect()
+    }
+
     /// Calls a type to build a value: `Enemy(position=p)`, `NotFound(path)`.
     pub(crate) fn construct(&mut self, type_name: &str, args: &[Arg], span: Span) -> Type {
+        self.construct_with(type_name, (args, &[]), span)
+    }
+
+    /// Builds a value, with the types for the type's parameters that are written in
+    /// brackets, as in `Deque[int]()`. The others are worked out from the fields given.
+    fn construct_with(&mut self, type_name: &str, given: (&[Arg], &[Type]), span: Span) -> Type {
+        let (args, types) = given;
         let Some(info) = self.checker.program.type_info(type_name) else {
             return self.construct_builtin(type_name, None, args, span);
         };
@@ -275,10 +404,28 @@ impl FnCx<'_> {
                     .with_help(format!("write one of {}", cases.join(", ")));
             return self.unusable(diagnostic, args);
         }
-        let fields = info.def.fields.clone();
-        let literal = self.build(type_name, None, &fields, args, span);
+        let (fields, generics) = (info.def.fields.clone(), info.def.generics.clone());
+        if types.len() > generics.len() {
+            self.error(crate::messages::wrong_args(type_name, span));
+        }
+        let mut given = Vec::new();
+        let mut chosen = Vec::new();
+        for (at, generic) in generics.iter().enumerate() {
+            let ty = match types.get(at) {
+                Some(ty) => ty.clone(),
+                None => self.checker.fresh(span, Hole::TypeParam(generic.name.clone())),
+            };
+            let bounds = generic.bounds.iter().map(|bound| bound.name.clone()).collect();
+            chosen.push(Chosen { ty: ty.clone(), bounds });
+            given.push((generic.name.clone(), ty));
+        }
+        let built = match given.as_slice() {
+            [] => Type::named(type_name),
+            given => Type::Generic(type_name.to_owned(), given.iter().map(|(_, ty)| ty.clone()).collect()),
+        };
+        let literal = self.build(&Target { name: type_name, case: None, given }, &fields, args, span);
+        self.check_bounds(chosen, span);
         crate::stdlib::construct(self, type_name, args);
-        let built = Type::named(type_name);
         if fields.iter().any(|field| field.rule.is_some()) && !literal {
             return Type::result(built, Type::named("InvalidValue"));
         }
@@ -287,19 +434,23 @@ impl FnCx<'_> {
 
     /// `IdMap[Enemy]()` and `SoaList[Particle]()`.
     fn construct_builtin(&mut self, type_name: &str, item: Option<&Expr>, args: &[Arg], span: Span) -> Type {
-        let item = match item.map(|item| &item.kind) {
-            Some(ExprKind::Name(name)) => self.checker.program.resolve(&TypeExpr {
-                name: name.clone(),
-                args: Vec::new(),
-                optional: false,
-                span,
-            }),
-            _ => Type::Unknown,
+        let has_item = item.is_some();
+        let item = match item.map(|item| (&item.kind, item.span)) {
+            Some((ExprKind::Name(name), at)) => {
+                self.resolve(&TypeExpr { name: name.clone(), args: Vec::new(), optional: false, span: at })
+            }
+            Some((_, at)) => {
+                let message =
+                    format!("write the type `{type_name}` holds as a name, like `{type_name}[Enemy]`");
+                self.error(Diagnostic::new(message, at));
+                Type::Unknown
+            }
+            None => Type::Unknown,
         };
         let types: Vec<Type> = args.iter().map(|arg| self.arg_value(arg, &[])).collect();
         match (type_name, types.as_slice()) {
-            ("IdMap", []) => Type::IdMap(Box::new(item)),
-            ("SoaList", []) => Type::list(item),
+            ("IdMap", []) if has_item => Type::IdMap(Box::new(item)),
+            ("SoaList", []) if has_item => Type::list(item),
             _ => {
                 self.error(crate::messages::wrong_args(type_name, span));
                 Type::Unknown
@@ -341,20 +492,14 @@ impl FnCx<'_> {
             .and_then(|info| info.def.cases.iter().find(|c| c.name == case))
             .map(|c| c.fields.clone())
             .unwrap_or_default();
-        self.build(&owner, Some(case), &fields, args, span);
+        self.build(&Target { name: &owner, case: Some(case), given: Vec::new() }, &fields, args, span);
         Type::Named(owner)
     }
 
     /// Matches arguments to fields, positionally and by name. Returns whether every argument
     /// is written as a literal, so `where` rules can be checked when the value is made.
-    fn build(
-        &mut self,
-        type_name: &str,
-        case: Option<&str>,
-        fields: &[Field],
-        args: &[Arg],
-        span: Span,
-    ) -> bool {
+    fn build(&mut self, target: &Target<'_>, fields: &[Field], args: &[Arg], span: Span) -> bool {
+        let Target { name: type_name, case, .. } = *target;
         let display = case.map_or_else(|| type_name.to_owned(), |case| format!("{type_name}.{case}"));
         let mut given = vec![false; fields.len()];
         let mut unmatched_args = false;
@@ -378,8 +523,9 @@ impl FnCx<'_> {
                 self.error(Diagnostic::new("this field is given twice", arg.value.span));
             }
             *slot = true;
-            let expected = self.checker.field_type(type_name, case, &field.name);
-            if !accepts(&expected, &ty) {
+            let expected = self.checker.field_type(type_name, case, &field.name).substitute(&target.given);
+            if !self.checker.fits(&expected, &ty) {
+                let expected = self.checker.settled(&expected);
                 self.error(mismatch(&format!("`{}`", field.name), &expected, &ty, arg.value.span));
             }
         }

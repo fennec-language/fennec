@@ -3,3 +3,5 @@ error: `Point` has nothing called `on_diagonal`
   |
 9 |     stdout.print(Point.on_diagonal)
   |                  ^^^^^^^^^^^^^^^^^
+  |
+  = help: call it with its arguments, like `Point.on_diagonal(...)`

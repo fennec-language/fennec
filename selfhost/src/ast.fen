@@ -82,8 +82,9 @@ struct Stmt:
 
 enum StmtKind:
     Expr(expr: Expr)
-    ## `name = value`, `mut name = value`, `a, b = pair`, `target op= value`.
-    Assign(target: Expr, op: BinOp?, value: Expr, declare_mut: bool)
+    ## `name = value`, `mut name = value`, `a, b = pair`, `target op= value`, and
+    ## `name: type = value`, which declares a name with its type written.
+    Assign(target: Expr, op: BinOp?, value: Expr, declare_mut: bool, ty: TypeExpr?)
     If(branches: list[(Expr, list[Stmt])], otherwise: list[Stmt]?)
     While(cond: Expr, body: list[Stmt])
     For(names: list[str], is_mut: bool, iter: Expr, body: list[Stmt])

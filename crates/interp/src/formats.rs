@@ -1,6 +1,7 @@
 //! `std.json` and `std.toml`: reading text into Fennec values and writing values back out.
 //! Bad text fails with a `ParseError` that says the line and column of the problem.
 
+mod decode;
 mod dump;
 mod json;
 mod toml;
@@ -8,7 +9,7 @@ mod toml_value;
 
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Span};
+use fennec_syntax::{Diagnostic, Span, TypeExpr};
 
 use crate::call::CallArg;
 use crate::interp::Interp;
@@ -151,6 +152,31 @@ impl Interp<'_> {
                 dump::toml(value).map(|text| Value::str(&text)).map_err(|why| Diagnostic::new(why, span))
             }
             _ => Err(Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span)),
+        }
+    }
+
+    /// `json.loads[T](text)`: the text read as a `T`. Text that reads fine but doesn't fit
+    /// the type fails with a `ParseError` at line 0, column 0.
+    pub(crate) fn typed_loads(
+        &mut self,
+        name: &str,
+        ty: &TypeExpr,
+        args: Vec<CallArg>,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        let read = self.format_builtin(name, args, span)?;
+        let Value::Ok(value) = read else { return Ok(read) };
+        match self.decode(value.as_ref().clone(), ty, "", span) {
+            Ok(value) => Ok(Value::Ok(Rc::new(value))),
+            Err(message) => {
+                let fields = vec![
+                    ("message", Value::str(&message)),
+                    ("line", Value::Int(0)),
+                    ("column", Value::Int(0)),
+                ];
+                let error = self.make_value("ParseError", fields, span)?;
+                Ok(Value::Err(Rc::new(error)))
+            }
         }
     }
 

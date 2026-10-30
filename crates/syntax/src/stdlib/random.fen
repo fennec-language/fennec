@@ -25,13 +25,13 @@ struct Random:
         low + (high - low) * self.random()
 
     ## One of `items`, picked at random.
-    def choice(mut self, items: list[T]) -> T:
+    def choice[T](mut self, items: list[T]) -> T:
         item, drawn = random_choice(self.seed, self.drawn, items)
         self.drawn = drawn
         item
 
     ## Puts `items` in a random order.
-    def shuffle(mut self, mut items: list[T]):
+    def shuffle[T](mut self, mut items: list[T]):
         for at in range(len(items) - 1, 0, -1):
             other = self.randint(0, at)
             item = items[at]

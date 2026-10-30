@@ -21,7 +21,8 @@ const FUNCTIONS: [Function; 5] = [
     takes("math.sqrt", (1, 1)),
 ];
 
-/// `floor` and `ceil` give ints; the rest give floats.
-fn result(_: &mut FnCx<'_>, name: &str, _: &[(Type, Span)], _: Span) -> Type {
-    if matches!(name, "math.floor" | "math.ceil") { Type::Int } else { Type::Float }
+/// Each takes a number. `floor` and `ceil` give ints; the rest give floats.
+fn result(cx: &mut FnCx<'_>, name: &str, plain: &[(Type, Span)], span: Span) -> Type {
+    let types: Vec<Type> = plain.iter().map(|(ty, _)| ty.clone()).collect();
+    cx.math(name, &types, span)
 }

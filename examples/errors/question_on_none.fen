@@ -1,0 +1,15 @@
+struct Player:
+    name: str
+
+def find(players: list[Player], name: str) -> Player?:
+    for player in players:
+        if player.name == name:
+            return player
+    None
+
+def greet(players: list[Player], name: str) -> str:
+    player = find(players, name)?
+    f"hello, {player.name}"
+
+def main(stdout: Stdout):
+    stdout.print(greet([Player(name="Ash")], "Ash"))

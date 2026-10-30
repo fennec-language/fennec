@@ -13,6 +13,8 @@ fn fennec_in(dir: &Path, args: &[&str], stdin: &str) -> std::io::Result<Output> 
     let mut child = Command::new(env!("CARGO_BIN_EXE_fennec"))
         .args(args)
         .current_dir(dir)
+        // Every run does all of its work, whatever earlier runs left in the real cache.
+        .env("FENNEC_NO_CACHE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

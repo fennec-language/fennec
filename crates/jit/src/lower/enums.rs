@@ -45,8 +45,13 @@ impl<'a> Lowerer<'a, '_> {
         let case = self.case(id, at, span)?;
         let Some(values) = self.field_values(&case.fields, args, span)? else { return Ok(None) };
         let mut words = vec![self.int(i64::try_from(at).unwrap_or(0))];
-        for (field, value) in case.fields.iter().zip(values) {
-            self.push_words(value, field.ty, &mut words)?;
+        self.field_words(&case.fields, values, &mut words)?;
+        if self.layout(id)?.boxed {
+            let size = usize::try_from(self.layout(id)?.size / WORD).unwrap_or(0);
+            while words.len() < size {
+                words.push(self.int(0));
+            }
+            return Ok(Some((Some(self.new_block(id, &words)?), Ty::Boxed(id))));
         }
         Ok(Some((Some(self.pad(words, id)?), Ty::Struct(id))))
     }
@@ -65,7 +70,12 @@ impl<'a> Lowerer<'a, '_> {
     }
 
     /// A value as the words an enum holds it in.
-    fn push_words(&mut self, value: Value, ty: Ty, words: &mut Vec<Value>) -> Result<(), Diagnostic> {
+    pub(super) fn push_words(
+        &mut self,
+        value: Value,
+        ty: Ty,
+        words: &mut Vec<Value>,
+    ) -> Result<(), Diagnostic> {
         match ty {
             Ty::Struct(id) => {
                 let leaves = self.leaves(value, id)?;
@@ -81,7 +91,7 @@ impl<'a> Lowerer<'a, '_> {
     }
 
     /// A value from the words an enum holds it in.
-    fn read_words(&mut self, words: &[Value], ty: Ty) -> Result<Value, Diagnostic> {
+    pub(super) fn read_words(&mut self, words: &[Value], ty: Ty) -> Result<Value, Diagnostic> {
         let span = self.function.def.span;
         let first = || words.first().copied().ok_or_else(|| internal("a field past the enum's end", span));
         Ok(match ty {
@@ -209,10 +219,14 @@ impl<'a> Lowerer<'a, '_> {
         (a, a_ty): Lowered,
         (b, b_ty): Lowered,
     ) -> Result<Option<Lowered>, Diagnostic> {
-        let (Ty::Struct(id), Some(a), Some(b), true) = (a_ty, a, b, a_ty == b_ty) else { return Ok(None) };
-        if !matches!(op, BinOp::Eq | BinOp::NotEq) {
+        if !matches!(op, BinOp::Eq | BinOp::NotEq) || a_ty != b_ty {
             return Ok(None);
         }
+        if let (Ty::Boxed(id), Some(a), Some(b)) = (a_ty, a, b) {
+            let same = self.boxed_equality(op == BinOp::NotEq, a, b, id)?;
+            return Ok(Some((Some(same), Ty::Bool)));
+        }
+        let (Ty::Struct(id), Some(a), Some(b)) = (a_ty, a, b) else { return Ok(None) };
         let left = self.leaves(a, id)?;
         let right = self.leaves(b, id)?;
         let mut same = self.b.ins().iconst(types::I8, 1);

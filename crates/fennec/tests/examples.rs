@@ -19,7 +19,7 @@ const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] =
 
 /// Examples that compile to plain machine code: nothing handed to the interpreter, and no
 /// function needing the runtime's frames.
-const PLAIN_MACHINE_CODE: &[&str] = &["hello.fen", "numbers.fen", "robot.fen"];
+const PLAIN_MACHINE_CODE: &[&str] = &["calculator.fen", "hello.fen", "numbers.fen", "robot.fen"];
 
 /// Checks how an example compiled, and that its run left nothing behind in the runtime.
 fn check_report(name: &str, report: &fennec_jit::Report) {
@@ -28,7 +28,11 @@ fn check_report(name: &str, report: &fennec_jit::Report) {
         .find(|(example, _)| *example == name)
         .map_or(&[][..], |(_, names)| names);
     assert_eq!(report.interpreted, expected, "{name}: the JIT couldn't compile these");
-    assert_eq!((report.leftover_temps, report.leftover_frames), (0, 0), "{name} left temporaries or frames");
+    assert_eq!(
+        (report.leftover_temps, report.leftover_frames, report.leftover_boxes),
+        (0, 0, 0),
+        "{name} left temporaries, frames or boxed values"
+    );
     if PLAIN_MACHINE_CODE.contains(&name) {
         assert_eq!((report.handed_over, report.with_frames), (0, 0), "{name} should be plain machine code");
     }

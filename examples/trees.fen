@@ -1,0 +1,114 @@
+# Types that contain themselves, like syntax trees and linked lists. They're values like
+# any other: copies share memory until one of them changes, and nothing can tell.
+
+enum Expr:
+    Num(value: int)
+    Var(slot: int)
+    Add(left: Expr, right: Expr)
+    Mul(left: Expr, right: Expr)
+    Neg(inner: Expr)
+    Let(slot: int, value: Expr, body: Expr)
+
+    def size(self) -> int:
+        match self:
+            case .Add(a, b): 1 + a.size() + b.size()
+            case .Mul(a, b): 1 + a.size() + b.size()
+            case .Neg(inner): 1 + inner.size()
+            case .Let(_, value, body): 1 + value.size() + body.size()
+            case _: 1
+
+struct Env:
+    a: int
+    b: int
+
+def lookup(env: Env, slot: int) -> int:
+    env.a if slot == 0 else env.b
+
+def bind(env: Env, slot: int, value: int) -> Env:
+    Env(a=value, b=env.b) if slot == 0 else Env(a=env.a, b=value)
+
+def eval(e: Expr, env: Env) -> int:
+    match e:
+        case .Num(n): n
+        case .Var(slot): lookup(env, slot)
+        case .Add(a, b): eval(a, env) + eval(b, env)
+        case .Mul(a, b): eval(a, env) * eval(b, env)
+        case .Neg(inner): -eval(inner, env)
+        case .Let(slot, value, body): eval(body, bind(env, slot, eval(value, env)))
+
+def simplify(e: Expr) -> Expr:
+    match e:
+        case .Add(.Num(0), right): simplify(right)
+        case .Add(left, .Num(0)): simplify(left)
+        case .Mul(.Num(1), right): simplify(right)
+        case .Mul(.Num(0), _): .Num(0)
+        case .Neg(.Neg(inner)): simplify(inner)
+        case .Add(a, b): .Add(simplify(a), simplify(b))
+        case .Mul(a, b): .Mul(simplify(a), simplify(b))
+        case .Neg(inner): .Neg(simplify(inner))
+        case .Let(slot, value, body): .Let(slot, simplify(value), simplify(body))
+        case other: other
+
+def build(depth: int, seed: int) -> Expr:
+    if depth == 0:
+        return Expr.Var(seed % 2) if seed % 4 == 0 else .Num(seed % 10)
+    left = build(depth - 1, seed * 3 + 1)
+    right = build(depth - 1, seed * 7 + 2)
+    match seed % 5:
+        case 0: .Add(left, right)
+        case 1: .Mul(.Num(1), .Add(left, .Num(0)))
+        case 2: .Add(.Neg(.Neg(left)), right)
+        case 3: .Let(seed % 2, left, right)
+        case _: .Mul(left, .Neg(right))
+
+enum Chain:
+    End
+    Link(value: int, rest: Chain)
+
+def count_down(n: int) -> Chain:
+    mut chain = Chain.End
+    for i in range(n):
+        chain = .Link(i, chain)
+    chain
+
+def total(chain: Chain) -> int:
+    mut sum = 0
+    mut at = chain
+    while True:
+        match at:
+            case .Link(value, rest):
+                sum += value
+                at = rest
+            case .End:
+                break
+    sum
+
+struct Program:
+    name: str
+    body: Expr
+    runs: int
+
+def main(stdout: Stdout):
+    env = Env(a=3, b=-2)
+    small = Expr.Let(0, .Add(.Num(2), .Var(1)), .Mul(.Var(0), .Neg(.Num(5))))
+    stdout.print(small)
+    stdout.print(eval(small, env), small.size())
+
+    tree = build(12, 1)
+    simpler = simplify(tree)
+    stdout.print(tree.size(), simpler.size(), eval(tree, env), eval(simpler, env))
+    stdout.print(simplify(simpler) == simpler, tree == simpler, build(12, 1) == tree)
+
+    # A copy shares the tree; changing one changes nothing else.
+    mut program = Program(name="calc", body=small, runs=0)
+    saved = program
+    program.runs += 1
+    program.body = .Add(program.body, .Num(1))
+    stdout.print(program.runs, saved.runs, eval(program.body, env), eval(saved.body, env))
+    stdout.print(saved.body == small, program.body == small)
+
+    chain = count_down(1000)
+    stdout.print(total(chain), total(.Link(5, chain)) - total(chain))
+    match chain:
+        case .Link(first, .Link(second, _)): stdout.print(first, second)
+        case _: stdout.print("short")

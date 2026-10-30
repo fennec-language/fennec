@@ -23,7 +23,9 @@ impl Lowerer<'_, '_> {
         }
         let block = self.b.create_block();
         let ty = if value.is_some() { ty } else { Ty::Unit };
-        // A struct crosses into the merge as its leaves, so it can stay in registers.
+        // A boxed value crosses owned; a struct crosses as its leaves, so it can stay in
+        // registers.
+        let value = value.map(|value| self.own(value, ty));
         let values = match (value, ty) {
             (Some(value), Ty::Struct(id)) => self.leaves(value, id)?,
             (Some(value), ty) if abi(ty).is_some() => vec![value],
@@ -97,11 +99,11 @@ impl Lowerer<'_, '_> {
         span: Span,
     ) -> Result<Lowered, Diagnostic> {
         let (value, ty) = self.expr(subject)?;
-        if matches!(ty, Ty::Int | Ty::Bool | Ty::Struct(_)) {
+        if matches!(ty, Ty::Int | Ty::Bool | Ty::Struct(_) | Ty::Boxed(_)) {
             // Arms drop temporaries back to here, keeping the ones made before the match.
             let mark = if self.frame && self.dirty { Some(self.help(Helper::Mark, &[])?) } else { None };
             self.bases.extend(mark);
-            let lowered = self.match_native((value, ty), arms, subject.span);
+            let lowered = self.match_native((value, ty), subject, arms);
             if mark.is_some() {
                 self.bases.pop();
             }

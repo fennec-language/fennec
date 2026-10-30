@@ -1,0 +1,76 @@
+# Boxed values going everywhere values go: through lists, loops that leave early, `match`
+# on values made on the spot, and structs that hold them.
+
+struct Point:
+    x: int
+    y: int
+
+enum Shape:
+    Dot(at: Point)
+    Group(first: Shape, rest: Shape)
+    Moved(by: Point, inner: Shape)
+
+struct Layer:
+    depth: int
+    origin: Point
+    shape: Shape
+
+def count(shape: Shape) -> int:
+    match shape:
+        case .Dot(_): 1
+        case .Group(first, rest): count(first) + count(rest)
+        case .Moved(_, inner): count(inner)
+
+def shift(shape: Shape, dx: int) -> Shape:
+    match shape:
+        case .Dot(at): .Dot(Point(x=at.x + dx, y=at.y))
+        case .Group(first, rest): .Group(shift(first, dx), shift(rest, dx))
+        case moved: .Moved(Point(x=dx, y=0), moved)
+
+def first_dot(shape: Shape) -> Point:
+    mut at = shape
+    while True:
+        match at:
+            case .Dot(point):
+                return point
+            case .Group(first, _):
+                at = first
+            case .Moved(_, inner):
+                at = inner
+
+def deepest(shapes: list[Shape], limit: int) -> int:
+    mut best = 0
+    for shape in shapes:
+        n = count(shape)
+        if n > limit:
+            break
+        if n > best:
+            best = n
+    best
+
+def row(n: int) -> Shape:
+    mut shape = Shape.Dot(Point(x=0, y=0))
+    for i in range(1, n):
+        shape = .Group(.Dot(Point(x=i, y=i * i)), shape)
+    shape
+
+def main(stdout: Stdout):
+    shapes = [row(1), row(3), shift(row(4), 10), row(50)]
+    stdout.print(deepest(shapes, 10), len(shapes))
+    for shape in shapes:
+        stdout.print(count(shape), first_dot(shape))
+    stdout.print(shapes[2])
+
+    match shift(row(2), 5):
+        case .Group(.Dot(at), rest): stdout.print(at, count(rest))
+        case other: stdout.print("other", other)
+
+    mut layer = Layer(depth=1, origin=Point(x=0, y=0), shape=row(2))
+    before = layer
+    layer.depth += 1
+    layer.origin.x = 7
+    layer.shape = .Moved(layer.origin, layer.shape)
+    stdout.print(layer)
+    stdout.print(before)
+    stdout.print(before == layer, before.shape == row(2), layer.shape != before.shape)
+    stdout.print(f"{count(layer.shape)} dots, depth {layer.depth}")

@@ -49,10 +49,7 @@ impl Lowerer<'_, '_> {
             }
             return self.fallback(expr);
         }
-        if let ExprKind::Attr { object, name, optional: false } = &callee.kind
-            && let Some(Ty::Struct(id)) = self.static_ty(object)
-            && let Some(result) = self.call_struct_method(expr, object, id, name, args)?
-        {
+        if let Some(result) = self.call_typed_method(expr, callee, args)? {
             return Ok(result);
         }
         if let Some((id, at)) = self.named_case(callee)
@@ -103,6 +100,22 @@ impl Lowerer<'_, '_> {
         (self.local(first).is_none() && self.shared.modules.contains(&alias)).then_some(name.as_str())
     }
 
+    /// `value.method(args)` on a plain struct or boxed value whose type is known here: a
+    /// direct native call to its type's method.
+    fn call_typed_method(
+        &mut self,
+        expr: &Expr,
+        callee: &Expr,
+        args: &[Arg],
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return Ok(None) };
+        match self.static_ty(object) {
+            Some(Ty::Struct(id)) => self.call_struct_method(expr, object, id, name, args),
+            Some(Ty::Boxed(id)) => self.call_boxed_method(object, id, name, args, expr.span),
+            _ => Ok(None),
+        }
+    }
+
     /// Which argument goes to each parameter, or `None` when they don't line up, which the
     /// interpreter then reports.
     fn arrange<'x>(params: &[(String, Ty, bool)], args: &'x [Arg]) -> Option<Vec<&'x Arg>> {
@@ -130,20 +143,8 @@ impl Lowerer<'_, '_> {
         let Some(compiled) = self.shared.compiled.get(name) else { return Ok(None) };
         let (id, params, ret) = (compiled.id, compiled.params.clone(), compiled.ret);
         let Some(arranged) = Self::arrange(&params, args) else { return Ok(None) };
-        for (arg, (_, ty, is_mut)) in arranged.iter().zip(&params) {
-            let fits = match (&arg.value.kind, arg.is_mut) {
-                (ExprKind::Name(local), true) => {
-                    *is_mut && self.local(local).is_some_and(|local| local.ty == *ty && local.is_mut)
-                }
-                (_, true) => false,
-                (ExprKind::Name(local), false) if matches!(ty, Ty::Cap(_)) => {
-                    self.local(local).is_some_and(|local| local.ty == *ty)
-                }
-                (_, false) => !is_mut && !matches!(ty, Ty::Cap(_)),
-            };
-            if !fits {
-                return Ok(None);
-            }
+        if !self.args_fit(&arranged, &params) {
+            return Ok(None);
         }
         let mut lowered: Vec<Option<Lowered>> = vec![None; params.len()];
         for arg in args {
@@ -187,10 +188,15 @@ impl Lowerer<'_, '_> {
         if let Some(body) = self.inlinable(name) {
             return self.inline_call(name, &body, values, None, span).map(Some);
         }
+        let used = Self::boxed_args(&params, &values);
         let mut values = self.addresses_for(&params, values)?;
         let dest = self.dest_for(ret)?;
         values.splice(0..0, dest);
         let mut results = self.raw_call(id, &values, self.is_prelude(name), span).into_iter();
+        // The callee only borrowed its boxed arguments.
+        for (value, ty) in used {
+            self.consume(Some(value), ty)?;
+        }
         let value = if let Some(dest) = dest {
             Some(dest)
         } else if super::abi(ret).is_some() {
@@ -210,6 +216,21 @@ impl Lowerer<'_, '_> {
         Ok(Some((value, ret)))
     }
 
+    /// Whether arranged arguments suit a native call: `mut` exactly where the parameter is,
+    /// and capabilities passed by name.
+    fn args_fit(&self, arranged: &[&Arg], params: &[(String, Ty, bool)]) -> bool {
+        arranged.iter().zip(params).all(|(arg, (_, ty, is_mut))| match (&arg.value.kind, arg.is_mut) {
+            (ExprKind::Name(local), true) => {
+                *is_mut && self.local(local).is_some_and(|local| local.ty == *ty && local.is_mut)
+            }
+            (_, true) => false,
+            (ExprKind::Name(local), false) if matches!(ty, Ty::Cap(_)) => {
+                self.local(local).is_some_and(|local| local.ty == *ty)
+            }
+            (_, false) => !is_mut && !matches!(ty, Ty::Cap(_)),
+        })
+    }
+
     /// Calls a compiled function by its key with arguments already as its parameters take
     /// them, giving back its result.
     pub(super) fn call_key(
@@ -226,9 +247,13 @@ impl Lowerer<'_, '_> {
         let params =
             self.shared.compiled.get(key).map(|compiled| compiled.params.clone()).unwrap_or_default();
         let dest = self.dest_for(ret)?;
+        let used = Self::boxed_args(&params, &values);
         let mut values = self.addresses_for(&params, values)?;
         values.splice(0..0, dest);
         let results = self.raw_call(id, &values, self.is_prelude(key), span);
+        for (value, ty) in used {
+            self.consume(Some(value), ty)?;
+        }
         let value = if dest.is_some() {
             dest
         } else if super::abi(ret).is_some() {
@@ -322,6 +347,25 @@ impl Lowerer<'_, '_> {
             });
         }
         Ok(converted)
+    }
+
+    /// The boxed arguments among values in the order a call passes them, to let go of after
+    /// the call.
+    fn boxed_args(params: &[(String, Ty, bool)], values: &[Value]) -> Vec<(Value, Ty)> {
+        let mut kinds = Vec::new();
+        for (_, ty, is_mut) in params {
+            match ty {
+                Ty::Cap(_) => {}
+                Ty::Obj if *is_mut => kinds.extend([Ty::Obj, Ty::Int]),
+                ty => kinds.push(*ty),
+            }
+        }
+        kinds
+            .into_iter()
+            .zip(values)
+            .filter(|(ty, _)| matches!(ty, Ty::Boxed(_)))
+            .map(|(ty, value)| (*value, ty))
+            .collect()
     }
 
     /// Memory for the plain struct a function gives back, when it gives one.
@@ -523,7 +567,7 @@ impl Lowerer<'_, '_> {
             Ty::Bool => Helper::PrintBool,
             Ty::Obj => Helper::PrintValue,
             Ty::Unit => return Ok(()),
-            Ty::Struct(_) => {
+            Ty::Struct(_) | Ty::Boxed(_) => {
                 let handle = self.handle_of(value, ty, expr.span)?;
                 return self.call_helper(Helper::PrintValue, &[handle]).map(|_| ());
             }

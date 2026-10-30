@@ -80,6 +80,12 @@ impl Lowerer<'_, '_> {
         {
             return self.load_field(address, id, field);
         }
+        if let (Ty::Boxed(id), Some(address)) = (ty, value)
+            && self.layout(id)?.cases.is_none()
+            && let Some(field) = self.struct_field(id, name)?
+        {
+            return self.boxed_field((address, id), field);
+        }
         let handle = self.handle_of(value, ty, object.span)?;
         let name = self.name_id(name);
         let optional = self.b.ins().iconst(types::I8, i64::from(optional));
@@ -262,7 +268,12 @@ impl Lowerer<'_, '_> {
         }
         let mut lowered = Vec::with_capacity(args.len());
         for arg in args {
-            lowered.push(self.expr(&arg.value)?);
+            // Each type's arm uses the arguments, so a boxed one becomes an object once.
+            let (value, ty) = self.expr(&arg.value)?;
+            lowered.push(match ty {
+                Ty::Boxed(_) => (Some(self.handle_of(value, ty, arg.value.span)?), Ty::Obj),
+                _ => (value, ty),
+            });
         }
         let (value, ty) = self.expr(object)?;
         let receiver = self.handle_of(value, ty, object.span)?;
@@ -308,21 +319,7 @@ impl Lowerer<'_, '_> {
         op: Option<BinOp>,
         value: &Expr,
     ) -> Result<(), Diagnostic> {
-        let span = target.span.to(value.span);
-        let (new, ty) = match op {
-            Some(op) => {
-                let combined = Expr {
-                    kind: ExprKind::Binary {
-                        op,
-                        lhs: Box::new(target.clone()),
-                        rhs: Box::new(value.clone()),
-                    },
-                    span,
-                };
-                self.expr(&combined)?
-            }
-            None => self.expr(value)?,
-        };
+        let (new, ty) = self.assigned(target, op, value)?;
         let handle = self.handle_of(new, ty, value.span)?;
         self.start_path(root, fields)?;
         let [start, end] = self.span_args(target.span);

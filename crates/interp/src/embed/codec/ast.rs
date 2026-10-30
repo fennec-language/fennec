@@ -86,6 +86,13 @@ impl Encode for Item {
             Item::Test(test) => (7, test).encode_tagged(to),
             Item::Stmt(stmt) => (8, stmt).encode_tagged(to),
             Item::Extend(extension) => (9, extension).encode_tagged(to),
+            Item::Const { name, ty, value, span } => {
+                to.tag(10);
+                name.encode(to);
+                ty.encode(to);
+                value.encode(to);
+                span.encode(to);
+            }
         }
     }
 }
@@ -107,6 +114,12 @@ impl Decode for Item {
             7 => Item::Test(Decode::decode(from)?),
             8 => Item::Stmt(Decode::decode(from)?),
             9 => Item::Extend(Decode::decode(from)?),
+            10 => Item::Const {
+                name: Decode::decode(from)?,
+                ty: Decode::decode(from)?,
+                value: Decode::decode(from)?,
+                span: Decode::decode(from)?,
+            },
             _ => return None,
         })
     }

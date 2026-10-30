@@ -33,6 +33,10 @@ pub(crate) fn unimported(module: &Module, program: &Program) -> Vec<Diagnostic> 
                 }
             }
             Item::TypeAlias { ty, .. } => uses.type_expr(Some(ty)),
+            Item::Const { ty, value, .. } => {
+                uses.type_expr(ty.as_ref());
+                uses.expr(Some(value));
+            }
             Item::Test(test) => {
                 for input in &test.inputs {
                     uses.type_expr(input.ty.as_ref());

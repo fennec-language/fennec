@@ -127,6 +127,12 @@ struct Tree:
                 self.open(f"type-alias {name}", span)
                 self.write_type_expr(ty)
                 self.close()
+            case .Const(name, ty, value, span):
+                self.open(f"const {name}", span)
+                if ty is not None:
+                    self.write_type_expr(ty)
+                self.write_expr(value)
+                self.close()
             case .Import(imported):
                 mut label = "import " + ".".join(imported.module)
                 if len(imported.names) > 0:

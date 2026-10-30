@@ -82,7 +82,7 @@ pub(crate) struct FnCx<'c> {
 }
 
 impl<'c> FnCx<'c> {
-    fn new(checker: &'c mut Checker, key: &str, name: &str, report: bool) -> Self {
+    pub(crate) fn new(checker: &'c mut Checker, key: &str, name: &str, report: bool) -> Self {
         let first_var = checker.vars.len();
         FnCx {
             checker,

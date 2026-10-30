@@ -16,6 +16,7 @@
 mod builtins;
 mod call;
 mod checker;
+mod constants;
 mod effects;
 mod expr;
 mod extend;

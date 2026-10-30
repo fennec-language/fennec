@@ -1,0 +1,5 @@
+WIDTH = HEIGHT * 2
+HEIGHT = WIDTH / 2
+
+def main(stdout: Stdout):
+    stdout.print(WIDTH)

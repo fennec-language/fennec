@@ -1,0 +1,7 @@
+error: `KEYWORDS` is a constant, so it can't change
+ --> examples/errors/constant_changes.fen:4:5
+  |
+4 |     KEYWORDS.add("while")
+  |     ^^^^^^^^
+  |
+  = help: make a changeable copy with a new name, like `mut copy = KEYWORDS`

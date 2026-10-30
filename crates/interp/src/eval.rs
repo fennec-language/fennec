@@ -20,7 +20,7 @@ impl Interp<'_> {
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
             ExprKind::None => Ok(Value::None),
             ExprKind::FStr(parts) => self.fstring(parts),
-            ExprKind::Name(name) => self.lookup(name, span),
+            ExprKind::Name(name) => self.name(name, span),
             ExprKind::Variant(name) => self.construct_variant(None, name, Vec::new(), span),
             ExprKind::List(items) => Ok(Value::list(self.eval_all(items)?)),
             ExprKind::Tuple(items) => Ok(Value::tuple(self.eval_all(items)?)),

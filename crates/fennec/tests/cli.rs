@@ -670,3 +670,23 @@ fn an_idle_daemon_exits_by_itself() {
     assert!(stops(&kit, &home), "the daemon didn't exit after a second with nothing to do");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
+
+#[test]
+fn dev_fallbacks_says_when_everything_is_native() {
+    let output = fennec(&["dev", "fallbacks", "bench/kernels/fib.fen"], "").unwrap();
+    assert!(output.status.success());
+    assert_eq!(text(&output.stdout), "everything compiles to native code\n");
+}
+
+#[test]
+fn dev_fallbacks_lists_what_isnt_native_hot_loops_first() {
+    let output = fennec(&["dev", "fallbacks", "bench/kernels/dicts.fen"], "").unwrap();
+    assert!(output.status.success());
+    let printed = text(&output.stdout);
+    let first = printed.lines().next().unwrap();
+    assert!(first.starts_with("bench/kernels/dicts.fen:7:"), "{printed}");
+    assert!(first.contains("in `main` (in a loop)"), "{printed}");
+    assert!(printed.contains("the interpreter calls the method `get`"), "{printed}");
+    assert!(printed.contains("    counts[key] = counts.get(key, 0) + 1\n"), "{printed}");
+    assert!(printed.ends_with("places aren't native\n"), "{printed}");
+}

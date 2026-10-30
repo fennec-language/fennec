@@ -417,6 +417,7 @@ impl Lowerer<'_, '_> {
     /// the loop counts through them.
     fn for_items(&mut self, names: &[String], iter: &Expr, body: &[Stmt]) -> Result<(), Diagnostic> {
         let (value, ty) = self.expr(iter)?;
+        self.note(iter.span, "the runtime lists the items a `for` loop goes over");
         let source = self.handle_of(value, ty, iter.span)?;
         let [start, end] = self.span_args(iter.span);
         let items = self.help(Helper::Items, &[source, start, end])?;

@@ -5,6 +5,7 @@
 mod aot;
 mod changes;
 mod daemon;
+mod fallbacks;
 mod fmt;
 mod repl;
 mod run;
@@ -49,6 +50,8 @@ fn main() -> ExitCode {
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["dev", "check", path] => dev(check_dump, path),
         ["daemon", action] => daemon::command(action),
+        ["dev", "fallbacks"] => on_big_stack(fallbacks::fallbacks, "."),
+        ["dev", "fallbacks", path] => on_big_stack(fallbacks::fallbacks, path),
         ["dev", "changes"] => changes::changes("."),
         ["dev", "changes", path] => changes::changes(path),
         ["--version" | "-V"] => {

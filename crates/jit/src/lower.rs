@@ -20,6 +20,7 @@ mod inline;
 mod lists;
 mod matching;
 mod module;
+pub(crate) mod notes;
 pub(crate) mod object;
 mod objects;
 mod stmt;
@@ -67,6 +68,10 @@ pub(crate) struct Compilation {
     pub(crate) with_frames: usize,
     /// How many operations the program's functions hand to the interpreter one at a time.
     pub(crate) handed_over: usize,
+    /// Why each function in `interpreted` couldn't be compiled.
+    pub(crate) reasons: Vec<Diagnostic>,
+    /// Where compiled code isn't native.
+    pub(crate) notes: Vec<notes::Note>,
 }
 
 /// What every function being compiled shares.
@@ -85,6 +90,8 @@ pub(super) struct Shared {
     stack_limit: i64,
     /// The imported standard library modules, like `math`.
     modules: HashSet<String>,
+    /// Where compiled code isn't native.
+    notes: Vec<notes::Note>,
 }
 
 fn internal(err: impl std::fmt::Debug, span: Span) -> Diagnostic {
@@ -103,7 +110,7 @@ pub(crate) fn compile(
     stack_limit: usize,
 ) -> Result<(Entry, Tables, Compilation), Diagnostic> {
     let stack_limit = i64::try_from(stack_limit).unwrap_or(i64::MAX);
-    let ((entry, shared), interpreted) = retrying(|skipped| {
+    let ((entry, shared), skipped) = retrying(|skipped| {
         let span = program.main_span;
         let fatal = |diagnostic| ("main".to_owned(), diagnostic);
         let mut module = new_module(span).map_err(fatal)?;
@@ -117,28 +124,36 @@ pub(crate) fn compile(
         let code = module.get_finalized_function(entry);
         Ok((Entry { code, _module: module }, shared))
     })?;
-    let compilation =
-        Compilation { interpreted, with_frames: shared.with_frames, handed_over: shared.handed_over };
+    let (interpreted, reasons) = skipped.into_iter().unzip();
+    let compilation = Compilation {
+        interpreted,
+        reasons,
+        with_frames: shared.with_frames,
+        handed_over: shared.handed_over,
+        notes: shared.notes,
+    };
     Ok((entry, shared.tables, compilation))
 }
 
 /// Tries compiling until it works, each time leaving out the function that failed last,
-/// which then runs in the interpreter. Gives back the result and the functions left out.
+/// which then runs in the interpreter. Gives back the result, and the functions left out
+/// with why each was, by name.
 pub(super) fn retrying<T>(
     mut attempt: impl FnMut(&HashSet<String>) -> Result<T, Failure>,
-) -> Result<(T, Vec<String>), Diagnostic> {
+) -> Result<(T, Vec<Failure>), Diagnostic> {
     let mut skipped = HashSet::new();
+    let mut reasons = Vec::new();
     loop {
         match attempt(&skipped) {
             Ok(done) => {
-                let mut interpreted: Vec<String> = skipped.into_iter().collect();
-                interpreted.sort();
-                return Ok((done, interpreted));
+                reasons.sort_by(|(a, _): &Failure, (b, _): &Failure| a.cmp(b));
+                return Ok((done, reasons));
             }
             Err((name, diagnostic)) => {
-                if name == "main" || !skipped.insert(name) {
+                if name == "main" || !skipped.insert(name.clone()) {
                     return Err(diagnostic);
                 }
+                reasons.push((name, diagnostic));
             }
         }
     }
@@ -163,6 +178,7 @@ impl Shared {
             handed_over: 0,
             stack_limit,
             modules: program.modules.clone(),
+            notes: Vec::new(),
         }
     }
 }
@@ -238,6 +254,7 @@ fn lower_function(cx: &mut Cx<'_>, function: &Function<'_>) -> Result<(), Diagno
         tables.stmts.len(),
         tables.patterns.len(),
     ];
+    let notes = cx.shared.notes.len();
     match lower_with(cx, function, false) {
         Err(diagnostic) if diagnostic.message == NEEDS_FRAME => {
             cx.ctx.clear();
@@ -256,6 +273,7 @@ fn lower_function(cx: &mut Cx<'_>, function: &Function<'_>) -> Result<(), Diagno
             tables.exprs.truncate(exprs);
             tables.stmts.truncate(stmts);
             tables.patterns.truncate(patterns);
+            shared.notes.truncate(notes);
             if !function.prelude {
                 cx.shared.with_frames += 1;
             }

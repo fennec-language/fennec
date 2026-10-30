@@ -31,7 +31,8 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup target add ${{ matrix.target }}
-      - run: cargo build --release --locked -p fennec --target ${{ matrix.target }}
+      # `fennec build` links executables against the runtime library, shipped next to `fennec`.
+      - run: cargo build --release --locked -p fennec -p fennec-runtime --target ${{ matrix.target }}
       - name: Package
         shell: bash
         env:
@@ -45,7 +46,7 @@ jobs:
             7z a "$name.zip" "$name" > /dev/null
             echo "ARCHIVE=$name.zip" >> "$GITHUB_ENV"
           else
-            cp "target/${TARGET}/release/fennec" "$name/"
+            cp "target/${TARGET}/release/fennec" "target/${TARGET}/release/libfennec_runtime.a" "$name/"
             tar czf "$name.tar.gz" "$name"
             echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
           fi

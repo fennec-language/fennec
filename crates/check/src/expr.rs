@@ -170,6 +170,9 @@ impl FnCx<'_> {
         if self.checker.program.functions.contains_key(name) {
             return Type::Function(name.to_owned());
         }
+        if let Some(ty) = self.checker.constant_type(name) {
+            return ty;
+        }
         if name == "PI" {
             return Type::Float;
         }

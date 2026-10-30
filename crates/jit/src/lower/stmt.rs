@@ -2,6 +2,7 @@
 //! Assigning into a field or item, and the statements the JIT doesn't compile yet, run in
 //! the interpreter as one step.
 
+use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use fennec_syntax::{Arg, BinOp, Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind};
@@ -131,16 +132,29 @@ impl Lowerer<'_, '_> {
     ) -> Result<(), Diagnostic> {
         match &target.kind {
             ExprKind::Name(name) => match self.local(name) {
+                Some(local @ super::Local { ty: Ty::Str, var: Some(var), .. })
+                    if op == Some(BinOp::Add)
+                        && !declare_mut
+                        && !self.borrowed_names.contains(&var.index()) =>
+                {
+                    self.append(name, local, target, value)
+                }
                 Some(local) if !declare_mut => {
                     let (new, new_ty) = self.assigned(target, op, value)?;
                     self.set_local(name, local, new, new_ty, target.span)
                 }
                 _ => {
-                    let (new, new_ty) = self.expr(value)?;
+                    let (new, new_ty) = match self.literal_for(name, value)? {
+                        Some(made) => made,
+                        None => self.expr(value)?,
+                    };
                     self.declare(name, new, new_ty, declare_mut, value)
                 }
             },
             ExprKind::Tuple(names) => self.unpack(names, value, target.span),
+            ExprKind::Index { object, index } if let Some((var, (key, item))) = self.dict_target(object) => {
+                self.assign_dict((var, key, item), target, index, op, value)
+            }
             ExprKind::Index { object, index } if let Some((name, item)) = self.packed(object) => {
                 let span = target.span.to(value.span);
                 let new = self.assigned(target, op, value)?;
@@ -168,6 +182,29 @@ impl Lowerer<'_, '_> {
         }
     }
 
+    /// `name += value` for a string the name owns, appended in place when the block has
+    /// room, so building a string a piece at a time isn't quadratic.
+    fn append(
+        &mut self,
+        name: &str,
+        local: super::Local,
+        target: &Expr,
+        value: &Expr,
+    ) -> Result<(), Diagnostic> {
+        let span = target.span.to(value.span);
+        let more = self.expr(value)?;
+        let (Some(more), Ty::Str, Some(var)) = (more.0, more.1, local.var) else {
+            let text = self.expr(target)?;
+            let (new, new_ty) = self.operate(BinOp::Add, text, more, span)?;
+            return self.set_local(name, local, new, new_ty, span);
+        };
+        // The helper takes over the name's owner, so the old value isn't released here.
+        let text = self.b.use_var(var);
+        let joined = self.append_text(text, more)?;
+        self.b.def_var(var, joined);
+        self.consume(Some(more), Ty::Str)
+    }
+
     /// The value an assignment stores: `value`, or `target op value` for `+=` and the like.
     pub(super) fn assigned(
         &mut self,
@@ -175,6 +212,11 @@ impl Lowerer<'_, '_> {
         op: Option<BinOp>,
         value: &Expr,
     ) -> Result<super::expr::Lowered, Diagnostic> {
+        if let (None, ExprKind::Name(name)) = (op, &target.kind)
+            && let Some(made) = self.literal_for(name, value)?
+        {
+            return Ok(made);
+        }
         let Some(op) = op else { return self.expr(value) };
         let combined = Expr {
             kind: ExprKind::Binary { op, lhs: Box::new(target.clone()), rhs: Box::new(value.clone()) },
@@ -194,7 +236,7 @@ impl Lowerer<'_, '_> {
     ) -> Result<(), Diagnostic> {
         // An object the checker knows is a plain struct is kept natively from here on.
         let (value, ty) = match (ty, self.checked_ty(name)) {
-            (Ty::Obj, Some(to @ (Ty::Struct(_) | Ty::Boxed(_) | Ty::Str))) => {
+            (Ty::Obj, Some(to @ (Ty::Struct(_) | Ty::Boxed(_) | Ty::Str | Ty::Dict(..)))) => {
                 (Some(self.convert(value, ty, to, source.span)?), to)
             }
             _ => (value, ty),
@@ -420,7 +462,16 @@ impl Lowerer<'_, '_> {
     /// `for item in items`: the runtime lists the items, which a hidden name holds while
     /// the loop counts through them.
     fn for_items(&mut self, names: &[String], iter: &Expr, body: &[Stmt]) -> Result<(), Diagnostic> {
+        if let Some((object, walk)) = self.dict_walk(iter, names) {
+            let (dict, ty) = self.expr(object)?;
+            if let (Some(dict), Ty::Dict(key, value)) = (dict, ty) {
+                return self.for_dict(names, (dict, key, value), walk, iter.span, body);
+            }
+        }
         let (value, ty) = self.expr(iter)?;
+        if let (Some(text), Ty::Str, [name]) = (value, ty, names) {
+            return self.for_text(name, text, iter.span, body);
+        }
         self.note(iter.span, "the runtime lists the items a `for` loop goes over");
         let source = self.handle_of(value, ty, iter.span)?;
         let [start, end] = self.span_args(iter.span);

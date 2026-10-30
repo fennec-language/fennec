@@ -1,0 +1,52 @@
+## Building strings a piece at a time, and walking their characters.
+
+def shout(word: str) -> str:
+    mut loud = word
+    loud += "!"
+    return loud
+
+def find(text: str, want: str) -> int:
+    mut at = 0
+    for c in text:
+        if c == want: return at
+        at += 1
+    return -1
+
+def main(stdout: Stdout):
+    mut text = "ab"
+    text += text
+    text += text
+    stdout.print(text, len(text))
+
+    # A copy keeps its value when the original grows.
+    kept = text
+    text += "é"
+    stdout.print(kept, text, len(text))
+    stdout.print(shout("hi"), shout(kept))
+    mut long = "<"
+    for i in range(3):
+        long += kept + kept + kept + kept + kept
+    stdout.print(long, len(long))
+
+    mut big = ""
+    for i in range(100_000):
+        big += "x" if i % 2 == 0 else "y"
+    stdout.print(len(big), big[4:9], big[-1])
+
+    # The loop goes over the text as it was when the loop started.
+    mut fox = "wörld 🦊!"
+    mut count = 0
+    for c in fox:
+        fox += c
+        count += 1
+    stdout.print(fox, count, len(fox))
+
+    mut dotted = ""
+    for c in "a🦊bc":
+        if c == "b": continue
+        if c == "c": break
+        dotted += c + "."
+    stdout.print(dotted)
+    for c in "":
+        stdout.print("never")
+    stdout.print(find("fennec", "c"), find("ü🦊x", "x"), find("ab", "z"))

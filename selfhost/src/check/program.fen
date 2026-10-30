@@ -86,6 +86,7 @@ struct Program:
                 case .Enum(type_def): self.add_type(type_def, .EnumKind, prelude)
                 case .Error(type_def): self.add_type(type_def, .ErrorKind, prelude)
                 case .TypeAlias(name, ty, _): self.aliases[name] = ty
+                case .Const(_, _, _, _): pass
                 case .Test(test): self.tests.append(test)
                 case .Interface(interface): self.interfaces[interface.name] = interface
                 case .Import(imported):
@@ -120,7 +121,7 @@ struct Program:
         elif name in built_in_types() and not prelude:
             self.problems.append(not_own(name, "is built in", extension))
             return
-        elif name in ["str", "bytes", "int", "float", "bool"]:
+        elif name == "str":
             # The standard library gives built-in types methods, like `str`'s `def *`.
             pass
         elif self.is_interface(name):

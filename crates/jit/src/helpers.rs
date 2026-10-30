@@ -2,7 +2,7 @@
 //! where they are. Each takes and returns only plain numbers.
 
 use cranelift_codegen::ir::types::{F64, I8, I64, Type};
-use fennec_interp::embed::{checks, eval, heap, io, lists, names, objects, strings, temps};
+use fennec_interp::embed::{checks, dicts, eval, heap, io, lists, names, objects, strings, temps};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Helper {
@@ -81,6 +81,11 @@ pub(crate) enum Helper {
     BoxEqual,
     StrFromValue,
     StrConcat,
+    StrAppend,
+    StrCharAt,
+    DictNew,
+    DictSet,
+    DictMissing,
     StrIndex,
     StrSlice,
     StrCompare,
@@ -95,7 +100,7 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 87] = [
+pub(crate) const ALL: [Helper; 92] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -171,6 +176,11 @@ pub(crate) const ALL: [Helper; 87] = [
     Helper::BoxEqual,
     Helper::StrFromValue,
     Helper::StrConcat,
+    Helper::StrAppend,
+    Helper::StrCharAt,
+    Helper::DictNew,
+    Helper::DictSet,
+    Helper::DictMissing,
     Helper::StrIndex,
     Helper::StrSlice,
     Helper::StrCompare,
@@ -289,6 +299,11 @@ impl Helper {
                 | Helper::Unshare
                 | Helper::BoxEqual
                 | Helper::StrConcat
+                | Helper::StrAppend
+                | Helper::StrCharAt
+                | Helper::DictNew
+                | Helper::DictSet
+                | Helper::DictMissing
                 | Helper::StrIndex
                 | Helper::StrSlice
                 | Helper::StrCompare
@@ -323,6 +338,10 @@ impl Helper {
                     | Helper::BoxFromValue
                     | Helper::StrFromValue
                     | Helper::StrConcat
+                    | Helper::StrAppend
+                    | Helper::StrCharAt
+                    | Helper::DictNew
+                    | Helper::DictSet
                     | Helper::StrIndex
                     | Helper::StrSlice
                     | Helper::StrCompare
@@ -350,6 +369,7 @@ impl Helper {
                 | Helper::StrIndex
                 | Helper::StrSlice
                 | Helper::StrPrint
+                | Helper::DictMissing
                 | Helper::Address
                 | Helper::Length
                 | Helper::Push
@@ -464,6 +484,11 @@ impl Helper {
             Helper::BoxEqual => shape("fennec_box_equal", &[I64, I64], &[I8]),
             Helper::StrFromValue => shape("fennec_str_from_value", &[I64, I64, I64], &[I64]),
             Helper::StrConcat => shape("fennec_str_concat", &[I64, I64], &[I64]),
+            Helper::StrAppend => shape("fennec_str_append", &[I64, I64], &[I64]),
+            Helper::StrCharAt => shape("fennec_str_char_at", &[I64, I64], &[I64]),
+            Helper::DictNew => shape("fennec_dict_new", &[I64, I64], &[I64]),
+            Helper::DictSet => shape("fennec_dict_set", &[I64, I64, I64], &[I64]),
+            Helper::DictMissing => shape("fennec_dict_missing", &[I64, I64, I8, I64, I64], &[]),
             Helper::StrIndex => shape("fennec_str_index", &[I64, I64, I64, I64], &[I64]),
             Helper::StrSlice => shape("fennec_str_slice", &[I64, I64, I64, I64, I64], &[I64]),
             Helper::StrCompare => shape("fennec_str_compare", &[I64, I64], &[I64]),
@@ -486,6 +511,11 @@ impl Helper {
             Helper::BoxEqual => heap::equal as *const u8,
             Helper::StrFromValue => strings::from_value as *const u8,
             Helper::StrConcat => strings::concat as *const u8,
+            Helper::StrAppend => strings::append as *const u8,
+            Helper::StrCharAt => strings::char_at as *const u8,
+            Helper::DictNew => dicts::new as *const u8,
+            Helper::DictSet => dicts::set as *const u8,
+            Helper::DictMissing => dicts::missing as *const u8,
             Helper::StrIndex => strings::index as *const u8,
             Helper::StrSlice => strings::slice as *const u8,
             Helper::StrCompare => strings::compare as *const u8,

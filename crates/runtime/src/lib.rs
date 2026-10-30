@@ -10,7 +10,7 @@
     reason = "exporting the runtime's functions under fixed names, for linked executables"
 )]
 
-use fennec_interp::embed::{aot, checks, eval, heap, io, lists, names, objects, strings, temps};
+use fennec_interp::embed::{aot, checks, dicts, eval, heap, io, lists, names, objects, strings, temps};
 
 /// Exports each function under a symbol: `symbol(params) -> result => function(args);`.
 macro_rules! export {
@@ -109,6 +109,11 @@ export! {
     fennec_box_equal(a0: i64, a1: i64) -> i8 => heap::equal(a0, a1);
     fennec_str_from_value(a0: i64, a1: i64, a2: i64) -> i64 => strings::from_value(a0, a1, a2);
     fennec_str_concat(a0: i64, a1: i64) -> i64 => strings::concat(a0, a1);
+    fennec_str_append(a0: i64, a1: i64) -> i64 => strings::append(a0, a1);
+    fennec_str_char_at(a0: i64, a1: i64) -> i64 => strings::char_at(a0, a1);
+    fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);
+    fennec_dict_set(a0: i64, a1: i64, a2: i64) -> i64 => dicts::set(a0, a1, a2);
+    fennec_dict_missing(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) => dicts::missing(a0, a1, a2, a3, a4);
     fennec_str_index(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::index(a0, a1, a2, a3);
     fennec_str_slice(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => strings::slice(a0, a1, a2, a3, a4);
     fennec_str_compare(a0: i64, a1: i64) -> i64 => strings::compare(a0, a1);

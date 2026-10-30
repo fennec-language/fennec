@@ -72,6 +72,7 @@ pub fn definitions(module: &Module) -> Vec<(String, Hash)> {
                 }
             }
             Item::TypeAlias { name, .. } => found.push((format!("type {name}"), tree_hash(item))),
+            Item::Const { name, .. } => found.push((format!("const {name}"), tree_hash(item))),
             Item::Import(import) => {
                 let module = import.module.join(".");
                 let key = if import.names.is_empty() {

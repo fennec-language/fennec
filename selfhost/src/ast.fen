@@ -15,6 +15,8 @@ enum Item:
     ## `extend Parser:`: methods for a type declared elsewhere in the kit.
     Extend(extension: Extension)
     TypeAlias(name: str, ty: TypeExpr, span: Span)
+    ## `NAME = value` at the top level of a file: a name that never changes.
+    Const(name: str, ty: TypeExpr?, value: Expr, span: Span)
     Import(imported: Import)
     Test(test: TestDef)
 

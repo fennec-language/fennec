@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 
 use fennec_check::Signatures;
+pub(crate) use fennec_interp::embed::dicts::Word;
 use fennec_syntax::{Diagnostic, FnDef, Imported, Item, Module, Span, StmtKind};
 
 use crate::layout::Layouts;
@@ -29,12 +30,15 @@ pub(crate) enum Ty {
     Boxed(u32),
     /// A string: the address of a block the runtime owns, shared by every copy.
     Str,
+    /// A dict with these keys and values: the address of a block the runtime owns, shared
+    /// by every copy until one changes it.
+    Dict(Word, Word),
 }
 
 impl Ty {
     /// Whether values of this kind are addresses of blocks with an owner count.
     pub(crate) fn counted(self) -> bool {
-        matches!(self, Ty::Boxed(_) | Ty::Str)
+        matches!(self, Ty::Boxed(_) | Ty::Str | Ty::Dict(..))
     }
 
     pub(crate) fn name(self) -> &'static str {
@@ -48,6 +52,7 @@ impl Ty {
             Ty::Struct(_) => "struct",
             Ty::Boxed(_) => "boxed value",
             Ty::Str => "str",
+            Ty::Dict(..) => "dict",
         }
     }
 }

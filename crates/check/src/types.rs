@@ -166,32 +166,19 @@ impl Type {
     }
 
     /// The name of the struct, enum, error or capability this is a value of.
-    /// The name a type's methods are kept under: a struct's or enum's own name, or a
-    /// built-in type's, like `str`, for the methods the standard library gives it.
+    /// The name a type's methods are kept under: a struct's or enum's own name, or `str`'s,
+    /// for the methods the standard library gives it. More built-in types join as the
+    /// standard library gives them methods.
     pub(crate) fn method_owner(&self) -> Option<&str> {
         match self {
             Type::Str => Some("str"),
-            Type::Bytes => Some("bytes"),
-            Type::Int => Some("int"),
-            Type::Float => Some("float"),
-            Type::Bool => Some("bool"),
-            Type::List(_) => Some("list"),
-            Type::Set(_) => Some("set"),
-            Type::Dict(..) => Some("dict"),
             other => other.type_name(),
         }
     }
 
     /// The built-in type `self` is in a method the standard library gives it, like `str`.
     pub(crate) fn built_in(name: &str) -> Option<Type> {
-        Some(match name {
-            "str" => Type::Str,
-            "bytes" => Type::Bytes,
-            "int" => Type::Int,
-            "float" => Type::Float,
-            "bool" => Type::Bool,
-            _ => return None,
-        })
+        (name == "str").then_some(Type::Str)
     }
 
     pub(crate) fn type_name(&self) -> Option<&str> {

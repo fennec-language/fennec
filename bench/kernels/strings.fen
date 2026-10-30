@@ -2,7 +2,7 @@
 
 def main(stdout: Stdout):
     mut text = ""
-    for i in range(20_000):
+    for i in range(2_000_000):
         text += "fennec " if i % 3 == 0 else "fox "
     mut spaces = 0
     for c in text:

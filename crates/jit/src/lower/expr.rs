@@ -31,7 +31,9 @@ impl Lowerer<'_, '_> {
                     let place = self.local_place(local).ok_or_else(|| unsupported("this struct", span))?;
                     Ok((Some(self.read_place(&place)), local.ty))
                 }
-                Some(local @ super::Local { ty: Ty::Boxed(_) | Ty::Str, var: Some(var), .. }) => {
+                Some(
+                    local @ super::Local { ty: Ty::Boxed(_) | Ty::Str | Ty::Dict(..), var: Some(var), .. },
+                ) => {
                     let value = self.b.use_var(var);
                     Ok((Some(self.borrow(value)), local.ty))
                 }
@@ -51,19 +53,7 @@ impl Lowerer<'_, '_> {
             ExprKind::Binary { op, lhs, rhs } => {
                 let left = self.expr(lhs)?;
                 let right = self.expr(rhs)?;
-                if let Some(result) = self.binary(*op, left, right, span) {
-                    return Ok(result);
-                }
-                if (*op, left.1, right.1) == (BinOp::Add, Ty::Str, Ty::Str) {
-                    self.note(span, "the runtime copies both strings to join them");
-                }
-                if let Some(result) = self.string_binary(*op, left, right)? {
-                    return Ok(result);
-                }
-                match self.struct_equality(*op, left, right)? {
-                    Some(result) => Ok(result),
-                    None => self.object_binary(*op, left, right, span),
-                }
+                self.operate(*op, left, right, span)
             }
             ExprKind::Variant(_) => match self.named_case(expr) {
                 Some((id, at)) => match self.make_case(id, at, &[], span)? {
@@ -125,6 +115,7 @@ impl Lowerer<'_, '_> {
                 let [start, end] = self.span_args(span);
                 return self.help(Helper::StrFromValue, &[handle, start, end]);
             }
+            Ty::Dict(key, value) => return self.handle_to_dict(handle, key, value, span),
             Ty::Unit | Ty::Cap(_) => {
                 return Err(unsupported(&format!("using a value as {}", to.name()), span));
             }
@@ -154,7 +145,7 @@ impl Lowerer<'_, '_> {
                 let address = value.ok_or_else(|| unsupported("this value", span))?;
                 return self.box_to_handle(address, id);
             }
-            Ty::Str => {
+            Ty::Str | Ty::Dict(..) => {
                 let address = value.ok_or_else(|| unsupported("this value", span))?;
                 return self.box_to_handle(address, 0);
             }
@@ -217,6 +208,32 @@ impl Lowerer<'_, '_> {
         let (value, ty) = self.expr(otherwise)?;
         arms.extend(self.arm_end(value, ty)?);
         self.join(arms, then.span.to(otherwise.span))
+    }
+
+    /// An operator on two lowered values, natively when it can be.
+    pub(super) fn operate(
+        &mut self,
+        op: BinOp,
+        left: Lowered,
+        right: Lowered,
+        span: Span,
+    ) -> Result<Lowered, Diagnostic> {
+        if let Some(result) = self.binary(op, left, right, span) {
+            return Ok(result);
+        }
+        if (op, left.1, right.1) == (BinOp::Add, Ty::Str, Ty::Str) {
+            self.note(span, "the runtime copies both strings to join them");
+        }
+        if let Some(result) = self.string_binary(op, left, right)? {
+            return Ok(result);
+        }
+        if let Some(result) = self.dict_binary(op, left, right, span)? {
+            return Ok(result);
+        }
+        match self.struct_equality(op, left, right)? {
+            Some(result) => Ok(result),
+            None => self.object_binary(op, left, right, span),
+        }
     }
 
     /// An operator on machine values, or `None` when it needs the interpreter.

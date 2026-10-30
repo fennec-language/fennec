@@ -41,15 +41,6 @@ code does instead, and links the issue where it's being decided or fixed.
 
 ## Enums
 
-- **A leading-dot case ignores the type it's going into.** `.Int(value)` is an error whenever
-  two enums have a case called `Int`, even as an argument to a parameter typed `ExprKind`, a
-  field typed `ExprKind`, or the result of a function that returns `ExprKind`. The token and
-  syntax-tree enums share `Int`, `Float`, `Str`, `FStr`, `Name`, `Text`, `Code`, `List`,
-  `Set`, `Dict`, `Tuple` and `Variant`, so those are written `ExprKind.Int(value)`,
-  `Tok.Name(word)` and so on. Patterns don't have this problem: `case .Int(value):` works.
-  The search covers the whole kit, not just what a file imports: `lexer.fen` never sees the
-  syntax tree, but adding `ast.fen` to the kit made its `.Name(word)` ambiguous. Adding the
-  checker's `Type` enum did the same to the parser's `.Function(...)` and `.Bool(...)`. (#62)
 - **A case can't be called `None`**, so the `None` literal in the syntax tree is
   `ExprKind.Nothing`.
 - **Keywords can't be field names**, so a case holding a function is `Function(function)`,

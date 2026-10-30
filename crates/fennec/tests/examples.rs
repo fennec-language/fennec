@@ -57,8 +57,9 @@ fn programs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 
 /// Runs a program the way `fennec run` does: its output, or its rendered errors.
 fn run(source: &str, shown_as: &str) -> Result<String, String> {
-    let module = fennec_syntax::parse(source).map_err(|diagnostic| diagnostic.render(shown_as, source))?;
-    fennec_check::check(&module).map_err(|diagnostics| {
+    let mut module =
+        fennec_syntax::parse(source).map_err(|diagnostic| diagnostic.render(shown_as, source))?;
+    fennec_check::check_and_resolve(&mut module).map_err(|diagnostics| {
         let rendered: Vec<String> =
             diagnostics.iter().map(|diagnostic| diagnostic.render(shown_as, source)).collect();
         rendered.join("\n")

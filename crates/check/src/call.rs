@@ -134,12 +134,18 @@ impl FnCx<'_> {
 
     /// An argument's type. An arrow function gets its parameters' types from `params`.
     pub(crate) fn arg_value(&mut self, arg: &Arg, params: &[Type]) -> Type {
+        self.arg_as(arg, params, None)
+    }
+
+    /// An argument's type, where a value of type `expected` goes, if that's known.
+    fn arg_as(&mut self, arg: &Arg, params: &[Type], expected: Option<&Type>) -> Type {
         if arg.is_mut {
             self.mut_place(&arg.value, MUT_ARG);
         }
-        match &arg.value.kind {
-            ExprKind::Lambda { params: names, body } => self.lambda(names, body, params, arg.value.span),
-            _ => self.expr(&arg.value),
+        match (&arg.value.kind, expected) {
+            (ExprKind::Lambda { params: names, body }, _) => self.lambda(names, body, params, arg.value.span),
+            (_, Some(expected)) => self.expr_as(&arg.value, expected),
+            (_, None) => self.expr(&arg.value),
         }
     }
 
@@ -192,7 +198,7 @@ impl FnCx<'_> {
                 Some(Type::Arrow(receives, _)) => receives,
                 _ => Vec::new(),
             };
-            let ty = self.arg_value(arg, &receives);
+            let ty = self.arg_as(arg, &receives, found.map(|(_, param)| &param.ty));
             let Some((at, param)) = found else {
                 let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();
                 self.error(unmatched(function, ("parameter", "argument"), &names, arg));
@@ -557,15 +563,18 @@ impl FnCx<'_> {
         let mut given = vec![false; fields.len()];
         let mut unmatched_args = false;
         for (position, arg) in args.iter().enumerate() {
-            let ty = self.arg_value(arg, &[]);
-            if arg.is_mut {
-                let message = "building a value doesn't change its arguments, so don't pass `mut`";
-                self.error(Diagnostic::new(message, arg.value.span));
-            }
             let at = match &arg.name {
                 Some(name) => fields.iter().position(|field| &field.name == name),
                 None => Some(position),
             };
+            let expected = at
+                .and_then(|at| fields.get(at))
+                .map(|field| self.checker.field_type(type_name, case, &field.name).substitute(&target.given));
+            let ty = self.arg_as(arg, &[], expected.as_ref());
+            if arg.is_mut {
+                let message = "building a value doesn't change its arguments, so don't pass `mut`";
+                self.error(Diagnostic::new(message, arg.value.span));
+            }
             let Some((field, slot)) = at.and_then(|at| fields.get(at).zip(given.get_mut(at))) else {
                 let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
                 self.error(unmatched(&display, ("field", "value"), &names, arg));
@@ -576,7 +585,7 @@ impl FnCx<'_> {
                 self.error(Diagnostic::new("this field is given twice", arg.value.span));
             }
             *slot = true;
-            let expected = self.checker.field_type(type_name, case, &field.name).substitute(&target.given);
+            let expected = expected.unwrap_or(Type::Unknown);
             if !self.checker.fits(&expected, &ty) {
                 let expected = self.checker.settled(&expected);
                 self.error(mismatch(&format!("`{}`", field.name), &expected, &ty, arg.value.span));

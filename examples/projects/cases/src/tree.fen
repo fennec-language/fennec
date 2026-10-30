@@ -1,0 +1,32 @@
+## What the words mean. A leading-dot case takes its enum from the type expected where
+## it's written, here the return type and a field.
+
+from tokens import Tok
+
+enum ExprKind:
+    Int(value: int)
+    Name(text: str)
+    Negative(inner: Expr)
+
+struct Expr:
+    kind: ExprKind
+
+def literal(tok: Tok) -> ExprKind:
+    match tok:
+        case .Int(value):
+            .Int(value)
+        case .Name(text):
+            .Name(text)
+
+def show(expr: Expr) -> str:
+    match expr.kind:
+        case .Int(value):
+            str(value)
+        case .Name(text):
+            text
+        case .Negative(inner):
+            "-" + show(inner)
+
+test "the return type picks the enum":
+    assert literal(Tok.Int(2)) == ExprKind.Int(2)
+    assert show(Expr(.Negative(Expr(.Name("x"))))) == "-x"

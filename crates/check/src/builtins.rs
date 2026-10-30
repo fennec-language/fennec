@@ -188,6 +188,7 @@ fn named_method(type_name: &str, name: &str) -> Option<Method> {
     Some(match (type_name, name) {
         ("Stdout", "print" | "write") => reads(&[], Type::Unit).any_args(),
         ("Clock", "now") => reads(&[], Type::named("Instant")),
+        ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
         ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),
         _ => return stdlib::method(type_name, name),
     })
@@ -322,8 +323,11 @@ impl FnCx<'_> {
             "len" => {
                 let has_len =
                     first.type_name().is_some_and(|name| self.checker.program.method(name, "len").is_some());
-                let sized =
-                    first.is_collection() || has_len || matches!(first, Type::Tuple(_) | Type::IdMap(_));
+                let args = first == Type::named("Args");
+                let sized = first.is_collection()
+                    || has_len
+                    || args
+                    || matches!(first, Type::Tuple(_) | Type::IdMap(_));
                 if !sized && first.is_known() {
                     self.error(Diagnostic::new(format!("{} has no length", article(&first.kind())), span));
                 }

@@ -176,8 +176,8 @@ impl Lowerer<'_, '_> {
         }
     }
 
-    /// `name += value` for a string the name owns. The runtime appends in place when the
-    /// block has room, so building a string a piece at a time isn't quadratic.
+    /// `name += value` for a string the name owns, appended in place when the block has
+    /// room, so building a string a piece at a time isn't quadratic.
     fn append(
         &mut self,
         name: &str,
@@ -194,7 +194,7 @@ impl Lowerer<'_, '_> {
         };
         // The helper takes over the name's owner, so the old value isn't released here.
         let text = self.b.use_var(var);
-        let joined = self.help(Helper::StrAppend, &[text, more])?;
+        let joined = self.append_text(text, more)?;
         self.b.def_var(var, joined);
         self.consume(Some(more), Ty::Str)
     }

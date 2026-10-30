@@ -1,6 +1,6 @@
 //! Strings natively. A string is the address of a block the runtime owns: its owner count,
-//! shape, length in bytes and in characters, then its UTF-8 bytes, zero-padded to a whole
-//! word and never shorter than one. Native code reads lengths, indexes ASCII strings
+//! shape, length in bytes and in characters, how many bytes it has room for, then its UTF-8
+//! bytes, zero-padded to a whole word and never shorter than one. Native code reads lengths, indexes ASCII strings
 //! through a table of one-character strings, and compares against short literals word by
 //! word. Making new strings, and anything that walks UTF-8, goes to the runtime.
 
@@ -14,10 +14,14 @@ use super::{Lowerer, internal};
 use crate::helpers::Helper;
 use crate::types::Ty;
 
-/// Where a string's length in bytes, its length in characters and its bytes start.
+/// Where a string's length in bytes, its length in characters, its room and its bytes start.
 const BYTES: i32 = 16;
 const CHARS: i32 = 24;
-const TEXT: i32 = 32;
+const ROOM: i32 = 32;
+const TEXT: i32 = 40;
+
+/// The longest string `+=` copies natively. The runtime copies longer ones.
+const SHORT: i64 = 32;
 
 impl Lowerer<'_, '_> {
     /// A string literal: the address of a block that lives for the whole run.
@@ -45,15 +49,86 @@ impl Lowerer<'_, '_> {
         Ok(length)
     }
 
+    /// `text += more`, giving back the joined string, which takes over `text`'s owner.
+    /// When `text` has one owner and room, `more`'s bytes are copied onto its end natively,
+    /// a word at a time; otherwise the runtime grows it. A whole word's room is needed past
+    /// the end, since the last word copied may reach past the new text: the bytes it
+    /// brings are `more`'s zero padding.
+    pub(super) fn append_text(&mut self, text: Value, more: Value) -> Result<Value, Diagnostic> {
+        let [quick, copy, word, finish, slow, done] = [(); 6].map(|()| self.b.create_block());
+        self.b.set_cold_block(slow);
+        self.b.append_block_param(copy, types::I64);
+        self.b.append_block_param(done, types::I64);
+        let flags = MemFlagsData::trusted();
+        let count = self.b.ins().load(types::I64, flags, text, 0);
+        let length = self.b.ins().load(types::I64, flags, text, BYTES);
+        let extra = self.b.ins().load(types::I64, flags, more, BYTES);
+        let total = self.b.ins().iadd(length, extra);
+        let reach = self.b.ins().iadd_imm_s(total, 7);
+        let room = self.b.ins().load(types::I64, flags, text, ROOM);
+        let alone = self.b.ins().icmp_imm_s(IntCC::Equal, count, 1);
+        let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, reach, room);
+        let short = self.b.ins().icmp_imm_u(IntCC::UnsignedLessThanOrEqual, extra, SHORT);
+        // `text += text` goes to the runtime: copying words would overwrite bytes not yet read.
+        let apart = self.b.ins().icmp(IntCC::NotEqual, text, more);
+        let ready =
+            [fits, short, apart].into_iter().fold(alone, |ready, also| self.b.ins().band(ready, also));
+        self.b.ins().brif(ready, quick, &[], slow, &[]);
+        self.b.switch_to_block(quick);
+        let zero = self.int(0);
+        let end = self.b.ins().iadd(text, length);
+        self.b.ins().jump(copy, &[zero.into()]);
+        self.b.switch_to_block(copy);
+        let at = self
+            .b
+            .block_params(copy)
+            .first()
+            .copied()
+            .ok_or_else(|| internal("lost a string", Span::default()))?;
+        let more_left = self.b.ins().icmp(IntCC::UnsignedLessThan, at, extra);
+        self.b.ins().brif(more_left, word, &[], finish, &[]);
+        self.b.switch_to_block(word);
+        let from = self.b.ins().iadd(more, at);
+        let word = self.b.ins().load(types::I64, flags, from, TEXT);
+        let to = self.b.ins().iadd(end, at);
+        // The text's end needn't fall on a word.
+        let mut unaligned = MemFlagsData::new();
+        unaligned.set_notrap();
+        self.b.ins().store(unaligned, word, to, TEXT);
+        let next = self.b.ins().iadd_imm_s(at, 8);
+        self.b.ins().jump(copy, &[next.into()]);
+        self.b.switch_to_block(finish);
+        let chars = self.b.ins().load(types::I64, flags, text, CHARS);
+        let more_chars = self.b.ins().load(types::I64, flags, more, CHARS);
+        let all_chars = self.b.ins().iadd(chars, more_chars);
+        self.b.ins().store(flags, total, text, BYTES);
+        self.b.ins().store(flags, all_chars, text, CHARS);
+        self.b.ins().jump(done, &[text.into()]);
+        self.b.switch_to_block(slow);
+        let joined = self.help(Helper::StrAppend, &[text, more])?;
+        self.b.ins().jump(done, &[joined.into()]);
+        self.b.switch_to_block(done);
+        self.b.block_params(done).first().copied().ok_or_else(|| internal("lost a string", Span::default()))
+    }
+
     /// The one-character string for an ASCII byte, from the shared table. It lives for the
     /// whole run.
     fn ascii(&mut self, byte: Value) -> Value {
-        let table = if let Some(base) = self.slots_base {
+        let table = self.ascii_table();
+        self.ascii_in(table, byte)
+    }
+
+    /// Where the table of one-character strings is.
+    fn ascii_table(&mut self) -> Value {
+        if let Some(base) = self.slots_base {
             self.b.ins().load(types::I64, MemFlagsData::trusted(), base, 8)
         } else {
             let table = heap::ascii_table(&mut self.shared.tables);
             self.int(table)
-        };
+        }
+    }
+
+    fn ascii_in(&mut self, table: Value, byte: Value) -> Value {
         let offset = self.b.ins().imul_imm_s(byte, 8);
         let entry = self.b.ins().iadd(table, offset);
         self.b.ins().load(types::I64, MemFlagsData::trusted(), entry, 0)
@@ -74,6 +149,7 @@ impl Lowerer<'_, '_> {
         self.open_scope();
         self.bind_native(&format!("\0for{}", span.start), Ty::Str, Some(text), false);
         let length = self.b.ins().load(types::I64, MemFlagsData::trusted(), text, BYTES);
+        let table = self.ascii_table();
         let [at, step] = [(); 2].map(|()| self.b.declare_var(types::I64));
         let zero = self.int(0);
         self.b.def_var(at, zero);
@@ -95,7 +171,7 @@ impl Lowerer<'_, '_> {
         let quick = self.b.create_block();
         self.b.ins().brif(wider, wide, &[], quick, &[]);
         self.b.switch_to_block(quick);
-        let char = self.ascii(byte);
+        let char = self.ascii_in(table, byte);
         self.b.ins().jump(inside, &[char.into()]);
         self.b.switch_to_block(wide);
         // A UTF-8 lead byte says how many bytes its character takes.

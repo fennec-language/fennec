@@ -23,6 +23,10 @@ def main(stdout: Stdout):
     text += "é"
     stdout.print(kept, text, len(text))
     stdout.print(shout("hi"), shout(kept))
+    mut long = "<"
+    for i in range(3):
+        long += kept + kept + kept + kept + kept
+    stdout.print(long, len(long))
 
     mut big = ""
     for i in range(100_000):

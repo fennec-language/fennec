@@ -115,14 +115,8 @@ impl Heap {
         self.blocks.get(&usize::try_from(address).ok()?).map(AsRef::as_ref)
     }
 
-    fn block_mut(&mut self, address: u64) -> Option<&mut [u64]> {
+    pub(super) fn block_mut(&mut self, address: u64) -> Option<&mut [u64]> {
         self.blocks.get_mut(&usize::try_from(address).ok()?).map(AsMut::as_mut)
-    }
-
-    /// A string's block, to change in place: the text made from it before is dropped.
-    pub(super) fn text_mut(&mut self, address: u64) -> Option<&mut [u64]> {
-        self.texts.remove(&usize::try_from(address).ok()?);
-        self.block_mut(address)
     }
 }
 
@@ -136,15 +130,16 @@ pub(super) fn is_text(state: &State, block: &[u64]) -> bool {
     block.get(1) == Some(&state.tables.str_shape)
 }
 
-/// Words a string's block starts with: its owner count, shape, length in bytes and length
-/// in characters.
-pub const TEXT_HEADER_WORDS: usize = 4;
+/// Words a string's block starts with: its owner count, shape, length in bytes, length in
+/// characters, and how many bytes its block has room for.
+pub const TEXT_HEADER_WORDS: usize = 5;
 
 /// A string's block: owned `count` times, its bytes packed eight to a word.
 pub fn text_block(shape: u64, text: &str, count: u64) -> Box<[u64]> {
     let bytes = text.as_bytes();
     let length = |n: usize| u64::try_from(n).unwrap_or(0);
-    let mut block = vec![count, shape, length(bytes.len()), length(text.chars().count())];
+    let words = bytes.len().div_ceil(8).max(1);
+    let mut block = vec![count, shape, length(bytes.len()), length(text.chars().count()), length(words * 8)];
     // Native code reads the first word of text without checking the length.
     if bytes.is_empty() {
         block.push(0);
@@ -328,7 +323,9 @@ pub extern "C" fn to_value(address: i64) -> i64 {
 
 pub(super) fn read_block(state: &mut State, address: u64) -> Value {
     let at = usize::try_from(address).unwrap_or(0);
-    if let Some(text) = state.heap.texts.get(&at) {
+    // A string only changes in place by growing, so a text of the same length is current.
+    let length = state.heap.block(address).and_then(|block| block.get(2)).copied();
+    if let Some(text) = state.heap.texts.get(&at).filter(|text| u64::try_from(text.len()).ok() == length) {
         return Value::Str(Rc::clone(text));
     }
     let Some(block) = state.heap.block(address).map(<[u64]>::to_vec) else { return Value::None };
@@ -452,12 +449,10 @@ fn same(state: &State, a: u64, b: u64) -> bool {
         return false;
     }
     if is_text(state, left) {
-        // Compare the bytes in use: a string's block may have room to grow.
-        let used = |block: &[u64]| {
-            let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
-            block.get(1..TEXT_HEADER_WORDS + length.div_ceil(8)).map(<[u64]>::to_vec)
-        };
-        return used(left) == used(right);
+        // Compare the lengths and the bytes in use, not the room to grow.
+        let length = left.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+        let text = TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + length.div_ceil(8);
+        return left.get(1..4) == right.get(1..4) && left.get(text.clone()) == right.get(text);
     }
     if left.len() != right.len() {
         return false;

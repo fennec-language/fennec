@@ -207,7 +207,6 @@ impl Lowerer<'_, '_> {
         self.join(arms, then.span.to(otherwise.span))
     }
 
-    /// An operator on machine values, or `None` when it needs the interpreter.
     /// An operator on two lowered values, natively when it can be.
     pub(super) fn operate(
         &mut self,
@@ -231,6 +230,7 @@ impl Lowerer<'_, '_> {
         }
     }
 
+    /// An operator on machine values, or `None` when it needs the interpreter.
     pub(super) fn binary(
         &mut self,
         op: BinOp,

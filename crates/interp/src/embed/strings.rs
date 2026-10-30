@@ -1,7 +1,7 @@
 //! Strings for native code. A string is a block in the heap (see `heap`): its owner count,
-//! its shape, its length in bytes and in characters, then its UTF-8 bytes. Copies share a
-//! block. The one change in place is `+=` on a block with one owner, which may have room
-//! left after its bytes. Native code reads lengths and ASCII characters itself; everything
+//! its shape, its length in bytes and in characters, how many bytes it has room for, then
+//! its UTF-8 bytes. Copies share a block. The one change in place is `+=` on a block with
+//! one owner, which may have room left after its bytes. Native code reads lengths and ASCII characters itself; everything
 //! that makes a new string, or needs to walk UTF-8, happens here.
 
 use fennec_syntax::Diagnostic;
@@ -59,20 +59,22 @@ fn grow(state: &mut State, text: i64, more: i64) -> Option<i64> {
     let needed = TEXT_HEADER_WORDS + total.div_ceil(8).max(1);
     let fits = block.first() == Some(&1) && block.len() >= needed;
     if fits {
-        let block = state.heap.text_mut(at)?;
+        let block = state.heap.block_mut(at)?;
         put_bytes(block, length, &extra);
         set_lengths(block, total, chars + u64::try_from(extra_chars).ok()?);
         return Some(text);
     }
-    let mut grown = state.heap.fresh(TEXT_HEADER_WORDS + 2 * total.div_ceil(8).max(1));
+    let room = 2 * total.div_ceil(8).max(1);
+    let mut grown = state.heap.fresh(TEXT_HEADER_WORDS + room);
     let used = TEXT_HEADER_WORDS + length.div_ceil(8);
     for (to, from) in grown.iter_mut().zip(state.heap.block(at)?.get(..used)?) {
         *to = *from;
     }
     put_bytes(&mut grown, length, &extra);
     set_lengths(&mut grown, total, chars + u64::try_from(extra_chars).ok()?);
-    if let Some(count) = grown.first_mut() {
+    if let Some([count, .., bytes]) = grown.get_mut(..TEXT_HEADER_WORDS) {
         *count = 1;
+        *bytes = u64::try_from(room * 8).unwrap_or(0);
     }
     let joined = state.heap.insert(grown);
     release(state, at);
@@ -94,7 +96,7 @@ fn put_bytes(block: &mut [u64], from: usize, bytes: &[u8]) {
 }
 
 fn set_lengths(block: &mut [u64], length: usize, chars: u64) {
-    if let Some([bytes, count]) = block.get_mut(2..TEXT_HEADER_WORDS) {
+    if let Some([bytes, count]) = block.get_mut(2..4) {
         *bytes = u64::try_from(length).unwrap_or(0);
         *count = chars;
     }

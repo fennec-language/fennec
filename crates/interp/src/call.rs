@@ -6,7 +6,7 @@ use std::rc::Rc;
 use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Param, Span};
 
 use crate::exec::Flow;
-use crate::interp::{Interp, MAX_DEPTH};
+use crate::interp::Interp;
 use crate::place::Place;
 use crate::scope::Frame;
 use crate::value::{Callable, Lambda, Value};
@@ -31,11 +31,26 @@ impl Interp<'_> {
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Result<Value, Diagnostic> {
         match &callee.kind {
             ExprKind::Attr { object, name, optional } => {
+                if let Some(member) = self.module_member(object, name, callee.span) {
+                    let function = self.lookup(&member?, callee.span)?;
+                    let args = self.eval_args(args)?;
+                    return self.call_value(&function, args, span);
+                }
                 return self.method_call(object, name, *optional, args, span);
             }
             ExprKind::Variant(name) => {
                 let args = self.eval_args(args)?;
                 return self.construct_variant(None, name, args, span);
+            }
+            ExprKind::Index { object, index }
+                if matches!(object.kind, ExprKind::Name(_) | ExprKind::Attr { .. }) =>
+            {
+                if let (Value::Builtin(name), Some(ty)) = (self.eval(object)?, index.as_type())
+                    && matches!(name, "json.loads" | "toml.loads")
+                {
+                    let args = self.eval_args(args)?;
+                    return self.typed_loads(name, &ty, args, span);
+                }
             }
             _ => {}
         }
@@ -104,7 +119,7 @@ impl Interp<'_> {
     }
 
     fn enter(&mut self, span: Span) -> Result<Frame, Diagnostic> {
-        if self.depth >= MAX_DEPTH {
+        if self.depth >= self.max_depth {
             return Err(Diagnostic::new("calls nested too deeply", span)
                 .with_help("check for recursion that never stops"));
         }

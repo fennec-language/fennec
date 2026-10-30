@@ -253,6 +253,37 @@ pub enum ExprKind {
     },
 }
 
+impl Expr {
+    /// The type an expression spells, as in `json.loads[list[int]]`: a name, a name with
+    /// types in brackets, a tuple of types, or any of those with `?`. `None` for anything
+    /// else.
+    pub fn as_type(&self) -> Option<TypeExpr> {
+        let plain = |name: &str, args: Vec<TypeExpr>| TypeExpr {
+            name: name.to_owned(),
+            args,
+            optional: false,
+            span: self.span,
+        };
+        match &self.kind {
+            ExprKind::Name(name) => Some(plain(name, Vec::new())),
+            ExprKind::None => Some(plain("None", Vec::new())),
+            ExprKind::Index { object, index } => {
+                let ExprKind::Name(name) = &object.kind else { return None };
+                let args = match &index.kind {
+                    ExprKind::Tuple(items) => items.iter().map(Expr::as_type).collect::<Option<Vec<_>>>()?,
+                    _ => vec![index.as_type()?],
+                };
+                Some(plain(name, args))
+            }
+            ExprKind::Tuple(items) => {
+                Some(plain("tuple", items.iter().map(Expr::as_type).collect::<Option<_>>()?))
+            }
+            ExprKind::Try { value, context: None } => Some(TypeExpr { optional: true, ..value.as_type()? }),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompKind {
     List,

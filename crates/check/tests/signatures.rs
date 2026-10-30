@@ -182,7 +182,7 @@ fn written_types_resolve() {
             Type::Tuple(vec![Type::Int, Type::Str]),
             Type::Id(Box::new(named("Thing"))),
             Type::IdMap(Box::new(named("Thing"))),
-            Type::Str,
+            named("Path"),
             list(named("Thing")),
             list(named("Thing")),
             Type::None,

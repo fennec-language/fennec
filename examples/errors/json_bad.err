@@ -1,0 +1,5 @@
+error: `main` failed: ParseError(message="expected `,` or `}` after the value, but found `\"`, at line 4, column 3", line=4, column=3)
+ --> examples/errors/json_bad.fen:8:1
+  |
+8 | def main(stdout: Stdout):
+  | ^^^^^^^^^^^^^^^^^^^^^^^^

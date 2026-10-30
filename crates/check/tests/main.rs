@@ -5,6 +5,7 @@ mod builtins;
 mod calls;
 mod errors;
 mod generics;
+mod library;
 mod mutation;
 mod names;
 mod narrowing;

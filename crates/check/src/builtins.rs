@@ -10,7 +10,8 @@ use crate::messages::{mismatch, needless_mut, no_method, wrong_args};
 use crate::types::{Type, a, article};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most).
-const BUILTINS: [(&str, usize, usize); 28] = [
+/// Names with a dot belong to a module, like `json.loads`, and exist only once imported.
+const BUILTINS: [(&str, usize, usize); 32] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("abs", 1, 1),
@@ -23,6 +24,8 @@ const BUILTINS: [(&str, usize, usize); 28] = [
     ("floor", 1, 1),
     ("ignore", 2, 2),
     ("int", 1, 1),
+    ("json.dumps", 1, 1),
+    ("json.loads", 1, 1),
     ("len", 1, 1),
     ("list", 1, 1),
     ("max", 1, usize::MAX),
@@ -38,6 +41,8 @@ const BUILTINS: [(&str, usize, usize); 28] = [
     ("sqrt", 1, 1),
     ("str", 1, 1),
     ("sum", 1, 1),
+    ("toml.dumps", 1, 1),
+    ("toml.loads", 1, 1),
     ("zip", 2, 2),
 ];
 
@@ -47,6 +52,15 @@ const NEEDS_VALUES: [&str; 11] =
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name)
+}
+
+/// The modules with a function of this name, like `json` and `toml` for `loads`.
+pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
+    BUILTINS
+        .iter()
+        .filter_map(|(builtin, ..)| builtin.split_once('.').filter(|(_, function)| *function == name))
+        .map(|(module, _)| module)
+        .collect()
 }
 
 /// A method of a built-in value: whether it changes the value, what it takes and gives
@@ -197,12 +211,16 @@ impl FnCx<'_> {
             );
             self.mut_place(object, &what);
         }
-        let plain = self.builtin_args(name, args, name == "sort", &method.receives, span);
+        let named: &[&str] = if name == "sort" { &["key"] } else { &[] };
+        let plain = self.builtin_args(name, args, named, &method.receives, span);
         if plain.len() < method.arity.0 || plain.len() > method.arity.1 {
             self.error(wrong_args(name, span));
         }
+        // `Fs` takes a file's path as a `Path` or as text.
+        let path = *ty == Type::named("Fs");
         for ((actual, at), expected) in plain.iter().zip(&method.params) {
-            if !self.checker.fits(expected, actual) {
+            let as_path = path && *expected == Type::Str && *actual == Type::named("Path");
+            if !as_path && !self.checker.fits(expected, actual) {
                 let expected = self.checker.settled(expected);
                 self.error(mismatch(&format!("`{name}`'s argument"), &expected, actual, *at));
             }
@@ -214,13 +232,13 @@ impl FnCx<'_> {
         method.returns
     }
 
-    /// Checks a builtin's arguments: none is `mut`, and only `key` may be named. Returns the
-    /// plain arguments' types and where they are.
+    /// Checks a builtin's arguments: none is `mut`, and only those in `named` may be named.
+    /// Returns the plain arguments' types and where they are.
     fn builtin_args(
         &mut self,
         name: &str,
         args: &[Arg],
-        takes_key: bool,
+        named: &[&str],
         receives: &[Type],
         span: Span,
     ) -> Vec<(Type, Span)> {
@@ -228,10 +246,15 @@ impl FnCx<'_> {
         for arg in args {
             let ty = self.arg_value(arg, receives);
             match arg.name.as_deref() {
-                Some("key") if !takes_key => {
+                Some("key") if !named.contains(&"key") => {
                     self.error(Diagnostic::new(format!("`{name}` doesn't take `key`"), span));
                 }
                 Some("key") => {}
+                Some("indent") if named.contains(&"indent") => {
+                    if !self.checker.fits(&Type::Int, &ty) {
+                        self.error(mismatch("`indent`", &Type::Int, &ty, arg.value.span));
+                    }
+                }
                 Some(other) => self.error(Diagnostic::new(
                     format!("`{name}` has no parameter called `{other}`"),
                     arg.value.span,
@@ -255,8 +278,12 @@ impl FnCx<'_> {
             .find(|arg| arg.name.is_none())
             .map_or(Type::Unknown, |arg| self.peek_type(&arg.value));
         let item = peek_item(&first);
-        let takes_key = matches!(name, "min" | "max" | "sorted");
-        let plain = self.builtin_args(name, args, takes_key, std::slice::from_ref(&item), span);
+        let named: &[&str] = match name {
+            "min" | "max" | "sorted" => &["key"],
+            "json.dumps" => &["indent"],
+            _ => &[],
+        };
+        let plain = self.builtin_args(name, args, named, std::slice::from_ref(&item), span);
         let (low, high) = BUILTINS
             .iter()
             .find(|(builtin, ..)| *builtin == name)
@@ -295,6 +322,9 @@ impl FnCx<'_> {
                     self.error(Diagnostic::new("`range` takes one to three ints", span));
                 }
                 Type::list(Type::Int)
+            }
+            "json.loads" | "toml.loads" | "json.dumps" | "toml.dumps" => {
+                self.format_result(name, &first, (at, span))
             }
             "str" => Type::Str,
             "ignore" => {

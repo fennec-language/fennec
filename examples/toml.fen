@@ -1,0 +1,110 @@
+from std import toml
+
+struct Kit:
+    name: str
+    version: str
+    fennec: str
+    description: str
+    authors: list[str]
+    license: str
+    capabilities: list[str]
+    released: str
+
+struct Dependency:
+    version: str
+    path = ""
+
+struct Bin:
+    name: str
+    main: str
+
+struct Release:
+    profile: bool
+    budget_mb: int
+    scale: float
+
+struct Build:
+    release: Release
+
+## A `kit.toml`.
+struct Manifest:
+    kit: Kit
+    dependencies: dict[str, Dependency]
+    bin: list[Bin]
+    build: Build
+
+## The kinds of value TOML knows.
+struct Sample:
+    speed = 0
+    angle = 0.0
+    at = ""
+    empty: list[int] = []
+
+struct Window:
+    title = "Fox Run"
+    width = 1280
+    height = 720
+    vsync = True
+
+def kit_toml():
+    "\n".join([
+        "# The kit a Fennec project describes itself with.",
+        "[kit]",
+        "name = \"fox-run\"",
+        "version = \"0.3.1\"",
+        "fennec = \"0.1\"",
+        "description = \"\"\"",
+        "A small game about a fennec fox \\",
+        "    who runs very fast.\"\"\"",
+        "authors = [\"Ash <ash@example.com>\", 'Kit']",
+        "license = 'MIT OR Apache-2.0'",
+        "capabilities = [\"Stdout\", \"Fs\"]",
+        "released = 2026-10-30",
+        "",
+        "[dependencies]",
+        "vecmath = { version = \"1.2\" }",
+        "sprites = { version = \"0.4\", path = \"../sprites\" }",
+        "",
+        "[[bin]]",
+        "name = \"game\"",
+        "main = \"src/main.fen\"",
+        "",
+        "[[bin]]",
+        "name = \"editor\"",
+        "main = \"tools/editor.fen\"",
+        "",
+        "[build.release]",
+        "profile = true",
+        "budget_mb = 1_024",
+        "scale = 1.5e0",
+    ])
+
+def describe(text: str):
+    match toml.loads[Sample](text):
+        case Ok(sample): f"read {sample}"
+        case ParseError(message): f"couldn't read it: {message}"
+
+def main(stdout: Stdout):
+    manifest = toml.loads[Manifest](kit_toml())?
+    stdout.print(manifest.kit.name, manifest.kit.version, "for Fennec", manifest.kit.fennec)
+    stdout.print(manifest.kit.description)
+    stdout.print(manifest.kit.authors, manifest.kit.released)
+    for name, dependency in manifest.dependencies.items():
+        stdout.print("needs", name, dependency.version)
+        if dependency.path != "":
+            stdout.print("  from", dependency.path)
+    for bin in manifest.bin:
+        stdout.print(bin.name, "starts at", bin.main)
+    stdout.print(manifest.build.release)
+
+    stdout.write(toml.dumps(manifest))
+    stdout.print("---")
+    stdout.write(toml.dumps(Window()))
+    stdout.print(toml.loads[Manifest](toml.dumps(manifest))? == manifest)
+
+    stdout.print(describe("speed = 0x10\nangle = -0.5\nat = 07:30:00\nempty = []"))
+    stdout.print(describe("name = \"fox\"\nname = \"kit\""))
+    stdout.print(describe("[kit]\nversion = 1.2.3"))
+    stdout.print(describe("[kit\nname = \"fox\""))
+    stdout.print(describe("title = \"never ends\nname = \"fox\""))
+    stdout.print(describe("[kit]\nname = \"fox\"\n[kit]"))

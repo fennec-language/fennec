@@ -1,0 +1,51 @@
+fox-run 0.3.1 for Fennec 0.1
+A small game about a fennec fox who runs very fast.
+["Ash <ash@example.com>", "Kit"] 2026-10-30
+needs vecmath 1.2
+needs sprites 0.4
+  from ../sprites
+game starts at src/main.fen
+editor starts at tools/editor.fen
+Release(profile=True, budget_mb=1024, scale=1.5)
+[kit]
+name = "fox-run"
+version = "0.3.1"
+fennec = "0.1"
+description = "A small game about a fennec fox who runs very fast."
+authors = ["Ash <ash@example.com>", "Kit"]
+license = "MIT OR Apache-2.0"
+capabilities = ["Stdout", "Fs"]
+released = "2026-10-30"
+
+[dependencies.vecmath]
+version = "1.2"
+path = ""
+
+[dependencies.sprites]
+version = "0.4"
+path = "../sprites"
+
+[[bin]]
+name = "game"
+main = "src/main.fen"
+
+[[bin]]
+name = "editor"
+main = "tools/editor.fen"
+
+[build.release]
+profile = true
+budget_mb = 1024
+scale = 1.5
+---
+title = "Fox Run"
+width = 1280
+height = 720
+vsync = true
+True
+read Sample(speed=16, angle=-0.5, at="07:30:00", empty=[])
+couldn't read it: `name` is defined twice, at line 2, column 1
+couldn't read it: `1.2.3` isn't a number TOML knows, at line 2, column 11
+couldn't read it: expected `]` to end the header, but found the end of the line, at line 1, column 5
+couldn't read it: this string never ends on its line; use `"""` for text over several lines, at line 1, column 9
+couldn't read it: the table `[kit]` is defined twice, at line 3, column 1

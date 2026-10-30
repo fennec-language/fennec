@@ -17,6 +17,7 @@ mod call;
 mod checker;
 mod effects;
 mod expr;
+mod formats;
 mod function;
 mod infer;
 mod messages;

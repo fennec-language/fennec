@@ -5,6 +5,7 @@
 use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Span, TypeExpr};
 
 use crate::builtins;
+use crate::expr::Member;
 use crate::function::FnCx;
 use crate::messages::{might_be_none, mismatch, no_method, unhandled_result};
 use crate::program::TypeKind;
@@ -26,12 +27,24 @@ impl FnCx<'_> {
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
         match &callee.kind {
             ExprKind::Attr { object, name, optional } => {
-                return self.method_call(object, name, *optional, args, span);
+                return match self.module_member(object, name, callee.span) {
+                    Some(Member::Name(member)) => {
+                        self.call(&Expr { kind: ExprKind::Name(member), span: callee.span }, args, span)
+                    }
+                    Some(Member::Missing) => {
+                        self.ignore_args(args);
+                        Type::Unknown
+                    }
+                    None => self.method_call(object, name, *optional, args, span),
+                };
             }
             ExprKind::Variant(name) => return self.construct_variant(None, name, args, span),
             ExprKind::Index { object, index } => {
                 if let Some(type_name) = self.as_type_name(object) {
                     return self.construct_builtin(type_name, Some(index), args, span);
+                }
+                if let Some(builtin) = self.loads(object) {
+                    return self.typed_loads(&builtin, index, args, span);
                 }
             }
             ExprKind::Name(name) if self.lookup(name).is_none() => {
@@ -41,6 +54,9 @@ impl FnCx<'_> {
                 }
                 if self.checker.program.is_type_name(name) {
                     return self.construct(name, args, span);
+                }
+                if let Some(builtin) = self.checker.program.imports.get(name).cloned() {
+                    return self.call_builtin(&builtin, args, span);
                 }
                 if builtins::is_builtin(name) {
                     return self.call_builtin(name, args, span);
@@ -71,6 +87,21 @@ impl FnCx<'_> {
                 self.unusable(Diagnostic::new(message, callee.span), args)
             }
         }
+    }
+
+    /// `json.loads` or `toml.loads`, imported by module or by name, without being called.
+    fn loads(&mut self, callee: &Expr) -> Option<String> {
+        let builtin = match &callee.kind {
+            ExprKind::Attr { object, name, .. } => match self.module_member(object, name, callee.span)? {
+                Member::Name(member) => member,
+                Member::Missing => return None,
+            },
+            ExprKind::Name(name) if self.lookup(name).is_none() => {
+                self.checker.program.imports.get(name)?.clone()
+            }
+            _ => return None,
+        };
+        matches!(builtin.as_str(), "json.loads" | "toml.loads").then_some(builtin)
     }
 
     /// An argument's type. An arrow function gets its parameters' types from `params`.
@@ -453,7 +484,7 @@ impl FnCx<'_> {
         built
     }
 
-    /// `IdMap[Enemy]()`, `SoaList[Particle]()` and `Path("...")`.
+    /// `IdMap[Enemy]()` and `SoaList[Particle]()`.
     fn construct_builtin(&mut self, type_name: &str, item: Option<&Expr>, args: &[Arg], span: Span) -> Type {
         let has_item = item.is_some();
         let item = match item.map(|item| (&item.kind, item.span)) {
@@ -472,7 +503,6 @@ impl FnCx<'_> {
         match (type_name, types.as_slice()) {
             ("IdMap", []) if has_item => Type::IdMap(Box::new(item)),
             ("SoaList", []) if has_item => Type::list(item),
-            ("Path", [Type::Str | Type::Unknown]) => Type::Str,
             _ => {
                 self.error(crate::messages::wrong_args(type_name, span));
                 Type::Unknown

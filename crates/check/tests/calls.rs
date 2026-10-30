@@ -329,7 +329,7 @@ fn builtin_types_are_built_the_right_way() {
         with_types(program),
         [
             "`IdMap` was called with the wrong arguments @ IdMap(1)",
-            "`Path` was called with the wrong arguments @ Path(1)",
+            "`text` should be a str, but this is an int @ 1",
             "`Id` was called with the wrong arguments @ Id()",
         ]
     );

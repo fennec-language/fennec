@@ -220,9 +220,19 @@ impl Parser {
         }
     }
 
-    /// `object[index]` or a slice `object[start:end]`, after the `[`.
+    /// `object[index]` or a slice `object[start:end]`, after the `[`. `object[a, b]` indexes
+    /// with the tuple `(a, b)`, which is also how types with several parts are written, as in
+    /// `json.loads[dict[str, int]]`.
     fn index(&mut self, object: Expr) -> Result<Expr, Diagnostic> {
-        let start = if self.at_p(Punct::Colon) { None } else { Some(Box::new(self.expr()?)) };
+        let mut start = if self.at_p(Punct::Colon) { None } else { Some(Box::new(self.expr()?)) };
+        if let Some(first) = start.take_if(|_| self.at_p(Punct::Comma)) {
+            let mut items = vec![*first];
+            while self.eat_p(Punct::Comma) && !self.at_p(Punct::RBracket) {
+                items.push(self.expr()?);
+            }
+            let span = items.iter().fold(self.prev_span(), |span, item| span.to(item.span));
+            start = Some(Box::new(Expr { kind: ExprKind::Tuple(items), span }));
+        }
         let slice_end = if self.eat_p(Punct::Colon) {
             Some(if self.at_p(Punct::RBracket) { None } else { Some(Box::new(self.expr()?)) })
         } else {

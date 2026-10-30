@@ -105,9 +105,10 @@ fn values_in(stmts: &[Stmt], found: &mut Vec<Expr>) {
     }
 }
 
-/// Whether an expression names a type, like `Vec3` in `Vec3.zero()`.
+/// Whether an expression names a type, like `Vec3` in `Vec3.zero()`, or a module, like
+/// `json` in `json.dumps(...)`.
 fn is_type_name(expr: &Expr) -> bool {
-    matches!(&expr.kind, ExprKind::Name(name) if name.starts_with(char::is_uppercase))
+    matches!(&expr.kind, ExprKind::Name(name) if name.starts_with(char::is_uppercase) || ["json", "toml", "path"].contains(&name.as_str()))
 }
 
 fn values(expr: &Expr, found: &mut Vec<Expr>) {

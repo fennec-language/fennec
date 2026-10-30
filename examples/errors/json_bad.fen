@@ -1,0 +1,10 @@
+from std.json import loads
+
+struct Save:
+    level: int
+    name: str
+    coins: int
+
+def main(stdout: Stdout):
+    save = loads[Save]("{\n  \"level\": 3,\n  \"name\": \"Ash\"\n  \"coins\": 10\n}")?
+    stdout.print(save.name)

@@ -47,6 +47,7 @@ impl Checker {
             }
         }
         program.add(module, false);
+        let diagnostics = std::mem::take(&mut program.import_problems);
         Checker {
             program,
             states: BTreeMap::new(),
@@ -54,7 +55,7 @@ impl Checker {
             locals: BTreeMap::new(),
             vars: Vec::new(),
             typed: BTreeMap::new(),
-            diagnostics: Vec::new(),
+            diagnostics,
         }
     }
 

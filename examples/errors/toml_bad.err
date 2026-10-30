@@ -1,0 +1,5 @@
+error: `main` failed: ParseError(message="`name` is defined twice, at line 4, column 1", line=4, column=1)
+  --> examples/errors/toml_bad.fen:10:1
+   |
+10 | def main(stdout: Stdout):
+   | ^^^^^^^^^^^^^^^^^^^^^^^^

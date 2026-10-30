@@ -79,7 +79,7 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **Parallel reductions combine in a fixed order.** How `sum(... for e in parallel(xs))` splits and combines its work depends on the data's size, never the thread count.
 *Why:* Float results don't drift between runs or machines.
 
-**`Clock` is a capability,** passed to `main` like `Stdout` and `Fs`. `clock.now()` reads a monotonic clock. A fixed clock for tests is still to come.
+**`Clock` is a capability,** passed to `main` like `Stdout` and `Fs`. `clock.now()` reads a monotonic clock. Tests get a fixed clock by default, as under Tooling.
 *Why:* Code that reads the time says so in its parameters, and can be handed a fixed clock instead.
 
 **`Random` is a seeded value.** `Random(seed=42)` draws the same numbers in the same order on every machine. It's SplitMix64, done in integer math, and `random_int(seed, n, low, high)`, imported from `std.random`, gives the `n`th number of a seed's sequence without keeping a generator. Seeding from the OS will be a capability `main` receives; it isn't built yet.
@@ -475,6 +475,15 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 
 *Why:* Inferred types and error sets need to be visible to be trusted, and a fixed style plus automatic fixes means AI and people write the same code. Cost hints show what code costs while it's written, not after a profiler finds it.
 
+**A test names the capabilities it needs, like `main`, and gets fakes by default.**
+```fennec
+test "saves the score"(fs: Fs, clock: Clock):
+    save_score(fs, clock, 120)?
+    assert fs.read_text("score.txt")? == "120"
+```
+The fakes are an in-memory `Fs`, a fixed `Clock`, captured `Stdout` and a scripted `Net`. `fennec test --real` uses actual files and the network, on a developer's machine and in their CI. The Den only ever uses fakes.
+*Why:* Tests are fast and give the same result every run, and they can't touch the machine unless someone asks. The same signature as `main` means nothing new to learn.
+
 **Benchmarks are `bench "name":` blocks,** written next to the code they measure, like `test` blocks, and left out of release builds.
 ```fennec
 bench "collide 10k bullets":
@@ -544,6 +553,20 @@ These are default lints, and the Den requires them.
 **The Den can be searched by type,** through `fennec search` and its website.
 
 **Lints are pinned to the kit's Fennec version.** A lint added in Fennec 0.5 never blocks a patch release of a kit written for 0.4.
+
+## Security goal
+
+**The goal is near-zero CVEs, and it's public policy.** True zero isn't possible: the compiler, the runtime and the C that can't be ported can all have bugs. What Fennec can do is remove the usual causes:
+- **Memory bugs are impossible in safe code.** `unsafe` exists only in extern modules.
+- **C is ported rather than linked,** so less C runs at all.
+- **A batteries-included standard library** keeps dependency trees shallow.
+- **Capabilities limit the blast radius** of any bug: code can reach only what it was handed.
+- **Typed standard library APIs** stop injection.
+- **The runtime is small, in-house and fuzzed continuously.**
+- **`fennec audit` is backed by a public advisory database.**
+- **Programs ship as one static binary in an empty container,** so there's no OS image full of other people's CVEs.
+
+*Why:* Most CVEs in the languages people use today come from memory errors, deep dependency trees, injection and base images. Each item removes one of those. `SECURITY.md` states the same policy publicly.
 
 ## Supply chain
 

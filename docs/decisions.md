@@ -283,6 +283,8 @@ with db.transaction() as mut tx:
 **What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the global functions, like `sum`, `range` and `sorted`.
 *Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
 
+**Network access is a capability, `Net`, like `Fs`.** Its API, for HTTP, sockets and limiting it to certain hosts, is decided when it's built.
+
 **Command-line arguments and standard input are capabilities.** `def main(stdout: Stdout, args: Args, stdin: Stdin):`. `for arg in args:` gives the arguments, not the program's name, which is `args.program`. `stdin.lines()` reads input a line at a time. A program that doesn't name them can't read them, and both are recorded for replay.
 *Why:* A program's input decides what it does, so it comes in the same visible way as files and the clock.
 
@@ -546,16 +548,18 @@ These are default lints, and the Den requires them.
 
 **Kits have three tiers, so the audit scales with what a kit can touch.**
 - **Pure** (no capabilities, no `extern`): automatic.
-- **Capability** (`Fs`, `Net` and so on): automatic plus AI review, with capabilities shown on the page. A newly added capability needs a human tap.
+- **Capability** (`Fs`, `Net` and so on): automatic plus AI review, with capabilities shown on the page. A newly added capability needs the author's own passkey tap at publish. Consumers' approval of an update that asks for more is unchanged.
 - **Native** (`extern`, C code): human audit, verified authors only.
 
 *Why:* Most kits can't touch anything, so they need no human, and the people's time goes to the few kits that could do harm.
 
-**Deferred until needed:** the phone approval web app, delegated publish grants for automation, a public transparency log, and a fine-tuned security model.
+**Deferred until needed:** the phone approval web app, delegated publish grants for automation, a public transparency log, a fine-tuned security model, Sigstore signing, and running dependents' tests before a release.
+
+**One known gap until the transparency log exists:** a hacked Den could swap an author's key undetected. The log should be built before the Den gets popular.
 
 **Each version has a size cap,** around 10 MB of source, and publishing is rate-limited.
 
-**Breaking dependents is caught before release.** Before a new version is published, the Den runs the tests of the kits that depend on it directly against that version, within a compute budget, and reports which ones break.
+**Later, breaking dependents is caught before release.** v1 defers this. Before a new version is published, the Den runs the tests of the kits that depend on it directly against that version, within a compute budget, and reports which ones break.
 *Why:* An author learns "this release breaks 14 kits" before releasing it, not from bug reports.
 
 **The Den can be searched by type,** through `fennec search` and its website.
@@ -581,7 +585,7 @@ These are default lints, and the Den requires them.
 - One-time recovery codes are issued at signup, and you have to save them.
 - If both your passkeys and your codes are lost, the last resort is a manual review by the Den team.
 - Email is only for notices, such as a new passkey added, a new release or a change of ownership. It's never used to sign in or recover an account.
-- Publishing still needs the signed release statement, as above, and every release is signed with Sigstore.
+- Publishing still needs the signed hash, as above. Sigstore signing is deferred.
 
 *Why:* Stolen passwords and hijacked email are how package accounts get taken over. With no password and no email reset, there's nothing for an attacker to phish or reset.
 
@@ -748,12 +752,12 @@ libraries = ["sqlite3"]
 ```
 The JIT loads them when the program runs, and release builds link them. The C standard library is always available.
 
-**Raw C is allowed only in the standard library's OS layer, first-party `fennec/` kits, verified kits and your own app.** A community kit's C is compiled to wasm and runs sandboxed, where capabilities still bind it. It runs about 10 to 30% slower, more for heavy SIMD. A `Buffer` allocated inside the sandbox lets Fennec pass data without copying. A community kit that needs native speed can apply to be audited and verified.
+**Raw C is allowed only in the standard library's OS layer, first-party `fennec/` kits, verified kits and your own app.** v1 doesn't let community kits bring C; whether they may bring C compiled to wasm is still open. A community kit that needs C can apply to be audited and verified.
 *Why:* No community kit can get around capabilities, which is the guarantee that matters. The native code games depend on, for graphics, audio, windows and physics, is first-party or verified, so it runs at full speed.
 
 **An app allows each native kit by name:** `sqlite = { version = "1.2", native = true }`. A native kit's API still takes the capabilities it uses, `sqlite.open(fs, path)`, so its signatures stay honest.
 
-**The interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox, compile-time evaluation and the REPL can't run native kits; the error points to `fennec run`, which uses the JIT. Community kits' C compiled to wasm does run there, sandboxed. Native kits' differential tests compare the JIT with release builds. A REPL that switches to the JIT when a native kit is imported can come later.
+**The interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox, compile-time evaluation and the REPL can't run native kits; the error points to `fennec run`, which uses the JIT. Native kits' differential tests compare the JIT with release builds. A REPL that switches to the JIT when a native kit is imported can come later.
 
 ## Sandboxing
 
@@ -795,12 +799,13 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 
 - How a type marks that its finishing method must be called.
 - Decorators. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.
+- Whether community kits may bring C compiled to wasm. It would run sandboxed, still bound by capabilities, about 10 to 30% slower and more for heavy SIMD, with a `Buffer` inside the sandbox to avoid copies. v1 doesn't offer it until this is decided.
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.
 - The syntax for units of measure.
 - The file extension (currently `.fen`).
 - Whether files of a kit may reuse a top-level name, reached through `import` by their module's name.
 - These security proposals:
-  - `Net`, `Env` and `Process` as capabilities.
+  - `Env` and `Process` as capabilities.
   - Types that make injection impossible: `sql"..."` templates, `Path`, argument lists for commands, escaping HTML templates.
   - `Secret[str]`, which can't be printed or logged.

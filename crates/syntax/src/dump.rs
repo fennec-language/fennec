@@ -3,8 +3,11 @@
 
 use std::fmt::Write as _;
 
+mod tree;
+
 use crate::diagnostic::Diagnostic;
 use crate::lexer::lex;
+use crate::parser::parse;
 use crate::token::{FPart, Tok};
 
 /// Every token in `source`, one per line, or the error that stopped the lexer.
@@ -16,6 +19,18 @@ pub fn tokens(source: &str) -> String {
                 let _ = writeln!(text, "{}..{} {}", token.span.start, token.span.end, tok(&token.tok));
             }
             text
+        }
+        Err(diagnostic) => error(&diagnostic),
+    }
+}
+
+/// The syntax tree of `source`, one node per line, or the error that stopped the parser.
+pub fn tree(source: &str) -> String {
+    match parse(source) {
+        Ok(module) => {
+            let mut tree = tree::Tree::default();
+            tree.module(&module);
+            tree.text
         }
         Err(diagnostic) => error(&diagnostic),
     }

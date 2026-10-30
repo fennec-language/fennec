@@ -1,8 +1,8 @@
 ## Fennec's front end, written in Fennec.
 ##
 ## This mirrors the Rust front end in `crates/syntax`: the lexer turns source text into
-## tokens, and the dump prints them in the same text as `fennec dev tokens`, so the two can
-## be compared line by line.
+## tokens, and the parser turns tokens into a syntax tree. The dumps print both in the same
+## text as `fennec dev tokens` and `fennec dev tree`, so the two can be compared line by line.
 
 # ---- Spans and diagnostics (crates/syntax/src/span.rs, diagnostic.rs) ----
 
@@ -232,7 +232,7 @@ struct Lexer:
         if is_keyword(word):
             self.push(.Keyword(word), start)
         else:
-            self.push(.Name(word), start)
+            self.push(Tok.Name(word), start)
 
     def number(mut self, start: int):
         self.digits()
@@ -252,9 +252,9 @@ struct Lexer:
             exponent_digits = self.text(exponent_start, self.pos).replace("_", "") != ""
         text = self.text(start, self.pos).replace("_", "")
         if not is_float:
-            self.push(.Int(self.int_value(text, start)?), start)
+            self.push(Tok.Int(self.int_value(text, start)?), start)
         elif exponent_digits:
-            self.push(.Float(float(text)), start)
+            self.push(Tok.Float(float(text)), start)
         else:
             fail Diagnostic(message="this isn't a valid number", span=self.span(start))
 
@@ -308,7 +308,7 @@ struct Lexer:
                 text += c
                 self.pos += 1
         self.pos += 1
-        self.push(.Str(text), start)
+        self.push(Tok.Str(text), start)
 
     def unterminated(self, start: int) -> Diagnostic:
         Diagnostic(
@@ -357,7 +357,7 @@ struct Lexer:
                 self.pos += 2
             elif c == "{":
                 if text != "":
-                    parts.append(.Text(text))
+                    parts.append(FPart.Text(text))
                     text = ""
                 parts.append(self.fstring_code(start)?)
             elif c == "}":
@@ -371,8 +371,8 @@ struct Lexer:
                 self.pos += 1
         self.pos += 1
         if text != "":
-            parts.append(.Text(text))
-        self.push(.FStr(parts), start)
+            parts.append(FPart.Text(text))
+        self.push(Tok.FStr(parts), start)
 
     ## Reads `{expression}` or `{expression:spec}` inside an f-string.
     def fstring_code(mut self, start: int) -> FPart:
@@ -395,9 +395,1210 @@ struct Lexer:
         self.pos += 1
         code_end = spec_start else end
         spec = self.text(spec_start + 1, end) if spec_start is not None else None
-        .Code(self.text(code_start, code_end), self.offset(code_start), spec)
+        FPart.Code(self.text(code_start, code_end), self.offset(code_start), spec)
 
-# ---- Dumps (crates/syntax/src/dump.rs) ----
+# ---- The syntax tree (crates/syntax/src/ast.rs) ----
+
+## A parsed `.fen` file.
+struct Module:
+    items: list[Item]
+
+enum Item:
+    Function(function: FnDef)
+    Struct(type_def: TypeDef)
+    Enum(type_def: TypeDef)
+    Error(type_def: TypeDef)
+    Interface(interface: Interface)
+    TypeAlias(name: str, ty: TypeExpr, span: Span)
+    Import(imported: Import)
+    Test(test: TestDef)
+
+struct FnDef:
+    name: str
+    params: list[Param]
+    ret: TypeExpr?
+    body: list[Stmt]
+    span: Span
+
+struct Param:
+    name: str
+    ## Missing only for `self`.
+    ty: TypeExpr?
+    is_mut: bool
+    is_self: bool
+    span: Span
+
+## A written type, like `int`, `list[str]`, `(int, int)` or `Enemy?`.
+struct TypeExpr:
+    name: str
+    args: list[TypeExpr]
+    optional: bool
+    span: Span
+
+## A struct, an error, or an enum. Enums have cases; structs and errors have fields.
+struct TypeDef:
+    name: str
+    fields: list[Field] = []
+    cases: list[Case] = []
+    methods: list[FnDef] = []
+    span: Span
+
+struct Field:
+    name: str
+    ty: TypeExpr?
+    default: Expr?
+    ## The `where` rule a value of this field must follow.
+    rule: Expr?
+    span: Span
+
+struct Case:
+    name: str
+    fields: list[Field]
+    span: Span
+
+struct Interface:
+    name: str
+    methods: list[FnDef]
+    span: Span
+
+struct Import:
+    module: list[str]
+    names: list[str]
+    span: Span
+
+## `test "name":`, or a property test `test "name" for items: list[int]:`.
+struct TestDef:
+    name: str
+    inputs: list[Param]
+    body: list[Stmt]
+    span: Span
+
+struct Stmt:
+    kind: StmtKind
+    span: Span
+
+enum StmtKind:
+    Expr(expr: Expr)
+    ## `name = value`, `mut name = value`, `a, b = pair`, `target op= value`.
+    Assign(target: Expr, op: BinOp?, value: Expr, declare_mut: bool)
+    If(branches: list[(Expr, list[Stmt])], otherwise: list[Stmt]?)
+    While(cond: Expr, body: list[Stmt])
+    For(names: list[str], is_mut: bool, iter: Expr, body: list[Stmt])
+    Return(value: Expr?)
+    Fail(value: Expr)
+    Yield(value: Expr)
+    Assert(value: Expr)
+    With(value: Expr, name: str?, is_mut: bool, body: list[Stmt])
+    Def(function: FnDef)
+    Break
+    Continue
+    Pass
+
+struct Expr:
+    kind: ExprKind
+    span: Span
+
+enum ExprKind:
+    Int(value: int)
+    Float(value: float)
+    Str(text: str)
+    FStr(parts: list[FStrPart])
+    Bool(value: bool)
+    ## The `None` literal. An enum case can't be called `None`.
+    Nothing
+    Name(name: str)
+    ## `.Circle`: an enum case of whatever enum has a case with this name.
+    Variant(name: str)
+    List(items: list[Expr])
+    Tuple(items: list[Expr])
+    Dict(pairs: list[(Expr, Expr)])
+    Set(items: list[Expr])
+    ## `[elem for a, b in iter if cond]`, generator expressions, and set and dict comprehensions.
+    Comprehension(kind: CompKind, elem: Expr, value: Expr?, names: list[str], iter: Expr, cond: Expr?)
+    Unary(op: UnaryOp, operand: Expr)
+    Binary(op: BinOp, lhs: Expr, rhs: Expr)
+    ## `then if cond else otherwise`.
+    Cond(then: Expr, cond: Expr, otherwise: Expr)
+    ## `value else default`: the value, or the default if it's None or an error.
+    Else(value: Expr, default: Expr)
+    ## `value?`, passing an error or None up; `value? from Context(...)` wraps the error.
+    Try(value: Expr, context: Expr?)
+    Call(callee: Expr, args: list[Arg])
+    Attr(object: Expr, name: str, optional: bool)
+    Index(object: Expr, index: Expr)
+    Slice(object: Expr, start: Expr?, end: Expr?)
+    ## `x => body` or `(a, b) => body`.
+    Lambda(params: list[str], body: Expr)
+    Match(subject: Expr, arms: list[MatchArm])
+
+enum CompKind:
+    List
+    ## A generator expression passed straight to a call, like `sum(x for x in xs)`.
+    Generator
+    Set
+    Dict
+
+struct MatchArm:
+    pattern: Pattern
+    body: list[Stmt]
+    span: Span
+
+enum Pattern:
+    Wildcard
+    Bind(name: str)
+    Literal(expr: Expr)
+    ## `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`.
+    Variant(name: str, dotted: bool, args: list[Pattern])
+    Tuple(items: list[Pattern])
+
+enum FStrPart:
+    Text(text: str)
+    Code(expr: Expr, spec: str?)
+
+## A call argument: `value`, `name=value` or `mut name`.
+struct Arg:
+    name: str?
+    is_mut: bool
+    value: Expr
+
+enum UnaryOp:
+    Neg
+    Not
+
+enum BinOp:
+    Add
+    Sub
+    Mul
+    Div
+    FloorDiv
+    Mod
+    Pow
+    Eq
+    NotEq
+    Lt
+    LtEq
+    Gt
+    GtEq
+    And
+    Or
+    In
+    NotIn
+    Is
+    IsNot
+
+    def symbol(self) -> str:
+        match self:
+            case .Add: "+"
+            case .Sub: "-"
+            case .Mul: "*"
+            case .Div: "/"
+            case .FloorDiv: "//"
+            case .Mod: "%"
+            case .Pow: "**"
+            case .Eq: "=="
+            case .NotEq: "!="
+            case .Lt: "<"
+            case .LtEq: "<="
+            case .Gt: ">"
+            case .GtEq: ">="
+            case .And: "and"
+            case .Or: "or"
+            case .In: "in"
+            case .NotIn: "not in"
+            case .Is: "is"
+            case .IsNot: "is not"
+
+# ---- The parser: declarations (crates/syntax/src/parser.rs) ----
+
+## Parses a whole `.fen` file, where only declarations may sit at the top level.
+def parse(source: str) -> Module:
+    mut parser = Parser.over(lex(source, 0)?)
+    parser.module()
+
+## Tokens to a syntax tree, by recursive descent: declarations first, then statements,
+## expressions, and `match` patterns.
+struct Parser:
+    tokens: list[Token]
+    ## Stands in for every token past the end.
+    eof: Token
+    pos = 0
+    ## Set when an expression ended with an indented block (a `match`), so the statement
+    ## holding it has no line ending of its own to consume.
+    block_ended = False
+
+    def over(tokens: list[Token]) -> Parser:
+        end = tokens[-1].span if len(tokens) > 0 else Span(start=0, end=0)
+        Parser(tokens=tokens, eof=Token(tok=.Eof, span=end))
+
+    def current(self) -> Token:
+        if self.pos < len(self.tokens):
+            return self.tokens[self.pos]
+        self.eof
+
+    def peek(self) -> Tok:
+        self.current().tok
+
+    def peek_at(self, ahead: int) -> Tok:
+        at = self.pos + ahead
+        if at < len(self.tokens):
+            return self.tokens[at].tok
+        self.eof.tok
+
+    def span(self) -> Span:
+        self.current().span
+
+    def prev_span(self) -> Span:
+        if self.pos > 0 and self.pos <= len(self.tokens):
+            return self.tokens[self.pos - 1].span
+        self.span()
+
+    def advance(mut self) -> Token:
+        token = self.current()
+        if self.pos < len(self.tokens):
+            self.pos += 1
+        token
+
+    def at(self, tok: Tok) -> bool:
+        self.peek() == tok
+
+    def at_punct(self, text: str) -> bool:
+        self.peek() == .Punct(text)
+
+    def at_keyword(self, word: str) -> bool:
+        self.peek() == .Keyword(word)
+
+    ## Whether the next token is the soft keyword `word`.
+    def at_soft(self, word: str) -> bool:
+        self.peek() == Tok.Name(word)
+
+    def eat(mut self, tok: Tok) -> bool:
+        found = self.at(tok)
+        if found:
+            self.pos += 1
+        found
+
+    def eat_punct(mut self, text: str) -> bool:
+        self.eat(.Punct(text))
+
+    def eat_keyword(mut self, word: str) -> bool:
+        self.eat(.Keyword(word))
+
+    def expect_punct(mut self, text: str) -> Span:
+        if not self.at_punct(text):
+            fail self.unexpected(f"`{text}`")
+        self.advance().span
+
+    def unexpected(self, expected: str) -> Diagnostic:
+        Diagnostic(message=f"expected {expected}, found {describe(self.peek())}", span=self.span())
+
+    def name(mut self, what: str) -> str:
+        match self.peek():
+            case .Name(name):
+                self.advance()
+                return name
+            case .Keyword(word):
+                if is_reserved(word):
+                    fail self.reserved(word)
+            case _: pass
+        fail self.unexpected(what)
+
+    def reserved(self, word: str) -> Diagnostic:
+        Diagnostic(
+            message=f"`{word}` is part of Fennec's design but isn't supported yet",
+            span=self.span(),
+            help="see what's coming at https://fennec-lang.dev/roadmap/",
+        )
+
+    ## The start of an indented block: a line break, then a deeper indent.
+    def expect_block_start(mut self):
+        if not (self.eat(.Newline) and self.eat(.Indent)):
+            fail Diagnostic(
+                message="expected an indented block",
+                span=self.span(),
+                help="indent the body 4 spaces more than the line ending in `:`",
+            )
+
+    def end_line(mut self):
+        block_ended = self.block_ended
+        self.block_ended = False
+        if block_ended or self.eat(.Newline) or self.at(.Eof) or self.at(.Dedent):
+            return
+        fail self.unexpected("the end of the line")
+
+    def module(mut self) -> Module:
+        mut items = []
+        while True:
+            while self.eat(.Newline):
+                pass
+            if self.at(.Eof):
+                break
+            items.append(self.item()?)
+        Module(items=items)
+
+    def item(mut self) -> Item:
+        # `export` and `noalloc` are accepted; visibility and allocation checks come with the type checker.
+        self.eat_keyword("export")
+        if self.eat_keyword("noalloc") and not self.at_keyword("def"):
+            fail Diagnostic(message="`noalloc` goes right before `def`", span=self.span())
+        match self.peek():
+            case .Keyword(word):
+                if word == "def":
+                    return .Function(self.function()?)
+                if word == "from" or word == "import":
+                    return .Import(self.import_names()?)
+            case .Name(word):
+                if self.is_declaration(word):
+                    return self.declaration(word)?
+            case _: pass
+        stmt = self.stmt()?
+        fail Diagnostic(
+            message="only declarations can go at the top level of a file",
+            span=stmt.span,
+            help="put this code inside `def main(stdout: Stdout):`",
+        )
+
+    def is_declaration(self, word: str) -> bool:
+        if word in ["struct", "enum", "error", "interface"]:
+            return is_name(self.peek_at(1))
+        if word == "type":
+            return is_name(self.peek_at(1)) and self.peek_at(2) == .Punct("=")
+        if word == "test":
+            return is_str(self.peek_at(1))
+        False
+
+    def declaration(mut self, word: str) -> Item:
+        start = self.advance().span
+        match word:
+            case "struct": .Struct(self.type_def(start, False)?)
+            case "error": .Error(self.type_def(start, False)?)
+            case "enum": .Enum(self.type_def(start, True)?)
+            case "interface": self.interface(start)?
+            case "type":
+                name = self.name("a type name")?
+                self.expect_punct("=")?
+                ty = self.type_expr()?
+                span = start.to(self.prev_span())
+                self.end_line()?
+                .TypeAlias(name, ty, span)
+            case _: self.test(start)?
+
+    def type_def(mut self, start: Span, is_enum: bool) -> TypeDef:
+        name = self.name("a type name")?
+        self.generic_params()?
+        span = start.to(self.prev_span())
+        self.expect_punct(":")?
+        self.expect_block_start()?
+        mut type_def = TypeDef(name=name, span=span)
+        while not self.eat(.Dedent) and not self.at(.Eof):
+            if self.at_keyword("def"):
+                type_def.methods.append(self.function()?)
+            elif self.eat_keyword("pass"):
+                self.end_line()?
+            elif is_enum:
+                type_def.cases.append(self.case()?)
+            else:
+                type_def.fields.append(self.field(True)?)
+                self.end_line()?
+        type_def
+
+    ## `name: type`, `name = default`, or both, with a `where` rule when `rules` allows.
+    def field(mut self, rules: bool) -> Field:
+        start = self.span()
+        name = self.name("a field name")?
+        mut ty = None
+        if self.eat_punct(":"):
+            ty = self.type_expr()?
+        mut default = None
+        if self.eat_punct("="):
+            default = self.expr()?
+        mut rule = None
+        if rules and self.at_soft("where"):
+            self.advance()
+            rule = self.expr()?
+        if ty is None and default is None:
+            fail Diagnostic(
+                message=f"field `{name}` needs a type or a default",
+                span=start,
+                help=f"write `{name}: int`, or a default like `{name} = 0`",
+            )
+        Field(name=name, ty=ty, default=default, rule=rule, span=start.to(self.prev_span()))
+
+    def case(mut self) -> Case:
+        start = self.span()
+        name = self.name("an enum case")?
+        mut fields = []
+        if self.eat_punct("("):
+            while not self.at_punct(")"):
+                fields.append(self.field(False)?)
+                if not self.eat_punct(","):
+                    break
+            self.expect_punct(")")?
+        span = start.to(self.prev_span())
+        self.end_line()?
+        Case(name=name, fields=fields, span=span)
+
+    def interface(mut self, start: Span) -> Item:
+        name = self.name("an interface name")?
+        self.expect_punct(":")?
+        self.expect_block_start()?
+        mut methods = []
+        while not self.eat(.Dedent) and not self.at(.Eof):
+            if not self.eat_keyword("pass"):
+                methods.append(self.signature()?)
+            self.end_line()?
+        .Interface(Interface(name=name, methods=methods, span=start.to(self.prev_span())))
+
+    def test(mut self, start: Span) -> Item:
+        mut name = ""
+        match self.advance().tok:
+            case .Str(text): name = text
+            case _: fail self.unexpected("a test name")
+        mut inputs = []
+        if self.eat_keyword("for"):
+            inputs.append(self.param()?)
+            while self.eat_punct(","):
+                inputs.append(self.param()?)
+        span = start.to(self.prev_span())
+        self.expect_punct(":")?
+        body = self.block()?
+        .Test(TestDef(name=name, inputs=inputs, body=body, span=span))
+
+    ## `import a.b`, or `from a.b import x, y`.
+    def import_names(mut self) -> Import:
+        start = self.span()
+        is_from = self.eat_keyword("from")
+        if not is_from:
+            self.advance()
+        mut module = [self.name("a module name")?]
+        while self.eat_punct("."):
+            module.append(self.name("a module name")?)
+        mut names = []
+        if is_from:
+            if not self.eat_keyword("import"):
+                fail self.unexpected("`import`")
+            names.append(self.name("a name to import")?)
+            while self.eat_punct(","):
+                names.append(self.name("a name to import")?)
+        span = start.to(self.prev_span())
+        self.end_line()?
+        Import(module=module, names=names, span=span)
+
+    ## `[T, U: Shape]` after a function or type name. Generic parameters are checked by the
+    ## type checker, so the parser only needs to skip them.
+    def generic_params(mut self):
+        if not self.eat_punct("["):
+            return
+        while True:
+            self.name("a type parameter")?
+            if self.eat_punct(":"):
+                self.type_expr()?
+            if not self.eat_punct(","):
+                break
+        self.expect_punct("]")?
+
+    def function(mut self) -> FnDef:
+        mut function = self.signature()?
+        self.expect_punct(":")?
+        function.body = self.block()?
+        function
+
+    ## `def name(params) -> ret`, without a body. Operators and indexing are defined as
+    ## `def +`, `def []` and `def []=`.
+    def signature(mut self) -> FnDef:
+        start = self.advance().span
+        mut name = ""
+        match self.peek():
+            case .Name(text): name = text
+            case .Punct(text):
+                if text in ["+", "-", "*", "/", "//", "%", "==", "<"]:
+                    name = text
+                elif text == "[" and self.peek_at(1) == .Punct("]"):
+                    self.pos += 1
+                    name = "[]"
+            case _: pass
+        if name == "":
+            fail self.unexpected("a function name")
+        self.advance()
+        if name == "[]" and self.eat_punct("="):
+            name = "[]="
+        self.generic_params()?
+        self.expect_punct("(")?
+        mut params = []
+        while not self.at_punct(")"):
+            params.append(self.param()?)
+            if not self.eat_punct(","):
+                break
+        self.expect_punct(")")?
+        mut ret = None
+        if self.eat_punct("->"):
+            ret = self.type_expr()?
+        FnDef(name=name, params=params, ret=ret, body=[], span=start.to(self.prev_span()))
+
+    def param(mut self) -> Param:
+        start = self.span()
+        is_mut = self.eat_keyword("mut")
+        name = self.name("a parameter name")?
+        if name == "self":
+            return Param(name=name, ty=None, is_mut=is_mut, is_self=True, span=start.to(self.prev_span()))
+        if not self.eat_punct(":"):
+            fail Diagnostic(
+                message=f"parameter `{name}` needs a type",
+                span=self.prev_span(),
+                help=f"write it with its type, like `{name}: int`",
+            )
+        ty = self.type_expr()?
+        Param(name=name, ty=ty, is_mut=is_mut, is_self=False, span=start.to(self.prev_span()))
+
+    def type_expr(mut self) -> TypeExpr:
+        start = self.span()
+        mut args = []
+        mut name = ""
+        if self.eat_keyword("None"):
+            name = "None"
+        elif self.eat_punct("("):
+            while not self.at_punct(")"):
+                args.append(self.type_expr()?)
+                if not self.eat_punct(","):
+                    break
+            self.expect_punct(")")?
+            name = "tuple"
+        else:
+            name = self.name("a type")?
+        if self.eat_punct("["):
+            args.append(self.type_expr()?)
+            while self.eat_punct(","):
+                args.append(self.type_expr()?)
+            self.expect_punct("]")?
+        optional = self.eat_punct("?")
+        TypeExpr(name=name, args=args, optional=optional, span=start.to(self.prev_span()))
+
+    # ---- Statements and blocks (crates/syntax/src/parser/stmt.rs) ----
+
+    ## The body after a `:`: an indented block, or one simple statement on the same line.
+    def block(mut self) -> list[Stmt]:
+        if not self.at(.Newline):
+            return [self.simple_stmt()?]
+        self.expect_block_start()?
+        mut stmts = []
+        while not self.eat(.Dedent) and not self.at(.Eof):
+            stmts.append(self.stmt()?)
+        stmts
+
+    def stmt(mut self) -> Stmt:
+        if self.at_keyword("if"):
+            return self.if_stmt()?
+        if self.at_keyword("while"):
+            return self.while_stmt()?
+        if self.at_keyword("for"):
+            return self.for_stmt()?
+        if self.at_keyword("with"):
+            return self.with_stmt()?
+        if self.at_keyword("def"):
+            function = self.function()?
+            return Stmt(kind=.Def(function), span=function.span)
+        self.simple_stmt()
+
+    def simple_stmt(mut self) -> Stmt:
+        start = self.span()
+        kind = match self.peek():
+            case .Keyword(word): self.keyword_stmt(word)?
+            case .Name(word):
+                if self.is_python_only(word):
+                    fail python_only(word, start)
+                self.expr_or_assign()?
+            case _: self.expr_or_assign()?
+        span = start.to(self.prev_span())
+        self.end_line()?
+        Stmt(kind=kind, span=span)
+
+    ## A simple statement that starts with the keyword `word`.
+    def keyword_stmt(mut self, word: str) -> StmtKind:
+        if is_reserved(word):
+            fail self.reserved(word)
+        if word == "mut":
+            return self.mut_declaration()?
+        if word not in ["return", "fail", "yield", "assert", "break", "continue", "pass"]:
+            return self.expr_or_assign()?
+        self.advance()
+        match word:
+            case "return":
+                if self.at(.Newline) or self.at(.Eof) or self.at(.Dedent):
+                    return .Return(None)
+                .Return(self.expr()?)
+            case "fail": .Fail(self.expr()?)
+            case "yield": .Yield(self.expr()?)
+            case "assert": .Assert(self.expr()?)
+            case "break": .Break
+            case "continue": .Continue
+            case _: .Pass
+
+    ## `raise x`, `try:` and `except x:` at the start of a statement: Python habits Fennec
+    ## catches with a pointer to what to write instead.
+    def is_python_only(self, word: str) -> bool:
+        word in ["raise", "try", "except", "finally"] and not (
+            self.peek_at(1) in [.Punct("="), .Punct("."), .Punct("("), .Punct("[")]
+        )
+
+    def mut_declaration(mut self) -> StmtKind:
+        self.advance()
+        target = self.expr()?
+        if not is_name_expr(target):
+            fail Diagnostic(message="`mut` declares a new name, like `mut count = 0`", span=target.span)
+        self.expect_punct("=")?
+        value = self.expr()?
+        .Assign(target, None, value, True)
+
+    ## An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
+    def expr_or_assign(mut self) -> StmtKind:
+        mut target = self.expr()?
+        if self.at_punct(","):
+            mut items = [target]
+            while self.eat_punct(","):
+                items.append(self.expr()?)
+            mut span = self.prev_span()
+            for item in items:
+                span = span.to(item.span)
+            target = Expr(kind=ExprKind.Tuple(items), span=span)
+        if self.peek() not in [.Punct("="), .Punct("+="), .Punct("-="), .Punct("*="), .Punct("/=")]:
+            return StmtKind.Expr(target)
+        op = assignment_op(self.advance().tok)
+        if not is_assignable(target, op is None):
+            fail Diagnostic(message="this can't be assigned to", span=target.span)
+        value = self.expr()?
+        .Assign(target, op, value, False)
+
+    def if_stmt(mut self) -> Stmt:
+        start = self.advance().span
+        mut branches = [self.condition_and_block()?]
+        mut otherwise = None
+        while True:
+            if self.eat_keyword("elif"):
+                branches.append(self.condition_and_block()?)
+            elif self.eat_keyword("else"):
+                self.expect_punct(":")?
+                otherwise = self.block()?
+                break
+            else:
+                break
+        Stmt(kind=.If(branches, otherwise), span=start.to(self.prev_span()))
+
+    def condition_and_block(mut self) -> (Expr, list[Stmt]):
+        cond = self.expr()?
+        self.expect_punct(":")?
+        (cond, self.block()?)
+
+    def while_stmt(mut self) -> Stmt:
+        start = self.advance().span
+        cond, body = self.condition_and_block()?
+        Stmt(kind=.While(cond, body), span=start.to(self.prev_span()))
+
+    def for_stmt(mut self) -> Stmt:
+        start = self.advance().span
+        is_mut = self.eat_keyword("mut")
+        names = self.loop_names()?
+        iter, body = self.condition_and_block()?
+        Stmt(kind=.For(names, is_mut, iter, body), span=start.to(self.prev_span()))
+
+    ## `name` or `a, b`, then `in`.
+    def loop_names(mut self) -> list[str]:
+        mut names = [self.name("a loop variable")?]
+        while self.eat_punct(","):
+            names.append(self.name("a loop variable")?)
+        if not self.eat_keyword("in"):
+            fail self.unexpected("`in`")
+        names
+
+    def with_stmt(mut self) -> Stmt:
+        start = self.advance().span
+        value = self.expr()?
+        mut name = None
+        mut is_mut = False
+        if self.eat_keyword("as"):
+            is_mut = self.eat_keyword("mut")
+            name = self.name("a name after `as`")?
+        self.expect_punct(":")?
+        body = self.block()?
+        Stmt(kind=.With(value, name, is_mut, body), span=start.to(self.prev_span()))
+
+    # ---- Expressions (crates/syntax/src/parser/expr.rs) ----
+    # From lowest precedence to highest: arrow functions and `match`; conditional expressions
+    # and `else` defaults; `or`; `and`; `not`; comparisons; `+ -`; `* / // %`; unary minus;
+    # `**`; then calls, attributes, indexing, `?` and `?.`.
+
+    def expr(mut self) -> Expr:
+        if self.at_match():
+            return self.match_expr()?
+        lambda = self.lambda()?
+        if lambda is not None:
+            return lambda
+        value = self.or_expr()?
+        if self.eat_keyword("if"):
+            cond = self.or_expr()?
+            if not self.eat_keyword("else"):
+                fail Diagnostic(
+                    message="a conditional expression needs `else`",
+                    span=self.span(),
+                    help="write `a if condition else b`",
+                )
+            otherwise = self.expr()?
+            return Expr(kind=.Cond(value, cond, otherwise), span=value.span.to(otherwise.span))
+        if self.eat_keyword("else"):
+            default = self.expr()?
+            return Expr(kind=.Else(value, default), span=value.span.to(default.span))
+        value
+
+    ## `x => body` or `(a, b) => body`.
+    def lambda(mut self) -> Expr?:
+        start = self.span()
+        mut params = []
+        if is_name(self.peek()) and self.peek_at(1) == .Punct("=>"):
+            params.append(self.name("a parameter")?)
+            self.pos += 1
+        elif self.at_punct("("):
+            found = self.paren_params()
+            if found is None:
+                return None
+            names, used = found
+            params = names
+            self.pos += used
+        else:
+            return None
+        body = self.expr()?
+        Expr(kind=.Lambda(params, body), span=start.to(body.span))
+
+    ## Looks ahead for `(a, b) =>`, returning the names and how many tokens they take.
+    def paren_params(self) -> (list[str], int)?:
+        mut params = []
+        mut at = 1
+        while True:
+            match self.peek_at(at):
+                case .Name(name): params.append(name)
+                case .Punct(")"):
+                    if len(params) > 0:
+                        return None
+                    break
+                case _: return None
+            at += 1
+            if self.peek_at(at) == .Punct(")"):
+                break
+            if self.peek_at(at) != .Punct(","):
+                return None
+            at += 1
+        if self.peek_at(at + 1) != .Punct("=>"):
+            return None
+        (params, at + 2)
+
+    def or_expr(mut self) -> Expr:
+        mut lhs = self.and_expr()?
+        while self.eat_keyword("or"):
+            lhs = binary(.Or, lhs, self.and_expr()?)
+        lhs
+
+    def and_expr(mut self) -> Expr:
+        mut lhs = self.not_expr()?
+        while self.eat_keyword("and"):
+            lhs = binary(.And, lhs, self.not_expr()?)
+        lhs
+
+    def not_expr(mut self) -> Expr:
+        start = self.span()
+        if self.eat_keyword("not"):
+            operand = self.not_expr()?
+            return Expr(kind=.Unary(UnaryOp.Not, operand), span=start.to(operand.span))
+        self.comparison()
+
+    ## Comparisons chain as in Python: `a < b <= c` means `a < b and b <= c`.
+    def comparison(mut self) -> Expr:
+        mut lhs = self.sum()?
+        mut chain = None
+        while True:
+            op = comparison_op(self.peek(), self.peek_at(1))
+            if op is None:
+                break
+            self.pos += 2 if op == .NotIn or op == .IsNot else 1
+            rhs = self.sum()?
+            pair = binary(op, lhs, rhs)
+            if chain is None:
+                chain = pair
+            else:
+                chain = binary(.And, chain, pair)
+            lhs = rhs
+        chain else lhs
+
+    def sum(mut self) -> Expr:
+        mut lhs = self.term()?
+        while self.at_punct("+") or self.at_punct("-"):
+            op = BinOp.Add if self.advance().tok == .Punct("+") else BinOp.Sub
+            lhs = binary(op, lhs, self.term()?)
+        lhs
+
+    def term(mut self) -> Expr:
+        mut lhs = self.unary()?
+        while True:
+            op = term_op(self.peek())
+            if op is None:
+                break
+            self.advance()
+            lhs = binary(op, lhs, self.unary()?)
+        lhs
+
+    def unary(mut self) -> Expr:
+        start = self.span()
+        if self.eat_punct("-"):
+            operand = self.unary()?
+            return Expr(kind=.Unary(UnaryOp.Neg, operand), span=start.to(operand.span))
+        base = self.postfix()?
+        if self.eat_punct("**"):
+            return binary(.Pow, base, self.unary()?)
+        base
+
+    def postfix(mut self) -> Expr:
+        mut expr = self.atom()?
+        while True:
+            if self.eat_punct("("):
+                args = self.call_args()?
+                span = expr.span.to(self.expect_punct(")")?)
+                expr = Expr(kind=.Call(expr, args), span=span)
+            elif self.at_punct(".") or (self.at_punct("?") and self.peek_at(1) == .Punct(".")):
+                optional = self.eat_punct("?")
+                self.advance()
+                name = self.name("a name after `.`")?
+                expr = Expr(kind=.Attr(expr, name, optional), span=expr.span.to(self.prev_span()))
+            elif self.eat_punct("["):
+                expr = self.index(expr)?
+            elif self.eat_punct("?"):
+                mut context = None
+                if self.eat_keyword("from"):
+                    context = self.postfix()?
+                expr = Expr(kind=.Try(expr, context), span=expr.span.to(self.prev_span()))
+            else:
+                break
+        expr
+
+    ## `object[index]` or a slice `object[start:end]`, after the `[`.
+    def index(mut self, object: Expr) -> Expr:
+        mut start = None
+        if not self.at_punct(":"):
+            start = self.expr()?
+        is_slice = self.eat_punct(":")
+        mut end = None
+        if is_slice and not self.at_punct("]"):
+            end = self.expr()?
+        span = object.span.to(self.expect_punct("]")?)
+        if is_slice:
+            return Expr(kind=.Slice(object, start, end), span=span)
+        if start is None:
+            fail self.unexpected("an index")
+        Expr(kind=.Index(object, start), span=span)
+
+    ## Arguments up to (not including) `)`. A single argument followed by `for` is a generator
+    ## expression, as in `sum(x * x for x in xs)`.
+    def call_args(mut self) -> list[Arg]:
+        mut args = []
+        while not self.at_punct(")"):
+            is_mut = self.eat_keyword("mut")
+            mut name = None
+            if not is_mut and is_name(self.peek()) and self.peek_at(1) == .Punct("="):
+                name = self.name("an argument name")?
+                self.pos += 1
+            mut value = self.expr()?
+            if len(args) == 0 and name is None and not is_mut and self.at_keyword("for"):
+                value = self.comprehension(.Generator, value, None)?
+            args.append(Arg(name=name, is_mut=is_mut, value=value))
+            if not self.eat_punct(","):
+                break
+        args
+
+    ## The `for names in iter if cond` part of a comprehension, after its element.
+    def comprehension(mut self, kind: CompKind, elem: Expr, value: Expr?) -> Expr:
+        self.advance()
+        names = self.loop_names()?
+        iter = self.or_expr()?
+        mut cond = None
+        if self.eat_keyword("if"):
+            cond = self.or_expr()?
+        span = elem.span.to(self.prev_span())
+        Expr(kind=.Comprehension(kind, elem, value, names, iter, cond), span=span)
+
+    def atom(mut self) -> Expr:
+        token = self.advance()
+        span = token.span
+        kind = match token.tok:
+            case .Int(value): ExprKind.Int(value)
+            case .Float(value): ExprKind.Float(value)
+            case .Str(text): ExprKind.Str(text)
+            case .FStr(parts): ExprKind.FStr(fstring_parts(parts)?)
+            case .Name(name): ExprKind.Name(name)
+            case .Keyword(word): self.keyword_atom(word, span)?
+            case .Punct(text):
+                if text == "(":
+                    return self.parenthesized(span)?
+                if text == "[":
+                    return self.list(span)?
+                if text == "{":
+                    return self.braces(span)?
+                if text != ".":
+                    self.pos -= 1
+                    fail Diagnostic(message=f"expected a value, found `{text}`", span=span)
+                ExprKind.Variant(self.name("an enum case after `.`")?)
+            case other:
+                self.pos -= 1
+                fail Diagnostic(message=f"expected a value, found {describe(other)}", span=span)
+        Expr(kind=kind, span=span.to(self.prev_span()))
+
+    ## `True`, `False` or `None`, after the keyword. Any other keyword can't start a value.
+    def keyword_atom(mut self, word: str, span: Span) -> ExprKind:
+        match word:
+            case "True": .Bool(True)
+            case "False": .Bool(False)
+            case "None": .Nothing
+            case _:
+                self.pos -= 1
+                if is_reserved(word):
+                    fail self.reserved(word)
+                fail Diagnostic(message=f"expected a value, found `{word}`", span=span)
+
+    ## `(expr)`, or a tuple: `()`, `(a,)`, `(a, b)`.
+    def parenthesized(mut self, start: Span) -> Expr:
+        mut items = []
+        mut trailing_comma = False
+        while not self.at_punct(")"):
+            items.append(self.expr()?)
+            trailing_comma = self.eat_punct(",")
+            if not trailing_comma:
+                break
+        span = start.to(self.expect_punct(")")?)
+        if len(items) == 1 and not trailing_comma:
+            return items[0]
+        Expr(kind=ExprKind.Tuple(items), span=span)
+
+    def list(mut self, start: Span) -> Expr:
+        mut items = []
+        while not self.at_punct("]"):
+            item = self.expr()?
+            if len(items) == 0 and self.at_keyword("for"):
+                comprehension = self.comprehension(CompKind.List, item, None)?
+                return Expr(kind=comprehension.kind, span=start.to(self.expect_punct("]")?))
+            items.append(item)
+            if not self.eat_punct(","):
+                break
+        span = start.to(self.expect_punct("]")?)
+        Expr(kind=ExprKind.List(items), span=span)
+
+    ## `{}` (an empty dict), `{k: v, ...}`, `{a, b}`, or a dict or set comprehension.
+    def braces(mut self, start: Span) -> Expr:
+        if self.at_punct("}"):
+            return Expr(kind=ExprKind.Dict([]), span=start.to(self.advance().span))
+        first = self.expr()?
+        is_dict = self.eat_punct(":")
+        mut first_value = None
+        if is_dict:
+            first_value = self.expr()?
+        if self.at_keyword("for"):
+            kind = CompKind.Dict if is_dict else CompKind.Set
+            comprehension = self.comprehension(kind, first, first_value)?
+            return Expr(kind=comprehension.kind, span=start.to(self.expect_punct("}")?))
+        if first_value is not None:
+            mut pairs = [(first, first_value)]
+            while self.eat_punct(",") and not self.at_punct("}"):
+                key = self.expr()?
+                self.expect_punct(":")?
+                pairs.append((key, self.expr()?))
+            return Expr(kind=ExprKind.Dict(pairs), span=start.to(self.expect_punct("}")?))
+        mut items = [first]
+        while self.eat_punct(",") and not self.at_punct("}"):
+            items.append(self.expr()?)
+        Expr(kind=ExprKind.Set(items), span=start.to(self.expect_punct("}")?))
+
+    # ---- `match` and its patterns (crates/syntax/src/parser/pattern.rs) ----
+
+    ## Whether `match` here starts a match rather than naming something called `match`.
+    def at_match(self) -> bool:
+        if not self.at_soft("match"):
+            return False
+        next = self.peek_at(1)
+        if next == .Newline or next == .Eof:
+            return False
+        next not in [.Punct("="), .Punct("("), .Punct("."), .Punct(","), .Punct(")"), .Punct(":")]
+
+    def match_expr(mut self) -> Expr:
+        start = self.advance().span
+        subject = self.or_expr()?
+        self.expect_punct(":")?
+        self.expect_block_start()?
+        mut arms = []
+        while not self.eat(.Dedent) and not self.at(.Eof):
+            if not self.at_soft("case"):
+                fail self.unexpected("`case`")
+            arm_start = self.advance().span
+            pattern = self.pattern()?
+            self.expect_punct(":")?
+            body = self.block()?
+            arms.append(MatchArm(pattern=pattern, body=body, span=arm_start.to(self.prev_span())))
+        self.block_ended = True
+        Expr(kind=.Match(subject, arms), span=start.to(self.prev_span()))
+
+    def pattern(mut self) -> Pattern:
+        token = self.advance()
+        match token.tok:
+            case .Name(name):
+                if name == "_":
+                    return .Wildcard
+                if name[0] >= "A" and name[0] <= "Z":
+                    return Pattern.Variant(name, False, self.pattern_args()?)
+                .Bind(name)
+            case .Int(value): literal(ExprKind.Int(value), token.span)
+            case .Float(value): literal(ExprKind.Float(value), token.span)
+            case .Str(text): literal(ExprKind.Str(text), token.span)
+            case .Keyword(word):
+                if word == "True" or word == "False":
+                    return literal(.Bool(word == "True"), token.span)
+                if word == "None":
+                    return literal(.Nothing, token.span)
+                self.pos -= 1
+                fail self.unexpected("a pattern")
+            case .Punct(text): self.punct_pattern(text, token.span)?
+            case _:
+                self.pos -= 1
+                fail self.unexpected("a pattern")
+
+    ## A pattern that starts with punctuation: `.Case(...)`, a negative number, or a tuple.
+    def punct_pattern(mut self, text: str, span: Span) -> Pattern:
+        if text == ".":
+            name = self.name("an enum case")?
+            return Pattern.Variant(name, True, self.pattern_args()?)
+        if text == "-":
+            match self.advance().tok:
+                case .Int(value): return literal(ExprKind.Int(-value), span)
+                case .Float(value): return literal(ExprKind.Float(-value), span)
+                case _: fail Diagnostic(message="expected a number after `-`", span=span)
+        if text == "(":
+            mut items = []
+            while not self.at_punct(")"):
+                items.append(self.pattern()?)
+                if not self.eat_punct(","):
+                    break
+            self.expect_punct(")")?
+            return Pattern.Tuple(items)
+        self.pos -= 1
+        fail self.unexpected("a pattern")
+
+    def pattern_args(mut self) -> list[Pattern]:
+        mut args = []
+        if self.eat_punct("("):
+            while not self.at_punct(")"):
+                args.append(self.pattern()?)
+                if not self.eat_punct(","):
+                    break
+            self.expect_punct(")")?
+        args
+
+# ---- Parser helpers ----
+
+def is_name(tok: Tok) -> bool:
+    match tok:
+        case .Name(_): True
+        case _: False
+
+def is_str(tok: Tok) -> bool:
+    match tok:
+        case .Str(_): True
+        case _: False
+
+def is_name_expr(expr: Expr) -> bool:
+    match expr.kind:
+        case .Name(_): True
+        case _: False
+
+## Whether `target` can go on the left of `=`, or of `+=` and the rest when not `plain`.
+def is_assignable(target: Expr, plain: bool) -> bool:
+    match target.kind:
+        case .Name(_): True
+        case .Index(_, _): True
+        case .Attr(_, _, optional): not optional
+        case .Tuple(items): plain and all(is_name_expr(item) for item in items)
+        case _: False
+
+## The operator `+=` and the rest apply, or None for a plain `=`.
+def assignment_op(tok: Tok) -> BinOp?:
+    match tok:
+        case .Punct("+="): .Add
+        case .Punct("-="): .Sub
+        case .Punct("*="): .Mul
+        case .Punct("/="): .Div
+        case _: None
+
+## The comparison that `first` (and `second`, for `not in` and `is not`) start, if any.
+def comparison_op(first: Tok, second: Tok) -> BinOp?:
+    match first:
+        case .Punct("=="): .Eq
+        case .Punct("!="): .NotEq
+        case .Punct("<"): .Lt
+        case .Punct("<="): .LtEq
+        case .Punct(">"): .Gt
+        case .Punct(">="): .GtEq
+        case .Keyword("in"): .In
+        case .Keyword("not"): .NotIn if second == .Keyword("in") else None
+        case .Keyword("is"): .IsNot if second == .Keyword("not") else .Is
+        case _: None
+
+def term_op(tok: Tok) -> BinOp?:
+    match tok:
+        case .Punct("*"): .Mul
+        case .Punct("/"): .Div
+        case .Punct("//"): .FloorDiv
+        case .Punct("%"): .Mod
+        case _: None
+
+def binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr:
+    Expr(kind=.Binary(op, lhs, rhs), span=lhs.span.to(rhs.span))
+
+def literal(kind: ExprKind, span: Span) -> Pattern:
+    .Literal(Expr(kind=kind, span=span))
+
+## How an error message names a token.
+def describe(tok: Tok) -> str:
+    match tok:
+        case .Name(name): f"`{name}`"
+        case .Int(_): "a number"
+        case .Float(_): "a number"
+        case .Str(_): "a string"
+        case .FStr(_): "a string"
+        case .Keyword(word): f"`{word}`"
+        case .Punct(text): f"`{text}`"
+        case .Newline: "the end of the line"
+        case .Indent: "an indented line"
+        case .Dedent: "the end of the block"
+        case .Eof: "the end of the file"
+
+def python_only(word: str, span: Span) -> Diagnostic:
+    mut help = "Fennec has no exceptions: pass errors up with `?`, give a default with `else`, or handle them with `match`"
+    if word == "raise":
+        help = "Fennec has no exceptions: write `fail SomeError(...)`, which returns the error"
+    Diagnostic(message=f"Fennec doesn't have `{word}`", span=span, help=help)
+
+## Parses each `{expression}` of an f-string, from the source the lexer kept.
+def fstring_parts(parts: list[FPart]) -> list[FStrPart]:
+    mut parsed = []
+    for part in parts:
+        match part:
+            case .Text(text): parsed.append(FStrPart.Text(text))
+            case .Code(source, offset, spec):
+                if source.strip() == "":
+                    fail Diagnostic(
+                        message="this f-string has an empty `{}`",
+                        span=Span(start=offset, end=offset + 1),
+                        help="put an expression inside, or write `{{` for a literal brace",
+                    )
+                mut parser = Parser.over(lex(source, offset)?)
+                expr = parser.expr()?
+                parser.eat(.Newline)
+                if not parser.at(.Eof):
+                    fail parser.unexpected("`}`")
+                parsed.append(FStrPart.Code(expr, spec))
+    parsed
+
+# ---- Dumps (crates/syntax/src/dump.rs, dump/tree.rs) ----
 
 ## Every token in `source`, one per line, or the error that stopped the lexer.
 def dump_tokens(source: str) -> str:
@@ -451,10 +1652,347 @@ def quoted(text: str) -> str:
             case _: c
     out + "\""
 
+## The syntax tree of `source`, one node per line, or the error that stopped the parser.
+def dump_tree(source: str) -> str:
+    match parse(source):
+        case Ok(module):
+            mut tree = Tree()
+            tree.write_module(module)
+            "".join(line + "\n" for line in tree.lines)
+        case Err(diagnostic): dump_error(diagnostic)
+
+## The syntax tree as indented text: one node per line, its children two spaces deeper, and
+## its span at the end as `@start..end`.
+struct Tree:
+    lines: list[str] = []
+    ## Two spaces for each level of nesting.
+    indent = ""
+
+    def line(mut self, label: str):
+        self.lines.append(self.indent + label)
+
+    def spanned(mut self, label: str, span: Span):
+        self.line(f"{label} @{span.start}..{span.end}")
+
+    ## A line for a node whose children follow, one level deeper, until `close`.
+    def open(mut self, label: str, span: Span?):
+        if span is None:
+            self.line(label)
+        else:
+            self.spanned(label, span)
+        self.indent += "  "
+
+    def close(mut self):
+        self.indent = self.indent[2:]
+
+    def write_module(mut self, module: Module):
+        self.open("module", None)
+        for item in module.items:
+            self.write_item(item)
+        self.close()
+
+    def write_item(mut self, item: Item):
+        match item:
+            case .Function(function): self.write_function(function)
+            case .Struct(type_def): self.write_type_def("struct", type_def)
+            case .Enum(type_def): self.write_type_def("enum", type_def)
+            case .Error(type_def): self.write_type_def("error", type_def)
+            case .Interface(interface):
+                self.open(f"interface {interface.name}", interface.span)
+                for method in interface.methods:
+                    self.write_function(method)
+                self.close()
+            case .TypeAlias(name, ty, span):
+                self.open(f"type-alias {name}", span)
+                self.write_type_expr(ty)
+                self.close()
+            case .Import(imported):
+                mut label = "import " + ".".join(imported.module)
+                if len(imported.names) > 0:
+                    label += ": " + ", ".join(imported.names)
+                self.spanned(label, imported.span)
+            case .Test(test):
+                self.open(f"test {quoted(test.name)}", test.span)
+                for input in test.inputs:
+                    self.write_param(input)
+                self.write_stmts(test.body)
+                self.close()
+
+    def write_function(mut self, function: FnDef):
+        self.open(f"def {function.name}", function.span)
+        for param in function.params:
+            self.write_param(param)
+        ret = function.ret
+        if ret is not None:
+            self.open("returns", None)
+            self.write_type_expr(ret)
+            self.close()
+        self.write_stmts(function.body)
+        self.close()
+
+    def write_param(mut self, param: Param):
+        mut label = f"param {param.name}"
+        if param.is_mut:
+            label += " mut"
+        if param.is_self:
+            label += " self"
+        self.open(label, param.span)
+        ty = param.ty
+        if ty is not None:
+            self.write_type_expr(ty)
+        self.close()
+
+    def write_type_expr(mut self, ty: TypeExpr) -> nothing:
+        self.open(f"type {ty.name}" + ("?" if ty.optional else ""), ty.span)
+        for arg in ty.args:
+            self.write_type_expr(arg)
+        self.close()
+
+    def write_type_def(mut self, kind: str, type_def: TypeDef):
+        self.open(f"{kind} {type_def.name}", type_def.span)
+        for field in type_def.fields:
+            self.write_field(field)
+        for case in type_def.cases:
+            self.write_case(case)
+        for method in type_def.methods:
+            self.write_function(method)
+        self.close()
+
+    def write_field(mut self, field: Field):
+        self.open(f"field {field.name}", field.span)
+        ty = field.ty
+        if ty is not None:
+            self.write_type_expr(ty)
+        self.labelled("default", field.default)
+        self.labelled("where", field.rule)
+        self.close()
+
+    ## A line saying what `expr` is for, with `expr` under it, when there is one.
+    def labelled(mut self, label: str, expr: Expr?) -> nothing:
+        if expr is None:
+            return
+        self.open(label, None)
+        self.write_expr(expr)
+        self.close()
+
+    def write_case(mut self, case: Case):
+        self.open(f"case {case.name}", case.span)
+        for field in case.fields:
+            self.write_field(field)
+        self.close()
+
+    def write_stmts(mut self, stmts: list[Stmt]) -> nothing:
+        for stmt in stmts:
+            self.write_stmt(stmt)
+
+    def write_stmt(mut self, stmt: Stmt):
+        span = stmt.span
+        match stmt.kind:
+            case .Expr(expr):
+                self.open("expr", span)
+                self.write_expr(expr)
+            case .Assign(target, op, value, declare_mut):
+                mut label = "assign"
+                if op is not None:
+                    label += f" {op.symbol()}="
+                if declare_mut:
+                    label += " mut"
+                self.open(label, span)
+                self.write_expr(target)
+                self.write_expr(value)
+            case .If(branches, otherwise):
+                self.open("if", span)
+                for cond, body in branches:
+                    self.open("branch", None)
+                    self.write_expr(cond)
+                    self.write_stmts(body)
+                    self.close()
+                if otherwise is not None:
+                    self.open("else", None)
+                    self.write_stmts(otherwise)
+                    self.close()
+            case .While(cond, body):
+                self.open("while", span)
+                self.write_expr(cond)
+                self.write_stmts(body)
+            case .For(names, is_mut, iter, body):
+                self.open("for" + (" mut " if is_mut else " ") + ", ".join(names), span)
+                self.write_expr(iter)
+                self.write_stmts(body)
+            case .Return(value):
+                self.open("return", span)
+                if value is not None:
+                    self.write_expr(value)
+            case .Fail(value):
+                self.open("fail", span)
+                self.write_expr(value)
+            case .Yield(value):
+                self.open("yield", span)
+                self.write_expr(value)
+            case .Assert(value):
+                self.open("assert", span)
+                self.write_expr(value)
+            case .With(value, name, is_mut, body):
+                mut label = "with"
+                if name is not None:
+                    label += (" as mut " if is_mut else " as ") + name
+                self.open(label, span)
+                self.write_expr(value)
+                self.write_stmts(body)
+            case .Def(function):
+                self.write_function(function)
+                return
+            case .Break:
+                self.spanned("break", span)
+                return
+            case .Continue:
+                self.spanned("continue", span)
+                return
+            case .Pass:
+                self.spanned("pass", span)
+                return
+        self.close()
+
+    def write_exprs(mut self, exprs: list[Expr]) -> nothing:
+        for expr in exprs:
+            self.write_expr(expr)
+
+    def write_expr(mut self, expr: Expr) -> nothing:
+        span = expr.span
+        match expr.kind:
+            case .Int(value): self.spanned(f"int {value}", span)
+            case .Float(value): self.spanned(f"float {value}", span)
+            case .Str(text): self.spanned(f"str {quoted(text)}", span)
+            case .Bool(value): self.spanned(f"bool {value}", span)
+            case .Nothing: self.spanned("none", span)
+            case .Name(name): self.spanned(f"name {name}", span)
+            case .Variant(name): self.spanned(f"variant {name}", span)
+            case .FStr(parts):
+                self.open("fstr", span)
+                for part in parts:
+                    self.write_fstring_part(part)
+                self.close()
+            case .List(items): self.group("list", span, items)
+            case .Tuple(items): self.group("tuple", span, items)
+            case .Set(items): self.group("set", span, items)
+            case .Dict(pairs):
+                self.open("dict", span)
+                for key, value in pairs:
+                    self.open("pair", None)
+                    self.write_expr(key)
+                    self.write_expr(value)
+                    self.close()
+                self.close()
+            case .Comprehension(kind, elem, value, names, iter, cond):
+                self.open(f"comprehension {comprehension_kind(kind)} " + ", ".join(names), span)
+                self.write_expr(elem)
+                self.labelled("value", value)
+                self.labelled("in", iter)
+                self.labelled("if", cond)
+                self.close()
+            case _: self.write_compound(expr)
+
+    ## A node holding a list of expressions.
+    def group(mut self, label: str, span: Span, items: list[Expr]) -> nothing:
+        self.open(label, span)
+        self.write_exprs(items)
+        self.close()
+
+    def write_fstring_part(mut self, part: FStrPart):
+        match part:
+            case .Text(text): self.line(f"text {quoted(text)}")
+            case .Code(expr, spec):
+                self.labelled("code" if spec is None else f"code spec {quoted(spec)}", expr)
+
+    ## Expressions built from operators, calls and blocks.
+    def write_compound(mut self, expr: Expr):
+        span = expr.span
+        match expr.kind:
+            case .Unary(op, operand):
+                self.open("unary " + ("-" if op == .Neg else "not"), span)
+                self.write_expr(operand)
+            case .Binary(op, lhs, rhs):
+                self.open(f"binary {op.symbol()}", span)
+                self.write_expr(lhs)
+                self.write_expr(rhs)
+            case .Cond(then, cond, otherwise):
+                self.open("cond", span)
+                self.write_exprs([then, cond, otherwise])
+            case .Else(value, default):
+                self.open("else", span)
+                self.write_exprs([value, default])
+            case .Try(value, context):
+                self.open("try", span)
+                self.write_expr(value)
+                self.labelled("from", context)
+            case .Call(callee, args):
+                self.open("call", span)
+                self.write_expr(callee)
+                for arg in args:
+                    self.write_arg(arg)
+            case .Attr(object, name, optional):
+                self.open("attr " + ("?." if optional else ".") + name, span)
+                self.write_expr(object)
+            case .Index(object, index):
+                self.open("index", span)
+                self.write_exprs([object, index])
+            case .Slice(object, start, end):
+                self.open("slice", span)
+                self.write_expr(object)
+                self.labelled("start", start)
+                self.labelled("end", end)
+            case .Lambda(params, body):
+                self.open("lambda " + ", ".join(params), span)
+                self.write_expr(body)
+            case .Match(subject, arms):
+                self.open("match", span)
+                self.write_expr(subject)
+                for arm in arms:
+                    self.write_arm(arm)
+            case _: return
+        self.close()
+
+    def write_arg(mut self, arg: Arg) -> nothing:
+        mut label = "arg"
+        if arg.is_mut:
+            label += " mut"
+        name = arg.name
+        if name is not None:
+            label += f" {name}="
+        self.labelled(label, arg.value)
+
+    def write_arm(mut self, arm: MatchArm):
+        self.open("arm", arm.span)
+        self.write_pattern(arm.pattern)
+        self.write_stmts(arm.body)
+        self.close()
+
+    def write_pattern(mut self, pattern: Pattern) -> nothing:
+        match pattern:
+            case .Wildcard: self.line("pattern _")
+            case .Bind(name): self.line(f"pattern bind {name}")
+            case .Literal(expr): self.labelled("pattern literal", expr)
+            case .Variant(name, dotted, args): self.write_patterns("pattern " + ("." if dotted else "") + name, args)
+            case .Tuple(items): self.write_patterns("pattern tuple", items)
+
+    def write_patterns(mut self, label: str, patterns: list[Pattern]):
+        self.open(label, None)
+        for pattern in patterns:
+            self.write_pattern(pattern)
+        self.close()
+
+def comprehension_kind(kind: CompKind) -> str:
+    match kind:
+        case .List: "list"
+        case .Generator: "generator"
+        case .Set: "set"
+        case .Dict: "dict"
+
 # ---- The command ----
 
 ## Fennec programs can't read their command-line arguments yet, so this reads its work from
-## `inputs.txt` in the current folder: one `tokens <path>` line per file to dump.
+## `inputs.txt` in the current folder: one `tokens <path>` or `tree <path>` line per file
+## to dump.
 def main(stdout: Stdout, fs: Fs):
     request = fs.read_text("inputs.txt")?
     for line in request.lines():
@@ -467,3 +2005,5 @@ def main(stdout: Stdout, fs: Fs):
         stdout.print(f"== {path}")
         if mode == "tokens":
             stdout.write(dump_tokens(source))
+        elif mode == "tree":
+            stdout.write(dump_tree(source))

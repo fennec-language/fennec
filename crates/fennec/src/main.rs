@@ -26,6 +26,7 @@ fn main() -> ExitCode {
         ["test", path] => on_big_stack(test::test, path),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),
+        ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["--version" | "-V"] => {
             println!("🦊 fennec {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -48,8 +49,8 @@ fn on_big_stack(command: fn(&str) -> ExitCode, path: &str) -> ExitCode {
     }
 }
 
-/// `fennec dev tokens <file>`: a hidden command that prints a dump of the front end's work,
-/// for comparing with the self-hosted front end in `selfhost/`.
+/// `fennec dev tokens <file>` and `fennec dev tree <file>`: hidden commands that print a dump
+/// of the front end's work, for comparing with the self-hosted front end in `selfhost/`.
 fn dev(dump: fn(&str) -> String, path: &str) -> ExitCode {
     match std::fs::read_to_string(path) {
         Ok(source) => {

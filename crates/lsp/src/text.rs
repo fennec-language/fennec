@@ -62,9 +62,16 @@ pub fn path_of(uri: &str) -> Option<PathBuf> {
     Some(PathBuf::from(if windows { decoded.get(1..).unwrap_or(&decoded) } else { &decoded }))
 }
 
+/// A path as the kit loader shows it, which is how a program's files are named: with `/`
+/// between folders, and without the `\\?\` Windows puts before a path it has resolved.
+pub(crate) fn shown(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    text.strip_prefix("//?/").map_or_else(|| text.clone(), str::to_owned)
+}
+
 /// The `file://` URI of a path.
 pub fn uri_of(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('\\', "/");
+    let text = shown(path);
     let mut uri = String::from(if text.starts_with('/') { "file://" } else { "file:///" });
     for byte in text.bytes() {
         if byte.is_ascii_alphanumeric() || b"/-._~:".contains(&byte) {

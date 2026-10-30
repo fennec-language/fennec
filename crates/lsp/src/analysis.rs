@@ -38,7 +38,7 @@ pub(crate) fn program_of(file: &Path) -> PathBuf {
 
 /// Loads and checks a program, reading the files in `overlay` from it.
 pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
-    let shown = program.to_string_lossy();
+    let shown = text::shown(program);
     match fennec_kit::load_with(program, &shown, Entry::Everything, overlay) {
         Err(problems) => Analysis {
             sources: problems.sources,

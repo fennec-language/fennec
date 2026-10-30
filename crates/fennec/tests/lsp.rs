@@ -24,7 +24,7 @@ fn framed(message: &str) -> String {
 /// Runs a whole session: opens `main.fen`, shuts down and exits. Gives back what the server
 /// wrote, and whether it exited cleanly.
 fn session(kit: &Path, home: &Path, daemon: bool) -> std::io::Result<(String, bool)> {
-    let uri = format!("file://{}", kit.join("src/main.fen").display());
+    let uri = fennec_lsp::uri_of(&kit.join("src/main.fen"));
     let source = "def main(stdout: Stdout):\\n    stdout.print(nope)\\n";
     let messages = [
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_owned(),

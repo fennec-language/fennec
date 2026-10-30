@@ -116,10 +116,10 @@ impl Session {
         self.refresh(&program);
         let Some((_, _, analysis)) = &self.cached else { return Vec::new() };
         let uri_of = |path: &str| self.uri_of(path);
-        let mut lists = analysis.diagnostics_by_file(&file.to_string_lossy(), &uri_of);
+        let mut lists = analysis.diagnostics_by_file(&text::shown(&file), &uri_of);
         // A single file that's closed is no one's concern anymore.
         if program == file && !self.documents.contains_key(uri) {
-            lists = vec![(file.to_string_lossy().into_owned(), Vec::new())];
+            lists = vec![(text::shown(&file), Vec::new())];
         }
         let mut published = BTreeSet::new();
         let mut notifications = Vec::new();
@@ -170,7 +170,7 @@ impl Session {
     fn at_position(&mut self, params: &Json) -> Option<(Target, &Analysis)> {
         let uri = params.at(&["textDocument", "uri"])?.as_str()?;
         let file = canonical(&text::path_of(uri)?);
-        let path = file.to_string_lossy().into_owned();
+        let path = text::shown(&file);
         let analysis = self.analysis(&program_of(&file))?;
         let (text, _) = analysis.sources.by_path(&path)?;
         let offset = text::offset(text, params.get("position")?)?;
@@ -230,7 +230,7 @@ impl Session {
         let Some(file) = text::path_of(uri).map(|path| canonical(&path)) else {
             return Json::Array(Vec::new());
         };
-        let path = file.to_string_lossy().into_owned();
+        let path = text::shown(&file);
         let documents = self.documents.clone();
         let Some(analysis) = self.analysis(&program_of(&file)) else { return Json::Array(Vec::new()) };
         let Some((text, _)) = analysis.sources.by_path(&path) else { return Json::Array(Vec::new()) };
@@ -263,9 +263,10 @@ impl Session {
 
 /// `uri_of`, for when the session itself is borrowed.
 fn uri_among(documents: &BTreeMap<String, String>, path: &str) -> String {
-    let path = Path::new(path);
-    let open = documents.keys().find(|uri| text::path_of(uri).is_some_and(|open| canonical(&open) == path));
-    open.cloned().unwrap_or_else(|| text::uri_of(path))
+    let open = documents
+        .keys()
+        .find(|uri| text::path_of(uri).is_some_and(|open| text::shown(&canonical(&open)) == path));
+    open.cloned().unwrap_or_else(|| text::uri_of(Path::new(path)))
 }
 
 /// A path with its links resolved, as loading a kit names its files. A file that doesn't

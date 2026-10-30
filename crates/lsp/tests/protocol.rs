@@ -70,4 +70,6 @@ fn file_uris_round_trip_through_paths() {
     assert_eq!(path_of(&uri).as_deref(), Some(path));
     assert_eq!(path_of("file:///C:/games/main.fen").as_deref(), Some(Path::new("C:/games/main.fen")));
     assert_eq!(path_of("untitled:Untitled-1"), None);
+    let resolved = uri_of(Path::new(r"\\?\C:\games\main.fen"));
+    assert_eq!(resolved, "file:///C:/games/main.fen", "a resolved Windows path");
 }

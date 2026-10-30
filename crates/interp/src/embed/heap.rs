@@ -70,6 +70,15 @@ impl Heap {
         heap
     }
 
+    /// Takes blocks made after the run started that live for the rest of it, like an
+    /// executable's string literals.
+    pub(crate) fn adopt(&mut self, statics: &mut Vec<Box<[u64]>>) {
+        self.statics += statics.len();
+        for block in statics.drain(..) {
+            self.insert(block);
+        }
+    }
+
     /// A zeroed block of `words` words, reusing a freed one when there is one.
     fn fresh(&mut self, words: usize) -> Box<[u64]> {
         match self.spare.get_mut(words).and_then(Vec::pop) {

@@ -2,6 +2,7 @@
 
 mod cli;
 mod examples;
+mod executables;
 mod hints;
 mod limits;
 mod projects;

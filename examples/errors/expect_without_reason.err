@@ -1,0 +1,7 @@
+error: `expect` needs a reason this can't fail
+  --> examples/errors/expect_without_reason.fen:10:18
+   |
+10 |     stdout.print(parse("12").expect(" "))
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: write it as a string, like `.expect("the file was just written")`

@@ -1,0 +1,9 @@
+struct Point:
+    x: int
+    y: int
+
+    def on_diagonal(at: int):
+        Point(x=at, y=at)
+
+def main(stdout: Stdout):
+    stdout.print(Point.on_diagonal)

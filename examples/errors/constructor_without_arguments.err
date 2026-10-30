@@ -1,0 +1,5 @@
+error: `Point` has nothing called `on_diagonal`
+ --> examples/errors/constructor_without_arguments.fen:9:18
+  |
+9 |     stdout.print(Point.on_diagonal)
+  |                  ^^^^^^^^^^^^^^^^^

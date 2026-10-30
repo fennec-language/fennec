@@ -71,3 +71,52 @@ fn depth(text: &str) -> i32 {
         _ => depth,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{depth, read_chunk};
+
+    /// Splits `input` into the entries the REPL would read from it. Stops at 10, so a
+    /// reader that never reports the end fails a test instead of hanging it.
+    fn chunks(input: &[&str]) -> Vec<String> {
+        let mut lines = input.iter().map(|line| Ok((*line).to_owned()));
+        std::iter::from_fn(|| read_chunk(&mut lines)).take(10).collect()
+    }
+
+    #[test]
+    fn a_line_is_an_entry() {
+        assert_eq!(chunks(&["1 + 2", "3"]), ["1 + 2\n", "3\n"]);
+    }
+
+    #[test]
+    fn nothing_left_ends_the_session() {
+        assert_eq!(chunks(&[]), Vec::<String>::new());
+        let mut failing = std::iter::once(Err(std::io::Error::other("closed")));
+        assert_eq!(read_chunk(&mut failing), None);
+    }
+
+    #[test]
+    fn a_block_continues_until_a_blank_line() {
+        assert_eq!(chunks(&["def f():", "    1", "", "f()"]), ["def f():\n    1\n", "f()\n"]);
+    }
+
+    #[test]
+    fn open_brackets_continue_past_blank_lines() {
+        assert_eq!(chunks(&["[1,", "", "2]", "", "3"]), ["[1,\n\n2]\n", "3\n"]);
+        assert_eq!(chunks(&["f(", "1)", "", "2"]), ["f(\n1)\n", "2\n"]);
+        assert_eq!(chunks(&["(1", "+ 2"]), ["(1\n+ 2\n"]);
+    }
+
+    #[test]
+    fn closed_brackets_end_the_entry() {
+        assert_eq!(chunks(&["f([1], {2: 3})", "4"]), ["f([1], {2: 3})\n", "4\n"]);
+    }
+
+    #[test]
+    fn depth_counts_open_brackets() {
+        assert_eq!(depth("x"), 0);
+        assert_eq!(depth("f([{"), 3);
+        assert_eq!(depth("f([{ }])"), 0);
+        assert_eq!(depth(")]}"), -3);
+    }
+}

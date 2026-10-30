@@ -3,6 +3,7 @@
 mod ast;
 mod diagnostic;
 mod lexer;
+mod modules;
 mod parser;
 mod prelude;
 mod sources;
@@ -14,6 +15,7 @@ pub use ast::{
     Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
 };
 pub use diagnostic::Diagnostic;
+pub use modules::{Imported, member as std_member, module_as_value, std_import};
 pub use parser::{parse, parse_at, parse_repl};
 pub use prelude::PRELUDE;
 pub use sources::Sources;

@@ -1,0 +1,43 @@
+import std.json
+
+struct Settings:
+    volume = 0.8
+    fullscreen = False
+    keys = ["w", "a", "s", "d"]
+
+def describe(text: str):
+    match json.loads(text):
+        case Ok(value): f"read {json.dumps(value)}"
+        case ParseError(message): f"couldn't read it: {message}"
+
+def main(stdout: Stdout):
+    text = "\n".join([
+        "{",
+        "  \"name\": \"Ash\",",
+        "  \"level\": 7,",
+        "  \"speed\": 2.5,",
+        "  \"items\": [\"torch\", \"rope\"],",
+        "  \"pet\": null,",
+        "  \"alive\": true",
+        "}",
+    ])
+    player = json.loads(text)?
+    stdout.print(player["name"], "is level", player["level"] + 1, "and moves at", player["speed"])
+    for item in player["items"]:
+        stdout.print("carries", item)
+    stdout.print(player["pet"] is None, player["alive"])
+
+    stdout.print(json.dumps(player))
+    stdout.print(json.dumps(Settings(), indent=2))
+    stdout.print(json.dumps([1, "two", 3.0, None, (4, 5), {"6": [], "7": {}}]))
+    stdout.print(json.dumps("quotes \" and \\ and\nnew lines"))
+    stdout.print(json.loads(json.dumps(Settings()))? == json.loads(json.dumps(Settings(), indent=4))?)
+
+    stdout.print(describe("[1, 2.5e3, -0.5, \"\\u00e9\"]"))
+    stdout.print(describe("[1, 2,]"))
+    stdout.print(describe("{\"a\": 1,\n \"b\" 2}"))
+    stdout.print(describe("\"never ends"))
+    stdout.print(describe("tru"))
+    match json.loads("[\n  1,\n  oops\n]"):
+        case ParseError(_, line, column): stdout.print(f"the problem is on line {line}, column {column}")
+        case Ok(value): stdout.print(value)

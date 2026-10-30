@@ -2,15 +2,25 @@
 
 from std.math import Vec3
 
-struct Enemy:
-    name: str
+pub enum Rank:
+    Grunt
+    Boss
+
+    pub def label(self) -> str:
+        match self:
+            case .Grunt: "grunt"
+            case .Boss: "boss"
+
+pub struct Enemy:
+    pub name: str
     position: Vec3
+    rank = Rank.Grunt
     health = 100
 
-    def describe(self) -> str:
-        f"{self.name} at {self.position.x} with {self.health} health"
+    pub def describe(self) -> str:
+        f"{self.name} ({self.rank.label()}) at {self.position.x} with {self.health} health"
 
-def spawn(name: str, position: Vec3, health: int) -> Enemy:
+pub def spawn(name: str, position: Vec3, health: int) -> Enemy:
     Enemy(name=name, position=position, health=health)
 
 def wave(size: int) -> list[Enemy]:

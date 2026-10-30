@@ -1,4 +1,10 @@
 import physics
 
+def slow(body: physics.Body) -> float:
+    physics.drag()
+
+def stop(body: engine.Body):
+    pass
+
 def main(stdout: Stdout):
     stdout.print(physics.gravity())

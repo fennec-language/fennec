@@ -156,7 +156,8 @@ fn test_runs_the_tests_in_every_file_of_a_kit() {
     let stdout = text(&output.stdout);
     assert!(stdout.contains("✓ a wave has as many enemies as asked"), "{stdout}");
     assert!(stdout.contains("✓ hitting takes health away"), "{stdout}");
-    assert!(stdout.ends_with("2 passed, 0 failed\n"), "{stdout}");
+    assert!(stdout.contains("✓ a boss survives a full hit"), "nothing imports balance.fen, but it has tests");
+    assert!(stdout.ends_with("3 passed, 0 failed\n"), "{stdout}");
 }
 
 #[test]
@@ -166,6 +167,39 @@ fn run_points_at_the_import_and_names_the_file() {
     let stderr = text(&output.stderr);
     assert!(stderr.starts_with("error: these imports go in a circle: ships → ports → ships"), "{stderr}");
     assert!(stderr.contains("--> examples/projects/errors/cycle/src/ports.fen:1:1"), "{stderr}");
+}
+
+#[test]
+fn errors_show_paths_the_way_the_kit_was_named() {
+    let output = fennec(&["run", "examples/projects/errors/cycle/src"], "").unwrap();
+    assert!(text(&output.stderr).contains("--> examples/projects/errors/cycle/src/ports.fen:1:1"));
+    // From inside the kit, `.` has no name to trim, so the path is absolute.
+    let inside = repo().join("examples/projects/errors/cycle/src");
+    let output = fennec_in(&inside, &["run"], "").unwrap();
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("examples/projects/errors/cycle/src/ports.fen:1:1"), "{stderr}");
+    assert!(!stderr.contains("--> src/ports.fen"), "{stderr}");
+}
+
+#[test]
+fn a_kit_without_main_can_be_tested_but_not_run() {
+    let dir = scratch("no-main").unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"lib\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(
+        dir.join("src/maths.fen"),
+        "def twice(x: int) -> int:\n    x * 2\n\ntest \"twice\":\n    assert twice(2) == 4\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("src/notes.txt"), "not Fennec\n").unwrap();
+    let run = fennec_in(&dir, &["run"], "").unwrap();
+    let test = fennec_in(&dir, &["test"], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(run.status.code(), Some(1));
+    assert!(text(&run.stderr).starts_with("error: src/main.fen doesn't exist"), "{}", text(&run.stderr));
+    assert!(test.status.success(), "{}", text(&test.stderr));
+    assert!(text(&test.stdout).ends_with("1 passed, 0 failed\n"));
 }
 
 #[test]
@@ -202,8 +236,10 @@ fn new_makes_a_kit_that_runs_and_passes_its_tests() {
     let again = fennec_in(&dir, &["new", "star_fox"], "").unwrap();
     assert_eq!(again.status.code(), Some(1));
     assert!(text(&again.stderr).contains("already exists"));
-    let bad = fennec_in(&dir, &["new", "Star-Fox"], "").unwrap();
-    assert_eq!(bad.status.code(), Some(1));
-    assert!(text(&bad.stderr).contains("can't name a kit"));
+    for bad_name in ["Star_Fox", "star-fox", "9lives", ""] {
+        let bad = fennec_in(&dir, &["new", bad_name], "").unwrap();
+        assert_eq!(bad.status.code(), Some(1), "{bad_name:?}");
+        assert!(text(&bad.stderr).contains("can't name a kit"), "{bad_name:?}");
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }

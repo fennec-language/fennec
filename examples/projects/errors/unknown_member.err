@@ -1,7 +1,23 @@
-error: `physics` has nothing called `gravity`
- --> examples/projects/errors/unknown_member/src/main.fen:4:18
+error: `physics` has nothing called `Body`
+ --> examples/projects/errors/unknown_member/src/main.fen:3:16
   |
-4 |     stdout.print(physics.gravity())
-  |                  ^^^^^^^^^^^^^^^
+3 | def slow(body: physics.Body) -> float:
+  |                ^^^^^^^^^^^^
   |
   = help: examples/projects/errors/unknown_member/src/physics.fen defines drag
+
+error: `engine` isn't imported here
+ --> examples/projects/errors/unknown_member/src/main.fen:6:16
+  |
+6 | def stop(body: engine.Body):
+  |                ^^^^^^^^^^^
+  |
+  = help: add `import engine` at the top of this file
+
+error: `physics` has nothing called `gravity`
+  --> examples/projects/errors/unknown_member/src/main.fen:10:18
+   |
+10 |     stdout.print(physics.gravity())
+   |                  ^^^^^^^^^^^^^^^
+   |
+   = help: examples/projects/errors/unknown_member/src/physics.fen defines drag

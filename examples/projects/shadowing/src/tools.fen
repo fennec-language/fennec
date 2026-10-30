@@ -1,0 +1,34 @@
+## Small helpers whose names `main.fen` reuses for its own values.
+
+error Missing:
+    value: int
+
+def total(items: list[int]) -> int:
+    sum(items)
+
+def first(items: list[int]) -> int:
+    items[0]
+
+def scale() -> int:
+    1
+
+def index() -> int:
+    0
+
+def count() -> int:
+    0
+
+def size() -> int:
+    0
+
+def step() -> int:
+    0
+
+def find(items: list[int], value: int):
+    for at in range(len(items)):
+        if items[at] == value:
+            return at
+    fail Missing(value)
+
+test "find gives the position":
+    assert find([1, 2], 2) == Ok(1)

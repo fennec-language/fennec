@@ -82,13 +82,17 @@ fn gather(files: &[File], errors: &mut Vec<Diagnostic>) -> Kit {
         for item in &file.module.items {
             let Some((name, span)) = defined(item) else { continue };
             match kit.owners.get(name) {
-                Some(&owner) if owner != at => errors.push(
+                Some(&owner) if owner == at => errors.push(
+                    Diagnostic::new(format!("`{name}` is already defined in this file"), span)
+                        .with_help("rename one of them"),
+                ),
+                Some(&owner) => errors.push(
                     Diagnostic::new(format!("`{name}` is already defined in {}", kit.shown(owner)), span)
                         .with_help(
                             "the files of a kit share one set of top-level names, so rename one of them",
                         ),
                 ),
-                _ => {
+                None => {
                     kit.owners.insert(name.to_owned(), at);
                 }
             }
@@ -367,9 +371,8 @@ impl Resolver<'_> {
             Pattern::Bind(name) => self.bind(name),
             Pattern::Literal(expr) => self.expr(expr),
             Pattern::Variant { name, dotted, args } => {
-                if !*dotted && !self.collecting {
-                    let name = name.clone();
-                    self.name(&name, span);
+                if !*dotted {
+                    self.qualified(name, span);
                 }
                 for arg in args {
                     self.pattern(arg, span);
@@ -444,27 +447,32 @@ impl Resolver<'_> {
 
     /// Checks a written type, rewriting `physics.Body` to `Body`.
     fn ty(&mut self, ty: &mut TypeExpr) {
+        self.qualified(&mut ty.name, ty.span);
+        for arg in &mut ty.args {
+            self.ty(arg);
+        }
+    }
+
+    /// Checks a type or case name, rewriting `physics.Body` to `Body`.
+    fn qualified(&mut self, name: &mut String, span: Span) {
         if self.collecting {
             return;
         }
-        if let Some((module, name)) = ty.name.rsplit_once('.') {
-            match self.modules.get(module) {
-                Some(&owner) if self.kit.defines(owner, name) => ty.name = name.to_owned(),
-                Some(&owner) => self.errors.push(
-                    Diagnostic::new(format!("`{module}` has nothing called `{name}`"), ty.span)
-                        .with_help(self.kit.listing(owner)),
-                ),
-                None => self.errors.push(
-                    Diagnostic::new(format!("`{module}` isn't imported here"), ty.span)
-                        .with_help(format!("add `import {module}` at the top of this file")),
-                ),
-            }
-        } else {
-            let name = ty.name.clone();
-            self.name(&name, ty.span);
-        }
-        for arg in &mut ty.args {
-            self.ty(arg);
+        let Some((module, member)) = name.rsplit_once('.') else {
+            let name = name.clone();
+            self.name(&name, span);
+            return;
+        };
+        match self.modules.get(module) {
+            Some(&owner) if self.kit.defines(owner, member) => *name = member.to_owned(),
+            Some(&owner) => self.errors.push(
+                Diagnostic::new(format!("`{module}` has nothing called `{member}`"), span)
+                    .with_help(self.kit.listing(owner)),
+            ),
+            None => self.errors.push(
+                Diagnostic::new(format!("`{module}` isn't imported here"), span)
+                    .with_help(format!("add `import {module}` at the top of this file")),
+            ),
         }
     }
 }

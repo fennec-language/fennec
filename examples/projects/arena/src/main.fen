@@ -1,13 +1,13 @@
 ## A small arena, split over several files.
 
 from std.math import Vec3
-from enemies import Enemy, spawn, wave
-from combat.damage import hit, Dodged
+from enemies import Enemy, Rank, spawn, wave
+import combat.damage
 import physics
 
 def main(stdout: Stdout):
     mut enemies = wave(3)
-    enemies.append(spawn("boss", Vec3(x=9.0), 250))
+    enemies.append(Enemy(name="boss", position=Vec3(x=9.0), rank=Rank.Boss, health=250))
     for enemy in enemies:
         stdout.print(enemy.describe())
 
@@ -16,12 +16,12 @@ def main(stdout: Stdout):
         physics.step(mut body, 0.5)
     stdout.print(body.position)
 
-    stdout.print(hit(mut enemies[0], 30))
+    stdout.print(combat.damage.hit(mut enemies[0], 30))
     stdout.print(enemies[0].health)
     for amount in [0, 50]:
-        match hit(mut enemies[3], amount):
+        match combat.damage.hit(mut enemies[3], amount):
             case Ok(left): stdout.print(f"the boss has {left} left")
-            case Dodged(name): stdout.print(f"the {name} dodged")
+            case combat.damage.Dodged(name): stdout.print(f"the {name} dodged")
             case Err(error): stdout.print(f"no luck: {error}")
 
     stdout.print(sum(enemy.health for enemy in enemies))

@@ -31,11 +31,6 @@ impl Sources {
         base
     }
 
-    /// The path of the file `span` is in.
-    pub fn path(&self, span: Span) -> Option<&str> {
-        self.file(span).map(|file| file.path.as_str())
-    }
-
     /// Renders a diagnostic against the file it points into. Spans from no file, like the
     /// standard library's, render against the first file, as they do with one file.
     pub fn render(&self, diagnostic: &Diagnostic) -> String {

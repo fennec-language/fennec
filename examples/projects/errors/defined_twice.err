@@ -5,3 +5,11 @@ error: `update` is already defined in examples/projects/errors/defined_twice/src
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = help: the files of a kit share one set of top-level names, so rename one of them
+
+error: `reset` is already defined in this file
+  --> examples/projects/errors/defined_twice/src/player.fen:10:1
+   |
+10 | def reset() -> float:
+   | ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: rename one of them

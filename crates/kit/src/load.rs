@@ -1,7 +1,7 @@
 //! Finding a kit, reading each file once, and following imports from file to file.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use fennec_syntax::{Diagnostic, Import, Item, Module, Sources, Span};
 
@@ -60,30 +60,28 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry) -> Result<Program, S
     loader.finish(Some(manifest))
 }
 
-/// The nearest folder at or above `dir` with a `kit.toml`, and how messages show it.
+/// The nearest folder at or above `dir` with a `kit.toml`, and how messages show it: by
+/// trimming `shown_as` when it names that folder, and as an absolute path when it doesn't.
 fn find_root(dir: &Path, shown_as: &str) -> Option<(PathBuf, String)> {
-    let (mut real, mut shown) = (dir.to_path_buf(), PathBuf::from(shown_as));
-    loop {
-        if real.join("kit.toml").is_file() {
-            return Some((real, folder_prefix(Some(&shown))));
-        }
-        match (real.parent(), shown.parent()) {
-            (Some(up), Some(shown_up)) if !up.as_os_str().is_empty() && !shown_up.as_os_str().is_empty() => {
-                real = up.to_path_buf();
-                shown = shown_up.to_path_buf();
-            }
-            _ => break,
-        }
-    }
-    // Above what the path names, like the parents of `.`: look from its absolute form.
     let absolute = std::fs::canonicalize(dir).ok()?;
-    let root = absolute.ancestors().find(|folder| folder.join("kit.toml").is_file())?;
-    Some((root.to_path_buf(), folder_prefix(Some(root))))
+    let (levels, root) =
+        absolute.ancestors().enumerate().find(|(_, folder)| folder.join("kit.toml").is_file())?;
+    let mut shown = PathBuf::from(shown_as);
+    for _ in 0..levels {
+        // Going up from `.` or `..` isn't trimming a name, so show the absolute path.
+        if !matches!(shown.components().next_back(), Some(Component::Normal(_))) {
+            return Some((root.to_path_buf(), folder_prefix(Some(root))));
+        }
+        shown.pop();
+    }
+    Some((root.to_path_buf(), folder_prefix(Some(&shown))))
 }
 
 /// How a folder is shown before the files in it: `games/arena/`, or nothing for `.`.
 fn folder_prefix(folder: Option<&Path>) -> String {
     let shown = folder.map_or_else(String::new, |folder| folder.to_string_lossy().replace('\\', "/"));
+    // Windows writes absolute paths it has resolved as `\\?\C:\...`.
+    let shown = shown.strip_prefix("//?/").unwrap_or(&shown);
     match shown.trim_end_matches('/') {
         "" | "." => String::new(),
         trimmed => format!("{trimmed}/"),

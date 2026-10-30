@@ -141,7 +141,16 @@ fn kit_toml_reports_each_mistake() {
     };
     let valid = "name = \"arena\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n";
     assert_eq!(messages(&valid.replace("arena", "Arena")), ["`Arena` can't name a kit"]);
-    assert_eq!(messages(&valid.replace("0.1.0", "1.0")), ["`1.0` isn't a version"]);
+    assert_eq!(messages(&valid.replace("arena", "star-fox")), ["`star-fox` can't name a kit"]);
+    assert_eq!(messages(&valid.replace("arena", "9lives")), ["`9lives` can't name a kit"]);
+    for version in ["1.0", "1.0.0.0", "+1.0.0", "1..0", "a.b.c"] {
+        assert_eq!(messages(&valid.replace("0.1.0", version)), [format!("`{version}` isn't a version")]);
+    }
+    assert_eq!(
+        messages(&valid.replace("0.1.0", "0.1#0")),
+        ["`0.1#0` isn't a version"],
+        "a # in a string isn't a comment"
+    );
     assert_eq!(
         messages(&valid.replace("0.0.1", "99.0.0")),
         [format!("this kit needs Fennec 99.0.0, and this is Fennec {}", env!("CARGO_PKG_VERSION"))]
@@ -154,4 +163,13 @@ fn kit_toml_reports_each_mistake() {
     assert_eq!(messages(&format!("{valid}[package]\n")), ["kit.toml has no table `[package]`"]);
     assert_eq!(messages(&format!("{valid}just words\n")), ["expected `key = \"value\"` or a `[table]`"]);
     assert_eq!(messages("fennec = \"0.0.1\"\n"), ["kit.toml needs `name`", "kit.toml needs `version`"]);
+}
+
+#[test]
+fn kit_toml_errors_point_at_their_line() {
+    let text = "name = \"arena\"\n  colour = \"red\"  # indented\n";
+    let errors = fennec_kit::Manifest::parse(text).unwrap_err();
+    let start = text.find("colour").unwrap();
+    let end = text.find("  #").unwrap();
+    assert_eq!(errors.first().map(|error| error.span), Some(fennec_syntax::Span::new(start, end)));
 }

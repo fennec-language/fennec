@@ -1,0 +1,5 @@
+error: TOML has no None, so leave the key out instead
+ --> examples/errors/toml_none.fen:4:18
+  |
+4 |     stdout.write(dumps({"name": "fox", "pet": None}))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

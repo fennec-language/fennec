@@ -1,0 +1,4 @@
+from std.toml import dumps
+
+def main(stdout: Stdout):
+    stdout.write(dumps({"name": "fox", "pet": None}))

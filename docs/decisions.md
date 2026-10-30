@@ -132,6 +132,22 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **Closures capture by value.** Only a closure that doesn't escape, one passed straight into a call, can capture a `mut` name, and it changes the original. This replaces the earlier rule that closures can't change captured names at all.
 *Why:* Capturing by value costs one reference-count bump. Capturing a `mut` in a closure that doesn't escape costs a pointer and needs no lifetimes.
 
+## Standard library
+
+**A module is imported whole or by name.** `import std.json` and `from std import json` both make `json.loads(...)` work. `from std.json import loads` makes plain `loads(...)` work. There's no `import *`.
+*Why:* These are Python's forms, so people and AI already write them, and every name in a file can be traced to an import.
+
+**Some modules' functions exist only once imported.** Without an import, `loads` doesn't exist, and the error says which modules have it. Other standard library names, like `Path` and `sqrt`, work everywhere for now.
+*Why:* `std.json` and `std.toml` both have `loads` and `dumps`, as in Python, so the name alone can't say which format is meant.
+
+**JSON and TOML read into plain values.** Objects and tables become dicts in the order written, arrays become lists, and TOML's dates and times stay strings as written. The checker doesn't know the shape of text it hasn't seen, so the values' types are unknown and checked as they're used. Writing takes dicts, lists, tuples and structs. Typed reading, `loads[Settings](text)`, comes later.
+
+**Bad text fails with `ParseError`.** It has the `message`, `line` and `column`, and the message says the line and column too. A value a format can't hold, like a set in JSON or `None` in TOML, stops the program, like overflow.
+*Why:* Bad input is expected and has to be handled. Writing a set as JSON is a mistake in the program.
+
+**`Path` is a struct written in Fennec.** Its methods only look at its text: `join` (also `/`), `parent`, `name`, `stem`, `extension` and `normalize`. `extension` has no dot, as in Rust. `fs` methods take a `Path` or a `str`.
+*Why:* Path handling needs nothing the language can't already do, and code written in Fennec is checked and compiled like everyone else's.
+
 ## Visibility
 
 **`pub` marks what other kits can use.** Inside a kit, every file and module sees everything. `pub` goes on each `def`, `struct`, `enum`, `error`, `interface`, `type` alias and re-exported `import` that other kits may use, and on each struct field they may see.

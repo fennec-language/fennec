@@ -10,6 +10,7 @@ pub mod embed;
 mod eval;
 mod exec;
 mod format;
+mod formats;
 mod interp;
 mod matching;
 mod methods;

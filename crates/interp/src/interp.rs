@@ -14,7 +14,7 @@ use crate::scope::Frame;
 use crate::value::{Callable, Capability, Value};
 
 /// How deep calls may nest before the program is stopped, as in Python.
-pub(crate) const MAX_DEPTH: usize = 1000;
+const MAX_DEPTH: usize = 1000;
 
 /// The message of the internal diagnostic that carries a `?` or `fail` up to the enclosing
 /// function. It never reaches the user: calls turn it back into a returned value.
@@ -37,9 +37,14 @@ pub(crate) struct TypeInfo {
 pub struct Interp<'out> {
     pub(crate) functions: HashMap<String, Rc<Callable>>,
     pub(crate) types: HashMap<String, Rc<TypeInfo>>,
+    /// Builtins that exist only once imported, by the name they're imported under.
+    pub(crate) imports: HashMap<String, &'static str>,
+    /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
+    pub(crate) modules: HashMap<String, &'static str>,
     pub(crate) tests: Vec<TestDef>,
     pub(crate) frame: Frame,
     pub(crate) depth: usize,
+    pub(crate) max_depth: usize,
     pub(crate) out: Box<dyn Write + 'out>,
     /// The value a `?` or `fail` is carrying up to the enclosing function.
     pub(crate) passing_up: Option<Flow>,
@@ -47,16 +52,16 @@ pub struct Interp<'out> {
     pub(crate) yields: Vec<Vec<Value>>,
     /// Each regex pattern used so far, compiled.
     pub(crate) regexes: HashMap<String, Rc<fennec_re::Regex>>,
+    /// How many more steps the program may take, if it's limited.
+    pub(crate) steps_left: Option<u64>,
+    step_limit: Option<u64>,
+    files: bool,
+    clock: bool,
 }
 
 /// Runs `module`'s `main`, writing what it prints to `out`.
 pub fn run(module: &Module, out: &mut dyn Write) -> Result<(), Diagnostic> {
-    let mut interp = Interp::new(out)?;
-    let statements = interp.load(module)?;
-    if let Some(stmt) = statements.first() {
-        return Err(Diagnostic::new("only declarations can go at the top level of a file", stmt.span));
-    }
-    interp.run_main()
+    Interp::new(out)?.run_program(module)
 }
 
 impl<'out> Interp<'out> {
@@ -69,19 +74,66 @@ impl<'out> Interp<'out> {
         let mut interp = Interp {
             functions: HashMap::new(),
             types: HashMap::new(),
+            imports: HashMap::new(),
+            modules: HashMap::new(),
             tests: Vec::new(),
             frame: Frame::new(),
             depth: 0,
+            max_depth: MAX_DEPTH,
             out,
             passing_up: None,
             yields: Vec::new(),
             regexes: HashMap::new(),
+            steps_left: None,
+            step_limit: None,
+            files: true,
+            clock: true,
         };
         for source in prelude::SOURCES {
             let module = fennec_syntax::parse_prelude(source)?;
             interp.load(&module)?;
         }
         Ok(interp)
+    }
+
+    /// Stops `main`, each test, and each REPL chunk once it has taken `steps` steps, so a
+    /// loop that never ends can't hang the host. A step is one statement or expression.
+    pub fn limit_steps(&mut self, steps: u64) {
+        self.step_limit = Some(steps);
+    }
+
+    /// Stops the program once calls nest `depth` deep, for hosts with less stack than the
+    /// default limit of 1000 needs.
+    pub fn limit_depth(&mut self, depth: usize) {
+        self.max_depth = depth;
+    }
+
+    /// Refuses `main` the `Fs` capability, for hosts that have no files, like a browser.
+    pub fn deny_files(&mut self) {
+        self.files = false;
+    }
+
+    /// Refuses `main` the `Clock` capability, for hosts with no clock to read, like a
+    /// browser running WebAssembly.
+    pub fn deny_clock(&mut self) {
+        self.clock = false;
+    }
+
+    /// Gives the program its full step budget again.
+    pub(crate) fn refill_steps(&mut self) {
+        self.steps_left = self.step_limit;
+    }
+
+    /// Takes one step, or stops the program if it has run out.
+    pub(crate) fn step(&mut self, span: Span) -> Result<(), Diagnostic> {
+        match self.steps_left {
+            None => Ok(()),
+            Some(0) => Err(out_of_steps(self.step_limit.unwrap_or(0), span)),
+            Some(left) => {
+                self.steps_left = Some(left - 1);
+                Ok(())
+            }
+        }
     }
 
     /// Registers a module's declarations and returns its top-level statements, which only
@@ -96,7 +148,11 @@ impl<'out> Interp<'out> {
                 Item::Struct(def) => self.register_type(def, TypeKind::Struct),
                 Item::Enum(def) => self.register_type(def, TypeKind::Enum),
                 Item::Error(def) => self.register_type(def, TypeKind::Error),
-                Item::Import(import) => prelude::check_import(import)?,
+                Item::Import(import) => {
+                    let (modules, functions) = prelude::check_import(import)?;
+                    self.modules.extend(modules);
+                    self.imports.extend(functions);
+                }
                 Item::Test(test) => self.tests.push(test.clone()),
                 Item::Interface(_) | Item::TypeAlias { .. } => {}
                 Item::Stmt(stmt) => statements.push(stmt.clone()),
@@ -114,6 +170,15 @@ impl<'out> Interp<'out> {
         self.types.insert(def.name.clone(), Rc::new(TypeInfo { def: def.clone(), kind, methods }));
     }
 
+    /// Loads a program and calls its `main`.
+    pub fn run_program(&mut self, module: &Module) -> Result<(), Diagnostic> {
+        let statements = self.load(module)?;
+        if let Some(stmt) = statements.first() {
+            return Err(Diagnostic::new("only declarations can go at the top level of a file", stmt.span));
+        }
+        self.run_main()
+    }
+
     /// Calls `main`, handing it the capabilities it asks for.
     pub fn run_main(&mut self) -> Result<(), Diagnostic> {
         let Some(main) = self.functions.get("main").cloned() else {
@@ -125,14 +190,29 @@ impl<'out> Interp<'out> {
             let ty = param.ty.as_ref().map_or("", |ty| ty.name.as_str());
             args.push(Value::Capability(match ty {
                 "Stdout" => Capability::Stdout,
-                "Fs" => Capability::Fs,
-                "Clock" => Capability::Clock,
+                "Fs" if self.files => Capability::Fs,
+                "Fs" => {
+                    return Err(Diagnostic::new(
+                        "`main` can't receive `Fs` here: there are no files",
+                        param.span,
+                    )
+                    .with_help("where this runs, `main` can only receive `stdout: Stdout`"));
+                }
+                "Clock" if self.clock => Capability::Clock,
+                "Clock" => {
+                    return Err(Diagnostic::new(
+                        "`main` can't receive `Clock` here: there's no clock",
+                        param.span,
+                    )
+                    .with_help("where this runs, `main` can only receive `stdout: Stdout`"));
+                }
                 other => {
                     return Err(Diagnostic::new(format!("`main` can't receive a `{other}`"), param.span)
                         .with_help("`main` can receive `stdout: Stdout`, `fs: Fs` and `clock: Clock`"));
                 }
             }));
         }
+        self.refill_steps();
         let result = self.call_with_values(&main, args, main.def.span)?;
         self.flush()?;
         match result {
@@ -153,6 +233,7 @@ impl<'out> Interp<'out> {
     /// Runs a chunk typed into the REPL. Returns how to echo its last expression, if anything.
     pub fn eval_repl(&mut self, module: &Module) -> Result<Option<String>, Diagnostic> {
         let statements = self.load(module)?;
+        self.refill_steps();
         let mut echo = None;
         for stmt in &statements {
             echo = self.exec_top(stmt)?;
@@ -170,6 +251,11 @@ impl<'out> Interp<'out> {
     pub(crate) fn type_info(&self, name: &str) -> Option<Rc<TypeInfo>> {
         self.types.get(name).cloned()
     }
+}
+
+fn out_of_steps(limit: u64, span: Span) -> Diagnostic {
+    Diagnostic::new(format!("stopped after {limit} steps: this ran too long"), span)
+        .with_help("check for a loop that never ends, or recursion that never stops")
 }
 
 /// Wraps a function definition, noting whether it can fail and whether it's a generator.

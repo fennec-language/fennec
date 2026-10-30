@@ -118,7 +118,8 @@ impl Interp<'_> {
                 .make_value("IoError", vec![("reason", Value::str(&err.to_string()))], span)
                 .map(|error| Value::Err(Rc::new(error)))
         };
-        match (method, args) {
+        let paths: Vec<Value> = args.iter().map(path_text).collect();
+        match (method, paths.as_slice()) {
             ("exists", [Value::Str(path)]) => Ok(Value::Bool(std::path::Path::new(path.as_ref()).exists())),
             ("read_text", [Value::Str(path)]) => match std::fs::read_to_string(path.as_ref()) {
                 Ok(text) => Ok(Value::Ok(Rc::new(Value::str(&text)))),
@@ -397,4 +398,14 @@ fn str_method(text: &str, method: &str, args: &[Value], span: Span) -> Result<Va
         ) => return Err(wrong_args(method, span)),
         _ => return Err(no_method(&Value::str(text), method, span)),
     })
+}
+
+/// A `Path`'s text, so `fs` methods take a `Path` or a `str`.
+fn path_text(value: &Value) -> Value {
+    match value {
+        Value::Instance(instance) if instance.type_name.as_ref() == "Path" => {
+            instance.field("text").cloned().unwrap_or_else(|| value.clone())
+        }
+        other => other.clone(),
+    }
 }

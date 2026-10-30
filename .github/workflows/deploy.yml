@@ -6,7 +6,18 @@ name: Deploy
 on:
   push:
     branches: [main]
-    paths: ["site/**", "cloudflare/**", ".github/workflows/deploy.yml", ".node-version"]
+    # The playground is built from the interpreter and shows the examples, so changes to
+    # either redeploy the site.
+    paths:
+      - "site/**"
+      - "cloudflare/**"
+      - ".github/workflows/deploy.yml"
+      - ".node-version"
+      - "crates/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
   workflow_dispatch:
 
 permissions:
@@ -33,7 +44,12 @@ jobs:
         with:
           node-version-file: .node-version
       - run: npm ci --prefix site
+      # The build also compiles the interpreter to WebAssembly for the playground; rustup
+      # installs the toolchain and target from rust-toolchain.toml. No Rust cache here: what
+      # this job builds is published.
       - run: npm run build --prefix site
+      - name: Run the examples through the playground's WebAssembly module
+        run: node site/scripts/check-playground.mjs
       - name: Deploy the website to fennec-lang.dev
         working-directory: site
         env:

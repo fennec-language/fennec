@@ -1,0 +1,7 @@
+error: `std.json` has nothing called `parse`
+ --> examples/errors/json_no_such_name.fen:4:12
+  |
+4 |     save = json.parse("{\"level\": 3}")?
+  |            ^^^^^^^^^^
+  |
+  = help: `std.json` provides loads, dumps, ParseError

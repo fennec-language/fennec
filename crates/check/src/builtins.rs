@@ -5,11 +5,12 @@
 use fennec_syntax::{Arg, Diagnostic, Expr, Span};
 
 use crate::function::FnCx;
-use crate::messages::{needless_mut, no_method, wrong_args};
-use crate::types::{Type, article, join, join_all};
+use crate::messages::{mismatch, needless_mut, no_method, wrong_args};
+use crate::types::{Type, accepts, article, join, join_all};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most).
-const BUILTINS: [(&str, usize, usize); 32] = [
+/// Names with a dot belong to a module, like `json.loads`, and exist only once imported.
+const BUILTINS: [(&str, usize, usize); 36] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("abs", 1, 1),
@@ -23,6 +24,8 @@ const BUILTINS: [(&str, usize, usize); 32] = [
     ("ignore", 2, 2),
     ("int", 1, 1),
     ("is_regex", 1, 1),
+    ("json.dumps", 1, 1),
+    ("json.loads", 1, 1),
     ("len", 1, 1),
     ("list", 1, 1),
     ("max", 1, usize::MAX),
@@ -41,6 +44,8 @@ const BUILTINS: [(&str, usize, usize); 32] = [
     ("sqrt", 1, 1),
     ("str", 1, 1),
     ("sum", 1, 1),
+    ("toml.dumps", 1, 1),
+    ("toml.loads", 1, 1),
     ("zip", 2, 2),
 ];
 
@@ -64,6 +69,15 @@ const NEEDS_VALUES: [&str; 14] = [
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name)
+}
+
+/// The modules with a function of this name, like `json` and `toml` for `loads`.
+pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
+    BUILTINS
+        .iter()
+        .filter_map(|(builtin, ..)| builtin.split_once('.').filter(|(_, function)| *function == name))
+        .map(|(module, _)| module)
+        .collect()
 }
 
 /// A method of a built-in value: whether it changes the value, what it gives back, and how
@@ -177,7 +191,8 @@ impl FnCx<'_> {
             );
             self.mut_place(object, &what);
         }
-        let plain = self.builtin_args(name, args, name == "sort", &method.receives, span);
+        let named: &[&str] = if name == "sort" { &["key"] } else { &[] };
+        let plain = self.builtin_args(name, args, named, &method.receives, span);
         if plain.len() < method.arity.0 || plain.len() > method.arity.1 {
             self.error(wrong_args(name, span));
         }
@@ -188,13 +203,13 @@ impl FnCx<'_> {
         method.returns
     }
 
-    /// Checks a builtin's arguments: none is `mut`, and only `key` may be named. Returns the
-    /// plain arguments' types and where they are.
+    /// Checks a builtin's arguments: none is `mut`, and only those in `named` may be named.
+    /// Returns the plain arguments' types and where they are.
     fn builtin_args(
         &mut self,
         name: &str,
         args: &[Arg],
-        takes_key: bool,
+        named: &[&str],
         receives: &[Type],
         span: Span,
     ) -> Vec<(Type, Span)> {
@@ -202,10 +217,15 @@ impl FnCx<'_> {
         for arg in args {
             let ty = self.arg_value(arg, receives);
             match arg.name.as_deref() {
-                Some("key") if !takes_key => {
+                Some("key") if !named.contains(&"key") => {
                     self.error(Diagnostic::new(format!("`{name}` doesn't take `key`"), span));
                 }
                 Some("key") => {}
+                Some("indent") if named.contains(&"indent") => {
+                    if !accepts(&Type::Int, &ty) {
+                        self.error(mismatch("`indent`", &Type::Int, &ty, arg.value.span));
+                    }
+                }
                 Some(other) => self.error(Diagnostic::new(
                     format!("`{name}` has no parameter called `{other}`"),
                     arg.value.span,
@@ -229,8 +249,12 @@ impl FnCx<'_> {
             .find(|arg| arg.name.is_none())
             .map_or(Type::Unknown, |arg| self.peek_type(&arg.value));
         let item = peek_item(&first);
-        let takes_key = matches!(name, "min" | "max" | "sorted");
-        let plain = self.builtin_args(name, args, takes_key, std::slice::from_ref(&item), span);
+        let named: &[&str] = match name {
+            "min" | "max" | "sorted" => &["key"],
+            "json.dumps" => &["indent"],
+            _ => &[],
+        };
+        let plain = self.builtin_args(name, args, named, std::slice::from_ref(&item), span);
         let (low, high) = BUILTINS
             .iter()
             .find(|(builtin, ..)| *builtin == name)
@@ -280,6 +304,7 @@ impl FnCx<'_> {
                 let item = plain.get(2).map_or(Type::Unknown, |(ty, at)| self.item_type(ty, *at));
                 Type::Tuple(vec![item, Type::Int])
             }
+            "json.loads" | "toml.loads" | "json.dumps" | "toml.dumps" => self.format_result(name, &first, at),
             "str" => Type::Str,
             "is_regex" => Type::Bool,
             "round" if types.len() == 2 => Type::Float,
@@ -317,6 +342,41 @@ impl FnCx<'_> {
         }
     }
 
+    /// `std.json` and `std.toml`. Read text gives values of any type, so its type is unknown,
+    /// except that a TOML document is always a table.
+    fn format_result(&mut self, name: &str, first: &Type, at: Span) -> Type {
+        let (format, function) = name.split_once('.').unwrap_or_default();
+        if function == "loads" {
+            if !accepts(&Type::Str, first) {
+                self.error(mismatch("the text to read", &Type::Str, first, at));
+            }
+            let read = if format == "toml" {
+                Type::Dict(Box::new(Type::Str), Box::new(Type::Unknown))
+            } else {
+                Type::Unknown
+            };
+            return Type::result(read, Type::named("ParseError"));
+        }
+        let format = format.to_uppercase();
+        let is_table = matches!(first, Type::Dict(..) | Type::Unknown)
+            || self.checker.program.kind_of(first) == Some(crate::program::TypeKind::Struct);
+        if format == "TOML" && !is_table {
+            self.error(Diagnostic::new(
+                format!(
+                    "a TOML document is a table, so `toml.dumps` needs a dict or a struct, not {}",
+                    article(&first.kind())
+                ),
+                at,
+            ));
+        } else if matches!(
+            first,
+            Type::Set(_) | Type::Function(_) | Type::Id(_) | Type::IdMap(_) | Type::Result(..)
+        ) {
+            self.error(mismatch_holds(&format, first, at));
+        }
+        Type::Str
+    }
+
     /// `replace(value, field=new, ...)`: a copy with some fields changed.
     fn replace(&mut self, args: &[Arg], span: Span) -> Type {
         let types: Vec<Type> = args.iter().map(|arg| self.arg_value(arg, &[])).collect();
@@ -349,13 +409,8 @@ impl FnCx<'_> {
                 continue;
             }
             let expected = self.checker.field_type(type_name, None, name);
-            if !crate::types::accepts(&expected, actual) {
-                self.error(crate::messages::mismatch(
-                    &format!("`{name}`"),
-                    &expected,
-                    actual,
-                    arg.value.span,
-                ));
+            if !accepts(&expected, actual) {
+                self.error(mismatch(&format!("`{name}`"), &expected, actual, arg.value.span));
             }
         }
         ty.clone()
@@ -370,4 +425,11 @@ fn peek_item(ty: &Type) -> Type {
         Type::Str => Type::Str,
         _ => Type::Unknown,
     }
+}
+
+fn mismatch_holds(format: &str, ty: &Type, span: Span) -> Diagnostic {
+    if matches!(ty, Type::Result(..)) {
+        return crate::messages::unhandled_result(span);
+    }
+    Diagnostic::new(format!("{format} can't hold {}", article(&ty.kind())), span)
 }

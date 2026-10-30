@@ -675,14 +675,16 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
     let first = with_daemon(&kit, &home, "30", &["dev", "changes"]).unwrap();
     assert_eq!(text(&first.stdout), "first run: hashed 1 files and 1 definitions\n");
     assert!(
-        status().starts_with("running: Fennec") && status().ends_with("1 request served\n"),
+        status().starts_with("running: Fennec") && status().contains("1 request served\n"),
         "{}",
         status()
     );
+    // The one snapshot is a few hundred bytes, under a tenth of a megabyte.
+    assert!(status().ends_with("\ncache: 0.0 MB of 1073.7 MB\n"), "{}", status());
 
     let again = with_daemon(&kit, &home, "30", &["dev", "changes"]).unwrap();
     assert_eq!(text(&again.stdout), "0 files parsed, 1 unchanged and not parsed again\nnothing changed\n");
-    assert!(status().ends_with("2 requests served\n"), "{}", status());
+    assert!(status().contains("2 requests served\n"), "{}", status());
 
     let stop = with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
     assert_eq!(text(&stop.stdout), "stopped\n");
@@ -696,6 +698,32 @@ fn an_idle_daemon_exits_by_itself() {
     let (kit, home) = small_kit("idle-daemon").unwrap();
     with_daemon(&kit, &home, "1", &["dev", "changes"]).unwrap();
     assert!(stops(&kit, &home), "the daemon didn't exit after a second with nothing to do");
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn the_daemon_keeps_the_cache_under_its_cap() {
+    let (kit, home) = small_kit("cache-daemon").unwrap();
+    let old = home.join("cache").join("0.0.0-old").join("functions").join("x");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::write(&old, vec![0_u8; 10_000]).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_fennec"))
+        .args(["dev", "changes"])
+        .current_dir(&kit)
+        .env("FENNEC_HOME", &home)
+        .env("FENNEC_DAEMON_IDLE", "30")
+        .env("FENNEC_CACHE_CAP", "5000")
+        .env_remove("FENNEC_NO_DAEMON")
+        .output()
+        .unwrap();
+    let cleaned = (0..250).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        !old.exists()
+    });
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(cleaned, "the daemon should drop another version's entries once over its cap");
+    assert!(stops(&kit, &home));
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 

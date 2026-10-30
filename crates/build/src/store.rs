@@ -1,9 +1,10 @@
-//! Where snapshots are kept: `~/.fennec/cache/runs/`, one per program, named by a hash of the
-//! program's absolute path. A snapshot records the last run of that program; it isn't a
+//! Where snapshots are kept: in the cache, `~/.fennec/cache/<version>/runs/`, one per program,
+//! named by a hash of the program's absolute path. A snapshot records the last run of that program; it isn't a
 //! cached result, so naming it by a path is fine. Nothing is written inside the project.
 
 use std::path::{Path, PathBuf};
 
+use crate::cache::Cache;
 use crate::snapshot::Snapshot;
 
 /// The first line of a stored snapshot. A snapshot from another version of Fennec is
@@ -19,29 +20,23 @@ pub fn fennec_home() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".fennec"))
 }
 
-/// The file that holds `program`'s last snapshot.
-fn snapshot_path(home: &Path, program: &Path) -> PathBuf {
+/// The name of the entry that holds `program`'s last snapshot.
+fn snapshot_name(program: &Path) -> String {
     let absolute = std::fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
-    let name = fennec_blake3::hash(absolute.to_string_lossy().as_bytes());
-    home.join("cache").join("runs").join(format!("{name}.txt"))
+    format!("{}.txt", fennec_blake3::hash(absolute.to_string_lossy().as_bytes()))
 }
 
 /// `program`'s last snapshot, or an empty one if there's none or it can't be read.
 pub fn load(home: &Path, program: &Path) -> Snapshot {
-    std::fs::read_to_string(snapshot_path(home, program))
-        .ok()
+    Cache::new(home)
+        .read("runs", &snapshot_name(program))
+        .and_then(|bytes| String::from_utf8(bytes).ok())
         .and_then(|text| text.strip_prefix(HEADER)?.strip_prefix('\n').and_then(Snapshot::from_text))
         .unwrap_or_default()
 }
 
-/// Stores `program`'s snapshot. It's written to a temporary file and renamed into place, so
-/// a reader never sees half of one.
+/// Stores `program`'s snapshot.
 pub fn save(home: &Path, program: &Path, snapshot: &Snapshot) -> std::io::Result<()> {
-    let path = snapshot_path(home, program);
-    if let Some(folder) = path.parent() {
-        std::fs::create_dir_all(folder)?;
-    }
-    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&temporary, format!("{HEADER}\n{}", snapshot.to_text()))?;
-    std::fs::rename(&temporary, &path)
+    let text = format!("{HEADER}\n{}", snapshot.to_text());
+    Cache::new(home).write("runs", &snapshot_name(program), text.as_bytes())
 }

@@ -51,19 +51,7 @@ impl Lowerer<'_, '_> {
             ExprKind::Binary { op, lhs, rhs } => {
                 let left = self.expr(lhs)?;
                 let right = self.expr(rhs)?;
-                if let Some(result) = self.binary(*op, left, right, span) {
-                    return Ok(result);
-                }
-                if (*op, left.1, right.1) == (BinOp::Add, Ty::Str, Ty::Str) {
-                    self.note(span, "the runtime copies both strings to join them");
-                }
-                if let Some(result) = self.string_binary(*op, left, right)? {
-                    return Ok(result);
-                }
-                match self.struct_equality(*op, left, right)? {
-                    Some(result) => Ok(result),
-                    None => self.object_binary(*op, left, right, span),
-                }
+                self.operate(*op, left, right, span)
             }
             ExprKind::Variant(_) => match self.named_case(expr) {
                 Some((id, at)) => match self.make_case(id, at, &[], span)? {
@@ -217,6 +205,29 @@ impl Lowerer<'_, '_> {
         let (value, ty) = self.expr(otherwise)?;
         arms.extend(self.arm_end(value, ty)?);
         self.join(arms, then.span.to(otherwise.span))
+    }
+
+    /// An operator on two lowered values, natively when it can be.
+    pub(super) fn operate(
+        &mut self,
+        op: BinOp,
+        left: Lowered,
+        right: Lowered,
+        span: Span,
+    ) -> Result<Lowered, Diagnostic> {
+        if let Some(result) = self.binary(op, left, right, span) {
+            return Ok(result);
+        }
+        if (op, left.1, right.1) == (BinOp::Add, Ty::Str, Ty::Str) {
+            self.note(span, "the runtime copies both strings to join them");
+        }
+        if let Some(result) = self.string_binary(op, left, right)? {
+            return Ok(result);
+        }
+        match self.struct_equality(op, left, right)? {
+            Some(result) => Ok(result),
+            None => self.object_binary(op, left, right, span),
+        }
     }
 
     /// An operator on machine values, or `None` when it needs the interpreter.

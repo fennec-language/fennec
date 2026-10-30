@@ -1,0 +1,352 @@
+## Expressions, from lowest precedence to highest: arrow functions and `match`; conditional
+## expressions and `else` defaults; `or`; `and`; `not`; comparisons; `+ -`; `* / // %`; unary
+## minus; `**`; then calls, attributes, indexing, `?` and `?.`. Mirrors
+## `crates/syntax/src/parser/expr.rs`.
+
+from span import Span, Diagnostic
+from token import FPart, Tok, is_reserved
+from lexer import byte_length, lex
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from parser import Parser, is_name, describe
+
+extend Parser:
+    def expr(mut self) -> Expr:
+        if self.at_match():
+            return self.match_expr()?
+        lambda = self.lambda()?
+        if lambda is not None:
+            return lambda
+        value = self.or_expr()?
+        if self.eat_keyword("if"):
+            cond = self.or_expr()?
+            if not self.eat_keyword("else"):
+                fail Diagnostic(
+                    message="a conditional expression needs `else`",
+                    span=self.span(),
+                    help="write `a if condition else b`",
+                )
+            otherwise = self.expr()?
+            return Expr(kind=.Cond(value, cond, otherwise), span=value.span.to(otherwise.span))
+        if self.eat_keyword("else"):
+            default = self.expr()?
+            return Expr(kind=.Else(value, default), span=value.span.to(default.span))
+        value
+
+    ## `x => body` or `(a, b) => body`.
+    def lambda(mut self) -> Expr?:
+        start = self.span()
+        mut params = []
+        if is_name(self.peek()) and self.peek_at(1) == .Punct("=>"):
+            params.append(self.name("a parameter")?)
+            self.pos += 1
+        elif self.at_punct("("):
+            found = self.paren_params()
+            if found is None:
+                return None
+            names, used = found
+            params = names
+            self.pos += used
+        else:
+            return None
+        body = self.expr()?
+        Expr(kind=.Lambda(params, body), span=start.to(body.span))
+
+    ## Looks ahead for `(a, b) =>`, returning the names and how many tokens they take. A
+    ## trailing comma is fine, as it is in `def` parameters.
+    def paren_params(self) -> (list[str], int)?:
+        mut params = []
+        mut at = 1
+        while True:
+            match self.peek_at(at):
+                case .Name(name): params.append(name)
+                case .Punct(")"): break
+                case _: return None
+            at += 1
+            if self.peek_at(at) == .Punct(")"):
+                break
+            if self.peek_at(at) != .Punct(","):
+                return None
+            at += 1
+        if self.peek_at(at + 1) != .Punct("=>"):
+            return None
+        (params, at + 2)
+
+    def or_expr(mut self) -> Expr:
+        mut lhs = self.and_expr()?
+        while self.eat_keyword("or"):
+            lhs = binary(.Or, lhs, self.and_expr()?)
+        lhs
+
+    def and_expr(mut self) -> Expr:
+        mut lhs = self.not_expr()?
+        while self.eat_keyword("and"):
+            lhs = binary(.And, lhs, self.not_expr()?)
+        lhs
+
+    def not_expr(mut self) -> Expr:
+        start = self.span()
+        if self.eat_keyword("not"):
+            operand = self.not_expr()?
+            return Expr(kind=.Unary(UnaryOp.Not, operand), span=start.to(operand.span))
+        self.comparison()
+
+    ## Comparisons chain as in Python: `a < b <= c` means `a < b and b <= c`.
+    def comparison(mut self) -> Expr:
+        mut lhs = self.sum()?
+        mut chain = None
+        while True:
+            op = comparison_op(self.peek(), self.peek_at(1))
+            if op is None:
+                break
+            self.pos += 2 if op == .NotIn or op == .IsNot else 1
+            rhs = self.sum()?
+            pair = binary(op, lhs, rhs)
+            if chain is None:
+                chain = pair
+            else:
+                chain = binary(.And, chain, pair)
+            lhs = rhs
+        chain else lhs
+
+    def sum(mut self) -> Expr:
+        mut lhs = self.term()?
+        while self.at_punct("+") or self.at_punct("-"):
+            op = BinOp.Add if self.advance().tok == .Punct("+") else BinOp.Sub
+            lhs = binary(op, lhs, self.term()?)
+        lhs
+
+    def term(mut self) -> Expr:
+        mut lhs = self.unary()?
+        while True:
+            op = term_op(self.peek())
+            if op is None:
+                break
+            self.advance()
+            lhs = binary(op, lhs, self.unary()?)
+        lhs
+
+    def unary(mut self) -> Expr:
+        start = self.span()
+        if self.eat_punct("-"):
+            operand = self.unary()?
+            return Expr(kind=.Unary(UnaryOp.Neg, operand), span=start.to(operand.span))
+        base = self.postfix()?
+        if self.eat_punct("**"):
+            return binary(.Pow, base, self.unary()?)
+        base
+
+    def postfix(mut self) -> Expr:
+        mut expr = self.atom()?
+        while True:
+            if self.eat_punct("("):
+                args = self.call_args()?
+                span = expr.span.to(self.expect_punct(")")?)
+                expr = Expr(kind=.Call(expr, args), span=span)
+            elif self.at_punct(".") or (self.at_punct("?") and self.peek_at(1) == .Punct(".")):
+                optional = self.eat_punct("?")
+                self.advance()
+                name = self.name("a name after `.`")?
+                expr = Expr(kind=.Attr(expr, name, optional), span=expr.span.to(self.prev_span()))
+            elif self.eat_punct("["):
+                expr = self.index(expr)?
+            elif self.eat_punct("?"):
+                mut context = None
+                if self.eat_keyword("from"):
+                    context = self.postfix()?
+                expr = Expr(kind=.Try(expr, context), span=expr.span.to(self.prev_span()))
+            else:
+                break
+        expr
+
+    ## `object[index]` or a slice `object[start:end]`, after the `[`.
+    def index(mut self, object: Expr) -> Expr:
+        mut start: Expr? = None
+        if not self.at_punct(":"):
+            first = self.expr()?
+            start = first
+            # `object[a, b]` indexes with the tuple `(a, b)`.
+            if self.at_punct(","):
+                mut items = [first]
+                while self.eat_punct(",") and not self.at_punct("]"):
+                    items.append(self.expr()?)
+                mut span = self.prev_span()
+                for item in items:
+                    span = span.to(item.span)
+                start = Expr(kind=ExprKind.Tuple(items), span=span)
+        is_slice = self.eat_punct(":")
+        mut end = None
+        if is_slice and not self.at_punct("]"):
+            end = self.expr()?
+        span = object.span.to(self.expect_punct("]")?)
+        if is_slice:
+            return Expr(kind=.Slice(object, start, end), span=span)
+        if start is None:
+            fail self.unexpected("an index")
+        Expr(kind=.Index(object, start), span=span)
+
+    ## Arguments up to (not including) `)`. A single argument followed by `for` is a generator
+    ## expression, as in `sum(x * x for x in xs)`.
+    def call_args(mut self) -> list[Arg]:
+        mut args = []
+        while not self.at_punct(")"):
+            is_mut = self.eat_keyword("mut")
+            mut name = None
+            if not is_mut and is_name(self.peek()) and self.peek_at(1) == .Punct("="):
+                name = self.name("an argument name")?
+                self.pos += 1
+            mut value = self.expr()?
+            if len(args) == 0 and name is None and not is_mut and self.at_keyword("for"):
+                value = self.comprehension(.Generator, value, None)?
+            args.append(Arg(name=name, is_mut=is_mut, value=value))
+            if not self.eat_punct(","):
+                break
+        args
+
+    ## The `for names in iter if cond` part of a comprehension, after its element.
+    def comprehension(mut self, kind: CompKind, elem: Expr, value: Expr?) -> Expr:
+        self.advance()
+        names = self.loop_names()?
+        iter = self.or_expr()?
+        mut cond = None
+        if self.eat_keyword("if"):
+            cond = self.or_expr()?
+        span = elem.span.to(self.prev_span())
+        Expr(kind=.Comprehension(kind, elem, value, names, iter, cond), span=span)
+
+    def atom(mut self) -> Expr:
+        token = self.advance()
+        span = token.span
+        kind = match token.tok:
+            case .Int(value): ExprKind.Int(value)
+            case .Float(value): ExprKind.Float(value)
+            case .Str(text): ExprKind.Str(text)
+            case .FStr(parts): ExprKind.FStr(fstring_parts(parts)?)
+            case .Name(name): ExprKind.Name(name)
+            case .Keyword(word): self.keyword_atom(word, span)?
+            case .Punct(text):
+                if text == "(":
+                    return self.parenthesized(span)?
+                if text == "[":
+                    return self.list(span)?
+                if text == "{":
+                    return self.braces(span)?
+                if text != ".":
+                    self.pos -= 1
+                    fail Diagnostic(message=f"expected a value, found `{text}`", span=span)
+                ExprKind.Variant(self.name("an enum case after `.`")?)
+            case other:
+                fail Diagnostic(message=f"expected a value, found {describe(other)}", span=span)
+        Expr(kind=kind, span=span.to(self.prev_span()))
+
+    ## `True`, `False` or `None`, after the keyword. Any other keyword can't start a value.
+    def keyword_atom(mut self, word: str, span: Span) -> ExprKind:
+        match word:
+            case "True": ExprKind.Bool(True)
+            case "False": ExprKind.Bool(False)
+            case "None": .Nothing
+            case _:
+                if is_reserved(word):
+                    self.pos -= 1
+                    fail self.reserved(word)
+                fail Diagnostic(message=f"expected a value, found `{word}`", span=span)
+
+    ## `(expr)`, or a tuple: `()`, `(a,)`, `(a, b)`.
+    def parenthesized(mut self, start: Span) -> Expr:
+        mut items = []
+        mut trailing_comma = False
+        while not self.at_punct(")"):
+            items.append(self.expr()?)
+            trailing_comma = self.eat_punct(",")
+            if not trailing_comma:
+                break
+        span = start.to(self.expect_punct(")")?)
+        if len(items) == 1 and not trailing_comma:
+            return items[0]
+        Expr(kind=ExprKind.Tuple(items), span=span)
+
+    def list(mut self, start: Span) -> Expr:
+        mut items = []
+        while not self.at_punct("]"):
+            item = self.expr()?
+            if len(items) == 0 and self.at_keyword("for"):
+                comprehension = self.comprehension(CompKind.List, item, None)?
+                return Expr(kind=comprehension.kind, span=start.to(self.expect_punct("]")?))
+            items.append(item)
+            if not self.eat_punct(","):
+                break
+        span = start.to(self.expect_punct("]")?)
+        Expr(kind=ExprKind.List(items), span=span)
+
+    ## `{}` (an empty dict), `{k: v, ...}`, `{a, b}`, or a dict or set comprehension.
+    def braces(mut self, start: Span) -> Expr:
+        if self.at_punct("}"):
+            return Expr(kind=ExprKind.Dict([]), span=start.to(self.advance().span))
+        first = self.expr()?
+        is_dict = self.eat_punct(":")
+        mut first_value = None
+        if is_dict:
+            first_value = self.expr()?
+        if self.at_keyword("for"):
+            kind = CompKind.Dict if is_dict else CompKind.Set
+            comprehension = self.comprehension(kind, first, first_value)?
+            return Expr(kind=comprehension.kind, span=start.to(self.expect_punct("}")?))
+        if first_value is not None:
+            mut pairs = [(first, first_value)]
+            while self.eat_punct(",") and not self.at_punct("}"):
+                key = self.expr()?
+                self.expect_punct(":")?
+                pairs.append((key, self.expr()?))
+            return Expr(kind=ExprKind.Dict(pairs), span=start.to(self.expect_punct("}")?))
+        mut items = [first]
+        while self.eat_punct(",") and not self.at_punct("}"):
+            items.append(self.expr()?)
+        Expr(kind=ExprKind.Set(items), span=start.to(self.expect_punct("}")?))
+
+## The comparison that `first` (and `second`, for `not in` and `is not`) start, if any.
+def comparison_op(first: Tok, second: Tok) -> BinOp?:
+    match first:
+        case .Punct("=="): .Eq
+        case .Punct("!="): .NotEq
+        case .Punct("<"): .Lt
+        case .Punct("<="): .LtEq
+        case .Punct(">"): .Gt
+        case .Punct(">="): .GtEq
+        case .Keyword("in"): .In
+        case .Keyword("not"): .NotIn if second == .Keyword("in") else None
+        case .Keyword("is"): .IsNot if second == .Keyword("not") else .Is
+        case _: None
+
+def term_op(tok: Tok) -> BinOp?:
+    match tok:
+        case .Punct("*"): .Mul
+        case .Punct("/"): .Div
+        case .Punct("//"): .FloorDiv
+        case .Punct("%"): .Mod
+        case _: None
+
+def binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr:
+    Expr(kind=.Binary(op, lhs, rhs), span=lhs.span.to(rhs.span))
+
+## Parses each `{expression}` of an f-string, from the source the lexer kept.
+def fstring_parts(parts: list[FPart]) -> list[FStrPart]:
+    mut parsed = []
+    for part in parts:
+        match part:
+            case .Text(text): parsed.append(FStrPart.Text(text))
+            case .Code(source, offset, spec):
+                if source.strip() == "":
+                    fail Diagnostic(
+                        message="this f-string has an empty `{}`",
+                        span=Span(start=offset, end=offset + 1),
+                        help="put an expression inside, or write `{{` for a literal brace",
+                    )
+                # Lexed on its own, a leading space would read as indentation.
+                code = source.lstrip()
+                skipped = byte_length(source[:len(source) - len(code)])
+                mut parser = Parser.over(lex(code, offset + skipped)?)
+                expr = parser.expr()?
+                parser.eat(.Newline)
+                if not parser.at(.Eof):
+                    fail parser.unexpected("`}`")
+                parsed.append(FStrPart.Code(expr, spec))
+    parsed

@@ -10,7 +10,8 @@ same dumps:
 | `src/token.fen`  | `crates/syntax/src/token.rs`              |
 | `src/lexer.fen`  | `crates/syntax/src/lexer.rs`              |
 | `src/ast.fen`    | `crates/syntax/src/ast.rs`                |
-| `src/parser.fen` | `crates/syntax/src/parser.rs` and `parser/{stmt,expr,pattern}.rs` |
+| `src/parser.fen` | `crates/syntax/src/parser.rs` |
+| `src/parser/{stmt,expr,pattern}.fen` | `crates/syntax/src/parser/{stmt,expr,pattern}.rs`, as `extend Parser:` |
 | `src/check/types.fen` | `crates/check/src/types.rs` |
 | `src/check/program.fen` | `crates/check/src/program.rs` |
 | `src/check/checker.fen` | `crates/check/src/checker.rs`, starting with the declarations |

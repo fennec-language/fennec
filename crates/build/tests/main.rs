@@ -1,6 +1,8 @@
 //! The build engine's content hashes: what changes a definition's hash and what doesn't,
 //! reusing unchanged files, reporting changes, and storing snapshots.
 
+mod cache;
+
 use std::collections::BTreeMap;
 
 use fennec_build::{Change, Kind, Snapshot, changes, definitions, load, save};
@@ -135,11 +137,15 @@ fn snapshots_are_stored_and_read_back() {
     assert_eq!(load(&home, &program), Snapshot::default());
     save(&home, &program, &snapshot).unwrap();
     assert_eq!(load(&home, &program), snapshot);
+    let other = home.join("other.fen");
+    std::fs::write(&other, "def other():\n    pass\n").unwrap();
+    assert_eq!(load(&home, &other), Snapshot::default(), "each program has its own snapshot");
     assert_eq!(Snapshot::from_text(&snapshot.to_text()), Some(snapshot.clone()));
     assert_eq!(Snapshot::from_text("file nothex game.fen\n"), None);
     assert_eq!(Snapshot::from_text("  0000 def stray\n"), None);
 
-    let stored = std::fs::read_dir(home.join("cache/runs")).unwrap().next().unwrap().unwrap().path();
+    let runs = home.join("cache").join(fennec_build::VERSION).join("runs");
+    let stored = std::fs::read_dir(runs).unwrap().next().unwrap().unwrap().path();
     let text = std::fs::read_to_string(&stored).unwrap();
     std::fs::write(&stored, text.replacen("fennec snapshot", "fennec snapshot 9.9.9 was", 1)).unwrap();
     assert_eq!(load(&home, &program), Snapshot::default(), "another version's snapshot is ignored");

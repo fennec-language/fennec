@@ -26,7 +26,10 @@ const LEX_CASES: &[(&str, &str)] = &[
     ("wide_then_error", "# 🦊 and €\ns = \"héllo\"\nt = f\"é{s}\"\nu = $\n"),
     ("int_too_big", "x = 99999999999999999999\n"),
     ("int_largest", "x = 9_223_372_036_854_775_807\ny = 1_000\n"),
-    ("float_forms", "x = 1.5e3 + 2E-2 + 1e9_9 + 3.0 + 1e20 + 1.25\ny = 1.x\n"),
+    (
+        "float_forms",
+        "x = 1.5e3 + 2E-2 + 1e9_9 + 3.0 + 1e20 + 1.25 + 0.00001 + 1e-4 + 1e16 + 1e999\ny = 1.x\n",
+    ),
     ("float_bad", "x = 1e\n"),
     ("float_bad_sign", "x = 2e+_\n"),
     ("dedent_mismatch", "if x:\n        a\n    b\n"),

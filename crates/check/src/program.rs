@@ -23,6 +23,14 @@ pub(crate) struct TypeInfo {
     pub(crate) prelude: bool,
 }
 
+/// A constant at the top level: `KEYWORDS = {"def", "if"}`.
+pub(crate) struct ConstEntry {
+    pub(crate) ty: Option<TypeExpr>,
+    pub(crate) value: fennec_syntax::Expr,
+    pub(crate) span: Span,
+    pub(crate) prelude: bool,
+}
+
 pub(crate) struct FnEntry {
     pub(crate) def: FnDef,
     /// The type a method belongs to.
@@ -40,6 +48,7 @@ pub(crate) struct Program {
     pub(crate) functions: BTreeMap<String, FnEntry>,
     pub(crate) tests: Vec<TestDef>,
     pub(crate) interfaces: BTreeMap<String, Interface>,
+    pub(crate) constants: BTreeMap<String, ConstEntry>,
     /// Builtins that exist only once imported, like `loads` from `std.json`, by the name
     /// they're imported under.
     pub(crate) imports: BTreeMap<String, String>,
@@ -77,6 +86,10 @@ impl Program {
                     self.interfaces.insert(interface.name.clone(), interface.clone());
                 }
                 Item::Import(import) => self.add_import(import),
+                Item::Const { name, ty, value, span } => {
+                    let entry = ConstEntry { ty: ty.clone(), value: value.clone(), span: *span, prelude };
+                    self.constants.insert(name.clone(), entry);
+                }
                 Item::Extend(_) | Item::Stmt(_) => {}
             }
         }

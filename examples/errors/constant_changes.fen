@@ -1,0 +1,5 @@
+KEYWORDS = {"def", "if", "else"}
+
+def main(stdout: Stdout):
+    KEYWORDS.add("while")
+    stdout.print(KEYWORDS)

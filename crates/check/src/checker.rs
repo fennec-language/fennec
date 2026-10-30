@@ -33,6 +33,8 @@ pub(crate) struct Checker {
     pub(crate) vars: Vec<Slot>,
     /// The typed tree, by function.
     pub(crate) typed: BTreeMap<String, Body>,
+    /// Each constant's type, once worked out. `None` while its value is being checked.
+    pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
     checking: Vec<String>,
     /// Functions that used a signature that may still grow: one being checked, so its
@@ -70,6 +72,7 @@ impl Checker {
             locals: BTreeMap::new(),
             vars: Vec::new(),
             typed: BTreeMap::new(),
+            const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
             previous: BTreeMap::new(),
@@ -87,6 +90,10 @@ impl Checker {
             }
         }
         self.revisit_cycles();
+        let constants: Vec<String> = self.program.constants.keys().cloned().collect();
+        for name in constants {
+            self.constant_type(&name);
+        }
         for test in self.program.tests.clone() {
             FnCx::check_test(&mut self, &test);
         }
@@ -552,7 +559,7 @@ fn known_errors(signature: Signature) -> Signature {
 
 /// A type with every variable left in it replaced by `Unknown`, for keeping in a signature
 /// or a field's type, where no later check may settle it.
-fn forget_vars(ty: &Type) -> Type {
+pub(crate) fn forget_vars(ty: &Type) -> Type {
     ty.map(&mut |part| matches!(part, Type::Var(_)).then_some(Type::Unknown))
 }
 

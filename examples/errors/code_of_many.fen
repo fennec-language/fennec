@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    letter = "ab"
+    stdout.print(letter.code())

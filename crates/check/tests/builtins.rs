@@ -285,6 +285,34 @@ fn bytes_hold_ints_and_decode_to_text_that_might_fail() {
 }
 
 #[test]
+fn reading_numbers_from_text_can_fail_and_characters_have_codes() {
+    let program = "
+        stdout.print(int('4') + 1, float('2.5') + 1.0, int(2.5) + 'a', float(2) + 'a')
+        stdout.print('A'.code() + 'a', 'Fox'.codes()[0] + 'a', str.from_code(65) + 'a', str.from_code('A'))
+    ";
+    assert_eq!(
+        in_main(program),
+        [
+            "this is the result of something that can fail @ int(\"4\") + 1",
+            "this is the result of something that can fail @ float(\"2.5\") + 1.0",
+            "can't use `+` on an int and a str @ int(2.5) + \"a\"",
+            "can't use `+` on a float and a str @ float(2) + \"a\"",
+            "can't use `+` on an int and a str @ \"A\".code() + \"a\"",
+            "can't use `+` on an int and a str @ \"Fox\".codes()[0] + \"a\"",
+            "this is the result of something that can fail @ str.from_code(65) + \"a\"",
+            "the code should be an int, but this is a str @ \"A\"",
+        ]
+    );
+    assert_eq!(
+        helps("def main(stdout: Stdout):\n    stdout.print(ord('A'), chr(65))"),
+        [
+            "a character's code is a method: write `c.code()`",
+            "make a character from its code with `str.from_code(n)`",
+        ]
+    );
+}
+
+#[test]
 fn a_regex_search_might_find_nothing() {
     let program = "stdout.print(Regex(r'a').search('b').text)";
     assert_eq!(in_main_after(IMPORTS, program), ["this might be None @ Regex(r\"a\").search(\"b\").text"]);

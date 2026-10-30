@@ -36,6 +36,12 @@ const MUT_ARG: &str = "only a name, or a field or item of one, can be passed wit
 impl FnCx<'_> {
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
         match &callee.kind {
+            ExprKind::Attr { object, name, .. }
+                if name == "from_code"
+                    && matches!(&object.kind, ExprKind::Name(type_name) if type_name == "str" && self.lookup(type_name).is_none()) =>
+            {
+                return self.char_from_code(args, span);
+            }
             ExprKind::Attr { object, name, optional } => {
                 return match self.module_member(object, name, callee.span) {
                     Some(Member::Name(member)) => {

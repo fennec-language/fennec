@@ -9,7 +9,7 @@ struct Score:
 
 def parse_score(text: str):
     if not text.isdigit(): fail ConfigError(f"\"{text}\" isn't a number")
-    Score(value=int(text))?
+    Score(value=int(text)?)?
 
 def load_scores(lines: list[str]):
     [parse_score(line)? for line in lines]

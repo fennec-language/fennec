@@ -116,6 +116,7 @@ impl Interp<'_> {
             ("len", [value]) => length(value, span),
             ("range", _) => range(&values, span),
             ("str", [value]) => Ok(Value::str(&format::display(value))),
+            ("int" | "float", [Value::Str(text)]) => self.parse_number(name, text, span),
             ("int", [value]) => to_int(value, span),
             ("float", [value]) => to_float(value, span),
             ("abs", [Value::Int(n)]) => {
@@ -129,6 +130,23 @@ impl Interp<'_> {
             }
             _ => self.collection_builtin(name, values, key.as_ref(), span),
         }
+    }
+
+    /// `int(text)` and `float(text)`. Text that isn't a number comes from outside the
+    /// program, so it fails with an `InvalidValue` rather than stopping it.
+    fn parse_number(&mut self, name: &str, text: &str, span: Span) -> Result<Value, Diagnostic> {
+        let parsed = if name == "int" {
+            text.trim().parse().map(Value::Int).ok()
+        } else {
+            text.trim().parse().map(Value::Float).ok()
+        };
+        if let Some(number) = parsed {
+            return Ok(Value::Ok(Rc::new(number)));
+        }
+        let what = if name == "int" { "an int" } else { "a float" };
+        let message = format!("{text:?} isn't {what}");
+        let error = self.make_value("InvalidValue", vec![("message", Value::str(&message))], span)?;
+        Ok(Value::Err(Rc::new(error)))
     }
 
     /// `bytes(items)`: each item has to be an int from 0 to 255.
@@ -287,11 +305,6 @@ pub(crate) fn to_int(value: &Value, span: Span) -> Result<Value, Diagnostic> {
             let n = x.trunc() as i64;
             Ok(Value::Int(n))
         }
-        Value::Str(text) => text
-            .trim()
-            .parse()
-            .map(Value::Int)
-            .map_err(|_| Diagnostic::new(format!("can't turn {text:?} into an int"), span)),
         other => Err(Diagnostic::new(format!("can't turn a {} into an int", other.type_name()), span)),
     }
 }
@@ -300,11 +313,6 @@ fn to_float(value: &Value, span: Span) -> Result<Value, Diagnostic> {
     match value {
         Value::Int(n) => Ok(Value::Float(ops::to_float(*n))),
         Value::Float(x) => Ok(Value::Float(*x)),
-        Value::Str(text) => text
-            .trim()
-            .parse()
-            .map(Value::Float)
-            .map_err(|_| Diagnostic::new(format!("can't turn {text:?} into a float"), span)),
         other => Err(Diagnostic::new(format!("can't turn a {} into a float", other.type_name()), span)),
     }
 }

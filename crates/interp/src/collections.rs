@@ -65,6 +65,10 @@ impl Interp<'_> {
             Value::Capability(Capability::Stdout) => self.stdout_method(method, &args, span),
             Value::Capability(Capability::Fs) => self.fs_method(method, &args, span),
             Value::Capability(Capability::Clock) => self.clock_method(method, &args, span),
+            // The bytes share the string's memory: nothing is copied.
+            Value::Str(text) if method == "encode" && args.is_empty() => {
+                Ok(Value::Bytes(Rc::from(Rc::clone(text))))
+            }
             Value::Str(text) => str_method(text, method, &args, span),
             Value::Bytes(data) if method == "decode" && args.is_empty() => match std::str::from_utf8(data) {
                 Ok(text) => Ok(Value::Ok(Rc::new(Value::str(text)))),
@@ -119,6 +123,18 @@ impl Interp<'_> {
         write!(self.out, "{text}{ending}")
             .map_err(|err| Diagnostic::new(format!("couldn't write output: {err}"), span))?;
         Ok(Value::Unit)
+    }
+
+    /// `str.from_code(n)`: the character with a code. A number that isn't one fails with
+    /// an `InvalidValue`.
+    pub(crate) fn char_from_code(&mut self, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+        let [Value::Int(code)] = args else { return Err(wrong_args("from_code", span)) };
+        if let Some(c) = u32::try_from(*code).ok().and_then(char::from_u32) {
+            return Ok(Value::Ok(Rc::new(Value::str(c.encode_utf8(&mut [0; 4])))));
+        }
+        let message = format!("{code} isn't the code of a character");
+        let error = self.make_value("InvalidValue", vec![("message", Value::str(&message))], span)?;
+        Ok(Value::Err(Rc::new(error)))
     }
 
     /// `clock.now()` reads the monotonic clock; `clock.sleep(duration)` waits.
@@ -338,7 +354,20 @@ fn lookup(pairs: &[(Value, Value)], key: &Value) -> Option<Value> {
 fn str_method(text: &str, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let words = |parts: Vec<&str>| Value::list(parts.into_iter().map(Value::str).collect());
     Ok(match (method, args) {
-        ("encode", []) => Value::Bytes(Rc::from(text.as_bytes())),
+        ("code", []) => {
+            let mut chars = text.chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                Value::Int(i64::from(u32::from(c)))
+            } else {
+                let count = text.chars().count();
+                return Err(Diagnostic::new(
+                    format!("`code` needs one character, but this has {count}"),
+                    span,
+                )
+                .with_help("use `codes()` for the code of every character"));
+            }
+        }
+        ("codes", []) => Value::list(text.chars().map(|c| Value::Int(i64::from(u32::from(c)))).collect()),
         ("upper", []) => Value::str(&text.to_uppercase()),
         ("lower", []) => Value::str(&text.to_lowercase()),
         ("strip", []) => Value::str(text.trim()),

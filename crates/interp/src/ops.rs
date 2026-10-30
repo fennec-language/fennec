@@ -171,6 +171,10 @@ pub(crate) fn index(object: &Value, index: &Value, span: Span) -> Result<Value, 
     match object {
         Value::List(items) => position(*at, items.len(), span)
             .and_then(|at| items.get(at).cloned().ok_or_else(|| Diagnostic::new("index out of range", span))),
+        // ASCII text has one byte per character, so its characters are reached directly.
+        Value::Str(text) if text.is_ascii() => position(*at, text.len(), span).and_then(|at| {
+            text.get(at..=at).map(Value::str).ok_or_else(|| Diagnostic::new("index out of range", span))
+        }),
         Value::Str(text) => {
             let count = text.chars().count();
             let at = position(*at, count, span)?;

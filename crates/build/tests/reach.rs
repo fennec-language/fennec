@@ -114,3 +114,15 @@ fn changing_where_a_name_comes_from_affects_the_tests_that_use_it() {
     };
     assert_eq!(affected(&program("one"), &program("other")), ["picking"]);
 }
+
+#[test]
+fn changing_where_an_aliased_name_comes_from_affects_the_tests_that_use_it() {
+    let program = |module: &str| {
+        format!(
+            "from std.{module} import pick as choose\nimport std.{module} as chosen\n\ntest \"by name\":\n    \
+            assert choose(1) == 1\n\ntest \"by module\":\n    assert chosen.pick(1) == 1\n\n\
+            test \"neither\":\n    assert True\n"
+        )
+    };
+    assert_eq!(affected(&program("one"), &program("other")), ["by module", "by name"]);
+}

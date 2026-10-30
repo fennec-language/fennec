@@ -93,3 +93,33 @@ fn ci_runs_every_test() {
     assert_eq!(stdout(&output), "  ✓ doubling\n  ✓ tripling\n2 passed, 0 failed\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_change_in_another_file_of_a_kit_reaches_tests_through_aliases() {
+    let dir = scratch("kit").unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(dir.join("kit.toml"), manifest).unwrap();
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x * 2\n").unwrap();
+    std::fs::write(dir.join("src/other.fen"), "def one() -> int:\n    1\n").unwrap();
+    let tests = "from maths import double as twice\nimport maths as numbers\nfrom other import one\n\n\
+        test \"by alias\":\n    assert twice(2) == 4\n\ntest \"by module\":\n    assert numbers.double(1) == 2\n\n\
+        test \"elsewhere\":\n    assert one() == 1\n";
+    std::fs::write(dir.join("src/main.fen"), tests).unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_fennec"))
+            .arg("test")
+            .arg(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("CI")
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap()
+    };
+    assert!(stdout(&run()).ends_with("3 passed, 0 failed\n"));
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x + x\n").unwrap();
+    let edited = stdout(&run());
+    assert_eq!(edited, "  ✓ by alias\n  ✓ by module\n3 tests: 2 run, 1 unchanged\n3 passed, 0 failed\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

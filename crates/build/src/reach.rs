@@ -140,14 +140,14 @@ impl Graph {
     /// where one name comes from affects only the tests that reach that name.
     fn import(&mut self, import: &Import) {
         let module = import.module.join(".");
-        for name in &import.names {
-            let at =
-                self.add(format!("from {module} import {name}"), tree_hash(&module), Uses::default(), None);
-            self.name(name, at);
+        for (name, bound) in import.bound() {
+            let key = format!("from {module} import {name}");
+            let at = self.add(key, tree_hash(&module), Uses::default(), None);
+            self.name(bound, at);
         }
         if import.names.is_empty() {
             let at = self.add(format!("import {module}"), tree_hash(&module), Uses::default(), None);
-            for part in &import.module {
+            for part in import.module.iter().chain(&import.alias) {
                 self.name(part, at);
             }
         }

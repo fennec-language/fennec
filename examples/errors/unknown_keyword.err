@@ -1,0 +1,7 @@
+error: `greet` has no parameter called `nmae`
+ --> examples/errors/unknown_keyword.fen:5:29
+  |
+5 |     stdout.print(greet(nmae="Ash"))
+  |                             ^^^^^
+  |
+  = help: `greet` takes `name`

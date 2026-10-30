@@ -1,9 +1,12 @@
-//! `fennec test`: runs a program's `test` blocks and reports each one.
+//! `fennec test`: checks a program, then runs its `test` blocks and reports each one.
 
 use std::process::ExitCode;
 
 pub(crate) fn test(path: &str) -> ExitCode {
     let Some((source, module)) = crate::load(path) else { return ExitCode::FAILURE };
+    if !crate::run::check(path, &source, &module) {
+        return ExitCode::FAILURE;
+    }
     let mut out = std::io::sink();
     let mut interp = match fennec_interp::Interp::new(&mut out) {
         Ok(interp) => interp,

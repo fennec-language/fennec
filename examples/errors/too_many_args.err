@@ -1,0 +1,7 @@
+error: `area` takes 2 argument(s)
+ --> examples/errors/too_many_args.fen:5:33
+  |
+5 |     stdout.print(area(2.0, 3.0, 4.0))
+  |                                 ^^^
+  |
+  = help: `area` takes `width`, `height`

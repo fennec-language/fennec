@@ -1,0 +1,7 @@
+error: `Light` is an enum, so pick one of its cases
+ --> examples/errors/enum_needs_case.fen:6:18
+  |
+6 |     stdout.print(Light())
+  |                  ^^^^^^^
+  |
+  = help: write one of Light.Red, Light.Green

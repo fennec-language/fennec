@@ -44,6 +44,7 @@ print_stdout = "deny"
 print_stderr = "deny"
 
 [workspace.dependencies]
+fennec-check = { path = "crates/check" }
 fennec-interp = { path = "crates/interp" }
 fennec-syntax = { path = "crates/syntax" }
 

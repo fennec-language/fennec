@@ -1,0 +1,5 @@
+error: `area` is missing its `height` argument
+ --> examples/errors/missing_arg.fen:5:18
+  |
+5 |     stdout.print(area(width=2.0))
+  |                  ^^^^^^^^^^^^^^^

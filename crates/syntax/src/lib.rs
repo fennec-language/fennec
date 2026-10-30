@@ -4,6 +4,7 @@ mod ast;
 mod diagnostic;
 mod lexer;
 mod parser;
+mod prelude;
 mod span;
 mod token;
 
@@ -13,4 +14,5 @@ pub use ast::{
 };
 pub use diagnostic::Diagnostic;
 pub use parser::{parse, parse_repl};
+pub use prelude::PRELUDE;
 pub use span::Span;

@@ -1,0 +1,7 @@
+error: this is the result of something that can fail
+  --> examples/errors/result_arithmetic.fen:10:18
+   |
+10 |     stdout.print(double(5) + 1)
+   |                  ^^^^^^^^^^^^^
+   |
+   = help: get the value out with `?`, `else`, or `match` first

@@ -1,0 +1,7 @@
+error: no case matches 3
+ --> examples/errors/no_case_matches_value.fen:2:11
+  |
+2 |     match 3:
+  |           ^
+  |
+  = help: add a case for it, or `case _:` for everything else

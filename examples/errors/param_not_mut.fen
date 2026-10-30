@@ -1,0 +1,6 @@
+def heal(health: int):
+    health += 10
+    health
+
+def main(stdout: Stdout):
+    stdout.print(heal(50))

@@ -1,0 +1,7 @@
+error: `while` needs a bool, but this is an int
+ --> examples/errors/not_condition.fen:3:11
+  |
+3 |     while count:
+  |           ^^^^^
+  |
+  = help: Fennec has no truthiness: compare explicitly, like `count > 0`

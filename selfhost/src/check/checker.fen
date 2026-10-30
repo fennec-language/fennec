@@ -13,6 +13,7 @@ def check(module: Module, library: list[Module]) -> list[Diagnostic]:
     for source in library:
         checker.program.add(source, True)
     checker.program.add(module, False)
+    checker.diagnostics += checker.program.problems
     checker.check_all()
     sorted_diagnostics(checker.diagnostics)
 

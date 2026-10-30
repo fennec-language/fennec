@@ -37,11 +37,19 @@ impl Sources {
         let Some(file) = self.file(diagnostic.span).or_else(|| self.files.first()) else {
             return format!("error: {}\n", diagnostic.message);
         };
-        let local = Span {
-            start: diagnostic.span.start.saturating_sub(file.base),
-            end: diagnostic.span.end.saturating_sub(file.base),
+        let local = |span: Span, file: &File| Span {
+            start: span.start.saturating_sub(file.base),
+            end: span.end.saturating_sub(file.base),
         };
-        Diagnostic { span: local, ..diagnostic.clone() }.render(&file.path, &file.text)
+        let also = diagnostic.also.and_then(|span| {
+            let other = self.file(span)?;
+            Some(crate::diagnostic::place(&other.path, &other.text, local(span, other)))
+        });
+        Diagnostic { span: local(diagnostic.span, file), ..diagnostic.clone() }.render_with(
+            &file.path,
+            &file.text,
+            also.as_deref(),
+        )
     }
 
     /// Every file, as its path and text, in the order they were added.

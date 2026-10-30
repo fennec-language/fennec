@@ -1,0 +1,8 @@
+error: `Player` already has a method called `reset`
+ --> examples/projects/errors/method_twice/src/main.fen:4:5
+  |
+4 |     def reset(mut self):
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = help: rename one of them
+  = note: the other one is at examples/projects/errors/method_twice/src/player.fen:4:5

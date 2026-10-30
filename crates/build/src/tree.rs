@@ -65,6 +65,12 @@ pub fn definitions(module: &Module) -> Vec<(String, Hash)> {
             Item::Interface(interface) => {
                 found.push((format!("interface {}", interface.name), tree_hash(interface)));
             }
+            // An extension's methods are the type's, keyed like the ones in its declaration.
+            Item::Extend(extension) => {
+                for method in &extension.methods {
+                    found.push((format!("def {}.{}", extension.name, method.name), tree_hash(method)));
+                }
+            }
             Item::TypeAlias { name, .. } => found.push((format!("type {name}"), tree_hash(item))),
             Item::Import(import) => {
                 let module = import.module.join(".");

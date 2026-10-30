@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, FnDef, Item, Module, Span, Stmt, TestDef, TypeDef};
+use fennec_syntax::{Diagnostic, Extension, FnDef, Item, Module, Span, Stmt, TestDef, TypeDef};
 
 use crate::exec::Flow;
 use crate::format;
@@ -161,11 +161,32 @@ impl<'out> Interp<'out> {
                     self.imports.extend(functions);
                 }
                 Item::Test(test) => self.tests.push(test.clone()),
-                Item::Interface(_) | Item::TypeAlias { .. } => {}
+                Item::Interface(_) | Item::TypeAlias { .. } | Item::Extend(_) => {}
                 Item::Stmt(stmt) => statements.push(stmt.clone()),
             }
         }
+        // Extensions come last, so the type they extend is known wherever it's declared.
+        for item in &module.items {
+            if let Item::Extend(extension) = item {
+                self.extend_type(extension)?;
+            }
+        }
         Ok(statements)
+    }
+
+    /// Adds an extension's methods to its type, as if they were written in its declaration.
+    fn extend_type(&mut self, extension: &Extension) -> Result<(), Diagnostic> {
+        let info = self
+            .types
+            .get(&extension.name)
+            .ok_or_else(|| Diagnostic::new(format!("`{}` isn't a type", extension.name), extension.span))?;
+        let mut methods = info.methods.clone();
+        for method in &extension.methods {
+            methods.insert(method.name.clone(), Rc::new(callable(method, Vec::new())));
+        }
+        let extended = TypeInfo { def: info.def.clone(), kind: info.kind, methods };
+        self.types.insert(extension.name.clone(), Rc::new(extended));
+        Ok(())
     }
 
     fn register_type(&mut self, def: &TypeDef, kind: TypeKind) {

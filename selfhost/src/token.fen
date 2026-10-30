@@ -1,0 +1,45 @@
+## The tokens the lexer produces, including Python-style indentation tokens.
+## Mirrors `crates/syntax/src/token.rs`.
+
+from span import Span
+
+## A piece of an f-string: literal text, or the source of an expression to parse later.
+enum FPart:
+    Text(text: str)
+    ## `offset` is where the expression's source starts in the file, in bytes.
+    Code(source: str, offset: int, spec: str?)
+
+enum Tok:
+    Name(text: str)
+    Int(value: int)
+    Float(value: float)
+    Str(text: str)
+    FStr(parts: list[FPart])
+    ## A hard keyword, like `def`. Soft keywords such as `match` stay names.
+    Keyword(word: str)
+    Punct(text: str)
+    Newline
+    Indent
+    Dedent
+    Eof
+
+struct Token:
+    tok: Tok
+    span: Span
+
+## Whether `word` is a hard keyword. `struct`, `enum`, `error`, `test`, `interface`, `type`,
+## `match`, `case` and `where` are soft: they're keywords only where a declaration or
+## `match` can start, so they stay usable as names, as in Python.
+def is_keyword(word: str) -> bool:
+    word in {
+        "def", "if", "elif", "else", "while", "for", "in", "return", "break", "continue",
+        "pass", "mut", "and", "or", "not", "is", "True", "False", "None", "fail", "yield",
+        "with", "as", "import", "from", "export", "noalloc", "assert", "extern", "unsafe",
+    }
+
+## Keywords the language has planned but this version doesn't support yet.
+def is_reserved(word: str) -> bool:
+    word == "extern" or word == "unsafe"
+
+def is_two_char_punct(text: str) -> bool:
+    text in ["->", "=>", "==", "!=", "<=", ">=", "//", "**", "+=", "-=", "*=", "/="]

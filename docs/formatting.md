@@ -7,9 +7,9 @@ formatter makes that the design still needs to agree to.
 
 ## What it never changes
 
-The formatter works on tokens. It changes only the space between them, so it never adds,
-drops or reorders code. The one exception is a trailing comma, added when it breaks a list
-across lines. Comments are kept word for word, apart from spaces at the end of the line.
+The formatter works on tokens. It changes only the space and line breaks between them, so it
+never adds, drops or reorders code. The one exception is a trailing comma, added when it
+breaks a list across lines. Comments are kept word for word, apart from spaces at the end of the line.
 Parentheses, number spellings like `1_000`, and string escapes stay as written.
 
 Before it writes a file, it parses the result and checks the syntax tree is the same as
@@ -22,6 +22,8 @@ file is left alone and the command reports a bug.
 - A bracketed list that doesn't fit puts each item on its own line, one indent deeper, and
   ends with a trailing comma. The closing bracket goes on its own line. The outermost list
   breaks first. *To confirm.*
+- A list whose only item is another bracketed list hugs it: `"\n".join([` opens both, the
+  inner list's items go one indent deeper, and `])` closes both. *To confirm.*
 - A list whose last item ends with a comma stays broken, even if it would fit, so a list can
   be kept one item per line on purpose. A one-item tuple like `(x,)` doesn't count.
   *To confirm.*
@@ -56,8 +58,9 @@ file is left alone and the command reports a bug.
 ## Blocks
 
 - Each block is indented 4 spaces more than the line ending in `:`.
-- A body on the same line as its `:`, like `case .Point: 0.0`, stays there; a body on its
-  own lines stays there too. *To confirm.*
+- A body on the same line as its `:`, like `case .Point: 0.0`, stays there unless the line
+  is too long; then it moves to its own line, one indent deeper. A body on its own lines
+  stays there. *To confirm.*
 
 ## Comments
 

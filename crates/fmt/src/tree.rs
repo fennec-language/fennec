@@ -1,7 +1,7 @@
 //! A logical line as a tree of bracket groups, so the layout can break the outermost
 //! group that doesn't fit. Comments inside brackets are kept in the tree where they were.
 
-use crate::spacing::{Bracket, Spacing, Tok};
+use crate::spacing::{Bracket, Tok};
 use fennec_syntax::TokenKind;
 
 pub(crate) enum Node<'a> {
@@ -51,7 +51,10 @@ pub(crate) struct Line<'t, 'a> {
     pub(crate) toks: &'t [Tok<'a>],
     pub(crate) leading: &'t [&'t [&'a str]],
     pub(crate) trailing: &'t [Option<&'a str>],
-    pub(crate) spacing: &'t Spacing,
+    /// Whether each token has a space before it.
+    pub(crate) space: &'t [bool],
+    /// What each opening bracket is for.
+    pub(crate) brackets: &'t [Option<Bracket>],
 }
 
 impl<'a> Line<'_, 'a> {
@@ -72,7 +75,27 @@ impl<'a> Line<'_, 'a> {
     }
 
     fn space(&self, at: usize) -> bool {
-        self.spacing.space.get(at).copied().unwrap_or(false)
+        self.space.get(at).copied().unwrap_or(false)
+    }
+
+    /// The line cut in two before token `at`.
+    pub(crate) fn split_at(&self, at: usize) -> (Self, Self) {
+        let cut = |tokens: usize| tokens.min(at);
+        let (toks, rest_toks) = self.toks.split_at(cut(self.toks.len()));
+        let (leading, rest_leading) = self.leading.split_at(cut(self.leading.len()));
+        let (trailing, rest_trailing) = self.trailing.split_at(cut(self.trailing.len()));
+        let (space, rest_space) = self.space.split_at(cut(self.space.len()));
+        let (brackets, rest_brackets) = self.brackets.split_at(cut(self.brackets.len()));
+        (
+            Line { toks, leading, trailing, space, brackets },
+            Line {
+                toks: rest_toks,
+                leading: rest_leading,
+                trailing: rest_trailing,
+                space: rest_space,
+                brackets: rest_brackets,
+            },
+        )
     }
 
     /// The whole line as one item. The first token's leading comments and the last token's
@@ -167,7 +190,7 @@ impl<'a> Line<'_, 'a> {
         }
         group.dangling.extend_from_slice(self.leading(at));
         group.close = self.text(at);
-        let bracket = self.spacing.brackets.get(open).copied().flatten().unwrap_or(Bracket::Paren);
+        let bracket = self.brackets.get(open).copied().flatten().unwrap_or(Bracket::Paren);
         group.comma_allowed = comma_allowed(bracket, group.items.len(), group.trailing_comma, has_for);
         let single_tuple = bracket == Bracket::Paren && group.items.len() == 1;
         let magic = group.trailing_comma && !single_tuple;

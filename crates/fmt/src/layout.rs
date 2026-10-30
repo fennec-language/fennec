@@ -100,7 +100,7 @@ impl Writer {
                     let follow = follows.get(at).copied().unwrap_or(0);
                     match group.flat {
                         Some(width) if self.column + width + follow <= WIDTH => self.flat_group(group),
-                        _ => self.broken_group(group, indent),
+                        _ => self.break_group(group, indent),
                     }
                 }
                 Node::Comment { text, own_line: false } => {
@@ -146,6 +146,18 @@ impl Writer {
         self.text(group.close, group.close.len());
     }
 
+    /// Writes a group across lines. A list whose only item is another bracketed list hugs it:
+    /// `join([` and `])` share lines, and the inner list's items go one indent deeper.
+    fn break_group(&mut self, group: &Group<'_>, indent: usize) {
+        if let Some(inner) = hugged(group) {
+            self.text(group.open, group.open.len());
+            self.break_group(inner, indent);
+            self.text(group.close, group.close.len());
+        } else {
+            self.broken_group(group, indent);
+        }
+    }
+
     fn broken_group(&mut self, group: &Group<'_>, indent: usize) {
         let inner = indent + INDENT;
         self.text(group.open, group.open.len());
@@ -172,6 +184,21 @@ impl Writer {
         }
         self.start(indent);
         self.text(group.close, group.close.len());
+    }
+}
+
+/// The list inside a group that holds just that list, with no comments or trailing comma.
+fn hugged<'g, 'a>(group: &'g Group<'a>) -> Option<&'g Group<'a>> {
+    if group.trailing_comma || group.open_comment.is_some() || !group.dangling.is_empty() {
+        return None;
+    }
+    let [item] = group.items.as_slice() else { return None };
+    if !item.leading.is_empty() || !item.trailing.is_empty() {
+        return None;
+    }
+    match item.nodes.as_slice() {
+        [Node::Group(inner)] if !inner.items.is_empty() => Some(inner),
+        _ => None,
     }
 }
 

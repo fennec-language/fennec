@@ -1,11 +1,11 @@
 //! The file as blocks of logical lines: indentation, blank lines between lines, and the
 //! comments on lines of their own between them.
 
-use crate::INDENT;
 use crate::comments::{Comments, text};
 use crate::layout::Writer;
 use crate::spacing::{BlockKind, Tok, analyze};
-use crate::tree::Line;
+use crate::tree::{Item, Line};
+use crate::{INDENT, WIDTH};
 use fennec_syntax::{SourceToken, TokenKind};
 
 struct Block {
@@ -123,14 +123,23 @@ impl<'s, 't> Driver<'s, 't> {
         let spacing = analyze(&toks, kind);
         let leading: Vec<&[&str]> = (start..end).map(|at| self.comments.leading(at)).collect();
         let trailing: Vec<Option<&str>> = (start..end).map(|at| self.comments.trailing(at)).collect();
-        let line = Line { toks: &toks, leading: &leading, trailing: &trailing, spacing: &spacing };
-        let indent = level * INDENT;
-        self.writer.start(indent);
-        self.writer.item(&line.build(), indent, 0);
-        if let Some(comment) = end.checked_sub(1).and_then(|last| self.comments.trailing(last)) {
-            self.writer.trailing_comment(comment);
+        let line = Line {
+            toks: &toks,
+            leading: &leading,
+            trailing: &trailing,
+            space: &spacing.space,
+            brackets: &spacing.brackets,
+        };
+        let item = line.build();
+        let too_long = item.flat.is_some_and(|width| level * INDENT + width > WIDTH);
+        match body_colon(&toks, kind).filter(|_| too_long) {
+            Some(colon) => {
+                let (header, body) = line.split_at(colon + 1);
+                write(&mut self.writer, &header.build(), level, None);
+                write(&mut self.writer, &body.build(), level + 1, trailing.last().copied().flatten());
+            }
+            None => write(&mut self.writer, &item, level, trailing.last().copied().flatten()),
         }
-        self.writer.finish();
 
         self.prev_end = end.checked_sub(1).and_then(|last| self.tokens.get(last)).map(|token| token.span.end);
         if let Some(block) = self.blocks.last_mut() {
@@ -228,6 +237,42 @@ fn is_item(toks: &[Tok<'_>], kind: BlockKind) -> bool {
         BlockKind::TypeBody => has_body && is_def,
         BlockKind::MatchBody | BlockKind::Other => false,
     }
+}
+
+/// Writes one line of code at `level`, with the comment that ends it.
+fn write(writer: &mut Writer, item: &Item<'_>, level: usize, comment: Option<&str>) {
+    let indent = level * INDENT;
+    writer.start(indent);
+    writer.item(item, indent, 0);
+    if let Some(comment) = comment {
+        writer.trailing_comment(comment);
+    }
+    writer.finish();
+}
+
+/// Where the `:` is in a block statement with its body on the same line, like
+/// `case .Point: 0.0`. A body that makes the line too long moves to a line of its own.
+fn body_colon(toks: &[Tok<'_>], kind: BlockKind) -> Option<usize> {
+    let mut words = toks.iter().skip_while(|tok| matches!(tok.text, "export" | "noalloc"));
+    let first = words.next()?;
+    let opens_block = match first.kind {
+        TokenKind::Keyword => matches!(first.text, "def" | "if" | "elif" | "else" | "while" | "for" | "with"),
+        TokenKind::Name => first.text == "case" && kind == BlockKind::MatchBody,
+        _ => false,
+    };
+    if !opens_block {
+        return None;
+    }
+    let mut depth = 0_usize;
+    for (at, tok) in toks.iter().enumerate().filter(|(_, tok)| tok.kind == TokenKind::Punct) {
+        match tok.text {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" => depth = depth.saturating_sub(1),
+            ":" if depth == 0 => return (at + 1 < toks.len()).then_some(at),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Whether a line has a `:` outside brackets, which a line with a body always has.

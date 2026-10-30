@@ -221,3 +221,19 @@ fn syntax_errors_are_reported_not_formatted() {
 fn files_keep_their_line_endings() {
     check("def f():\r\n  pass\r\n", "def f():\r\n    pass\r\n");
 }
+
+#[test]
+fn a_lone_list_argument_hugs_its_call() {
+    check(
+        "def f():\n    text = \"\\n\".join([\"first line of the file\", \"second line of the file\", \"the third line of the file\"])\n",
+        "def f():\n    text = \"\\n\".join([\n        \"first line of the file\",\n        \"second line of the file\",\n        \"the third line of the file\",\n    ])\n",
+    );
+}
+
+#[test]
+fn a_body_too_long_for_its_line_moves_below_it() {
+    check(
+        "def f(x: int):\n    match x:\n        case 1: stdout.print(f\"the problem is on line {line}, column {column}, look there right now!\")\n        case _: pass\n",
+        "def f(x: int):\n    match x:\n        case 1:\n            stdout.print(f\"the problem is on line {line}, column {column}, look there right now!\")\n        case _: pass\n",
+    );
+}

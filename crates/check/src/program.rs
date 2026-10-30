@@ -280,6 +280,9 @@ impl Program {
 
     /// The type of `self` in a type's methods: `Deque[T]` for a `Deque`.
     pub(crate) fn self_type(&self, name: &str) -> Type {
+        if let Some(built_in) = Type::built_in(name) {
+            return built_in;
+        }
         let params = self.type_params(name);
         if params.is_empty() {
             return Type::named(name);

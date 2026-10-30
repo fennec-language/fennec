@@ -139,6 +139,9 @@ impl Parser {
                 Ok(name)
             }
             Tok::Kw(Kw::Reserved(word)) => Err(self.reserved(word)),
+            Tok::Kw(_) => Err(self
+                .unexpected(what)
+                .with_help(format!("{} is a keyword, so it can't be a name", describe(self.peek())))),
             _ => Err(self.unexpected(what)),
         }
     }

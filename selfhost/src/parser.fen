@@ -101,6 +101,11 @@ struct Parser:
             case .Keyword(word):
                 if is_reserved(word):
                     fail self.reserved(word)
+                fail Diagnostic(
+                    message=f"expected {what}, found {describe(self.peek())}",
+                    span=self.span(),
+                    help=f"{describe(self.peek())} is a keyword, so it can't be a name",
+                )
             case _: pass
         fail self.unexpected(what)
 

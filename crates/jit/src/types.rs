@@ -120,6 +120,11 @@ impl<'m> Program<'m> {
         }
         let main_span = main_span
             .ok_or_else(|| Diagnostic::new("this program has no `main` function", Span::default()))?;
+        // Compile only what a run can reach from `main`.
+        let modules: Vec<&Module> = prelude.iter().chain(std::iter::once(module)).collect();
+        let (reached, mentions) = crate::reach::reachable(&functions, &modules);
+        functions.retain(|function| reached.contains(&function.key));
+        excluded.retain(|key| crate::reach::is_mentioned(key, &mentions));
         if !functions.iter().any(|function| function.def.name == "main") {
             return Err(unsupported("this `main`", main_span));
         }

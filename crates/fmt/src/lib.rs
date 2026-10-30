@@ -82,3 +82,43 @@ fn comment_texts(source: &str) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, check_same, comment_texts, without_spans};
+
+    fn parse(source: &str) -> fennec_syntax::Module {
+        fennec_syntax::parse(source).unwrap()
+    }
+
+    #[test]
+    fn trees_compare_without_their_positions() {
+        let tree = without_spans(&parse("def f():\n    pass\n"));
+        assert_eq!(
+            tree,
+            "Module { items: [Function(FnDef { name: \"f\", params: [], ret: None, \
+             body: [Stmt { kind: Pass, span: Span }], span: Span })] }"
+        );
+        assert_eq!(tree, without_spans(&parse("def  f( ):\n\n        pass\n")));
+        assert_ne!(tree, without_spans(&parse("def g():\n    pass\n")));
+    }
+
+    #[test]
+    fn comments_are_listed_word_for_word() {
+        assert_eq!(comment_texts("# one  \nx = 1  #two\n"), ["# one", "#two"]);
+        assert!(comment_texts("x = 1\n").is_empty());
+    }
+
+    #[test]
+    fn a_result_that_changes_the_file_is_refused() {
+        let source = "def f():\n    pass  # why\n";
+        let before = parse(source);
+        assert_eq!(check_same(source, &before, "def f():\n    pass  # why\n"), Ok(()));
+        assert_eq!(
+            check_same(source, &before, "def g():\n    pass  # why\n"),
+            Err(Error::WouldChange("meaning"))
+        );
+        assert_eq!(check_same(source, &before, "def f(:\n"), Err(Error::WouldChange("meaning")));
+        assert_eq!(check_same(source, &before, "def f():\n    pass\n"), Err(Error::WouldChange("comments")));
+    }
+}

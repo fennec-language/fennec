@@ -249,7 +249,10 @@ fn fmt_check_passes_on_the_examples() {
     let output = fennec(&["fmt", "--check", "examples"], "").unwrap();
     assert!(output.status.success(), "{}{}", text(&output.stdout), text(&output.stderr));
     assert_eq!(text(&output.stdout), "");
-    assert!(text(&output.stderr).contains("raise.fen: it doesn't parse"));
+    assert!(text(&output.stderr).contains("raise.fen: it doesn't parse (2:5: Fennec doesn't have `raise`)"));
+    assert!(
+        text(&output.stderr).contains("tab_inside_line.fen: it doesn't parse (2:12: tabs aren't allowed)")
+    );
 }
 
 #[test]
@@ -398,5 +401,31 @@ fn new_makes_a_kit_that_runs_and_passes_its_tests() {
         assert_eq!(bad.status.code(), Some(1), "{bad_name:?}");
         assert!(text(&bad.stderr).contains("can't name a kit"), "{bad_name:?}");
     }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn fmt_with_no_path_formats_the_kit_around_the_current_folder() {
+    let dir = scratch("fmt-kit").unwrap();
+    std::fs::create_dir_all(dir.join("kit/src/combat")).unwrap();
+    std::fs::write(dir.join("kit/kit.toml"), "name = \"demo\"\n").unwrap();
+    std::fs::write(dir.join("kit/src/main.fen"), "def main(stdout:Stdout):\n  pass\n").unwrap();
+    std::fs::write(dir.join("kit/src/combat/hit.fen"), "def hit( ):\n  pass\n").unwrap();
+    std::fs::write(dir.join("outside.fen"), "def outside( ):\n  pass\n").unwrap();
+
+    let check = fennec_in(&dir.join("kit/src/combat"), &["fmt", "--check"], "").unwrap();
+    assert_eq!(check.status.code(), Some(1));
+    let listed = text(&check.stdout).replace('\\', "/");
+    assert_eq!(listed, "../../src/combat/hit.fen\n../../src/main.fen\n");
+
+    let write = fennec_in(&dir.join("kit/src/combat"), &["fmt"], "").unwrap();
+    assert!(write.status.success());
+    let hit = std::fs::read_to_string(dir.join("kit/src/combat/hit.fen")).unwrap();
+    assert_eq!(hit, "def hit():\n    pass\n");
+    let outside = std::fs::read_to_string(dir.join("outside.fen")).unwrap();
+    assert_eq!(outside, "def outside( ):\n  pass\n");
+
+    let plain = fennec_in(&dir, &["fmt", "--check"], "").unwrap();
+    assert_eq!(text(&plain.stdout).replace('\\', "/"), "outside.fen\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }

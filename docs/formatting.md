@@ -73,8 +73,10 @@ file is left alone and the command reports a bug.
 ## The command
 
 - `fennec fmt [paths]` rewrites files in place. A folder means every `.fen` file under it,
-  skipping hidden folders, `target` and `node_modules`, so a kit's folder formats the
-  whole kit. With no paths, it formats the current folder.
+  skipping hidden folders, `target` and `node_modules`.
+- With no paths, it formats the whole kit around the current folder: the nearest folder at
+  or above it with a `kit.toml`, `src/` and all. Outside a kit, it formats the current
+  folder.
 - `fennec fmt --check [paths]` lists the files that aren't formatted and fails if there are
   any. CI runs `fennec fmt --check examples`.
 - A file that doesn't parse is skipped with a note, and doesn't fail the command: the

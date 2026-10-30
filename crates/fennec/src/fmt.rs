@@ -48,11 +48,10 @@ fn kit_root(dir: &Path) -> Option<PathBuf> {
     let absolute = std::fs::canonicalize(dir).ok()?;
     let (levels, _) =
         absolute.ancestors().enumerate().find(|(_, folder)| folder.join("kit.toml").is_file())?;
-    let mut root = dir.to_path_buf();
-    for _ in 0..levels {
-        root.push("..");
+    if levels == 0 {
+        return Some(dir.to_path_buf());
     }
-    Some(root)
+    Some((0..levels).map(|_| "..").collect())
 }
 
 /// Adds `path` if it's a file, or the `.fen` files under it if it's a folder, sorted.
@@ -80,7 +79,7 @@ fn collect(path: &Path, named: bool, files: &mut Vec<PathBuf>) -> std::io::Resul
 /// Formats one file. Returns whether it wasn't formatted already; with `check`, it's only
 /// listed, not rewritten. A file with a syntax error is skipped with a note.
 fn format_file(path: &Path, check: bool) -> Result<bool, ()> {
-    let shown = path.display();
+    let shown = path.strip_prefix(".").unwrap_or(path).display();
     let source =
         std::fs::read_to_string(path).map_err(|err| eprintln!("error: couldn't read {shown}: {err}"))?;
     let formatted = match fennec_fmt::format(&source) {

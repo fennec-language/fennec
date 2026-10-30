@@ -4,7 +4,7 @@
 
 from span import Span, Diagnostic
 from token import FPart, Tok, Token, is_reserved
-from lexer import lex
+from lexer import byte_length, lex
 from ast import Module, Item, FnDef, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
 
 ## Parses a whole `.fen` file, where only declarations may sit at the top level.
@@ -410,8 +410,6 @@ struct Parser:
 
     ## A simple statement that starts with the keyword `word`.
     def keyword_stmt(mut self, word: str) -> StmtKind:
-        if is_reserved(word):
-            fail self.reserved(word)
         if word == "mut":
             return self.mut_declaration()?
         if word not in ["return", "fail", "yield", "assert", "break", "continue", "pass"]:
@@ -563,17 +561,15 @@ struct Parser:
         body = self.expr()?
         Expr(kind=.Lambda(params, body), span=start.to(body.span))
 
-    ## Looks ahead for `(a, b) =>`, returning the names and how many tokens they take.
+    ## Looks ahead for `(a, b) =>`, returning the names and how many tokens they take. A
+    ## trailing comma is fine, as it is in `def` parameters.
     def paren_params(self) -> (list[str], int)?:
         mut params = []
         mut at = 1
         while True:
             match self.peek_at(at):
                 case .Name(name): params.append(name)
-                case .Punct(")"):
-                    if len(params) > 0:
-                        return None
-                    break
+                case .Punct(")"): break
                 case _: return None
             at += 1
             if self.peek_at(at) == .Punct(")"):
@@ -739,7 +735,6 @@ struct Parser:
                     fail Diagnostic(message=f"expected a value, found `{text}`", span=span)
                 ExprKind.Variant(self.name("an enum case after `.`")?)
             case other:
-                self.pos -= 1
                 fail Diagnostic(message=f"expected a value, found {describe(other)}", span=span)
         Expr(kind=kind, span=span.to(self.prev_span()))
 
@@ -750,8 +745,8 @@ struct Parser:
             case "False": .Bool(False)
             case "None": .Nothing
             case _:
-                self.pos -= 1
                 if is_reserved(word):
+                    self.pos -= 1
                     fail self.reserved(word)
                 fail Diagnostic(message=f"expected a value, found `{word}`", span=span)
 
@@ -985,7 +980,10 @@ def fstring_parts(parts: list[FPart]) -> list[FStrPart]:
                         span=Span(start=offset, end=offset + 1),
                         help="put an expression inside, or write `{{` for a literal brace",
                     )
-                mut parser = Parser.over(lex(source, offset)?)
+                # Lexed on its own, a leading space would read as indentation.
+                code = source.lstrip()
+                skipped = byte_length(source[:len(source) - len(code)])
+                mut parser = Parser.over(lex(code, offset + skipped)?)
                 expr = parser.expr()?
                 parser.eat(.Newline)
                 if not parser.at(.Eof):

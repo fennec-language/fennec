@@ -21,6 +21,10 @@ def utf8_width(c: str) -> int:
     else:
         4
 
+## How many bytes `text` takes in UTF-8.
+def byte_length(text: str) -> int:
+    sum(utf8_width(c) for c in text)
+
 ## The byte offset of each character, plus one past the end. Spans count bytes, but Fennec
 ## strings index by character.
 def byte_offsets(chars: list[str]) -> list[int]:

@@ -44,7 +44,7 @@ impl Lowerer<'_, '_> {
 
     /// `text.len()`: its length in characters.
     pub(super) fn string_length(&mut self, text: Value) -> Result<Value, Diagnostic> {
-        let length = self.b.ins().load(types::I64, MemFlagsData::trusted(), text, CHARS);
+        let length = self.load_length(text, CHARS);
         self.consume(Some(text), Ty::Str)?;
         Ok(length)
     }

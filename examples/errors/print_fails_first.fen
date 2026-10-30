@@ -1,0 +1,6 @@
+## Every argument is worked out before anything prints.
+
+def main(stdout: Stdout):
+    big = 9_223_372_036_854_775_807
+    for i in range(3, 4):
+        stdout.print(i, i + big)

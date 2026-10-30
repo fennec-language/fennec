@@ -74,6 +74,8 @@ pub(super) fn new_module(span: Span) -> Result<ObjectModule, Diagnostic> {
     let mut flags = settings::builder();
     flags.set("opt_level", "speed").map_err(|err| internal(err, span))?;
     flags.set("enable_pinned_reg", "true").map_err(|err| internal(err, span))?;
+    // Results past a target's return registers go through memory: x86-64 has only two.
+    flags.set("enable_multi_ret_implicit_sret", "true").map_err(|err| internal(err, span))?;
     flags.set("is_pic", "true").map_err(|err| internal(err, span))?;
     let isa = cranelift_native::builder()
         .map_err(|err| internal(err, span))?

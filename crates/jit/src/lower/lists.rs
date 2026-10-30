@@ -155,13 +155,17 @@ impl Lowerer<'_, '_> {
         if let Some(hoisted) = self.hoisted(name) {
             return Ok(hoisted.length);
         }
-        let list = self.b.use_var(self.list_var(name)?);
+        let var = self.list_var(name)?;
+        if let Some(length) = self.fixed_length(var) {
+            return Ok(length);
+        }
+        let list = self.b.use_var(var);
         Ok(self.length_of_list(list))
     }
 
     /// How many items a list has.
     pub(super) fn length_of_list(&mut self, list: Value) -> Value {
-        self.b.ins().load(types::I64, MemFlagsData::trusted(), list, LIST_LENGTH)
+        self.load_length(list, LIST_LENGTH)
     }
 
     /// The address of `list[index]`, failing like the interpreter for an index past either
@@ -177,6 +181,9 @@ impl Lowerer<'_, '_> {
         let (at, at_ty) = self.expr(index)?;
         let at = self.convert(at, at_ty, Ty::Int, index.span)?;
         let len = self.list_length(name, item)?;
+        if self.known_inside(at, len) {
+            return self.item_at(name, item, write, at);
+        }
         let here = self.b.current_block();
         // The SSA builder can give a variable's value back under another name.
         let (len, at) = (self.b.func.dfg.resolve_aliases(len), self.b.func.dfg.resolve_aliases(at));

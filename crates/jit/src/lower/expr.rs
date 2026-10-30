@@ -6,7 +6,7 @@ use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, Span, UnaryOp};
 
-use super::Lowerer;
+use super::{Lowerer, ranges};
 use crate::helpers::Helper;
 use crate::runtime;
 use crate::types::{Ty, unsupported};
@@ -38,10 +38,10 @@ impl Lowerer<'_, '_> {
                         ..
                     },
                 ) => {
-                    let value = self.b.use_var(var);
+                    let value = self.read_var(var);
                     Ok((Some(self.borrow(value)), local.ty))
                 }
-                Some(local) => Ok((local.var.map(|var| self.b.use_var(var)), local.ty)),
+                Some(local) => Ok((local.var.map(|var| self.read_var(var)), local.ty)),
                 None => self.fallback(expr),
             },
             ExprKind::Unary { op, expr: inner } => {
@@ -269,7 +269,28 @@ impl Lowerer<'_, '_> {
         result.map(|(value, ty)| (Some(value), ty))
     }
 
+    /// Arithmetic on ints: without a check when what's known says it can't overflow, and
+    /// remembering what's known about the result.
     fn int_arithmetic(&mut self, op: BinOp, a: Value, b: Value, span: Span) -> Option<(Value, Ty)> {
+        let exact = self.exact_range(op, a, b);
+        if let Some(range) = exact.filter(|range| ranges::fits(*range)) {
+            let value = match op {
+                BinOp::Add => self.b.ins().iadd(a, b),
+                BinOp::Sub => self.b.ins().isub(a, b),
+                _ => self.b.ins().imul(a, b),
+            };
+            self.note_range(value, ranges::clamped(range));
+            return Some((value, Ty::Int));
+        }
+        let division = self.division_range(op, a, b);
+        let result = self.checked_arithmetic(op, a, b, span)?;
+        if let Some(range) = exact.map(ranges::clamped).or(division) {
+            self.note_range(result.0, range);
+        }
+        Some(result)
+    }
+
+    fn checked_arithmetic(&mut self, op: BinOp, a: Value, b: Value, span: Span) -> Option<(Value, Ty)> {
         if let (BinOp::Add | BinOp::Sub, Some(constant)) = (op, self.constant(b)) {
             return Some((self.add_constant(op, a, b, constant, span), Ty::Int));
         }
@@ -335,7 +356,7 @@ impl Lowerer<'_, '_> {
     }
 
     fn float_arithmetic(&mut self, op: BinOp, a: Value, b: Value, span: Span) -> Option<(Value, Ty)> {
-        if matches!(op, BinOp::Div | BinOp::FloorDiv | BinOp::Mod) {
+        if matches!(op, BinOp::Div | BinOp::FloorDiv | BinOp::Mod) && !self.nonzero_float(b) {
             let zero = self.b.ins().f64const(0.0);
             let is_zero = self.b.ins().fcmp(FloatCC::Equal, b, zero);
             self.fail_if(is_zero, runtime::DIVISION_BY_ZERO, span);

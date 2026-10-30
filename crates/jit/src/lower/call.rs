@@ -154,6 +154,9 @@ impl Lowerer<'_, '_> {
                 *slot = Some(self.expr(&arg.value)?);
             }
         }
+        // A list passed both ways must keep its items where it's passed without `mut`, so
+        // that argument gets an owner of its own for the call, and a change copies the list.
+        let changes = params.iter().any(|(_, ty, is_mut)| *is_mut && ty.counted());
         let mut values = Vec::new();
         let mut mut_natives = Vec::new();
         let mut reloads = Vec::new();
@@ -161,7 +164,8 @@ impl Lowerer<'_, '_> {
             match (lowered, is_mut, &arg.value.kind) {
                 (Some((value, from)), _, _) => {
                     if !matches!(ty, Ty::Cap(_)) {
-                        values.push(self.convert(value, from, *ty, arg.value.span)?);
+                        let converted = self.convert(value, from, *ty, arg.value.span)?;
+                        values.push(if changes { self.own(converted, *ty) } else { converted });
                     }
                 }
                 (None, true, ExprKind::Name(local)) => {
@@ -469,7 +473,7 @@ impl Lowerer<'_, '_> {
             ("min" | "max", [(Some(a), Ty::Float), (Some(b), Ty::Float)]) => {
                 (if name == "min" { self.b.ins().fmin(*a, *b) } else { self.b.ins().fmax(*a, *b) }, Ty::Float)
             }
-            ("float", [(Some(x), Ty::Int)]) => (self.b.ins().fcvt_from_sint(types::F64, *x), Ty::Float),
+            ("float", [(Some(x), Ty::Int)]) => (self.int_to_float(*x), Ty::Float),
             ("float", [(Some(x), Ty::Float)]) => (*x, Ty::Float),
             ("int", [(Some(x), Ty::Int)]) => (*x, Ty::Int),
             ("int", [(Some(x), Ty::Float)]) => (self.float_to_int(*x, span), Ty::Int),
@@ -575,6 +579,26 @@ impl Lowerer<'_, '_> {
 
     /// `stdout.print(...)`: each argument's text, separated by spaces, then a newline.
     fn print(&mut self, args: &[Arg], newline: bool) -> Result<(), Diagnostic> {
+        // Everything is worked out before anything prints, as the interpreter does, so a
+        // failure in one argument prints none of them.
+        let mut exprs = Vec::new();
+        for arg in args {
+            match &arg.value.kind {
+                ExprKind::Str(_) => {}
+                ExprKind::FStr(parts) => exprs.extend(parts.iter().filter_map(|part| match part {
+                    FStrPart::Text(_) => None,
+                    FStrPart::Expr { expr, .. } => Some(expr),
+                })),
+                _ => exprs.push(&arg.value),
+            }
+        }
+        let many = exprs.len() > 1;
+        let mut inputs = Vec::with_capacity(exprs.len());
+        for expr in exprs {
+            inputs.push(self.print_input(expr, many)?);
+        }
+        let mut inputs = inputs.into_iter();
+        let mut next = move || inputs.next().unwrap_or((None, Ty::Unit));
         for (at, arg) in args.iter().enumerate() {
             if at > 0 {
                 self.print_text(" ")?;
@@ -585,9 +609,9 @@ impl Lowerer<'_, '_> {
                     for part in parts {
                         match part {
                             FStrPart::Text(text) => self.print_text(text)?,
-                            FStrPart::Expr { expr, spec: None } => self.print_value(expr)?,
+                            FStrPart::Expr { spec: None, .. } => self.print_value(next())?,
                             FStrPart::Expr { expr, spec: Some(spec) } => {
-                                let (value, ty) = self.expr(expr)?;
+                                let (value, ty) = next();
                                 let handle = self.handle_of(value, ty, expr.span)?;
                                 let spec = self.string_id(spec);
                                 let [start, end] = self.span_args(expr.span);
@@ -596,7 +620,7 @@ impl Lowerer<'_, '_> {
                         }
                     }
                 }
-                _ => self.print_value(&arg.value)?,
+                _ => self.print_value(next())?,
             }
         }
         if newline {
@@ -605,28 +629,36 @@ impl Lowerer<'_, '_> {
         Ok(())
     }
 
-    fn print_value(&mut self, expr: &Expr) -> Result<(), Diagnostic> {
+    /// Works out something to print, in a form that a later argument can't change: when
+    /// `many` are printed, a string gets an owner of its own, and a structure or collection
+    /// becomes an object now.
+    fn print_input(&mut self, expr: &Expr, many: bool) -> Result<Lowered, Diagnostic> {
         let (value, ty) = self.expr(expr)?;
+        match ty {
+            Ty::Str if many => Ok((value.map(|text| self.own(text, ty)), ty)),
+            Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) | Ty::List(_) => {
+                Ok((Some(self.handle_of(value, ty, expr.span)?), Ty::Obj))
+            }
+            Ty::Cap(_) => {
+                let fallback = self.fallback(expr)?;
+                Ok((Some(self.handle_of(fallback.0, fallback.1, expr.span)?), Ty::Obj))
+            }
+            _ => Ok((value, ty)),
+        }
+    }
+
+    fn print_value(&mut self, (value, ty): Lowered) -> Result<(), Diagnostic> {
         let helper = match ty {
             Ty::Int => Helper::PrintInt,
             Ty::Float => Helper::PrintFloat,
             Ty::Bool => Helper::PrintBool,
-            Ty::Obj => Helper::PrintValue,
-            Ty::Unit => return Ok(()),
             Ty::Str => {
-                let address = value.ok_or_else(|| super::internal("a missing string", expr.span))?;
+                let address = value.ok_or_else(|| super::internal("a missing string", Span::default()))?;
                 self.call_helper(Helper::StrPrint, &[address])?;
                 return self.consume(Some(address), ty);
             }
-            Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) | Ty::List(_) => {
-                let handle = self.handle_of(value, ty, expr.span)?;
-                return self.call_helper(Helper::PrintValue, &[handle]).map(|_| ());
-            }
-            Ty::Cap(_) => {
-                let fallback = self.fallback(expr)?;
-                let handle = self.handle_of(fallback.0, fallback.1, expr.span)?;
-                return self.call_helper(Helper::PrintValue, &[handle]).map(|_| ());
-            }
+            Ty::Unit => return Ok(()),
+            _ => Helper::PrintValue,
         };
         let args: Vec<Value> = value.into_iter().collect();
         self.call_helper(helper, &args).map(|_| ())

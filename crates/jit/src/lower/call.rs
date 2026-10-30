@@ -22,6 +22,22 @@ impl Lowerer<'_, '_> {
             self.print(args, name == "print")?;
             return Ok((None, Ty::Unit));
         }
+        if let (ExprKind::Attr { object, name, optional: false }, [arg]) = (&callee.kind, args)
+            && name == "append"
+            && plain
+            && let Some((list, item)) = self.packed(object)
+        {
+            self.append_packed(&list, item, &arg.value, expr.span)?;
+            return Ok((None, Ty::Unit));
+        }
+        if let (ExprKind::Name(name), [arg]) = (&callee.kind, args)
+            && name == "len"
+            && plain
+            && self.local(name).is_none()
+            && let Some((list, item)) = self.packed(&arg.value)
+        {
+            return Ok((Some(self.list_length(&list, item)?), Ty::Int));
+        }
         if let ExprKind::Attr { object, name, optional: false } = &callee.kind
             && let Some(Ty::Struct(id)) = self.static_ty(object)
             && let Some(result) = self.call_struct_method(expr, object, id, name, args)?

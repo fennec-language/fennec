@@ -1,0 +1,4 @@
+def main(stdout: Stdout):
+    mut levels = [1, 2, 3]
+    stdout.print(levels[-3])
+    stdout.print(levels[3])

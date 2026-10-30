@@ -279,7 +279,10 @@ impl<'a> Lowerer<'a, '_> {
             }
         }
         if let Some(scope) = self.scopes.last_mut() {
-            scope.locals.insert(name.to_owned(), Local { var: Some(identity), ty: Ty::Struct(id), is_mut });
+            scope.locals.insert(
+                name.to_owned(),
+                Local { var: Some(identity), ty: Ty::Struct(id), is_mut, list: None },
+            );
         }
     }
 
@@ -367,6 +370,13 @@ impl<'a> Lowerer<'a, '_> {
                 }
                 _ => None,
             }),
+            ExprKind::Index { object, index } => match self.packed(object) {
+                Some((name, Ty::Struct(id))) => {
+                    let address = self.item_address(&name, Ty::Struct(id), index, true, expr.span)?;
+                    Ok(Some((Place::Memory(address), id)))
+                }
+                _ => Ok(None),
+            },
             ExprKind::Attr { object, name, optional: false } => {
                 let Some((place, id)) = self.struct_place(object)? else { return Ok(None) };
                 match self.struct_field(id, name)? {

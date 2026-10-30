@@ -1,7 +1,10 @@
 //! Building the Rust twins, and timing runs. Each program runs several times, taking turns
 //! with the others so they share whatever the machine is doing, and its median run counts.
-//! On Linux with `perf`, each run's user-space instructions are counted too: unlike time,
-//! they barely move when the machine is busy.
+//!
+//! Instruction counts back up times: unlike time, they barely move when the machine is busy
+//! or when code merely moves around in the binary. Where the CPU's counters can be read,
+//! `perf` counts every run. Where they can't, as on CI's virtual machines, Valgrind counts
+//! by simulating, about 50 times slower, so only to confirm a slowdown.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -75,6 +78,32 @@ pub(crate) fn perf_report(out_dir: &Path) -> Option<PathBuf> {
     probe.run(Some(&report)).ok()?.instructions.map(|_| report)
 }
 
+/// Counts the instructions a program runs with Valgrind's cachegrind, if it's installed.
+pub(crate) fn count_with_valgrind(program: &Program) -> Option<u64> {
+    let output = Command::new("valgrind")
+        .args(["--tool=cachegrind", "--cache-sim=no", "--cachegrind-out-file=/dev/null"])
+        .arg(&program.command)
+        .args(&program.args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    valgrind_count(&String::from_utf8_lossy(&output.stderr))
+}
+
+/// The count in cachegrind's summary line, `==123== I refs:      1,234,567`.
+fn valgrind_count(report: &str) -> Option<u64> {
+    let line = report.lines().find(|line| line.contains("I refs:") || line.contains("I   refs:"))?;
+    let digits: String = line.rsplit(':').next()?.chars().filter(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// Whether Valgrind is installed.
+pub(crate) fn valgrind_available() -> bool {
+    Command::new("valgrind").arg("--version").output().is_ok_and(|output| output.status.success())
+}
+
 /// The middle value: the mean of the middle two for an even count.
 fn median<T: Copy + Ord>(values: &mut [T], mean: fn(T, T) -> T) -> Option<T> {
     values.sort_unstable();
@@ -133,7 +162,7 @@ pub(crate) fn build_twin(source: &Path, out_dir: &Path) -> Result<PathBuf, Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{instructions, median};
+    use super::{instructions, median, valgrind_count};
 
     #[test]
     fn perf_reports_give_their_instruction_count() {
@@ -141,6 +170,14 @@ mod tests {
         assert_eq!(instructions(report), Some(1_234_567_890));
         assert_eq!(instructions("<not supported>,,instructions:u,0,100.00,,\n"), None);
         assert_eq!(instructions(""), None);
+    }
+
+    #[test]
+    fn cachegrind_reports_give_their_instruction_count() {
+        let report = "==4242== Cachegrind, a high-precision tracing profiler\n==4242== \n==4242== I   refs:      1,234,567\n";
+        assert_eq!(valgrind_count(report), Some(1_234_567));
+        assert_eq!(valgrind_count("==1== I refs: 89\n"), Some(89));
+        assert_eq!(valgrind_count("==1== nothing here\n"), None);
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
         "lambda" => diagnostic.with_help("write an arrow function: `x => x * 2`"),
         "raise" => diagnostic.with_help("Fennec has no exceptions: write `fail SomeError(...)`"),
         "ord" => diagnostic.with_help("a character's code is a method: write `c.code()`"),
+        "abs" => diagnostic.with_help("a size is a method: write `x.abs()`, or `x => x.abs()` to pass it"),
         "len" => diagnostic.with_help("a length is a method: write `x.len()`, or `x => x.len()` to pass it"),
         "chr" => diagnostic.with_help("make a character from its code with `str.from_code(n)`"),
         _ => match crate::builtins::modules_with(name).as_slice() {

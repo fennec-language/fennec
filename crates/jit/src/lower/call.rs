@@ -30,11 +30,11 @@ impl Lowerer<'_, '_> {
             return Ok((None, Ty::Unit));
         }
         if let (ExprKind::Attr { object, name, optional: false }, []) = (&callee.kind, args)
-            && name == "len"
+            && matches!(name.as_str(), "len" | "abs")
             && self.std_member(callee).is_none()
             && !matches!(self.static_ty(object), Some(Ty::Struct(_) | Ty::Boxed(_)))
         {
-            return self.length(expr, object);
+            return if name == "len" { self.length(expr, object) } else { self.absolute(expr, object) };
         }
         if let Some(name) = self.std_member(callee) {
             if let Some(id) = self.layouts.id(name)
@@ -457,10 +457,8 @@ impl Lowerer<'_, '_> {
         args: &[Arg],
         span: Span,
     ) -> Result<Option<Lowered>, Diagnostic> {
-        let known = matches!(
-            name,
-            "abs" | "min" | "max" | "float" | "int" | "sqrt" | "floor" | "ceil" | "sin" | "cos"
-        );
+        let known =
+            matches!(name, "min" | "max" | "float" | "int" | "sqrt" | "floor" | "ceil" | "sin" | "cos");
         if !known || self.shared.compiled.contains_key(name) {
             return Ok(None);
         }
@@ -469,15 +467,6 @@ impl Lowerer<'_, '_> {
             values.push(self.expr(&arg.value)?);
         }
         let result = match (name, values.as_slice()) {
-            ("abs", [(Some(x), Ty::Int)]) => {
-                let zero = self.int(0);
-                let (negated, overflow) = self.b.ins().ssub_overflow(zero, *x);
-                self.fail_if(overflow, runtime::OVERFLOW, span);
-                let negative =
-                    self.b.ins().icmp_imm_s(cranelift_codegen::ir::condcodes::IntCC::SignedLessThan, *x, 0);
-                (self.b.ins().select(negative, negated, *x), Ty::Int)
-            }
-            ("abs", [(Some(x), Ty::Float)]) => (self.b.ins().fabs(*x), Ty::Float),
             ("min" | "max", [(Some(a), Ty::Int), (Some(b), Ty::Int)]) => {
                 (if name == "min" { self.b.ins().smin(*a, *b) } else { self.b.ins().smax(*a, *b) }, Ty::Int)
             }
@@ -525,6 +514,26 @@ impl Lowerer<'_, '_> {
             _ => {
                 let receiver = self.handle_of(value, ty, object.span)?;
                 self.interpret_method(expr, object, receiver, "len", &[])
+            }
+        }
+    }
+
+    /// `x.abs()`: natively for an int or a float, and in the interpreter for anything else.
+    fn absolute(&mut self, expr: &Expr, object: &Expr) -> Result<Lowered, Diagnostic> {
+        let (value, ty) = self.expr(object)?;
+        match (value, ty) {
+            (Some(x), Ty::Int) => {
+                let zero = self.int(0);
+                let (negated, overflow) = self.b.ins().ssub_overflow(zero, x);
+                self.fail_if(overflow, runtime::OVERFLOW, expr.span);
+                let negative =
+                    self.b.ins().icmp_imm_s(cranelift_codegen::ir::condcodes::IntCC::SignedLessThan, x, 0);
+                Ok((Some(self.b.ins().select(negative, negated, x)), Ty::Int))
+            }
+            (Some(x), Ty::Float) => Ok((Some(self.b.ins().fabs(x)), Ty::Float)),
+            _ => {
+                let receiver = self.handle_of(value, ty, object.span)?;
+                self.interpret_method(expr, object, receiver, "abs", &[])
             }
         }
     }

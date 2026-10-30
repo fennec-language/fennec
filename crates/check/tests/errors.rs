@@ -185,7 +185,7 @@ fn files_can_fail_to_read() {
 #[test]
 fn builtins_need_values_not_results() {
     assert_eq!(
-        with_risky("stdout.print(names().len(), abs(risky(1)))"),
+        with_risky("stdout.print(names().len(), risky(1).abs())"),
         [
             "this is the result of something that can fail @ names()",
             "this is the result of something that can fail @ risky(1)",

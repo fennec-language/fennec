@@ -1,0 +1,45 @@
+## Types as the checker sees them. Mirrors `crates/check/src/types.rs`.
+
+## The type of a value.
+enum Type:
+    ## A type the checker couldn't work out because of a mistake it has already reported.
+    Unknown
+    ## What a function returns when it has nothing to return.
+    Unit
+    ## The type of `None` on its own. An enum case can't be called `None`.
+    NoneType
+    Bool
+    Int
+    Float
+    Str
+    List(item: Type)
+    Set(item: Type)
+    Dict(key: Type, value: Type)
+    Tuple(items: list[Type])
+    ## `T?`: a `T`, or `None`.
+    Optional(inner: Type)
+    ## What something that can fail gives back: a value, or an error of the second type.
+    Result(value: Type, error: Type)
+    ## A struct, enum or error, or a capability like `Stdout`.
+    Named(name: str)
+    ## An `Id` from an `IdMap` of the given type.
+    Id(item: Type)
+    IdMap(item: Type)
+    ## A function, by its name in the signature table.
+    Function(name: str)
+    ## An arrow function: the types of its parameters, and what it gives back.
+    Arrow(params: list[Type], returns: Type)
+    ## A type parameter of a generic function, or an interface written as a parameter's type.
+    Param(name: str)
+    ## One of several error types, in name order.
+    Errors(names: list[str])
+    ## A type still being worked out inside one function.
+    Var(id: int)
+
+## `T?`, which stays `T` when `T` can already be None or isn't known.
+def optional_type(inner: Type) -> Type:
+    match inner:
+        case .Optional(_): inner
+        case .NoneType: inner
+        case .Unknown: inner
+        case _: Type.Optional(inner)

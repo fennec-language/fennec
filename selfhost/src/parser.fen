@@ -140,7 +140,7 @@ struct Parser:
         match self.peek():
             case .Keyword(word):
                 if word == "def":
-                    return .Function(self.function()?)
+                    return Item.Function(self.function()?)
                 if word == "from" or word == "import":
                     return .Import(self.import_names()?)
             case .Name(word):
@@ -765,8 +765,8 @@ struct Parser:
     ## `True`, `False` or `None`, after the keyword. Any other keyword can't start a value.
     def keyword_atom(mut self, word: str, span: Span) -> ExprKind:
         match word:
-            case "True": .Bool(True)
-            case "False": .Bool(False)
+            case "True": ExprKind.Bool(True)
+            case "False": ExprKind.Bool(False)
             case "None": .Nothing
             case _:
                 if is_reserved(word):
@@ -868,7 +868,7 @@ struct Parser:
             case .Str(text): literal(ExprKind.Str(text), token.span)
             case .Keyword(word):
                 if word == "True" or word == "False":
-                    return literal(.Bool(word == "True"), token.span)
+                    return literal(ExprKind.Bool(word == "True"), token.span)
                 if word == "None":
                     return literal(.Nothing, token.span)
                 self.pos -= 1

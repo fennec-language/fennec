@@ -6,13 +6,21 @@ from span import Span, Diagnostic
 from token import FPart, Tok
 from lexer import lex
 from parser import parse
-from ast import Module, Item, FnDef, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from check.checker import check
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
 
 ## Every token in `source`, one per line, or the error that stopped the lexer.
 def dump_tokens(source: str) -> str:
     match lex(source, 0):
         case Ok(tokens):
             "".join(f"{token.span.start}..{token.span.end} {describe_tok(token.tok)}\n" for token in tokens)
+        case Err(diagnostic): dump_error(diagnostic)
+
+## What the checker finds in `source`, checked against the standard library's modules:
+## every diagnostic, or the parse error that stopped it first. Nothing when it checks.
+def dump_check(source: str, library: list[Module]) -> str:
+    match parse(source):
+        case Ok(module): "".join(dump_error(diagnostic) for diagnostic in check(module, library))
         case Err(diagnostic): dump_error(diagnostic)
 
 ## A diagnostic as the dumps show it: its span and message, then its help on a second line.

@@ -5,13 +5,17 @@
 ## `dump.fen` prints both in the same text as `fennec dev tokens` and `fennec dev tree`, so
 ## the two front ends can be compared line by line.
 
-from dump import dump_tokens, dump_tree
+from ast import Module
+from parser import parse
+from dump import dump_tokens, dump_tree, dump_check
 
 ## Fennec programs can't read their command-line arguments yet, so this reads its work from
-## `inputs.txt` in the current folder: one `tokens <path>` or `tree <path>` line per file
-## to dump.
+## `inputs.txt` in the current folder: one `tokens <path>`, `tree <path>` or `check <path>`
+## line per file to dump. `std <path>` lines name the standard library's sources, which
+## `check` checks against.
 def main(stdout: Stdout, fs: Fs):
     request = fs.read_text("inputs.txt")?
+    mut library = []
     for line in request.lines():
         space = line.find(" ")
         if space is None:
@@ -19,8 +23,15 @@ def main(stdout: Stdout, fs: Fs):
         mode = line[:space]
         path = line[space + 1:]
         source = fs.read_text(path)?
+        if mode == "std":
+            match parse(source):
+                case Ok(module): library.append(module)
+                case Err(_): pass
+            continue
         stdout.print(f"== {path}")
         if mode == "tokens":
             stdout.write(dump_tokens(source))
         elif mode == "tree":
             stdout.write(dump_tree(source))
+        elif mode == "check":
+            stdout.write(dump_check(source, library))

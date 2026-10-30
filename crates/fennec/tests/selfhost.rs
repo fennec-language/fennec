@@ -208,6 +208,7 @@ fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
     let mut paths = sources_in(&repo().join("examples"))?;
     paths.extend(sources_in(&repo().join("examples/errors"))?);
     paths.extend(sources_in(&repo().join("selfhost/src"))?);
+    paths.extend(sources_in(&repo().join("selfhost/src/check"))?);
     let generated = fennec_syntax::prelude()
         .enumerate()
         .map(|(at, source)| (format!("prelude_{at}"), source))
@@ -225,6 +226,14 @@ fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
 /// printed. It reads its work from `inputs.txt` in the folder it runs in.
 fn selfhost(work: &Path, mode: &str, corpus: &[PathBuf], engine: &[&str]) -> Result<String, String> {
     let mut inputs = String::new();
+    if mode == "check" {
+        let library = corpus.iter().filter(|path| {
+            path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("prelude_"))
+        });
+        for path in library {
+            let _ = writeln!(inputs, "std {}", path.display());
+        }
+    }
     for path in corpus {
         let _ = writeln!(inputs, "{mode} {}", path.display());
     }
@@ -286,6 +295,27 @@ fn compare(mode: &str, rust_dump: fn(&str) -> String) -> Result<(), String> {
     Ok(())
 }
 
+/// The kinds of checker diagnostics the self-hosted checker reports so far, by a part of
+/// their message. It grows until it covers everything the Rust checker says.
+const CHECK_KINDS: &[&str] =
+    &["isn't a type", "type in brackets", "types in brackets", "refers to itself", "isn't an interface"];
+
+/// The Rust checker's diagnostics of the kinds in `CHECK_KINDS`, as `fennec dev check`
+/// prints them, or the parse error that stopped it.
+fn checked(source: &str) -> String {
+    match fennec_syntax::parse(source) {
+        Ok(module) => match fennec_check::check(&module) {
+            Ok(_) => String::new(),
+            Err(diagnostics) => diagnostics
+                .iter()
+                .filter(|diagnostic| CHECK_KINDS.iter().any(|kind| diagnostic.message.contains(kind)))
+                .map(fennec_syntax::dump::error)
+                .collect(),
+        },
+        Err(diagnostic) => fennec_syntax::dump::error(&diagnostic),
+    }
+}
+
 #[test]
 fn selfhost_lexer_matches_the_rust_lexer() {
     if let Err(difference) = compare("tokens", fennec_syntax::dump::tokens) {
@@ -296,6 +326,13 @@ fn selfhost_lexer_matches_the_rust_lexer() {
 #[test]
 fn selfhost_parser_matches_the_rust_parser() {
     if let Err(difference) = compare("tree", fennec_syntax::dump::tree) {
+        panic!("{difference}");
+    }
+}
+
+#[test]
+fn selfhost_checker_matches_the_rust_checker() {
+    if let Err(difference) = compare("check", checked) {
         panic!("{difference}");
     }
 }

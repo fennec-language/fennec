@@ -1,0 +1,5 @@
+struct Loop:
+    for = 1
+
+def main(stdout: Stdout):
+    stdout.print(Loop())

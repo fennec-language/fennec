@@ -363,6 +363,7 @@ impl Lowerer<'_, '_> {
         let header = self.b.create_block();
         let inside = self.b.create_block();
         let exit = self.b.create_block();
+        let hoisted = self.hoist_lists(&[], Some(cond), body)?;
         self.b.ins().jump(header, &[]);
         self.b.switch_to_block(header);
         let test = self.condition(cond)?;
@@ -372,6 +373,7 @@ impl Lowerer<'_, '_> {
         self.loops.push(Loop { next: header, done: exit, depth: self.scopes.len(), put_back: None });
         let lowered = self.block_tail(body);
         self.loops.pop();
+        self.unhoist(hoisted);
         lowered?;
         self.drop_temps()?;
         if !self.is_dead() {
@@ -415,6 +417,7 @@ impl Lowerer<'_, '_> {
         let inside = self.b.create_block();
         let advance = self.b.create_block();
         let exit = self.b.create_block();
+        let hoisted = self.hoist_lists(&[name.to_owned()], None, body)?;
         self.b.ins().jump(header, &[]);
         self.b.switch_to_block(header);
         let at = self.b.use_var(counter);
@@ -430,6 +433,7 @@ impl Lowerer<'_, '_> {
         self.loops.push(Loop { next: advance, done: exit, depth, put_back: None });
         let lowered = self.tail(body);
         self.loops.pop();
+        self.unhoist(hoisted);
         lowered?;
         self.close_scope()?;
         if !self.is_dead() {
@@ -469,6 +473,7 @@ impl Lowerer<'_, '_> {
         let inside = self.b.create_block();
         let advance = self.b.create_block();
         let exit = self.b.create_block();
+        let hoisted = self.hoist_lists(names, None, body)?;
         self.b.ins().jump(header, &[]);
         self.b.switch_to_block(header);
         let at = self.b.use_var(counter);
@@ -489,6 +494,7 @@ impl Lowerer<'_, '_> {
         self.loops.push(Loop { next: advance, done: exit, depth, put_back: None });
         let lowered = self.tail(body);
         self.loops.pop();
+        self.unhoist(hoisted);
         lowered?;
         self.close_scope()?;
         if !self.is_dead() {

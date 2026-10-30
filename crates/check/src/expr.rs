@@ -273,7 +273,8 @@ impl FnCx<'_> {
         if !self.usable_operands(&left, &right, span, spans) {
             return Type::Unknown;
         }
-        if let (Some(name), Some(method)) = (left.type_name(), op.method_name())
+        // A type's own operator, like a struct's `def +` or `str`'s `def *` from std.
+        if let (Some(name), Some(method)) = (left.method_owner(), op.method_name())
             && let Some((key, _)) = self.checker.program.method(name, method)
         {
             return self.call_operator(&left, &key, &right, spans.1);

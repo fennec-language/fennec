@@ -117,9 +117,12 @@ struct Program:
             if self.types[name].prelude and not prelude:
                 self.problems.append(not_own(name, "is from the standard library", extension))
                 return
-        elif name in built_in_types():
+        elif name in built_in_types() and not prelude:
             self.problems.append(not_own(name, "is built in", extension))
             return
+        elif name in ["str", "bytes", "int", "float", "bool"]:
+            # The standard library gives built-in types methods, like `str`'s `def *`.
+            pass
         elif self.is_interface(name):
             self.problems.append(
                 Diagnostic(

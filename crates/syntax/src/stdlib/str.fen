@@ -1,0 +1,5 @@
+## `str`'s methods written in Fennec. The rest are machine operations the engines provide.
+extend str:
+    ## `"ab" * 3` is `"ababab"`: the text repeated. Repeating it fewer than once gives "".
+    def *(self, times: int) -> str:
+        "".join([self for _ in range(times)])

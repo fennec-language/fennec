@@ -4,10 +4,11 @@
 use fennec_syntax::{Diagnostic, Extension, FnDef};
 
 use crate::program::{BUILT_IN_TYPES, FnEntry, Program, unknown_type};
+use crate::types::Type;
 
 impl Program {
     /// Adds an extension's methods to its type, once every type is known. The standard
-    /// library's own code may extend its own types.
+    /// library's own code may extend its own types, built-in ones included.
     pub(crate) fn add_extension(&mut self, extension: &Extension, prelude: bool) {
         let name = &extension.name;
         let problem = match self.type_info(name) {
@@ -15,7 +16,10 @@ impl Program {
                 Some(not_own(name, "is from the standard library", extension))
             }
             Some(_) => None,
-            None if BUILT_IN_TYPES.contains(&name.as_str()) => Some(not_own(name, "is built in", extension)),
+            None if BUILT_IN_TYPES.contains(&name.as_str()) && !prelude => {
+                Some(not_own(name, "is built in", extension))
+            }
+            None if Type::built_in(name).is_some() => None,
             None if self.is_interface(name) => Some(
                 Diagnostic::new(format!("`{name}` is an interface, so it can't be extended"), extension.span)
                     .with_help(format!("declare its methods in `interface {name}:`")),

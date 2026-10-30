@@ -39,12 +39,15 @@ modules! {
     toml,
 }
 
+/// What's available everywhere without an import: the errors standard operations fail
+/// with, and the built-in types' methods written in Fennec.
+const CORE: [&str; 2] = [include_str!("stdlib/errors.fen"), include_str!("stdlib/str.fen")];
+
 /// The standard library written in Fennec, loaded before every program by both the
-/// interpreter and the type checker: the errors standard operations fail with, then each
-/// module's code.
+/// interpreter and the type checker: the core, then each module's code.
 pub fn prelude() -> impl Iterator<Item = &'static str> {
     let modules = MODULES.iter().map(|module| module.source).filter(|source| !source.is_empty());
-    std::iter::once(include_str!("stdlib/errors.fen")).chain(modules)
+    CORE.into_iter().chain(modules)
 }
 
 /// Standard library types a program gets values of without naming them, by the method

@@ -160,16 +160,6 @@ def literal(tok: Tok) -> ExprKind:
 Only with no expected type is a name shared by two enums ambiguous, and the error lists them. The search covers only the enums a file can see: its own and those it imports.
 *Why:* The type is usually right there, as in Swift. Otherwise adding an unrelated file could break code that never imports it.
 
-**`extend` adds methods to a type from another file of the same kit.**
-```fennec
-# parser/expr.fen
-extend Parser:
-    def parse_expr(mut self) -> Expr:
-        ...
-```
-An extension adds methods only, never fields, so a type's shape stays in its declaration. It works only on the kit's own types, never another kit's or the standard library's. Two methods with the same name on one type are an error, wherever they're written.
-*Why:* A large type, like a parser, otherwise has to be one file, past the length lint. Inside a kit everything is visible anyway, so splitting a type across files hides nothing.
-
 **Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They're erased at compile time, so they cost nothing at run time. The syntax is still open.
 *Why:* Game code mixes up degrees and radians, and world and screen space, constantly. F# has had units since 2009, and no mainstream language has followed.
 

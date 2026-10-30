@@ -1,0 +1,100 @@
+# A tokenizer: strings indexed, sliced, compared and joined natively, and tokens that hold
+# their text.
+
+enum Tok:
+    Name(text: str)
+    Number(value: int)
+    Op(text: str)
+    Text(body: str)
+
+struct Token:
+    tok: Tok
+    line: int
+
+def is_digit(c: str) -> bool:
+    c >= "0" and c <= "9"
+
+def is_letter(c: str) -> bool:
+    (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_"
+
+def digit(c: str) -> int:
+    match c:
+        case "0": 0
+        case "1": 1
+        case "2": 2
+        case "3": 3
+        case "4": 4
+        case "5": 5
+        case "6": 6
+        case "7": 7
+        case "8": 8
+        case _: 9
+
+def describe(token: Token) -> str:
+    match token.tok:
+        case .Name("def"): "keyword def"
+        case .Name(text): "name " + text
+        case .Number(value): f"number {value}"
+        case .Op(text): "op " + text
+        case .Text(body): "text " + body + " (" + str(len(body)) + " chars)"
+
+def tokenize(source: str) -> list[Token]:
+    mut tokens = []
+    mut at = 0
+    mut line = 1
+    while at < len(source):
+        c = source[at]
+        if c == "\n":
+            line += 1
+            at += 1
+        elif c == " ":
+            at += 1
+        elif is_digit(c):
+            mut value = 0
+            while at < len(source) and is_digit(source[at]):
+                value = value * 10 + digit(source[at])
+                at += 1
+            tokens.append(Token(tok=.Number(value), line=line))
+        elif is_letter(c):
+            start = at
+            while at < len(source) and (is_letter(source[at]) or is_digit(source[at])):
+                at += 1
+            tokens.append(Token(tok=.Name(source[start:at]), line=line))
+        elif c == "\"":
+            start = at + 1
+            at += 1
+            while at < len(source) and source[at] != "\"":
+                at += 1
+            tokens.append(Token(tok=.Text(source[start:at]), line=line))
+            at += 1
+        else:
+            two = source[at:at + 2]
+            if two == "->" or two == "==" or two == "<=":
+                tokens.append(Token(tok=.Op(two), line=line))
+                at += 2
+            else:
+                tokens.append(Token(tok=.Op(c), line=line))
+                at += 1
+    tokens
+
+def main(stdout: Stdout):
+    source = "def area(r) -> float:\n    3 * r * r == 12 <= x_1\nprint(\"héllo wörld\", \"\")"
+    tokens = tokenize(source)
+    for token in tokens:
+        stdout.print(token.line, describe(token))
+    stdout.print(len(tokens), len(source), source[-3:], source[100:], source[-1], source[4])
+
+    word = "naïve"
+    stdout.print(len(word), word[2], word[-1], word[1:4], word + "!", "ï" in word, "x" not in word)
+    stdout.print(
+        "abc" < "abd",
+        "b" > "abc",
+        "" < "a",
+        "Z" < "a",
+        "é" > "z",
+        word == "naïve",
+        word != "naive",
+    )
+    copy = word
+    joined = copy + copy
+    stdout.print(joined, len(joined), joined[5:], copy == word)

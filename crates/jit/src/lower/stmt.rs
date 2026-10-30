@@ -194,7 +194,7 @@ impl Lowerer<'_, '_> {
     ) -> Result<(), Diagnostic> {
         // An object the checker knows is a plain struct is kept natively from here on.
         let (value, ty) = match (ty, self.checked_ty(name)) {
-            (Ty::Obj, Some(to @ (Ty::Struct(_) | Ty::Boxed(_)))) => {
+            (Ty::Obj, Some(to @ (Ty::Struct(_) | Ty::Boxed(_) | Ty::Str))) => {
                 (Some(self.convert(value, ty, to, source.span)?), to)
             }
             _ => (value, ty),
@@ -246,7 +246,7 @@ impl Lowerer<'_, '_> {
                 let place = self.local_place(local).ok_or_else(|| unsupported("this struct", span))?;
                 self.write_place(&place, converted, id)
             }
-            (Some(var), local_ty @ Ty::Boxed(_)) => {
+            (Some(var), local_ty) if local_ty.counted() => {
                 let converted = self.convert(value, ty, local_ty, span)?;
                 let new = self.own(converted, local_ty);
                 let old = self.b.use_var(var);

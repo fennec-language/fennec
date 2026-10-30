@@ -1,0 +1,7 @@
+def first_after(word: str, at: int) -> str:
+    word[at + 1]
+
+def main(stdout: Stdout):
+    word = "naïve"
+    stdout.print(first_after(word, 2))
+    stdout.print(first_after(word, 4))

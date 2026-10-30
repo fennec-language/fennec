@@ -1,0 +1,27 @@
+1 keyword def
+1 name area
+1 op (
+1 name r
+1 op )
+1 op ->
+1 name float
+1 op :
+2 number 3
+2 op *
+2 name r
+2 op *
+2 name r
+2 op ==
+2 number 12
+2 op <=
+2 name x_1
+3 name print
+3 op (
+3 text héllo wörld (11 chars)
+3 op ,
+3 text  (0 chars)
+3 op )
+23 73 "")  ) a
+5 ï e aïv naïve! True True
+True True True True True True True
+naïvenaïve 10 naïve True

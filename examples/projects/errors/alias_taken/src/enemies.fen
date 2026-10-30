@@ -1,0 +1,5 @@
+def spawn() -> int:
+    1
+
+def count() -> int:
+    2

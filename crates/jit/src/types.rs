@@ -33,12 +33,48 @@ pub(crate) enum Ty {
     /// A dict with these keys and values: the address of a block the runtime owns, shared
     /// by every copy until one changes it.
     Dict(Word, Word),
+    /// A list of numbers, bools or plain structs, packed one after another: the address of
+    /// a block the runtime owns, shared by every copy until one changes it.
+    List(ListItem),
+}
+
+/// What a native list's items are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum ListItem {
+    Int,
+    Float,
+    Bool,
+    /// A plain struct or enum, by its layout's number.
+    Struct(u32),
+}
+
+impl ListItem {
+    /// The kind of item a list of `ty` holds natively, if it can.
+    pub(crate) fn of(ty: Ty) -> Option<ListItem> {
+        Some(match ty {
+            Ty::Int => ListItem::Int,
+            Ty::Float => ListItem::Float,
+            Ty::Bool => ListItem::Bool,
+            Ty::Struct(id) => ListItem::Struct(id),
+            _ => return None,
+        })
+    }
+
+    /// How native code holds one item.
+    pub(crate) fn ty(self) -> Ty {
+        match self {
+            ListItem::Int => Ty::Int,
+            ListItem::Float => Ty::Float,
+            ListItem::Bool => Ty::Bool,
+            ListItem::Struct(id) => Ty::Struct(id),
+        }
+    }
 }
 
 impl Ty {
     /// Whether values of this kind are addresses of blocks with an owner count.
     pub(crate) fn counted(self) -> bool {
-        matches!(self, Ty::Boxed(_) | Ty::Str | Ty::Dict(..))
+        matches!(self, Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_))
     }
 
     pub(crate) fn name(self) -> &'static str {
@@ -53,6 +89,7 @@ impl Ty {
             Ty::Boxed(_) => "boxed value",
             Ty::Str => "str",
             Ty::Dict(..) => "dict",
+            Ty::List(_) => "list",
         }
     }
 }

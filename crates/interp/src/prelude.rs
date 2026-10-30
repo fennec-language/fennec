@@ -15,9 +15,9 @@ pub(crate) fn check_import(import: &Import) -> Result<Brought, Diagnostic> {
     for imported in fennec_syntax::std_import(import)? {
         match imported {
             Imported::Module { alias, module } => modules.push((alias, module)),
-            Imported::Name { name, module } => {
+            Imported::Name { name, alias, module } => {
                 if let Some(builtin) = crate::builtins::named(&format!("{module}.{name}")) {
-                    functions.push((name, builtin));
+                    functions.push((alias, builtin));
                 }
             }
         }

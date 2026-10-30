@@ -1,15 +1,16 @@
-//! Packed lists natively. A name the checker knows holds a list of numbers, bools or plain
-//! structs is packed by the runtime into flat memory, and native code reads, changes and
-//! appends to its items directly, checking every index. Anything else done with the list
-//! goes through the runtime, which sees an ordinary list.
+//! Packed lists natively. A list of numbers, bools or plain structs is the address of a
+//! block the runtime owns (see the runtime's `lists`): a count of items, the room it has,
+//! then the items one after another. Native code reads, changes and appends items itself,
+//! checking every index. A change to a list something else shares copies it first, and an
+//! append to a full one grows it, both in the runtime. Anything else done with the list
+//! goes through the interpreter, which sees an ordinary list.
 //!
-//! An item's address stays good until the list grows or something else gets hold of it.
-//! Native code asks for it again for each access, except in a loop whose body never names
-//! the list: there nothing else can touch it, so the loop asks once.
+//! A loop whose body only indexes a list works out where its items are once, before the
+//! loop, as nothing in the body can copy or grow it.
 
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value, types};
-use fennec_check::Type;
+use cranelift_codegen::ir::{Block, InstBuilder, MemFlagsData, Value, types};
+use cranelift_frontend::Variable;
 use fennec_interp::packed::Element;
 use fennec_syntax::{Diagnostic, Expr, ExprKind, Span, Stmt};
 
@@ -18,29 +19,34 @@ use super::structs::Place;
 use super::{Lowerer, abi, internal};
 use crate::helpers::Helper;
 use crate::layout::WORD;
-use crate::types::Ty;
+use crate::types::{ListItem, Ty};
+
+/// Where a list's count of items, its room and its items are.
+const LIST_LENGTH: i32 = 16;
+const LIST_ROOM: i32 = 24;
+pub(super) const LIST_ITEMS: i64 = 32;
+
+/// An index already checked against a list's length, which straight-line code after it
+/// needn't check again: in `block`, `at` resolved to `resolved` for a list `length` long.
+pub(super) struct Checked {
+    block: Block,
+    length: Value,
+    at: Value,
+    resolved: Value,
+}
 
 impl Lowerer<'_, '_> {
-    /// The kind of item in the list a name holds, when the checker knows it's a list that
-    /// can be packed.
-    pub(super) fn checked_list(&self, name: &str) -> Option<Ty> {
-        let signatures = self.signatures;
-        let Type::List(item) = signatures.local(self.current_key(), name)? else { return None };
-        match self.layouts.ty(item) {
-            ty @ (Ty::Int | Ty::Float | Ty::Bool | Ty::Struct(_)) => Some(ty),
-            _ => None,
-        }
-    }
-
-    /// Packs the list a new name holds, and remembers the name as packed.
-    pub(super) fn pack_name(&mut self, name: &str, item: Ty) -> Result<(), Diagnostic> {
-        let id = self.name_id(name);
-        let element = self.element(item)?;
-        self.call_helper(Helper::Pack, &[id, element])?;
-        if let Some(local) = self.scopes.last_mut().and_then(|scope| scope.locals.get_mut(name)) {
-            local.list = Some(item);
-        }
-        Ok(())
+    /// A runtime object as an owned native list, failing like the interpreter when it isn't
+    /// a list of the kind of item expected.
+    pub(super) fn handle_to_list(
+        &mut self,
+        handle: Value,
+        item: ListItem,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        let element = self.element(item.ty())?;
+        let [start, end] = self.span_args(span);
+        self.help(Helper::ListFromValue, &[handle, element, start, end])
     }
 
     /// The runtime's number for a kind of item, registering it the first time.
@@ -88,39 +94,74 @@ impl Lowerer<'_, '_> {
     /// A packed list name, and the kind of its items.
     pub(super) fn packed(&self, expr: &Expr) -> Option<(String, Ty)> {
         match &expr.kind {
-            ExprKind::Name(name) => {
-                self.local(name).and_then(|local| local.list).map(|item| (name.clone(), item))
-            }
+            ExprKind::Name(name) => match self.local(name)?.ty {
+                Ty::List(item) => Some((name.clone(), item.ty())),
+                _ => None,
+            },
             _ => None,
         }
     }
 
     /// How many bytes one item takes.
-    fn stride(&self, item: Ty) -> Result<i64, Diagnostic> {
+    pub(super) fn stride(&self, item: Ty) -> Result<i64, Diagnostic> {
         Ok(match item {
             Ty::Struct(id) => i64::from(self.layout(id)?.size),
             _ => i64::from(WORD),
         })
     }
 
-    /// Where a packed list's items start, for reading or for changing them.
-    pub(super) fn items_at(&mut self, name: &str, item: Ty, write: bool) -> Result<Value, Diagnostic> {
+    /// The variable holding the list a name holds.
+    fn list_var(&self, name: &str) -> Result<Variable, Diagnostic> {
+        self.local(name)
+            .and_then(|local| local.var)
+            .ok_or_else(|| internal("a list without a variable", Span::default()))
+    }
+
+    /// Where a packed list's items start, for reading or for changing them. Changing them
+    /// first gives the name a list of its own, if it shares one.
+    pub(super) fn items_at(&mut self, name: &str, _item: Ty, write: bool) -> Result<Value, Diagnostic> {
         if let Some(hoisted) = self.hoisted(name).filter(|hoisted| hoisted.writable || !write) {
             return Ok(hoisted.items);
         }
-        let id = self.name_id(name);
-        let element = self.element(item)?;
-        let write = self.b.ins().iconst(types::I8, i64::from(write));
-        self.help(Helper::Address, &[id, element, write])
+        let var = self.list_var(name)?;
+        let list = self.b.use_var(var);
+        let list = if write { self.own_list(var, list)? } else { list };
+        Ok(self.b.ins().iadd_imm_s(list, LIST_ITEMS))
     }
 
-    pub(super) fn list_length(&mut self, name: &str, item: Ty) -> Result<Value, Diagnostic> {
+    /// A list only `var` holds: its own, or a copy the runtime makes when it's shared.
+    fn own_list(&mut self, var: Variable, list: Value) -> Result<Value, Diagnostic> {
+        let count = self.b.ins().load(types::I64, MemFlagsData::trusted(), list, 0);
+        let alone = self.b.ins().icmp_imm_s(IntCC::Equal, count, 1);
+        let [copy, done] = [(); 2].map(|()| self.b.create_block());
+        self.b.set_cold_block(copy);
+        self.b.append_block_param(done, types::I64);
+        self.b.ins().brif(alone, done, &[list.into()], copy, &[]);
+        self.b.switch_to_block(copy);
+        let copied = self.help(Helper::ListUnshare, &[list])?;
+        self.b.ins().jump(done, &[copied.into()]);
+        self.b.switch_to_block(done);
+        let list = self
+            .b
+            .block_params(done)
+            .first()
+            .copied()
+            .ok_or_else(|| internal("lost a list", Span::default()))?;
+        self.b.def_var(var, list);
+        Ok(list)
+    }
+
+    pub(super) fn list_length(&mut self, name: &str, _item: Ty) -> Result<Value, Diagnostic> {
         if let Some(hoisted) = self.hoisted(name) {
             return Ok(hoisted.length);
         }
-        let id = self.name_id(name);
-        let element = self.element(item)?;
-        self.help(Helper::Length, &[id, element])
+        let list = self.b.use_var(self.list_var(name)?);
+        Ok(self.length_of_list(list))
+    }
+
+    /// How many items a list has.
+    pub(super) fn length_of_list(&mut self, list: Value) -> Value {
+        self.b.ins().load(types::I64, MemFlagsData::trusted(), list, LIST_LENGTH)
     }
 
     /// The address of `list[index]`, failing like the interpreter for an index past either
@@ -133,15 +174,17 @@ impl Lowerer<'_, '_> {
         write: bool,
         span: Span,
     ) -> Result<Value, Diagnostic> {
-        if self.hoisted(name).is_none() {
-            self.note(
-                span,
-                format!("the runtime looks up the packed list `{name}` by name, twice, for each access"),
-            );
-        }
         let (at, at_ty) = self.expr(index)?;
         let at = self.convert(at, at_ty, Ty::Int, index.span)?;
         let len = self.list_length(name, item)?;
+        let here = self.b.current_block();
+        // The SSA builder can give a variable's value back under another name.
+        let (len, at) = (self.b.func.dfg.resolve_aliases(len), self.b.func.dfg.resolve_aliases(at));
+        let checked =
+            self.checked.iter().find(|done| Some(done.block) == here && done.length == len && done.at == at);
+        if let Some(resolved) = checked.map(|done| done.resolved) {
+            return self.item_at(name, item, write, resolved);
+        }
         // Unsigned, a negative position is huge, so one comparison checks a position from
         // the start. One from the end is the rare case, checked apart.
         let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, at, len);
@@ -160,14 +203,29 @@ impl Lowerer<'_, '_> {
         let [start, end] = self.span_args(span);
         self.call_helper(Helper::OutOfRange, &[at, len, start, end])?;
         self.b.ins().jump(self.bail, &[]);
-        self.b.switch_to_block(ok);
+        self.carry_on(here, ok);
         self.b.seal_block(ok);
         let resolved =
             self.b.block_params(ok).first().copied().ok_or_else(|| internal("lost a position", span))?;
+        self.checked.push(Checked { block: ok, length: len, at, resolved });
+        self.item_at(name, item, write, resolved)
+    }
+
+    fn item_at(&mut self, name: &str, item: Ty, write: bool, resolved: Value) -> Result<Value, Diagnostic> {
         let items = self.items_at(name, item, write)?;
         let stride = self.stride(item)?;
         let offset = self.b.ins().imul_imm_s(resolved, stride);
         Ok(self.b.ins().iadd(items, offset))
+    }
+
+    /// Goes on in `next`, a block only `from` leads to other than to a failure, so every
+    /// index checked in `from` stays checked there. Others are forgotten.
+    pub(super) fn carry_on(&mut self, from: Option<Block>, next: Block) {
+        self.checked.retain(|done| Some(done.block) == from);
+        for done in &mut self.checked {
+            done.block = next;
+        }
+        self.b.switch_to_block(next);
     }
 
     /// The item at an address, as a value of its own: a later change to the list doesn't
@@ -217,12 +275,36 @@ impl Lowerer<'_, '_> {
         value: &Expr,
         span: Span,
     ) -> Result<(), Diagnostic> {
-        self.note(span, format!("the runtime looks up the packed list `{name}` by name to append"));
         let value = self.expr(value)?;
         let converted = self.convert(value.0, value.1, item, span)?;
-        let id = self.name_id(name);
-        let element = self.element(item)?;
-        let address = self.help(Helper::Push, &[id, element])?;
+        let flags = MemFlagsData::trusted();
+        let var = self.list_var(name)?;
+        let list = self.b.use_var(var);
+        // Room on the end of a list nothing else holds takes one more item in place.
+        let count = self.b.ins().load(types::I64, flags, list, 0);
+        let length = self.b.ins().load(types::I64, flags, list, LIST_LENGTH);
+        let room = self.b.ins().load(types::I64, flags, list, LIST_ROOM);
+        let alone = self.b.ins().icmp_imm_s(IntCC::Equal, count, 1);
+        let fits = self.b.ins().icmp(IntCC::UnsignedLessThan, length, room);
+        let ready = self.b.ins().band(alone, fits);
+        let [quick, grow, done] = [(); 3].map(|()| self.b.create_block());
+        self.b.set_cold_block(grow);
+        self.b.append_block_param(done, types::I64);
+        self.b.ins().brif(ready, quick, &[], grow, &[]);
+        self.b.switch_to_block(quick);
+        let longer = self.b.ins().iadd_imm_s(length, 1);
+        self.b.ins().store(flags, longer, list, LIST_LENGTH);
+        self.b.ins().jump(done, &[list.into()]);
+        self.b.switch_to_block(grow);
+        let grown = self.help(Helper::ListGrow, &[list])?;
+        self.b.ins().jump(done, &[grown.into()]);
+        self.b.switch_to_block(done);
+        let list = self.b.block_params(done).first().copied().ok_or_else(|| internal("lost a list", span))?;
+        self.b.def_var(var, list);
+        let stride = self.stride(item)?;
+        let offset = self.b.ins().imul_imm_s(length, stride);
+        let address = self.b.ins().iadd(list, offset);
+        let address = self.b.ins().iadd_imm_s(address, LIST_ITEMS);
         self.store_item(address, item, (Some(converted), item), span)
     }
 

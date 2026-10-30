@@ -106,9 +106,10 @@ fn values_in(stmts: &[Stmt], found: &mut Vec<Expr>) {
 }
 
 /// Whether an expression names a type, like `Vec3` in `Vec3.zero()`, or a module, like
-/// `json` in `json.dumps(...)` or `std.json` in `std.json.dumps(...)`.
+/// `json` in `json.dumps(...)` or `std.json` in `std.json.dumps(...)`. `geometry` and `data`
+/// are what `import_as.fen` imports modules as.
 fn is_type_name(expr: &Expr) -> bool {
-    const MODULES: [&str; 12] = [
+    const MODULES: [&str; 14] = [
         "std",
         "json",
         "toml",
@@ -121,6 +122,8 @@ fn is_type_name(expr: &Expr) -> bool {
         "hash",
         "game",
         "layout",
+        "geometry",
+        "data",
     ];
     match &expr.kind {
         // `str` in `str.from_code(65)` is the type, not a value.

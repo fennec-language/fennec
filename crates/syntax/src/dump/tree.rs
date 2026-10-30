@@ -78,8 +78,19 @@ impl Tree {
             }
             Item::Import(import) => {
                 let mut label = format!("import {}", import.module.join("."));
+                if let Some(alias) = &import.alias {
+                    label = format!("{label} as {alias}");
+                }
                 if !import.names.is_empty() {
-                    label = format!("{label}: {}", import.names.join(", "));
+                    let names: Vec<String> = import
+                        .bound()
+                        .map(
+                            |(name, bound)| {
+                                if name == bound { name.to_owned() } else { format!("{name} as {bound}") }
+                            },
+                        )
+                        .collect();
+                    label = format!("{label}: {}", names.join(", "));
                 }
                 self.spanned(&label, import.span);
             }

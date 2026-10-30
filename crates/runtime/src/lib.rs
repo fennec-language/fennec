@@ -94,11 +94,10 @@ export! {
     fennec_make_instance(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => objects::make_instance(a0, a1, a2, a3);
     fennec_sin(a0: f64) -> f64 => checks::sin(a0);
     fennec_cos(a0: f64) -> f64 => checks::cos(a0);
-    fennec_pack(a0: i64, a1: i64) -> i8 => lists::pack(a0, a1);
-    fennec_zeroed(a0: i64, a1: i64) -> i64 => lists::zeroed(a0, a1);
-    fennec_address(a0: i64, a1: i64, a2: i8) -> i64 => lists::address(a0, a1, a2);
-    fennec_length(a0: i64, a1: i64) -> i64 => lists::length(a0, a1);
-    fennec_push(a0: i64, a1: i64) -> i64 => lists::push(a0, a1);
+    fennec_list_new(a0: i64, a1: i64) -> i64 => lists::new(a0, a1);
+    fennec_list_grow(a0: i64) -> i64 => lists::grow(a0);
+    fennec_list_unshare(a0: i64) -> i64 => lists::unshare(a0);
+    fennec_list_from_value(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::from_value(a0, a1, a2, a3);
     fennec_out_of_range(a0: i64, a1: i64, a2: i64, a3: i64) => lists::out_of_range(a0, a1, a2, a3);
     fennec_make_variant(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => objects::make_variant(a0, a1, a2, a3, a4);
     fennec_case_of(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => objects::case_of(a0, a1, a2, a3);

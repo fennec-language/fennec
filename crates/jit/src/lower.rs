@@ -228,7 +228,9 @@ pub(super) fn compile_functions(
 
 fn abi(ty: Ty) -> Option<types::Type> {
     match ty {
-        Ty::Int | Ty::Obj | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) => Some(types::I64),
+        Ty::Int | Ty::Obj | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_) => {
+            Some(types::I64)
+        }
         Ty::Float => Some(types::F64),
         Ty::Bool => Some(types::I8),
         Ty::Unit | Ty::Cap(_) => None,
@@ -352,6 +354,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         slots_base,
         literal_of: HashMap::new(),
         hoisted: Vec::new(),
+        checked: Vec::new(),
         handed: 0,
         origin,
         inlined_origin: None,
@@ -371,8 +374,6 @@ pub(crate) struct Local {
     var: Option<Variable>,
     ty: Ty,
     is_mut: bool,
-    /// For a name holding a list native code packed: the kind of its items.
-    list: Option<Ty>,
 }
 
 #[derive(Default)]
@@ -441,6 +442,8 @@ pub(crate) struct Lowerer<'a, 'f> {
     borrowed_names: HashSet<usize>,
     /// The packed lists the loops being lowered looked up once, innermost last.
     hoisted: Vec<hoist::Hoisted>,
+    /// Indexes checked in the straight-line code being lowered.
+    checked: Vec<lists::Checked>,
     /// Where the table of runtime addresses is, in an executable.
     slots_base: Option<Value>,
     /// How many things this function has handed the runtime by number so far.
@@ -482,9 +485,6 @@ impl Lowerer<'_, '_> {
             if param.ty == Ty::Obj {
                 let value = value.ok_or_else(|| internal("missing parameter", span))?;
                 self.declare_object(&param.name, value, param.is_mut)?;
-                if let Some(item) = self.checked_list(&param.name) {
-                    self.pack_name(&param.name, item)?;
-                }
                 if param.is_mut {
                     let caller = values.next().ok_or_else(|| internal("missing parameter", span))?;
                     let var = self.b.declare_var(types::I64);
@@ -634,7 +634,7 @@ impl Lowerer<'_, '_> {
             var
         });
         if let Some(scope) = self.scopes.last_mut() {
-            scope.locals.insert(name.to_owned(), Local { var, ty, is_mut, list: None });
+            scope.locals.insert(name.to_owned(), Local { var, ty, is_mut });
         }
     }
 
@@ -645,7 +645,7 @@ impl Lowerer<'_, '_> {
         let is_mut_flag = self.b.ins().iconst(types::I8, i64::from(is_mut));
         self.call_helper(Helper::Declare, &[id, handle, is_mut_flag])?;
         if let Some(scope) = self.scopes.last_mut() {
-            scope.locals.insert(name.to_owned(), Local { var: None, ty: Ty::Obj, is_mut, list: None });
+            scope.locals.insert(name.to_owned(), Local { var: None, ty: Ty::Obj, is_mut });
         }
         Ok(())
     }
@@ -746,6 +746,7 @@ impl Lowerer<'_, '_> {
     /// Calls the runtime's failure with one of the JIT's own codes when `failed` is set,
     /// then leaves the function.
     fn fail_if(&mut self, failed: Value, code: i64, span: Span) {
+        let here = self.b.current_block();
         let fail = self.b.create_block();
         self.b.set_cold_block(fail);
         let ok = self.b.create_block();
@@ -759,7 +760,7 @@ impl Lowerer<'_, '_> {
             self.b.ins().call(callee, &[code, start, end]);
         }
         self.b.ins().jump(self.bail, &[]);
-        self.b.switch_to_block(ok);
+        self.carry_on(here, ok);
         self.b.seal_block(ok);
     }
 
@@ -772,9 +773,9 @@ impl Lowerer<'_, '_> {
 
     /// Leaves the function if `failed` is set.
     fn leave_if(&mut self, failed: Value) {
-        let ok = self.b.create_block();
+        let (here, ok) = (self.b.current_block(), self.b.create_block());
         self.b.ins().brif(failed, self.bail, &[], ok, &[]);
-        self.b.switch_to_block(ok);
+        self.carry_on(here, ok);
         self.b.seal_block(ok);
     }
 }

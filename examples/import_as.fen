@@ -1,0 +1,16 @@
+## `as` binds an import under another name, so two modules with the same function names,
+## like `std.json` and `std.toml`, can both be used in one file.
+
+from std import json as data
+from std.json import loads as json_loads
+import std.math as geometry
+from std.toml import loads as toml_loads
+
+struct Settings:
+    speed: float
+
+def main(stdout: Stdout):
+    numbers = json_loads[list[int]]("[1, 2, 3]") else []
+    settings = toml_loads[Settings]("speed = 2.5") else Settings(1.0)
+    stdout.print(numbers, settings.speed)
+    stdout.print(geometry.sqrt(16.0), data.dumps(numbers))

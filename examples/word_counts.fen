@@ -12,6 +12,9 @@ def total(counts: dict[str, int]) -> int:
         sum += counts[word]
     return sum
 
+def bump(mut counts: dict[str, int], word: str):
+    counts[word] = counts.get(word, 0) + 1
+
 def main(stdout: Stdout):
     counts = tally("the fox and the hound and the fennec".split())
     stdout.print(counts, total(counts), counts.len())
@@ -58,3 +61,8 @@ def main(stdout: Stdout):
     stdout.print(flags, ratios, flags[2], ratios["half"] * 2.0)
     removed = squares.pop(7)
     stdout.print(removed, squares.len(), 7 in squares)
+    mut seen: dict[str, int] = {}
+    bump(mut seen, "fox")
+    bump(mut seen, "fox")
+    bump(mut seen, "den")
+    stdout.print(seen)

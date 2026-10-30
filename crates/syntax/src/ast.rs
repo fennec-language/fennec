@@ -136,7 +136,22 @@ pub struct Extension {
 pub struct Import {
     pub module: Vec<String>,
     pub names: Vec<String>,
+    /// The name each of `names` is bound under, when `as` renames it: `loads` in
+    /// `from std.json import loads as json_loads` has `json_loads`. One per name.
+    pub aliases: Vec<Option<String>>,
+    /// The name a whole module is bound under, from `import game.physics as physics`.
+    pub alias: Option<String>,
     pub span: Span,
+}
+
+impl Import {
+    /// Each imported name, with the name it's bound under.
+    pub fn bound(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.names.iter().enumerate().map(|(at, name)| {
+            let alias = self.aliases.get(at).and_then(Option::as_deref);
+            (name.as_str(), alias.unwrap_or(name))
+        })
+    }
 }
 
 /// `test "name":`, or a property test `test "name" for items: list[int]:`.

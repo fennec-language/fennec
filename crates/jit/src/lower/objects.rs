@@ -75,6 +75,22 @@ impl Lowerer<'_, '_> {
             let [start, end] = self.span_args(expr.span);
             return Ok((Some(self.help(Helper::PathGet, &[start, end])?), Ty::Obj));
         }
+        // A field of a packed list's item is read straight from the list, not by copying the
+        // whole item out first.
+        if let ExprKind::Index { object: list, index } = &object.kind
+            && !optional
+            && let Some((list, Ty::Struct(id))) = self.packed(list)
+            && let Some(field) = self.struct_field(id, name)?
+        {
+            let address = self.item_address(&list, Ty::Struct(id), index, false, object.span)?;
+            return match self.load_field(address, id, field)? {
+                // A nested struct is still in the list's memory: copy it out.
+                (Some(inner), Ty::Struct(inner_id)) => {
+                    Ok((Some(self.clone_struct(inner, inner_id)?), field.ty))
+                }
+                loaded => Ok(loaded),
+            };
+        }
         let (value, ty) = self.expr(object)?;
         if let (Ty::Struct(id), Some(address)) = (ty, value)
             && let Some(field) = self.struct_field(id, name)?

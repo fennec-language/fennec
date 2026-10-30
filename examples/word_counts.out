@@ -9,3 +9,4 @@ banana
 apple pie none banana
 {1: True, 2: False} {"half": 0.5, "third": 0.3333333333333333} False 1.0
 9 999 False
+{"fox": 2, "den": 1}

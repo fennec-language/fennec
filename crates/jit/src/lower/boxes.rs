@@ -122,7 +122,7 @@ impl<'a> Lowerer<'a, '_> {
 
     /// A new block holding `words`, its fields: an owned boxed value.
     pub(super) fn new_block(&mut self, id: u32, words: &[Value]) -> Result<Value, Diagnostic> {
-        let shape = self.int(i64::from(id));
+        let shape = self.handed_number("shape", i64::from(id));
         let address = self.help(Helper::Alloc, &[shape])?;
         let fields = self.fields_at(address);
         for (at, word) in words.iter().enumerate() {
@@ -322,7 +322,7 @@ impl<'a> Lowerer<'a, '_> {
     /// A runtime object as an owned boxed value, failing like the interpreter when it isn't
     /// the type expected.
     pub(super) fn handle_to_box(&mut self, handle: Value, id: u32, span: Span) -> Result<Value, Diagnostic> {
-        let shape = self.int(i64::from(id));
+        let shape = self.handed_number("shape", i64::from(id));
         let [start, end] = self.span_args(span);
         self.help(Helper::BoxFromValue, &[handle, shape, start, end])
     }

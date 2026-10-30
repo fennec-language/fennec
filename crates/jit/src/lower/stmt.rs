@@ -145,7 +145,11 @@ impl Lowerer<'_, '_> {
                 }
                 _ if self.packed_comprehension(name, value, declare_mut)? => Ok(()),
                 _ => {
-                    let (new, new_ty) = match self.literal_for(name, value)? {
+                    let made = match self.literal_for(name, value)? {
+                        Some(made) => Some(made),
+                        None => self.list_literal_for(name, value)?,
+                    };
+                    let (new, new_ty) = match made {
                         Some(made) => made,
                         None => self.expr(value)?,
                     };
@@ -214,7 +218,10 @@ impl Lowerer<'_, '_> {
         value: &Expr,
     ) -> Result<super::expr::Lowered, Diagnostic> {
         if let (None, ExprKind::Name(name)) = (op, &target.kind)
-            && let Some(made) = self.literal_for(name, value)?
+            && let Some(made) = match self.literal_for(name, value)? {
+                Some(made) => Some(made),
+                None => self.list_literal_for(name, value)?,
+            }
         {
             return Ok(made);
         }
@@ -237,7 +244,7 @@ impl Lowerer<'_, '_> {
     ) -> Result<(), Diagnostic> {
         // An object the checker knows is a plain struct is kept natively from here on.
         let (value, ty) = match (ty, self.checked_ty(name)) {
-            (Ty::Obj, Some(to @ (Ty::Struct(_) | Ty::Boxed(_) | Ty::Str | Ty::Dict(..)))) => {
+            (Ty::Obj, Some(to @ (Ty::Struct(_) | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_)))) => {
                 (Some(self.convert(value, ty, to, source.span)?), to)
             }
             _ => (value, ty),
@@ -245,11 +252,7 @@ impl Lowerer<'_, '_> {
         match ty {
             Ty::Obj => {
                 let handle = value.ok_or_else(|| unsupported("this value", source.span))?;
-                self.declare_object(name, handle, is_mut)?;
-                match self.checked_list(name) {
-                    Some(item) => self.pack_name(name, item),
-                    None => Ok(()),
-                }
+                self.declare_object(name, handle, is_mut)
             }
             Ty::Struct(id) => {
                 let from = value.ok_or_else(|| unsupported("this value", source.span))?;

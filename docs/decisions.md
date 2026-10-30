@@ -158,6 +158,20 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 A big app that wants walls between its own parts splits into local kits in one workspace.
 *Why:* `pub` appears only where API stability matters, and never in apps. Making every field of a `pub struct` public would make every internal field part of the API, so renaming one would need a major version. Go's capitalization rule would clash with lowercase built-ins and capitalized user types.
 
+## Files and kits
+
+**A kit is a folder with a `kit.toml` and its code under `src`.** `src/main.fen` holds `main`, and the module `enemies.ai` is the file `src/enemies/ai.fen`. `kit.toml` has `name`, `version` and `fennec`, the toolchain the kit is built with (see Toolchain). Until the launcher exists, a kit asking for a newer Fennec than the one running is an error. Its `[dependencies]` table is reserved for kits from the Den. `fennec run` and `fennec test` with no file run the kit around the current folder; `fennec test` runs the tests in every file under `src`.
+*Why:* One layout means no configuration, and finding a module's file needs no search.
+
+**A file uses another file's names only after importing them.** `from enemies import spawn` brings in names, and `import physics` brings in the module, used as `physics.step`. A file's own names need no import.
+*Why:* Where every name comes from is visible in the file that uses it, for people and for AI.
+
+**A kit's files share one set of top-level names.** Two files of a kit can't both define `update`; the error names both files.
+*Why:* A name means the same thing everywhere in the kit, and a value always prints with the one name its type has. Methods belong to their type, so the names that clash are few.
+
+**Imports can't go in a circle.**
+*Why:* Two files that need each other usually share something that belongs in a third.
+
 ## Concurrency
 
 **Tasks are scoped.** Every task ends before the `with` block or `parallel(...)` call that started it. There are no detached threads.
@@ -318,6 +332,7 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 - The exact syntax for property tests.
 - The syntax for units of measure.
 - The file extension (currently `.fen`).
+- Whether files of a kit may reuse a top-level name, reached through `import` by their module's name.
 - These security proposals:
   - `Net`, `Env` and `Process` as capabilities.
   - Narrowed capabilities like `fs.only("saves/")`.

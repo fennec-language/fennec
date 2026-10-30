@@ -1,0 +1,6 @@
+name = "bad_manifest"
+versoin = "0.1.0"
+fennec = "0.0.1"
+
+[dependencies]
+lasers = "1.0.0"

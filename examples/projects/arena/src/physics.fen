@@ -1,0 +1,10 @@
+## Moving things around.
+
+from std.math import Vec3
+
+struct Body:
+    position: Vec3
+    velocity: Vec3
+
+def step(mut body: Body, dt: float):
+    body.position += body.velocity * dt

@@ -1,0 +1,2 @@
+def drag() -> float:
+    0.5

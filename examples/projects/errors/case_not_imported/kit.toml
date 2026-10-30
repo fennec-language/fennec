@@ -1,0 +1,5 @@
+name = "case_not_imported"
+version = "0.1.0"
+fennec = "0.0.1"
+
+[dependencies]

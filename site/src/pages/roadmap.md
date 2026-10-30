@@ -68,8 +68,7 @@ The next milestone moves Fennec's checks from runtime to compile time.
 
 These are still being decided. Decisions already made, and why, are in [the design decisions](https://github.com/fennec-language/fennec/blob/main/docs/decisions.md).
 
-- How a function declares the errors it can fail with.
-- How closures longer than one line should look, beyond nested functions.
+- Whether to add decorators, as annotations read at compile time.
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.
 - The file extension (currently `.fen`).

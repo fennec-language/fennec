@@ -311,7 +311,7 @@ fn dumps(output: &str) -> Vec<(String, String)> {
 }
 
 /// Runs the self-hosted front end over the corpus with both engines, and checks each file's
-/// dump against `rust_dump`. Returns the first difference.
+/// dump against `rust_dump`. Returns a report of what differs.
 fn compare(mode: &str, rust_dump: fn(&str) -> String) -> Result<(), String> {
     let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("selfhost-{mode}"));
     fs::create_dir_all(&work).map_err(|err| err.to_string())?;
@@ -321,21 +321,106 @@ fn compare(mode: &str, rust_dump: fn(&str) -> String) -> Result<(), String> {
     if dumps.len() != corpus.len() {
         return Err(format!("the self-hosted front end dumped {} of {} files", dumps.len(), corpus.len()));
     }
+    let mut first = None;
+    let mut others = Vec::new();
     for (path, (shown, dump)) in corpus.iter().zip(&dumps) {
         let source = fs::read_to_string(path).map_err(|err| err.to_string())?;
         let expected = rust_dump(&source);
-        if *dump != expected {
-            let line = dump.lines().zip(expected.lines()).position(|(a, b)| a != b).map_or(0, |at| at + 1);
-            return Err(format!(
-                "{mode} differ for {shown} at line {line}\nself-hosted:\n{dump}\nrust:\n{expected}"
-            ));
+        if *dump == expected {
+            continue;
         }
+        let shown = short(shown, &work);
+        match first {
+            None => first = Some(difference(&shown, &source, dump, &expected)),
+            Some(_) => others.push(shown),
+        }
+    }
+    if let Some(first) = first {
+        let mut report = format!("the self-hosted {mode} differ from Rust's for {first}");
+        if !others.is_empty() {
+            let _ = write!(report, "\n\nThey also differ for:\n  {}", others.join("\n  "));
+        }
+        let _ = write!(report, "\n\n{}", mirror_hint(mode));
+        return Err(report);
     }
     let native = selfhost(&work, mode, &corpus, &["--jit"])?;
     if native != interpreted {
-        return Err(format!("the JIT and the interpreter disagree on the self-hosted {mode}"));
+        let (ours, theirs) = first_difference(&native, &interpreted);
+        return Err(format!(
+            "the JIT and the interpreter disagree on the self-hosted {mode}: the JIT printed\n  {ours}\nwhere the interpreter printed\n  {theirs}\nThat's a bug in an engine, not in selfhost/."
+        ));
     }
     Ok(())
+}
+
+/// A corpus file's path as a report shows it: from the repository's root, or marked as one
+/// of the small cases this test writes.
+fn short(shown: &str, work: &Path) -> String {
+    let root = format!("{}/", repo().display());
+    let generated = format!("{}/", work.display());
+    shown
+        .strip_prefix(&root)
+        .map(str::to_owned)
+        .or_else(|| {
+            shown.strip_prefix(&generated).map(|name| format!("{name} (a case in tests/selfhost.rs)"))
+        })
+        .unwrap_or_else(|| shown.to_owned())
+}
+
+/// A file's name, the first line where the two dumps differ, and the source line it's about.
+fn difference(shown: &str, source: &str, ours: &str, theirs: &str) -> String {
+    let (our_line, their_line) = first_difference(ours, theirs);
+    let mut report = format!("{shown}\n  self-hosted: {our_line}\n  rust:        {their_line}");
+    if let Some((line, text)) =
+        span_start(their_line).or_else(|| span_start(our_line)).and_then(|at| line_at(source, at))
+    {
+        let _ = write!(report, "\n  source line {line}: {}", text.trim());
+    }
+    report
+}
+
+/// The first line where two dumps differ, from each. A dump that ended early shows
+/// `(nothing more)`.
+fn first_difference<'a>(ours: &'a str, theirs: &'a str) -> (&'a str, &'a str) {
+    let mut ours = ours.lines();
+    let mut theirs = theirs.lines();
+    loop {
+        match (ours.next(), theirs.next()) {
+            (Some(a), Some(b)) if a == b => {}
+            (None, None) => return ("(nothing)", "(nothing)"),
+            (a, b) => return (a.unwrap_or("(nothing more)"), b.unwrap_or("(nothing more)")),
+        }
+    }
+}
+
+/// Where the span a dump line mentions starts: the number before `..` in `12..16`,
+/// `error 12..16 ...` or `name x @12..16`.
+fn span_start(line: &str) -> Option<usize> {
+    let (before, _) = line.split_once("..")?;
+    let digits = before.rsplit(|c: char| !c.is_ascii_digit()).next()?;
+    digits.parse().ok()
+}
+
+/// The line number and text of the line holding byte `at`.
+fn line_at(source: &str, at: usize) -> Option<(usize, &str)> {
+    let before = source.get(..at)?;
+    let number = before.matches('\n').count() + 1;
+    source.lines().nth(number - 1).map(|text| (number, text))
+}
+
+/// Where to make the self-hosted front end match a change to the Rust one.
+fn mirror_hint(mode: &str) -> &'static str {
+    match mode {
+        "tokens" => {
+            "The Rust lexer changed. Make the same change in selfhost/src/lexer.fen (and token.fen for a new token). See \"Changing the front end\" in selfhost/README.md."
+        }
+        "tree" => {
+            "The Rust parser or tree dump changed. Make the same change in selfhost/src/parser.fen and ast.fen, and in the tree dump in selfhost/src/dump.fen if crates/syntax/src/dump/tree.rs changed. See \"Changing the front end\" in selfhost/README.md."
+        }
+        _ => {
+            "The Rust checker changed. Make the same change in selfhost/src/check/, which mirrors crates/check/src file for file. Only the kinds of diagnostics in CHECK_KINDS are compared. See \"Changing the front end\" in selfhost/README.md."
+        }
+    }
 }
 
 /// The kinds of checker diagnostics the self-hosted checker reports so far, by a part of

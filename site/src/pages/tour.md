@@ -391,7 +391,7 @@ def total_area[T: Shape](shapes: list[T]) -> f32:
     sum(shape.area() for shape in shapes)
 ```
 
-Generics are resolved at compile time, so calls go straight to the right function. For a collection of different kinds of things, use an `enum`.
+Release builds compile generic code for each type it's used with, so calls go straight to the right function. For a collection of different kinds of things, use an `enum`.
 
 ## Events and callbacks
 

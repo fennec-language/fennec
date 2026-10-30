@@ -20,6 +20,8 @@ pub enum Type {
     Int,
     Float,
     Str,
+    /// Binary data: a run of bytes, each an int from 0 to 255.
+    Bytes,
     List(Box<Type>),
     Set(Box<Type>),
     Dict(Box<Type>, Box<Type>),
@@ -94,6 +96,7 @@ impl Type {
             Type::Int => "int".to_owned(),
             Type::Float => "float".to_owned(),
             Type::Str => "str".to_owned(),
+            Type::Bytes => "bytes".to_owned(),
             Type::List(_) => "list".to_owned(),
             Type::Set(_) => "set".to_owned(),
             Type::Dict(..) => "dict".to_owned(),
@@ -108,9 +111,9 @@ impl Type {
         }
     }
 
-    /// Whether this is a list, str, dict or set: something with a length.
+    /// Whether this is a list, str, bytes, dict or set: something with a length.
     pub(crate) fn is_collection(&self) -> bool {
-        matches!(self, Type::List(_) | Type::Str | Type::Dict(..) | Type::Set(_))
+        matches!(self, Type::List(_) | Type::Str | Type::Bytes | Type::Dict(..) | Type::Set(_))
     }
 
     /// Whether every part of this type is known: no `Unknown` and no `Var` inside.
@@ -222,6 +225,10 @@ pub(crate) fn a(ty: &Type) -> String {
 }
 
 pub(crate) fn article(name: &str) -> String {
+    // A plural type name reads best on its own: "this is bytes".
+    if name == "bytes" {
+        return name.to_owned();
+    }
     if name.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U']) {
         format!("an {name}")
     } else {

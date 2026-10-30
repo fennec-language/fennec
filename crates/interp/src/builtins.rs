@@ -13,12 +13,13 @@ use crate::value::Value;
 use crate::{format, ops, stdlib};
 
 /// The builtins. Standard library functions, like `json.loads`, are in `stdlib`.
-const NAMES: [&str; 22] = [
+const NAMES: [&str; 23] = [
     "Err",
     "Ok",
     "abs",
     "all",
     "any",
+    "bytes",
     "enumerate",
     "float",
     "ignore",
@@ -105,6 +106,8 @@ impl Interp<'_> {
         }
         match (name, values.as_slice()) {
             ("Ok", [value]) => Ok(Value::Ok(Rc::new(value.clone()))),
+            ("bytes", []) => Ok(Value::Bytes(Rc::from([]))),
+            ("bytes", [items]) => self.bytes(items.clone(), span),
             ("Ok", []) => Ok(Value::Ok(Rc::new(Value::Unit))),
             ("Err", [value]) => Ok(Value::Err(Rc::new(value.clone()))),
             ("ignore", [_, Value::Str(reason)]) if !reason.trim().is_empty() => Ok(Value::Unit),
@@ -126,6 +129,22 @@ impl Interp<'_> {
             }
             _ => self.collection_builtin(name, values, key.as_ref(), span),
         }
+    }
+
+    /// `bytes(items)`: each item has to be an int from 0 to 255.
+    fn bytes(&mut self, items: Value, span: Span) -> Result<Value, Diagnostic> {
+        let mut data = Vec::new();
+        for item in self.iterate(items, span)? {
+            let byte = match item {
+                Value::Int(n) => u8::try_from(n).ok(),
+                _ => None,
+            };
+            let byte = byte.ok_or_else(|| {
+                Diagnostic::new(format!("a byte is an int from 0 to 255, not {}", format::repr(&item)), span)
+            })?;
+            data.push(byte);
+        }
+        Ok(Value::Bytes(Rc::from(data)))
     }
 
     /// Builtins that walk through a collection.
@@ -231,6 +250,7 @@ fn length(value: &Value, span: Span) -> Result<Value, Diagnostic> {
         Value::List(items) | Value::Tuple(items) | Value::Set(items) => items.len(),
         Value::Dict(pairs) => pairs.len(),
         Value::Str(text) => text.chars().count(),
+        Value::Bytes(data) => data.len(),
         Value::IdMap(map) => map.entries().count(),
         other => return Err(Diagnostic::new(format!("a {} has no length", other.type_name()), span)),
     };

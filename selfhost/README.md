@@ -37,4 +37,33 @@ fennec run selfhost
 Compare with `fennec dev tokens examples/hello.fen`, `fennec dev tree examples/hello.fen` and
 `fennec dev check examples/hello.fen`.
 
+## Changing the front end
+
+`selfhost/` mirrors the Rust code, so a change to the lexer, the parser, the tree dump or the
+checker has to be made in both. The test `crates/fennec/tests/selfhost.rs` fails when they
+disagree. Its message names the file, the first line where the dumps differ, and the source
+line that line is about.
+
+1. **Find the twin.** Each Fennec file mirrors one Rust file, as the table above shows, and
+   its functions mostly have the same names: `resolve_within` in `check/program.fen` is
+   `resolve_within` in `crates/check/src/program.rs`. Make the same change there, in the same
+   order, with the same messages and help text.
+2. **New syntax** goes in `parser.fen` and `ast.fen`. If the Rust tree dump shows the new
+   field, show it in the `Tree` in `dump.fen` too. New tokens go in `token.fen` and
+   `lexer.fen`.
+3. **New built-in types or interfaces** go in the lists at the top of `check/program.fen`,
+   and in `builtin_type` there if they hold other types.
+4. **A new kind of checker error** isn't compared until its message is in `CHECK_KINDS` in
+   the test. Only the kinds the self-hosted checker reports so far are listed, so a change
+   to an error that isn't listed needs nothing here.
+5. **Run the test:** `cargo test -p fennec --test fennec selfhost`. It runs both front ends
+   over every example, every error example, the example kits, the standard library and
+   `selfhost/` itself, with the interpreter and with the JIT.
+
+Fennec code here has to pass the type checker too, so a stricter checker can break `selfhost/`
+itself: `fennec run selfhost` then fails before it prints anything, with the checker's own
+errors. Fix the Fennec code. If a rule felt wrong, add it to `NOTES.md`.
+
+If you're stuck, open an issue labeled `area: selfhost`.
+
 `NOTES.md` lists what was awkward to write in Fennec. It feeds the language's design.

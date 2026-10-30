@@ -36,6 +36,10 @@ impl FnCx<'_> {
                 self.key_fits(&Type::Int, &at, index.span);
                 Type::Str
             }
+            Type::Bytes => {
+                self.key_fits(&Type::Int, &at, index.span);
+                Type::Int
+            }
             Type::Tuple(items) => self.tuple_item(items, index),
             Type::Dict(key, item) => {
                 self.key_fits(key, &at, index.span);
@@ -119,7 +123,7 @@ impl FnCx<'_> {
             }
         }
         match ty {
-            Type::List(_) | Type::Str | Type::Unknown => ty,
+            Type::List(_) | Type::Str | Type::Bytes | Type::Unknown => ty,
             Type::Tuple(items) => self.tuple_slice(&items, start, end, span),
             other => {
                 self.error(Diagnostic::new(format!("{} can't be sliced", article(&other.kind())), span));

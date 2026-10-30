@@ -1,0 +1,12 @@
+[package]
+name = "fennec-bench"
+description = "The benchmark suite: Fennec kernels timed against Rust twins and the previous commit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

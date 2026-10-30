@@ -62,6 +62,9 @@ fn arithmetic(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Value, Di
         (Value::Int(a), Value::Int(b)) => int_arithmetic(op, a, b, span),
         (Value::Float(a), Value::Float(b)) => float_arithmetic(op, a, b, span),
         (Value::Str(a), Value::Str(b)) if op == BinOp::Add => Ok(Value::Str(Rc::from(format!("{a}{b}")))),
+        (Value::Bytes(a), Value::Bytes(b)) if op == BinOp::Add => {
+            Ok(Value::Bytes(Rc::from([&a[..], &b[..]].concat())))
+        }
         (Value::List(a), Value::List(b)) if op == BinOp::Add => {
             Ok(Value::list(a.iter().chain(b.iter()).cloned().collect()))
         }
@@ -127,6 +130,7 @@ pub(crate) fn compare(lhs: &Value, rhs: &Value, span: Span) -> Result<Ordering, 
         (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
         (Value::Float(a), Value::Float(b)) => Ok(a.total_cmp(b)),
         (Value::Str(a), Value::Str(b)) => Ok(a.cmp(b)),
+        (Value::Bytes(a), Value::Bytes(b)) => Ok(a.cmp(b)),
         (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
         (Value::Tuple(a), Value::Tuple(b)) | (Value::List(a), Value::List(b)) => {
             for (x, y) in a.iter().zip(b.iter()) {
@@ -149,6 +153,9 @@ fn contains(container: &Value, item: &Value, span: Span) -> Result<bool, Diagnos
         (Value::List(items) | Value::Tuple(items) | Value::Set(items), item) => Ok(items.contains(item)),
         (Value::Dict(pairs), key) => Ok(pairs.iter().any(|(existing, _)| existing == key)),
         (Value::Str(text), Value::Str(part)) => Ok(text.contains(part.as_ref())),
+        (Value::Bytes(data), Value::Int(byte)) => {
+            Ok(u8::try_from(*byte).is_ok_and(|byte| data.contains(&byte)))
+        }
         _ => Err(Diagnostic::new(
             format!("can't look for a {} in a {}", item.type_name(), container.type_name()),
             span,
@@ -172,6 +179,11 @@ pub(crate) fn index(object: &Value, index: &Value, span: Span) -> Result<Value, 
                 .map(|c| Value::str(c.encode_utf8(&mut [0; 4])))
                 .ok_or_else(|| Diagnostic::new("index out of range", span))
         }
+        Value::Bytes(data) => position(*at, data.len(), span).and_then(|at| {
+            data.get(at)
+                .map(|byte| Value::Int(i64::from(*byte)))
+                .ok_or_else(|| Diagnostic::new("index out of range", span))
+        }),
         other => Err(Diagnostic::new(format!("a {} can't be indexed", other.type_name()), span)),
     }
 }
@@ -197,6 +209,7 @@ pub(crate) fn slice(
     let len = match value {
         Value::List(items) | Value::Tuple(items) => items.len(),
         Value::Str(text) => text.chars().count(),
+        Value::Bytes(data) => data.len(),
         other => return Err(Diagnostic::new(format!("a {} can't be sliced", other.type_name()), span)),
     };
     let bound = |at: Option<&Value>, default: usize| -> Result<usize, Diagnostic> {
@@ -219,6 +232,7 @@ pub(crate) fn slice(
         Value::List(items) => Value::list(items.get(from..to).unwrap_or(&[]).to_vec()),
         Value::Tuple(items) => Value::tuple(items.get(from..to).unwrap_or(&[]).to_vec()),
         Value::Str(text) => Value::str(&text.chars().skip(from).take(to - from).collect::<String>()),
+        Value::Bytes(data) => Value::Bytes(Rc::from(data.get(from..to).unwrap_or(&[]))),
         _ => Value::Unit,
     })
 }

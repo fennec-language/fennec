@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    levels = [0, 128, 256]
+    stdout.print(bytes(levels))

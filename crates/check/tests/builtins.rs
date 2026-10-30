@@ -260,6 +260,31 @@ fn file_system_methods_give_back_their_types() {
 }
 
 #[test]
+fn bytes_hold_ints_and_decode_to_text_that_might_fail() {
+    let program = "
+        def first(data: bytes) -> int:
+            data[0]
+
+        def main(stdout: Stdout, fs: Fs):
+            data = 'fox'.encode()
+            saved = fs.read_bytes('save.bin')?
+            stdout.print(first(data) + 'a', data[1:] + 1, [byte + 'a' for byte in saved])
+            stdout.print(data.decode() + 'a', bytes(['a']), bytes(), fs.write_bytes('a', 'text'))
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "can't use `+` on an int and a str @ first(data) + \"a\"",
+            "can't use `+` on bytes and an int @ data[1:] + 1",
+            "can't use `+` on an int and a str @ byte + \"a\"",
+            "this is the result of something that can fail @ data.decode() + \"a\"",
+            "`bytes`'s argument should be a list[int], but this is a list[str] @ [\"a\"]",
+            "`write_bytes`'s argument should be bytes, but this is a str @ \"text\"",
+        ]
+    );
+}
+
+#[test]
 fn a_regex_search_might_find_nothing() {
     let program = "stdout.print(Regex(r'a').search('b').text)";
     assert_eq!(in_main_after(IMPORTS, program), ["this might be None @ Regex(r\"a\").search(\"b\").text"]);

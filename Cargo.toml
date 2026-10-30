@@ -50,6 +50,7 @@ cranelift-jit = "=0.137.0"
 cranelift-module = "=0.137.0"
 cranelift-native = "=0.137.0"
 cranelift-object = "=0.137.0"
+fennec-bench = { path = "crates/bench" }
 fennec-blake3 = { path = "crates/blake3" }
 fennec-build = { path = "crates/build" }
 fennec-check = { path = "crates/check" }

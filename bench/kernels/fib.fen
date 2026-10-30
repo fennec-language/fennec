@@ -1,0 +1,8 @@
+## Naive recursive Fibonacci: the cost of a call and of checked integer math.
+
+def fib(n: int) -> int:
+    if n < 2: return n
+    fib(n - 1) + fib(n - 2)
+
+def main(stdout: Stdout):
+    stdout.print(fib(35))

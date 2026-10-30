@@ -548,7 +548,14 @@ These are default lints, and the Den requires them.
 **Every kit has an owner's namespace,** `owner/kit`. The Den rejects names a small edit away from popular ones. There's one public registry, and private kits live in their own namespace.
 *Why:* That stops typosquatting and dependency confusion.
 
-**Accounts use passkeys, and every release is signed** with Sigstore.
+**Den accounts sign in with passkeys only.** There are no passwords and no recovery by email.
+- At least one passkey is required; adding a second is encouraged, not required.
+- One-time recovery codes are issued at signup, and you have to save them.
+- If both your passkeys and your codes are lost, the last resort is a manual review by the Den team.
+- Email is only for notices, such as a new passkey added, a new release or a change of ownership. It's never used to sign in or recover an account.
+- Publishing still needs the signed release statement, as above, and every release is signed with Sigstore.
+
+*Why:* Stolen passwords and hijacked email are how package accounts get taken over. With no password and no email reset, there's nothing for an attacker to phish or reset.
 
 **`fennec audit` is built in.** It checks every dependency against the advisory database, and CI fails on a known vulnerability.
 

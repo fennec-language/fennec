@@ -104,8 +104,9 @@ impl<'c> FnCx<'c> {
             cx.declare_as(&param.name, param.ty.clone(), param.is_mut, Origin::Param);
         }
         let flow = cx.stmts(&def.body, true);
-        if let (Some(declared), Some(StmtKind::Expr(last)), false) =
-            (&cx.declared, def.body.last().map(|stmt| &stmt.kind), flow.exits || cx.generator)
+        // A body that always leaves early has an unknown value, which fits any type.
+        if let (Some(declared), Some(StmtKind::Expr(last))) =
+            (&cx.declared, def.body.last().map(|stmt| &stmt.kind))
         {
             let declared = declared.clone();
             cx.check_return(&declared, &flow.ty, last.span);

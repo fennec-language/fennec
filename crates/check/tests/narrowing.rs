@@ -380,11 +380,14 @@ fn match_cases_bind_typed_values() {
             match shape:
                 case Circle(r): r + 1
             match other:
-                case .Circle(r): r + 1
-                case Circle(r): r + 1
+                case .Circle(dotted): dotted + 1
+                case Circle(plain): plain + 1
                 case _: 0
             match 3:
-                case .Circle(r): r + 1
+                case .Circle(number): number + 1
+                case _: 0
+            pair = (1, 'a')
+            match pair:
                 case (a, b, c): c
                 case _: 0
     ";
@@ -394,7 +397,7 @@ fn match_cases_bind_typed_values() {
             "can't use `+` on an int and a str @ value + \"a\"",
             "can't use `+` on an Oops and an int @ error + 1",
             "can't mix int and float in `+` @ r + 1",
-            "can't mix int and float in `+` @ r + 1",
+            "can't mix int and float in `+` @ dotted + 1",
         ]
     );
 }

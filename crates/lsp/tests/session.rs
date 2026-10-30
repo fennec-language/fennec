@@ -296,3 +296,18 @@ fn requests_after_shutdown_are_refused_and_exit_ends_the_session() {
     session.handle(&Json::parse(r#"{"jsonrpc":"2.0","method":"exit"}"#).unwrap());
     assert!(session.exited() && session.shut_down());
 }
+
+#[test]
+fn names_bound_in_a_case_are_found_from_its_guard_and_body() {
+    let mut editor = Editor::new("cases").unwrap();
+    let text = "def size(value: int) -> str:\n    match value:\n        case 1 | 2:\n            \"small\"\n        \
+        case count if count > 9:\n            f\"{count} is big\"\n        case _:\n            \"medium\"\n\n\
+        def main(stdout: Stdout):\n    stdout.print(size(12))\n";
+    let published = editor.open("src/main.fen", text);
+    assert_eq!(for_file(&published, "main.fen"), Some(&[][..]));
+    let bound = position(text, "count if", 0);
+    for (needle, into) in [("count > 9", 0), ("count} is", 1)] {
+        let found = editor.at("textDocument/definition", "src/main.fen", text, needle, into);
+        assert_eq!(found.as_array().unwrap()[0].at(&["range", "start"]), Some(&bound), "{needle}");
+    }
+}

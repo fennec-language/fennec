@@ -310,6 +310,9 @@ impl Finder<'_> {
                     }
                     self.scoped(|finder| {
                         finder.pattern(&arm.pattern, arm.span);
+                        if let Some(guard) = &arm.guard {
+                            finder.expr(guard);
+                        }
                         finder.block(&arm.body);
                     });
                 }
@@ -353,8 +356,33 @@ impl Finder<'_> {
                     self.pattern(arg, arm);
                 }
             }
+            // Every alternative binds the same names, and the first one is where they're written
+            // first.
+            Pattern::Or(alternatives) => {
+                if let Some(first) = alternatives.first() {
+                    self.pattern(first, arm);
+                }
+                for alternative in alternatives.iter().skip(1) {
+                    self.literals(alternative);
+                }
+            }
             Pattern::Literal(expr) => self.expr(expr),
             Pattern::Wildcard => {}
+        }
+    }
+}
+
+impl Finder<'_> {
+    /// Walks the values a pattern compares with, without declaring the names it binds.
+    fn literals(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::Literal(expr) => self.expr(expr),
+            Pattern::Variant { args, .. } | Pattern::Tuple(args) | Pattern::Or(args) => {
+                for arg in args {
+                    self.literals(arg);
+                }
+            }
+            Pattern::Bind(_) | Pattern::Wildcard => {}
         }
     }
 }

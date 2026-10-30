@@ -290,8 +290,20 @@ impl FnCx<'_> {
                 self.ignore_args(args);
                 Type::Unknown
             }
+            // Methods the standard library writes in Fennec for a built-in type, like
+            // `str.startswith`; the rest are the engines' own.
+            ty if let Some(found) = self.std_method(ty, method) => {
+                self.call_method(call, ty, (&found.0, found.1))
+            }
             _ => self.builtin_method(object, ty, method, args, span),
         }
+    }
+
+    /// The method the standard library gives a built-in type, if it has one by that name,
+    /// and whether it takes `self`.
+    fn std_method(&self, ty: &Type, method: &str) -> Option<(String, bool)> {
+        let owner = ty.method_owner()?;
+        self.checker.program.method(owner, method).map(|(key, entry)| (key, entry.def.takes_self()))
     }
 
     /// A method called on a value of a type parameter, which has the methods of its

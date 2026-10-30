@@ -285,10 +285,8 @@ impl Interp<'_> {
         {
             return self.call_with_values(&function, vec![left, right], span);
         }
-        // An operator the standard library gives a built-in type, like `str`'s `*`. Numbers'
-        // operators are the machine's own, so they skip the lookup.
-        if !matches!(left, Value::Int(_) | Value::Float(_) | Value::Bool(_))
-            && let Some(method) = op.method_name()
+        // An operator the standard library gives a built-in type, like `str`'s `*`.
+        if let Some(method) = op.method_name()
             && let Some(function) = self.built_in_method(&left, method)
         {
             return self.call_with_values(&function, vec![left, right], span);

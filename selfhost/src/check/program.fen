@@ -121,7 +121,7 @@ struct Program:
         elif name in built_in_types() and not prelude:
             self.problems.append(not_own(name, "is built in", extension))
             return
-        elif name in ["str", "bytes", "int", "float", "bool"]:
+        elif name == "str":
             # The standard library gives built-in types methods, like `str`'s `def *`.
             pass
         elif self.is_interface(name):

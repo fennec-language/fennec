@@ -252,7 +252,7 @@ fn values_and_builtins_do_not_take_mut() {
         [
             "`len` doesn't change its arguments, so don't pass `mut` @ len(mut s)",
             "building a value doesn't change its arguments, so don't pass `mut` @ n",
-            "`startswith` doesn't change its arguments, so don't pass `mut` @ \"a\".startswith(mut s)",
+            "`startswith` doesn't change `prefix`, so it shouldn't be passed with `mut` @ s",
             "`replace` doesn't change its arguments, so don't pass `mut` @ replace(Enemy(), mut n)",
             "name the field to change, like `health=50` @ n",
         ]

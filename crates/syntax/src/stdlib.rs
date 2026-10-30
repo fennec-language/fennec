@@ -50,3 +50,23 @@ pub fn prelude() -> impl Iterator<Item = &'static str> {
 pub fn given() -> impl Iterator<Item = (&'static str, &'static str)> {
     MODULES.iter().flat_map(|module| module.gives.iter().copied())
 }
+
+#[cfg(test)]
+mod tests {
+    /// The JIT compiles a type's methods only once something gives it one, so every method
+    /// that gives back a standard library type has to be listed.
+    #[test]
+    fn methods_say_which_types_they_give() {
+        let given: Vec<_> = super::given().collect();
+        assert_eq!(
+            given,
+            [
+                ("match", "Match"),
+                ("fullmatch", "Match"),
+                ("search", "Match"),
+                ("find_all", "Match"),
+                ("now", "Instant")
+            ]
+        );
+    }
+}

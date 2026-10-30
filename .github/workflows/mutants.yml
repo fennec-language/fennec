@@ -35,7 +35,14 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: git diff "$BASE" -- crates > changes.diff
-      - run: cargo mutants --in-diff changes.diff --no-shuffle --timeout 120 --jobs 2
+      - name: Mutate
+        run: |
+          status=0
+          cargo mutants --in-diff changes.diff --no-shuffle --timeout 120 --jobs 2 || status=$?
+          # 3 means some mutations made the tests hang, which still counts as noticing them.
+          # It wins over 2 (missed), so check for misses separately.
+          if [ "$status" -eq 3 ] && [ ! -s mutants.out/missed.txt ]; then status=0; fi
+          exit "$status"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -59,7 +66,15 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo mutants --shard ${{ matrix.shard }}/8 --baseline=skip --timeout 120 --jobs 2
+      - name: Mutate
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          status=0
+          cargo mutants --shard "$SHARD/8" --baseline=skip --timeout 120 --jobs 2 || status=$?
+          # As above: hangs count as noticed, misses don't.
+          if [ "$status" -eq 3 ] && [ ! -s mutants.out/missed.txt ]; then status=0; fi
+          exit "$status"
       - name: List what the tests missed on the run's summary page
         if: always()
         run: |

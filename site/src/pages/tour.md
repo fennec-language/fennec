@@ -62,7 +62,7 @@ def factorial(n: int) -> int:             # recursive functions state their retu
 
 - Use `return` to leave early. You can write a return type anywhere you want it as documentation; your editor shows the inferred one.
 - Short functions can be passed inline with an arrow: `enemies.sort(key=enemy => enemy.health)`.
-- Closures read the names around them but can't change them. To build up a value, use a comprehension or a builtin like `sum`.
+- Closures read the names around them but can't change them. To build up a value, use a comprehension or a builtin like `sum`. A nested function that's only called directly, never passed around, can change the enclosing function's `mut` names.
 - Anything longer is a nested function, which also gives the logic a name:
 
 ```fennec
@@ -335,7 +335,7 @@ with fs.open(path) as file:
 with db.transaction() as mut tx:
     tx.insert(player)?
     tx.insert(inventory)?
-    tx.commit()
+    tx.commit()?
 # if anything failed before commit, the transaction rolls back
 ```
 

@@ -1,0 +1,30 @@
+## Enemies and where they come from.
+
+from std.math import Vec3
+
+pub enum Rank:
+    Grunt
+    Boss
+
+    pub def label(self) -> str:
+        match self:
+            case .Grunt: "grunt"
+            case .Boss: "boss"
+
+pub struct Enemy:
+    pub name: str
+    position: Vec3
+    rank = Rank.Grunt
+    health = 100
+
+    pub def describe(self) -> str:
+        f"{self.name} ({self.rank.label()}) at {self.position.x} with {self.health} health"
+
+pub def spawn(name: str, position: Vec3, health: int) -> Enemy:
+    Enemy(name=name, position=position, health=health)
+
+def wave(size: int) -> list[Enemy]:
+    [spawn(f"grunt {at + 1}", Vec3(x=float(at)), 100) for at in range(size)]
+
+test "a wave has as many enemies as asked":
+    assert len(wave(4)) == 4

@@ -1,0 +1,2 @@
+def main(stdout: Stdout):
+    stdout.print(f"a } b")

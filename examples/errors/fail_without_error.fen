@@ -1,0 +1,10 @@
+struct Problem:
+    reason: str
+
+def check(n: int):
+    if n < 0:
+        fail Problem("negative")
+    n
+
+def main(stdout: Stdout):
+    stdout.print(check(-1))

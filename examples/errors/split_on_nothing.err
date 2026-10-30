@@ -1,0 +1,5 @@
+error: `split` was called with the wrong arguments
+ --> examples/errors/split_on_nothing.fen:2:18
+  |
+2 |     stdout.print("fennec".split(""))
+  |                  ^^^^^^^^^^^^^^^^^^

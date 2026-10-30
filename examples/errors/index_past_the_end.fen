@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    items = [1, 2, 3]
+    stdout.print(items[3])

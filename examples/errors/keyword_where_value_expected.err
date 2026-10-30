@@ -1,0 +1,5 @@
+error: expected a value, found `if`
+ --> examples/errors/keyword_where_value_expected.fen:2:13
+  |
+2 |     total = if
+  |             ^^

@@ -1,6 +1,6 @@
 [package]
 name = "fennec"
-description = "The fennec command: run, and soon build and test, Fennec programs"
+description = "The fennec command: run, test and start Fennec programs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,6 +19,7 @@ fennec-check.workspace = true
 fennec-fmt.workspace = true
 fennec-interp.workspace = true
 fennec-jit.workspace = true
+fennec-kit.workspace = true
 fennec-syntax.workspace = true
 
 [lints]

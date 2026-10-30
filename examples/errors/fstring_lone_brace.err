@@ -1,0 +1,7 @@
+error: `}` without a matching `{`
+ --> examples/errors/fstring_lone_brace.fen:2:22
+  |
+2 |     stdout.print(f"a } b")
+  |                      ^
+  |
+  = help: write `}}` for a literal brace

@@ -1,0 +1,5 @@
+error: can't use `-` on a str and a str
+ --> examples/errors/subtract_strings.fen:2:18
+  |
+2 |     stdout.print("fennec" - "nec")
+  |                  ^^^^^^^^^^^^^^^^

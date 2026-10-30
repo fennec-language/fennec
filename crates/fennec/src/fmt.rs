@@ -1,5 +1,6 @@
 //! `fennec fmt`: formats files in place, or with `--check` lists the ones that aren't
-//! formatted. A folder means every `.fen` file under it, so a kit's folder formats the kit.
+//! formatted. A folder means every `.fen` file under it. With no path, it formats the kit
+//! around the current folder, or the current folder if it isn't in a kit.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -14,8 +15,9 @@ pub(crate) fn fmt(args: &[&str]) -> ExitCode {
         eprintln!("error: `fennec fmt` has no option `{flag}`; it has one style and only `--check`");
         return ExitCode::from(2);
     }
+    let kit = kit_root(Path::new("."));
     if paths.is_empty() {
-        paths.push(".");
+        paths.push(kit.as_deref().and_then(Path::to_str).unwrap_or("."));
     }
     let mut files = Vec::new();
     for path in paths {
@@ -38,6 +40,19 @@ pub(crate) fn fmt(args: &[&str]) -> ExitCode {
         failed = true;
     }
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+/// The kit `dir` is in: the nearest folder at or above it with a `kit.toml`, written relative
+/// to `dir`, like `../..`.
+fn kit_root(dir: &Path) -> Option<PathBuf> {
+    let absolute = std::fs::canonicalize(dir).ok()?;
+    let (levels, _) =
+        absolute.ancestors().enumerate().find(|(_, folder)| folder.join("kit.toml").is_file())?;
+    let mut root = dir.to_path_buf();
+    for _ in 0..levels {
+        root.push("..");
+    }
+    Some(root)
 }
 
 /// Adds `path` if it's a file, or the `.fen` files under it if it's a folder, sorted.

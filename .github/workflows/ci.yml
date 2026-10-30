@@ -50,13 +50,18 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test --locked
-      - name: Run every example through the fennec command
+      - name: Run every example and kit through the fennec command
         shell: bash
         run: |
           cargo build --locked --quiet -p fennec
           for program in examples/*.fen; do
             ./target/debug/fennec run "$program" | diff --strip-trailing-cr "${program%.fen}.out" -
             ./target/debug/fennec test "$program" > /dev/null
+          done
+          for kit in examples/projects/*/; do
+            [ -f "$kit/kit.toml" ] || continue
+            ./target/debug/fennec run "$kit" | diff --strip-trailing-cr "${kit%/}.out" -
+            ./target/debug/fennec test "$kit" > /dev/null
           done
 
   coverage:

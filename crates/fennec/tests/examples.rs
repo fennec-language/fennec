@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 
 use fennec_jit::JitError;
 
-/// Examples the JIT must compile to native code, not hand back to the interpreter. The list
-/// grows as the JIT covers more of the language.
-const NATIVE: &[&str] = &["hello.fen", "numbers.fen", "errors/division_by_zero.fen", "errors/overflow.fen"];
+/// Examples the JIT may hand back to the interpreter whole, because it can't compile their
+/// `main` yet. Every other example must run natively.
+const INTERPRETED: &[&str] = &[];
 
 fn examples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
@@ -55,67 +55,81 @@ fn failing_tests(source: &str, shown_as: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// Runs a test on a stack as big as `fennec run` gives programs, so examples can nest calls
+/// as deeply as the language allows.
+fn on_big_stack(test: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+    let worker = std::thread::Builder::new().stack_size(512 * 1024 * 1024).spawn(test)?;
+    if let Err(panic) = worker.join() {
+        std::panic::resume_unwind(panic);
+    }
+    Ok(())
+}
+
 #[test]
 fn examples_print_their_expected_output() {
-    let paths = programs(&examples_dir()).unwrap();
-    assert!(!paths.is_empty(), "no examples found");
-    for path in paths {
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let source = fs::read_to_string(&path).unwrap();
-        let expected = fs::read_to_string(path.with_extension("out")).unwrap();
-        let actual =
-            run(&source, &format!("examples/{name}")).unwrap_or_else(|err| panic!("{name} failed:\n{err}"));
-        assert_eq!(actual, expected, "{name} printed something different");
-        let failures = failing_tests(&source, &format!("examples/{name}")).unwrap();
-        assert!(failures.is_empty(), "{name} has failing tests:\n{}", failures.join("\n"));
-    }
+    on_big_stack(|| {
+        let paths = programs(&examples_dir()).unwrap();
+        assert!(!paths.is_empty(), "no examples found");
+        for path in paths {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let source = fs::read_to_string(&path).unwrap();
+            let expected = fs::read_to_string(path.with_extension("out")).unwrap();
+            let actual = run(&source, &format!("examples/{name}"))
+                .unwrap_or_else(|err| panic!("{name} failed:\n{err}"));
+            assert_eq!(actual, expected, "{name} printed something different");
+            let failures = failing_tests(&source, &format!("examples/{name}")).unwrap();
+            assert!(failures.is_empty(), "{name} has failing tests:\n{}", failures.join("\n"));
+        }
+    })
+    .unwrap();
 }
 
 #[test]
 fn error_examples_fail_with_their_expected_message() {
-    let paths = programs(&examples_dir().join("errors")).unwrap();
-    assert!(!paths.is_empty(), "no error examples found");
-    for path in paths {
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let source = fs::read_to_string(&path).unwrap();
-        let expected = fs::read_to_string(path.with_extension("err")).unwrap();
-        let actual =
-            run(&source, &format!("examples/errors/{name}")).expect_err(&format!("{name} should fail"));
-        assert_eq!(actual, expected, "{name} failed with a different message");
-    }
+    on_big_stack(|| {
+        let paths = programs(&examples_dir().join("errors")).unwrap();
+        assert!(!paths.is_empty(), "no error examples found");
+        for path in paths {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let source = fs::read_to_string(&path).unwrap();
+            let expected = fs::read_to_string(path.with_extension("err")).unwrap();
+            let actual =
+                run(&source, &format!("examples/errors/{name}")).expect_err(&format!("{name} should fail"));
+            assert_eq!(actual, expected, "{name} failed with a different message");
+        }
+    })
+    .unwrap();
 }
 
 #[test]
 fn the_jit_runs_examples_exactly_like_the_interpreter() {
-    let dir = examples_dir();
-    let mut paths = programs(&dir).unwrap();
-    paths.extend(programs(&dir.join("errors")).unwrap());
-    let mut native = Vec::new();
-    for path in paths {
-        let name = path.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
-        let source = fs::read_to_string(&path).unwrap();
-        let shown_as = format!("examples/{name}");
-        let Ok(module) = fennec_syntax::parse(&source) else { continue };
-        if fennec_check::check(&module).is_err() {
-            continue;
-        }
-        let mut out = Vec::new();
-        let actual = match fennec_jit::run(&module, &mut out) {
-            Ok(()) => Ok(String::from_utf8_lossy(&out).into_owned()),
-            Err(JitError::Failed(diagnostic)) => Err(diagnostic.render(&shown_as, &source)),
-            Err(JitError::Unsupported(why)) => {
-                assert!(
-                    !NATIVE.contains(&name.as_str()),
-                    "{name} should compile natively, but: {}",
-                    why.message
-                );
+    on_big_stack(|| {
+        let dir = examples_dir();
+        let mut paths = programs(&dir).unwrap();
+        paths.extend(programs(&dir.join("errors")).unwrap());
+        for path in paths {
+            let name = path.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
+            let source = fs::read_to_string(&path).unwrap();
+            let shown_as = format!("examples/{name}");
+            let Ok(module) = fennec_syntax::parse(&source) else { continue };
+            if fennec_check::check(&module).is_err() {
                 continue;
             }
-        };
-        assert_eq!(actual, run(&source, &shown_as), "{name} ran differently as native code");
-        native.push(name);
-    }
-    for name in NATIVE {
-        assert!(native.iter().any(|ran| ran == name), "{name} isn't an example");
-    }
+            let mut out = Vec::new();
+            let actual = match fennec_jit::run(&module, &mut out) {
+                Ok(()) => Ok(String::from_utf8_lossy(&out).into_owned()),
+                Err(JitError::Failed(diagnostic)) => Err(diagnostic.render(&shown_as, &source)),
+                Err(JitError::Unsupported(why)) => {
+                    assert!(
+                        INTERPRETED.contains(&name.as_str()),
+                        "{name} should compile natively, but: {}",
+                        why.message
+                    );
+                    continue;
+                }
+            };
+            assert_eq!(actual, run(&source, &shown_as), "{name} ran differently as native code");
+        }
+    })
+    .unwrap();
 }

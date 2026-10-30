@@ -1,0 +1,394 @@
+//! Statements: blocks, assignments, `if`, loops, `return`, `fail`, `break` and `continue`.
+//! Assigning into a field or item, and the statements the JIT doesn't compile yet, run in
+//! the interpreter as one step.
+
+use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::{InstBuilder, Value, types};
+use fennec_syntax::{Arg, BinOp, Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind};
+
+use super::{Loop, Lowerer};
+use crate::helpers::Helper;
+use crate::runtime;
+use crate::types::{Ty, unsupported};
+
+impl Lowerer<'_, '_> {
+    /// Lowers a block's statements, giving back the value of its last one when that's an
+    /// expression, an `if` with an `else`, or a `match`.
+    pub(super) fn tail(&mut self, stmts: &[Stmt]) -> Result<(Option<Value>, Ty), Diagnostic> {
+        let Some((last, rest)) = stmts.split_last() else { return Ok((None, Ty::Unit)) };
+        for stmt in rest {
+            self.stmt(stmt)?;
+            self.drop_temps()?;
+        }
+        if self.is_dead() {
+            return Ok((None, Ty::Unit));
+        }
+        match &last.kind {
+            StmtKind::Expr(expr) => self.expr(expr),
+            StmtKind::If { branches, otherwise: Some(otherwise) } => self.tail_if(branches, otherwise),
+            _ => {
+                self.stmt(last)?;
+                self.drop_temps()?;
+                Ok((None, Ty::Unit))
+            }
+        }
+    }
+
+    /// A nested block, with its own scope.
+    pub(super) fn block_tail(&mut self, stmts: &[Stmt]) -> Result<(Option<Value>, Ty), Diagnostic> {
+        self.open_scope();
+        let result = self.tail(stmts);
+        // A value the block gives back is a temporary, which outlives the block's names.
+        let (value, ty) = result?;
+        self.close_scope()?;
+        Ok((value, ty))
+    }
+
+    /// An `if` whose branches all end in a value: the value of whichever branch runs.
+    fn tail_if(
+        &mut self,
+        branches: &[(Expr, Vec<Stmt>)],
+        otherwise: &[Stmt],
+    ) -> Result<(Option<Value>, Ty), Diagnostic> {
+        let mut arms = Vec::new();
+        for (cond, body) in branches {
+            let test = self.condition(cond)?;
+            let then = self.b.create_block();
+            let next = self.b.create_block();
+            self.b.ins().brif(test, then, &[], next, &[]);
+            self.b.switch_to_block(then);
+            let (value, ty) = self.block_tail(body)?;
+            arms.extend(self.arm_end(value, ty));
+            self.b.switch_to_block(next);
+        }
+        let (value, ty) = self.block_tail(otherwise)?;
+        arms.extend(self.arm_end(value, ty));
+        self.join(arms, otherwise.last().map_or(Span::default(), |stmt| stmt.span))
+    }
+
+    pub(super) fn stmt(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
+        match &stmt.kind {
+            StmtKind::Expr(expr) => self.expr(expr).map(|_| ()),
+            StmtKind::Assign { target, op, value, declare_mut } => {
+                self.assign(target, *op, value, *declare_mut)
+            }
+            StmtKind::If { branches, otherwise } => self.if_stmt(branches, otherwise.as_deref()),
+            StmtKind::While { cond, body } => self.while_loop(cond, body),
+            StmtKind::For { names, is_mut: false, iter, body } => self.for_loop(names, iter, body),
+            StmtKind::Return(value) => {
+                let (value, ty) = match value {
+                    Some(value) => self.expr(value)?,
+                    None => (None, Ty::Unit),
+                };
+                self.ret(value, ty, stmt.span)
+            }
+            StmtKind::Fail(error) => {
+                let error = self.expr(error)?;
+                let handle = self.handle_of(error.0, error.1, stmt.span)?;
+                let [start, end] = self.span_args(stmt.span);
+                let failed = self.help(Helper::Err, &[handle, start, end])?;
+                self.pass_up(failed);
+                Ok(())
+            }
+            StmtKind::Break | StmtKind::Continue => {
+                let target = self.loops.last().map(|lp| {
+                    (if matches!(stmt.kind, StmtKind::Break) { lp.done } else { lp.next }, lp.depth)
+                });
+                let (target, depth) = target
+                    .ok_or_else(|| Diagnostic::new("`break` or `continue` outside a loop", stmt.span))?;
+                self.unwind_scopes(depth)?;
+                self.b.ins().jump(target, &[]);
+                self.after_terminator();
+                Ok(())
+            }
+            StmtKind::Pass => Ok(()),
+            StmtKind::For { is_mut: true, .. } | StmtKind::Assert(_) | StmtKind::With { .. } => {
+                self.interpret_stmt(stmt)
+            }
+            StmtKind::Yield(_) | StmtKind::Def(_) => Err(unsupported("this kind of statement", stmt.span)),
+        }
+    }
+
+    fn assign(
+        &mut self,
+        target: &Expr,
+        op: Option<BinOp>,
+        value: &Expr,
+        declare_mut: bool,
+    ) -> Result<(), Diagnostic> {
+        match &target.kind {
+            ExprKind::Name(name) => match self.local(name) {
+                Some(local) if !declare_mut => {
+                    let (new, new_ty) = match op {
+                        Some(op) => {
+                            let combined = Expr {
+                                kind: ExprKind::Binary {
+                                    op,
+                                    lhs: Box::new(target.clone()),
+                                    rhs: Box::new(value.clone()),
+                                },
+                                span: target.span.to(value.span),
+                            };
+                            self.expr(&combined)?
+                        }
+                        None => self.expr(value)?,
+                    };
+                    self.set_local(name, local, new, new_ty, target.span)
+                }
+                _ => {
+                    let (new, new_ty) = self.expr(value)?;
+                    self.declare(name, new, new_ty, declare_mut, value)
+                }
+            },
+            ExprKind::Tuple(names) => self.unpack(names, value, target.span),
+            _ => self.interpret_assign(target, op, value, declare_mut, target.span),
+        }
+    }
+
+    /// Creates a name. A name copied from another object name gets its own copy.
+    pub(super) fn declare(
+        &mut self,
+        name: &str,
+        value: Option<Value>,
+        ty: Ty,
+        is_mut: bool,
+        source: &Expr,
+    ) -> Result<(), Diagnostic> {
+        if ty == Ty::Obj {
+            let handle = value.ok_or_else(|| unsupported("this value", source.span))?;
+            return self.declare_object(name, handle, is_mut);
+        }
+        self.bind_native(name, ty, value, is_mut);
+        Ok(())
+    }
+
+    /// Changes what a name holds.
+    fn set_local(
+        &mut self,
+        name: &str,
+        local: super::Local,
+        value: Option<Value>,
+        ty: Ty,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        match (local.var, local.ty) {
+            (_, Ty::Obj) => {
+                let handle = self.handle_of(value, ty, span)?;
+                let id = self.name_id(name);
+                self.call_helper(Helper::Assign, &[id, handle]).map(|_| ())
+            }
+            (Some(var), local_ty) => {
+                let converted = self.convert(value, ty, local_ty, span)?;
+                self.b.def_var(var, converted);
+                Ok(())
+            }
+            (None, _) => Ok(()),
+        }
+    }
+
+    /// `a, b = value`: takes a tuple apart into names.
+    fn unpack(&mut self, names: &[Expr], value: &Expr, span: Span) -> Result<(), Diagnostic> {
+        let (lowered, ty) = self.expr(value)?;
+        let whole = self.handle_of(lowered, ty, value.span)?;
+        let names: Vec<&str> = names
+            .iter()
+            .map(|name| match &name.kind {
+                ExprKind::Name(name) => Ok(name.as_str()),
+                _ => Err(unsupported("unpacking into this", span)),
+            })
+            .collect::<Result<_, _>>()?;
+        self.unpack_into(&names, whole, false, value.span)
+    }
+
+    /// Declares or changes names from the items of a tuple.
+    fn unpack_into(
+        &mut self,
+        names: &[&str],
+        whole: Value,
+        for_loop: bool,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        let count = self.int(i64::try_from(names.len()).unwrap_or(0));
+        let for_loop_names = for_loop;
+        let for_loop = self.b.ins().iconst(types::I8, i64::from(for_loop));
+        for (at, name) in names.iter().enumerate() {
+            let at = self.int(i64::try_from(at).unwrap_or(0));
+            let [start, end] = self.span_args(span);
+            let item = self.help(Helper::Unpack, &[whole, at, count, for_loop, start, end])?;
+            // A loop's names are new each time round, like the interpreter's.
+            match self.local(name).filter(|_| !for_loop_names) {
+                Some(local) => self.set_local(name, local, Some(item), Ty::Obj, span)?,
+                None => self.declare_object(name, item, false)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn if_stmt(
+        &mut self,
+        branches: &[(Expr, Vec<Stmt>)],
+        otherwise: Option<&[Stmt]>,
+    ) -> Result<(), Diagnostic> {
+        let done = self.b.create_block();
+        for (cond, body) in branches {
+            let test = self.condition(cond)?;
+            let then = self.b.create_block();
+            let next = self.b.create_block();
+            self.b.ins().brif(test, then, &[], next, &[]);
+            self.b.switch_to_block(then);
+            self.block_tail(body)?;
+            if !self.is_dead() {
+                self.b.ins().jump(done, &[]);
+            }
+            self.b.switch_to_block(next);
+        }
+        if let Some(body) = otherwise {
+            self.block_tail(body)?;
+        }
+        if !self.is_dead() {
+            self.b.ins().jump(done, &[]);
+        }
+        self.b.switch_to_block(done);
+        Ok(())
+    }
+
+    fn while_loop(&mut self, cond: &Expr, body: &[Stmt]) -> Result<(), Diagnostic> {
+        let header = self.b.create_block();
+        let inside = self.b.create_block();
+        let exit = self.b.create_block();
+        self.b.ins().jump(header, &[]);
+        self.b.switch_to_block(header);
+        let test = self.condition(cond)?;
+        self.drop_temps()?;
+        self.b.ins().brif(test, inside, &[], exit, &[]);
+        self.b.switch_to_block(inside);
+        self.loops.push(Loop { next: header, done: exit, depth: self.scopes.len() });
+        let lowered = self.block_tail(body);
+        self.loops.pop();
+        lowered?;
+        self.drop_temps()?;
+        if !self.is_dead() {
+            self.b.ins().jump(header, &[]);
+        }
+        self.b.switch_to_block(exit);
+        Ok(())
+    }
+
+    fn for_loop(&mut self, names: &[String], iter: &Expr, body: &[Stmt]) -> Result<(), Diagnostic> {
+        if let (ExprKind::Call { callee, args }, [name]) = (&iter.kind, names)
+            && matches!(&callee.kind, ExprKind::Name(callee) if callee == "range" && self.local(callee).is_none())
+            && args.iter().all(|arg| arg.name.is_none() && !arg.is_mut)
+        {
+            return self.for_range(name, args, iter.span, body);
+        }
+        self.for_items(names, iter, body)
+    }
+
+    /// `for name in range(...)`, counted natively.
+    fn for_range(&mut self, name: &str, args: &[Arg], span: Span, body: &[Stmt]) -> Result<(), Diagnostic> {
+        let mut bounds = Vec::new();
+        for arg in args {
+            let (value, ty) = self.expr(&arg.value)?;
+            bounds.push(self.convert(value, ty, Ty::Int, arg.value.span)?);
+        }
+        self.drop_temps()?;
+        let zero = self.int(0);
+        let one = self.int(1);
+        let (start, end, step) = match bounds.as_slice() {
+            [end] => (zero, *end, one),
+            [start, end] => (*start, *end, one),
+            [start, end, step] => (*start, *end, *step),
+            _ => return Err(unsupported("`range` with these arguments", span)),
+        };
+        let zero_step = self.b.ins().icmp_imm_s(IntCC::Equal, step, 0);
+        self.fail_if(zero_step, runtime::ZERO_STEP, span);
+        let counter = self.b.declare_var(types::I64);
+        self.b.def_var(counter, start);
+        let header = self.b.create_block();
+        let inside = self.b.create_block();
+        let advance = self.b.create_block();
+        let exit = self.b.create_block();
+        self.b.ins().jump(header, &[]);
+        self.b.switch_to_block(header);
+        let at = self.b.use_var(counter);
+        let up = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, step, 0);
+        let below = self.b.ins().icmp(IntCC::SignedLessThan, at, end);
+        let above = self.b.ins().icmp(IntCC::SignedGreaterThan, at, end);
+        let test = self.b.ins().select(up, below, above);
+        self.b.ins().brif(test, inside, &[], exit, &[]);
+        self.b.switch_to_block(inside);
+        let depth = self.scopes.len();
+        self.open_scope();
+        self.bind_native(name, Ty::Int, Some(at), false);
+        self.loops.push(Loop { next: advance, done: exit, depth });
+        let lowered = self.tail(body);
+        self.loops.pop();
+        lowered?;
+        self.close_scope()?;
+        if !self.is_dead() {
+            self.b.ins().jump(advance, &[]);
+        }
+        self.b.switch_to_block(advance);
+        let at = self.b.use_var(counter);
+        let next = self.b.ins().iadd(at, step);
+        self.b.def_var(counter, next);
+        self.b.ins().jump(header, &[]);
+        self.b.switch_to_block(exit);
+        Ok(())
+    }
+
+    /// `for item in items`: the runtime lists the items, which a hidden name holds while
+    /// the loop counts through them.
+    fn for_items(&mut self, names: &[String], iter: &Expr, body: &[Stmt]) -> Result<(), Diagnostic> {
+        let (value, ty) = self.expr(iter)?;
+        let source = self.handle_of(value, ty, iter.span)?;
+        let [start, end] = self.span_args(iter.span);
+        let items = self.help(Helper::Items, &[source, start, end])?;
+        self.open_scope();
+        let hidden = format!("\0for{}", iter.span.start);
+        self.declare_object(&hidden, items, false)?;
+        let hidden_id = self.name_id(&hidden);
+        let list = self.help(Helper::Get, &[hidden_id])?;
+        let count = self.help(Helper::Count, &[list])?;
+        self.drop_temps()?;
+        let counter = self.b.declare_var(types::I64);
+        let zero = self.int(0);
+        self.b.def_var(counter, zero);
+        let header = self.b.create_block();
+        let inside = self.b.create_block();
+        let advance = self.b.create_block();
+        let exit = self.b.create_block();
+        self.b.ins().jump(header, &[]);
+        self.b.switch_to_block(header);
+        let at = self.b.use_var(counter);
+        let test = self.b.ins().icmp(IntCC::SignedLessThan, at, count);
+        self.b.ins().brif(test, inside, &[], exit, &[]);
+        self.b.switch_to_block(inside);
+        let depth = self.scopes.len();
+        self.open_scope();
+        let list = self.help(Helper::Get, &[hidden_id])?;
+        let item = self.help(Helper::Item, &[list, at])?;
+        if let [name] = names {
+            self.declare_object(name, item, false)?;
+        } else {
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            self.unpack_into(&names, item, true, iter.span)?;
+        }
+        self.drop_temps()?;
+        self.loops.push(Loop { next: advance, done: exit, depth });
+        let lowered = self.tail(body);
+        self.loops.pop();
+        lowered?;
+        self.close_scope()?;
+        if !self.is_dead() {
+            self.b.ins().jump(advance, &[]);
+        }
+        self.b.switch_to_block(advance);
+        let at = self.b.use_var(counter);
+        let next = self.b.ins().iadd_imm_s(at, 1);
+        self.b.def_var(counter, next);
+        self.b.ins().jump(header, &[]);
+        self.b.switch_to_block(exit);
+        self.close_scope()
+    }
+}

@@ -6,6 +6,7 @@ mod access;
 mod builtins;
 mod call;
 mod collections;
+pub mod embed;
 mod eval;
 mod exec;
 mod format;

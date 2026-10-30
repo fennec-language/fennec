@@ -1,0 +1,7 @@
+error: calls nested more than 1000 deep
+ --> examples/errors/too_deep.fen:2:12
+  |
+2 |     return down(n + 1)
+  |            ^^^^^^^^^^^
+  |
+  = help: check for recursion that never stops

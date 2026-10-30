@@ -338,6 +338,16 @@ impl<'c> FnCx<'c> {
         self.scopes.push(Scope { bindings: Vec::new(), barrier });
     }
 
+    /// The names declared in the innermost scope, with what each holds.
+    pub(crate) fn bound_here(&self) -> Vec<(String, Type)> {
+        self.scopes
+            .last()
+            .map(|scope| {
+                scope.bindings.iter().map(|binding| (binding.name.clone(), binding.ty.clone())).collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub(crate) fn pop(&mut self) {
         self.scopes.pop();
     }

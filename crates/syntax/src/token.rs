@@ -160,6 +160,8 @@ pub(crate) enum Punct {
     Question,
     /// `&`, which joins the interfaces a type parameter has to fit: `T: Ordered & Hashable`.
     Amp,
+    /// `|`, which separates the alternatives of a `case`: `case .Int(_) | .Float(_):`.
+    Pipe,
     Plus,
     Minus,
     Star,
@@ -219,6 +221,7 @@ impl Punct {
             Punct::Lt => "<",
             Punct::Gt => ">",
             Punct::Amp => "&",
+            Punct::Pipe => "|",
             _ => "?",
         }
     }
@@ -236,6 +239,7 @@ impl Punct {
             '.' => Punct::Dot,
             '?' => Punct::Question,
             '&' => Punct::Amp,
+            '|' => Punct::Pipe,
             '+' => Punct::Plus,
             '-' => Punct::Minus,
             '*' => Punct::Star,

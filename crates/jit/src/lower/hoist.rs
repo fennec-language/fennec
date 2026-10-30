@@ -132,9 +132,9 @@ fn indexed_only(cond: Option<&Expr>, body: &[Stmt], name: &str) -> Option<bool> 
 fn binds(pattern: &fennec_syntax::Pattern, name: &str) -> bool {
     match pattern {
         fennec_syntax::Pattern::Bind(bound) => bound == name,
-        fennec_syntax::Pattern::Variant { args, .. } | fennec_syntax::Pattern::Tuple(args) => {
-            args.iter().any(|arg| binds(arg, name))
-        }
+        fennec_syntax::Pattern::Variant { args, .. }
+        | fennec_syntax::Pattern::Tuple(args)
+        | fennec_syntax::Pattern::Or(args) => args.iter().any(|arg| binds(arg, name)),
         fennec_syntax::Pattern::Wildcard | fennec_syntax::Pattern::Literal(_) => false,
     }
 }

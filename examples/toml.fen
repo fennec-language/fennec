@@ -1,0 +1,68 @@
+from std.toml import loads, dumps, ParseError
+
+struct Window:
+    title = "Fox Run"
+    width = 1280
+    height = 720
+    vsync = True
+
+def kit_toml():
+    "\n".join([
+        "# The kit a Fennec project describes itself with.",
+        "[kit]",
+        "name = \"fox-run\"",
+        "version = \"0.3.1\"",
+        "fennec = \"0.1\"",
+        "description = \"\"\"",
+        "A small game about a fennec fox \\",
+        "    who runs very fast.\"\"\"",
+        "authors = [\"Ash <ash@example.com>\", 'Kit']",
+        "license = 'MIT OR Apache-2.0'",
+        "capabilities = [\"Stdout\", \"Fs\"]",
+        "released = 2026-10-30",
+        "",
+        "[dependencies]",
+        "vecmath = \"1.2\"",
+        "sprites = { version = \"0.4\", path = \"../sprites\" }",
+        "",
+        "[[bin]]",
+        "name = \"game\"",
+        "main = \"src/main.fen\"",
+        "",
+        "[[bin]]",
+        "name = \"editor\"",
+        "main = \"tools/editor.fen\"",
+        "",
+        "[build.release]",
+        "profile = true",
+        "budget_mb = 1_024",
+        "scale = 1.5e0",
+    ])
+
+def describe(text: str):
+    match loads(text):
+        case Ok(table): f"read {table}"
+        case ParseError(message): f"couldn't read it: {message}"
+
+def main(stdout: Stdout):
+    kit = loads(kit_toml())?
+    stdout.print(kit["kit"]["name"], kit["kit"]["version"], "for Fennec", kit["kit"]["fennec"])
+    stdout.print(kit["kit"]["description"])
+    stdout.print(kit["kit"]["authors"], kit["kit"]["released"])
+    for name, version in kit["dependencies"].items():
+        stdout.print("needs", name, version)
+    for bin in kit["bin"]:
+        stdout.print(bin["name"], "starts at", bin["main"])
+    stdout.print(kit["build"]["release"])
+
+    stdout.write(dumps(kit))
+    stdout.print("---")
+    stdout.write(dumps(Window()))
+    stdout.print(loads(dumps(kit))? == kit)
+
+    stdout.print(describe("speed = 0x10\nangle = -0.5\nat = 07:30:00\nempty = []"))
+    stdout.print(describe("name = \"fox\"\nname = \"kit\""))
+    stdout.print(describe("[kit]\nversion = 1.2.3"))
+    stdout.print(describe("[kit\nname = \"fox\""))
+    stdout.print(describe("title = \"never ends\nname = \"fox\""))
+    stdout.print(describe("[kit]\nname = \"fox\"\n[kit]"))

@@ -1,0 +1,5 @@
+from std.path import Path
+
+def main(stdout: Stdout):
+    root = Path("assets")
+    stdout.print(root.join(Path("fox.png")).text)

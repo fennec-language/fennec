@@ -1,0 +1,5 @@
+from std.toml import loads
+
+def main(stdout: Stdout):
+    kit = loads("[kit]\nname = \"fox-run\"\nversion = \"0.1\"\nname = \"fox\"")?
+    stdout.print(kit["kit"]["name"])

@@ -1,0 +1,5 @@
+error: `part` should be a str, but this is a Path
+ --> examples/errors/path_join_path.fen:5:28
+  |
+5 |     stdout.print(root.join(Path("fox.png")).text)
+  |                            ^^^^^^^^^^^^^^^

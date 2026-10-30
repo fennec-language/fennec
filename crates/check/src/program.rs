@@ -35,6 +35,9 @@ pub(crate) struct Program {
     pub(crate) types: BTreeMap<String, TypeInfo>,
     pub(crate) functions: BTreeMap<String, FnEntry>,
     pub(crate) tests: Vec<TestDef>,
+    /// Builtins that exist only once imported, like `loads` from `std.json`, by the name
+    /// they're imported under.
+    pub(crate) imports: BTreeMap<String, String>,
     aliases: BTreeMap<String, TypeExpr>,
 }
 
@@ -56,7 +59,16 @@ impl Program {
                     self.aliases.insert(name.clone(), ty.clone());
                 }
                 Item::Test(test) => self.tests.push(test.clone()),
-                Item::Interface(_) | Item::Import(_) | Item::Stmt(_) => {}
+                Item::Import(import) => {
+                    let Some(module) = import.module.last() else { continue };
+                    for name in &import.names {
+                        let builtin = format!("{module}.{name}");
+                        if crate::builtins::is_builtin(&builtin) {
+                            self.imports.insert(name.clone(), builtin);
+                        }
+                    }
+                }
+                Item::Interface(_) | Item::Stmt(_) => {}
             }
         }
     }
@@ -88,7 +100,7 @@ impl Program {
 
     /// Whether a name, used as a value, means a type: `Enemy` in `Enemy.at(...)`.
     pub(crate) fn is_type_name(&self, name: &str) -> bool {
-        self.types.contains_key(name) || matches!(name, "Id" | "IdMap" | "Path" | "SoaList")
+        self.types.contains_key(name) || matches!(name, "Id" | "IdMap" | "SoaList")
     }
 
     /// The enums that have a case with this name, in name order.
@@ -113,7 +125,7 @@ impl Program {
             "int" => Type::Int,
             "float" => Type::Float,
             "bool" => Type::Bool,
-            "str" | "Path" => Type::Str,
+            "str" => Type::Str,
             "None" => Type::None,
             "list" | "SoaList" => Type::list(arg(0)),
             "set" => Type::Set(Box::new(arg(0))),

@@ -1,0 +1,5 @@
+error: JSON can't hold a set
+ --> examples/errors/json_set.fen:4:18
+  |
+4 |     stdout.print(dumps({"tags": [{"fast", "small"}]}))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

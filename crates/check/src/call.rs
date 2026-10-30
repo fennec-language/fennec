@@ -41,6 +41,9 @@ impl FnCx<'_> {
                 if self.checker.program.is_type_name(name) {
                     return self.construct(name, args, span);
                 }
+                if let Some(builtin) = self.checker.program.imports.get(name).cloned() {
+                    return self.call_builtin(&builtin, args, span);
+                }
                 if builtins::is_builtin(name) {
                     return self.call_builtin(name, args, span);
                 }
@@ -270,7 +273,7 @@ impl FnCx<'_> {
         built
     }
 
-    /// `IdMap[Enemy]()`, `SoaList[Particle]()` and `Path("...")`.
+    /// `IdMap[Enemy]()` and `SoaList[Particle]()`.
     fn construct_builtin(&mut self, type_name: &str, item: Option<&Expr>, args: &[Arg], span: Span) -> Type {
         let item = match item.map(|item| &item.kind) {
             Some(ExprKind::Name(name)) => self.checker.program.resolve(&TypeExpr {
@@ -285,7 +288,6 @@ impl FnCx<'_> {
         match (type_name, types.as_slice()) {
             ("IdMap", []) => Type::IdMap(Box::new(item)),
             ("SoaList", []) => Type::list(item),
-            ("Path", [Type::Str | Type::Unknown]) => Type::Str,
             _ => {
                 self.error(crate::messages::wrong_args(type_name, span));
                 Type::Unknown

@@ -1,0 +1,10 @@
+saves/slot1.json slot1.json slot1 json
+saves . /
+fox.tar.gz fox.tar gz
+assets/art/fox.tar.gz ["assets", "sprites", "..", "art", "fox.tar.gz"]
+../../levels/one /b
+. True notes.
+/home/ash/games/fox logs/today.txt
+/etc/hosts True False
+True Path(text="saves/slot1.json")
+True False

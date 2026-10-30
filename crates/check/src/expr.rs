@@ -107,7 +107,8 @@ impl FnCx<'_> {
         if name == "PI" {
             return Type::Float;
         }
-        if !self.checker.program.is_type_name(name) && !builtins::is_builtin(name) {
+        let imported = self.checker.program.imports.contains_key(name);
+        if !self.checker.program.is_type_name(name) && !builtins::is_builtin(name) && !imported {
             self.error(unknown_name(name, span));
         }
         Type::Unknown

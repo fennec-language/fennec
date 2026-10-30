@@ -105,6 +105,9 @@ impl Interp<'_> {
         if self.types.contains_key(name) || builtins::is_type(name) {
             return Ok(Value::Type(Rc::from(name)));
         }
+        if let Some(builtin) = self.imports.get(name) {
+            return Ok(Value::Builtin(builtin));
+        }
         if let Some(constant) = builtins::constant(name) {
             return Ok(constant);
         }
@@ -289,6 +292,12 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
         "null" | "nil" | "none" | "undefined" => diagnostic.with_help("write `None`"),
         "lambda" => diagnostic.with_help("write an arrow function: `x => x * 2`"),
         "raise" => diagnostic.with_help("Fennec has no exceptions: write `fail SomeError(...)`"),
-        _ => diagnostic,
+        _ => match builtins::modules_with(name).as_slice() {
+            [] => diagnostic,
+            modules @ [module, ..] => diagnostic.with_help(format!(
+                "import it from std.{}, like `from std.{module} import {name}`",
+                modules.join(" or std.")
+            )),
+        },
     }
 }

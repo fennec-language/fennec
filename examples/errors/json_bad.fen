@@ -1,0 +1,5 @@
+from std.json import loads
+
+def main(stdout: Stdout):
+    save = loads("{\n  \"level\": 3,\n  \"name\": \"Ash\"\n  \"coins\": 10\n}")?
+    stdout.print(save["name"])

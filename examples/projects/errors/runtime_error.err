@@ -1,0 +1,5 @@
+error: index 5 is out of range for length 2
+ --> examples/projects/errors/runtime_error/src/inventory.fen:2:5
+  |
+2 |     items[slot]
+  |     ^^^^^^^^^^^

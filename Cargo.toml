@@ -52,6 +52,7 @@ cranelift-native = "=0.137.0"
 fennec-check = { path = "crates/check" }
 fennec-jit = { path = "crates/jit" }
 fennec-interp = { path = "crates/interp" }
+fennec-kit = { path = "crates/kit" }
 fennec-re = { path = "crates/re" }
 fennec-syntax = { path = "crates/syntax" }
 

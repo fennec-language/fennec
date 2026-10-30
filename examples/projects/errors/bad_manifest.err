@@ -1,0 +1,23 @@
+error: kit.toml has no key called `versoin`
+ --> examples/projects/errors/bad_manifest/kit.toml:2:1
+  |
+2 | versoin = "0.1.0"
+  | ^^^^^^^^^^^^^^^^^
+  |
+  = help: kit.toml has `name`, `version` and `fennec`
+
+error: dependencies aren't supported yet
+ --> examples/projects/errors/bad_manifest/kit.toml:6:1
+  |
+6 | lasers = "1.0.0"
+  | ^^^^^^^^^^^^^^^^
+  |
+  = help: for now a kit is the files under its `src` folder; leave `[dependencies]` empty
+
+error: kit.toml needs `version`
+ --> examples/projects/errors/bad_manifest/kit.toml:1:1
+  |
+1 | name = "bad_manifest"
+  | ^
+  |
+  = help: add `version = "0.1.0"`

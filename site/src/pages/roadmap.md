@@ -10,7 +10,8 @@ description: Where Fennec is today, what gets built first, and the design questi
 
 ## Now: the interpreter runs most of the language
 
-- `fennec run`, `fennec test` (including property tests that shrink failures) and `fennec repl`.
+- `fennec run`, `fennec test` (including property tests that shrink failures), `fennec new` and `fennec repl`.
+- Programs over several files: a kit is a folder with a `kit.toml`, and its files import from each other.
 - Names and `mut`, functions with inferred returns, nested functions, arrow functions.
 - Structs with defaults, methods, named constructors and `where` rules; enums and `match`; operators with `def +` and `def []`.
 - Errors with `error`, `fail`, `?`, `else`, `match` and `from`; optional values with `None`, `?.` and `else`.
@@ -74,3 +75,4 @@ These are still being decided. Decisions already made, and why, are in [the desi
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.
 - The file extension (currently `.fen`).
+- Whether files of a kit may reuse a top-level name, reached through `import` by their module's name.

@@ -1,0 +1,7 @@
+error: `Enemy` is defined in examples/projects/errors/type_not_imported/src/enemies.fen, which this file doesn't import
+ --> examples/projects/errors/type_not_imported/src/main.fen:3:21
+  |
+3 | def strength(enemy: Enemy) -> int:
+  |                     ^^^^^
+  |
+  = help: add `from enemies import Enemy` at the top of this file

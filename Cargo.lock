@@ -245,6 +245,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
+ "fennec-check",
  "fennec-interp",
  "fennec-syntax",
 ]

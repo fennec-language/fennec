@@ -1,0 +1,3 @@
+# Mutants in one crate are often caught by another crate's tests: the examples, run through
+# the `fennec` command and the JIT, check the interpreter, type checker and JIT together.
+test_workspace = true

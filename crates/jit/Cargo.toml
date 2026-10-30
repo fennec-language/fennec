@@ -14,6 +14,7 @@ cranelift-frontend.workspace = true
 cranelift-jit.workspace = true
 cranelift-module.workspace = true
 cranelift-native.workspace = true
+fennec-check.workspace = true
 fennec-interp.workspace = true
 fennec-syntax.workspace = true
 

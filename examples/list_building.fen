@@ -1,0 +1,28 @@
+## Lists made with comprehensions over ranges, then indexed from either end.
+
+def main(stdout: Stdout):
+    n = 5
+    squares = [x * x for x in range(n)]
+    mut halves = [float(x) / 2.0 for x in range(2, 7)]
+    halves[0] = 9.5
+    halves[-1] += 1.0
+    odd = [x % 2 == 1 for x in range(4)]
+    none = [0 for _ in range(-3)]
+    zeros = [0.0 for _ in range(3)]
+    backwards = [x for x in range(10, 3)]
+    stdout.print(squares, halves, odd, none, zeros, backwards)
+    stdout.print(squares[-1], squares[-5], halves[-2], len(squares))
+
+    mut composite = [0 for _ in range(50)]
+    mut primes = 0
+    for k in range(2, 50):
+        if composite[k] == 0:
+            primes += 1
+            mut multiple = k * k
+            while multiple < 50:
+                composite[multiple] = 1
+                multiple += k
+    stdout.print(primes)
+
+    for x in range(-9, 10, 3):
+        stdout.print(x, x // 2, x % 2, x // 8, x % 8)

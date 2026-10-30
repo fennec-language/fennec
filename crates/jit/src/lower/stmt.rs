@@ -143,6 +143,7 @@ impl Lowerer<'_, '_> {
                     let (new, new_ty) = self.assigned(target, op, value)?;
                     self.set_local(name, local, new, new_ty, target.span)
                 }
+                _ if self.packed_comprehension(name, value, declare_mut)? => Ok(()),
                 _ => {
                     let (new, new_ty) = match self.literal_for(name, value)? {
                         Some(made) => made,

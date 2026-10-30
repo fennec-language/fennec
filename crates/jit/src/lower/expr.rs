@@ -293,6 +293,14 @@ impl Lowerer<'_, '_> {
 
     /// `//` and `%` on ints, rounding toward negative infinity like Python.
     fn floor_div_mod(&mut self, op: BinOp, a: Value, b: Value, span: Span) -> Value {
+        // By a positive power of two, flooring is a shift and the remainder a mask.
+        if let Some(divisor) = self.constant(b).filter(|divisor| *divisor > 0 && divisor.count_ones() == 1) {
+            return if op == BinOp::FloorDiv {
+                self.b.ins().sshr_imm_s(a, i64::from(divisor.trailing_zeros()))
+            } else {
+                self.b.ins().band_imm_s(a, divisor - 1)
+            };
+        }
         let zero = self.b.ins().icmp_imm_s(IntCC::Equal, b, 0);
         self.fail_if(zero, runtime::DIVISION_BY_ZERO, span);
         let minus_one = self.b.ins().icmp_imm_s(IntCC::Equal, b, -1);

@@ -249,6 +249,15 @@ fn abs_is_a_method_and_its_fix_moves_it_there() {
         ["`abs` is a method: write `x.abs()` @ abs(1)", "can't use `+` on an int and a str @ abs(1) + \"a\""]
     );
     assert_eq!(
+        problems_as_written("def main(stdout: Stdout):\n    stdout.print(abs(1.5) + 1, len('a') + 'b')"),
+        [
+            "`abs` is a method: write `x.abs()` @ abs(1.5)",
+            "can't mix int and float in `+` @ abs(1.5) + 1",
+            "`len` is a method: write `x.len()` @ len(\"a\")",
+            "can't use `+` on an int and a str @ len(\"a\") + \"b\"",
+        ]
+    );
+    assert_eq!(
         helps("def main(stdout: Stdout):\n    stdout.print(sorted([1], key=abs))"),
         ["a size is a method: write `x.abs()`, or `x => x.abs()` to pass it"]
     );

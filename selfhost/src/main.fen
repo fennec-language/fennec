@@ -1,0 +1,26 @@
+## Fennec's front end, written in Fennec.
+##
+## This mirrors the Rust front end in `crates/syntax`, file for file: `lexer.fen` turns source
+## text into tokens, `parser.fen` turns tokens into the syntax tree in `ast.fen`, and
+## `dump.fen` prints both in the same text as `fennec dev tokens` and `fennec dev tree`, so
+## the two front ends can be compared line by line.
+
+from dump import dump_tokens, dump_tree
+
+## Fennec programs can't read their command-line arguments yet, so this reads its work from
+## `inputs.txt` in the current folder: one `tokens <path>` or `tree <path>` line per file
+## to dump.
+def main(stdout: Stdout, fs: Fs):
+    request = fs.read_text("inputs.txt")?
+    for line in request.lines():
+        space = line.find(" ")
+        if space is None:
+            continue
+        mode = line[:space]
+        path = line[space + 1:]
+        source = fs.read_text(path)?
+        stdout.print(f"== {path}")
+        if mode == "tokens":
+            stdout.write(dump_tokens(source))
+        elif mode == "tree":
+            stdout.write(dump_tree(source))

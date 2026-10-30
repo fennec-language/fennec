@@ -13,8 +13,8 @@ type EnemyId = Id[Enemy]          # a safe handle to an enemy stored in an IdMap
 
 struct Enemy:
     position: Vec3
-    velocity: Vec3 = Vec3.zero
-    health: int = 100
+    velocity = Vec3.zero
+    health = 100
 
     def take_damage(mut self, amount: int):
         self.health -= amount

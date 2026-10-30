@@ -75,13 +75,13 @@ Built-in types are lowercase. Everything you define or import is capitalized.
 
 ## Structs
 
-A struct is a set of named fields, like a Python dataclass. You get a constructor automatically, and fields can have defaults.
+A struct is a set of named fields, like a Python dataclass. You get a constructor automatically, and fields can have defaults. A field with a default takes its type from it, so only fields without one need a type.
 
 ```fennec
 struct Config:
-    volume: float = 0.8
-    fullscreen: bool = False
-    levels: list[str] = ["intro"]
+    volume = 0.8
+    fullscreen = False
+    levels = ["intro"]
 
 config = Config(volume=0.5)
 defaults = Config()            # every field has a default
@@ -92,7 +92,7 @@ A method without `self` is a named constructor, for anything the automatic one c
 ```fennec
 struct Enemy:
     position: Vec3
-    health: int = 100
+    health = 100
 
     def at(position: Vec3):
         Enemy(position=position)

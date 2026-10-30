@@ -24,14 +24,12 @@ Rust checker accepts must get no complaint from the self-hosted one either.
 
 ## Running it
 
-Fennec programs can't read their command-line arguments yet, so this one reads its work from
-`inputs.txt` in the folder it runs in, one `tokens <path>`, `tree <path>` or `check <path>`
+It reads its work from standard input, one `tokens <path>`, `tree <path>` or `check <path>`
 line per file. `check` checks against the standard library sources named by `std <path>`
 lines before it:
 
 ```bash
-printf "tokens examples/hello.fen\ntree examples/hello.fen\ncheck examples/hello.fen\n" > inputs.txt
-fennec run selfhost
+printf "tokens examples/hello.fen\ntree examples/hello.fen\ncheck examples/hello.fen\n" | fennec run selfhost
 ```
 
 Compare with `fennec dev tokens examples/hello.fen`, `fennec dev tree examples/hello.fen` and

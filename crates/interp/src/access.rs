@@ -8,7 +8,7 @@ use fennec_syntax::{Diagnostic, Span};
 use crate::eval::unhandled_result;
 use crate::interp::{Interp, TypeKind};
 use crate::ops;
-use crate::value::Value;
+use crate::value::{Capability, Value};
 
 impl Interp<'_> {
     pub(crate) fn attr(
@@ -27,6 +27,7 @@ impl Interp<'_> {
                     .with_help("call a method with parentheses, like `x.length()`")
             }),
             Value::Type(type_name) => self.type_attr(&type_name, name, span),
+            Value::Capability(Capability::Args) => self.args_field(name, span),
             other => Err(Diagnostic::new(format!("a {} has no field `{name}`", other.type_name()), span)),
         }
     }
@@ -53,6 +54,7 @@ impl Interp<'_> {
     pub(crate) fn index(&mut self, value: Value, at: Value, span: Span) -> Result<Value, Diagnostic> {
         match (&value, &at) {
             (Value::Type(_), _) => Ok(value),
+            (Value::Capability(Capability::Args), _) => ops::index(&Value::list(self.arguments()), &at, span),
             (Value::Ok(_) | Value::Err(_), _) => Err(unhandled_result(span)),
             (Value::None, _) => Err(might_be_none(span)),
             (Value::IdMap(map), Value::Id(id)) => map.get(*id).cloned().ok_or_else(|| {
@@ -98,6 +100,7 @@ impl Interp<'_> {
                 items.iter().zip(0_i64..).map(|(item, at)| (Some(Value::Int(at)), item.clone())).collect()
             }
             Value::Tuple(items) | Value::Set(items) => keyless(&items),
+            Value::Capability(Capability::Args) => keyless(&self.arguments()),
             Value::Dict(pairs) => pairs.iter().map(|(key, _)| (None, key.clone())).collect(),
             Value::Str(text) => {
                 text.chars().map(|c| (None, Value::str(c.encode_utf8(&mut [0; 4])))).collect()

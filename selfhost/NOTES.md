@@ -6,9 +6,8 @@ code does instead, and links the issue where it's being decided or fixed.
 
 ## Input and output
 
-- **A program can't read its command-line arguments**, and there's no stdin. The front end
-  reads its work from `inputs.txt` in the current folder instead. An `Args` capability (or
-  `Env`, still open in `docs/decisions.md`) would fix it. (#64)
+- **A program couldn't read its command-line arguments or stdin**, so the front end read its
+  work from `inputs.txt`. `Args` and `Stdin` fixed it, and it now reads standard input. (#64)
 
 ## Strings and characters
 

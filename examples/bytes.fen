@@ -14,8 +14,12 @@ def main(stdout: Stdout):
     stdout.print(header + bytes([13, 10]), header == bytes([137, 80, 78, 71]), bytes() < header)
 
     match data.decode():
-        case Ok(text): stdout.print("decoded", text)
-        case InvalidValue(message): stdout.print(message)
+        case Ok(text):
+            stdout.print("decoded", text)
+        case InvalidValue(message):
+            stdout.print(message)
     match header.decode():
-        case Ok(text): stdout.print("decoded", text)
-        case InvalidValue(_): stdout.print("the header isn't text")
+        case Ok(text):
+            stdout.print("decoded", text)
+        case InvalidValue(_):
+            stdout.print("the header isn't text")

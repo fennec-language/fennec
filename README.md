@@ -16,13 +16,13 @@ Fennec is a safe, compiled language for games and tools, designed so that the ea
 
 > **Status: early design.** The interpreter runs most of the language described on the website. The type checker, native compilers and concurrency come next, and the syntax will still change.
 
-**Read more at [seashell86.github.io/fennec](https://seashell86.github.io/fennec/):**
+**Read more at [fennec-lang.dev](https://fennec-lang.dev/):**
 
-- [Why Fennec](https://seashell86.github.io/fennec/why/): what it's for and the principles behind it
-- [A tour](https://seashell86.github.io/fennec/tour/): the proposed syntax and semantics
-- [Built for AI to write](https://seashell86.github.io/fennec/ai/)
-- [Two speeds](https://seashell86.github.io/fennec/speed/): instant development builds, full-speed release builds
-- [Roadmap](https://seashell86.github.io/fennec/roadmap/)
+- [Why Fennec](https://fennec-lang.dev/why/): what it's for and the principles behind it
+- [A tour](https://fennec-lang.dev/tour/): the proposed syntax and semantics
+- [Built for AI to write](https://fennec-lang.dev/ai/)
+- [Two speeds](https://fennec-lang.dev/speed/): instant development builds, full-speed release builds
+- [Roadmap](https://fennec-lang.dev/roadmap/)
 
 ## A taste
 

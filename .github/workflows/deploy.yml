@@ -1,0 +1,48 @@
+name: Deploy
+
+# Builds the website and deploys it, and the fennec-lang.com redirect, to Cloudflare. It runs
+# only once the CLOUDFLARE_ACCOUNT_ID repository variable exists, and the API token lives in
+# the `production` environment, which only `main` can use.
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", "cloudflare/**", ".github/workflows/deploy.yml", ".node-version"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer push waits for the current one.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare
+    if: vars.CLOUDFLARE_ACCOUNT_ID != ''
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://fennec-lang.dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - run: npm ci --prefix site
+      - run: npm run build --prefix site
+      - name: Deploy the website to fennec-lang.dev
+        working-directory: site
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --no-install wrangler deploy
+      - name: Deploy the redirects for fennec-lang.com and www
+        working-directory: site
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --no-install wrangler deploy --config ../cloudflare/redirect/wrangler.jsonc

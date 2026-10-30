@@ -1,0 +1,12 @@
+// Sends fennec-lang.com and the www names to https://fennec-lang.dev, keeping the path.
+{
+  "name": "fennec-redirect",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "routes": [
+    { "pattern": "fennec-lang.com", "custom_domain": true },
+    { "pattern": "www.fennec-lang.com", "custom_domain": true },
+    { "pattern": "www.fennec-lang.dev", "custom_domain": true }
+  ],
+  "workers_dev": false
+}

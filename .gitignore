@@ -6,3 +6,4 @@ site/.astro/
 target/
 mutants.out/
 mutants.out.old/
+.wrangler/

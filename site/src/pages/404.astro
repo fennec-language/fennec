@@ -1,0 +1,36 @@
+---
+import Base from '../layouts/Base.astro';
+
+const base = import.meta.env.BASE_URL;
+---
+
+<Base title="Not found" description="This page doesn't exist.">
+  <section class="wrap missing">
+    <img src={`${base}brand/fennec-logo-480.webp`} alt="" width="120" height="120" />
+    <h1>Nothing here</h1>
+    <p>The fox listened carefully with its very large ears, and heard no page at this address.</p>
+    <a class="button primary" href={base}>Back to the start</a>
+  </section>
+</Base>
+
+<style>
+  .missing {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding-top: 5rem;
+  }
+
+  .missing h1 {
+    font-size: 2.2rem;
+    letter-spacing: -0.02em;
+    margin: 1rem 0 0.5rem;
+  }
+
+  .missing p {
+    color: var(--muted);
+    max-width: 420px;
+    margin: 0 0 1.75rem;
+  }
+</style>

@@ -123,7 +123,7 @@ impl Parser {
 
     fn reserved(&self, word: &str) -> Diagnostic {
         Diagnostic::new(format!("`{word}` is part of Fennec's design but isn't supported yet"), self.span())
-            .with_help("see what's coming at https://seashell86.github.io/fennec/roadmap/")
+            .with_help("see what's coming at https://fennec-lang.dev/roadmap/")
     }
 
     /// The start of an indented block: a line break, then a deeper indent.

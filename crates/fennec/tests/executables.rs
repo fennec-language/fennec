@@ -18,6 +18,14 @@ fn ensure_runtime() -> std::io::Result<bool> {
     Ok(built.success())
 }
 
+/// Whether mutation testing is running the tests (CI's mutation jobs set
+/// `FENNEC_UNDER_MUTANTS`). Building the runtime library and linking every example takes
+/// longer than its time limit for a whole run, so these tests stand aside there. Every
+/// other run of the tests, CI's test jobs included, runs them.
+fn under_mutants() -> bool {
+    std::env::var_os("FENNEC_UNDER_MUTANTS").is_some()
+}
+
 fn examples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
@@ -62,6 +70,9 @@ fn work_dir(test: &str) -> std::io::Result<PathBuf> {
 #[test]
 #[cfg_attr(windows, ignore = "`fennec build` doesn't link executables on Windows yet")]
 fn examples_build_to_executables_that_print_their_expected_output() {
+    if under_mutants() {
+        return;
+    }
     assert!(ensure_runtime().unwrap(), "couldn't build the runtime library");
     let work = work_dir("examples").unwrap();
     for path in programs(&examples_dir()).unwrap() {
@@ -78,6 +89,9 @@ fn examples_build_to_executables_that_print_their_expected_output() {
 #[test]
 #[cfg_attr(windows, ignore = "`fennec build` doesn't link executables on Windows yet")]
 fn failing_examples_fail_the_same_way_as_executables() {
+    if under_mutants() {
+        return;
+    }
     assert!(ensure_runtime().unwrap(), "couldn't build the runtime library");
     let work = work_dir("errors").unwrap();
     let mut built = 0;

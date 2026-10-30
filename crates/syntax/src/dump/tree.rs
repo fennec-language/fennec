@@ -57,6 +57,13 @@ impl Tree {
                     }
                 });
             }
+            Item::Extend(extension) => {
+                self.node(&format!("extend {}", extension.name), Some(extension.span), |tree| {
+                    for method in &extension.methods {
+                        tree.function(method);
+                    }
+                });
+            }
             Item::TypeAlias { name, ty, span } => {
                 self.node(&format!("type-alias {name}"), Some(*span), |tree| tree.type_expr(ty));
             }
@@ -94,7 +101,7 @@ impl Tree {
                 tree.param(param);
             }
             if let Some(ret) = &function.ret {
-                tree.node("returns", None, |tree| tree.type_expr(ret));
+                tree.node("returns", function.arrow, |tree| tree.type_expr(ret));
             }
             tree.stmts(&function.body);
         });

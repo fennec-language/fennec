@@ -221,6 +221,10 @@ const CHECK_CASES: &[(&str, &str)] = &[
         "struct Box[T]:\n    item: T\n    other: U\n\n    def get(self) -> T:\n        self.item\n\ndef outer[T](x: T) -> T:\n    def inner(y: Nope) -> T:\n        y\n    names: list[T] = []\n    x\n",
     ),
     (
+        "arrows_to_nothing",
+        "def a() -> None:\n    pass\n\ndef b(x: int) -> nothing:\n    pass\n\ndef c() -> None?:\n    None\n\nstruct S:\n    def m(self) -> None:\n        def inner() -> nothing:\n            pass\n        inner()\n\ninterface I:\n    def q(self) -> None\n",
+    ),
+    (
         "written_places",
         "from std import collections\nimport std.json\n\nerror Oops:\n    why: Reason\n\nstruct S:\n    q: collections.Deque[int]\n    r: collections.Nope\n\ndef main(stdout: Stdout):\n    a: Mystery = 1\n    match a:\n        case _:\n            b: Unknown2 = 2\n    if True:\n        c: Gone = 3\n\ntest \"t\" for n: Nada:\n    d: Nothing2 = 4\n",
     ),
@@ -258,6 +262,9 @@ fn sources_under(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// Under mutation testing, one in this many of the repository's files is compared.
+const MUTANTS_SAMPLE: usize = 8;
+
 /// Every file the two front ends are compared on. Sources that don't live in files, like the
 /// standard library's, are written into `work`.
 fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
@@ -265,6 +272,11 @@ fn corpus(work: &Path) -> io::Result<Vec<PathBuf>> {
     paths.extend(sources_in(&repo().join("examples/errors"))?);
     paths.extend(sources_under(&repo().join("examples/projects"))?);
     paths.extend(sources_under(&repo().join("selfhost/src"))?);
+    // Mutation testing runs every test for every mutant: a sample of the files keeps the
+    // whole run inside its time limit. The small cases below are always all compared.
+    if std::env::var_os("FENNEC_UNDER_MUTANTS").is_some() {
+        paths = paths.into_iter().step_by(MUTANTS_SAMPLE).collect();
+    }
     let generated = fennec_syntax::prelude()
         .enumerate()
         .map(|(at, source)| (format!("prelude_{at}"), source))
@@ -448,11 +460,14 @@ fn mirror_hint(mode: &str) -> &'static str {
 /// their message. It grows until it covers everything the Rust checker says.
 const CHECK_KINDS: &[&str] = &[
     "isn't a type",
+    "can't be extended",
+    "already has a method called",
     "type in brackets",
     "types in brackets",
     "refers to itself",
     "isn't an interface",
     "is an interface, not a type",
+    "so it has no arrow",
 ];
 
 /// The Rust checker's diagnostics of the kinds in `CHECK_KINDS`, as `fennec dev check`

@@ -1,0 +1,7 @@
+error: an extension adds methods only
+ --> examples/errors/extend_field.fen:5:5
+  |
+5 |     health = 100
+  |     ^^^^^^
+  |
+  = help: declare fields where `Player` is declared

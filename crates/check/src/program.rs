@@ -58,8 +58,9 @@ pub(crate) struct Program {
     pub(crate) imported_types: std::collections::BTreeSet<String>,
     /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
     pub(crate) modules: BTreeMap<String, &'static str>,
-    /// Imports of modules or names that don't exist.
-    pub(crate) import_problems: Vec<Diagnostic>,
+    /// Problems found while adding declarations: imports of modules or names that don't
+    /// exist, and methods that can't be added.
+    pub(crate) problems: Vec<Diagnostic>,
     aliases: BTreeMap<String, TypeExpr>,
 }
 
@@ -89,7 +90,13 @@ impl Program {
                     let entry = ConstEntry { ty: ty.clone(), value: value.clone(), span: *span, prelude };
                     self.constants.insert(name.clone(), entry);
                 }
-                Item::Stmt(_) => {}
+                Item::Extend(_) | Item::Stmt(_) => {}
+            }
+        }
+        // Extensions come last, so the type they extend is known wherever it's declared.
+        for item in &module.items {
+            if let Item::Extend(extension) = item {
+                self.add_extension(extension, prelude);
             }
         }
     }
@@ -98,7 +105,7 @@ impl Program {
         let imported = match fennec_syntax::std_import(import) {
             Ok(imported) => imported,
             Err(problem) => {
-                self.import_problems.push(problem);
+                self.problems.push(problem);
                 return;
             }
         };
@@ -121,13 +128,7 @@ impl Program {
 
     fn add_type(&mut self, def: &TypeDef, kind: TypeKind, prelude: bool) {
         for method in &def.methods {
-            let entry = FnEntry {
-                def: method.clone(),
-                owner: Some(def.name.clone()),
-                prelude,
-                inherited: Vec::new(),
-            };
-            self.functions.insert(format!("{}.{}", def.name, method.name), entry);
+            self.add_method(&def.name, method, prelude);
         }
         self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone(), prelude });
     }
@@ -314,7 +315,7 @@ impl Program {
 /// The interfaces every type that can fits automatically.
 pub(crate) const BUILT_IN_INTERFACES: [&str; 4] = ["Eq", "Hashable", "Ordered", "Format"];
 
-const BUILT_IN_TYPES: [&str; 22] = [
+pub(crate) const BUILT_IN_TYPES: [&str; 22] = [
     "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "set", "dict", "tuple",
     "Id", "IdMap", "Stdout", "Fs", "Clock", "Args", "Stdin", "Result", "Iterator", "->",
 ];
@@ -343,7 +344,7 @@ fn wrong_type_args(written: &TypeExpr, wanted: usize) -> Diagnostic {
     Diagnostic::new(message, written.span).with_help(format!("write it like `{example}`"))
 }
 
-fn unknown_type(name: &str, span: Span) -> Diagnostic {
+pub(crate) fn unknown_type(name: &str, span: Span) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("`{name}` isn't a type"), span);
     match name {
         "f32" | "f64" | "double" => diagnostic.with_help("write `float`"),

@@ -2,7 +2,13 @@
 
 from std.math import Vec3
 
+from enemies import Enemy
 import enemies
+
+## Whether an enemy is down is about damage, so it's written here, as `Enemy`'s own method.
+extend Enemy:
+    pub def is_down(self) -> bool:
+        self.health <= 0
 
 error Dodged:
     name: str

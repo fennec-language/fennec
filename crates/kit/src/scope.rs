@@ -125,7 +125,7 @@ fn defined(item: &Item) -> Option<(&str, Span)> {
         Item::Struct(def) | Item::Enum(def) | Item::Error(def) => Some((&def.name, def.span)),
         Item::Interface(interface) => Some((&interface.name, interface.span)),
         Item::TypeAlias { name, span, .. } | Item::Const { name, span, .. } => Some((name, *span)),
-        Item::Import(_) | Item::Test(_) | Item::Stmt(_) => None,
+        Item::Extend(_) | Item::Import(_) | Item::Test(_) | Item::Stmt(_) => None,
     }
 }
 
@@ -184,6 +184,13 @@ impl Resolver<'_> {
             }
             Item::Interface(interface) => {
                 for method in &mut interface.methods {
+                    self.function(method, &[]);
+                }
+            }
+            // The type has to be one this file can see, like any other name it uses.
+            Item::Extend(extension) => {
+                self.qualified(&mut extension.name, extension.span);
+                for method in &mut extension.methods {
                     self.function(method, &[]);
                 }
             }

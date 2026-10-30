@@ -37,11 +37,19 @@ impl Sources {
         let Some(file) = self.file(diagnostic.span).or_else(|| self.files.first()) else {
             return format!("error: {}\n", diagnostic.message);
         };
-        let local = Span {
-            start: diagnostic.span.start.saturating_sub(file.base),
-            end: diagnostic.span.end.saturating_sub(file.base),
+        let local = |span: Span, file: &File| Span {
+            start: span.start.saturating_sub(file.base),
+            end: span.end.saturating_sub(file.base),
         };
-        Diagnostic { span: local, ..diagnostic.clone() }.render(&file.path, &file.text)
+        let also = diagnostic.also.and_then(|span| {
+            let other = self.file(span)?;
+            Some(crate::diagnostic::place(&other.path, &other.text, local(span, other)))
+        });
+        Diagnostic { span: local(diagnostic.span, file), ..diagnostic.clone() }.render_with(
+            &file.path,
+            &file.text,
+            also.as_deref(),
+        )
     }
 
     /// Every file, as its path and text, in the order they were added.
@@ -53,6 +61,19 @@ impl Sources {
     pub fn render_all(&self, diagnostics: &[Diagnostic]) -> String {
         let rendered: Vec<String> = diagnostics.iter().map(|diagnostic| self.render(diagnostic)).collect();
         rendered.join("\n")
+    }
+
+    /// Where a span starts: its file's path, its line and column (from 1), and that line's
+    /// text.
+    pub fn locate(&self, span: Span) -> Option<(&str, usize, usize, &str)> {
+        let file = self.file(span)?;
+        let start = usize::try_from(span.start.saturating_sub(file.base)).ok()?.min(file.text.len());
+        let before = file.text.get(..start)?;
+        let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+        let line_end = file.text.get(start..)?.find('\n').map_or(file.text.len(), |at| start + at);
+        let column = file.text.get(line_start..start)?.chars().count() + 1;
+        let line = before.matches('\n').count() + 1;
+        Some((file.path.as_str(), line, column, file.text.get(line_start..line_end)?))
     }
 
     /// Each file the fixes of `diagnostics` change, with its new text.

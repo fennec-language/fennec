@@ -6,8 +6,8 @@ mod pattern;
 mod stmt;
 
 use crate::ast::{
-    Case, ExprKind, Field, FnDef, Generic, Import, Interface, Item, Module, Param, Stmt, StmtKind, TestDef,
-    TypeDef, TypeExpr,
+    Case, ExprKind, Extension, Field, FnDef, Generic, Import, Interface, Item, Module, Param, Stmt, StmtKind,
+    TestDef, TypeDef, TypeExpr,
 };
 use crate::diagnostic::Diagnostic;
 use crate::lexer::lex;
@@ -204,7 +204,7 @@ impl Parser {
 
     fn is_declaration(&self, word: &str) -> bool {
         match word {
-            "struct" | "enum" | "error" | "interface" => matches!(self.peek_at(1), Tok::Name(_)),
+            "struct" | "enum" | "error" | "interface" | "extend" => matches!(self.peek_at(1), Tok::Name(_)),
             "type" => matches!((self.peek_at(1), self.peek_at(2)), (Tok::Name(_), Tok::P(Punct::Assign))),
             "test" => matches!(self.peek_at(1), Tok::Str(_)),
             _ => false,
@@ -218,6 +218,7 @@ impl Parser {
             "error" => Ok(Item::Error(self.type_def(start, false)?)),
             "enum" => Ok(Item::Enum(self.type_def(start, true)?)),
             "interface" => self.interface(start),
+            "extend" => self.extension(start),
             "type" => {
                 let name = self.name("a type name")?;
                 self.expect_p(Punct::Assign)?;
@@ -306,6 +307,27 @@ impl Parser {
             self.end_line()?;
         }
         Ok(Item::Interface(Interface { name, methods, span: start.to(self.prev_span()) }))
+    }
+
+    /// `extend Name:` and its methods. A field is an error: an extension adds methods only.
+    fn extension(&mut self, start: Span) -> Result<Item, Diagnostic> {
+        let name = self.name("a type name")?;
+        let span = start.to(self.prev_span());
+        self.expect_p(Punct::Colon)?;
+        self.expect_block_start()?;
+        let mut methods = Vec::new();
+        while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
+            self.eat_pub();
+            if self.at_kw(Kw::Def) {
+                methods.push(self.def()?);
+            } else if self.eat_kw(Kw::Pass) {
+                self.end_line()?;
+            } else {
+                return Err(Diagnostic::new("an extension adds methods only", self.span())
+                    .with_help(format!("declare fields where `{name}` is declared")));
+            }
+        }
+        Ok(Item::Extend(Extension { name, methods, span }))
     }
 
     fn test(&mut self, start: Span) -> Result<Item, Diagnostic> {

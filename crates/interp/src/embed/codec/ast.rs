@@ -2,8 +2,8 @@
 //! the variant, then its fields.
 
 use fennec_syntax::{
-    Arg, BinOp, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Generic, Import, Interface, Item,
-    MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
+    Arg, BinOp, Case, CompKind, Expr, ExprKind, Extension, FStrPart, Field, FnDef, Generic, Import,
+    Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
 };
 
 use super::{Decode, Encode, Reader, Writer};
@@ -34,6 +34,7 @@ fields!(TypeDef { name, generics, fields, cases, methods, span });
 fields!(Field { name, ty, default, rule, span });
 fields!(Case { name, fields, span });
 fields!(Interface { name, methods, span });
+fields!(Extension { name, methods, span });
 fields!(Import { module, names, span });
 fields!(TestDef { name, inputs, body, span });
 fields!(Stmt { kind, span });
@@ -84,8 +85,9 @@ impl Encode for Item {
             Item::Import(import) => (6, import).encode_tagged(to),
             Item::Test(test) => (7, test).encode_tagged(to),
             Item::Stmt(stmt) => (8, stmt).encode_tagged(to),
+            Item::Extend(extension) => (9, extension).encode_tagged(to),
             Item::Const { name, ty, value, span } => {
-                to.tag(9);
+                to.tag(10);
                 name.encode(to);
                 ty.encode(to);
                 value.encode(to);
@@ -111,7 +113,8 @@ impl Decode for Item {
             6 => Item::Import(Decode::decode(from)?),
             7 => Item::Test(Decode::decode(from)?),
             8 => Item::Stmt(Decode::decode(from)?),
-            9 => Item::Const {
+            9 => Item::Extend(Decode::decode(from)?),
+            10 => Item::Const {
                 name: Decode::decode(from)?,
                 ty: Decode::decode(from)?,
                 value: Decode::decode(from)?,

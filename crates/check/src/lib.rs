@@ -19,6 +19,7 @@ mod checker;
 mod constants;
 mod effects;
 mod expr;
+mod extend;
 mod function;
 mod generic;
 mod imports;

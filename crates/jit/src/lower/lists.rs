@@ -127,6 +127,10 @@ impl Lowerer<'_, '_> {
         write: bool,
         span: Span,
     ) -> Result<Value, Diagnostic> {
+        self.note(
+            span,
+            format!("the runtime looks up the packed list `{name}` by name, twice, for each access"),
+        );
         let (at, at_ty) = self.expr(index)?;
         let at = self.convert(at, at_ty, Ty::Int, index.span)?;
         let len = self.list_length(name, item)?;
@@ -199,6 +203,7 @@ impl Lowerer<'_, '_> {
         value: &Expr,
         span: Span,
     ) -> Result<(), Diagnostic> {
+        self.note(span, format!("the runtime looks up the packed list `{name}` by name to append"));
         let value = self.expr(value)?;
         let converted = self.convert(value.0, value.1, item, span)?;
         let id = self.name_id(name);

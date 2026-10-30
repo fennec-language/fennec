@@ -11,6 +11,8 @@ mod reach;
 mod runtime;
 mod types;
 
+pub use lower::notes::Note;
+
 use std::io::Write;
 
 use fennec_interp::Inputs;
@@ -156,4 +158,53 @@ pub fn build(module: &Module, sources: &fennec_syntax::Sources) -> Result<Built,
     interpreted.extend(program.excluded);
     interpreted.sort();
     Ok(Built { object, interpreted, handed_over: compilation.handed_over })
+}
+
+/// Every place a program's compiled code isn't native: whole functions the interpreter
+/// runs, with why, and each operation handed to the interpreter or the runtime's objects.
+/// In source order, the standard library's left out.
+pub fn fallbacks(module: &Module) -> Result<Vec<Note>, Diagnostic> {
+    let signatures = fennec_check::check(module).map_err(|diagnostics| {
+        diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default()))
+    })?;
+    let prelude: Vec<Module> =
+        fennec_syntax::prelude().filter_map(|source| fennec_syntax::parse_prelude(source).ok()).collect();
+    let program = types::Program::from_module(module, &prelude, &signatures)?;
+    let (_, _, compilation) = lower::compile(&program, &signatures, 0)?;
+    let whole = |function: &str, what: String| Note {
+        function: function.to_owned(),
+        span: definition(module, function).unwrap_or_default(),
+        what,
+        loops: 0,
+    };
+    let mut notes: Vec<Note> = compilation
+        .interpreted
+        .iter()
+        .zip(&compilation.reasons)
+        .map(|(function, why)| {
+            whole(function, format!("the interpreter runs the whole function: {}", why.message))
+        })
+        .chain(program.excluded.iter().map(|function| {
+            whole(
+                function,
+                "the interpreter runs the whole function: it's a generator or holds a `def`".to_owned(),
+            )
+        }))
+        .chain(compilation.notes)
+        .filter(|note| !note.span.in_prelude())
+        .collect();
+    notes.sort_by_key(|note| (note.span.start, note.span.end));
+    Ok(notes)
+}
+
+/// Where a function or method is defined in a program, by its key.
+fn definition(module: &Module, key: &str) -> Option<Span> {
+    module.items.iter().find_map(|item| match item {
+        fennec_syntax::Item::Function(def) if def.name == key => Some(def.span),
+        fennec_syntax::Item::Struct(ty) | fennec_syntax::Item::Enum(ty) | fennec_syntax::Item::Error(ty) => {
+            let (owner, method) = key.split_once('.')?;
+            ty.methods.iter().find(|def| ty.name == owner && def.name == method).map(|def| def.span)
+        }
+        _ => None,
+    })
 }

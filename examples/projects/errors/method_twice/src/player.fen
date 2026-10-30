@@ -1,0 +1,5 @@
+struct Player:
+    x = 0.0
+
+    def reset(mut self):
+        self.x = 0.0

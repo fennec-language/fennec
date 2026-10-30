@@ -70,6 +70,7 @@ impl Lowerer<'_, '_> {
             return self.fallback(expr);
         }
         if !optional && let Some((root, fields)) = self.field_path(expr) {
+            self.note(expr.span, format!("the runtime reads the field `{name}` of an object"));
             self.start_path(&root, &fields)?;
             let [start, end] = self.span_args(expr.span);
             return Ok((Some(self.help(Helper::PathGet, &[start, end])?), Ty::Obj));
@@ -86,6 +87,7 @@ impl Lowerer<'_, '_> {
         {
             return self.boxed_field((address, id), field);
         }
+        self.note(expr.span, format!("the runtime reads the field `{name}` of an object"));
         let handle = self.handle_of(value, ty, object.span)?;
         let name = self.name_id(name);
         let optional = self.b.ins().iconst(types::I8, i64::from(optional));
@@ -118,6 +120,7 @@ impl Lowerer<'_, '_> {
             let at = self.convert(at, at_ty, Ty::Int, index.span)?;
             return self.string_index(text, at, expr.span);
         }
+        self.note(expr.span, "the runtime indexes an object");
         let object = self.handle_of(value, ty, expr.span)?;
         let (value, ty) = self.expr(index)?;
         let index = self.handle_of(value, ty, expr.span)?;
@@ -131,6 +134,7 @@ impl Lowerer<'_, '_> {
         (value, ty): Lowered,
         span: Span,
     ) -> Result<Lowered, Diagnostic> {
+        self.note(span, "the runtime runs a unary operator on an object");
         let handle = self.handle_of(value, ty, span)?;
         let negate = self.int(i64::from(op == UnaryOp::Neg));
         let [start, end] = self.span_args(span);
@@ -188,6 +192,7 @@ impl Lowerer<'_, '_> {
                 self.otherwise_type();
             }
         }
+        self.note(span, format!("the runtime runs `{}` on objects", op.symbol()));
         let code = self.int(code);
         let [start, end] = self.span_args(span);
         let value = self.help(Helper::Binary, &[code, a, b, start, end])?;
@@ -281,6 +286,10 @@ impl Lowerer<'_, '_> {
             });
         }
         let (value, ty) = self.expr(object)?;
+        self.note(
+            expr.span,
+            format!("the runtime calls the method `{method}`, picked by the receiver's type"),
+        );
         let receiver = self.handle_of(value, ty, object.span)?;
         let type_id = self.help(Helper::TypeOf, &[receiver])?;
         let mut arms = Vec::new();
@@ -325,6 +334,7 @@ impl Lowerer<'_, '_> {
         value: &Expr,
     ) -> Result<(), Diagnostic> {
         let (new, ty) = self.assigned(target, op, value)?;
+        self.note(target.span, "the runtime changes a field of an object");
         let handle = self.handle_of(new, ty, value.span)?;
         self.start_path(root, fields)?;
         let [start, end] = self.span_args(target.span);
@@ -341,6 +351,7 @@ impl Lowerer<'_, '_> {
         body: &[Stmt],
     ) -> Result<(), Diagnostic> {
         let (value, ty) = self.expr(iter)?;
+        self.note(iter.span, "the runtime lists the items a `for mut` loop changes");
         let source = self.handle_of(value, ty, iter.span)?;
         let [start, end] = self.span_args(iter.span);
         let entries = self.help(Helper::Entries, &[source, start, end])?;

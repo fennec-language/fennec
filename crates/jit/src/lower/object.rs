@@ -34,7 +34,7 @@ pub(crate) fn compile_object(
     signatures: &fennec_check::Signatures,
     image: &Written<'_>,
 ) -> Result<(Vec<u8>, Compilation), Diagnostic> {
-    let (bytes, interpreted) = retrying(|skipped| {
+    let (bytes, skipped) = retrying(|skipped| {
         let span = program.main_span;
         let fatal = |diagnostic| ("main".to_owned(), diagnostic);
         let mut module = new_module(span).map_err(fatal)?;
@@ -46,7 +46,8 @@ pub(crate) fn compile_object(
         Ok((bytes, counts))
     })?;
     let (bytes, (with_frames, handed_over)) = bytes;
-    Ok((bytes, Compilation { interpreted, with_frames, handed_over }))
+    let (interpreted, reasons) = skipped.into_iter().unzip();
+    Ok((bytes, Compilation { interpreted, reasons, with_frames, handed_over, notes: Vec::new() }))
 }
 
 /// An executable's table of runtime addresses: the failure flag's, the ASCII table's, then

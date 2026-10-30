@@ -33,6 +33,7 @@ When a model reaches for something Fennec doesn't have, the compiler recognizes 
 | `print(value)` or `console.log(value)` | There's no global output. Write through the `Stdout` that `main` receives; to inspect a value, use a test or the debugger. |
 | `class Boss(Enemy):` | There are no classes or inheritance. Use a `struct`, and an `enum` for different kinds of enemy. |
 | `def __add__(self, other):` | Write `def +(self, other):`. |
+| `if ready: label = "a"` / `else: label = "b"` | Set it once with an expression: `label = "a" if ready else "b"`. Names don't leak out of blocks. |
 
 ## Guardrails for the mistakes models actually make
 
@@ -40,6 +41,8 @@ When a model reaches for something Fennec doesn't have, the compiler recognizes 
 | --- | --- |
 | Forgetting a value might be missing | An `Enemy?` can't be used until it's checked for `None`. |
 | Tangled shared state | There are no references. Every value is independent, so code can't change data another part of the program is holding. |
+| Expecting a copy to change the original | Changing a copy that's never used afterwards is a compile error that says where the original is. |
+| Changing a list while looping over it | A compile error, with `remove_where` suggested instead. |
 | Ignoring an error | A call that can fail needs `?`, `else` or `match`. Discarding an error on purpose needs `ignore(result, "why")`. |
 | Assuming something can't fail | Asserting success needs `expect("reason")`, and an empty reason is rejected. |
 | Leaving a stub behind | `todo()` compiles in development builds and is an error in release builds. Unused values and dead code are errors. |

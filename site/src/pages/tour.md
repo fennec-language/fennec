@@ -32,6 +32,19 @@ name = "Vex"      # error: `name` isn't mut. Declare it `mut name = "Ash"`
 
 `mut` is the one word for mutability everywhere: names, parameters, methods and loops. Immutability is deep: nothing inside an immutable value can change either, not even through a function you pass it to.
 
+An immutable name is set once, by a single expression. When the value depends on a condition, use a conditional expression, or `match` for more than two choices:
+
+```fennec
+label = "boss" if enemy.health > 500 else "minion"
+
+speed = match enemy.kind:
+    case .Runner: 8.0
+    case .Walker: 3.0
+    case .Turret: 0.0
+```
+
+Names belong to the block they're created in. A name created inside an `if`, `for` or `with` doesn't exist after it, so nothing leaks into the rest of the function.
+
 ## Functions
 
 Parameters have types. Return types are inferred, and the last expression in a function is its value.
@@ -49,6 +62,7 @@ def factorial(n: int) -> int:             # recursive functions state their retu
 
 - Use `return` to leave early. You can write a return type anywhere you want it as documentation; your editor shows the inferred one.
 - Short functions can be passed inline with an arrow: `enemies.sort(key=enemy => enemy.health)`.
+- Closures read the names around them but can't change them. To build up a value, use a comprehension or a builtin like `sum`.
 - Anything longer is a nested function, which also gives the logic a name:
 
 ```fennec
@@ -71,7 +85,7 @@ def visible_enemies(world: World):
 | `list`, `dict`, `set` | `[1, 2]`, `{"hp": 10}`, `{1, 2}` |
 | `tuple` | `(3, 4)` |
 
-Built-in types are lowercase. Everything you define or import is capitalized.
+Built-in types are lowercase. Everything you define or import is capitalized. Number literals take the type their context needs, so `distance > 5.0` works whether `distance` is a `float` or an `f32`.
 
 ## Structs
 
@@ -110,6 +124,8 @@ struct Player:
 player = Player(name=entered_name, level=1)?
 ```
 
+When the values are known at compile time, the compiler checks the rules itself, so `Player(name="Ash", level=1)` needs no `?`.
+
 Equality, hashing and printing work automatically for any type whose fields support them. There's nothing to derive.
 
 ## Values, not references
@@ -123,6 +139,14 @@ b.x = 10.0   # a.x is still 1.0
 ```
 
 This doesn't mean everything gets copied. The compiler passes values by reference when it's safe, moves them when the original isn't used again, and shares large data, like a big list, until one side changes it. You write simple value code; the compiler makes it fast.
+
+Because a copy is independent, changing it never changes the original. The compiler catches the mistake that habit from other languages leads to:
+
+```fennec
+mut enemies = world.enemies
+enemies.remove(id)    # error: you changed `enemies`, a copy of `world.enemies`,
+                      # but never used it. To change the world, write world.enemies.remove(id)
+```
 
 ## Mutation is visible
 
@@ -221,7 +245,7 @@ match load_config(fs, path):                       # handle specific errors
     case Err(error): warn(f"couldn't load config: {error}")
 ```
 
-`?` works inside comprehensions too: `[parse_score(line)? for line in lines]` gives every score, or the first error. Failing is a plain return, with no stack unwinding, so it costs nothing extra.
+The default after `else` is only evaluated if it's needed. `?` works inside comprehensions too: `[parse_score(line)? for line in lines]` gives every score, or the first error. Failing is a plain return, with no stack unwinding, so it costs nothing extra.
 
 ## Collections
 
@@ -236,6 +260,12 @@ strongest = max(alive, key=enemy => enemy.health)
 
 - Python's builtins come along: `len`, `sum`, `min`, `max`, `any`, `all`, `enumerate`, `zip`, `range`.
 - A `dict` keeps insertion order, so iterating it is always deterministic.
+- Changing a collection while looping over it is a compile error. Use `remove_where`, or collect what to change first:
+
+```fennec
+world.enemies.remove_where(enemy => enemy.health <= 0)
+```
+
 - `IdMap` stores things that come and go, like enemies or bullets. Inserting returns an `Id`, and a stale `Id` safely finds nothing, even after its slot is reused.
 
 ```fennec
@@ -329,6 +359,24 @@ def total_area[T: Shape](shapes: list[T]):
 
 Generics are resolved at compile time, so calls go straight to the right function. For a collection of different kinds of things, use an `enum`.
 
+## Events and callbacks
+
+With no references, a callback can't hold on to the world and change it later. Instead, handlers return what should happen, and the main loop applies it:
+
+```fennec
+enum Command:
+    Spawn(enemy: Enemy)
+    Damage(target: EnemyId, amount: int)
+
+def on_explosion(world: World, center: Vec3):
+    [.Damage(id, 50) for id, enemy in world.enemies.items() if enemy.distance_to(center) < 3.0]
+
+for command in on_explosion(world, blast):
+    world.apply(command)
+```
+
+Every change to the world happens in one visible place, which also makes replays and networking simpler.
+
 ## Capabilities
 
 A function can only touch the outside world through what it's given. Without an `Fs` parameter, it can't read files. Without a `Clock`, it can't read the time.
@@ -373,7 +421,7 @@ noalloc def update(mut particles: SoaList[Particle], dt: f32):
         particle.life -= dt
 ```
 
-- `noalloc` is checked through every call. If anything inside allocates or might copy shared data, it's a compile error that names the line.
+- `noalloc` is checked through every call. If anything inside allocates or might copy shared data, it's a compile error that names the line and says why.
 - `SoaList` stores each field in its own array, which is faster for code that loops over one field at a time. You still write `particle.position`.
 
 ## C and unsafe code

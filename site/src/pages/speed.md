@@ -45,6 +45,10 @@ Fennec code never handles references, but the compiler uses them behind the scen
 
 The cost of sharing is a reference count on large data, mostly optimized away, and a copy the first time shared data changes. That copy isn't written in the code, so three things keep it in check: the compiler warns when a change inside a loop might copy, `noalloc` code rejects it outright, and the profiler reports hidden copies by name.
 
+## Libraries can't change silently
+
+Return types and errors are inferred, so a library could change what a function returns or how it fails without any visible edit to its signature. When a package is published, Fennec compares the inferred signatures of everything it exports, including the errors each function can fail with, against the previous version, and flags every change.
+
 ## The engines
 
 | Engine | Starts running | Runtime speed | Used for |

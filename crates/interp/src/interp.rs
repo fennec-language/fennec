@@ -267,3 +267,37 @@ pub(crate) fn callable(def: &FnDef, captured: Vec<(String, Value)>) -> Callable 
     let (fallible, generator) = crate::scan::body_effects(&def.body);
     Callable { def: Rc::new(def.clone()), captured, fallible, generator }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    /// Output that takes writes but can't be flushed, like a file on a full disk.
+    struct Unflushable;
+
+    impl Write for Unflushable {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("the disk is full"))
+        }
+    }
+
+    #[test]
+    fn capabilities_equal_themselves() {
+        let source = "def main(stdout: Stdout, fs: Fs):\n    stdout.print(stdout == stdout, fs == fs)\n";
+        let module = fennec_syntax::parse(source).unwrap();
+        let mut out = Vec::new();
+        super::run(&module, &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "True True\n");
+    }
+
+    #[test]
+    fn output_that_cant_be_flushed_is_an_error() {
+        let module = fennec_syntax::parse("def main(stdout: Stdout):\n    stdout.print(1)\n").unwrap();
+        let error = super::run(&module, &mut Unflushable).unwrap_err();
+        assert_eq!(error.message, "couldn't write output: the disk is full");
+    }
+}

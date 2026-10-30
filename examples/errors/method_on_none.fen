@@ -1,0 +1,13 @@
+struct Player:
+    name: str
+
+    def greet(self):
+        f"hi, {self.name}"
+
+def find(name: str) -> Player?:
+    if name == "Kit":
+        return Player(name="Kit")
+    None
+
+def main(stdout: Stdout):
+    stdout.print(find("Vex").greet())

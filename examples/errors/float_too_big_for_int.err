@@ -1,0 +1,5 @@
+error: can't turn a float into an int
+ --> examples/errors/float_too_big_for_int.fen:2:18
+  |
+2 |     stdout.print(int(1e19))
+  |                  ^^^^^^^^^

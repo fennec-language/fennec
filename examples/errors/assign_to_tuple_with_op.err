@@ -1,0 +1,5 @@
+error: this can't be assigned to
+ --> examples/errors/assign_to_tuple_with_op.fen:4:5
+  |
+4 |     a, b += 1
+  |     ^^^^

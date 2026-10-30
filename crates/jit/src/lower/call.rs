@@ -411,18 +411,17 @@ impl Lowerer<'_, '_> {
         Ok(Some((Some(result.0), result.1)))
     }
 
-    /// `int(x)` on a float: toward zero, failing like the interpreter for a float too big or
-    /// not finite.
+    /// `int(x)` on a float: toward zero, failing like the interpreter for a float outside an
+    /// int's range (at least -2^63 and below 2^63) or not finite.
     fn float_to_int(&mut self, x: Value, span: Span) -> Value {
-        let size = self.b.ins().fabs(x);
-        let limit = self.b.ins().f64const(9.2e18);
-        // Not below the limit, which is also true of NaN.
-        let too_big = self.b.ins().fcmp(
-            cranelift_codegen::ir::condcodes::FloatCC::UnorderedOrGreaterThanOrEqual,
-            size,
-            limit,
-        );
-        self.fail_if(too_big, runtime::NOT_AN_INT, span);
+        use cranelift_codegen::ir::condcodes::FloatCC;
+        let low = self.b.ins().f64const(-9_223_372_036_854_775_808.0);
+        let high = self.b.ins().f64const(9_223_372_036_854_775_808.0);
+        // Below the range, which is also true of NaN, or at or above it.
+        let too_low = self.b.ins().fcmp(FloatCC::UnorderedOrLessThan, x, low);
+        let too_high = self.b.ins().fcmp(FloatCC::GreaterThanOrEqual, x, high);
+        let outside = self.b.ins().bor(too_low, too_high);
+        self.fail_if(outside, runtime::NOT_AN_INT, span);
         self.b.ins().fcvt_to_sint_sat(types::I64, x)
     }
 

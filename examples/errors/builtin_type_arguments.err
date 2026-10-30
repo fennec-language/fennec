@@ -1,0 +1,5 @@
+error: `IdMap` was called with the wrong arguments
+ --> examples/errors/builtin_type_arguments.fen:4:18
+  |
+4 |     stdout.print(IdMap(3))
+  |                  ^^^^^^^^

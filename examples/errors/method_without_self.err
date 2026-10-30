@@ -1,0 +1,5 @@
+error: `greet` needs a `Player` to call it on
+ --> examples/errors/method_without_self.fen:8:18
+  |
+8 |     stdout.print(Player.greet())
+  |                  ^^^^^^^^^^^^^^

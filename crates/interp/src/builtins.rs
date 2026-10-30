@@ -57,6 +57,9 @@ const TYPES: [&str; 3] = ["Id", "IdMap", "SoaList"];
 /// The longest list `range` will build, until ranges become lazy.
 const MAX_RANGE: usize = 10_000_000;
 
+/// 2^63: a float converts to an int when it is at least -2^63 and below 2^63.
+const INT_LIMIT: f64 = 9_223_372_036_854_775_808.0;
+
 pub(crate) fn named(name: &str) -> Option<&'static str> {
     NAMES.iter().copied().find(|builtin| *builtin == name).or_else(|| (name == "zip").then_some("zip"))
 }
@@ -267,7 +270,7 @@ fn range(values: &[Value], span: Span) -> Result<Value, Diagnostic> {
     }
     let mut items = Vec::new();
     let mut at = first;
-    while (stride > 0 && at < end) || (stride < 0 && at > end) {
+    while if stride.is_positive() { at < end } else { at > end } {
         if items.len() >= MAX_RANGE {
             return Err(Diagnostic::new(format!("ranges are limited to {MAX_RANGE} items for now"), span));
         }
@@ -301,7 +304,7 @@ fn math(name: &str, value: &Value, span: Span) -> Result<Value, Diagnostic> {
 fn to_int(value: &Value, span: Span) -> Result<Value, Diagnostic> {
     match value {
         Value::Int(n) => Ok(Value::Int(*n)),
-        Value::Float(x) if x.is_finite() && x.abs() < 9.2e18 => {
+        Value::Float(x) if (-INT_LIMIT..INT_LIMIT).contains(x) => {
             #[expect(clippy::cast_possible_truncation, reason = "int() truncates toward zero, as in Python")]
             let n = x.trunc() as i64;
             Ok(Value::Int(n))

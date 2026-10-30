@@ -1,0 +1,5 @@
+error: index 3 is out of range for length 3
+ --> examples/errors/index_past_the_end.fen:3:18
+  |
+3 |     stdout.print(items[3])
+  |                  ^^^^^^^^

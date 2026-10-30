@@ -1,0 +1,5 @@
+error: `exists` was called with the wrong arguments
+ --> examples/errors/fs_arguments.fen:2:18
+  |
+2 |     stdout.print(fs.exists(42))
+  |                  ^^^^^^^^^^^^^

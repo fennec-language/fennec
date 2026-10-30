@@ -277,3 +277,34 @@ fn each_expr(expr: &Expr, visit: &mut dyn FnMut(&Expr)) {
         each_expr(expr, visit);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use fennec_syntax::{Item, StmtKind};
+
+    use super::indexed_only;
+
+    /// What `indexed_only` says about the `while` loop in a function's body, for `xs`.
+    fn loop_uses(body: &str) -> Option<bool> {
+        let source = format!("def f(mut xs: list[int]) -> int:\n    mut at = 0\n{body}    at\n");
+        let module = fennec_syntax::parse(&source).unwrap();
+        let Some(Item::Function(def)) = module.items.first() else { panic!("no function") };
+        let Some(StmtKind::While { cond, body }) = def.body.get(1).map(|stmt| &stmt.kind) else {
+            panic!("no loop")
+        };
+        indexed_only(Some(cond), body, "xs")
+    }
+
+    #[test]
+    fn a_loop_that_indexes_a_list_and_takes_its_length_can_hoist_it() {
+        assert_eq!(loop_uses("    while at < xs.len():\n        at += xs[at]\n"), Some(false));
+        assert_eq!(loop_uses("    while at < xs.len():\n        xs[at] = 1\n        at += 1\n"), Some(true));
+    }
+
+    #[test]
+    fn any_other_call_on_the_list_keeps_it_from_being_hoisted() {
+        assert_eq!(loop_uses("    while at < xs.len():\n        xs.clear()\n        at += 1\n"), None);
+        assert_eq!(loop_uses("    while at < 3:\n        xs.append(at)\n        at += 1\n"), None);
+        assert_eq!(loop_uses("    while at < xs.len(1):\n        at += 1\n"), None);
+    }
+}

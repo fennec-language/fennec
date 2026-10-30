@@ -13,10 +13,9 @@ use crate::value::Value;
 use crate::{format, ops, stdlib};
 
 /// The builtins. Standard library functions, like `json.loads`, are in `stdlib`.
-const NAMES: [&str; 22] = [
+const NAMES: [&str; 21] = [
     "Err",
     "Ok",
-    "abs",
     "all",
     "any",
     "bytes",
@@ -110,10 +109,6 @@ impl Interp<'_> {
             ("int" | "float", [Value::Str(text)]) => self.parse_number(name, text, span),
             ("int", [value]) => to_int(value, span),
             ("float", [value]) => to_float(value, span),
-            ("abs", [Value::Int(n)]) => {
-                n.checked_abs().map(Value::Int).ok_or_else(|| Diagnostic::new("this overflows an int", span))
-            }
-            ("abs", [Value::Float(x)]) => Ok(Value::Float(x.abs())),
             ("round", [Value::Float(x)]) => to_int(&Value::Float(x.round_ties_even()), span),
             ("round", [Value::Float(x), Value::Int(places)]) => {
                 let scale = 10_f64.powi(i32::try_from(*places).unwrap_or(0));

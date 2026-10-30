@@ -1,0 +1,7 @@
+error: `strongest` is defined in examples/projects/errors/not_imported/src/enemies.fen, which this file doesn't import
+ --> examples/projects/errors/not_imported/src/main.fen:5:18
+  |
+5 |     stdout.print(strongest([enemy]))
+  |                  ^^^^^^^^^
+  |
+  = help: add `from enemies import strongest` at the top of this file

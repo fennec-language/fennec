@@ -1,0 +1,5 @@
+error: this pattern has 2 parts, but the value has 1 fields
+ --> examples/errors/pattern_too_long.fen:7:9
+  |
+7 |         case .Circle(radius, color): stdout.print(radius, color)
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

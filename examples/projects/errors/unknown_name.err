@@ -1,0 +1,7 @@
+error: `enemies` has nothing called `spwan`
+ --> examples/projects/errors/unknown_name/src/main.fen:1:1
+  |
+1 | from enemies import Enemy, spwan
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: examples/projects/errors/unknown_name/src/enemies.fen defines Enemy, spawn

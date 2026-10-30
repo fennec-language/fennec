@@ -1,0 +1,6 @@
+error Broken:
+    reason: str
+
+def main(stdout: Stdout):
+    stdout.print("starting")
+    fail Broken("on purpose")

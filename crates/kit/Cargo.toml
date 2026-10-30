@@ -1,0 +1,15 @@
+[package]
+name = "fennec-kit"
+description = "Fennec projects: kit.toml, and loading a kit's files as one program"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+fennec-syntax.workspace = true
+
+[lints]
+workspace = true

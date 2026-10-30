@@ -1,0 +1,8 @@
+struct Player:
+    name: str
+
+    def greet(self):
+        f"hi, {self.name}"
+
+def main(stdout: Stdout):
+    stdout.print(Player.greet())

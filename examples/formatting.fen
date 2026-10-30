@@ -1,0 +1,16 @@
+def main(stdout: Stdout):
+    # Floats print as Python prints them: whole ones keep `.0`, and very large or very
+    # small ones use an exponent.
+    big = 1e308 * 10.0
+    stdout.print(big, -big, big - big)
+    stdout.print(1e15, 1e16, -1.5e17, 1e-7, 0.0001, 0.1 + 0.2, -0.0)
+
+    # Collections show their items as the REPL would echo them.
+    stdout.print((1,), (1, "two"), (), set(), {1}, [None, True, False])
+
+    # Format specs: `,` groups thousands, `.N` sets the places, `f` and `d` name the kind.
+    stdout.print(f"{1234567:,} {-1234567:,} {123:,} {1234.5:,.2f} {-0.5:,}")
+    stdout.print(f"{7:.2f} {7:d} {2.5:f} {2.0} {[1, 2]}")
+
+    # Brackets and colons inside `{}` belong to the expression, not the spec.
+    stdout.print(f"{ {1: 2}[1] } {len({3: 4, 5: 6}):d} {max([1, 5], key=n => -n)}")

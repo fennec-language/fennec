@@ -1,0 +1,69 @@
+enum Shape:
+    Circle(radius: float)
+    Rect(width: float, height: float)
+    Point
+
+def name_int(n: int):
+    match n:
+        case 0: "zero"
+        case -1: "minus one"
+        case _: "something else"
+
+def name_float(x: float):
+    match x:
+        case 0.5: "a half"
+        case -0.5: "minus a half"
+        case _: "something else"
+
+def name_str(text: str):
+    match text:
+        case "fox": "a fox"
+        case _: "not a fox"
+
+def name_bool(b: bool):
+    match b:
+        case True: "yes"
+        case False: "no"
+
+def name_maybe(n: int?):
+    match n:
+        case None: "nothing"
+        case _: "something"
+
+def outcome(result: Result[int, str]):
+    match result:
+        case Ok(0): "nothing"
+        case Ok(_): "something"
+        case Err(): "failed"
+
+def width(shape: Shape):
+    match shape:
+        # A pattern can name fewer fields than the case has.
+        case .Rect(width): f"{width} wide"
+        case .Point: "a point"
+        case _: "no width"
+
+def main(stdout: Stdout):
+    stdout.print(name_int(0), name_int(-1), name_int(1), name_float(0.5), name_float(-0.5), name_float(1.5))
+    stdout.print(name_maybe(None), name_maybe(0))
+    stdout.print(name_str("fox"), name_str("cat"), name_bool(True), name_bool(False))
+    stdout.print(outcome(Ok(0)), outcome(Ok(5)), outcome(Err("no")))
+    stdout.print(width(.Rect(width=2.0, height=1.0)), width(.Point), width(.Circle(radius=1.0)))
+
+    # A tuple pattern only matches a tuple of the same length.
+    for point in [(0, 4), (2, 3, 1), ()]:
+        match point:
+            case (0, y): stdout.print(f"on the y axis at {y}")
+            case (x, y): stdout.print(f"at {x}, {y}")
+            case (): stdout.print("no numbers")
+            case _: stdout.print("three numbers")
+
+    # A plain name never matches an error, so a forgotten error can't pass as a value.
+    match Err("broken"):
+        case value: stdout.print(f"got {value}")
+        case _: stdout.print("an error")
+
+    # A dotted case never looks inside an error.
+    match Err(Shape.Point):
+        case .Point: stdout.print("a point")
+        case _: stdout.print("an error")

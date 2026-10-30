@@ -1,0 +1,5 @@
+error: "mud" isn't in the set
+ --> examples/errors/remove_missing_from_set.fen:3:5
+  |
+3 |     seen.remove("mud")
+  |     ^^^^^^^^^^^^^^^^^^

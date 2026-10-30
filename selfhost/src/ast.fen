@@ -18,9 +18,17 @@ enum Item:
 
 struct FnDef:
     name: str
+    ## Type parameters, like `T` in `def first[T](items: list[T]) -> T`.
+    generics: list[Generic]
     params: list[Param]
     ret: TypeExpr?
     body: list[Stmt]
+    span: Span
+
+## A type parameter, with the interface its types have to fit: `T` or `T: Shape`.
+struct Generic:
+    name: str
+    bound: TypeExpr?
     span: Span
 
 struct Param:
@@ -82,8 +90,9 @@ struct Stmt:
 
 enum StmtKind:
     Expr(expr: Expr)
-    ## `name = value`, `mut name = value`, `a, b = pair`, `target op= value`.
-    Assign(target: Expr, op: BinOp?, value: Expr, declare_mut: bool)
+    ## `name = value`, `mut name = value`, `a, b = pair`, `target op= value`, and
+    ## `name: type = value`, which declares a name with its type written.
+    Assign(target: Expr, op: BinOp?, value: Expr, declare_mut: bool, ty: TypeExpr?)
     If(branches: list[(Expr, list[Stmt])], otherwise: list[Stmt]?)
     While(cond: Expr, body: list[Stmt])
     For(names: list[str], is_mut: bool, iter: Expr, body: list[Stmt])

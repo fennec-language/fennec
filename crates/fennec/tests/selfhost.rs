@@ -84,6 +84,13 @@ const PARSE_CASES: &[(&str, &str)] = &[
     ("unclosed_call", "def f():\n    g(1, 2\n"),
     ("line_goes_on", "def f():\n    x = 1 2\n"),
     ("dedent_at_top", "def f():\n        x\n    y\n"),
+    (
+        "generics_and_typed_names",
+        "def first[T, U: Shape](items: list[T]) -> T:\n    empty: list[int] = []\n    mut n: int = 0\n    x = loads[dict[str, int]]\n    y = grid[1, 2,]\n",
+    ),
+    ("generic_struct", "struct Box[T]:\n    item: T\n"),
+    ("typed_attr", "def f():\n    a.b: int = 1\n"),
+    ("typed_needs_value", "def f():\n    x: int\n"),
     ("fstring_leading_space", "def f():\n    x = f\"{ a} {\u{a0}b} { c:>3}\"\n"),
     ("lambda_trailing_comma", "def f():\n    g = (a, b,) => a\n    h = (a,) => a\n    i = () => 1\n"),
     ("lambda_lone_comma", "def f():\n    i = (,) => 1\n"),

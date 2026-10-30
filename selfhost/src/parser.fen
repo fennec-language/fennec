@@ -5,7 +5,7 @@
 from span import Span, Diagnostic
 from token import FPart, Tok, Token, is_reserved
 from lexer import byte_length, lex
-from ast import Module, Item, FnDef, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
 
 ## Parses a whole `.fen` file, where only declarations may sit at the top level.
 def parse(source: str) -> Module:
@@ -181,7 +181,13 @@ struct Parser:
 
     def type_def(mut self, start: Span, is_enum: bool) -> TypeDef:
         name = self.name("a type name")?
-        self.generic_params()?
+        generics = self.generic_params()?
+        if len(generics) > 0:
+            fail Diagnostic(
+                message=f"`{name}` can't have type parameters yet",
+                span=generics[0].span,
+                help="write a separate type for each kind of value it holds, or an enum of them",
+            )
         span = start.to(self.prev_span())
         self.expect_punct(":")?
         self.expect_block_start()?
@@ -280,18 +286,22 @@ struct Parser:
         self.end_line()?
         Import(module=module, names=names, span=span)
 
-    ## `[T, U: Shape]` after a function or type name. Generic parameters are checked by the
-    ## type checker, so the parser only needs to skip them.
-    def generic_params(mut self):
+    ## `[T, U: Shape]` after a function or type name.
+    def generic_params(mut self) -> list[Generic]:
+        mut generics = []
         if not self.eat_punct("["):
-            return
+            return generics
         while True:
-            self.name("a type parameter")?
+            start = self.span()
+            name = self.name("a type parameter")?
+            mut bound = None
             if self.eat_punct(":"):
-                self.type_expr()?
+                bound = self.type_expr()?
+            generics.append(Generic(name=name, bound=bound, span=start.to(self.prev_span())))
             if not self.eat_punct(","):
                 break
         self.expect_punct("]")?
+        generics
 
     def function(mut self) -> FnDef:
         mut function = self.signature()?
@@ -318,7 +328,7 @@ struct Parser:
         self.advance()
         if name == "[]" and self.eat_punct("="):
             name = "[]="
-        self.generic_params()?
+        generics = self.generic_params()?
         self.expect_punct("(")?
         mut params = []
         while not self.at_punct(")"):
@@ -329,7 +339,7 @@ struct Parser:
         mut ret = None
         if self.eat_punct("->"):
             ret = self.type_expr()?
-        FnDef(name=name, params=params, ret=ret, body=[], span=start.to(self.prev_span()))
+        FnDef(name=name, generics=generics, params=params, ret=ret, body=[], span=start.to(self.prev_span()))
 
     def param(mut self) -> Param:
         start = self.span()
@@ -439,13 +449,20 @@ struct Parser:
         target = self.expr()?
         if not is_name_expr(target):
             fail Diagnostic(message="`mut` declares a new name, like `mut count = 0`", span=target.span)
+        mut ty = None
+        if self.eat_punct(":"):
+            ty = self.type_expr()?
         self.expect_punct("=")?
         value = self.expr()?
-        .Assign(target, None, value, True)
+        .Assign(target, None, value, True, ty)
 
     ## An expression on its own, or an assignment. `a, b = pair` unpacks a tuple.
     def expr_or_assign(mut self) -> StmtKind:
         mut target = self.expr()?
+        if is_name_expr(target) and self.eat_punct(":"):
+            ty = self.type_expr()?
+            self.expect_punct("=")?
+            return .Assign(target, None, self.expr()?, False, ty)
         if self.at_punct(","):
             mut items = [target]
             while self.eat_punct(","):
@@ -460,7 +477,7 @@ struct Parser:
         if not is_assignable(target, op is None):
             fail Diagnostic(message="this can't be assigned to", span=target.span)
         value = self.expr()?
-        .Assign(target, op, value, False)
+        .Assign(target, op, value, False, None)
 
     def if_stmt(mut self) -> Stmt:
         start = self.advance().span
@@ -668,11 +685,22 @@ struct Parser:
                 break
         expr
 
-    ## `object[index]` or a slice `object[start:end]`, after the `[`.
+    ## `object[index]` or a slice `object[start:end]`, after the `[`. `object[a, b]` indexes
+    ## with the tuple `(a, b)`, which is also how types with several parts are written, as in
+    ## `json.loads[dict[str, int]]`.
     def index(mut self, object: Expr) -> Expr:
         mut start = None
         if not self.at_punct(":"):
-            start = self.expr()?
+            first = self.expr()?
+            start = first
+            if self.at_punct(","):
+                mut items = [first]
+                while self.eat_punct(",") and not self.at_punct("]"):
+                    items.append(self.expr()?)
+                mut span = self.prev_span()
+                for item in items:
+                    span = span.to(item.span)
+                start = Expr(kind=ExprKind.Tuple(items), span=span)
         is_slice = self.eat_punct(":")
         mut end = None
         if is_slice and not self.at_punct("]"):

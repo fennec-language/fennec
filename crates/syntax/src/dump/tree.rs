@@ -81,6 +81,13 @@ impl Tree {
 
     fn function(&mut self, function: &FnDef) {
         self.node(&format!("def {}", function.name), Some(function.span), |tree| {
+            for generic in &function.generics {
+                tree.node(&format!("generic {}", generic.name), Some(generic.span), |tree| {
+                    if let Some(bound) = &generic.bound {
+                        tree.type_expr(bound);
+                    }
+                });
+            }
             for param in &function.params {
                 tree.param(param);
             }
@@ -160,7 +167,7 @@ impl Tree {
         let span = Some(stmt.span);
         match &stmt.kind {
             StmtKind::Expr(expr) => self.node("expr", span, |tree| tree.expr(expr)),
-            StmtKind::Assign { target, op, value, declare_mut } => {
+            StmtKind::Assign { target, op, value, declare_mut, ty } => {
                 let mut label = "assign".to_owned();
                 if let Some(op) = op {
                     label = format!("{label} {}=", op.symbol());
@@ -170,6 +177,9 @@ impl Tree {
                 }
                 self.node(&label, span, |tree| {
                     tree.expr(target);
+                    if let Some(ty) = ty {
+                        tree.type_expr(ty);
+                    }
                     tree.expr(value);
                 });
             }

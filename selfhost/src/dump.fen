@@ -6,7 +6,7 @@ from span import Span, Diagnostic
 from token import FPart, Tok
 from lexer import lex
 from parser import parse
-from ast import Module, Item, FnDef, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
 
 ## Every token in `source`, one per line, or the error that stopped the lexer.
 def dump_tokens(source: str) -> str:
@@ -128,6 +128,12 @@ struct Tree:
 
     def write_function(mut self, function: FnDef):
         self.open(f"def {function.name}", function.span)
+        for generic in function.generics:
+            self.open(f"generic {generic.name}", generic.span)
+            bound = generic.bound
+            if bound is not None:
+                self.write_type_expr(bound)
+            self.close()
         for param in function.params:
             self.write_param(param)
         ret = function.ret
@@ -150,7 +156,7 @@ struct Tree:
             self.write_type_expr(ty)
         self.close()
 
-    def write_type_expr(mut self, ty: TypeExpr) -> nothing:
+    def write_type_expr(mut self, ty: TypeExpr):
         self.open(f"type {ty.name}" + ("?" if ty.optional else ""), ty.span)
         for arg in ty.args:
             self.write_type_expr(arg)
@@ -176,7 +182,7 @@ struct Tree:
         self.close()
 
     ## A line saying what `expr` is for, with `expr` under it, when there is one.
-    def labelled(mut self, label: str, expr: Expr?) -> nothing:
+    def labelled(mut self, label: str, expr: Expr?):
         if expr is None:
             return
         self.open(label, None)
@@ -189,7 +195,7 @@ struct Tree:
             self.write_field(field)
         self.close()
 
-    def write_stmts(mut self, stmts: list[Stmt]) -> nothing:
+    def write_stmts(mut self, stmts: list[Stmt]):
         for stmt in stmts:
             self.write_stmt(stmt)
 
@@ -199,7 +205,7 @@ struct Tree:
             case .Expr(expr):
                 self.open("expr", span)
                 self.write_expr(expr)
-            case .Assign(target, op, value, declare_mut):
+            case .Assign(target, op, value, declare_mut, ty):
                 mut label = "assign"
                 if op is not None:
                     label += f" {op.symbol()}="
@@ -207,6 +213,8 @@ struct Tree:
                     label += " mut"
                 self.open(label, span)
                 self.write_expr(target)
+                if ty is not None:
+                    self.write_type_expr(ty)
                 self.write_expr(value)
             case .If(branches, otherwise):
                 self.open("if", span)
@@ -261,11 +269,11 @@ struct Tree:
                 return
         self.close()
 
-    def write_exprs(mut self, exprs: list[Expr]) -> nothing:
+    def write_exprs(mut self, exprs: list[Expr]):
         for expr in exprs:
             self.write_expr(expr)
 
-    def write_expr(mut self, expr: Expr) -> nothing:
+    def write_expr(mut self, expr: Expr):
         span = expr.span
         match expr.kind:
             case .Int(value): self.spanned(f"int {value}", span)
@@ -301,7 +309,7 @@ struct Tree:
             case _: self.write_compound(expr)
 
     ## A node holding a list of expressions.
-    def group(mut self, label: str, span: Span, items: list[Expr]) -> nothing:
+    def group(mut self, label: str, span: Span, items: list[Expr]):
         self.open(label, span)
         self.write_exprs(items)
         self.close()
@@ -360,7 +368,7 @@ struct Tree:
             case _: return
         self.close()
 
-    def write_arg(mut self, arg: Arg) -> nothing:
+    def write_arg(mut self, arg: Arg):
         mut label = "arg"
         if arg.is_mut:
             label += " mut"
@@ -375,7 +383,7 @@ struct Tree:
         self.write_stmts(arm.body)
         self.close()
 
-    def write_pattern(mut self, pattern: Pattern) -> nothing:
+    def write_pattern(mut self, pattern: Pattern):
         match pattern:
             case .Wildcard: self.line("pattern _")
             case .Bind(name): self.line(f"pattern bind {name}")

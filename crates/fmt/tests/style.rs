@@ -237,3 +237,11 @@ fn a_body_too_long_for_its_line_moves_below_it() {
         "def f(x: int):\n    match x:\n        case 1:\n            stdout.print(f\"the problem is on line {line}, column {column}, look there right now!\")\n        case _: pass\n",
     );
 }
+
+#[test]
+fn enum_case_defaults_keep_their_spaces() {
+    check(
+        "enum Move:\n    Wait(turns=1)\n    Step(dir: Dir, count: int=1)\n\ndef f():\n    Move.Wait(turns = 2)\n",
+        "enum Move:\n    Wait(turns = 1)\n    Step(dir: Dir, count: int = 1)\n\ndef f():\n    Move.Wait(turns=2)\n",
+    );
+}

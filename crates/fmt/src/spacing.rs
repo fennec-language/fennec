@@ -14,9 +14,9 @@ pub(crate) struct Tok<'a> {
 /// What a pair of brackets holds. It decides colons, `=` and trailing commas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Bracket {
-    /// Call arguments, or a pattern's or an enum case's fields: `f(a, b)`.
+    /// Call arguments, or a pattern's fields: `f(a, b)`.
     Call,
-    /// A function's parameters.
+    /// A function's parameters, or an enum case's fields: `Circle(radius: float = 1.0)`.
     Params,
     /// Grouping or a tuple: `(a + b)`, `(a, b)`.
     Paren,
@@ -78,6 +78,7 @@ pub(crate) fn analyze(toks: &[Tok<'_>], block: BlockKind) -> Spacing {
         spacing: Spacing { space: Vec::with_capacity(toks.len()), brackets: vec![None; toks.len()] },
         header: header(toks),
         in_def_name: false,
+        block,
     };
     for at in 0..toks.len() {
         analyzer.step(at, block);
@@ -116,6 +117,7 @@ struct Analyzer<'t, 'a> {
     header: Header,
     /// Between `def` and the `(` of its parameters, where `def []=(` is written without spaces.
     in_def_name: bool,
+    block: BlockKind,
 }
 
 impl<'a> Analyzer<'_, 'a> {
@@ -197,6 +199,7 @@ impl<'a> Analyzer<'_, 'a> {
         let top = self.stack.is_empty();
         match text {
             "(" if top && self.in_def_name => Bracket::Params,
+            "(" if top && at == 1 && self.block == BlockKind::TypeBody => Bracket::Params,
             "(" if after_operand => Bracket::Call,
             "(" if self.closes_before_arrow(at) => Bracket::LambdaParams,
             "(" => Bracket::Paren,
@@ -233,7 +236,7 @@ impl<'a> Analyzer<'_, 'a> {
 
     /// Whether `=` at `at` names a call argument, as in `Vec3(x=1.0)`.
     fn is_kwarg(&self, at: usize) -> bool {
-        let in_call = matches!(self.stack.last(), Some(Bracket::Call | Bracket::Params));
+        let in_call = self.stack.last() == Some(&Bracket::Call);
         let name_before = at.checked_sub(1).and_then(|before| self.tok(before));
         let opener = at.checked_sub(2).and_then(|before| self.tok(before));
         in_call

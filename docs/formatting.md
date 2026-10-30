@@ -40,7 +40,8 @@ file is left alone and the command reports a bug.
 - One space around binary operators, including `**`, and around `->`, `=>` and `=`.
   *To confirm `**`; Python's style hugs it for simple operands.*
 - No space after unary minus, before `(` or `[` in calls and indexes, or around `.`.
-- Keyword arguments hug their `=`: `Vec3(x=1.0)`.
+- Keyword arguments hug their `=`: `Vec3(x=1.0)`. Defaults in declarations don't:
+  `x = 0.0` in a struct, `Wait(turns = 1)` in an enum.
 - One space after `,` and after `:` in types, dicts and blocks; none before.
 - Slices have no spaces around their colon: `xs[1:3]`, `xs[i + 1:]`. *To confirm.*
 - Operator methods are written tight: `def +(self, other: Vec3)`, `def []=(mut self, ...)`.

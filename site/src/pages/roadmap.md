@@ -22,12 +22,12 @@ The first milestone is running the examples on this site.
 - Parser, type checker and formatter.
 - The intermediate representation, designed for native code from the start.
 - The interpreter.
-- `const` and `let`, `def` with inferred return types, `struct` with methods, `enum` and `match`.
-- `Result` with `?`, and optional types with `None`, `?.` and `??`.
-- Interfaces and generics.
-- Values with automatic moves, `mut`, and the ownership checker.
-- `list`, `dict`, `set`, `tuple`, comprehensions, generator expressions and the builtins.
-- `test` blocks.
+- Names and `mut`, `def` with inferred return types, structs with defaults, named constructors and `where`, `enum` and `match`.
+- Errors with `error`, `fail`, `?`, `else`, `match` and `from`, and optional types with `None` and `?.`.
+- Implicit interfaces and generics.
+- Values without references: automatic moves, sharing until changed, and the check that `mut` access is exclusive.
+- `list`, `dict`, `set`, `tuple`, comprehensions, generators and the builtins.
+- `with` and `test` blocks.
 
 ## v0.2: native speed
 
@@ -39,23 +39,24 @@ The first milestone is running the examples on this site.
 ## v0.3: games
 
 - `noalloc`, per-frame memory arenas, struct-of-arrays layout, SIMD and math types.
-- C interop with `extern`, `__del__` and `unsafe`.
+- C interop with `extern`, `ptr[...]`, `def del` and `unsafe`.
 - A platform layer for windows, input, audio and graphics.
 
 ## Later
 
-- `class` with reference counting and compile-time cycle checks.
-- `frozen[...]` for large shared immutable data.
-- Views into strings and lists that avoid copies.
+- Parallelism: `parallel(...)` loops, tasks scoped to a `with` block, locks and channels. There will be no `async`/`await`; waiting on I/O lets other tasks run automatically.
+- Views into strings and lists, so streaming text needs no copies.
 - Contracts with automatic testing, and property tests for every type.
 - Capabilities throughout the standard library.
 - Hot reload.
+- Shared objects with their own identity, if real programs turn out to need them.
 - A Fennec compiler written in Fennec.
 
 ## Open questions
 
 These are still being decided:
 
+- Whether ID types are written with an alias (`type EnemyId = Id[Enemy]`) or provided automatically (`Enemy.Id`).
 - Whether integer overflow checks stay on in release builds by default. The benchmark suite will decide.
 - How closures longer than one line should look, beyond nested functions.
 - The exact syntax for property tests.

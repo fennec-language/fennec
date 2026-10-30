@@ -12,11 +12,11 @@ description: How Fennec is designed so AI models write correct code on the first
 
 Fennec reads like typed Python: indentation, `def`, comprehensions, f-strings, `and`, `or` and `not`, `True`, `False` and `None`. Python is the language models have written more of than any other, so they write Fennec fluently from a short guide rather than a learning curve.
 
-What Fennec drops is the part of Python that causes bugs at scale: types that are only checked at runtime, exceptions, truthiness, shared mutable objects, inheritance, and `None` values you can forget to check.
+What Fennec drops is the part of Python that causes bugs at scale: types that are only checked at runtime, exceptions, truthiness, shared mutable objects, classes and inheritance, and `None` values you can forget to check.
 
 ## One way to do each thing
 
-Models do best when there's one obvious answer. Comprehensions build collections, and builtins like `sum` and `max` consume them. There's one string syntax, one way to declare a function, one formatter with no settings, and one tool that builds, tests and lints. There are no macros and no decorators to learn per project.
+Models do best when there's one obvious answer. Comprehensions build collections, and builtins like `sum` and `max` consume them. `mut` is the only word for mutability, and errors always go through `fail`, `?`, `else` and `match`. There's one string syntax, one way to declare a function, one formatter with no settings, and one tool that builds, tests and lints. There are no macros and no decorators to learn per project.
 
 ## Habits from other languages are caught, not guessed at
 
@@ -24,26 +24,29 @@ When a model reaches for something Fennec doesn't have, the compiler recognizes 
 
 | What a model writes | What Fennec says |
 | --- | --- |
-| `count = 0` | Declare it: `let count = 0` if it changes, `const count = 0` if it doesn't. |
+| `count = 0` then `count += 1` | `count` isn't mut. Declare it `mut count = 0`. |
 | `def area(shape):` | Parameters need types: `def area(shape: Shape):`. |
 | `if items:` | There's no truthiness. Write `if len(items) > 0:`. |
-| `try: ... except` | There are no exceptions. Return a `Result` and pass errors up with `?`. |
+| `raise NotFound(path)` | There are no exceptions. Write `fail NotFound(path)`, which returns the error. |
+| `try: ... except NotFound:` | Pass errors up with `?`, give a default with `else`, or handle them with `match`. |
 | `lambda x: x * 2` | Write `x => x * 2`. |
 | `print(value)` or `console.log(value)` | There's no global output. Write through the `Stdout` that `main` receives; to inspect a value, use a test or the debugger. |
-| `class Boss(Enemy):` | There's no inheritance. `Enemy` is a struct; use an enum case or an interface. |
+| `class Boss(Enemy):` | There are no classes or inheritance. Use a `struct`, and an `enum` for different kinds of enemy. |
+| `def __add__(self, other):` | Write `def +(self, other):`. |
 
 ## Guardrails for the mistakes models actually make
 
 | The mistake | What stops it |
 | --- | --- |
 | Forgetting a value might be missing | An `Enemy?` can't be used until it's checked for `None`. |
-| Ignoring an error | You can't use a `Result` without handling the failure. Discarding one needs `ignore(result, "why")`. |
+| Tangled shared state | There are no references. Every value is independent, so code can't change data another part of the program is holding. |
+| Ignoring an error | A call that can fail needs `?`, `else` or `match`. Discarding an error on purpose needs `ignore(result, "why")`. |
 | Assuming something can't fail | Asserting success needs `expect("reason")`, and an empty reason is rejected. |
 | Leaving a stub behind | `todo()` compiles in development builds and is an error in release builds. Unused values and dead code are errors. |
 | Forgetting the last step | A type can require that its value is consumed. A `Transaction` that's never committed or rolled back doesn't compile. |
 | Silencing the compiler | No lint can be switched off inline. Exceptions go in project config, each with a written reason. |
 | Quietly adding I/O | A function can only use the filesystem, network or clock if it's given one, and that shows in its parameters. |
-| Writing slow code | Allocations and copies are visible, and lints catch quadratic patterns like `in` on a list inside a loop. |
+| Writing slow code | Allocation is visible, the compiler warns about hidden copies in loops, and lints catch quadratic patterns like `in` on a list inside a loop. |
 
 ## Signatures that tell the truth
 
@@ -57,8 +60,8 @@ Every compiler error names the problem, explains why, and offers a fix that tool
 error: `enemy` might be None
   --> src/combat.fen:14:5
    |
-12 |     const enemy = world.enemies.get(target)
-   |                   ------------------------- this can return None
+12 |     enemy = world.enemies.get(target)
+   |             ------------------------- this can return None
    |
 14 |     enemy.take_damage(10)
    |     ^^^^^ used without checking

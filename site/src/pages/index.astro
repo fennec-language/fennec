@@ -9,36 +9,39 @@ const themes = { light: 'vitesse-light', dark: 'vitesse-dark' } as const;
 const hero = `from std.math import Vec3
 from std.game import Id
 
+type EnemyId = Id[Enemy]          # a safe handle to an enemy stored in an IdMap
+
 struct Enemy:
     position: Vec3
-    velocity: Vec3
-    health: int
+    velocity: Vec3 = Vec3.zero
+    health: int = 100
 
     def take_damage(mut self, amount: int):
         self.health -= amount
 
-enum CombatError:
-    TargetGone(target: Id[Enemy])
-    OutOfRange(distance: f32)
+error TargetGone:
+    target: EnemyId
+
+error OutOfRange:
+    distance: f32
 
 noalloc def step(mut world: World, dt: f32):
     for mut enemy in world.enemies:
         enemy.position += enemy.velocity * dt
 
-export def attack(mut world: World, target: Id[Enemy]):
-    const enemy = world.enemies.get(target)
+export def attack(mut world: World, target: EnemyId):
+    enemy = world.enemies.get(target)
     if enemy is None:
-        return Err(.TargetGone(target))
-    const distance = (enemy.position - world.player).length()
+        fail TargetGone(target)
+    distance = (enemy.position - world.player).length()
     if distance > 5.0:
-        return Err(.OutOfRange(distance))
-    world.enemies.modify(target, enemy => enemy.take_damage(10))
-    Ok(None)
+        fail OutOfRange(distance)
+    world.enemies.modify(target, e => e.take_damage(10))
 
 test "attacking a distant enemy fails":
-    let world = World.empty()
-    const far = world.enemies.insert(Enemy.at(Vec3(x=10.0, y=0.0, z=0.0)))
-    assert attack(mut world, far) == Err(.OutOfRange(10.0))`;
+    mut world = World()
+    far = world.enemies.insert(Enemy(position=Vec3(x=10.0, y=0.0, z=0.0)))
+    assert attack(mut world, far) == Err(OutOfRange(distance=10.0))`;
 
 const pillars = [
   {
@@ -51,11 +54,11 @@ const pillars = [
   },
   {
     title: 'Safe by default',
-    body: 'No null, no data races, no unchecked memory access. Unsafe code exists only at the boundary with C, in marked files, with a written reason.',
+    body: 'No unchecked None, no data races, no unchecked memory access. Unsafe code exists only at the boundary with C, in marked files, with a written reason.',
   },
   {
     title: 'Readable and fast by default',
-    body: 'Mutation is marked where it happens. Allocations and copies are visible in the code. The obvious way to write something is also the fast way.',
+    body: 'Everything is a value, so there are no references to manage. Mutation is marked where it happens, and the obvious way to write something is also the fast way.',
   },
   {
     title: 'Written well by AI',
@@ -72,11 +75,11 @@ const readable = [
     code: `apply_damage(mut player, 10)   # player changes
 describe(player)               # guaranteed not to`,
     title: 'You can see what changes',
-    body: 'Values are immutable unless you say otherwise. A function that changes its argument says mut in its signature, and so does every call to it.',
+    body: 'Names are immutable unless declared mut. A function that changes its argument says mut in its signature, and so does every call to it.',
   },
   {
-    code: `const total = sum(hit.damage for hit in hits)        # no allocation
-const names = [player.name for player in players]   # a new list: allocates`,
+    code: `total = sum(hit.damage for hit in hits)        # no allocation
+names = [player.name for player in players]   # a new list: allocates`,
     title: 'You can see what costs',
     body: 'Generator expressions compile down to plain loops. Brackets build a new collection, so allocation is visible from the syntax itself.',
   },

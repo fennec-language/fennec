@@ -3,16 +3,36 @@
   "displayName": "Fennec",
   "scopeName": "source.fennec",
   "patterns": [
-    { "include": "#comments" },
-    { "include": "#fstrings" },
-    { "include": "#strings" },
-    { "include": "#numbers" },
-    { "include": "#declarations" },
-    { "include": "#keywords" },
-    { "include": "#variants" },
-    { "include": "#types" },
-    { "include": "#calls" },
-    { "include": "#operators" }
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#fstrings"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#variants"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#calls"
+    },
+    {
+      "include": "#operators"
+    }
   ],
   "repository": {
     "comments": {
@@ -24,14 +44,29 @@
       "begin": "\\bf\"",
       "end": "\"",
       "patterns": [
-        { "name": "constant.character.escape.fennec", "match": "\\\\.|\\{\\{|\\}\\}" },
+        {
+          "name": "constant.character.escape.fennec",
+          "match": "\\\\.|\\{\\{|\\}\\}"
+        },
         {
           "name": "meta.interpolation.fennec",
           "begin": "\\{",
           "end": "\\}",
-          "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.fennec" } },
-          "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.fennec" } },
-          "patterns": [{ "include": "$self" }]
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.section.interpolation.begin.fennec"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.interpolation.end.fennec"
+            }
+          },
+          "patterns": [
+            {
+              "include": "$self"
+            }
+          ]
         }
       ]
     },
@@ -39,7 +74,12 @@
       "name": "string.quoted.double.fennec",
       "begin": "\"",
       "end": "\"",
-      "patterns": [{ "name": "constant.character.escape.fennec", "match": "\\\\." }]
+      "patterns": [
+        {
+          "name": "constant.character.escape.fennec",
+          "match": "\\\\."
+        }
+      ]
     },
     "numbers": {
       "name": "constant.numeric.fennec",
@@ -50,38 +90,85 @@
         {
           "match": "\\b(def)\\s+([a-zA-Z_]\\w*)",
           "captures": {
-            "1": { "name": "storage.type.function.fennec" },
-            "2": { "name": "entity.name.function.fennec" }
+            "1": {
+              "name": "storage.type.function.fennec"
+            },
+            "2": {
+              "name": "entity.name.function.fennec"
+            }
           }
         },
         {
-          "match": "\\b(struct|enum|class|interface|type)\\s+([A-Z]\\w*)",
+          "match": "\\b(def)\\s+(\\+|-|\\*|/|%|==|<|\\[\\]|del)(?=\\s*\\()",
           "captures": {
-            "1": { "name": "storage.type.fennec" },
-            "2": { "name": "entity.name.type.fennec" }
+            "1": {
+              "name": "storage.type.function.fennec"
+            },
+            "2": {
+              "name": "entity.name.function.fennec"
+            }
+          }
+        },
+        {
+          "match": "\\b(struct|enum|error|interface|type)\\s+([A-Z]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.fennec"
+            },
+            "2": {
+              "name": "entity.name.type.fennec"
+            }
           }
         }
       ]
     },
     "keywords": {
       "patterns": [
-        { "name": "keyword.control.fennec", "match": "\\b(if|elif|else|match|case|for|in|while|return|break|continue|pass)\\b" },
-        { "name": "keyword.control.import.fennec", "match": "\\b(import|from|export)\\b" },
-        { "name": "storage.type.fennec", "match": "\\b(def|const|let|struct|enum|class|interface|type|extern)\\b" },
-        { "name": "storage.modifier.fennec", "match": "\\b(mut|noalloc|unsafe|weak)\\b" },
-        { "name": "keyword.operator.logical.fennec", "match": "\\b(and|or|not|is)\\b" },
-        { "name": "keyword.other.fennec", "match": "\\b(test|assert)\\b" },
-        { "name": "constant.language.fennec", "match": "\\b(True|False|None)\\b" },
-        { "name": "variable.language.self.fennec", "match": "\\bself\\b" },
+        {
+          "name": "keyword.control.fennec",
+          "match": "\\b(if|elif|else|match|case|for|in|while|return|break|continue|pass|fail|yield|with|as)\\b"
+        },
+        {
+          "name": "keyword.control.import.fennec",
+          "match": "\\b(import|from|export)\\b"
+        },
+        {
+          "name": "storage.type.fennec",
+          "match": "\\b(def|struct|enum|error|interface|type|extern|where)\\b"
+        },
+        {
+          "name": "storage.modifier.fennec",
+          "match": "\\b(mut|noalloc|unsafe)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.fennec",
+          "match": "\\b(and|or|not|is)\\b"
+        },
+        {
+          "name": "keyword.other.fennec",
+          "match": "\\b(test|assert)\\b"
+        },
+        {
+          "name": "constant.language.fennec",
+          "match": "\\b(True|False|None)\\b"
+        },
+        {
+          "name": "variable.language.self.fennec",
+          "match": "\\bself\\b"
+        },
         {
           "name": "support.type.builtin.fennec",
-          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64|bool|int|float|str|list|dict|set|tuple|frozen)\\b"
+          "match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|usize|f32|f64|bool|int|float|str|list|dict|set|tuple|ptr)\\b"
         }
       ]
     },
     "variants": {
       "match": "(?<![\\w)\\]])\\.([A-Z]\\w*)",
-      "captures": { "1": { "name": "variable.other.enummember.fennec" } }
+      "captures": {
+        "1": {
+          "name": "variable.other.enummember.fennec"
+        }
+      }
     },
     "types": {
       "name": "entity.name.type.fennec",
@@ -89,12 +176,22 @@
     },
     "calls": {
       "match": "\\b([a-z_]\\w*)(?=\\s*\\()",
-      "captures": { "1": { "name": "entity.name.function.call.fennec" } }
+      "captures": {
+        "1": {
+          "name": "entity.name.function.call.fennec"
+        }
+      }
     },
     "operators": {
       "patterns": [
-        { "name": "keyword.operator.arrow.fennec", "match": "->|=>" },
-        { "name": "keyword.operator.fennec", "match": "\\?\\?|\\?\\.|\\?|==|!=|<=|>=|//|\\*\\*|\\+=|-=|\\*=|/=|[-+*/%<>=]" }
+        {
+          "name": "keyword.operator.arrow.fennec",
+          "match": "->|=>"
+        },
+        {
+          "name": "keyword.operator.fennec",
+          "match": "\\?\\.|\\?|==|!=|<=|>=|//|\\*\\*|\\+=|-=|\\*=|/=|[-+*/%<>=]"
+        }
       ]
     }
   }

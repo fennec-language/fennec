@@ -28,7 +28,22 @@ Release builds take as long as they need to produce the fastest code.
 - The language's guarantees passed to the optimizer: a `mut` parameter is known to be the only reference to its data, which unlocks optimizations most languages can't prove are safe.
 - Compact data layouts: field reordering, and optional values (`Enemy?`) that take no extra space.
 - Immutable updates done in place: `replace()` reuses the original's memory when the original isn't used again.
+- Generators compiled to state machines on the stack, so streaming through data allocates nothing.
 - No garbage collector, and a fast memory allocator by default.
+
+## Values without references
+
+Fennec code never handles references, but the compiler uses them behind the scenes wherever it's safe:
+
+| You write | What the compiler does |
+| --- | --- |
+| `describe(player)` | Passes a hidden read-only reference; no copy |
+| `apply_damage(mut player, 10)` | Passes a hidden exclusive reference |
+| `b = a`, and `a` isn't used again | Moves it, for free |
+| `b = a`, and both are used | Shares the memory until one of them changes, then copies once |
+| Small values like `Vec3` | Copies them in registers, for free |
+
+The cost of sharing is a reference count on large data, mostly optimized away, and a copy the first time shared data changes. That copy isn't written in the code, so three things keep it in check: the compiler warns when a change inside a loop might copy, `noalloc` code rejects it outright, and the profiler reports hidden copies by name.
 
 ## The engines
 
@@ -57,4 +72,4 @@ Release builds should land within a few percent of hand-tuned native code. That'
 
 ## What costs nothing
 
-These features exist only at compile time and have no runtime cost: `const` and `let`, `mut`, type inference, `?`, `?.` and `??`, optional types, enums and `match`, interfaces and generics, generator expressions, tuples, capabilities, and `noalloc`.
+These features exist only at compile time and have no runtime cost: `mut`, type inference, `?`, `?.` and `else`, optional types, error handling, enums and `match`, interfaces and generics, generators, tuples, `with`, capabilities, and `noalloc`.

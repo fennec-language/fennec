@@ -6,7 +6,7 @@ description: A walk through Fennec's proposed syntax and semantics, from values 
 
 # A tour of Fennec
 
-<p class="lede">If you can read Python, you can read Fennec. What's different is underneath: values instead of shared objects, types checked before anything runs, errors you can't ignore, and costs you can see.</p>
+<p class="lede">If you can read Python, you can read Fennec. What's different is underneath: everything is a value, types are checked before anything runs, errors can't be ignored, and there are no references to manage.</p>
 
 > **Fennec is in early design.** Everything on this page is proposed syntax, and it will change as real programs push on it.
 
@@ -19,17 +19,18 @@ def main(stdout: Stdout):
 
 `main` receives what the program is allowed to touch, here standard output. There's no global `print`: code can only write output if it's given somewhere to write it. More on that in [capabilities](#capabilities).
 
-## Bindings
+## Names
 
-There are two ways to name a value. `const` can never change; `let` can.
+A name is immutable unless you declare it `mut`.
 
 ```fennec
-const name = "Ash"
-let health = 100
+name = "Ash"
+mut health = 100
 health -= 10
+name = "Vex"      # error: `name` isn't mut. Declare it `mut name = "Ash"`
 ```
 
-Prefer `const`. The compiler flags any `let` that never changes. `const` is deep: nothing inside a `const` value can change either, not even through a function you pass it to.
+`mut` is the one word for mutability everywhere: names, parameters, methods and loops. Immutability is deep: nothing inside an immutable value can change either, not even through a function you pass it to.
 
 ## Functions
 
@@ -53,7 +54,7 @@ def factorial(n: int) -> int:             # recursive functions state their retu
 ```fennec
 def visible_enemies(world: World):
     def in_view(enemy: Enemy):
-        const distance = (enemy.position - world.camera).length()
+        distance = (enemy.position - world.camera).length()
         distance < world.view_range
 
     [enemy for enemy in world.enemies if in_view(enemy)]
@@ -72,24 +73,56 @@ def visible_enemies(world: World):
 
 Built-in types are lowercase. Everything you define or import is capitalized.
 
-## Values
+## Structs
 
-A `struct` is a value. Assigning or passing it gives the receiver its own independent copy, so nothing can change your data behind your back.
+A struct is a set of named fields, like a Python dataclass. You get a constructor automatically, and fields can have defaults.
 
 ```fennec
-struct Vec3:
-    x: f32
-    y: f32
-    z: f32
+struct Config:
+    volume: float = 0.8
+    fullscreen: bool = False
+    levels: list[str] = ["intro"]
 
-let a = Vec3(x=1.0, y=2.0, z=3.0)
-let b = a
+config = Config(volume=0.5)
+defaults = Config()            # every field has a default
+```
+
+A method without `self` is a named constructor, for anything the automatic one can't do:
+
+```fennec
+struct Enemy:
+    position: Vec3
+    health: int = 100
+
+    def at(position: Vec3):
+        Enemy(position=position)
+
+boss = Enemy.at(spawn_point)
+```
+
+Rules about a field's value go right next to it with `where`. Creating a value that breaks one fails, like any other failure:
+
+```fennec
+struct Player:
+    name: str where len(name) > 0
+    level: int where level >= 1
+
+player = Player(name=entered_name, level=1)?
+```
+
+Equality, hashing and printing work automatically for any type whose fields support them. There's nothing to derive.
+
+## Values, not references
+
+Everything in Fennec is a value. Assigning or passing something gives the receiver its own independent version, so nothing can change your data behind your back. There are no references, pointers or lifetimes to manage.
+
+```fennec
+a = Vec3(x=1.0, y=2.0, z=3.0)
+mut b = a
 b.x = 10.0   # a.x is still 1.0
 ```
 
-Copies are cheap or free: the compiler moves a value instead of copying it when the original isn't used again. Copying anything that owns heap memory, like a list or a string, is written out as `.copy()`, so expensive copies never happen by accident.
-
-Equality, hashing and printing work automatically for any type whose fields support them. There's nothing to derive.
+This doesn't mean everything gets copied. The compiler passes values by reference when it's safe, moves them when the original isn't used again, and shares large data, like a big list, until one side changes it. You write simple value code; the compiler makes it fast.
 
 ## Mutation is visible
 
@@ -99,21 +132,15 @@ Parameters are read-only. A function that changes its argument says `mut` in its
 def apply_damage(mut player: Player, amount: int):
     player.health -= amount
 
-let player = Player.spawn()
+mut player = Player.spawn()
 apply_damage(mut player, 10)   # you can see player changes here
 describe(player)               # and that it doesn't change here
 ```
 
-Reading any call, you know whether it can modify your data without opening the function. Loops say it too: `for mut enemy in enemies:` changes each enemy in place.
-
-## Methods
-
-Methods live inside the struct, as in Python. `self` is read-only unless the method says `mut self`.
+Reading any call, you know whether it can modify your data without opening the function. Methods and loops say it the same way:
 
 ```fennec
 struct Enemy:
-    const id: Id[Enemy]          # const fields never change after creation
-    position: Vec3
     health: int
 
     def is_alive(self):
@@ -121,6 +148,9 @@ struct Enemy:
 
     def take_damage(mut self, amount: int):
         self.health -= amount
+
+for mut enemy in enemies:
+    enemy.take_damage(1)
 ```
 
 ## Enums and match
@@ -140,24 +170,7 @@ def area(shape: Shape):
 
 The leading dot marks an enum case. You only write the enum's name if two enums in scope share a case name.
 
-## Errors
-
-There are no exceptions. A function that can fail returns `Result`, you can't use the value without dealing with the error, and `?` passes an error up to your caller.
-
-```fennec
-enum ConfigError:
-    NotFound(path: Path)
-    Parse(line: int, message: str)
-    Io(IoError)
-
-def load_config(fs: Fs, path: Path) -> Result[Config, ConfigError]:
-    const text = fs.read_text(path)?      # an IoError becomes ConfigError.Io
-    parse_config(text)
-```
-
-Any enum used as an error gets display and source chaining automatically, and `?` converts errors into any case that wraps them. To assert that something can't fail, you write `expect("why it can't fail")`.
-
-## Optional values
+## Missing values
 
 A value that might be missing has a `?` on its type: `Enemy?` holds either an `Enemy` or `None`. The compiler won't let you use it until you've checked.
 
@@ -165,25 +178,60 @@ A value that might be missing has a `?` on its type: `Enemy?` holds either an `E
 def find_target(world: World) -> Enemy?:
     ...
 
-const target = find_target(world)
+target = find_target(world)
 if target is None:
     return
 target.take_damage(10)                  # the compiler knows target is an Enemy here
 
-const damage = player.weapon?.damage ?? 1
+damage = player.weapon?.damage else 1   # use 1 if there's no weapon
 ```
 
-There's no wrapper to unpack. An `Enemy?` takes no more space than a plain pointer would.
+## Errors
+
+There are no exceptions. An error is a value a function returns when it fails, and you can't use the result without dealing with it.
+
+```fennec
+error NotFound:
+    path: Path
+
+error ConfigUnreadable:
+    path: Path
+
+def load_config(fs: Fs, path: Path):
+    if not fs.exists(path):
+        fail NotFound(path)
+    text = fs.read_text(path)? from ConfigUnreadable(path)
+    parse(text)
+```
+
+- `error` declares an error type. `fail` returns one; anything else the function returns is success.
+- `?` passes an error up to your caller. `from` adds context, keeping the original error as the cause.
+- A function's possible errors are inferred, and your editor shows them.
+
+There are three ways to deal with a call that can fail:
+
+```fennec
+config = load_config(fs, path)?                    # pass any error up
+
+config = load_config(fs, path) else Config()       # use a default if it failed
+
+match load_config(fs, path):                       # handle specific errors
+    case Ok(config): run(config)
+    case NotFound(path): create_default(fs, path)
+    case Err(error): warn(f"couldn't load config: {error}")
+```
+
+`?` works inside comprehensions too: `[parse_score(line)? for line in lines]` gives every score, or the first error. Failing is a plain return, with no stack unwinding, so it costs nothing extra.
 
 ## Collections
 
 Comprehensions build collections, and the brackets tell you something new is being allocated. Without brackets, a generator expression is lazy and allocates nothing.
 
 ```fennec
-const alive = [enemy for enemy in enemies if enemy.is_alive()]   # a new list
-const by_id = {enemy.id: enemy for enemy in alive}               # a new dict
-const total = sum(hit.damage for hit in hits)                    # no allocation
-const strongest = max(alive, key=enemy => enemy.health)
+alive = [enemy for enemy in enemies if enemy.is_alive()]   # a new list
+by_name = {enemy.name: enemy for enemy in alive}           # a new dict
+total = sum(hit.damage for hit in hits)                    # no allocation
+strongest = max(alive, key=enemy => enemy.health)
 ```
 
 - Python's builtins come along: `len`, `sum`, `min`, `max`, `any`, `all`, `enumerate`, `zip`, `range`.
@@ -191,30 +239,61 @@ const strongest = max(alive, key=enemy => enemy.health)
 - `IdMap` stores things that come and go, like enemies or bullets. Inserting returns an `Id`, and a stale `Id` safely finds nothing, even after its slot is reused.
 
 ```fennec
-const id = world.enemies.insert(Enemy.spawn())
+type EnemyId = Id[Enemy]
+
+id = world.enemies.insert(Enemy.spawn())
 world.enemies.remove(id)
 world.enemies.get(id)   # None
 ```
 
-## Immutable state
+## Generators
 
-`const` makes any value immutable, so there's no need for separate frozen types. A few more tools for working with immutable data:
+A function with `yield` produces values one at a time.
 
 ```fennec
-const point = (3, 4)                            # tuples are always immutable
-const (quotient, remainder) = divmod(17, 5)     # and unpack naturally
+def visible(enemies: list[Enemy], camera: Camera):
+    for enemy in enemies:
+        if camera.sees(enemy.position):
+            yield enemy
 
-const hurt = replace(enemy, health=enemy.health - 10)
-
-const items: frozen[dict[str, Item]] = freeze(load_items(fs)?)
+for enemy in visible(enemies, camera):
+    draw(enemy)
 ```
 
-- `replace()` makes a copy with some fields changed. When the original isn't used again, the compiler updates it in place, so immutable code runs at mutation speed.
-- `frozen[...]` is for large data that many places hold at once. It can never change, copying it is nearly free, and it's safe to share across threads.
+Generators compile to small state machines that live on the stack, so streaming through data allocates nothing and works inside `noalloc` code. A recursive generator is the one exception, since its memory grows with depth.
+
+## Immutable data
+
+```fennec
+point = (3, 4)                              # tuples are always immutable
+quotient, remainder = divmod(17, 5)         # and unpack naturally
+
+hurt = replace(enemy, health=enemy.health - 10)
+```
+
+`replace()` makes a copy with some fields changed. When the original isn't used again, the compiler updates it in place, so immutable code runs at mutation speed.
+
+## Context managers
+
+`with` ties a value to a block. When the block ends, normally or through `?`, the value is cleaned up.
+
+```fennec
+with fs.open(path) as file:
+    header = file.read_line()?
+# the file is closed here
+
+with db.transaction() as mut tx:
+    tx.insert(player)?
+    tx.insert(inventory)?
+    tx.commit()
+# if anything failed before commit, the transaction rolls back
+```
+
+There's nothing special to implement: any type that defines cleanup with `def del` works with `with`.
 
 ## Operators
 
-Your own types support operators through Python's special methods.
+Your own types define operators by name.
 
 ```fennec
 struct Vec3:
@@ -222,13 +301,13 @@ struct Vec3:
     y: f32
     z: f32
 
-    def __add__(self, other: Vec3):
+    def +(self, other: Vec3):
         Vec3(x=self.x + other.x, y=self.y + other.y, z=self.z + other.z)
 
 position += velocity * dt
 ```
 
-Operators can't perform I/O, and the test runner checks that equality, ordering and hashing follow their rules.
+`def []` defines indexing the same way. Operators can't perform I/O, and the test runner checks that equality, ordering and hashing follow their rules.
 
 ## Interfaces and generics
 
@@ -248,7 +327,7 @@ def total_area[T: Shape](shapes: list[T]):
     sum(shape.area() for shape in shapes)
 ```
 
-Writing `struct Circle(Shape):` turns that into a promise the compiler checks. Generics are resolved at compile time, so calls go straight to the right function. For a collection of different kinds of things, use an `enum`.
+Generics are resolved at compile time, so calls go straight to the right function. For a collection of different kinds of things, use an `enum`.
 
 ## Capabilities
 
@@ -294,18 +373,8 @@ noalloc def update(mut particles: SoaList[Particle], dt: f32):
         particle.life -= dt
 ```
 
-- `noalloc` is checked through every call. If anything inside allocates, it's a compile error that names the call.
+- `noalloc` is checked through every call. If anything inside allocates or might copy shared data, it's a compile error that names the line.
 - `SoaList` stores each field in its own array, which is faster for code that loops over one field at a time. You still write `particle.position`.
-
-## Shared objects
-
-Most data should be plain values. When something really needs a shared identity, such as an asset cache or a network connection, use a `class`. Classes are reference counted, there's no garbage collector, and the compiler rejects reference cycles that would leak.
-
-```fennec
-class AssetCache:
-    let textures: dict[str, Texture]
-    weak owner: Game
-```
 
 ## C and unsafe code
 
@@ -313,18 +382,18 @@ Fennec is safe by default. Calling C is the one place unsafe code is allowed, an
 
 ```fennec
 extern "C":
-    def sqlite3_open(path: *u8, db: **Sqlite3) -> i32
-    def sqlite3_close(db: *Sqlite3) -> i32
+    def sqlite3_open(path: ptr[u8], db: ptr[ptr[Sqlite3]]) -> i32
+    def sqlite3_close(db: ptr[Sqlite3]) -> i32
 
 export struct Database:
-    handle: *Sqlite3
+    handle: ptr[Sqlite3]
 
-    def __del__(self):
+    def del(self):
         unsafe("handle came from sqlite3_open and is closed exactly once"):
             sqlite3_close(self.handle)
 ```
 
-- `unsafe` blocks are only allowed in modules that declare `extern` functions, and each one states its reason.
-- Exported functions can't expose raw pointers, so callers only ever see a safe API.
-- A type with `__del__` is cleaned up exactly once, when its owner is done with it, and can't be copied or leaked.
+- Pointers (`ptr[...]`) and `unsafe` blocks are only allowed in modules that declare `extern` functions, and each `unsafe` block states its reason.
+- Exported functions can't expose pointers, so callers only ever see a safe API.
+- A type with `def del` is cleaned up exactly once, when it's no longer used, and can't be duplicated.
 - A package that uses `unsafe` is marked, and you have to allow it by name before your project can depend on it.

@@ -1,0 +1,7 @@
+error: `self` isn't mut
+ --> examples/errors/mut_self.fen:5:9
+  |
+5 |         self.health += 10
+  |         ^^^^^^^^^^^
+  |
+  = help: to change `self`, write `mut self` in `heal`'s parameters

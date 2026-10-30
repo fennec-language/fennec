@@ -6,6 +6,7 @@ mod access;
 mod builtins;
 mod call;
 mod collections;
+pub mod embed;
 mod eval;
 mod exec;
 mod format;
@@ -21,5 +22,6 @@ mod testing;
 mod types;
 mod value;
 
+pub use format::float as format_float;
 pub use interp::{Interp, run};
 pub use testing::TestOutcome;

@@ -1,0 +1,5 @@
+struct Enemy:
+    health = 100
+
+    def heal(self):
+        self.health += 10

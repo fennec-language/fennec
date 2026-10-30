@@ -41,7 +41,7 @@ pub struct Interp<'out> {
     pub(crate) frame: Frame,
     pub(crate) depth: usize,
     pub(crate) max_depth: usize,
-    pub(crate) out: &'out mut dyn Write,
+    pub(crate) out: Box<dyn Write + 'out>,
     /// The value a `?` or `fail` is carrying up to the enclosing function.
     pub(crate) passing_up: Option<Flow>,
     /// Values collected by `yield`, one list per running generator.
@@ -59,6 +59,11 @@ pub fn run(module: &Module, out: &mut dyn Write) -> Result<(), Diagnostic> {
 
 impl<'out> Interp<'out> {
     pub fn new(out: &'out mut dyn Write) -> Result<Self, Diagnostic> {
+        Self::with_output(Box::new(out))
+    }
+
+    /// Like `new`, owning where the output goes.
+    pub fn with_output(out: Box<dyn Write + 'out>) -> Result<Self, Diagnostic> {
         let mut interp = Interp {
             functions: HashMap::new(),
             types: HashMap::new(),

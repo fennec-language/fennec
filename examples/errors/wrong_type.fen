@@ -1,0 +1,5 @@
+def move(position: float, speed: float):
+    position + speed
+
+def main(stdout: Stdout):
+    stdout.print(move(1.5, 2))

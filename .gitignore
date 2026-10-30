@@ -7,3 +7,4 @@ site/public/fennec.wasm
 target/
 mutants.out/
 mutants.out.old/
+.wrangler/

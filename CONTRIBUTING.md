@@ -32,4 +32,4 @@ New dependencies need a reason, and new versions must be at least 7 days old.
 
 ## Language design
 
-Design discussion happens in issues. The [website](https://seashell86.github.io/fennec/) describes the current design, and the [roadmap](https://seashell86.github.io/fennec/roadmap/) lists the open questions.
+Design discussion happens in issues. The [website](https://fennec-lang.dev/) describes the current design, and the [roadmap](https://fennec-lang.dev/roadmap/) lists the open questions.

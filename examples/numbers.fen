@@ -1,0 +1,62 @@
+# Ints, floats and bools: the core that compiles straight to machine code.
+
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+def collatz_steps(start: int):
+    mut n = start
+    mut steps = 0
+    while n != 1:
+        n = n // 2 if n % 2 == 0 else 3 * n + 1
+        steps += 1
+    steps
+
+def is_prime(n: int):
+    if n < 2:
+        return False
+    mut d = 2
+    while d * d <= n:
+        if n % d == 0:
+            return False
+        d += 1
+    True
+
+def lerp(a: float, b: float, t: float):
+    a + (b - a) * t
+
+def main(stdout: Stdout):
+    stdout.print(fib(20), collatz_steps(27))
+    mut primes = 0
+    for n in range(100):
+        if is_prime(n):
+            primes += 1
+    stdout.print(f"{primes} primes below 100")
+
+    # Division rounds toward negative infinity, and % follows it.
+    stdout.print(7 // 2, -7 // 2, 7 % 3, -7 % 3, 7 % -3)
+    stdout.print(7 / 2, -7.5 // 2.0, 7.5 % 2.0, 2.0 * 3.0)
+    stdout.print(abs(-4), abs(-2.5), min(3, 9), max(3.5, 1.0), float(3), int(2.9))
+    stdout.print(lerp(0.0, 10.0, 0.25), 0.1 + 0.2, 1.0 / 3.0)
+
+    mut evens = 0
+    for i in range(10, 0, -2):
+        evens += i
+    stdout.print(evens, not True, 3 < 4 and 4 < 3, 3 < 4 or 4 < 3)
+
+    mut total = 0
+    mut i = 0
+    while True:
+        i += 1
+        if i > 20:
+            break
+        if i % 3 != 0:
+            continue
+        total += i
+    stdout.print(f"multiples of 3 up to 20 add up to {total}")
+
+    # Right up to the limits of a 64-bit int, without going over.
+    biggest = 9223372036854775806 + 1
+    smallest = -biggest - 1
+    stdout.print(biggest, smallest, biggest - 1, smallest + 1, smallest - -5)

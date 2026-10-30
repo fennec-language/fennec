@@ -7,22 +7,22 @@
 <p align="center"><strong>Fast to write. Fast to build. Fast to run.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/seashell86/fennec/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/seashell86/fennec/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/seashell86/fennec/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/seashell86/fennec/actions/workflows/codeql.yml/badge.svg"></a>
-  <a href="https://scorecard.dev/viewer/?uri=github.com/seashell86/fennec"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/seashell86/fennec/badge"></a>
+  <a href="https://github.com/fennec-language/fennec/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/fennec-language/fennec/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/fennec-language/fennec/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/fennec-language/fennec/actions/workflows/codeql.yml/badge.svg"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/fennec-language/fennec"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/fennec-language/fennec/badge"></a>
 </p>
 
 Fennec is a safe, compiled language for games and tools, designed so that the easy way to write something is also the readable way and the fast way, for people and for the AI they work with.
 
-> **Status: early design.** The interpreter runs most of the language described on the website. The type checker, native compilers and concurrency come next, and the syntax will still change.
+> **Status: early design.** The interpreter runs most of the language described on the website, and a first type checker catches most mistakes before a program runs. Native compilers and concurrency come next, and the syntax will still change.
 
-**Read more at [seashell86.github.io/fennec](https://seashell86.github.io/fennec/):**
+**Read more at [fennec-lang.dev](https://fennec-lang.dev/):**
 
-- [Why Fennec](https://seashell86.github.io/fennec/why/): what it's for and the principles behind it
-- [A tour](https://seashell86.github.io/fennec/tour/): the proposed syntax and semantics
-- [Built for AI to write](https://seashell86.github.io/fennec/ai/)
-- [Two speeds](https://seashell86.github.io/fennec/speed/): instant development builds, full-speed release builds
-- [Roadmap](https://seashell86.github.io/fennec/roadmap/)
+- [Why Fennec](https://fennec-lang.dev/why/): what it's for and the principles behind it
+- [A tour](https://fennec-lang.dev/tour/): the proposed syntax and semantics
+- [Built for AI to write](https://fennec-lang.dev/ai/)
+- [Two speeds](https://fennec-lang.dev/speed/): instant development builds, full-speed release builds
+- [Roadmap](https://fennec-lang.dev/roadmap/)
 
 ## A taste
 
@@ -43,7 +43,7 @@ total_health = sum(enemy.health for enemy in alive)
 
 ## Try it
 
-The interpreter runs most of the language on the website: structs, enums, `match`, errors with `fail` and `?`, optional values, comprehensions, generators, `with`, operators, tests and property tests. Fennec's checks happen at runtime until the type checker lands.
+The interpreter runs most of the language on the website: structs, enums, `match`, errors with `fail` and `?`, optional values, comprehensions, generators, `with`, operators, tests and property tests. `fennec run` and `fennec test` type-check a program first and report every mistake they find; the interpreter still checks what the type checker can't yet.
 
 ```bash
 cargo run -q -p fennec -- run examples/game.fen
@@ -62,6 +62,7 @@ Every program in [`examples/`](examples) is a test: it must print exactly its `.
 ## Repository layout
 
 - `crates/syntax`: the lexer (with Python-style indentation), parser and syntax tree.
+- `crates/check`: the type checker, which also infers every function's signature.
 - `crates/interp`: the interpreter.
 - `crates/fennec`: the `fennec` command.
 - `crates/wasm`: the interpreter as WebAssembly, for the website's [playground](https://seashell86.github.io/fennec/playground/).

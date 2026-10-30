@@ -1,0 +1,7 @@
+error: `fail` needs an error, but this is a str
+ --> examples/errors/fail_not_error.fen:3:14
+  |
+3 |         fail "empty"
+  |              ^^^^^^^
+  |
+  = help: declare error types with `error`, like `error NotFound:`

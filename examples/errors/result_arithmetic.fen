@@ -1,0 +1,10 @@
+error TooBig:
+    value: int
+
+def double(n: int):
+    if n > 100:
+        fail TooBig(n)
+    n * 2
+
+def main(stdout: Stdout):
+    stdout.print(double(5) + 1)

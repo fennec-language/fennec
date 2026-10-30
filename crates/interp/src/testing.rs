@@ -86,8 +86,11 @@ impl Interp<'_> {
         mut failure: Diagnostic,
     ) -> (Inputs, Diagnostic) {
         let mut attempts = 0;
-        // Once the step budget is spent every input fails, so shrinking would only mislead.
-        'improving: while attempts < SHRINK_ATTEMPTS && self.steps_left != Some(0) {
+        'improving: while attempts < SHRINK_ATTEMPTS {
+            // Once the step budget is spent every input fails, so shrinking would only mislead.
+            if self.steps_left == Some(0) {
+                break;
+            }
             for at in 0..inputs.len() {
                 let Some((_, value)) = inputs.get(at) else { continue };
                 for candidate in simpler(value) {

@@ -17,7 +17,7 @@ use std::fmt::Write as _;
 use std::io::Write;
 
 use fennec_interp::Interp;
-use fennec_syntax::Diagnostic;
+use fennec_syntax::{Diagnostic, Module};
 
 /// How many steps a run, or each test, may take: a few seconds' work in a browser.
 pub const STEP_LIMIT: u64 = 50_000_000;
@@ -137,6 +137,20 @@ impl Capped {
     }
 }
 
+/// Parses and type-checks a program, as the CLI does before running anything.
+fn checked(source: &str) -> Result<Module, Report> {
+    let module =
+        fennec_syntax::parse(source).map_err(|diagnostic| Report::default().failed(source, &diagnostic))?;
+    fennec_check::check(&module).map_err(|diagnostics| {
+        let rendered: Vec<String> =
+            diagnostics.iter().map(|diagnostic| diagnostic.render(PATH, source)).collect();
+        let mut report = Report::default();
+        report.err(rendered.join("\n"));
+        report
+    })?;
+    Ok(module)
+}
+
 fn interp(out: &mut dyn Write, steps: u64) -> Result<Interp<'_>, Diagnostic> {
     let mut interp = Interp::new(out)?;
     interp.limit_steps(steps);
@@ -156,11 +170,11 @@ pub fn test(source: &str) -> Report {
 }
 
 fn run_within(source: &str, steps: u64) -> Report {
-    let report = Report::default();
-    let module = match fennec_syntax::parse(source) {
+    let module = match checked(source) {
         Ok(module) => module,
-        Err(diagnostic) => return report.failed(source, &diagnostic),
+        Err(report) => return report,
     };
+    let report = Report::default();
     let mut out = Capped::default();
     let result = interp(&mut out, steps).and_then(|mut interp| interp.run_program(&module));
     let mut report = Report { ok: true, ..report };
@@ -172,11 +186,11 @@ fn run_within(source: &str, steps: u64) -> Report {
 }
 
 fn test_within(source: &str, steps: u64) -> Report {
-    let report = Report::default();
-    let module = match fennec_syntax::parse(source) {
+    let module = match checked(source) {
         Ok(module) => module,
-        Err(diagnostic) => return report.failed(source, &diagnostic),
+        Err(report) => return report,
     };
+    let report = Report::default();
     let mut out = std::io::sink();
     let mut interp = match interp(&mut out, steps) {
         Ok(interp) => interp,
@@ -307,11 +321,7 @@ mod tests {
         // Unoptimized native code needs far more stack per call than the release module does.
         let runner = std::thread::Builder::new().stack_size(256 * 1024 * 1024);
         let report = runner.spawn(move || run_within(source, STEPS)).unwrap().join().unwrap();
-        assert!(
-            report.parts[0].1.starts_with("error: calls nested more than 150 deep"),
-            "{:?}",
-            report.parts
-        );
+        assert!(report.parts[0].1.starts_with("error: calls nested too deeply"), "{:?}", report.parts);
     }
 
     #[test]
@@ -327,8 +337,43 @@ mod tests {
         let source =
             format!("def main(stdout: Stdout):\n    while True:\n        stdout.print(\"{line}\")\n");
         let report = run_within(&source, STEPS);
-        assert_eq!(report.parts[0].1.len(), OUTPUT_LIMIT);
-        assert!(report.parts[1].1.starts_with("note: output stopped"), "{:?}", report.parts[1]);
+        assert_eq!(report.parts[0].1.len(), 1024 * 1024);
+        assert!(
+            report.parts[1].1.starts_with("note: output stopped after 1024 KiB\nerror: "),
+            "{:?}",
+            report.parts[1]
+        );
+    }
+
+    #[test]
+    fn output_that_exactly_fits_isnt_cut() {
+        let mut out = Capped::default();
+        out.write_all(&vec![b'x'; OUTPUT_LIMIT]).unwrap();
+        assert!(!out.cut);
+        out.write_all(b"y").unwrap();
+        assert!(out.cut);
+        assert_eq!(out.bytes.len(), OUTPUT_LIMIT);
+    }
+
+    #[test]
+    fn type_checks_before_running() {
+        let report = run("def main(stdout: Stdout):\n    stdout.print(\"ran\")\n    x: int = \"text\"\n");
+        assert!(!report.ok);
+        assert_eq!(report.parts.len(), 1, "{:?}", report.parts);
+        assert!(report.parts[0].1.contains("--> playground.fen:3:"), "{:?}", report.parts);
+    }
+
+    #[test]
+    fn reports_passing_tests() {
+        let source = "test \"adds\":\n    assert 1 + 1 == 2\n\ntest \"any\" for n: int:\n    assert n == n\n";
+        let report = test(source);
+        let expected = "  ✓ adds\n  ✓ any (100 inputs)\n2 passed, 0 failed\n";
+        assert_eq!(report, Report { ok: true, parts: vec![(Stream::Out, expected.into())] });
+        let empty = test(HELLO);
+        assert_eq!(
+            empty,
+            Report { ok: true, parts: vec![(Stream::Out, "no tests in playground.fen\n".into())] }
+        );
     }
 
     #[test]
@@ -350,6 +395,11 @@ mod tests {
         let json = OUTPUT.with_borrow(|output| String::from_utf8(output.clone()).unwrap());
         assert_eq!(json.len(), len);
         assert!(json.contains("Hello, Fennec"));
+        assert_eq!(fennec_output(), OUTPUT.with_borrow(|output| output.as_ptr().addr()));
+        let len = fennec_test();
+        let json = OUTPUT.with_borrow(|output| String::from_utf8(output.clone()).unwrap());
+        assert_eq!(json.len(), len);
+        assert!(json.contains("no tests"), "{json}");
     }
 
     #[test]

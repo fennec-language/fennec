@@ -63,7 +63,7 @@ fn instance_repr(instance: &Instance) -> String {
 
 /// Floats print like Python's: always with a decimal point, as short as round-trips.
 #[expect(clippy::float_cmp, reason = "checking for a whole number is an exact comparison")]
-pub(crate) fn float(x: f64) -> String {
+pub fn float(x: f64) -> String {
     if x.is_nan() {
         "nan".to_owned()
     } else if x.is_infinite() {

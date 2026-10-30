@@ -1,0 +1,7 @@
+struct Enemy:
+    name: str
+    health = 100
+
+def main(stdout: Stdout):
+    boss = Enemy(name="Vex")
+    stdout.print(boss.hp)

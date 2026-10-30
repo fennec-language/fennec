@@ -77,7 +77,7 @@ impl Interp<'_> {
         }
     }
 
-    fn exec(&mut self, stmt: &Stmt) -> Result<Flow, Diagnostic> {
+    pub(crate) fn exec(&mut self, stmt: &Stmt) -> Result<Flow, Diagnostic> {
         self.step(stmt.span)?;
         match &stmt.kind {
             StmtKind::Expr(expr) => Ok(Flow::Normal(self.eval(expr)?)),
@@ -369,7 +369,7 @@ impl Interp<'_> {
 }
 
 /// Checks a value can be failed with: it must be declared with `error`.
-fn check_error(value: &Value, span: Span) -> Result<(), Diagnostic> {
+pub(crate) fn check_error(value: &Value, span: Span) -> Result<(), Diagnostic> {
     match value {
         Value::Instance(instance) if instance.is_error => Ok(()),
         other => {

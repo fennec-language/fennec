@@ -44,6 +44,32 @@ fn each_test_gets_the_whole_step_budget() {
     assert!(failures.is_empty(), "{failures:?}");
 }
 
+/// Runs `source`'s tests with a step limit, returning the first failure's help.
+fn first_failure_help(source: &str, steps: u64) -> Option<String> {
+    let module = fennec_syntax::parse(source).ok()?;
+    let mut out = std::io::sink();
+    let mut interp = Interp::new(&mut out).ok()?;
+    interp.limit_steps(steps);
+    interp.load(&module).ok()?;
+    interp.run_tests().into_iter().find_map(|outcome| outcome.failure)?.help
+}
+
+#[test]
+fn property_tests_shrink_to_the_smallest_failure() {
+    let help = first_failure_help("test \"small\" for n: int:\n    assert n < 5\n", 100_000).unwrap();
+    assert!(help.starts_with("it failed for n = 5"), "{help}");
+}
+
+#[test]
+fn running_out_of_steps_doesnt_shrink() {
+    // Every input after the first failure would fail too, out of steps, so shrinking would
+    // wrongly report n = 0, which passes.
+    let source = "test \"spins\" for n: int:\n    while n != 0:\n        pass\n";
+    let help = first_failure_help(source, 1000).unwrap();
+    assert!(help.starts_with("it failed for n = "), "{help}");
+    assert!(!help.starts_with("it failed for n = 0;"), "{help}");
+}
+
 #[test]
 fn a_depth_limit_stops_deep_recursion() {
     let source = |depth: u32| {
@@ -53,7 +79,7 @@ fn a_depth_limit_stops_deep_recursion() {
     };
     assert_eq!(run(&source(5), |interp| interp.limit_depth(10)).unwrap(), "0\n");
     let error = run(&source(20), |interp| interp.limit_depth(10)).unwrap_err();
-    assert_eq!(error, "calls nested more than 10 deep");
+    assert_eq!(error, "calls nested too deeply");
 }
 
 #[test]

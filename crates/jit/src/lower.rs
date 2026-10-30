@@ -43,6 +43,17 @@ struct Compiled {
     takes_self: bool,
 }
 
+/// How a program compiled.
+#[derive(Debug, Default)]
+pub(crate) struct Compilation {
+    /// The functions and methods that couldn't be compiled, which run in the interpreter.
+    pub(crate) interpreted: Vec<String>,
+    /// How many of the program's compiled functions needed a frame in the runtime.
+    pub(crate) with_frames: usize,
+    /// How many operations the program's functions hand to the interpreter one at a time.
+    pub(crate) handed_over: usize,
+}
+
 /// What every function being compiled shares.
 struct Shared {
     compiled: HashMap<String, Compiled>,
@@ -50,6 +61,8 @@ struct Shared {
     tables: Tables,
     names: HashMap<String, i64>,
     strings: HashMap<String, i64>,
+    with_frames: usize,
+    handed_over: usize,
 }
 
 fn internal(err: impl std::fmt::Debug, span: Span) -> Diagnostic {
@@ -59,11 +72,15 @@ fn internal(err: impl std::fmt::Debug, span: Span) -> Diagnostic {
 
 /// Compiles every function the JIT can. A function it can't compile runs in the
 /// interpreter instead, so this retries without each one that fails until all compile.
-pub(crate) fn compile(program: &Program<'_>) -> Result<(Entry, Tables), Diagnostic> {
+pub(crate) fn compile(program: &Program<'_>) -> Result<(Entry, Tables, Compilation), Diagnostic> {
     let mut skipped = HashSet::new();
     loop {
         match attempt(program, &skipped) {
-            Ok(done) => return Ok(done),
+            Ok((entry, tables, (with_frames, handed_over))) => {
+                let mut interpreted: Vec<String> = skipped.into_iter().collect();
+                interpreted.sort();
+                return Ok((entry, tables, Compilation { interpreted, with_frames, handed_over }));
+            }
             Err((name, diagnostic)) => {
                 if name == "main" || !skipped.insert(name) {
                     return Err(diagnostic);
@@ -87,7 +104,7 @@ fn new_module(span: Span) -> Result<JITModule, Diagnostic> {
     Ok(JITModule::new(builder))
 }
 
-type Attempt = Result<(Entry, Tables), (String, Diagnostic)>;
+type Attempt = Result<(Entry, Tables, (usize, usize)), (String, Diagnostic)>;
 
 /// One try at compiling the program, skipping some functions. On failure, the name of the
 /// function that couldn't be compiled.
@@ -101,6 +118,8 @@ fn attempt(program: &Program<'_>, skipped: &HashSet<String>) -> Attempt {
         tables: Tables::default(),
         names: HashMap::new(),
         strings: HashMap::new(),
+        with_frames: 0,
+        handed_over: 0,
     };
     declare_all(&mut module, &mut shared, program, skipped).map_err(fatal)?;
     let mut ctx = module.make_context();
@@ -124,7 +143,7 @@ fn attempt(program: &Program<'_>, skipped: &HashSet<String>) -> Attempt {
         .map_err(fatal)?;
     module.finalize_definitions().map_err(|err| fatal(internal(err, span)))?;
     let code = module.get_finalized_function(entry);
-    Ok((Entry { code, _module: module }, shared.tables))
+    Ok((Entry { code, _module: module }, shared.tables, (shared.with_frames, shared.handed_over)))
 }
 
 /// The entry point: calls `main`, and fails the way the interpreter does if `main` gives
@@ -236,7 +255,14 @@ struct Cx<'a> {
 fn lower_function(cx: &mut Cx<'_>, function: &Function<'_>) -> Result<(), Diagnostic> {
     let names = cx.shared.names.clone();
     let strings = cx.shared.strings.clone();
-    let lengths = (cx.shared.tables.names.len(), cx.shared.tables.strings.len());
+    let tables = &cx.shared.tables;
+    let lengths = [
+        tables.names.len(),
+        tables.strings.len(),
+        tables.exprs.len(),
+        tables.stmts.len(),
+        tables.patterns.len(),
+    ];
     match lower_with(cx, function, false) {
         Err(diagnostic) if diagnostic.message == NEEDS_FRAME => {
             cx.ctx.clear();
@@ -244,12 +270,25 @@ fn lower_function(cx: &mut Cx<'_>, function: &Function<'_>) -> Result<(), Diagno
             cx.ctx.func.signature = signature(cx.module, function);
             cx.shared.names = names;
             cx.shared.strings = strings;
-            cx.shared.tables.names.truncate(lengths.0);
-            cx.shared.tables.strings.truncate(lengths.1);
+            let [names, strings, exprs, stmts, patterns] = lengths;
+            let tables = &mut cx.shared.tables;
+            tables.names.truncate(names);
+            tables.strings.truncate(strings);
+            tables.exprs.truncate(exprs);
+            tables.stmts.truncate(stmts);
+            tables.patterns.truncate(patterns);
+            if !function.prelude {
+                cx.shared.with_frames += 1;
+            }
             lower_with(cx, function, true)
         }
         other => other,
+    }?;
+    if !function.prelude {
+        let tables = &cx.shared.tables;
+        cx.shared.handed_over += tables.exprs.len() + tables.stmts.len() - lengths[2] - lengths[3];
     }
+    Ok(())
 }
 
 fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(), Diagnostic> {

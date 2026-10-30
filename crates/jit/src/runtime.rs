@@ -19,6 +19,7 @@ pub(crate) struct Entry {
 pub(crate) struct Outcome {
     pub(crate) output: Vec<u8>,
     pub(crate) failure: Option<Diagnostic>,
+    pub(crate) leftovers: embed::Leftovers,
 }
 
 pub(crate) fn execute(entry: &Entry, module: &Module, tables: Tables) -> Result<Outcome, Diagnostic> {
@@ -29,8 +30,8 @@ pub(crate) fn execute(entry: &Entry, module: &Module, tables: Tables) -> Result<
     )]
     let main = unsafe { std::mem::transmute::<*const u8, extern "C" fn()>(entry.code) };
     main();
-    let (output, failure) = embed::finish();
-    Ok(Outcome { output, failure })
+    let (output, failure, leftovers) = embed::finish();
+    Ok(Outcome { output, failure, leftovers })
 }
 
 /// Called by native code when one of its own checks fails.

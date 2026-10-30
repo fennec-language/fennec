@@ -303,7 +303,6 @@ impl Parser {
                 return Err(self.reserved(word));
             }
             other => {
-                self.pos -= 1;
                 return Err(Diagnostic::new(
                     format!("expected a value, found {}", super::describe(&other)),
                     span,

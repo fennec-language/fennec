@@ -44,6 +44,11 @@ impl Lowerer<'_, '_> {
         {
             return Ok(result);
         }
+        if let Some((id, at)) = self.named_case(callee)
+            && let Some(result) = self.make_case(id, at, args, expr.span)?
+        {
+            return Ok(result);
+        }
         if let ExprKind::Name(type_name) = &callee.kind
             && self.local(type_name).is_none()
             && let Some(id) = self.layouts.id(type_name)

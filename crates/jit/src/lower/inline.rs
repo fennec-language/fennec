@@ -58,7 +58,11 @@ fn simple_stmt(stmt: &Stmt, nodes: &mut usize) -> bool {
 fn simple_expr(expr: &Expr, nodes: &mut usize) -> bool {
     *nodes += 1;
     match &expr.kind {
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Name(_) => true,
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Name(_)
+        | ExprKind::Variant(_) => true,
         ExprKind::Unary { expr, .. } | ExprKind::Attr { object: expr, optional: false, .. } => {
             simple_expr(expr, nodes)
         }
@@ -67,9 +71,18 @@ fn simple_expr(expr: &Expr, nodes: &mut usize) -> bool {
             simple_expr(then, nodes) && simple_expr(cond, nodes) && simple_expr(otherwise, nodes)
         }
         ExprKind::Call { callee, args } => {
-            matches!(callee.kind, ExprKind::Name(_) | ExprKind::Attr { optional: false, .. })
-                && simple_expr(callee, nodes)
+            matches!(
+                callee.kind,
+                ExprKind::Name(_) | ExprKind::Attr { optional: false, .. } | ExprKind::Variant(_)
+            ) && simple_expr(callee, nodes)
                 && args.iter().all(|arg| !arg.is_mut && simple_expr(&arg.value, nodes))
+        }
+        ExprKind::Match { subject, arms } => {
+            simple_expr(subject, nodes)
+                && arms.iter().all(|arm| {
+                    *nodes += 1;
+                    arm.body.iter().all(|stmt| simple_stmt(stmt, nodes))
+                })
         }
         _ => false,
     }

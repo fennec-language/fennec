@@ -62,6 +62,11 @@ impl Lowerer<'_, '_> {
         if let ExprKind::Name(object) = &object.kind
             && self.local(object).is_none()
         {
+            if let Some((id, at)) = self.named_case(expr)
+                && let Some(made) = self.make_case(id, at, &[], expr.span)?
+            {
+                return Ok(made);
+            }
             return self.fallback(expr);
         }
         if !optional && let Some((root, fields)) = self.field_path(expr) {
@@ -168,14 +173,14 @@ impl Lowerer<'_, '_> {
                     .map_or(Ty::Obj, |param| param.1);
                 let a_param = self.convert(Some(a), Ty::Obj, self_ty, span)?;
                 let (value, ty) = self.call_key(&key, vec![a_param, b_param], span)?;
-                arms.extend(self.arm_end(value, ty));
+                arms.extend(self.arm_end(value, ty)?);
                 self.otherwise_type();
             }
         }
         let code = self.int(code);
         let [start, end] = self.span_args(span);
         let value = self.help(Helper::Binary, &[code, a, b, start, end])?;
-        arms.extend(self.arm_end(Some(value), Ty::Obj));
+        arms.extend(self.arm_end(Some(value), Ty::Obj)?);
         self.join(arms, span)
     }
 
@@ -285,11 +290,11 @@ impl Lowerer<'_, '_> {
                 }
             }
             let (value, ty) = self.call_key(&key, values, expr.span)?;
-            arms.extend(self.arm_end(value, ty));
+            arms.extend(self.arm_end(value, ty)?);
             self.otherwise_type();
         }
         let (value, ty) = self.interpret_method(expr, object, receiver, method, &lowered)?;
-        arms.extend(self.arm_end(value, ty));
+        arms.extend(self.arm_end(value, ty)?);
         self.join(arms, expr.span).map(Some)
     }
 

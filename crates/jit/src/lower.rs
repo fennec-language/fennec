@@ -11,11 +11,13 @@
 
 mod call;
 mod codegen;
+mod enums;
 mod expr;
 mod fallback;
 mod flow;
 mod inline;
 mod lists;
+mod matching;
 mod module;
 mod objects;
 mod stmt;

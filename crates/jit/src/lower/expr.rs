@@ -50,11 +50,21 @@ impl Lowerer<'_, '_> {
             ExprKind::Binary { op, lhs, rhs } => {
                 let left = self.expr(lhs)?;
                 let right = self.expr(rhs)?;
-                match self.binary(*op, left, right, span) {
+                if let Some(result) = self.binary(*op, left, right, span) {
+                    return Ok(result);
+                }
+                match self.struct_equality(*op, left, right)? {
                     Some(result) => Ok(result),
                     None => self.object_binary(*op, left, right, span),
                 }
             }
+            ExprKind::Variant(_) => match self.named_case(expr) {
+                Some((id, at)) => match self.make_case(id, at, &[], span)? {
+                    Some(made) => Ok(made),
+                    None => self.fallback(expr),
+                },
+                None => self.fallback(expr),
+            },
             ExprKind::Cond { then, cond, otherwise } => self.conditional(then, cond, otherwise),
             ExprKind::Else { value, default } => self.else_value(value, default),
             ExprKind::Try { value, context } => self.try_value(value, context.as_deref()),
@@ -169,10 +179,10 @@ impl Lowerer<'_, '_> {
         self.b.ins().brif(test, then_block, &[], else_block, &[]);
         self.b.switch_to_block(then_block);
         let (value, ty) = self.expr(then)?;
-        let mut arms: Vec<_> = self.arm_end(value, ty).into_iter().collect();
+        let mut arms: Vec<_> = self.arm_end(value, ty)?.into_iter().collect();
         self.b.switch_to_block(else_block);
         let (value, ty) = self.expr(otherwise)?;
-        arms.extend(self.arm_end(value, ty));
+        arms.extend(self.arm_end(value, ty)?);
         self.join(arms, then.span.to(otherwise.span))
     }
 

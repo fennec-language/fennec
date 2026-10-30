@@ -71,6 +71,8 @@ pub(crate) enum Helper {
     PutItem,
     Entries,
     MakeInstance,
+    MakeVariant,
+    CaseOf,
     Sin,
     Cos,
     Pack,
@@ -80,7 +82,7 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 70] = [
+pub(crate) const ALL: [Helper; 72] = [
     Helper::Fail,
     Helper::Enter,
     Helper::Leave,
@@ -144,6 +146,8 @@ pub(crate) const ALL: [Helper; 70] = [
     Helper::PutItem,
     Helper::Entries,
     Helper::MakeInstance,
+    Helper::MakeVariant,
+    Helper::CaseOf,
     Helper::Sin,
     Helper::Cos,
     Helper::Pack,
@@ -230,6 +234,8 @@ impl Helper {
             Helper::PutItem => shape("fennec_put_item", &[I64, I64, I64, I64], &[]),
             Helper::Entries => shape("fennec_entries", &[I64, I64, I64], &[I64]),
             Helper::MakeInstance => shape("fennec_make_instance", &[I64, I64, I64, I64], &[I64]),
+            Helper::MakeVariant => shape("fennec_make_variant", &[I64, I64, I64, I64, I64], &[I64]),
+            Helper::CaseOf => shape("fennec_case_of", &[I64, I64, I64, I64], &[I64]),
             Helper::Sin => shape("fennec_sin", &[F64], &[F64]),
             Helper::Cos => shape("fennec_cos", &[F64], &[F64]),
             Helper::Pack => shape("fennec_pack", &[I64, I64], &[I8]),
@@ -267,6 +273,7 @@ impl Helper {
                     | Helper::Address
                     | Helper::Length
                     | Helper::Push
+                    | Helper::CaseOf
             )
     }
 
@@ -284,6 +291,8 @@ impl Helper {
                 | Helper::PutItem
                 | Helper::Entries
                 | Helper::MakeInstance
+                | Helper::MakeVariant
+                | Helper::CaseOf
                 | Helper::Address
                 | Helper::Length
                 | Helper::Push
@@ -368,6 +377,8 @@ impl Helper {
             Helper::PutItem => objects::put_item as *const u8,
             Helper::Entries => objects::entries as *const u8,
             Helper::MakeInstance => objects::make_instance as *const u8,
+            Helper::MakeVariant => objects::make_variant as *const u8,
+            Helper::CaseOf => objects::case_of as *const u8,
             Helper::Sin => runtime::sin as *const u8,
             Helper::Cos => runtime::cos as *const u8,
             Helper::Pack => lists::pack as *const u8,

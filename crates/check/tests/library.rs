@@ -91,18 +91,36 @@ fn modules_are_imported_whole() {
         stdout.print(json.dumps(json.loads('1')?), toml.dumps({'a': 1}), path.Path('a').name())
         stdout.print(math.sqrt(2.0) + math.PI)
     ";
-    let imports = "import std.json\nfrom std import toml, path\nimport std.math";
+    let imports = "from std import json, toml, path, math";
     assert_eq!(with_imports(imports, program), Vec::<String>::new());
     let program = "
         stdout.print(json.parse('1'), json, json.dumps(1) + 1, path.Path(1))
     ";
     assert_eq!(
-        with_imports("import std.json\nimport std.path", program),
+        with_imports("from std import json, path", program),
         [
             "`std.json` has nothing called `parse` @ json.parse",
             "`json` is a module, so use one of its names, like `json.loads` @ json",
             "can't use `+` on a str and an int @ json.dumps(1) + 1",
             "`text` should be a str, but this is an int @ 1",
+        ]
+    );
+}
+
+#[test]
+fn imports_bind_names_the_way_python_does() {
+    // `import std.json` binds `std`; `from std import toml` binds `toml`.
+    let program = "stdout.print(std.json.dumps(1), toml.dumps({'a': 1}), loads('2')?)";
+    let imports = "import std.json\nfrom std import toml\nfrom std.json import loads";
+    assert_eq!(with_imports(imports, program), Vec::<String>::new());
+    let program = "stdout.print(json.dumps(1), std.toml.dumps(1), std.json, std)";
+    assert_eq!(
+        with_imports("import std.json", program),
+        [
+            "`json` doesn't exist @ json",
+            "`std.toml` isn't imported here @ std.toml",
+            "`std.json` is a module, so use one of its names, like `std.json.loads` @ std.json",
+            "`std.json` is a module, so use one of its names, like `std.json.loads` @ std",
         ]
     );
 }

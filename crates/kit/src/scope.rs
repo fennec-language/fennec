@@ -56,16 +56,31 @@ pub(crate) fn resolve(files: &mut [File], errors: &mut Vec<Diagnostic>) {
             file: at,
             imported: HashMap::new(),
             modules: HashMap::new(),
+            std_modules: HashSet::new(),
             locals: HashSet::new(),
             collecting: false,
             errors: &mut *errors,
         };
         for item in &file.module.items {
-            if let Item::Import(import) = item
-                && !is_std(import)
-                && let Some(&from) = index.get(&import.module.join("."))
+            let Item::Import(import) = item else { continue };
+            if is_std(import) {
+                scope.std_modules.extend(std_aliases(&import.module, &import.names));
+                continue;
+            }
+            let module = import.module.join(".");
+            // `from game import physics` binds the module `game.physics`, when there is one.
+            let (submodules, names): (Vec<&String>, Vec<&String>) =
+                import.names.iter().partition(|name| index.contains_key(&format!("{module}.{name}")));
+            for name in submodules {
+                if let Some(&from) = index.get(&format!("{module}.{name}")) {
+                    scope.modules.insert(name.clone(), from);
+                }
+            }
+            if let Some(&from) = index.get(&module)
+                && (import.names.is_empty() || !names.is_empty())
             {
-                scope.import(&import.module.join("."), &import.names, from, import.span);
+                let names: Vec<String> = names.into_iter().cloned().collect();
+                scope.import(&module, &names, from, import.span);
             }
         }
         for item in &mut file.module.items {
@@ -123,6 +138,9 @@ struct Resolver<'a> {
     imported: HashMap<String, usize>,
     /// Modules brought in whole by `import module`.
     modules: HashMap<String, usize>,
+    /// Standard library modules imported whole, by the name they're used under, like
+    /// `std.json` or `json`. The checker resolves their names.
+    std_modules: HashSet<String>,
     /// The names the function being walked binds anywhere in it.
     locals: HashSet<String>,
     collecting: bool,
@@ -416,7 +434,16 @@ impl Resolver<'_> {
     /// `expr` was one.
     fn member(&mut self, expr: &mut Expr) -> bool {
         let ExprKind::Attr { object, name, optional: false } = &expr.kind else { return false };
-        let Some((module, owner)) = self.module(object) else { return false };
+        let Some((module, owner)) = self.module(object) else {
+            if let ExprKind::Name(short) = &object.kind
+                && !self.locals.contains(short)
+                && let Some(problem) = self.short_form(short, name, expr.span)
+            {
+                self.errors.push(problem);
+                return true;
+            }
+            return false;
+        };
         if self.kit.defines(owner, name) {
             expr.kind = ExprKind::Name(name.clone());
         } else {
@@ -426,6 +453,17 @@ impl Resolver<'_> {
             );
         }
         true
+    }
+
+    /// The mistake of writing `physics.Body` after `import game.physics`, which binds `game`.
+    fn short_form(&self, short: &str, member: &str, span: Span) -> Option<Diagnostic> {
+        let full =
+            self.modules.keys().find(|path| path.rsplit_once('.').is_some_and(|(_, last)| last == short))?;
+        let (parent, _) = full.rsplit_once('.')?;
+        let package = full.split('.').next().unwrap_or_default();
+        Some(Diagnostic::new(format!("`{short}` isn't imported here"), span).with_help(format!(
+            "`import {full}` binds `{package}`, so write `{full}.{member}`, or import it with `from {parent} import {short}`"
+        )))
     }
 
     /// The module imported whole that `expr` names, like `physics` or `game.physics`.
@@ -463,17 +501,33 @@ impl Resolver<'_> {
             self.name(&name, span);
             return;
         };
+        if self.std_modules.contains(module) {
+            return;
+        }
         match self.modules.get(module) {
             Some(&owner) if self.kit.defines(owner, member) => *name = member.to_owned(),
             Some(&owner) => self.errors.push(
                 Diagnostic::new(format!("`{module}` has nothing called `{member}`"), span)
                     .with_help(self.kit.listing(owner)),
             ),
-            None => self.errors.push(
-                Diagnostic::new(format!("`{module}` isn't imported here"), span)
-                    .with_help(format!("add `import {module}` at the top of this file")),
-            ),
+            None => {
+                let problem = self.short_form(module, member, span).unwrap_or_else(|| {
+                    Diagnostic::new(format!("`{module}` isn't imported here"), span)
+                        .with_help(format!("add `import {module}` at the top of this file"))
+                });
+                self.errors.push(problem);
+            }
         }
+    }
+}
+
+/// The names a standard library import binds to modules: `std.json` for `import std.json`,
+/// and `json` for `from std import json`.
+fn std_aliases(module: &[String], names: &[String]) -> Vec<String> {
+    match (module, names) {
+        ([_], names) => names.to_vec(),
+        (module, []) => vec![module.join(".")],
+        _ => Vec::new(),
     }
 }
 

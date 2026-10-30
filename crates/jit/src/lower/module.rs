@@ -111,9 +111,10 @@ pub(super) fn declare_all(
                 .or_default()
                 .push((owner.to_owned(), function.key.clone()));
         }
-        shared
-            .compiled
-            .insert(function.key.clone(), Compiled { id, params, ret: function.ret, takes_self, inline });
+        shared.compiled.insert(
+            function.key.clone(),
+            Compiled { id, params, ret: function.ret, takes_self, inline, prelude: function.prelude },
+        );
     }
     Ok(())
 }

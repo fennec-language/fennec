@@ -1,0 +1,44 @@
+from std.re import Regex, Match
+
+struct Command:
+    verb: str
+    target: str
+    count: int
+
+## Reads a typed command like "take 3 arrows" or "open door".
+def parse_command(line: str) -> Command?:
+    found = Regex(r"^\s*(\w+)\s+(?:(\d+)\s+)?(\w+)\s*$").match(line)
+    if found is None:
+        return None
+    count = found[2]
+    Command(verb=found[1] else "", target=found[3] else "", count=int(count) if count is not None else 1)
+
+test "names with letters only are found whole" for word: str:
+    names = Regex(r"[a-z]+").find_all(word)
+    assert all(len(name.text) > 0 for name in names)
+
+def main(stdout: Stdout):
+    stdout.print(parse_command("take 3 arrows"))
+    stdout.print(parse_command("  open door "))
+    stdout.print(parse_command("dance"))
+
+    log = "hp=30 mp=7 xp=1250 gold=99"
+    stat = Regex(r"(\w+)=(\d+)")
+    for found in stat.find_all(log):
+        stdout.print(found[1], int(found[2] else "0"), found.start, found.end)
+
+    stdout.print(stat.replace(log, r"\1: \2"))
+    stdout.print(Regex(r"\s*[,;]\s*").split("sword, shield;bow ,  arrows"))
+    stdout.print(Regex(r"colou?r").search("What colour is it?"))
+    stdout.print([m.start for m in Regex(r"\bcat\b").find_all("cat concat cat.")])
+
+    # Patterns written in the program are checked before it runs. One built while it runs
+    # might not be valid, so making it gives a result.
+    for pattern in ["[0-9]+", "[0-9+"]:
+        match Regex(pattern):
+            case Ok(regex): stdout.print(pattern, "finds", [m.text for m in regex.find_all("a1b22")])
+            case Err(error): stdout.print(pattern, "->", error.message)
+
+    # Matching never backtracks, so this takes time in proportion to the text.
+    many = "".join(["a" for _ in range(5_000)])
+    stdout.print(Regex(r"(a*)*b").search(many))

@@ -10,7 +10,7 @@ use crate::types::{Type, accepts, article, join, join_all};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most).
 /// Names with a dot belong to a module, like `json.loads`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 32] = [
+const BUILTINS: [(&str, usize, usize); 36] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("abs", 1, 1),
@@ -30,7 +30,11 @@ const BUILTINS: [(&str, usize, usize); 32] = [
     ("max", 1, usize::MAX),
     ("min", 1, usize::MAX),
     ("parallel", 1, 1),
+    ("random.random_choice", 3, 3),
+    ("random.random_float", 2, 2),
+    ("random.random_int", 4, 4),
     ("range", 1, 3),
+    ("re.is_regex", 1, 1),
     ("replace", 1, usize::MAX),
     ("reversed", 1, 1),
     ("round", 1, 2),
@@ -46,8 +50,22 @@ const BUILTINS: [(&str, usize, usize); 32] = [
 ];
 
 /// Builtins whose arguments have to be plain values, not results or optionals.
-const NEEDS_VALUES: [&str; 11] =
-    ["abs", "ceil", "cos", "float", "floor", "int", "len", "range", "round", "sin", "sqrt"];
+const NEEDS_VALUES: [&str; 14] = [
+    "abs",
+    "ceil",
+    "cos",
+    "float",
+    "floor",
+    "int",
+    "len",
+    "random.random_choice",
+    "random.random_float",
+    "random.random_int",
+    "range",
+    "round",
+    "sin",
+    "sqrt",
+];
 
 pub(crate) fn is_builtin(name: &str) -> bool {
     BUILTINS.iter().any(|(builtin, ..)| *builtin == name)
@@ -59,6 +77,7 @@ pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
         .iter()
         .filter_map(|(builtin, ..)| builtin.split_once('.').filter(|(_, function)| *function == name))
         .map(|(module, _)| module)
+        .chain(fennec_syntax::importable_type(name))
         .collect()
 }
 
@@ -118,7 +137,7 @@ fn method(ty: &Type, name: &str) -> Option<Method> {
         }
         (Type::IdMap(item), "ids") => reads(Type::list(Type::Id(item.clone())), 0, 0),
         (Type::Str, _) => return str_method(name),
-        (Type::Named(capability), _) => return capability_method(capability, name),
+        (Type::Named(type_name), _) => return named_method(type_name, name),
         _ => return None,
     })
 }
@@ -137,12 +156,20 @@ fn str_method(name: &str) -> Option<Method> {
     }
 }
 
-fn capability_method(capability: &str, name: &str) -> Option<Method> {
-    match (capability, name) {
+/// Methods of capabilities, and of standard library types that are written in Rust.
+fn named_method(type_name: &str, name: &str) -> Option<Method> {
+    let found = || Type::named("Match");
+    match (type_name, name) {
         ("Stdout", "print" | "write") => Some(reads(Type::Unit, 0, usize::MAX)),
         ("Fs", "exists") => Some(reads(Type::Bool, 1, 1)),
         ("Fs", "read_text") => Some(reads(Type::result(Type::Str, Type::named("IoError")), 1, 1)),
         ("Fs", "write_text") => Some(reads(Type::result(Type::Unit, Type::named("IoError")), 2, 2)),
+        ("Clock", "now") => Some(reads(Type::named("Instant"), 0, 0)),
+        ("Clock", "sleep") => Some(reads(Type::Unit, 1, 1)),
+        ("Regex", "match" | "fullmatch" | "search") => Some(reads(Type::optional(found()), 1, 1)),
+        ("Regex", "find_all") => Some(reads(Type::list(found()), 1, 1)),
+        ("Regex", "replace") => Some(reads(Type::Str, 2, 2)),
+        ("Regex", "split") => Some(reads(Type::list(Type::Str), 1, 1)),
         _ => None,
     }
 }
@@ -251,7 +278,11 @@ impl FnCx<'_> {
             "Ok" => Type::result(first, Type::Unknown),
             "Err" => Type::result(Type::Unknown, first),
             "len" => {
-                if !first.is_collection() && !matches!(first, Type::Tuple(_) | Type::IdMap(_) | Type::Unknown)
+                let has_len =
+                    matches!(&first, Type::Named(name) if self.checker.program.method(name, "len").is_some());
+                if !first.is_collection()
+                    && !has_len
+                    && !matches!(first, Type::Tuple(_) | Type::IdMap(_) | Type::Unknown)
                 {
                     self.error(Diagnostic::new(format!("{} has no length", article(&first.kind())), span));
                 }
@@ -263,8 +294,20 @@ impl FnCx<'_> {
                 }
                 Type::list(Type::Int)
             }
+            "random.random_int" | "random.random_float" => {
+                if types.iter().any(|ty| !matches!(ty, Type::Int | Type::Unknown)) {
+                    self.error(Diagnostic::new(format!("`{name}` takes ints"), span));
+                }
+                let value = if name == "random.random_int" { Type::Int } else { Type::Float };
+                Type::Tuple(vec![value, Type::Int])
+            }
+            "random.random_choice" => {
+                let item = plain.get(2).map_or(Type::Unknown, |(ty, at)| self.item_type(ty, *at));
+                Type::Tuple(vec![item, Type::Int])
+            }
             "json.loads" | "toml.loads" | "json.dumps" | "toml.dumps" => self.format_result(name, &first, at),
             "str" => Type::Str,
+            "re.is_regex" => Type::Bool,
             "round" if types.len() == 2 => Type::Float,
             "int" | "floor" | "ceil" | "round" => Type::Int,
             "float" | "sqrt" | "sin" | "cos" => Type::Float,

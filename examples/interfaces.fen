@@ -36,8 +36,5 @@ def main(stdout: Stdout):
     stdout.print(f"{total_area([Circle(radius=1.0), Circle(radius=2.0)]):.2f}")
     stdout.print(total_area([Square(side=2.0), Square(side=3.0)]))
     stdout.print([shape.name() for shape in [Square(side=1.0)]], first([(1, "one"), (2, "two")]))
-    numbers = [
-        1,
-        2,
-    ]
+    numbers = [1, 2]
     stdout.print(numbers)

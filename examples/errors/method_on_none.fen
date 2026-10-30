@@ -5,8 +5,7 @@ struct Player:
         f"hi, {self.name}"
 
 def find(name: str) -> Player?:
-    if name == "Kit":
-        return Player(name="Kit")
+    if name == "Kit": return Player(name="Kit")
     None
 
 def main(stdout: Stdout):

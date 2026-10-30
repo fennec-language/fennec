@@ -4,4 +4,5 @@ enum Light:
 
 def main(stdout: Stdout):
     match Light.Green:
-        case .Red: stdout.print("stop")
+        case .Red:
+            stdout.print("stop")

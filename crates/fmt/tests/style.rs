@@ -56,10 +56,10 @@ fn operator_methods_and_generics_are_written_tight() {
 }
 
 #[test]
-fn match_arms_and_one_line_bodies() {
+fn match_arms_go_on_their_own_lines() {
     check(
         "def area(shape: Shape):\n    match shape :\n        case .Circle(radius):PI*radius*radius\n        case -1 : 0.0\n        case _:\n            0.0\n",
-        "def area(shape: Shape):\n    match shape:\n        case .Circle(radius): PI * radius * radius\n        case -1: 0.0\n        case _:\n            0.0\n",
+        "def area(shape: Shape):\n    match shape:\n        case .Circle(radius):\n            PI * radius * radius\n        case -1:\n            0.0\n        case _:\n            0.0\n",
     );
 }
 
@@ -71,7 +71,7 @@ fn soft_keywords_get_their_spaces() {
     );
     check(
         "def f(x: int):\n    match -x:\n        case(a, b): a\n",
-        "def f(x: int):\n    match -x:\n        case (a, b): a\n",
+        "def f(x: int):\n    match -x:\n        case (a, b):\n            a\n",
     );
 }
 
@@ -87,7 +87,7 @@ fn blocks_indent_four_spaces() {
 fn declarations_get_one_blank_line_around_them() {
     check(
         "from std.math import Vec3\nfrom std.game import Id\ntype EnemyId = Id[Enemy]\nstruct A:\n    x: int\n    def get(self):\n        self.x\n    def set(mut self, x: int):\n        self.x = x\n\n\n\nerror Gone:\n    id: int\ndef main(stdout: Stdout):\n    pass\ntest \"it works\":\n    pass\n",
-        "from std.math import Vec3\nfrom std.game import Id\ntype EnemyId = Id[Enemy]\n\nstruct A:\n    x: int\n\n    def get(self):\n        self.x\n\n    def set(mut self, x: int):\n        self.x = x\n\nerror Gone:\n    id: int\n\ndef main(stdout: Stdout):\n    pass\n\ntest \"it works\":\n    pass\n",
+        "from std.game import Id\nfrom std.math import Vec3\ntype EnemyId = Id[Enemy]\n\nstruct A:\n    x: int\n\n    def get(self):\n        self.x\n\n    def set(mut self, x: int):\n        self.x = x\n\nerror Gone:\n    id: int\n\ndef main(stdout: Stdout):\n    pass\n\ntest \"it works\":\n    pass\n",
     );
 }
 
@@ -116,18 +116,18 @@ fn doc_comments_stay_with_what_they_document() {
 }
 
 #[test]
-fn comments_are_kept_word_for_word() {
+fn comments_get_a_space_after_the_hash() {
     check(
         "#!odd   spacing  \n#no space\ndef f():  #   trailing   \n    pass\n",
-        "#!odd   spacing\n#no space\ndef f():  #   trailing\n    pass\n",
+        "#!odd   spacing\n# no space\ndef f():  #   trailing\n    pass\n",
     );
 }
 
 #[test]
-fn trailing_comments_line_up() {
+fn trailing_comments_get_two_spaces_and_no_lining_up() {
     check(
         "def f():\n    x = 1 # one\n    longer = 2      # two\n\n    y = 3     # alone\n",
-        "def f():\n    x = 1       # one\n    longer = 2  # two\n\n    y = 3  # alone\n",
+        "def f():\n    x = 1  # one\n    longer = 2  # two\n\n    y = 3  # alone\n",
     );
 }
 
@@ -165,9 +165,9 @@ fn long_signatures_break_their_parameters() {
 }
 
 #[test]
-fn lists_that_fit_join_unless_they_end_with_a_comma() {
+fn lists_that_fit_join_even_with_a_trailing_comma() {
     check("def f():\n    g(\n        1,\n        2\n    )\n", "def f():\n    g(1, 2)\n");
-    check("def f():\n    g(1, 2,)\n", "def f():\n    g(\n        1,\n        2,\n    )\n");
+    check("def f():\n    g(1, 2,)\n", "def f():\n    g(1, 2)\n");
     check("def f():\n    t = (\n        1,\n    )\n", "def f():\n    t = (1,)\n");
 }
 
@@ -179,12 +179,12 @@ fn no_comma_is_added_where_the_parser_wouldnt_take_one() {
         &format!("def f():\n    [\n        {long_name} for x in xs\n    ]\n"),
     );
     check(
-        &format!("def f():\n    xs[{long_name} + 1]\n"),
-        &format!("def f():\n    xs[\n        {long_name} + 1\n    ]\n"),
+        &format!("def f():\n    xs[{long_name}.count]\n"),
+        &format!("def f():\n    xs[\n        {long_name}.count\n    ]\n"),
     );
     check(
-        &format!("def f():\n    x = ({long_name} + 1)\n"),
-        &format!("def f():\n    x = (\n        {long_name} + 1\n    )\n"),
+        &format!("def f():\n    x = ({long_name}.count)\n"),
+        &format!("def f():\n    x = (\n        {long_name}.count\n    )\n"),
     );
 }
 
@@ -200,7 +200,7 @@ fn comments_inside_brackets_keep_the_list_broken() {
 fn a_comment_inside_an_item_breaks_the_line_there() {
     check(
         "def f():\n    g(a +  # why\n      b)\n",
-        "def f():\n    g(\n        a +  # why\n        b,\n    )\n",
+        "def f():\n    g(\n        a\n        +  # why\n        b,\n    )\n",
     );
 }
 
@@ -218,8 +218,8 @@ fn syntax_errors_are_reported_not_formatted() {
 }
 
 #[test]
-fn files_keep_their_line_endings() {
-    check("def f():\r\n  pass\r\n", "def f():\r\n    pass\r\n");
+fn files_always_use_line_feeds() {
+    check("def f():\r\n  pass\r\n", "def f():\n    pass\n");
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn a_lone_list_argument_hugs_its_call() {
 fn a_body_too_long_for_its_line_moves_below_it() {
     check(
         "def f(x: int):\n    match x:\n        case 1: stdout.print(f\"the problem is on line {line}, column {column}, look there right now!\")\n        case _: pass\n",
-        "def f(x: int):\n    match x:\n        case 1:\n            stdout.print(f\"the problem is on line {line}, column {column}, look there right now!\")\n        case _: pass\n",
+        "def f(x: int):\n    match x:\n        case 1:\n            stdout.print(f\"the problem is on line {line}, column {column}, look there right now!\")\n        case _:\n            pass\n",
     );
 }
 
@@ -243,5 +243,37 @@ fn enum_case_defaults_keep_their_spaces() {
     check(
         "enum Move:\n    Wait(turns=1)\n    Step(dir: Dir, count: int=1)\n\ndef f():\n    Move.Wait(turns = 2)\n",
         "enum Move:\n    Wait(turns = 1)\n    Step(dir: Dir, count: int = 1)\n\ndef f():\n    Move.Wait(turns=2)\n",
+    );
+}
+
+#[test]
+fn guard_clauses_sit_on_one_line_and_other_bodies_dont() {
+    check(
+        "def f(x: int) -> int:\n    if x < 0:\n        return 0\n    if x > 9: fail TooBig(x)\n    if x == 5:\n        return 5\n    else:\n        return 6\n    if x == 3: return 3\n    elif x == 4: return 4\n    for i in range(3): print(i)\n    while True:\n        break\n    if x == 7:  # why\n        return 7\n    if x == 8:\n        # explain\n        return 8\n    x\n",
+        "def f(x: int) -> int:\n    if x < 0: return 0\n    if x > 9: fail TooBig(x)\n    if x == 5:\n        return 5\n    else:\n        return 6\n    if x == 3:\n        return 3\n    elif x == 4:\n        return 4\n    for i in range(3):\n        print(i)\n    while True:\n        break\n    if x == 7:  # why\n        return 7\n    if x == 8:\n        # explain\n        return 8\n    x\n",
+    );
+}
+
+#[test]
+fn imports_are_sorted_with_std_first() {
+    check(
+        "## The module.\nfrom physics import Body, Air\nimport std.game\n\n# about math\nfrom std.math import Vec3, Mat4  # vectors\nfrom enemies import Orc\ndef main(stdout: Stdout):\n    pass\n",
+        "## The module.\nimport std.game\n# about math\nfrom std.math import Mat4, Vec3  # vectors\n\nfrom enemies import Orc\nfrom physics import Air, Body\n\ndef main(stdout: Stdout):\n    pass\n",
+    );
+}
+
+#[test]
+fn long_statements_break_before_their_loosest_operators() {
+    check(
+        "def f(enemy: Enemy, world: World) -> int:\n    total_damage_dealt_this_frame = enemy.base_damage * enemy.level_multiplier + world.global_bonus_damage - enemy.armor\n    if enemy.health_points_remaining > 0 and enemy.is_visible_to_the_player and not world.paused_by_menu:\n        return enemy.base_damage * enemy.level_multiplier + world.global_bonus_damage - enemy.armor_value\n    x = [score for score in all_the_scores_in_this_world if score > minimum_score_needed_to_qualify_here]\n    0\n",
+        "def f(enemy: Enemy, world: World) -> int:\n    total_damage_dealt_this_frame = (\n        enemy.base_damage * enemy.level_multiplier + world.global_bonus_damage - enemy.armor\n    )\n    if (\n        enemy.health_points_remaining > 0\n        and enemy.is_visible_to_the_player\n        and not world.paused_by_menu\n    ):\n        return (\n            enemy.base_damage * enemy.level_multiplier\n            + world.global_bonus_damage\n            - enemy.armor_value\n        )\n    x = [\n        score for score in all_the_scores_in_this_world if score > minimum_score_needed_to_qualify_here\n    ]\n    0\n",
+    );
+}
+
+#[test]
+fn lists_of_plain_literals_fill_their_lines() {
+    check(
+        "def f() -> list[float]:\n    m = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.5, -3.0, 4.25, 100.0]\n    names = [\"ash\", \"kit\", \"vex\", \"bramble\", \"fennec\", \"orc\", \"goblin\", \"troll\", \"dragon\", \"wyvern\", \"imp\"]\n    m\n",
+        "def f() -> list[float]:\n    m = [\n        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.5, -3.0,\n        4.25, 100.0,\n    ]\n    names = [\n        \"ash\", \"kit\", \"vex\", \"bramble\", \"fennec\", \"orc\", \"goblin\", \"troll\", \"dragon\", \"wyvern\",\n        \"imp\",\n    ]\n    m\n",
     );
 }

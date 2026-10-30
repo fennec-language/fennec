@@ -1,0 +1,6 @@
+# A kit that renames what it imports with `as`.
+name = "aliases"
+version = "0.1.0"
+fennec = "0.0.1"
+
+[dependencies]

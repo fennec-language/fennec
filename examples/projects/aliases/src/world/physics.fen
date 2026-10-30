@@ -1,0 +1,4 @@
+## Moving things along. `main.fen` uses this module as `motion`.
+
+def step(position: float, speed: float) -> float:
+    position + speed

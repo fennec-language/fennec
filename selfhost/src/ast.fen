@@ -91,6 +91,10 @@ struct Extension:
 struct Import:
     module: list[str]
     names: list[str]
+    ## The name each of `names` is bound under, when `as` renames it. One per name.
+    aliases: list[str?]
+    ## The name a whole module is bound under, from `import game.physics as physics`.
+    alias: str?
     span: Span
 
 ## `test "name":`, or a property test `test "name" for items: list[int]:`.

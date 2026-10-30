@@ -24,10 +24,11 @@ pub fn importable_type(name: &str) -> Option<&'static str> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Imported {
     /// A module, used under `alias`: `std.json` for `import std.json`, which binds `std` as
-    /// in Python, and `json` for `from std import json`.
+    /// in Python, `json` for `from std import json`, and `j` for `import std.json as j`.
     Module { alias: String, module: &'static str },
-    /// One name from a module: from `from std.json import loads`.
-    Name { name: String, module: &'static str },
+    /// One name from a module, bound under `alias`: `loads` from `from std.json import
+    /// loads`, or `json_loads` with `as json_loads`.
+    Name { name: String, alias: String, module: &'static str },
 }
 
 /// Checks an import names standard library modules and names that exist, and says what it
@@ -40,24 +41,30 @@ pub fn std_import(import: &Import) -> Result<Vec<Imported>, Diagnostic> {
                 .with_help("like `import std.json` or `from std import json`"))
         }
         [std] if std == "std" => import
-            .names
-            .iter()
-            .map(|name| {
+            .bound()
+            .map(|(name, alias)| {
                 let module = module(name).ok_or_else(|| no_module(&format!("std.{name}"), span))?;
-                Ok(Imported::Module { alias: name.clone(), module })
+                Ok(Imported::Module { alias: alias.to_owned(), module })
             })
             .collect(),
         [std, name] if std == "std" => {
             let module = module(name).ok_or_else(|| no_module(&format!("std.{name}"), span))?;
             if import.names.is_empty() {
-                return Ok(vec![Imported::Module { alias: format!("std.{name}"), module }]);
+                let alias = import.alias.clone().unwrap_or_else(|| format!("std.{name}"));
+                return Ok(vec![Imported::Module { alias, module }]);
             }
             import
-                .names
-                .iter()
-                .map(|name| {
+                .bound()
+                .map(|(name, alias)| {
                     member(module, name, span)?;
-                    Ok(Imported::Name { name: name.clone(), module })
+                    if alias != name && name.starts_with(|c: char| c.is_ascii_uppercase()) {
+                        return Err(Diagnostic::new(
+                            format!("`as` can't rename a type from the standard library yet, like `{name}`"),
+                            span,
+                        )
+                        .with_help(format!("import it as `{name}`")));
+                    }
+                    Ok(Imported::Name { name: name.to_owned(), alias: alias.to_owned(), module })
                 })
                 .collect()
         }

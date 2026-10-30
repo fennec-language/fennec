@@ -104,9 +104,10 @@ struct Program:
 
     def add_import(mut self, imported: Import):
         if len(imported.module) == 1 and imported.module[0] == "std":
-            self.modules += imported.names
+            for at in range(len(imported.names)):
+                self.modules.append(imported.aliases[at] else imported.names[at])
         elif len(imported.module) == 2 and imported.module[0] == "std" and len(imported.names) == 0:
-            self.modules.append(".".join(imported.module))
+            self.modules.append(imported.alias else ".".join(imported.module))
 
     def add_type(mut self, type_def: TypeDef, kind: TypeKind, prelude: bool):
         for method in type_def.methods:

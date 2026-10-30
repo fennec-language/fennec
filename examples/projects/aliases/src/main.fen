@@ -1,0 +1,28 @@
+## `as` binds an import under another name. Two modules with the same function names, like
+## `std.json` and `std.toml`, can both be used this way.
+
+from std.json import dumps as to_json
+from std.toml import loads as toml_loads
+
+from enemies import Enemy as Foe, describe, spawn as make_enemy
+import world.physics as motion
+
+struct Settings:
+    speed: float
+
+def strongest(foes: list[Foe]) -> Foe?:
+    if len(foes) == 0: return None
+    foes[0]
+
+def main(stdout: Stdout):
+    settings = toml_loads[Settings]("speed = 2.5") else Settings(1.0)
+    foes = [make_enemy("bat", .Flyer(3.0)), Foe("rat", .Walker)]
+    for foe in foes:
+        stdout.print(describe(foe))
+    first = strongest(foes)
+    if first is not None:
+        stdout.print(first.name, to_json([1, 2]), motion.step(1.0, settings.speed))
+
+test "an alias stands for what it renames":
+    assert make_enemy("cat", .Walker).name == "cat"
+    assert motion.step(0.0, 2.0) == 2.0

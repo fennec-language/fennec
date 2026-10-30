@@ -63,7 +63,9 @@ fn imports_sorted(module: &fennec_syntax::Module) -> fennec_syntax::Module {
         module.items.iter().cloned().partition(|item| matches!(item, fennec_syntax::Item::Import(_)));
     for item in &mut imports {
         if let fennec_syntax::Item::Import(import) = item {
-            import.names.sort();
+            let mut pairs: Vec<_> = import.names.drain(..).zip(std::mem::take(&mut import.aliases)).collect();
+            pairs.sort();
+            (import.names, import.aliases) = pairs.into_iter().unzip();
             import.span = fennec_syntax::Span::default();
         }
     }

@@ -57,6 +57,8 @@ pub(crate) fn resolve(files: &mut [File], errors: &mut Vec<Diagnostic>) {
             kit: &kit,
             file: at,
             imported: HashMap::new(),
+            renamed: HashMap::new(),
+            bound: HashSet::new(),
             modules: HashMap::new(),
             std_modules: HashSet::new(),
             locals: HashSet::new(),
@@ -66,23 +68,28 @@ pub(crate) fn resolve(files: &mut [File], errors: &mut Vec<Diagnostic>) {
         for item in &file.module.items {
             let Item::Import(import) = item else { continue };
             if is_std(import) {
-                scope.std_modules.extend(std_aliases(&import.module, &import.names));
+                for (bound, original) in std_bound(import) {
+                    scope.bind_import(&bound, &original, import.span);
+                }
+                scope.std_modules.extend(std_aliases(import));
                 continue;
             }
             let module = import.module.join(".");
             // `from game import physics` binds the module `game.physics`, when there is one.
-            let (submodules, names): (Vec<&String>, Vec<&String>) =
-                import.names.iter().partition(|name| index.contains_key(&format!("{module}.{name}")));
-            for name in submodules {
-                if let Some(&from) = index.get(&format!("{module}.{name}")) {
-                    scope.modules.insert(name.clone(), from);
+            let mut names = Vec::new();
+            for (name, bound) in import.bound() {
+                match index.get(&format!("{module}.{name}")) {
+                    Some(&from) => {
+                        scope.bind_import(bound, name, import.span);
+                        scope.modules.insert(bound.to_owned(), from);
+                    }
+                    None => names.push((name.to_owned(), bound.to_owned())),
                 }
             }
             if let Some(&from) = index.get(&module)
                 && (import.names.is_empty() || !names.is_empty())
             {
-                let names: Vec<String> = names.into_iter().cloned().collect();
-                scope.import(&module, &names, from, import.span);
+                scope.import(&module, &names, import.alias.as_deref(), from, import.span);
             }
         }
         for item in &mut file.module.items {
@@ -143,6 +150,11 @@ struct Resolver<'a> {
     file: usize,
     /// Names brought in by `from module import name`, and the file each is from.
     imported: HashMap<String, usize>,
+    /// What each name imported with `as` stands for: `make` for `spawn` after
+    /// `from enemies import spawn as make`. Uses are rewritten to the name it stands for.
+    renamed: HashMap<String, String>,
+    /// Every name this file's imports bind.
+    bound: HashSet<String>,
     /// Modules brought in whole by `import module`.
     modules: HashMap<String, usize>,
     /// Standard library modules imported whole, by the name they're used under, like
@@ -155,13 +167,47 @@ struct Resolver<'a> {
 }
 
 impl Resolver<'_> {
-    fn import(&mut self, module: &str, names: &[String], from: usize, span: Span) {
-        if names.is_empty() {
-            self.modules.insert(module.to_owned(), from);
+    /// Notes a name an import binds, reporting one that's bound twice, defined in this file
+    /// too, or one the language provides everywhere taken with `as`.
+    fn bind_import(&mut self, bound: &str, original: &str, span: Span) {
+        if bound != original && fennec_check::provided_everywhere(bound) {
+            self.errors.push(
+                Diagnostic::new(format!("`{bound}` is a name the language provides everywhere"), span)
+                    .with_help("pick another name after `as`"),
+            );
+        } else if !self.bound.insert(bound.to_owned()) {
+            self.errors.push(
+                Diagnostic::new(format!("`{bound}` is imported twice in this file"), span)
+                    .with_help("give one of them another name with `as`"),
+            );
+        } else if self.kit.defines(self.file, bound) {
+            self.errors.push(
+                Diagnostic::new(format!("`{bound}` is already defined in this file"), span)
+                    .with_help("give the import another name with `as`"),
+            );
         }
-        for name in names {
+    }
+
+    fn import(
+        &mut self,
+        module: &str,
+        names: &[(String, String)],
+        alias: Option<&str>,
+        from: usize,
+        span: Span,
+    ) {
+        if names.is_empty() {
+            let bound = alias.unwrap_or(module);
+            self.bind_import(bound, module, span);
+            self.modules.insert(bound.to_owned(), from);
+        }
+        for (name, bound) in names {
             if self.kit.defines(from, name) {
-                self.imported.insert(name.clone(), from);
+                self.bind_import(bound, name, span);
+                self.imported.insert(bound.clone(), from);
+                if bound != name {
+                    self.renamed.insert(bound.clone(), name.clone());
+                }
             } else {
                 self.errors.push(
                     Diagnostic::new(format!("`{module}` has nothing called `{name}`"), span)
@@ -334,8 +380,11 @@ impl Resolver<'_> {
             | ExprKind::None
             | ExprKind::Variant(_) => {}
             ExprKind::Name(name) => {
-                let name = name.clone();
-                self.name(&name, span);
+                let used = name.clone();
+                self.name(&used, span);
+                if let Some(original) = self.original(&used, span) {
+                    *name = original;
+                }
             }
             ExprKind::FStr(parts) => {
                 for part in parts {
@@ -458,6 +507,22 @@ impl Resolver<'_> {
     }
 
     /// Checks a name the file uses: it must be its own, imported, or not the kit's at all.
+    /// The name a use stands for when it's an import's `as` name, so the merged module uses
+    /// the name it's defined under. A name the function binds itself hides the import.
+    fn original(&mut self, used: &str, span: Span) -> Option<String> {
+        if self.collecting || self.locals.contains(used) {
+            return None;
+        }
+        let original = self.renamed.get(used)?.clone();
+        if self.locals.contains(&original) {
+            self.errors.push(
+                Diagnostic::new(format!("`{used}` stands for `{original}`, which a name here hides"), span)
+                    .with_help(format!("rename the `{original}` here")),
+            );
+        }
+        Some(original)
+    }
+
     fn name(&mut self, name: &str, span: Span) {
         if self.collecting
             || self.locals.contains(name)
@@ -550,8 +615,11 @@ impl Resolver<'_> {
             return;
         }
         let Some((module, member)) = name.rsplit_once('.') else {
-            let name = name.clone();
-            self.name(&name, span);
+            let used = name.clone();
+            self.name(&used, span);
+            if let Some(original) = self.original(&used, span) {
+                *name = original;
+            }
             return;
         };
         if self.std_modules.contains(module) {
@@ -576,11 +644,26 @@ impl Resolver<'_> {
 
 /// The names a standard library import binds to modules: `std.json` for `import std.json`,
 /// and `json` for `from std import json`.
-fn std_aliases(module: &[String], names: &[String]) -> Vec<String> {
-    match (module, names) {
-        ([_], names) => names.to_vec(),
-        (module, []) => vec![module.join(".")],
+/// The names a standard library module is used under after an import: `json` after
+/// `from std import json`, `std.json` after `import std.json`, `j` after `as j`.
+fn std_aliases(import: &fennec_syntax::Import) -> Vec<String> {
+    match (import.module.as_slice(), &import.alias) {
+        ([_], _) => import.bound().map(|(_, bound)| bound.to_owned()).collect(),
+        (_, Some(alias)) if import.names.is_empty() => vec![alias.clone()],
+        (module, None) if import.names.is_empty() => vec![module.join(".")],
         _ => Vec::new(),
+    }
+}
+
+/// Each name a standard library import binds, with what it stands for. `import std.json`
+/// binds `std`, as in Python, which any number of imports can share, so it isn't listed.
+fn std_bound(import: &fennec_syntax::Import) -> Vec<(String, String)> {
+    match &import.alias {
+        _ if !import.names.is_empty() => {
+            import.bound().map(|(name, bound)| (bound.to_owned(), name.to_owned())).collect()
+        }
+        Some(alias) => vec![(alias.clone(), import.module.join("."))],
+        None => Vec::new(),
     }
 }
 

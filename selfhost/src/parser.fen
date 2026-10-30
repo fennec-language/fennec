@@ -295,7 +295,7 @@ struct Parser:
         body = self.block()?
         .Test(TestDef(name=name, inputs=inputs, body=body, span=span))
 
-    ## `import a.b`, or `from a.b import x, y`.
+    ## `import a.b`, or `from a.b import x, y`, each maybe renamed with `as`.
     def import_names(mut self) -> Import:
         start = self.span()
         is_from = self.eat_keyword("from")
@@ -305,15 +305,27 @@ struct Parser:
         while self.eat_punct("."):
             module.append(self.name("a module name")?)
         mut names = []
+        mut aliases = []
+        mut alias = None
         if is_from:
             if not self.eat_keyword("import"):
                 fail self.unexpected("`import`")
             names.append(self.name("a name to import")?)
+            aliases.append(self.import_alias()?)
             while self.eat_punct(","):
                 names.append(self.name("a name to import")?)
+                aliases.append(self.import_alias()?)
+        else:
+            alias = self.import_alias()?
         span = start.to(self.prev_span())
         self.end_line()?
-        Import(module=module, names=names, span=span)
+        Import(module=module, names=names, aliases=aliases, alias=alias, span=span)
+
+    ## `as name` after something imported, if it's there.
+    def import_alias(mut self) -> str?:
+        if self.eat_keyword("as"):
+            return self.name("a name to import it as")?
+        None
 
     ## `[T, U: Shape & Eq]` after a function or type name.
     def generic_params(mut self) -> list[Generic]:

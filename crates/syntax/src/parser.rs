@@ -362,20 +362,30 @@ impl Parser {
             module.push(self.name("a module name")?);
         }
         let mut names = Vec::new();
+        let mut aliases = Vec::new();
+        let mut alias = None;
         if from {
             if !self.eat_kw(Kw::Import) {
                 return Err(self.unexpected("`import`"));
             }
             loop {
                 names.push(self.name("a name to import")?);
+                aliases.push(self.alias()?);
                 if !self.eat_p(Punct::Comma) {
                     break;
                 }
             }
+        } else {
+            alias = self.alias()?;
         }
         let span = start.to(self.prev_span());
         self.end_line()?;
-        Ok(Import { module, names, span })
+        Ok(Import { module, names, aliases, alias, span })
+    }
+
+    /// `as name` after something imported, if it's there.
+    fn alias(&mut self) -> Result<Option<String>, Diagnostic> {
+        if self.eat_kw(Kw::As) { Ok(Some(self.name("a name to import it as")?)) } else { Ok(None) }
     }
 
     /// `[T, U: Shape]` after a function or type name. Generic parameters are checked by the

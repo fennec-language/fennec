@@ -35,7 +35,7 @@ fields!(Field { name, ty, default, rule, span });
 fields!(Case { name, fields, span });
 fields!(Interface { name, methods, span });
 fields!(Extension { name, generics, methods, span });
-fields!(Import { module, names, span });
+fields!(Import { module, names, aliases, alias, span });
 fields!(TestDef { name, inputs, body, span });
 fields!(Stmt { kind, span });
 fields!(Expr { kind, span });

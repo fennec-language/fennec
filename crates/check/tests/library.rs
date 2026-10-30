@@ -172,3 +172,21 @@ fn imports_name_modules_and_names_that_exist() {
         ["`std.json` has nothing called `parse` @ from std.json import parse"]
     );
 }
+
+#[test]
+fn as_binds_an_import_under_another_name() {
+    let program = "stdout.print(read_json[int]('1')?, read_toml[dict[str, int]]('a = 1')?, j.dumps(1), t.dumps({'a': 1}))";
+    let imports = "from std.json import loads as read_json\nfrom std.toml import loads as read_toml\nimport std.json as j\nfrom std import toml as t";
+    assert_eq!(with_imports(imports, program), Vec::<String>::new());
+    let program = "stdout.print(loads, json.dumps(1), std.json.dumps(1))";
+    assert_eq!(
+        with_imports("from std.json import loads as read\nimport std.json as j", program),
+        ["`loads` doesn't exist @ loads", "`json` doesn't exist @ json", "`std` doesn't exist @ std",]
+    );
+    assert_eq!(
+        with_imports("from std.collections import Deque as Queue", "stdout.print(1)"),
+        [
+            "`as` can't rename a type from the standard library yet, like `Deque` @ from std.collections import Deque as Queue"
+        ]
+    );
+}

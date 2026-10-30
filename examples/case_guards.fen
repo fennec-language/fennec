@@ -1,0 +1,44 @@
+## `case` takes several patterns separated by `|`, and an `if` guard that has to be true
+## for the case to be taken. A guarded case never counts toward handling every case.
+
+enum Tok:
+    Int(value: int)
+    Float(value: float)
+    Name(word: str)
+    Eof
+
+def describe(tok: Tok) -> str:
+    match tok:
+        case .Int(_) | .Float(_):
+            "a number"
+        case .Name(word) if word in ["def", "if", "match"]:
+            "the keyword " + word
+        case .Name(word):
+            "the name " + word
+        case .Eof:
+            "the end"
+
+def size(n: int) -> str:
+    match n:
+        case 0:
+            "none"
+        case 1 | 2 | 3:
+            "a few"
+        case many if many < 0:
+            "less than none"
+        case _:
+            "lots"
+
+def first_word(found: str?) -> str:
+    match found:
+        case text if text is not None and len(text) > 0:
+            text.split()[0]
+        case _:
+            "(nothing)"
+
+def main(stdout: Stdout):
+    for tok in [Tok.Int(1), Tok.Float(2.5), Tok.Name("match"), Tok.Name("fox"), Tok.Eof]:
+        stdout.print(describe(tok))
+    for n in [0, 2, -4, 40]:
+        stdout.print(n, size(n))
+    stdout.print(first_word("quick brown fox"), first_word(""), first_word(None))

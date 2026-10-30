@@ -178,6 +178,7 @@ impl Uses<'_> {
             ExprKind::Match { subject, arms } => {
                 self.expr(Some(subject));
                 for arm in arms {
+                    self.expr(arm.guard.as_ref());
                     self.stmts(&arm.body);
                 }
             }

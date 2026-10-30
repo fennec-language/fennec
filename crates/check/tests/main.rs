@@ -3,6 +3,7 @@
 
 mod builtins;
 mod calls;
+mod cases;
 mod constants;
 mod errors;
 mod generics;

@@ -12,10 +12,14 @@ use fennec_jit::JitError;
 /// `main` yet. Every other example must run natively.
 const INTERPRETED: &[&str] = &[];
 
-/// The functions the JIT can't compile yet, in the examples that have any: generators and
-/// functions with functions inside them. They run in the interpreter.
-const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] =
-    &[("functions_more.fen", &["countdown", "counter_from"]), ("operators.fen", &["Grid.iter"])];
+/// The functions the JIT can't compile yet, in the examples that have any: generators,
+/// functions with functions inside them, and `match`es with a guarded `case`. They run in
+/// the interpreter.
+const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] = &[
+    ("case_guards.fen", &["describe", "first_word", "size"]),
+    ("functions_more.fen", &["countdown", "counter_from"]),
+    ("operators.fen", &["Grid.iter"]),
+];
 
 /// Examples that compile to plain machine code: nothing handed to the interpreter, and no
 /// function needing the runtime's frames.

@@ -165,9 +165,6 @@ fn str_method(name: &str) -> Option<Method> {
     Some(match name {
         "upper" | "lower" | "strip" | "lstrip" | "rstrip" => reads(&[], Type::Str),
         "split" => reads(&[text], Type::list(Type::Str)).optional(1),
-        "lines" => reads(&[], Type::list(Type::Str)),
-        "startswith" | "endswith" => reads(&[text], Type::Bool),
-        "isdigit" => reads(&[], Type::Bool),
         "replace" => reads(&[text.clone(), text], Type::Str),
         "find" => reads(&[text], Type::optional(Type::Int)),
         "join" => reads(&[Type::list(Type::Str)], Type::Str),

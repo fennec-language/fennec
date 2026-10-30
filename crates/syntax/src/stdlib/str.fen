@@ -3,3 +3,32 @@ extend str:
     ## `"ab" * 3` is `"ababab"`: the text repeated. Repeating it fewer than once gives "".
     def *(self, times: int) -> str:
         "".join([self for _ in range(times)])
+
+    ## Whether the text starts with `prefix`.
+    def startswith(self, prefix: str) -> bool:
+        len(prefix) <= len(self) and self[:len(prefix)] == prefix
+
+    ## Whether the text ends with `suffix`.
+    def endswith(self, suffix: str) -> bool:
+        size = len(self)
+        len(suffix) <= size and self[size - len(suffix):] == suffix
+
+    ## Whether the text is one or more of the digits 0 to 9.
+    def isdigit(self) -> bool:
+        len(self) > 0 and all(c >= "0" and c <= "9" for c in self)
+
+    ## The text's lines, without their endings, `\n` or `\r\n`. A last line ending adds no
+    ## empty line after it.
+    def lines(self) -> list[str]:
+        parts = self.split("\n")
+        last = len(parts) - 1
+        mut found = []
+        for at, part in enumerate(parts):
+            if at == last:
+                if part != "":
+                    found.append(part)
+            elif part.endswith("\r"):
+                found.append(part[:-1])
+            else:
+                found.append(part)
+        found

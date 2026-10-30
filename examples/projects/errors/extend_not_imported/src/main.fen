@@ -1,0 +1,8 @@
+from enemies import spawn
+
+extend Enemy:
+    def is_down(self) -> bool:
+        self.health <= 0
+
+def main(stdout: Stdout):
+    stdout.print(spawn().is_down())

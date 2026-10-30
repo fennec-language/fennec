@@ -177,6 +177,11 @@ impl<'m> Program<'m> {
                         add(method, format!("{}.{}", ty.name, method.name), from_prelude);
                     }
                 }
+                Item::Extend(extension) => {
+                    for method in &extension.methods {
+                        add(method, format!("{}.{}", extension.name, method.name), from_prelude);
+                    }
+                }
                 Item::Stmt(stmt) => return Err(unsupported("top-level statements", stmt.span)),
                 _ => {}
             }

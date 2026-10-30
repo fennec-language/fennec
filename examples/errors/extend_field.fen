@@ -1,0 +1,8 @@
+struct Player:
+    name: str
+
+extend Player:
+    health = 100
+
+def main(stdout: Stdout):
+    stdout.print(Player(name="Ash"))

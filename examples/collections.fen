@@ -32,5 +32,5 @@ def main(stdout: Stdout):
         stdout.print(at, name)
     stdout.print(list(zip([1, 2], ["one", "two"])))
 
-def divmod(a: int, b: int):
+def divmod(a: int, b: int) -> (int, int):
     (a // b, a % b)

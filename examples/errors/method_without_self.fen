@@ -1,7 +1,7 @@
 struct Player:
     name: str
 
-    def greet(self):
+    def greet(self) -> str:
         f"hi, {self.name}"
 
 def main(stdout: Stdout):

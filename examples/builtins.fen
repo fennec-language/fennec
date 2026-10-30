@@ -1,6 +1,6 @@
 from std.math import PI, ceil, cos, floor, sin, sqrt
 
-def square(n: int):
+def square(n: int) -> int:
     n * n
 
 def checked(n: int):

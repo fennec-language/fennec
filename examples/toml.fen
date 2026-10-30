@@ -46,7 +46,7 @@ struct Window:
     height = 720
     vsync = True
 
-def kit_toml():
+def kit_toml() -> str:
     "\n".join([
         "# The kit a Fennec project describes itself with.",
         "[kit]",
@@ -79,7 +79,7 @@ def kit_toml():
         "scale = 1.5e0",
     ])
 
-def describe(text: str):
+def describe(text: str) -> str:
     match toml.loads[Sample](text):
         case Ok(sample):
             f"read {sample}"

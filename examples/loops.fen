@@ -1,4 +1,4 @@
-def first_square_over(limit: int):
+def first_square_over(limit: int) -> int:
     mut n = 1
     while True:
         if n * n > limit: return n

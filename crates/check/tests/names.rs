@@ -159,3 +159,46 @@ fn f_strings_and_collections_are_checked_inside() {
         .collect();
     assert_eq!(in_main(program), missing);
 }
+
+#[test]
+fn extensions_add_methods_to_the_programs_own_types() {
+    let program = "
+        struct Point:
+            x = 0
+
+            def moved(self) -> Point:
+                Point(x=self.x + 1)
+
+            def moved(self) -> Point:
+                self
+
+        extend Point:
+            def far(self) -> int:
+                self.moved().x + 'a'
+
+        interface Shape:
+            def area(self) -> float
+
+        extend Shape:
+            pass
+
+        extend int:
+            pass
+
+        extend Nowhere:
+            pass
+
+        def main(stdout: Stdout):
+            stdout.print(Point().far())
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "`Point` already has a method called `moved` @ def moved(self) -> Point",
+            "can't use `+` on an int and a str @ self.moved().x + \"a\"",
+            "`Shape` is an interface, so it can't be extended @ extend Shape",
+            "`int` is built in, so it can't be extended @ extend int",
+            "`Nowhere` isn't a type @ extend Nowhere",
+        ]
+    );
+}

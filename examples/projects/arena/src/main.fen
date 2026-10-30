@@ -29,3 +29,4 @@ def main(stdout: Stdout):
                 stdout.print(f"no luck: {error}")
 
     stdout.print(sum(enemy.health for enemy in enemies))
+    stdout.print([enemy.is_down() for enemy in enemies])

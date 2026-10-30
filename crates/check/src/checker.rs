@@ -1,25 +1,23 @@
 //! The signature table and the order functions are checked in. A function is checked the
-//! first time a caller needs its signature, or after that in name order, so each body is
-//! checked once. A function that's still being checked when it's needed again calls itself,
-//! directly or through others, so it has to have its return type written; until it's done,
-//! its written signature stands in.
+//! first time a caller needs its signature, for the errors it can fail with, or after that in
+//! name order. A function that's still being checked when it's needed again calls itself,
+//! directly or through others; its written signature stands in, and the functions in such a
+//! cycle are checked again until their errors stop growing.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fennec_syntax::{Diagnostic, FnDef, Generic, Module};
+use fennec_syntax::{Diagnostic, FnDef, Generic, Module, Span};
 
 use crate::effects::{self, Effects};
 use crate::function::{Binding, FnCx};
 use crate::infer::Slot;
-use crate::program::{FnEntry, Program, TypeKind, written};
-use crate::types::Type;
+use crate::program::{FnEntry, Program, TypeKind, written, written_ret};
+use crate::types::{Type, a};
 use crate::{Body, Checked, ParamType, Signature, Signatures, Types};
 
 enum State {
-    /// Being checked now. `recursive` is set when it's needed before it's done.
-    Checking {
-        recursive: bool,
-    },
+    /// Being checked now.
+    Checking,
     Done(Signature),
 }
 
@@ -63,7 +61,7 @@ impl Checker {
         }
         program.prelude_imports = std::mem::take(&mut program.imports);
         program.add(module, false);
-        let mut diagnostics = std::mem::take(&mut program.import_problems);
+        let mut diagnostics = std::mem::take(&mut program.problems);
         diagnostics.extend(crate::imports::unimported(module, &program));
         Checker {
             program,
@@ -114,7 +112,7 @@ impl Checker {
                 .into_iter()
                 .filter_map(|(key, state)| match state {
                     State::Done(signature) => Some((key, signature)),
-                    State::Checking { .. } => None,
+                    State::Checking => None,
                 })
                 .collect();
             let signatures = Signatures { functions, structs, locals };
@@ -167,7 +165,7 @@ impl Checker {
     /// A function's signature, checking its body first if that's the only way to know its
     /// return type.
     pub(crate) fn signature(&mut self, key: &str) -> Option<Signature> {
-        let has_return_type = self.program.functions.get(key)?.def.ret.is_some();
+        self.program.functions.get(key)?;
         if let Some(caller) = self.checking.last() {
             let caller = self.outermost(caller);
             self.callers.entry(self.outermost(key)).or_default().insert(caller);
@@ -180,16 +178,12 @@ impl Checker {
                 }
                 return Some(signature);
             }
-            Some(State::Checking { recursive }) => {
-                // When it's checked again, what it gave back last time stands in, so it
-                // doesn't need its return type written any more than the first time.
-                if let Some(previous) = self.previous.get(key).cloned() {
-                    self.mark_stale();
-                    return Some(previous);
-                }
-                *recursive |= !has_return_type;
+            Some(State::Checking) => {
+                // Calls to a function from inside itself use what's written, or what it
+                // gave back last time when it's checked again. Its errors aren't known yet,
+                // so the caller is checked again once they are.
                 self.mark_stale();
-                return self.declared(key);
+                return self.previous.get(key).cloned().or_else(|| self.declared(key));
             }
             None => self.check_function(key),
         }
@@ -203,7 +197,7 @@ impl Checker {
     fn written_return(&self, key: &str) -> Type {
         let Some(entry) = self.program.functions.get(key) else { return Type::Unknown };
         let generics = self.generic_names(entry);
-        let written = entry.def.ret.as_ref().map(|ret| self.program.resolve_in(ret, &generics));
+        let written = written_ret(&entry.def).map(|ret| self.program.resolve_in(ret, &generics));
         written.and_then(Result::ok).unwrap_or(Type::Unknown)
     }
 
@@ -269,28 +263,54 @@ impl Checker {
         let Some(entry) = self.program.functions.get(key) else { return };
         let (def, prelude) = (entry.def.clone(), entry.prelude);
         let Some(mut signature) = self.declared(key) else { return };
-        self.states.insert(key.to_owned(), State::Checking { recursive: false });
+        self.states.insert(key.to_owned(), State::Checking);
         let effects = effects::of_body(&def.body);
         self.checking.push(key.to_owned());
         let body = FnCx::check_function(self, key, &def, &signature.params, captured, !prelude);
         self.checking.pop();
-        let recursive = matches!(self.states.get(key), Some(State::Checking { recursive: true }));
-        // No arrow means it gives back nothing. A call to it from inside itself stood in as
-        // unknown, so a body that gives back nothing else gives back nothing; one that gives
-        // back a value has to write its return type.
-        let gives_back = !matches!(self.settled(&body.value), Type::Unit | Type::Unknown);
-        let value = match &def.ret {
-            Some(_) => self.written_return(key),
-            None if recursive && !gives_back => Type::Unit,
-            None => body.value,
+        // No arrow means it gives back nothing. One that gives back a value anyway has to
+        // write its type, and until it does, callers see the value so they aren't reported
+        // as well.
+        let value = self.settled(&body.value);
+        let gives_back = !matches!(value, Type::Unit | Type::Unknown);
+        let value = match (written_ret(&def), &def.ret) {
+            (Some(_), _) => self.written_return(key),
+            (None, None) if gives_back => value,
+            (None, _) => Type::Unit,
         };
+        // A value that isn't fully known has been reported already.
+        if def.ret.is_none() && gives_back && value.is_known() && !prelude {
+            let fixable = self.can_write(&value);
+            self.diagnostics.push(missing_return_type(&def, &value, effects.yields, fixable));
+        }
+        if let (Some(ret), Some(arrow)) = (&def.ret, def.arrow)
+            && matches!(ret.name.as_str(), "None" | "nothing")
+            && ret.args.is_empty()
+            && !ret.optional
+            && !prelude
+        {
+            self.diagnostics.push(arrow_to_nothing(&def.name, arrow, ret.span));
+        }
         // Anything still open in what it gives back has been reported, and callers
         // mustn't settle it.
         signature.returns = forget_vars(&wrap(value, body.error, effects));
-        if recursive && def.ret.is_none() && !prelude && gives_back {
-            self.diagnostics.push(needs_return_type(&def, &body.suggestion));
-        }
         self.states.insert(key.to_owned(), State::Done(signature));
+    }
+
+    /// Whether a program can write a type as it is, with every type it names in scope.
+    fn can_write(&self, ty: &Type) -> bool {
+        let mut writable = true;
+        ty.map(&mut |part| {
+            let name = match part {
+                Type::Named(name) | Type::Generic(name, _) => Some(name.as_str()),
+                Type::Id(_) => Some("Id"),
+                Type::IdMap(_) => Some("IdMap"),
+                _ => None,
+            };
+            writable &= name.is_none_or(|name| self.program.can_name(name));
+            None
+        });
+        writable
     }
 
     /// Notes that the function being checked used a signature that may still grow.
@@ -460,7 +480,7 @@ impl Checker {
         self.diagnostics.extend(unknown_signatures);
         for (start, end) in innermost {
             self.diagnostics.push(
-                Diagnostic::new("can't work out the type of this", fennec_syntax::Span { start, end })
+                Diagnostic::new("can't work out the type of this", Span { start, end })
                     .with_help("name it with its type written, like `value: int = ...`"),
             );
         }
@@ -536,7 +556,7 @@ fn forget_vars(ty: &Type) -> Type {
     ty.map(&mut |part| matches!(part, Type::Var(_)).then_some(Type::Unknown))
 }
 
-fn field_needs_type(name: &str, ty: &Type, span: fennec_syntax::Span) -> Diagnostic {
+fn field_needs_type(name: &str, ty: &Type, span: Span) -> Diagnostic {
     let example = match ty {
         Type::List(_) => format!("{name}: list[int] = []"),
         Type::Dict(..) => format!("{name}: dict[str, int] = {{}}"),
@@ -560,7 +580,15 @@ fn wrap(value: Type, error: Type, effects: Effects) -> Type {
     }
 }
 
-fn needs_return_type(def: &FnDef, suggestion: &Type) -> Diagnostic {
+/// `-> None` on a `def`: no arrow already means it gives back nothing, so the fix removes it.
+fn arrow_to_nothing(name: &str, arrow: Span, ret: Span) -> Diagnostic {
+    Diagnostic::new(format!("`{name}` gives back nothing, so it has no arrow"), arrow.to(ret))
+        .with_help("a `def` with no `->` gives back nothing: remove the arrow and what follows it")
+        .with_fix(arrow.to(ret), "")
+}
+
+/// A `def` with no arrow that gives back a value anyway, with the fix that writes in its type.
+fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool) -> Diagnostic {
     let params: Vec<String> = def
         .params
         .iter()
@@ -573,11 +601,20 @@ fn needs_return_type(def: &FnDef, suggestion: &Type) -> Diagnostic {
         })
         .collect();
     let signature = format!("def {}({})", def.name, params.join(", "));
-    let help = if *suggestion == Type::Unknown {
-        format!("write the type it returns after the parameters: `{signature} -> <type>:`")
-    } else {
-        format!("write it after the parameters: `{signature} -> {suggestion}:`")
+    let (what, written) = match value {
+        Type::List(item) if generator => {
+            (format!("yields {}", a(item)), item.source().map(|item| format!("Iterator[{item}]")))
+        }
+        value => (format!("gives back {}", a(value)), value.source()),
     };
-    Diagnostic::new(format!("`{}` calls itself, so its return type has to be written", def.name), def.span)
-        .with_help(help)
+    let message = format!("`{}` {what}, so its return type has to be written", def.name);
+    let Some(written) = written.filter(|_| fixable) else {
+        return Diagnostic::new(message, def.span).with_help(format!(
+            "write the type it gives back after the parameters: `{signature} -> <type>:`"
+        ));
+    };
+    let end = Span { start: def.span.end, end: def.span.end };
+    Diagnostic::new(message, def.span)
+        .with_help(format!("write it after the parameters: `{signature} -> {written}:`"))
+        .with_fix(end, format!(" -> {written}"))
 }

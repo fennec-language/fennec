@@ -1,7 +1,7 @@
 struct Problem:
     reason: str
 
-def check(n: int):
+def check(n: int) -> int:
     if n < 0: fail Problem("negative")
     n
 

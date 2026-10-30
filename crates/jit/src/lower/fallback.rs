@@ -264,6 +264,7 @@ impl Lowerer<'_, '_> {
         for input in handover.inputs {
             self.call_helper(Helper::Input, &[input])?;
         }
+        self.note(span, super::notes::expression(&expr.kind));
         let id = i64::try_from(self.shared.tables.exprs.len()).unwrap_or(0);
         self.shared.tables.exprs.push(expr);
         let id = self.int(id);
@@ -282,6 +283,7 @@ impl Lowerer<'_, '_> {
         for input in handover.inputs {
             self.call_helper(Helper::Input, &[input])?;
         }
+        self.note(span, super::notes::statement(&stmt.kind));
         let id = i64::try_from(self.shared.tables.stmts.len()).unwrap_or(0);
         self.shared.tables.stmts.push(stmt);
         let id = self.int(id);

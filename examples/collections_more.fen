@@ -1,6 +1,6 @@
 from std.game import IdMap
 
-def describe(result: Result[str, IoError]):
+def describe(result: Result[str, IoError]) -> str:
     match result:
         case Ok(text):
             f"read {len(text)} characters"

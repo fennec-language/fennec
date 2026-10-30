@@ -49,8 +49,9 @@ pub(crate) struct Program {
     pub(crate) imported_types: std::collections::BTreeSet<String>,
     /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
     pub(crate) modules: BTreeMap<String, &'static str>,
-    /// Imports of modules or names that don't exist.
-    pub(crate) import_problems: Vec<Diagnostic>,
+    /// Problems found while adding declarations: imports of modules or names that don't
+    /// exist, and methods that can't be added.
+    pub(crate) problems: Vec<Diagnostic>,
     aliases: BTreeMap<String, TypeExpr>,
 }
 
@@ -76,7 +77,13 @@ impl Program {
                     self.interfaces.insert(interface.name.clone(), interface.clone());
                 }
                 Item::Import(import) => self.add_import(import),
-                Item::Stmt(_) => {}
+                Item::Extend(_) | Item::Stmt(_) => {}
+            }
+        }
+        // Extensions come last, so the type they extend is known wherever it's declared.
+        for item in &module.items {
+            if let Item::Extend(extension) = item {
+                self.add_extension(extension, prelude);
             }
         }
     }
@@ -85,7 +92,7 @@ impl Program {
         let imported = match fennec_syntax::std_import(import) {
             Ok(imported) => imported,
             Err(problem) => {
-                self.import_problems.push(problem);
+                self.problems.push(problem);
                 return;
             }
         };
@@ -108,13 +115,7 @@ impl Program {
 
     fn add_type(&mut self, def: &TypeDef, kind: TypeKind, prelude: bool) {
         for method in &def.methods {
-            let entry = FnEntry {
-                def: method.clone(),
-                owner: Some(def.name.clone()),
-                prelude,
-                inherited: Vec::new(),
-            };
-            self.functions.insert(format!("{}.{}", def.name, method.name), entry);
+            self.add_method(&def.name, method, prelude);
         }
         self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone(), prelude });
     }
@@ -191,7 +192,7 @@ impl Program {
         }
         let wanted = match name {
             "->" => written.args.len().max(1),
-            "list" | "set" | "SoaList" | "Id" | "IdMap" => 1,
+            "list" | "set" | "SoaList" | "Id" | "IdMap" | "Iterator" => 1,
             "dict" | "Result" => 2,
             "tuple" => written.args.len(),
             name => self.type_params(name).len(),
@@ -215,7 +216,8 @@ impl Program {
             // What a function gives back when it gives back nothing, for writing the return
             // type of one that calls itself.
             "nothing" => Type::Unit,
-            "list" | "SoaList" => Type::List(arg()),
+            // A generator gives back an `Iterator[T]`, a list of what it yields.
+            "list" | "SoaList" | "Iterator" => Type::List(arg()),
             "set" => Type::Set(arg()),
             "dict" => Type::Dict(arg(), arg()),
             "Result" => Type::Result(arg(), arg()),
@@ -242,6 +244,14 @@ impl Program {
             },
         };
         Ok(if written.optional { Type::optional(ty) } else { ty })
+    }
+
+    /// Whether a program can write a type's name where it is: it's built in, declared in the
+    /// program, or imported from the standard library.
+    pub(crate) fn can_name(&self, name: &str) -> bool {
+        fennec_syntax::importable_type(name).is_none()
+            || self.types.get(name).is_some_and(|info| !info.prelude)
+            || self.imported_types.contains(name)
     }
 
     /// Whether a name is an interface: one the program declares, or a built-in one.
@@ -292,9 +302,9 @@ impl Program {
 /// The interfaces every type that can fits automatically.
 pub(crate) const BUILT_IN_INTERFACES: [&str; 4] = ["Eq", "Hashable", "Ordered", "Format"];
 
-const BUILT_IN_TYPES: [&str; 21] = [
+pub(crate) const BUILT_IN_TYPES: [&str; 22] = [
     "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "set", "dict", "tuple",
-    "Id", "IdMap", "Stdout", "Fs", "Clock", "Args", "Stdin", "Result", "->",
+    "Id", "IdMap", "Stdout", "Fs", "Clock", "Args", "Stdin", "Result", "Iterator", "->",
 ];
 
 /// An interface written where a type goes, as in `list[Shape]`.
@@ -321,7 +331,7 @@ fn wrong_type_args(written: &TypeExpr, wanted: usize) -> Diagnostic {
     Diagnostic::new(message, written.span).with_help(format!("write it like `{example}`"))
 }
 
-fn unknown_type(name: &str, span: Span) -> Diagnostic {
+pub(crate) fn unknown_type(name: &str, span: Span) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("`{name}` isn't a type"), span);
     match name {
         "f32" | "f64" | "double" => diagnostic.with_help("write `float`"),
@@ -332,6 +342,14 @@ fn unknown_type(name: &str, span: Span) -> Diagnostic {
         "Optional" => diagnostic.with_help("write `?` after the type, like `Enemy?`"),
         _ => diagnostic.with_help(format!("declare it, like `struct {name}:`, or check the spelling")),
     }
+}
+
+/// The return type a `def` writes. `-> None` counts as none, since no arrow already means it
+/// gives back nothing; it's reported, with a fix that removes it.
+pub(crate) fn written_ret(def: &FnDef) -> Option<&TypeExpr> {
+    def.ret.as_ref().filter(|ret| {
+        !(matches!(ret.name.as_str(), "None" | "nothing") && ret.args.is_empty() && !ret.optional)
+    })
 }
 
 /// A written type as source text, for suggesting a fix.

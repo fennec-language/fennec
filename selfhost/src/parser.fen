@@ -5,7 +5,7 @@
 from span import Span, Diagnostic
 from token import FPart, Tok, Token, is_reserved
 from lexer import byte_length, lex
-from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Extension, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
 
 ## Parses a whole `.fen` file, where only declarations may sit at the top level.
 def parse(source: str) -> Module:
@@ -162,7 +162,7 @@ struct Parser:
         )
 
     def is_declaration(self, word: str) -> bool:
-        if word in ["struct", "enum", "error", "interface"]:
+        if word in ["struct", "enum", "error", "interface", "extend"]:
             return is_name(self.peek_at(1))
         if word == "type":
             return is_name(self.peek_at(1)) and self.peek_at(2) == .Punct("=")
@@ -177,6 +177,7 @@ struct Parser:
             case "error": .Error(self.type_def(start, False)?)
             case "enum": .Enum(self.type_def(start, True)?)
             case "interface": self.interface(start)?
+            case "extend": self.extension(start)?
             case "type":
                 name = self.name("a type name")?
                 self.expect_punct("=")?
@@ -254,6 +255,27 @@ struct Parser:
                 methods.append(self.signature()?)
             self.end_line()?
         .Interface(Interface(name=name, methods=methods, span=start.to(self.prev_span())))
+
+    ## `extend Name:` and its methods. A field is an error: an extension adds methods only.
+    def extension(mut self, start: Span) -> Item:
+        name = self.name("a type name")?
+        span = start.to(self.prev_span())
+        self.expect_punct(":")?
+        self.expect_block_start()?
+        mut methods = []
+        while not self.eat(.Dedent) and not self.at(.Eof):
+            self.eat_pub()
+            if self.at_keyword("def"):
+                methods.append(self.function()?)
+            elif self.eat_keyword("pass"):
+                self.end_line()?
+            else:
+                fail Diagnostic(
+                    message="an extension adds methods only",
+                    span=self.span(),
+                    help=f"declare fields where `{name}` is declared",
+                )
+        .Extend(Extension(name=name, methods=methods, span=span))
 
     def test(mut self, start: Span) -> Item:
         mut name = ""
@@ -343,9 +365,19 @@ struct Parser:
                 break
         self.expect_punct(")")?
         mut ret = None
+        mut arrow = None
         if self.eat_punct("->"):
+            arrow = self.prev_span()
             ret = self.type_expr()?
-        FnDef(name=name, generics=generics, params=params, ret=ret, body=[], span=start.to(self.prev_span()))
+        FnDef(
+            name=name,
+            generics=generics,
+            params=params,
+            ret=ret,
+            arrow=arrow,
+            body=[],
+            span=start.to(self.prev_span()),
+        )
 
     def param(mut self) -> Param:
         start = self.span()

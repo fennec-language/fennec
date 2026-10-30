@@ -7,7 +7,7 @@ from token import FPart, Tok
 from lexer import lex
 from parser import parse
 from check.checker import check
-from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Extension, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
 
 ## Every token in `source`, one per line, or the error that stopped the lexer.
 def dump_tokens(source: str) -> str:
@@ -118,6 +118,11 @@ struct Tree:
                 for method in interface.methods:
                     self.write_function(method)
                 self.close()
+            case .Extend(extension):
+                self.open(f"extend {extension.name}", extension.span)
+                for method in extension.methods:
+                    self.write_function(method)
+                self.close()
             case .TypeAlias(name, ty, span):
                 self.open(f"type-alias {name}", span)
                 self.write_type_expr(ty)
@@ -141,7 +146,7 @@ struct Tree:
             self.write_param(param)
         ret = function.ret
         if ret is not None:
-            self.open("returns", None)
+            self.open("returns", function.arrow)
             self.write_type_expr(ret)
             self.close()
         self.write_stmts(function.body)

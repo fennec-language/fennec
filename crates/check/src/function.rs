@@ -277,6 +277,9 @@ impl<'c> FnCx<'c> {
         }
         cx.stmts(&test.body, false);
         cx.finish(&[]);
+        if test.inputs.is_empty() {
+            checker.record_test(key, &test.body);
+        }
     }
 
     /// Checks a type's field defaults against their types, and its `where` rules.

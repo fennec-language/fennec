@@ -31,6 +31,9 @@ mod stmt;
 mod strings;
 mod structs;
 mod symbols;
+mod test_entries;
+
+pub(crate) use test_entries::{CompiledTests, compile_tests};
 
 use std::collections::{HashMap, HashSet};
 
@@ -130,14 +133,14 @@ pub(crate) fn compile(
         let fatal = |diagnostic| ("main".to_owned(), diagnostic);
         let mut module = new_module(span).map_err(fatal)?;
         let mut shared = Shared::new(program, stack_limit);
-        shared.cache = cache
-            .map(|(cache, program)| cached::CacheUse { cache: cache.clone(), program: program.to_owned() });
+        shared.cache = cached::CacheUse::of(cache, false);
         let main = compile_functions(&mut module, &mut shared, program, signatures, skipped)?;
         symbols::define(&mut module, &shared).map_err(fatal)?;
         let mut ctx = module.make_context();
         let mut builder_ctx = FunctionBuilderContext::new();
         let entry =
-            define_entry(&mut module, &mut ctx, &mut builder_ctx, &shared, main, span).map_err(fatal)?;
+            define_entry(&mut module, &mut ctx, &mut builder_ctx, &shared, ("fennec_entry", main), span)
+                .map_err(fatal)?;
         module.finalize_definitions().map_err(|err| fatal(internal(err, span)))?;
         let code = module.get_finalized_function(entry);
         Ok((Entry { code, _module: module }, shared))
@@ -194,6 +197,23 @@ pub(super) fn compile_functions(
 ) -> Result<(FuncId, Ty), Failure> {
     let span = program.main_span;
     let fatal = |diagnostic| ("main".to_owned(), diagnostic);
+    compile_bodies(module, shared, program, signatures, skipped)?;
+    let main = shared.compiled.get("main").ok_or_else(|| fatal(unsupported("this `main`", span)))?;
+    if main.params.iter().any(|(_, ty, _)| !matches!(ty, Ty::Cap(_))) {
+        return Err(fatal(unsupported("a `main` that takes anything but `stdout`", span)));
+    }
+    Ok((main.id, main.ret))
+}
+
+/// Declares, lowers and generates machine code for every function not skipped.
+fn compile_bodies(
+    module: &mut dyn Module,
+    shared: &mut Shared,
+    program: &Program<'_>,
+    signatures: &fennec_check::Signatures,
+    skipped: &HashSet<String>,
+) -> Result<(), Failure> {
+    let fatal = |diagnostic| ("main".to_owned(), diagnostic);
     declare_all(module, shared, program, skipped).map_err(fatal)?;
     let mut ctx = module.make_context();
     let mut builder_ctx = FunctionBuilderContext::new();
@@ -219,11 +239,7 @@ pub(super) fn compile_functions(
         module.clear_context(&mut ctx);
     }
     shared.cached = cached::generate(module, lowered, shared.cache.as_ref())?;
-    let main = shared.compiled.get("main").ok_or_else(|| fatal(unsupported("this `main`", span)))?;
-    if main.params.iter().any(|(_, ty, _)| !matches!(ty, Ty::Cap(_))) {
-        return Err(fatal(unsupported("a `main` that takes anything but `stdout`", span)));
-    }
-    Ok((main.id, main.ret))
+    Ok(())
 }
 
 fn abi(ty: Ty) -> Option<types::Type> {

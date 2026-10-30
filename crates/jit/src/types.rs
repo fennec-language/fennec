@@ -180,6 +180,26 @@ impl<'m> Program<'m> {
         prelude: &'m [Module],
         signatures: &Signatures,
     ) -> Result<Self, Diagnostic> {
+        Self::build(module, prelude, signatures, &[])
+    }
+
+    /// Like `from_module`, for running `tests` rather than `main`: each is a function with
+    /// its key, and the program is what they reach.
+    pub(crate) fn for_tests(
+        module: &'m Module,
+        prelude: &'m [Module],
+        signatures: &Signatures,
+        tests: &'m [(String, FnDef)],
+    ) -> Result<Self, Diagnostic> {
+        Self::build(module, prelude, signatures, tests)
+    }
+
+    fn build(
+        module: &'m Module,
+        prelude: &'m [Module],
+        signatures: &Signatures,
+        tests: &'m [(String, FnDef)],
+    ) -> Result<Self, Diagnostic> {
         let items = || prelude.iter().chain(std::iter::once(module)).flat_map(|module| &module.items);
         let enums = items().filter_map(|item| match item {
             Item::Enum(def) => Some(def),
@@ -228,14 +248,23 @@ impl<'m> Program<'m> {
                 _ => {}
             }
         }
+        for (key, def) in tests {
+            add(def, key.clone(), false);
+            main_span = main_span.or(Some(def.span));
+        }
         let main_span = main_span
             .ok_or_else(|| Diagnostic::new("this program has no `main` function", Span::default()))?;
-        // Compile only what a run can reach from `main`.
+        // Compile only what a run can reach from `main`, or from the tests it runs.
         let modules: Vec<&Module> = prelude.iter().chain(std::iter::once(module)).collect();
-        let (reached, mentions) = crate::reach::reachable(&functions, &modules);
+        let roots: Vec<String> = if tests.is_empty() {
+            vec!["main".to_owned()]
+        } else {
+            tests.iter().map(|(key, _)| key.clone()).collect()
+        };
+        let (reached, mentions) = crate::reach::reachable(&functions, &modules, &roots);
         functions.retain(|function| reached.contains(&function.key));
         excluded.retain(|key| crate::reach::is_mentioned(key, &mentions));
-        if !functions.iter().any(|function| function.def.name == "main") {
+        if tests.is_empty() && !functions.iter().any(|function| function.def.name == "main") {
             return Err(unsupported("this `main`", main_span));
         }
         let modules = module

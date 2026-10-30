@@ -52,6 +52,9 @@ const KINDS: [Reloc; 30] = [
     Reloc::PulleyCallIndirectHost,
 ];
 
+/// How many functions a pack that's added to may keep, so old versions of them don't pile up.
+const MOST_MERGED: usize = 1 << 17;
+
 /// Everything code generation depends on besides the IR: the CPU and every setting.
 fn target(isa: &dyn TargetIsa) -> String {
     let features: Vec<String> = isa.isa_flags().iter().map(ToString::to_string).collect();
@@ -120,6 +123,15 @@ impl Names {
 pub(crate) struct CacheUse {
     pub(crate) cache: Cache,
     pub(crate) program: String,
+    /// Whether to add to the pack rather than replace it. Several workers running different
+    /// tests share one pack, and none of them compiles the whole program.
+    pub(crate) merge: bool,
+}
+
+impl CacheUse {
+    pub(crate) fn of(cache: Option<(&Cache, &str)>, merge: bool) -> Option<Self> {
+        cache.map(|(cache, program)| CacheUse { cache: cache.clone(), program: program.to_owned(), merge })
+    }
 }
 
 /// Generates and installs machine code for every lowered function, reusing what the program's
@@ -130,7 +142,7 @@ pub(super) fn generate(
     lowered: Vec<(FuncId, Ir, &Function<'_>)>,
     cache: Option<&CacheUse>,
 ) -> Result<usize, Failure> {
-    let Some(CacheUse { cache, program }) = cache else {
+    let Some(CacheUse { cache, program, merge }) = cache else {
         for (id, code) in compile_all(module.isa(), lowered)? {
             code.install(module, id)?;
         }
@@ -161,6 +173,11 @@ pub(super) fn generate(
         code.install(module, id)?;
     }
     if found < kept.len() {
+        if *merge {
+            let have: std::collections::HashSet<_> = kept.iter().map(|(key, _)| *key).collect();
+            let others = cache.pack(program).into_iter().filter(|(key, _)| !have.contains(key));
+            kept.extend(others.take(MOST_MERGED.saturating_sub(have.len())));
+        }
         // A cache that can't be written only means compiling again next time.
         let _ = cache.store_pack(program, &kept);
     }

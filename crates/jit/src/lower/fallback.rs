@@ -95,6 +95,14 @@ impl Lowerer<'_, '_> {
         self.run_stmt(stmt, handover, span)
     }
 
+    /// Checks an assertion in the interpreter, which writes its message, with the values it
+    /// compares computed natively.
+    pub(super) fn interpret_assert(&mut self, condition: &Expr, span: Span) -> Result<(), Diagnostic> {
+        let mut handover = Handover::default();
+        let condition = self.hoist(condition, &mut handover)?;
+        self.run_stmt(Stmt { kind: StmtKind::Assert(condition), span }, handover, span)
+    }
+
     /// Runs a whole statement in the interpreter.
     pub(super) fn interpret_stmt(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
         let mut handover = Handover::default();

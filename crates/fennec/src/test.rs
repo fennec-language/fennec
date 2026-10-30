@@ -5,6 +5,9 @@
 //! itself, or anything it can reach (see `fennec_build::test_keys`). The keys of the tests
 //! that passed are kept in the cache in `~/.fennec`. `--all` runs every test, as do runs with
 //! `CI` or `FENNEC_NO_CACHE` set. A test that failed always runs again.
+//!
+//! Tests run as native code on every core, reusing machine code from the cache. Property
+//! tests, and any test the JIT can't compile yet, run in the interpreter.
 
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
@@ -16,27 +19,41 @@ pub(crate) fn test(path: &str, all: bool) -> ExitCode {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Everything) else {
         return ExitCode::FAILURE;
     };
-    if !crate::run::check(&mut program) {
-        return ExitCode::FAILURE;
-    }
-    let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
-    let mut out = std::io::sink();
-    let mut interp = match fennec_interp::Interp::new(&mut out) {
-        Ok(interp) => interp,
-        Err(diagnostic) => {
-            eprint!("{}", render(&diagnostic));
+    let signatures = match fennec_check::check_and_resolve(&mut program.module) {
+        Ok(signatures) => signatures,
+        Err(diagnostics) => {
+            eprint!("{}", program.sources.render_all(&diagnostics));
             return ExitCode::FAILURE;
         }
     };
-    if let Err(diagnostic) = interp.load(&program.module) {
-        eprint!("{}", render(&diagnostic));
-        return ExitCode::FAILURE;
-    }
-    let keys: HashMap<String, Hash> = fennec_build::test_keys(&program.module).into_iter().collect();
+    let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
+    let keyed = fennec_build::test_keys(&program.module);
+    let keys: HashMap<String, Hash> = keyed.iter().cloned().collect();
     let results = Results::open(path, all);
     let unchanged: HashSet<&str> =
         keys.iter().filter(|(_, key)| results.passed.contains(*key)).map(|(name, _)| name.as_str()).collect();
-    let outcomes = interp.run_tests_where(&|name| !unchanged.contains(name));
+    let wanted: Vec<String> = keyed
+        .iter()
+        .map(|(name, _)| name)
+        .filter(|name| !unchanged.contains(name.as_str()))
+        .cloned()
+        .collect();
+    let cache = results.machine_code();
+    let cache = cache.as_ref().map(|(cache, program)| (cache, program.as_str()));
+    let native = fennec_jit::run_tests(&program.module, &signatures, &wanted, cache);
+    let mut outcomes = native.outcomes;
+    if !native.left.is_empty() {
+        match interpreted(&program.module, &native.left) {
+            Ok(more) => outcomes.extend(more),
+            Err(diagnostic) => {
+                eprint!("{}", render(&diagnostic));
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    // Workers finish in any order, and a report reads in the order the tests are written.
+    let place = |name: &str| keyed.iter().position(|(test, _)| test == name);
+    outcomes.sort_by_key(|outcome| place(&outcome.name));
     if outcomes.is_empty() && unchanged.is_empty() {
         println!("no tests in {path}");
         return ExitCode::SUCCESS;
@@ -67,6 +84,17 @@ pub(crate) fn test(path: &str, all: bool) -> ExitCode {
     if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
+/// Runs the tests in `names` in the interpreter.
+fn interpreted(
+    module: &fennec_syntax::Module,
+    names: &[String],
+) -> Result<Vec<fennec_interp::TestOutcome>, fennec_syntax::Diagnostic> {
+    let mut out = std::io::sink();
+    let mut interp = fennec_interp::Interp::new(&mut out)?;
+    interp.load(module)?;
+    Ok(interp.run_tests_where(&|name| names.iter().any(|left| left == name)))
+}
+
 /// Which tests of a program passed last time, and where to keep this run's.
 struct Results {
     cache: Option<(Cache, String)>,
@@ -87,6 +115,12 @@ impl Results {
             _ => HashSet::new(),
         };
         Results { cache, passed }
+    }
+
+    /// Where machine code for this program's tests is kept: apart from its `main`'s, since
+    /// tests reach other functions.
+    fn machine_code(&self) -> Option<(Cache, String)> {
+        self.cache.as_ref().map(|(cache, program)| (cache.clone(), format!("{program}#tests")))
     }
 
     fn store(&self, passing: &[Hash]) {

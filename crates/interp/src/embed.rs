@@ -24,6 +24,7 @@ pub mod heap;
 pub mod lists;
 pub mod objects;
 pub mod strings;
+mod tests;
 
 use std::collections::HashMap;
 
@@ -32,6 +33,8 @@ use crate::interp::Interp;
 use crate::place::Place;
 use crate::scope::Frame;
 use crate::value::{Capability, Value};
+
+pub use tests::next_test;
 
 /// What the compiler registers before a program runs: the names, text and syntax its
 /// native code refers to by number.

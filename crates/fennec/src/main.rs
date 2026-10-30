@@ -2,6 +2,7 @@
 #![expect(clippy::print_stdout, reason = "the command line prints its results")]
 #![expect(clippy::print_stderr, reason = "the command line reports errors")]
 
+mod fmt;
 mod repl;
 mod run;
 mod test;
@@ -13,6 +14,8 @@ const USAGE: &str = "usage:
   fennec run --jit [path]   run it as native code (still in progress)
   fennec test [path]        run a kit's tests, or a single file's
   fennec new <name>         start a kit in a new folder
+  fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
+  fennec fmt --check        list the files that aren't formatted, and fail if any aren't
   fennec repl               try Fennec interactively
   fennec --version          show the version
 
@@ -32,6 +35,7 @@ fn main() -> ExitCode {
         ["test", path] => on_big_stack(test::test, path),
         ["new", path] => new(path),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
+        ["fmt", rest @ ..] => fmt::fmt(rest),
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["--version" | "-V"] => {

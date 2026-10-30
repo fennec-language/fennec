@@ -199,7 +199,7 @@ struct Tree:
             case .Expr(expr):
                 self.open("expr", span)
                 self.write_expr(expr)
-            case .Assign(target, op, value, declare_mut):
+            case .Assign(target, op, value, declare_mut, ty):
                 mut label = "assign"
                 if op is not None:
                     label += f" {op.symbol()}="
@@ -207,6 +207,8 @@ struct Tree:
                     label += " mut"
                 self.open(label, span)
                 self.write_expr(target)
+                if ty is not None:
+                    self.write_type_expr(ty)
                 self.write_expr(value)
             case .If(branches, otherwise):
                 self.open("if", span)

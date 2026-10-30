@@ -4,11 +4,14 @@
 mod builtins;
 mod calls;
 mod errors;
+mod generics;
 mod library;
 mod mutation;
 mod names;
 mod narrowing;
 mod signatures;
+mod strict;
+mod typed;
 mod types;
 
 use fennec_check::{Signatures, Type};

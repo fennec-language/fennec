@@ -27,6 +27,7 @@ macro_rules! modules {
 modules! {
     collections,
     game,
+    hash,
     json,
     layout,
     math,

@@ -6,7 +6,7 @@ use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, FnDef, Stmt, StmtKind, Un
 use crate::effects;
 use crate::function::{Binding, FnCx, Origin};
 use crate::messages::unhandled;
-use crate::types::{Type, article, join_all};
+use crate::types::{Type, article};
 
 /// How a block or statement finishes: its value, and whether it always leaves early
 /// (`return`, `fail`, `break` or `continue`), so nothing after it runs.
@@ -43,7 +43,7 @@ impl FnCx<'_> {
             let this = self.stmt(stmt, last && used);
             if matches!(stmt.kind, StmtKind::Expr(_))
                 && !(last && used)
-                && matches!(this.ty, Type::Result(..))
+                && matches!(self.checker.settled(&this.ty), Type::Result(..))
             {
                 self.error(unhandled(stmt.span));
             }
@@ -58,14 +58,16 @@ impl FnCx<'_> {
     fn stmt(&mut self, stmt: &Stmt, used: bool) -> Flow {
         match &stmt.kind {
             StmtKind::Expr(expr) => Flow { ty: self.expr(expr), exits: false },
-            StmtKind::Assign { target, op, value, declare_mut } => {
-                self.assign(target, *op, value, *declare_mut);
+            StmtKind::Assign { target, op, value, declare_mut, ty } => {
+                self.assign(target, *op, value, *declare_mut, ty.as_ref());
                 Flow::unit()
             }
-            StmtKind::If { branches, otherwise } => self.if_stmt(branches, otherwise.as_deref(), used),
+            StmtKind::If { branches, otherwise } => {
+                self.if_stmt(branches, otherwise.as_deref(), used, stmt.span)
+            }
             StmtKind::While { cond, body } => self.while_stmt(cond, body),
             StmtKind::For { names, is_mut, iter, body } => {
-                self.for_stmt(names, *is_mut, iter, body);
+                self.for_stmt(names, *is_mut, iter, body, stmt.span);
                 Flow::unit()
             }
             StmtKind::Return(value) => {
@@ -93,7 +95,7 @@ impl FnCx<'_> {
                 let ty = self.expr(value);
                 self.push(false);
                 if let Some(name) = name {
-                    self.declare(name, ty, *is_mut);
+                    self.declare(name, ty, *is_mut, stmt.span);
                 }
                 let flow = self.stmts(body, used);
                 self.pop();
@@ -110,7 +112,9 @@ impl FnCx<'_> {
 
     fn fail(&mut self, error: &Expr) {
         let ty = self.expr(error);
-        if ty != Type::Unknown && !self.checker.is_error_type(&ty) {
+        if self.checker.is_error_type(&ty) || matches!(ty, Type::Errors(_)) {
+            self.errors.push(ty);
+        } else if ty != Type::Unknown {
             self.error(
                 Diagnostic::new(
                     format!("`fail` needs an error, but this is {}", article(&ty.kind())),
@@ -119,12 +123,17 @@ impl FnCx<'_> {
                 .with_help("declare error types with `error`, like `error NotFound:`"),
             );
         }
-        self.errors.push(ty);
     }
 
     /// `if`, `elif` and `else`. Each branch sees what the conditions before it ruled out,
     /// and afterwards each name holds what it held on any branch that didn't leave early.
-    fn if_stmt(&mut self, branches: &[(Expr, Vec<Stmt>)], otherwise: Option<&[Stmt]>, used: bool) -> Flow {
+    fn if_stmt(
+        &mut self,
+        branches: &[(Expr, Vec<Stmt>)],
+        otherwise: Option<&[Stmt]>,
+        used: bool,
+        span: fennec_syntax::Span,
+    ) -> Flow {
         for (cond, _) in branches {
             self.track(cond);
         }
@@ -156,7 +165,11 @@ impl FnCx<'_> {
             self.restore(&before);
         }
         self.merge(&paths);
-        let ty = if otherwise.is_some() && used { join_all(&values) } else { Type::Unit };
+        let ty = if otherwise.is_some() && used && !values.is_empty() {
+            self.join_or_report(&values, span, "the branches of this `if` give")
+        } else {
+            Type::Unit
+        };
         Flow { ty, exits: paths.is_empty() }
     }
 
@@ -172,7 +185,14 @@ impl FnCx<'_> {
         if forever { Flow::exit() } else { Flow::unit() }
     }
 
-    fn for_stmt(&mut self, names: &[String], is_mut: bool, iter: &Expr, body: &[Stmt]) {
+    fn for_stmt(
+        &mut self,
+        names: &[String],
+        is_mut: bool,
+        iter: &Expr,
+        body: &[Stmt],
+        span: fennec_syntax::Span,
+    ) {
         if is_mut {
             self.mut_place(iter, "`for mut` changes each item, so loop over something held in a mut name");
         }
@@ -180,40 +200,49 @@ impl FnCx<'_> {
         let item = self.item_type(&iter_ty, iter.span);
         let before = self.snapshot();
         self.push(false);
-        self.bind_names(names, &item, is_mut, iter.span);
+        self.bind_names(names, &item, is_mut, (iter.span, span));
         self.stmts(body, false);
         self.pop();
         let after = self.snapshot();
         self.merge(&[before, after]);
     }
 
-    /// Binds a loop's names to an item: one name, or several unpacking a tuple.
+    /// Binds a loop's names to an item: one name, or several unpacking a tuple. `spans`
+    /// are what's looped over, for problems, and the loop, where the names are declared.
     pub(crate) fn bind_names(
         &mut self,
         names: &[String],
         item: &Type,
         is_mut: bool,
-        span: fennec_syntax::Span,
+        spans: (fennec_syntax::Span, fennec_syntax::Span),
     ) {
+        let (span, at) = spans;
         if let [name] = names {
-            self.declare_as(name, item.clone(), is_mut, Origin::Loop);
+            self.declare_as(name, item.clone(), is_mut, Origin::Loop, at);
             return;
         }
         let parts = self.unpack(item, names.len(), span);
         for (name, ty) in names.iter().zip(parts) {
-            self.declare_as(name, ty, is_mut, Origin::Loop);
+            self.declare_as(name, ty, is_mut, Origin::Loop, at);
         }
     }
 
     /// The types of the parts of a tuple being unpacked into `count` names.
     pub(crate) fn unpack(&mut self, ty: &Type, count: usize, span: fennec_syntax::Span) -> Vec<Type> {
-        match ty {
+        match &self.checker.settled(ty) {
             Type::Tuple(items) if items.len() == count => return items.clone(),
             Type::Tuple(items) => self.error(Diagnostic::new(
                 format!("can't unpack {} values into {count} names", items.len()),
                 span,
             )),
             Type::Unknown => {}
+            Type::Var(_) => {
+                let parts: Vec<Type> =
+                    (0..count).map(|_| self.checker.fresh(span, crate::infer::Hole::Unpacked)).collect();
+                let tuple = Type::Tuple(parts.clone());
+                self.checker.fits(ty, &tuple);
+                return parts;
+            }
             other => self.error(Diagnostic::new(
                 format!("can't unpack {} into {count} names", article(&other.kind())),
                 span,
@@ -226,21 +255,24 @@ impl FnCx<'_> {
     fn nested(&mut self, def: &FnDef) {
         let key = format!("{}.{}", self.key, def.name);
         let mut captured = self.visible();
+        let function = Type::Function(key.clone());
         captured.push(Binding {
             name: def.name.clone(),
-            ty: Type::Function(key.clone()),
+            ty: function.clone(),
+            declared: function.clone(),
             is_mut: false,
             origin: Origin::Captured,
         });
         let report = self.report;
-        self.checker.check_nested(&key, def, captured, !report);
-        self.declare(&def.name, Type::Function(key), false);
+        let inherited = self.generics.clone();
+        self.checker.check_nested(&key, def, captured, !report, inherited);
+        self.declare(&def.name, function, false, def.span);
     }
 
     /// Checks a condition is a bool.
     pub(crate) fn condition(&mut self, cond: &Expr, keyword: &str) {
         let ty = self.expr(cond);
-        if ty != Type::Bool && ty != Type::Unknown {
+        if !self.checker.fits(&Type::Bool, &ty) {
             self.error(crate::messages::not_bool(keyword, &ty, cond.span));
         }
     }

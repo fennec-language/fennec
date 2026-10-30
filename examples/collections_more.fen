@@ -60,7 +60,12 @@ def main(stdout: Stdout, fs: Fs):
     text = "  fire ice  "
     stdout.print(f"[{text.lstrip()}]", f"[{text.rstrip()}]")
     stdout.print("one\ntwo".lines(), "a,b,,c".split(","), "fennec".startswith("fen"))
-    stdout.print("fennec".replace("n", "N"), "fennec".find("nec"), "fennec".find("fox"), "äbc".find("c"))
+    stdout.print(
+        "fennec".replace("n", "N"),
+        "fennec".find("nec"),
+        "fennec".find("fox"),
+        "äbc".find("c"),
+    )
     stdout.print("nec" in "fennec", "fox" in "fennec", "fox" not in "fennec")
     stdout.write("no newline, ")
     stdout.write("then one\n")

@@ -1,4 +1,4 @@
-//! The `fennec` command itself: `run`, `test`, `new`, `repl`, `--version`, and what it does
+//! The `fennec` command itself: `run`, `test`, `new`, `repl`, `dev`, `--version`, and what it does
 //! with bad input. These run the real binary.
 
 use std::io::Write;
@@ -53,6 +53,23 @@ fn run_reports_a_missing_file() {
 }
 
 #[test]
+fn dev_tokens_and_dev_tree_dump_the_front_ends_work() {
+    let tokens = fennec(&["dev", "tokens", "examples/hello.fen"], "").unwrap();
+    assert!(tokens.status.success());
+    assert!(text(&tokens.stdout).starts_with("0..3 keyword def\n4..8 name main\n"));
+    let tree = fennec(&["dev", "tree", "examples/hello.fen"], "").unwrap();
+    assert!(tree.status.success());
+    assert!(text(&tree.stdout).starts_with("module\n  def main @0..24\n"));
+}
+
+#[test]
+fn dev_reports_a_missing_file() {
+    let output = fennec(&["dev", "tokens", "examples/no-such-program.fen"], "").unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(text(&output.stderr).contains("couldn't read examples/no-such-program.fen"));
+}
+
+#[test]
 fn test_lists_each_test_and_a_summary() {
     let output = fennec(&["test", "examples/testing.fen"], "").unwrap();
     assert!(output.status.success());
@@ -96,7 +113,7 @@ fn test_fails_when_a_test_fails() {
 fn test_shrinks_and_replays_property_failures() {
     let output = fennec(&["test", "crates/fennec/tests/fixtures/failing_properties.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(text(&output.stdout).ends_with("  ✓ this one passes\n1 passed, 16 failed\n"));
+    assert!(text(&output.stdout).ends_with("  ✓ this one passes\n1 passed, 15 failed\n"));
     let stderr = text(&output.stderr);
     let reported: Vec<&str> = stderr
         .lines()
@@ -127,8 +144,6 @@ fn test_shrinks_and_replays_property_failures() {
              side is Coin.Heads",
             "it failed for n = 160",
             "the test failed with Oops(reason=\"broken\")",
-            "property tests can't generate a `Widget` yet",
-            "use int, float, bool, str, list, tuples, or your own structs and enums",
         ]
     );
 }
@@ -256,6 +271,49 @@ fn scratch(name: &str) -> std::io::Result<PathBuf> {
 }
 
 #[test]
+fn fmt_check_passes_on_the_examples() {
+    let output = fennec(&["fmt", "--check", "examples"], "").unwrap();
+    assert!(output.status.success(), "{}{}", text(&output.stdout), text(&output.stderr));
+    assert_eq!(text(&output.stdout), "");
+    assert!(text(&output.stderr).contains("raise.fen: it doesn't parse (2:5: Fennec doesn't have `raise`)"));
+    assert!(
+        text(&output.stderr).contains("tab_inside_line.fen: it doesn't parse (2:12: tabs aren't allowed)")
+    );
+}
+
+#[test]
+fn fmt_rewrites_a_folder_and_check_lists_what_it_would_change() {
+    let dir = scratch("fmt").unwrap();
+    std::fs::create_dir_all(dir.join("src/.hidden")).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"demo\"\n").unwrap();
+    std::fs::write(dir.join("src/main.fen"), "def main(stdout:Stdout):\n  stdout.print(1+2)\n").unwrap();
+    std::fs::write(dir.join("src/done.fen"), "def done():\n    pass\n").unwrap();
+    std::fs::write(dir.join("src/.hidden/skip.fen"), "def skip( ):\n  pass\n").unwrap();
+    let folder = dir.to_str().unwrap();
+
+    let check = fennec(&["fmt", "--check", folder], "").unwrap();
+    assert_eq!(check.status.code(), Some(1));
+    assert!(text(&check.stdout).trim_end().ends_with("main.fen"), "{}", text(&check.stdout));
+    assert!(text(&check.stderr).contains("1 file isn't formatted"));
+
+    let write = fennec(&["fmt", folder], "").unwrap();
+    assert!(write.status.success());
+    let main = std::fs::read_to_string(dir.join("src/main.fen")).unwrap();
+    assert_eq!(main, "def main(stdout: Stdout):\n    stdout.print(1 + 2)\n");
+    let hidden = std::fs::read_to_string(dir.join("src/.hidden/skip.fen")).unwrap();
+    assert_eq!(hidden, "def skip( ):\n  pass\n");
+    assert!(fennec(&["fmt", "--check", folder], "").unwrap().status.success());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn fmt_has_no_options() {
+    let output = fennec(&["fmt", "--line-width=80", "examples"], "").unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(text(&output.stderr).contains("has no option `--line-width=80`"));
+}
+
+#[test]
 fn run_with_no_path_runs_the_kit_around_the_current_folder() {
     let expected = std::fs::read_to_string(repo().join("examples/projects/arena.out")).unwrap();
     let kit = repo().join("examples/projects/arena");
@@ -369,5 +427,31 @@ fn new_makes_a_kit_that_runs_and_passes_its_tests() {
         assert_eq!(bad.status.code(), Some(1), "{bad_name:?}");
         assert!(text(&bad.stderr).contains("can't name a kit"), "{bad_name:?}");
     }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn fmt_with_no_path_formats_the_kit_around_the_current_folder() {
+    let dir = scratch("fmt-kit").unwrap();
+    std::fs::create_dir_all(dir.join("kit/src/combat")).unwrap();
+    std::fs::write(dir.join("kit/kit.toml"), "name = \"demo\"\n").unwrap();
+    std::fs::write(dir.join("kit/src/main.fen"), "def main(stdout:Stdout):\n  pass\n").unwrap();
+    std::fs::write(dir.join("kit/src/combat/hit.fen"), "def hit( ):\n  pass\n").unwrap();
+    std::fs::write(dir.join("outside.fen"), "def outside( ):\n  pass\n").unwrap();
+
+    let check = fennec_in(&dir.join("kit/src/combat"), &["fmt", "--check"], "").unwrap();
+    assert_eq!(check.status.code(), Some(1));
+    let listed = text(&check.stdout).replace('\\', "/");
+    assert_eq!(listed, "../../src/combat/hit.fen\n../../src/main.fen\n");
+
+    let write = fennec_in(&dir.join("kit/src/combat"), &["fmt"], "").unwrap();
+    assert!(write.status.success());
+    let hit = std::fs::read_to_string(dir.join("kit/src/combat/hit.fen")).unwrap();
+    assert_eq!(hit, "def hit():\n    pass\n");
+    let outside = std::fs::read_to_string(dir.join("outside.fen")).unwrap();
+    assert_eq!(outside, "def outside( ):\n  pass\n");
+
+    let plain = fennec_in(&dir, &["fmt", "--check"], "").unwrap();
+    assert_eq!(text(&plain.stdout).replace('\\', "/"), "outside.fen\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -160,7 +160,7 @@ impl Tree {
         let span = Some(stmt.span);
         match &stmt.kind {
             StmtKind::Expr(expr) => self.node("expr", span, |tree| tree.expr(expr)),
-            StmtKind::Assign { target, op, value, declare_mut } => {
+            StmtKind::Assign { target, op, value, declare_mut, ty } => {
                 let mut label = "assign".to_owned();
                 if let Some(op) = op {
                     label = format!("{label} {}=", op.symbol());
@@ -170,6 +170,9 @@ impl Tree {
                 }
                 self.node(&label, span, |tree| {
                     tree.expr(target);
+                    if let Some(ty) = ty {
+                        tree.type_expr(ty);
+                    }
                     tree.expr(value);
                 });
             }

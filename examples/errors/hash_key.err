@@ -1,0 +1,7 @@
+error: a BLAKE3 key is 64 hex digits
+ --> examples/errors/hash_key.fen:4:18
+  |
+4 |     stdout.print(keyed_blake3("not a key", "level 3"))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: make one with `derive_key(context, secret)`

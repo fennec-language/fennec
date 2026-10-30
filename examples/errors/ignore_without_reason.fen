@@ -1,2 +1,6 @@
+def save(path: str):
+    if path == "":
+        fail IoError("there's nowhere to save")
+
 def main(stdout: Stdout):
-    ignore(Ok(3), "  ")
+    ignore(save("slot1"), "  ")

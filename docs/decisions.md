@@ -36,6 +36,9 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **Short strings live in the header.** A `str` of up to 23 bytes is stored in its 24-byte header with no allocation.
 *Why:* Most names, keys and identifiers fit.
 
+**Indexing a string takes constant time when it's ASCII.** A string knows whether all its characters are ASCII, so `s[i]` is direct for those. On other strings it walks from the start, and `for c in s` is the fast way through.
+*Why:* Source code, identifiers and most text in programs are ASCII, and lexers index them in loops.
+
 ## Layout
 
 **Structs inside structs are stored inline.** There are no hidden pointers or boxes. `player.transform.pos.x += 1.0` is one write to memory.
@@ -117,20 +120,70 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 ## Functions and types
 
+**Every `def` writes its return type. Arrow functions never do. No `->` means the function returns nothing.**
+```fennec
+def visible(world: World) -> list[Enemy]:
+    def in_view(enemy: Enemy) -> bool:
+        enemy.distance_to(world.camera) < world.view_range
+    [e for e in world.enemies if in_view(e)]
+
+enemies.sort(key=e => e.health)          # an arrow's type comes from where it's passed
+
+def main(stdout: Stdout):                # no arrow: returns nothing
+    stdout.print("hi")
+```
+- Nested `def`s follow the same rule as top-level ones. There's one rule: `def` has an arrow when it returns a value, and `=>` never has one.
+- A `def` that returns a value without an arrow is an error whose fix writes the inferred type in. `fennec fix` does it for a whole kit.
+- `-> None` has a fix that removes it, since no arrow already means the function returns nothing.
+- Everything inside a body is still inferred: locals, empty collections (`dict[str, int]()` when a type must be said), closures, comprehensions and type arguments at calls. Errors are still inferred too, and `fails` stays optional.
+- Recursion needs nothing special: every named function already has its type written, and an arrow can't call itself.
+
+*Why:* When AI writes most code, writing costs little and reading is what matters, for people reviewing it and for agents reading other files. A complete signature summarizes a function without its body. A mistake in a body is reported inside that function ("returns `float`, but the signature says `int`") instead of at a caller in another file, where an agent tends to "fix" the wrong place. Rust, Swift, Kotlin and well-kept TypeScript settled on the same line: explicit where a function meets the rest of the program, inferred inside. Annotating locals is left out because it's what makes bodies tiring to read. It's cheap to reverse: `fennec fix` can strip written return types again if measurement shows they don't help.
+
+This replaces the earlier rules that return types are inferred, and that recursive functions must declare theirs.
+
 **Builtins work on anything; methods belong to a type.** Builtins work on any value that fits an interface and never change it: `len`, `sum`, `min`, `max`, `any`, `all`, `sorted`, `enumerate`, `zip`. Methods are specific to a type or change the value: `xs.append(x)`, `d.keys()`, `s.split(",")`, `mut xs.sort()`. A type supports a builtin by having the method, such as `def len(self)`. The language server offers the builtins that apply after `xs.`.
 *Why:* Builtins read well with comprehensions (`sum(e.health for e in enemies)`), and Python users and AI already write them. Python mostly follows this split; Fennec always does.
 
+**No global function serves only one type.** A builtin has to work across types, through an interface, or be a type's constructor, like `int(...)`, `float(...)` and `range(...)`. An operation on one type is a method. So a character's code is `"A".code()`, not Python's `ord("A")`, and `ord(c)` is an error whose fix writes `c.code()`.
+*Why:* Global functions that only fit one type crowd the namespace, can't be extended by other types, and hide where an operation lives.
+
+**A type is said by calling it with its type arguments:** `counts = dict[str, int]()`, `mut queue = Deque[Job]()`. There are no annotations on local names. An empty `{}` or `[]` takes its type from how it's used later.
+*Why:* It needs no new syntax, it's one line, and Python 3.9 and later accept the same thing.
+
+**A leading-dot case resolves from the type expected where it's written.** A parameter, a field, a return type, a variable whose type is known, or the other side of `==` decides which enum `.Int(value)` belongs to:
+```fennec
+def literal(tok: Tok) -> ExprKind:
+    match tok:
+        case .Int(value): .Int(value)   # the return type makes it ExprKind.Int
+```
+Only with no expected type is a name shared by two enums ambiguous, and the error lists them. The search covers only the enums a file can see: its own and those it imports.
+*Why:* The type is usually right there, as in Swift. Otherwise adding an unrelated file could break code that never imports it.
+
+**`extend` adds methods to a type from another file of the same kit.**
+```fennec
+# parser/expr.fen
+extend Parser:
+    def parse_expr(mut self) -> Expr:
+        ...
+```
+An extension adds methods only, never fields, so a type's shape stays in its declaration. It works only on the kit's own types, never another kit's or the standard library's. Two methods with the same name on one type are an error, wherever they're written. The editor, `fennec doc` and `fennec context` list every method of a type in one place.
+*Why:* A type that many responsibilities attach to, like a parser, an interpreter or a game's `World`, is otherwise one huge file, or its methods become free functions with noisier calls. Swift, C#, Kotlin, Go and Rust all let a type's methods live in several files. Keeping it to the kit's own types means no one can change a type they don't own.
+
 **Units of measure are types.** Meters, pixels, seconds and radians can't be mixed by accident, and multiplying or dividing them gives the right unit. They're erased at compile time, so they cost nothing at run time. The syntax is still open.
 *Why:* Game code mixes up degrees and radians, and world and screen space, constantly. F# has had units since 2009, and no mainstream language has followed.
+
+**They're called interfaces, not protocols.** `interface Shape:` declares one, and a type fits it by having its methods, with nothing to declare.
+*Why:* Go and TypeScript, the best-known languages where types fit by their methods alone, both say `interface`, and it's the word people and AI reach for first. Python's `typing.Protocol` is a library class most code never uses, and Swift's protocols need a declared conformance, which is the opposite of Fennec's rule. Python's informal sense, like the iterator protocol, is still fine for describing `def len` and `def []`.
 
 **An enum fits an interface when every case does.** The compiler writes the `match`, so `total(targets)` works on a list of a `Target` enum whose cases are all `Damageable`.
 *Why:* Lists of mixed types stay static, since the `match` compiles to a jump table, with nothing extra to write.
 
 **Type parameters are written the way Python 3.12 writes them.** The bound says what the type must be able to do:
 ```fennec
-def total_area[T: Shape](shapes: list[T]):
+def total_area[T: Shape](shapes: list[T]) -> f32:
 def largest[T: Ordered](xs: list[T]) -> T:
-def merge[T: Ordered & Hashable](a: list[T], b: list[T]):
+def merge[T: Ordered & Hashable](a: list[T], b: list[T]) -> list[T]:
 struct Pool[T]:
 interface Container[T]:
 ```
@@ -152,7 +205,7 @@ Type arguments are inferred at calls; `largest[int](xs)` is allowed when they ca
 
 **A nested `def` that's only called directly can change the enclosing function's `mut` names.**
 ```fennec
-def collect_leaves(tree: Tree):
+def collect_leaves(tree: Tree) -> list[Tree]:
     mut leaves = []
     def visit(node: Tree):
         if len(node.children) == 0:
@@ -191,8 +244,17 @@ with db.transaction() as mut tx:
 **Names live in their modules.** A standard library module provides nothing until it's imported: `from std.math import Vec3, sqrt`, or `from std import math` and then `math.Vec3` and `math.sqrt(x)`. That's every module so far: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`. Using a name without its import is reported with the import to add.
 *Why:* A file's imports show everything it uses from the standard library, as in Python.
 
-**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs` and `Clock`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the Python builtins, like `len`, `range` and `abs`.
+**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the Python builtins, like `len`, `range` and `abs`.
 *Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
+
+**Command-line arguments and standard input are capabilities.** `def main(stdout: Stdout, args: Args, stdin: Stdin):`. `for arg in args:` gives the arguments, not the program's name, which is `args.program`. `stdin.lines()` reads input a line at a time. A program that doesn't name them can't read them, and both are recorded for replay.
+*Why:* A program's input decides what it does, so it comes in the same visible way as files and the clock.
+
+**`int(text)` and `float(text)` fail with `InvalidValue`** when the text isn't a number or doesn't fit, handled with `?`, `else` or `match`. `int(3.7)` still truncates to `3`. `int()` of NaN, or of a float too big for an int, stops the program, like overflow.
+*Why:* Text often comes from input, so a bad number is expected and must be handled. A NaN reaching `int()` is a bug in the program.
+
+**A string's characters are reached by code and as bytes without copying.** `"A".code()` gives `65`, `str.from_code(65)` gives `"A"` and fails with `InvalidValue` for a number that isn't a character, and `s.codes()` gives every code. `.code()` on anything but one character stops the program, like an index out of range. `s.encode()` is a view of the UTF-8 bytes, with no copy, so `len(s.encode())` is the length in bytes.
+*Why:* A lexer needs character codes and byte lengths, and strings are stored as UTF-8 already, so the bytes cost nothing.
 
 **Imports bind names exactly as in Python.** `import std.json` binds `std`, and the call is `std.json.loads(...)`. `from std import json` binds `json`, for `json.loads(...)`. `from std.json import loads` binds `loads`. A kit's own modules follow the same rule: `import game.physics` binds `game`, and `from game import physics` binds `physics`. Writing `json.loads` after `import std.json` is an error whose help suggests `from std import json`. There's no `import *`.
 *Why:* It's one rule that Python developers and AI models already know, and an import never binds a name behind your back. Earlier, `import std.json` also bound `json`, which Python doesn't do.
@@ -231,10 +293,10 @@ import game.world.physics as physics
 - A `pub` signature can't mention anything that isn't `pub`.
 - A lint flags `pub` items that no other kit can reach.
 
-**Return types and errors are inferred, even on `pub` functions.** A kit's API is checked against its last published version instead, cached from the Den. When a change would break other kits, `fennec check` says so at once, in the editor: "`load` can now also fail with `ParseError` (since v1.2.0). This is a breaking change: handle or wrap it, or release v2.0." `fennec publish` refuses a version number that undersells the change. Adding an error is a breaking change; removing one isn't.
+**Errors are inferred, even on `pub` functions.** A kit's API is checked against its last published version instead, cached from the Den. When a change would break other kits, `fennec check` says so at once, in the editor: "`load` can now also fail with `ParseError` (since v1.2.0). This is a breaking change: handle or wrap it, or release v2.0." `fennec publish` refuses a version number that undersells the change. Adding an error is a breaking change; removing one isn't.
 
 **Declaring errors is optional,** written with `fails` after the return type and checked like a declared return type: `def load(fs: Fs, path: Path) -> Config fails NotFound, ConfigUnreadable:`. `type LoadError = NotFound | ConfigUnreadable` names a set of errors.
-*Why:* The same protection as required declarations, with nothing to write. This replaces the earlier rule that `pub` functions must declare their return and error types.
+*Why:* The same protection as required declarations, with nothing to write. Return types are written on every `def` (see Functions and types), so the API check matters most for errors.
 
 A big app that wants walls between its own parts splits into local kits in one workspace.
 *Why:* `pub` appears only where API stability matters, and never in apps. Making every field of a `pub struct` public would make every internal field part of the API, so renaming one would need a major version. Go's capitalization rule would clash with lowercase built-ins and capitalized user types.
@@ -279,6 +341,23 @@ Scoped tasks with `with`, channels, locks and overlapping I/O come in later slic
 *Why:* That's what lets reference counts stay non-atomic even with long-lived worker tasks.
 
 ## Syntax
+
+**A module can hold constants.** `KEYWORDS = {"def", "if", "else"}` at the top level is an immutable name, computed when compiling from literals, collections and calls to functions that take no capabilities. There's still no `mut` at the top level, so there's no global state. UPPER_CASE is a convention the lint suggests, not a rule.
+*Why:* A table rebuilt inside a function on every call is what people write only when the language leaves them no choice. A constant is computed once, before the program runs.
+
+**String escapes are Python's:** `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\xhh`, `\uhhhh` and `\Uhhhhhhhh`.
+*Why:* Control and invisible characters need a way to be written, and these are the forms people and AI already know.
+
+**There's no walrus (`:=`).** A loop that runs while a lookup succeeds is a `for` over a generator, and an `if` on a lookup is two lines, with the same narrowing:
+```fennec
+for tok in lexer:
+    use(tok)
+
+entry = table.get(key)
+if entry is not None:
+    use(entry)
+```
+*Why:* The walrus needs parentheses to mean what it looks like, which is a trap, and generators and narrowing already cover what it's for.
 
 **Raw strings are `r"..."`.** Backslashes stay as written, so a pattern reads `r"\d+"`. A raw string can't contain `"`.
 *Why:* Regular expressions are unreadable with every backslash doubled. Python has the same strings, so people and AI already write them.

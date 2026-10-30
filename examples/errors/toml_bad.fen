@@ -1,5 +1,12 @@
 from std.toml import loads
 
+struct Kit:
+    name: str
+    version: str
+
+struct Manifest:
+    kit: Kit
+
 def main(stdout: Stdout):
-    kit = loads("[kit]\nname = \"fox-run\"\nversion = \"0.1\"\nname = \"fox\"")?
-    stdout.print(kit["kit"]["name"])
+    manifest = loads[Manifest]("[kit]\nname = \"fox-run\"\nversion = \"0.1\"\nname = \"fox\"")?
+    stdout.print(manifest.kit.name)

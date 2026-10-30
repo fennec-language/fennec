@@ -1,5 +1,5 @@
-error: `exists` was called with the wrong arguments
- --> examples/errors/fs_arguments.fen:2:18
+error: `exists` takes a path, as a str or a `Path`, but this is an int
+ --> examples/errors/fs_arguments.fen:2:28
   |
 2 |     stdout.print(fs.exists(42))
-  |                  ^^^^^^^^^^^^^
+  |                            ^^

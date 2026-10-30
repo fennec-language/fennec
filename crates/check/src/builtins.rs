@@ -5,9 +5,10 @@
 use fennec_syntax::{Arg, Diagnostic, Expr, Span};
 
 use crate::function::FnCx;
+use crate::infer::Hole;
 use crate::messages::{mismatch, needless_mut, no_method, wrong_args};
 use crate::stdlib;
-use crate::types::{Type, accepts, article, join, join_all};
+use crate::types::{Type, a, article};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
@@ -53,22 +54,25 @@ pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// A method of a built-in value: whether it changes the value, what it gives back, and how
-/// many arguments it takes.
+/// A method of a built-in value: whether it changes the value, what it takes and gives
+/// back, and how many arguments it takes.
 pub(crate) struct Method {
     changes: bool,
+    /// The types of its arguments, in order. Arguments past these can be anything.
+    params: Vec<Type>,
     returns: Type,
     arity: (usize, usize),
     /// The types an arrow function passed to it receives, like the item for `remove_where`.
     receives: Vec<Type>,
 }
 
-pub(crate) fn reads(returns: Type, low: usize, high: usize) -> Method {
-    Method { changes: false, returns, arity: (low, high), receives: Vec::new() }
+pub(crate) fn reads(params: &[Type], returns: Type) -> Method {
+    let count = params.len();
+    Method { changes: false, params: params.to_vec(), returns, arity: (count, count), receives: Vec::new() }
 }
 
-fn changes(returns: Type, low: usize, high: usize) -> Method {
-    Method { changes: true, returns, arity: (low, high), receives: Vec::new() }
+fn changes(params: &[Type], returns: Type) -> Method {
+    Method { changes: true, ..reads(params, returns) }
 }
 
 impl Method {
@@ -76,69 +80,112 @@ impl Method {
     fn receiving(self, item: &Type) -> Method {
         Method { receives: vec![item.clone()], ..self }
     }
+
+    /// The last `optional` arguments can be left out.
+    fn optional(self, optional: usize) -> Method {
+        Method { arity: (self.arity.0.saturating_sub(optional), self.arity.1), ..self }
+    }
+
+    /// Takes any number of arguments of any type.
+    fn any_args(self) -> Method {
+        Method { arity: (0, usize::MAX), ..self }
+    }
 }
 
 fn method(ty: &Type, name: &str) -> Option<Method> {
-    Some(match (ty, name) {
-        (Type::List(_), "append" | "extend" | "remove") | (Type::Set(_), "add" | "discard" | "remove") => {
-            changes(Type::Unit, 1, 1)
-        }
-        (Type::List(_), "insert") => changes(Type::Unit, 2, 2),
-        (Type::List(_), "clear" | "reverse") | (Type::Dict(..) | Type::Set(_) | Type::IdMap(_), "clear") => {
-            changes(Type::Unit, 0, 0)
-        }
-        (Type::List(item) | Type::IdMap(item), "remove_where") => changes(Type::Unit, 1, 1).receiving(item),
-        (Type::List(item), "sort") => changes(Type::Unit, 0, 0).receiving(item),
-        (Type::List(item), "pop") => changes(item.as_ref().clone(), 0, 1),
-        (Type::List(_), "index") => reads(Type::optional(Type::Int), 1, 1),
-        (Type::List(_), "count") => reads(Type::Int, 1, 1),
-        (Type::Dict(_, value), "pop") => changes(value.as_ref().clone(), 1, 1),
-        (Type::Dict(_, item) | Type::IdMap(item), "get") => {
-            reads(Type::optional(item.as_ref().clone()), 1, 2)
-        }
-        (Type::Dict(key, _), "keys") => reads(Type::list(key.as_ref().clone()), 0, 0),
-        (Type::Dict(_, item) | Type::IdMap(item), "values") => reads(Type::list(item.as_ref().clone()), 0, 0),
-        (Type::Dict(key, value), "items") => {
-            reads(Type::list(Type::Tuple(vec![*key.clone(), *value.clone()])), 0, 0)
-        }
-        (Type::IdMap(item), "insert") => changes(Type::Id(item.clone()), 1, 1),
-        (Type::IdMap(item), "remove") => changes(Type::optional(item.as_ref().clone()), 1, 1),
-        (Type::IdMap(item), "modify") => changes(Type::Bool, 2, 2).receiving(item),
-        (Type::IdMap(item), "items") => {
-            reads(Type::list(Type::Tuple(vec![Type::Id(item.clone()), *item.clone()])), 0, 0)
-        }
-        (Type::IdMap(item), "ids") => reads(Type::list(Type::Id(item.clone())), 0, 0),
-        (Type::Str, _) => return str_method(name),
-        (Type::Named(type_name), _) => return named_method(type_name, name),
+    match ty {
+        Type::List(item) => list_method(item, name),
+        Type::Set(item) => set_method(item, name),
+        Type::Dict(key, value) => dict_method(key, value, name),
+        Type::IdMap(item) => id_map_method(item, name),
+        Type::Str => str_method(name),
+        Type::Named(type_name) => named_method(type_name, name),
+        _ => None,
+    }
+}
+
+fn list_method(item: &Type, name: &str) -> Option<Method> {
+    let item = item.clone();
+    Some(match name {
+        "append" | "remove" => changes(&[item], Type::Unit),
+        "extend" => changes(&[Type::list(item)], Type::Unit),
+        "insert" => changes(&[Type::Int, item], Type::Unit),
+        "clear" | "reverse" => changes(&[], Type::Unit),
+        "remove_where" => changes(&[], Type::Unit).receiving(&item).any_args(),
+        "sort" => changes(&[], Type::Unit).receiving(&item),
+        "pop" => changes(&[Type::Int], item).optional(1),
+        "index" => reads(&[item], Type::optional(Type::Int)),
+        "count" => reads(&[item], Type::Int),
+        _ => return None,
+    })
+}
+
+fn set_method(item: &Type, name: &str) -> Option<Method> {
+    Some(match name {
+        "add" | "discard" | "remove" => changes(std::slice::from_ref(item), Type::Unit),
+        "clear" => changes(&[], Type::Unit),
+        _ => return None,
+    })
+}
+
+fn dict_method(key: &Type, value: &Type, name: &str) -> Option<Method> {
+    let (key, value) = (key.clone(), value.clone());
+    Some(match name {
+        "pop" => changes(&[key], value),
+        "get" => reads(&[key, value.clone()], Type::optional(value)).optional(1),
+        "keys" => reads(&[], Type::list(key)),
+        "values" => reads(&[], Type::list(value)),
+        "items" => reads(&[], Type::list(Type::Tuple(vec![key, value]))),
+        "clear" => changes(&[], Type::Unit),
+        _ => return None,
+    })
+}
+
+fn id_map_method(item: &Type, name: &str) -> Option<Method> {
+    let id = Type::Id(Box::new(item.clone()));
+    let item = item.clone();
+    Some(match name {
+        "insert" => changes(&[item], id),
+        "remove" => changes(&[id], Type::optional(item)),
+        "get" => reads(&[id], Type::optional(item)),
+        "modify" => changes(&[id], Type::Bool).receiving(&item).any_args(),
+        "remove_where" => changes(&[], Type::Unit).receiving(&item).any_args(),
+        "values" => reads(&[], Type::list(item)),
+        "ids" => reads(&[], Type::list(id)),
+        "items" => reads(&[], Type::list(Type::Tuple(vec![id, item]))),
+        "clear" => changes(&[], Type::Unit),
         _ => return None,
     })
 }
 
 fn str_method(name: &str) -> Option<Method> {
-    match name {
-        "upper" | "lower" | "strip" | "lstrip" | "rstrip" => Some(reads(Type::Str, 0, 0)),
-        "split" => Some(reads(Type::list(Type::Str), 0, 1)),
-        "lines" => Some(reads(Type::list(Type::Str), 0, 0)),
-        "startswith" | "endswith" => Some(reads(Type::Bool, 1, 1)),
-        "isdigit" => Some(reads(Type::Bool, 0, 0)),
-        "replace" => Some(reads(Type::Str, 2, 2)),
-        "find" => Some(reads(Type::optional(Type::Int), 1, 1)),
-        "join" => Some(reads(Type::Str, 1, 1)),
-        _ => None,
-    }
+    let text = Type::Str;
+    Some(match name {
+        "upper" | "lower" | "strip" | "lstrip" | "rstrip" => reads(&[], Type::Str),
+        "split" => reads(&[text], Type::list(Type::Str)).optional(1),
+        "lines" => reads(&[], Type::list(Type::Str)),
+        "startswith" | "endswith" => reads(&[text], Type::Bool),
+        "isdigit" => reads(&[], Type::Bool),
+        "replace" => reads(&[text.clone(), text], Type::Str),
+        "find" => reads(&[text], Type::optional(Type::Int)),
+        "join" => reads(&[Type::list(Type::Str)], Type::Str),
+        _ => return None,
+    })
 }
 
 /// Methods of capabilities, and of standard library types that are written in Rust.
 fn named_method(type_name: &str, name: &str) -> Option<Method> {
-    match (type_name, name) {
-        ("Stdout", "print" | "write") => Some(reads(Type::Unit, 0, usize::MAX)),
-        ("Fs", "exists") => Some(reads(Type::Bool, 1, 1)),
-        ("Fs", "read_text") => Some(reads(Type::result(Type::Str, Type::named("IoError")), 1, 1)),
-        ("Fs", "write_text") => Some(reads(Type::result(Type::Unit, Type::named("IoError")), 2, 2)),
-        ("Clock", "now") => Some(reads(Type::named("Instant"), 0, 0)),
-        ("Clock", "sleep") => Some(reads(Type::Unit, 1, 1)),
-        _ => stdlib::method(type_name, name),
-    }
+    let io = |value: Type| Type::result(value, Type::named("IoError"));
+    let text = || Type::Str;
+    Some(match (type_name, name) {
+        ("Stdout", "print" | "write") => reads(&[], Type::Unit).any_args(),
+        ("Fs", "exists") => reads(&[text()], Type::Bool),
+        ("Fs", "read_text") => reads(&[text()], io(text())),
+        ("Fs", "write_text") => reads(&[text(), text()], io(Type::Unit)),
+        ("Clock", "now") => reads(&[], Type::named("Instant")),
+        ("Clock", "sleep") => reads(&[Type::named("Duration")], Type::Unit),
+        _ => return stdlib::method(type_name, name),
+    })
 }
 
 impl FnCx<'_> {
@@ -164,9 +211,25 @@ impl FnCx<'_> {
         if plain.len() < method.arity.0 || plain.len() > method.arity.1 {
             self.error(wrong_args(name, span));
         }
+        // `Fs` takes a file's path as a `Path` or as text.
+        let path = *ty == Type::named("Fs");
+        for ((actual, at), expected) in plain.iter().zip(&method.params) {
+            let as_path = path && *expected == Type::Str && *actual == Type::named("Path");
+            if as_path || self.checker.fits(expected, actual) {
+                continue;
+            }
+            if path {
+                let message =
+                    format!("`{name}` takes a path, as a str or a `Path`, but this is {}", a(actual));
+                self.error(Diagnostic::new(message, *at));
+                continue;
+            }
+            let expected = self.checker.settled(expected);
+            self.error(mismatch(&format!("`{name}`'s argument"), &expected, actual, *at));
+        }
         // `table.get(key, default)` gives the default instead of None.
-        if let (Type::Dict(_, value), [_, (default, _)]) = (ty, plain.as_slice()) {
-            return join(value, default);
+        if let (Type::Dict(_, value), [_, _]) = (ty, plain.as_slice()) {
+            return value.as_ref().clone();
         }
         method.returns
     }
@@ -190,7 +253,7 @@ impl FnCx<'_> {
                 }
                 Some("key") => {}
                 Some("indent") if named.contains(&"indent") => {
-                    if !accepts(&Type::Int, &ty) {
+                    if !self.checker.fits(&Type::Int, &ty) {
                         self.error(mismatch("`indent`", &Type::Int, &ty, arg.value.span));
                     }
                 }
@@ -247,39 +310,90 @@ impl FnCx<'_> {
             return (module.result)(self, name, plain, span);
         }
         let types: Vec<Type> = plain.iter().map(|(ty, _)| ty.clone()).collect();
-        let (first, at) = plain.first().cloned().unwrap_or((Type::Unknown, span));
-        let items = |cx: &mut Self| cx.item_type(&first, at);
+        let (first, at) = plain.first().cloned().unwrap_or((Type::Unit, span));
         match name {
-            "Ok" => Type::result(first, Type::Unknown),
-            "Err" => Type::result(Type::Unknown, first),
+            "Ok" => Type::result(first, self.checker.fresh(span, Hole::OkError)),
+            "Err" => Type::result(self.checker.fresh(span, Hole::ErrValue), first),
             "len" => {
                 let has_len =
-                    matches!(&first, Type::Named(name) if self.checker.program.method(name, "len").is_some());
-                if !first.is_collection()
-                    && !has_len
-                    && !matches!(first, Type::Tuple(_) | Type::IdMap(_) | Type::Unknown)
-                {
+                    first.type_name().is_some_and(|name| self.checker.program.method(name, "len").is_some());
+                let sized =
+                    first.is_collection() || has_len || matches!(first, Type::Tuple(_) | Type::IdMap(_));
+                if !sized && first.is_known() {
                     self.error(Diagnostic::new(format!("{} has no length", article(&first.kind())), span));
                 }
                 Type::Int
             }
             "range" => {
-                if types.iter().any(|ty| !matches!(ty, Type::Int | Type::Unknown)) {
+                if !types.iter().all(|ty| self.checker.fits(&Type::Int, ty)) {
                     self.error(Diagnostic::new("`range` takes one to three ints", span));
                 }
                 Type::list(Type::Int)
             }
             "str" => Type::Str,
+            "ignore" => {
+                if !plain.get(1).is_some_and(|(reason, _)| self.checker.fits(&Type::Str, reason)) {
+                    self.error(wrong_args(name, span));
+                }
+                Type::Unit
+            }
+            "int" | "float" => {
+                if !matches!(first, Type::Int | Type::Float | Type::Str | Type::Bool | Type::Unknown) {
+                    let message = format!("`{name}` converts a number or text, not {}", a(&first));
+                    self.error(Diagnostic::new(message, at));
+                }
+                if name == "int" { Type::Int } else { Type::Float }
+            }
+            "round" | "abs" => self.math(name, &types, span),
+            _ => self.collection_builtin(name, plain, span),
+        }
+    }
+
+    /// `round`, `abs` and `std.math`'s functions, which take numbers.
+    pub(crate) fn math(&mut self, name: &str, types: &[Type], span: Span) -> Type {
+        let first = types.first().cloned().unwrap_or(Type::Unknown);
+        let number = matches!(first, Type::Int | Type::Float | Type::Unknown);
+        let digits = types.get(1).is_none_or(|digits| self.checker.fits(&Type::Int, digits));
+        if !number || !digits {
+            let message = format!("`{name}` takes a number, but this is {}", a(&first));
+            self.error(Diagnostic::new(message, span));
+            return Type::Unknown;
+        }
+        match name {
             "round" if types.len() == 2 => Type::Float,
-            "int" | "round" => Type::Int,
-            "float" => Type::Float,
+            "round" | "math.floor" | "math.ceil" => Type::Int,
             "abs" => first,
-            "ignore" => Type::Unit,
-            "min" | "max" if types.len() > 1 => join_all(&types),
-            "min" | "max" | "sum" => items(self),
+            _ => Type::Float,
+        }
+    }
+
+    /// The builtins that work on the items of a collection.
+    fn collection_builtin(&mut self, name: &str, plain: &[(Type, Span)], span: Span) -> Type {
+        let types: Vec<Type> = plain.iter().map(|(ty, _)| ty.clone()).collect();
+        let Some((first, at)) = plain.first().cloned() else {
+            // Only `set()` takes nothing.
+            return Type::Set(Box::new(self.checker.fresh(span, Hole::EmptySet)));
+        };
+        let items = |cx: &mut Self| cx.item_type(&first, at);
+        match name {
+            "min" | "max" if types.len() > 1 => {
+                self.join_or_report(&types, span, &format!("`{name}` is given"))
+            }
+            "min" | "max" => items(self),
+            "sum" => {
+                let item = items(self);
+                if !matches!(
+                    self.checker.settled(&item),
+                    Type::Int | Type::Float | Type::Unknown | Type::Var(_)
+                ) {
+                    let message = format!("`sum` adds numbers, but these are {}s", item.kind());
+                    self.error(Diagnostic::new(message, span));
+                }
+                item
+            }
             "any" | "all" => {
                 let item = items(self);
-                if !matches!(item, Type::Bool | Type::Unknown) {
+                if !self.checker.fits(&Type::Bool, &item) {
                     self.error(
                         Diagnostic::new(
                             format!("`{name}` needs bools, but got {}", article(&item.kind())),
@@ -297,9 +411,9 @@ impl FnCx<'_> {
             "set" => Type::Set(Box::new(items(self))),
             "enumerate" => Type::list(Type::Tuple(vec![Type::Int, items(self)])),
             "zip" => {
-                let a = items(self);
-                let b = plain.get(1).map_or(Type::Unknown, |(ty, at)| self.item_type(ty, *at));
-                Type::list(Type::Tuple(vec![a, b]))
+                let first = items(self);
+                let second = plain.get(1).map_or(Type::Unknown, |(ty, at)| self.item_type(ty, *at));
+                Type::list(Type::Tuple(vec![first, second]))
             }
             _ => Type::Unknown,
         }
@@ -318,7 +432,13 @@ impl FnCx<'_> {
         if args.iter().any(|arg| arg.is_mut) {
             self.error(needless_mut("replace", span));
         }
-        let Type::Named(type_name) = ty else { return ty.clone() };
+        let Some(type_name) = ty.type_name() else {
+            if ty.is_known() {
+                let message = format!("`replace` copies a struct, but this is {}", a(ty));
+                self.error(Diagnostic::new(message, span));
+            }
+            return ty.clone();
+        };
         for (arg, actual) in args.iter().zip(&types).skip(1) {
             let Some(name) = &arg.name else {
                 self.error(Diagnostic::new("name the field to change, like `health=50`", arg.value.span));
@@ -336,8 +456,11 @@ impl FnCx<'_> {
                 ));
                 continue;
             }
-            let expected = self.checker.field_type(type_name, None, name);
-            if !accepts(&expected, actual) {
+            let expected = self
+                .checker
+                .field_type(type_name, None, name)
+                .substitute(&self.checker.program.type_args(ty));
+            if !self.checker.fits(&expected, actual) {
                 self.error(mismatch(&format!("`{name}`"), &expected, actual, arg.value.span));
             }
         }
@@ -349,7 +472,9 @@ impl FnCx<'_> {
 fn peek_item(ty: &Type) -> Type {
     match ty {
         Type::List(item) | Type::Set(item) | Type::IdMap(item) | Type::Dict(item, _) => item.as_ref().clone(),
-        Type::Tuple(items) => join_all(items),
+        Type::Tuple(items) if items.windows(2).all(|pair| pair.first() == pair.last()) => {
+            items.first().cloned().unwrap_or(Type::Unknown)
+        }
         Type::Str => Type::Str,
         _ => Type::Unknown,
     }

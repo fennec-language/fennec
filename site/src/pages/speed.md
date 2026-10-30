@@ -46,7 +46,7 @@ The cost of sharing is a reference count on large data, mostly optimized away, a
 
 ## Libraries can't change silently
 
-Return types and errors are inferred, so a library could change what a function returns or how it fails without any visible edit to its signature. When a package is published, Fennec compares the inferred signatures of everything it exports, including the errors each function can fail with, against the previous version, and flags every change.
+Errors are inferred, so a library could change how a function fails without any visible edit to its signature. When a package is published, Fennec compares the inferred signatures of everything it exports, including the errors each function can fail with, against the previous version, and flags every change.
 
 ## The engines
 
@@ -60,7 +60,7 @@ Return types and errors are inferred, so a library could change what a function 
 
 Fast builds come from design decisions, not just a fast compiler.
 
-- **Changes stay local.** When you edit a function, the compiler checks whether its signature changed, including its inferred return type. Almost always it hasn't, and nothing that calls the function is checked again.
+- **Changes stay local.** When you edit a function, the compiler checks whether its signature changed, including the errors it can fail with. Almost always it hasn't, and nothing that calls the function is checked again.
 - **No macros.** Code generation at compile time runs through the interpreter in a sandbox, so its results can be cached.
 - **Simple type checking.** Parameters are typed, so each function is checked on its own once the signatures it calls are known. There are no program-wide inference puzzles, and files are checked in parallel.
 - **One shared cache with a size limit.** Build output is stored once per machine and shared by every project, with old entries removed automatically, so builds don't fill your disk.

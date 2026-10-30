@@ -1,0 +1,7 @@
+error: `json.loads` needs the type to read
+ --> examples/errors/json_untyped.fen:4:12
+  |
+4 |     save = json.loads("{\"level\": 3}")?
+  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: write it in brackets, like `json.loads[Settings](text)`

@@ -217,11 +217,16 @@ name = "fennec"
 version = "0.0.1"
 dependencies = [
  "fennec-check",
+ "fennec-fmt",
  "fennec-interp",
  "fennec-jit",
  "fennec-kit",
  "fennec-syntax",
 ]
+
+[[package]]
+name = "fennec-blake3"
+version = "0.0.1"
 
 [[package]]
 name = "fennec-check"
@@ -232,9 +237,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fennec-fmt"
+version = "0.0.1"
+dependencies = [
+ "fennec-syntax",
+]
+
+[[package]]
 name = "fennec-interp"
 version = "0.0.1"
 dependencies = [
+ "fennec-blake3",
  "fennec-re",
  "fennec-syntax",
 ]

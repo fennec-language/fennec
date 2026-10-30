@@ -11,10 +11,11 @@ mod sources;
 mod span;
 mod stdlib;
 mod token;
+mod trivia;
 
 pub use ast::{
-    Arg, BinOp, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Import, Interface, Item, MatchArm,
-    Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
+    Arg, BinOp, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Generic, Import, Interface, Item,
+    MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
 };
 pub use diagnostic::Diagnostic;
 pub use modules::{
@@ -25,3 +26,4 @@ pub use parser::{parse, parse_at, parse_prelude, parse_repl};
 pub use sources::Sources;
 pub use span::Span;
 pub use stdlib::{given, prelude};
+pub use trivia::{Lexed, SourceToken, TokenKind, lex_source};

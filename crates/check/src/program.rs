@@ -3,7 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use fennec_syntax::{Diagnostic, FnDef, Import, Imported, Item, Module, Span, TestDef, TypeDef, TypeExpr};
+use fennec_syntax::{
+    Diagnostic, FnDef, Generic, Import, Imported, Interface, Item, Module, Span, TestDef, TypeDef, TypeExpr,
+};
 
 use crate::types::Type;
 
@@ -26,6 +28,8 @@ pub(crate) struct FnEntry {
     /// The type a method belongs to.
     pub(crate) owner: Option<String>,
     pub(crate) prelude: bool,
+    /// The type parameters of the functions around a nested function, which it can use.
+    pub(crate) inherited: Vec<Generic>,
 }
 
 /// Every declaration in a program, keyed the way the signature table is: `name` for a
@@ -35,6 +39,7 @@ pub(crate) struct Program {
     pub(crate) types: BTreeMap<String, TypeInfo>,
     pub(crate) functions: BTreeMap<String, FnEntry>,
     pub(crate) tests: Vec<TestDef>,
+    pub(crate) interfaces: BTreeMap<String, Interface>,
     /// Builtins that exist only once imported, like `loads` from `std.json`, by the name
     /// they're imported under.
     pub(crate) imports: BTreeMap<String, String>,
@@ -57,7 +62,7 @@ impl Program {
         for item in &module.items {
             match item {
                 Item::Function(def) => {
-                    let entry = FnEntry { def: def.clone(), owner: None, prelude };
+                    let entry = FnEntry { def: def.clone(), owner: None, prelude, inherited: Vec::new() };
                     self.functions.insert(def.name.clone(), entry);
                 }
                 Item::Struct(def) => self.add_type(def, TypeKind::Struct, prelude),
@@ -67,8 +72,11 @@ impl Program {
                     self.aliases.insert(name.clone(), ty.clone());
                 }
                 Item::Test(test) => self.tests.push(test.clone()),
+                Item::Interface(interface) => {
+                    self.interfaces.insert(interface.name.clone(), interface.clone());
+                }
                 Item::Import(import) => self.add_import(import),
-                Item::Interface(_) | Item::Stmt(_) => {}
+                Item::Stmt(_) => {}
             }
         }
     }
@@ -100,7 +108,12 @@ impl Program {
 
     fn add_type(&mut self, def: &TypeDef, kind: TypeKind, prelude: bool) {
         for method in &def.methods {
-            let entry = FnEntry { def: method.clone(), owner: Some(def.name.clone()), prelude };
+            let entry = FnEntry {
+                def: method.clone(),
+                owner: Some(def.name.clone()),
+                prelude,
+                inherited: Vec::new(),
+            };
             self.functions.insert(format!("{}.{}", def.name, method.name), entry);
         }
         self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone(), prelude });
@@ -143,48 +156,190 @@ impl Program {
             .collect()
     }
 
-    /// The type a written type means. Names the checker doesn't know, like a generic `T`,
-    /// are `Unknown`.
-    pub(crate) fn resolve(&self, written: &TypeExpr) -> Type {
-        self.resolve_within(written, ALIAS_DEPTH)
+    /// The type a written type means, outside any generic function.
+    pub(crate) fn resolve(&self, written: &TypeExpr) -> Result<Type, Diagnostic> {
+        self.resolve_in(written, &[])
     }
 
-    fn resolve_within(&self, written: &TypeExpr, depth: usize) -> Type {
-        let arg =
-            |at: usize| written.args.get(at).map_or(Type::Unknown, |arg| self.resolve_within(arg, depth));
-        let ty = match written.name.as_str() {
+    /// The type a written type means, with these type parameters in scope.
+    pub(crate) fn resolve_in(&self, written: &TypeExpr, generics: &[String]) -> Result<Type, Diagnostic> {
+        self.resolve_within(written, generics, ALIAS_DEPTH)
+    }
+
+    fn resolve_within(
+        &self,
+        written: &TypeExpr,
+        generics: &[String],
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
+        // `std.collections.Deque` or `collections.Deque`, through an imported module.
+        let name = match written.name.rsplit_once('.') {
+            Some((path, member)) if self.modules.contains_key(path) && self.types.contains_key(member) => {
+                member
+            }
+            _ => written.name.as_str(),
+        };
+        if self.is_interface(name) {
+            return Err(interface_as_type(name, written.span));
+        }
+        let builtin = BUILT_IN_TYPES.contains(&name);
+        let declared = generics.iter().any(|generic| generic == name)
+            || self.types.contains_key(name)
+            || self.aliases.contains_key(name);
+        if !builtin && !declared {
+            return Err(unknown_type(name, written.span));
+        }
+        let wanted = match name {
+            "->" => written.args.len().max(1),
+            "list" | "set" | "SoaList" | "Id" | "IdMap" => 1,
+            "dict" | "Result" => 2,
+            "tuple" => written.args.len(),
+            name => self.type_params(name).len(),
+        };
+        if written.args.len() != wanted {
+            return Err(wrong_type_args(written, wanted));
+        }
+        let mut args = Vec::new();
+        for arg in &written.args {
+            args.push(self.resolve_within(arg, generics, depth)?);
+        }
+        let mut items = args.clone().into_iter();
+        let mut arg = || Box::new(items.next().unwrap_or(Type::Unknown));
+        let ty = match name {
             "int" => Type::Int,
             "float" => Type::Float,
             "bool" => Type::Bool,
             "str" => Type::Str,
             "None" => Type::None,
-            "list" | "SoaList" => Type::list(arg(0)),
-            "set" => Type::Set(Box::new(arg(0))),
-            "dict" => Type::Dict(Box::new(arg(0)), Box::new(arg(1))),
-            "tuple" => Type::Tuple(written.args.iter().map(|arg| self.resolve_within(arg, depth)).collect()),
-            "Id" => Type::Id(Box::new(arg(0))),
-            "IdMap" => Type::IdMap(Box::new(arg(0))),
-            "Stdout" | "Fs" | "Clock" => Type::named(&written.name),
-            name if self.types.contains_key(name) => Type::named(name),
-            // `std.collections.Deque` or `collections.Deque`, through an imported module.
-            name if let Some((path, member)) = name.rsplit_once('.')
-                && self.modules.contains_key(path)
-                && self.types.contains_key(member) =>
-            {
-                Type::named(member)
+            // What a function gives back when it gives back nothing, for writing the return
+            // type of one that calls itself.
+            "nothing" => Type::Unit,
+            "list" | "SoaList" => Type::List(arg()),
+            "set" => Type::Set(arg()),
+            "dict" => Type::Dict(arg(), arg()),
+            "Result" => Type::Result(arg(), arg()),
+            "tuple" => Type::Tuple(args),
+            "->" => {
+                let mut params = args;
+                let ret = params.pop().unwrap_or(Type::Unit);
+                Type::Arrow(params, Box::new(ret))
             }
+            "Id" => Type::Id(arg()),
+            "IdMap" => Type::IdMap(arg()),
+            "Stdout" | "Fs" | "Clock" => Type::named(name),
+            name if generics.iter().any(|generic| generic == name) => Type::Param(name.to_owned()),
+            name if self.types.contains_key(name) && !args.is_empty() => Type::Generic(name.to_owned(), args),
+            name if self.types.contains_key(name) => Type::named(name),
             name => match (self.aliases.get(name), depth.checked_sub(1)) {
-                (Some(alias), Some(depth)) => self.resolve_within(alias, depth),
-                _ => Type::Unknown,
+                (Some(alias), Some(depth)) => self.resolve_within(alias, generics, depth)?,
+                _ => {
+                    return Err(Diagnostic::new(
+                        format!("the type alias `{name}` refers to itself"),
+                        written.span,
+                    ));
+                }
             },
         };
-        if written.optional { Type::optional(ty) } else { ty }
+        Ok(if written.optional { Type::optional(ty) } else { ty })
+    }
+
+    /// Whether a name is an interface: one the program declares, or a built-in one.
+    pub(crate) fn is_interface(&self, name: &str) -> bool {
+        self.interfaces.contains_key(name) || BUILT_IN_INTERFACES.contains(&name)
+    }
+
+    /// A type's type parameters, in order: `T` for `Deque[T]`.
+    pub(crate) fn type_params(&self, name: &str) -> Vec<String> {
+        self.types
+            .get(name)
+            .map(|info| info.def.generics.iter().map(|generic| generic.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// What each of a generic type's parameters stands for in a value's type: `T` is `int`
+    /// in `Deque[int]`.
+    pub(crate) fn type_args(&self, ty: &Type) -> Vec<(String, Type)> {
+        match ty {
+            Type::Generic(name, args) => {
+                self.type_params(name).into_iter().zip(args.iter().cloned()).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The type of `self` in a type's methods: `Deque[T]` for a `Deque`.
+    pub(crate) fn self_type(&self, name: &str) -> Type {
+        let params = self.type_params(name);
+        if params.is_empty() {
+            return Type::named(name);
+        }
+        Type::Generic(name.to_owned(), params.into_iter().map(Type::Param).collect())
+    }
+
+    /// The type parameters in scope in a function: its type's, then its own.
+    pub(crate) fn generics_of(&self, entry: &FnEntry) -> Vec<Generic> {
+        let owner = entry.owner.as_ref().and_then(|owner| self.types.get(owner));
+        let owner = owner.map(|info| info.def.generics.clone()).unwrap_or_default();
+        owner
+            .into_iter()
+            .chain(entry.inherited.iter().cloned())
+            .chain(entry.def.generics.iter().cloned())
+            .collect()
+    }
+}
+
+/// The interfaces every type that can fits automatically.
+pub(crate) const BUILT_IN_INTERFACES: [&str; 4] = ["Eq", "Hashable", "Ordered", "Format"];
+
+const BUILT_IN_TYPES: [&str; 18] = [
+    "int", "float", "bool", "str", "None", "nothing", "list", "SoaList", "set", "dict", "tuple", "Id",
+    "IdMap", "Stdout", "Fs", "Clock", "Result", "->",
+];
+
+/// An interface written where a type goes, as in `list[Shape]`.
+fn interface_as_type(name: &str, span: Span) -> Diagnostic {
+    Diagnostic::new(format!("`{name}` is an interface, not a type"), span).with_help(format!(
+        "take a type parameter that fits it, like `def f[T: {name}](items: list[T])`, or use an enum for a mix of types"
+    ))
+}
+
+fn wrong_type_args(written: &TypeExpr, wanted: usize) -> Diagnostic {
+    let name = &written.name;
+    let example = match name.as_str() {
+        "dict" => "dict[str, int]".to_owned(),
+        "Result" => "Result[int, IoError]".to_owned(),
+        "list" | "set" | "SoaList" => format!("{name}[int]"),
+        "Id" | "IdMap" => format!("{name}[Enemy]"),
+        _ => name.clone(),
+    };
+    let message = if wanted == 0 {
+        format!("`{name}` doesn't take types in brackets")
+    } else {
+        format!("`{name}` needs {wanted} type{} in brackets", if wanted == 1 { "" } else { "s" })
+    };
+    Diagnostic::new(message, written.span).with_help(format!("write it like `{example}`"))
+}
+
+fn unknown_type(name: &str, span: Span) -> Diagnostic {
+    let diagnostic = Diagnostic::new(format!("`{name}` isn't a type"), span);
+    match name {
+        "f32" | "f64" | "double" => diagnostic.with_help("write `float`"),
+        "i32" | "i64" | "usize" | "long" => diagnostic.with_help("write `int`"),
+        "string" | "String" => diagnostic.with_help("write `str`"),
+        "boolean" | "Bool" => diagnostic.with_help("write `bool`"),
+        "List" | "Dict" | "Set" => diagnostic.with_help(format!("write `{}`", name.to_lowercase())),
+        "Optional" => diagnostic.with_help("write `?` after the type, like `Enemy?`"),
+        _ => diagnostic.with_help(format!("declare it, like `struct {name}:`, or check the spelling")),
     }
 }
 
 /// A written type as source text, for suggesting a fix.
 pub(crate) fn written(ty: &TypeExpr) -> String {
     let args: Vec<String> = ty.args.iter().map(written).collect();
+    if ty.name == "->" {
+        let (ret, params) = args.split_last().map_or(("", &[][..]), |(ret, params)| (ret.as_str(), params));
+        return format!("({}) -> {ret}", params.join(", "));
+    }
     let base = if ty.name == "tuple" {
         format!("({})", args.join(", "))
     } else if args.is_empty() {

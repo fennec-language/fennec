@@ -29,6 +29,8 @@ pub enum Item {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FnDef {
     pub name: String,
+    /// Type parameters, like `T` in `def first[T](items: list[T]) -> T`.
+    pub generics: Vec<Generic>,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
     pub body: Vec<Stmt>,
@@ -42,6 +44,15 @@ impl FnDef {
     }
 }
 
+/// A type parameter, with the interfaces its types have to fit: `T`, `T: Shape` or
+/// `T: Ordered & Hashable`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Generic {
+    pub name: String,
+    pub bounds: Vec<TypeExpr>,
+    pub span: Span,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Param {
     pub name: String,
@@ -52,7 +63,8 @@ pub struct Param {
     pub span: Span,
 }
 
-/// A written type, like `int`, `list[str]`, `(int, int)` or `Enemy?`.
+/// A written type, like `int`, `list[str]`, `(int, int)` or `Enemy?`. A function type,
+/// `(int, str) -> bool`, is named `->`, with its parameters' types and then its return type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeExpr {
     pub name: String,
@@ -65,6 +77,8 @@ pub struct TypeExpr {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeDef {
     pub name: String,
+    /// Type parameters, like `T` in `struct Deque[T]:`.
+    pub generics: Vec<Generic>,
     pub fields: Vec<Field>,
     pub cases: Vec<Case>,
     pub methods: Vec<FnDef>,
@@ -120,12 +134,14 @@ pub struct Stmt {
 #[derive(Clone, Debug, PartialEq)]
 pub enum StmtKind {
     Expr(Expr),
-    /// `name = value`, `mut name = value`, `a, b = pair`, `target op= value`.
+    /// `name = value`, `mut name = value`, `a, b = pair`, `target op= value`, and
+    /// `name: type = value`, which declares a name with its type written.
     Assign {
         target: Expr,
         op: Option<BinOp>,
         value: Expr,
         declare_mut: bool,
+        ty: Option<TypeExpr>,
     },
     If {
         branches: Vec<(Expr, Vec<Stmt>)>,
@@ -239,6 +255,37 @@ pub enum ExprKind {
         subject: Box<Expr>,
         arms: Vec<MatchArm>,
     },
+}
+
+impl Expr {
+    /// The type an expression spells, as in `json.loads[list[int]]`: a name, a name with
+    /// types in brackets, a tuple of types, or any of those with `?`. `None` for anything
+    /// else.
+    pub fn as_type(&self) -> Option<TypeExpr> {
+        let plain = |name: &str, args: Vec<TypeExpr>| TypeExpr {
+            name: name.to_owned(),
+            args,
+            optional: false,
+            span: self.span,
+        };
+        match &self.kind {
+            ExprKind::Name(name) => Some(plain(name, Vec::new())),
+            ExprKind::None => Some(plain("None", Vec::new())),
+            ExprKind::Index { object, index } => {
+                let ExprKind::Name(name) = &object.kind else { return None };
+                let args = match &index.kind {
+                    ExprKind::Tuple(items) => items.iter().map(Expr::as_type).collect::<Option<Vec<_>>>()?,
+                    _ => vec![index.as_type()?],
+                };
+                Some(plain(name, args))
+            }
+            ExprKind::Tuple(items) => {
+                Some(plain("tuple", items.iter().map(Expr::as_type).collect::<Option<_>>()?))
+            }
+            ExprKind::Try { value, context: None } => Some(TypeExpr { optional: true, ..value.as_type()? }),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

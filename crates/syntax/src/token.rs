@@ -158,6 +158,8 @@ pub(crate) enum Punct {
     Arrow,
     FatArrow,
     Question,
+    /// `&`, which joins the interfaces a type parameter has to fit: `T: Ordered & Hashable`.
+    Amp,
     Plus,
     Minus,
     Star,
@@ -216,6 +218,7 @@ impl Punct {
             Punct::Assign => "=",
             Punct::Lt => "<",
             Punct::Gt => ">",
+            Punct::Amp => "&",
             _ => "?",
         }
     }
@@ -232,6 +235,7 @@ impl Punct {
             ':' => Punct::Colon,
             '.' => Punct::Dot,
             '?' => Punct::Question,
+            '&' => Punct::Amp,
             '+' => Punct::Plus,
             '-' => Punct::Minus,
             '*' => Punct::Star,

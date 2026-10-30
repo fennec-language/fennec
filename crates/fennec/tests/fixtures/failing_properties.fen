@@ -69,8 +69,5 @@ test "big numbers are odd" for n: int:
 test "failing with an error":
     fail Oops("broken")
 
-test "a widget" for widget: Widget:
-    pass
-
 test "this one passes":
     assert True

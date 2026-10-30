@@ -5,9 +5,17 @@ struct Settings:
     fullscreen = False
     keys = ["w", "a", "s", "d"]
 
+struct Player:
+    name: str
+    level: int
+    speed: float
+    items: list[str]
+    pet: str?
+    alive: bool
+
 def describe(text: str):
-    match json.loads(text):
-        case Ok(value): f"read {json.dumps(value)}"
+    match json.loads[list[float]](text):
+        case Ok(numbers): f"read {json.dumps(numbers)}"
         case ParseError(message): f"couldn't read it: {message}"
 
 def main(stdout: Stdout):
@@ -21,23 +29,29 @@ def main(stdout: Stdout):
         "  \"alive\": true",
         "}",
     ])
-    player = json.loads(text)?
-    stdout.print(player["name"], "is level", player["level"] + 1, "and moves at", player["speed"])
-    for item in player["items"]:
+    player = json.loads[Player](text)?
+    stdout.print(player.name, "is level", player.level + 1, "and moves at", player.speed)
+    for item in player.items:
         stdout.print("carries", item)
-    stdout.print(player["pet"] is None, player["alive"])
+    stdout.print(player.pet is None, player.alive)
 
     stdout.print(json.dumps(player))
     stdout.print(json.dumps(Settings(), indent=2))
-    stdout.print(json.dumps([1, "two", 3.0, None, (4, 5), {"6": [], "7": {}}]))
+    stdout.print(json.dumps((1, "two", 3.0, None, (4, 5), {"6": [6], "7": []})))
     stdout.print(json.dumps("quotes \" and \\ and\nnew lines"))
-    stdout.print(json.loads(json.dumps(Settings()))? == json.loads(json.dumps(Settings(), indent=4))?)
+    stdout.print(json.loads[str]("\"\\u00e9t\\u00e9\"")?)
+    settings = json.loads[Settings](json.dumps(Settings()))?
+    stdout.print(settings == json.loads[Settings](json.dumps(Settings(), indent=4))?)
+    loud = json.loads[Settings]("{\"volume\": 1}")?
+    stdout.print(loud.volume, loud.keys)
 
-    stdout.print(describe("[1, 2.5e3, -0.5, \"\\u00e9\"]"))
+    stdout.print(describe("[1, 2.5e3, -0.5]"))
+    stdout.print(describe("[1, \"two\"]"))
     stdout.print(describe("[1, 2,]"))
     stdout.print(describe("{\"a\": 1,\n \"b\" 2}"))
     stdout.print(describe("\"never ends"))
     stdout.print(describe("tru"))
-    match json.loads("[\n  1,\n  oops\n]"):
-        case ParseError(_, line, column): stdout.print(f"the problem is on line {line}, column {column}")
+    match json.loads[list[int]]("[\n  1,\n  oops\n]"):
+        case ParseError(_, line, column):
+            stdout.print(f"the problem is on line {line}, column {column}")
         case Ok(value): stdout.print(value)

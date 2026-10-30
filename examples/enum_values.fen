@@ -33,47 +33,73 @@ struct Robot:
 
 def turn(dir: Dir) -> Dir:
     match dir:
-        case .North: .East
-        case .East: .South
-        case .South: .West
-        case .West: .North
+        case .North:
+            .East
+        case .East:
+            .South
+        case .South:
+            .West
+        case .West:
+            .North
 
 def step(at: Cell, dir: Dir, count: int) -> Cell:
     match dir:
-        case .North: Cell(row=at.row - count, col=at.col)
-        case .South: Cell(row=at.row + count, col=at.col)
-        case .East: Cell(row=at.row, col=at.col + count)
-        case .West: Cell(row=at.row, col=at.col - count)
+        case .North:
+            Cell(row=at.row - count, col=at.col)
+        case .South:
+            Cell(row=at.row + count, col=at.col)
+        case .East:
+            Cell(row=at.row, col=at.col + count)
+        case .West:
+            Cell(row=at.row, col=at.col - count)
 
 def apply(robot: Robot, move: Move) -> Robot:
     match move:
-        case .Step(dir, count): Robot(at=step(robot.at, dir, count), facing=dir, last=move)
-        case .Jump(Cell(row, col)): Robot(at=Cell(row=row, col=col), facing=robot.facing, last=move)
-        case _: Robot(at=robot.at, facing=turn(robot.facing), last=move)
+        case .Step(dir, count):
+            Robot(at=step(robot.at, dir, count), facing=dir, last=move)
+        case .Jump(Cell(row, col)):
+            Robot(at=Cell(row=row, col=col), facing=robot.facing, last=move)
+        case _:
+            Robot(at=robot.at, facing=turn(robot.facing), last=move)
 
 def describe(move: Move) -> str:
     match move:
-        case .Step(.North, 1): "one step north"
-        case .Step(.North, count): f"{count} steps north"
-        case .Step(_, 0): "standing still"
-        case .Step(dir, count): f"{count} steps {dir}"
-        case .Jump(Cell(0, 0)): "back home"
-        case .Jump(to): f"jump to {to.row},{to.col}"
-        case .Wait(turns): f"wait {turns}"
-        case .Quit: "quit"
+        case .Step(.North, 1):
+            "one step north"
+        case .Step(.North, count):
+            f"{count} steps north"
+        case .Step(_, 0):
+            "standing still"
+        case .Step(dir, count):
+            f"{count} steps {dir}"
+        case .Jump(Cell(0, 0)):
+            "back home"
+        case .Jump(to):
+            f"jump to {to.row},{to.col}"
+        case .Wait(turns):
+            f"wait {turns}"
+        case .Quit:
+            "quit"
 
 def score(tokens: list[Token]) -> int:
     mut total = 0
     mut sign = 1
     for token in tokens:
         match token:
-            case .Number(value): total += sign * value
-            case .Decimal(value): total += sign * int(value * 10.0)
-            case .Flag(True): total *= 2
-            case .Flag(_): pass
-            case .Plus: sign = 1
-            case .Minus: sign = -1
-            case .End: break
+            case .Number(value):
+                total += sign * value
+            case .Decimal(value):
+                total += sign * int(value * 10.0)
+            case .Flag(True):
+                total *= 2
+            case .Flag(_):
+                pass
+            case .Plus:
+                sign = 1
+            case .Minus:
+                sign = -1
+            case .End:
+                break
     total
 
 def main(stdout: Stdout):

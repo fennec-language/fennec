@@ -26,8 +26,7 @@ def step() -> int:
 
 def find(items: list[int], value: int):
     for at in range(len(items)):
-        if items[at] == value:
-            return at
+        if items[at] == value: return at
     fail Missing(value)
 
 test "find gives the position":

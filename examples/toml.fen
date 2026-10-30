@@ -81,8 +81,10 @@ def kit_toml():
 
 def describe(text: str):
     match toml.loads[Sample](text):
-        case Ok(sample): f"read {sample}"
-        case ParseError(message): f"couldn't read it: {message}"
+        case Ok(sample):
+            f"read {sample}"
+        case ParseError(message):
+            f"couldn't read it: {message}"
 
 def main(stdout: Stdout):
     manifest = toml.loads[Manifest](kit_toml())?

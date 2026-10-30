@@ -1,4 +1,6 @@
 def main(stdout: Stdout):
     match 3:
-        case 1: stdout.print("one")
-        case 2: stdout.print("two")
+        case 1:
+            stdout.print("one")
+        case 2:
+            stdout.print("two")

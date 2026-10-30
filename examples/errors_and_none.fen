@@ -10,20 +10,17 @@ struct Player:
 
 def find(players: list[Player], name: str) -> Player?:
     for player in players:
-        if player.name == name:
-            return player
+        if player.name == name: return player
     None
 
 def require(players: list[Player], name: str):
     player = find(players, name)
-    if player is None:
-        fail NotFound(name)
+    if player is None: fail NotFound(name)
     player
 
 def challenge(players: list[Player], name: str):
     player = require(players, name)?
-    if player.level < 5:
-        fail TooWeak(player.level)
+    if player.level < 5: fail TooWeak(player.level)
     f"{player.name} accepts the challenge"
 
 def main(stdout: Stdout):
@@ -35,9 +32,12 @@ def main(stdout: Stdout):
 
     for name in ["Ash", "Kit", "Vex"]:
         match challenge(players, name):
-            case Ok(message): stdout.print(message)
-            case TooWeak(level): stdout.print(f"{name} is only level {level}")
-            case Err(error): stdout.print(f"no luck: {error}")
+            case Ok(message):
+                stdout.print(message)
+            case TooWeak(level):
+                stdout.print(f"{name} is only level {level}")
+            case Err(error):
+                stdout.print(f"no luck: {error}")
 
     nobody = Player(name="nobody", level=-1)
     level = (require(players, "Vex") else nobody).level

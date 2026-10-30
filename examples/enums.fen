@@ -7,19 +7,24 @@ enum Shape:
 
 def area(shape: Shape):
     match shape:
-        case .Circle(radius): PI * radius * radius
-        case .Rect(width, height): width * height
-        case .Point: 0.0
+        case .Circle(radius):
+            PI * radius * radius
+        case .Rect(width, height):
+            width * height
+        case .Point:
+            0.0
 
 def describe(shape: Shape):
     kind = match shape:
-        case .Circle(_): "round"
+        case .Circle(_):
+            "round"
         case .Rect(width, height):
             if width == height:
                 "square"
             else:
                 "rectangle"
-        case _: "tiny"
+        case _:
+            "tiny"
     f"a {kind} shape with area {area(shape):.2f}"
 
 def main(stdout: Stdout):

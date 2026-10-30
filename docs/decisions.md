@@ -410,6 +410,16 @@ Every tool ships in the `fennec` binary and has no configuration unless a settin
 
 *Why:* Inferred types and error sets need to be visible to be trusted, and a fixed style plus automatic fixes means AI and people write the same code. Cost hints show what code costs while it's written, not after a profiler finds it.
 
+**The format depends only on the code.** Two files with the same syntax tree format to the same text, however they were laid out, so people and AI write identical code. `docs/formatting.md` has the details.
+- Lines are at most 100 characters. A bracketed list that doesn't fit puts one item per line, with a trailing comma; a list of plain literals fills its lines instead. A comma after the last item doesn't keep a list broken.
+- A line with nothing to break is wrapped in parentheses and broken before its loosest operators, so 100 is a real limit.
+- Indentation is 4 spaces. There's one blank line around top-level declarations and methods, and at most one anywhere else.
+- A body goes on its own lines, `case` arms included. The exception is a guard clause that fits: `if hp <= 0: return`, an `if` with no `else` whose body is one `return`, `fail`, `break` or `continue`.
+- Imports are sorted: `std` first, then other kits, then the kit's own modules.
+- A trailing comment has two spaces before its `#`, and a comment one space after it. Line endings are always LF.
+
+*Why:* Formatting is never worth discussing, and output that depends on how code was typed isn't one style. Wide enough for real game code and two panes side by side, with breaks that keep a diff to the lines that changed.
+
 **Every breaking change ships with its own fix.** No language change that breaks code lands unless `fennec fix` rewrites old code to match.
 *Why:* Upgrading Fennec should never be a project.
 

@@ -2,8 +2,7 @@ error Oops:
     reason: str
 
 def risky(n: int):
-    if n > 1:
-        fail Oops("too big")
+    if n > 1: fail Oops("too big")
     n
 
 def main(stdout: Stdout):

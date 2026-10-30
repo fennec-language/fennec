@@ -1,8 +1,7 @@
 # Ints, floats and bools: the core that compiles straight to machine code.
 
 def fib(n: int) -> int:
-    if n < 2:
-        return n
+    if n < 2: return n
     return fib(n - 1) + fib(n - 2)
 
 def collatz_steps(start: int):
@@ -14,12 +13,10 @@ def collatz_steps(start: int):
     steps
 
 def is_prime(n: int):
-    if n < 2:
-        return False
+    if n < 2: return False
     mut d = 2
     while d * d <= n:
-        if n % d == 0:
-            return False
+        if n % d == 0: return False
         d += 1
     True
 
@@ -49,10 +46,8 @@ def main(stdout: Stdout):
     mut i = 0
     while True:
         i += 1
-        if i > 20:
-            break
-        if i % 3 != 0:
-            continue
+        if i > 20: break
+        if i % 3 != 0: continue
         total += i
     stdout.print(f"multiples of 3 up to 20 add up to {total}")
 

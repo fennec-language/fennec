@@ -1,11 +1,9 @@
 ## The three ways to import, as in Python.
 
 # `import std.collections` binds `std`: write `std.collections.Deque`.
-import std.collections
-
 # `from std import random` binds `random`: write `random.Random`.
 from std import random
-
+import std.collections
 # `from std.re import Regex` binds `Regex` itself.
 from std.re import Regex
 

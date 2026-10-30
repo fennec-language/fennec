@@ -1,4 +1,4 @@
-from std.re import Regex, Match
+from std.re import Match, Regex
 
 struct Command:
     verb: str
@@ -8,8 +8,7 @@ struct Command:
 ## Reads a typed command like "take 3 arrows" or "open door".
 def parse_command(line: str) -> Command?:
     found = Regex(r"^\s*(\w+)\s+(?:(\d+)\s+)?(\w+)\s*$").match(line)
-    if found is None:
-        return None
+    if found is None: return None
     count = found[2]
     Command(
         verb=found[1] else "",
@@ -42,7 +41,8 @@ def main(stdout: Stdout):
         match Regex(pattern):
             case Ok(regex):
                 stdout.print(pattern, "finds", [m.text for m in regex.find_all("a1b22")])
-            case Err(error): stdout.print(pattern, "->", error.message)
+            case Err(error):
+                stdout.print(pattern, "->", error.message)
 
     # Matching never backtracks, so this takes time in proportion to the text.
     many = "".join(["a" for _ in range(5_000)])

@@ -1,6 +1,11 @@
 //! The file as blocks of logical lines: indentation, blank lines between lines, and the
 //! comments on lines of their own between them.
 
+mod bodies;
+mod imports;
+
+use std::collections::HashSet;
+
 use crate::comments::{Comments, text};
 use crate::layout::Writer;
 use crate::spacing::{BlockKind, Tok, analyze};
@@ -33,8 +38,11 @@ struct Entry<'a> {
 }
 
 pub(crate) struct Driver<'s, 't> {
-    source: &'s str,
     tokens: &'t [SourceToken],
+    /// Every token with its text.
+    all: Vec<Tok<'s>>,
+    /// Tokens already written as part of an earlier line: a guard clause's body, joined on.
+    skipped: HashSet<usize>,
     comments: Comments<'s>,
     pub(crate) writer: Writer,
     blocks: Vec<Block>,
@@ -48,9 +56,12 @@ pub(crate) struct Driver<'s, 't> {
 
 impl<'s, 't> Driver<'s, 't> {
     pub(crate) fn new(source: &'s str, tokens: &'t [SourceToken], comments: Comments<'s>) -> Self {
+        let all =
+            tokens.iter().map(|token| Tok { kind: token.kind, text: text(source, token.span) }).collect();
         Driver {
-            source,
             tokens,
+            all,
+            skipped: HashSet::new(),
             comments,
             writer: Writer::default(),
             blocks: vec![Block::new(0, BlockKind::TopLevel)],
@@ -69,6 +80,9 @@ impl<'s, 't> Driver<'s, 't> {
             let before_break = chunk.iter().take_while(|token| token.kind != TokenKind::Newline);
             for (index, token) in before_break.enumerate() {
                 let at = offset + index;
+                if self.skipped.contains(&at) {
+                    continue;
+                }
                 match token.kind {
                     TokenKind::Indent => {
                         let width =
@@ -81,6 +95,10 @@ impl<'s, 't> Driver<'s, 't> {
                         self.blocks.pop();
                     }
                     TokenKind::Eof => self.end_of_file(at),
+                    _ if self.is_import(at) => {
+                        self.imports(at);
+                        break;
+                    }
                     _ => {
                         let end = chunk.iter().position(|token| token.kind == TokenKind::Newline);
                         self.line(at, offset + end.unwrap_or(chunk.len()));
@@ -96,53 +114,77 @@ impl<'s, 't> Driver<'s, 't> {
         self.blocks.len().saturating_sub(1)
     }
 
-    fn toks(&self, start: usize, end: usize) -> Vec<Tok<'s>> {
-        self.tokens
-            .get(start..end)
-            .unwrap_or(&[])
-            .iter()
-            .map(|token| Tok { kind: token.kind, text: text(self.source, token.span) })
-            .collect()
+    fn toks(&self, start: usize, end: usize) -> &[Tok<'s>] {
+        self.all.get(start..end).unwrap_or(&[])
     }
 
-    /// Writes the logical line made of tokens `start..end`, with the comments before it.
+    /// Writes the logical line made of tokens `start..end`, with the comments before it. A
+    /// guard clause written as a block is joined onto one line when it fits.
     fn line(&mut self, start: usize, end: usize) {
-        let toks = self.toks(start, end);
         let level = self.level();
         let kind = self.blocks.last().map_or(BlockKind::Other, |block| block.kind);
-        let is_item = is_item(&toks, kind);
+        let is_item = is_item(self.toks(start, end), kind);
         let first = self.tokens.get(start).map_or(0, |token| token.span.start);
         let entries = self.entries(start, first, level);
         self.write_entries(&entries, level, is_item);
 
-        let spacing = analyze(&toks, kind);
-        let leading: Vec<&[&str]> = (start..end).map(|at| self.comments.leading(at)).collect();
-        let trailing: Vec<Option<&str>> = (start..end).map(|at| self.comments.trailing(at)).collect();
-        let line = Line {
-            toks: &toks,
-            leading: &leading,
-            trailing: &trailing,
-            space: &spacing.space,
-            brackets: &spacing.brackets,
+        let joined = self.guard_block(start, end).filter(|&(body_start, body_end)| {
+            self.write_line(&[(start, end), (body_start, body_end)], level, kind, body_end + 2, true)
+        });
+        let last = if let Some((_, body_end)) = joined {
+            self.skipped.extend(end + 1..=body_end + 1);
+            body_end
+        } else {
+            self.write_line(&[(start, end)], level, kind, end + 1, false);
+            end
         };
-        let item = line.build();
-        let too_long = item.flat.is_some_and(|width| level * INDENT + width > WIDTH);
-        match body_colon(&toks, kind).filter(|_| too_long) {
-            Some(colon) => {
-                let (header, body) = line.split_at(colon + 1);
-                write(&mut self.writer, &header.build(), level, None);
-                write(&mut self.writer, &body.build(), level + 1, trailing.last().copied().flatten());
-            }
-            None => write(&mut self.writer, &item, level, trailing.last().copied().flatten()),
-        }
-
-        self.prev_end = end.checked_sub(1).and_then(|last| self.tokens.get(last)).map(|token| token.span.end);
+        self.prev_end = last.checked_sub(1).and_then(|at| self.tokens.get(at)).map(|token| token.span.end);
         if let Some(block) = self.blocks.last_mut() {
             block.started = true;
             block.last_was_item = is_item;
         }
-        self.pending = opened_kind(&toks);
+        self.pending = if joined.is_some() { BlockKind::Other } else { opened_kind(self.toks(start, end)) };
         self.last_widths = self.blocks.iter().map(|block| block.width).collect();
+    }
+
+    /// Writes one logical line made of the tokens in `ranges`, at `level`. A body after its
+    /// `:` moves to a line of its own, unless it makes a guard clause that fits; `next` is
+    /// the first token after the statement, to see whether an `else` follows. With `only_if_fits`,
+    /// a line that doesn't fit isn't written, and the result says so.
+    fn write_line(
+        &mut self,
+        ranges: &[(usize, usize)],
+        level: usize,
+        kind: BlockKind,
+        next: usize,
+        only_if_fits: bool,
+    ) -> bool {
+        let indexes: Vec<usize> = ranges.iter().flat_map(|&(start, end)| start..end).collect();
+        let toks: Vec<Tok<'_>> = indexes.iter().filter_map(|&at| self.all.get(at).copied()).collect();
+        let spacing = analyze(&toks, kind);
+        let leading: Vec<&[&str]> = indexes.iter().map(|&at| self.comments.leading(at)).collect();
+        let trailing: Vec<Option<&str>> = indexes.iter().map(|&at| self.comments.trailing(at)).collect();
+        let line = Line::new(&toks, &leading, &trailing, &spacing);
+        let room = WIDTH.saturating_sub(level * INDENT);
+        let item = line.build();
+        let fits = item.flat.is_some_and(|width| level * INDENT + width <= WIDTH);
+        if only_if_fits && !fits {
+            return false;
+        }
+        let comment = trailing.last().copied().flatten();
+        let split = bodies::inline_body(&toks, kind).filter(|&colon| {
+            let (header, body) = toks.split_at(colon + 1);
+            !(bodies::guards(header, body) && fits && !self.has_else(next))
+        });
+        match split {
+            Some(colon) => {
+                let (header, body) = line.split_at(colon + 1);
+                write(&mut self.writer, &header.shaped(room), level, None);
+                write(&mut self.writer, &body.shaped(room.saturating_sub(INDENT)), level + 1, comment);
+            }
+            None => write(&mut self.writer, &line.shaped(room), level, comment),
+        }
+        true
     }
 
     /// The own-line comments before token `at`, then the line itself, with their levels and
@@ -231,33 +273,11 @@ fn is_item(toks: &[Tok<'_>], kind: BlockKind) -> bool {
 fn write(writer: &mut Writer, item: &Item<'_>, level: usize, comment: Option<&str>) {
     let indent = level * INDENT;
     writer.start(indent);
-    writer.item(item, indent, 0);
+    writer.item(item, indent, 0, false);
     if let Some(comment) = comment {
         writer.trailing_comment(comment);
     }
     writer.finish();
-}
-
-/// Where the `:` is in a block statement with its body on the same line, like
-/// `case .Point: 0.0`. A body that makes the line too long moves to a line of its own.
-fn body_colon(toks: &[Tok<'_>], kind: BlockKind) -> Option<usize> {
-    let mut words = toks.iter().skip_while(|tok| matches!(tok.text, "export" | "noalloc"));
-    let first = words.next()?;
-    let opens_block = matches!(first.text, "def" | "if" | "elif" | "else" | "while" | "for" | "with")
-        || first.text == "case" && kind == BlockKind::MatchBody;
-    if !opens_block {
-        return None;
-    }
-    let mut depth = 0_usize;
-    for (at, tok) in toks.iter().enumerate().filter(|(_, tok)| tok.kind == TokenKind::Punct) {
-        match tok.text {
-            "(" | "[" | "{" => depth += 1,
-            ")" | "]" | "}" => depth = depth.saturating_sub(1),
-            ":" if depth == 0 => return (at + 1 < toks.len()).then_some(at),
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Whether a line has a `:` outside brackets, which a line with a body always has.

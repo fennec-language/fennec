@@ -2,8 +2,7 @@ def factorial(n: int) -> int:
     1 if n <= 1 else n * factorial(n - 1)
 
 def fibonacci(n: int) -> int:
-    if n < 2:
-        return n
+    if n < 2: return n
     fibonacci(n - 1) + fibonacci(n - 2)
 
 def apply_damage(mut health: int, amount: int):

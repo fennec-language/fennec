@@ -4,10 +4,14 @@
 use crate::style::check;
 
 #[test]
-fn a_one_line_body_that_just_fits_stays() {
+fn a_guard_clause_that_just_fits_stays_on_one_line() {
     check(
-        "def f(x: int):\n    match x:\n        case 1: total = 1 + bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
-        "def f(x: int):\n    match x:\n        case 1: total = 1 + bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+        "def f(x: int):\n    if x > 0: return bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+        "def f(x: int):\n    if x > 0: return bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+    );
+    check(
+        "def f(x: int):\n    if x > 0: return bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+        "def f(x: int):\n    if x > 0:\n        return bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
     );
 }
 
@@ -44,7 +48,7 @@ fn a_long_one_line_if_body_moves_below() {
 fn a_field_named_case_is_not_a_match_arm() {
     check(
         "struct S:\n    case: list[int] = [1000000000, 2000000000, 3000000000, 4000000000, 5000000000, 6000000000, 70000]\n",
-        "struct S:\n    case: list[int] = [\n        1000000000,\n        2000000000,\n        3000000000,\n        4000000000,\n        5000000000,\n        6000000000,\n        70000,\n    ]\n",
+        "struct S:\n    case: list[int] = [\n        1000000000, 2000000000, 3000000000, 4000000000, 5000000000, 6000000000, 70000,\n    ]\n",
     );
 }
 
@@ -97,10 +101,10 @@ fn type_arguments_break_without_a_trailing_comma() {
 }
 
 #[test]
-fn a_list_ending_in_a_comma_isnt_hugged() {
+fn a_trailing_comma_doesnt_stop_hugging() {
     check(
         "def f():\n    g([\"item number 0\", \"item number 1\", \"item number 2\", \"item number 3\", \"item number 4\", \"item number 5\", \"item number 6\", \"item number 7\"],)\n",
-        "def f():\n    g(\n        [\n            \"item number 0\",\n            \"item number 1\",\n            \"item number 2\",\n            \"item number 3\",\n            \"item number 4\",\n            \"item number 5\",\n            \"item number 6\",\n            \"item number 7\",\n        ],\n    )\n",
+        "def f():\n    g([\n        \"item number 0\", \"item number 1\", \"item number 2\", \"item number 3\", \"item number 4\",\n        \"item number 5\", \"item number 6\", \"item number 7\",\n    ])\n",
     );
 }
 
@@ -108,7 +112,7 @@ fn a_list_ending_in_a_comma_isnt_hugged() {
 fn a_comment_after_the_bracket_stops_hugging() {
     check(
         "def f():\n    g(  # why\n        [\"item number 0\", \"item number 1\", \"item number 2\", \"item number 3\", \"item number 4\", \"item number 5\", \"item number 6\", \"item number 7\"]\n    )\n",
-        "def f():\n    g(  # why\n        [\n            \"item number 0\",\n            \"item number 1\",\n            \"item number 2\",\n            \"item number 3\",\n            \"item number 4\",\n            \"item number 5\",\n            \"item number 6\",\n            \"item number 7\",\n        ],\n    )\n",
+        "def f():\n    g(  # why\n        [\n            \"item number 0\", \"item number 1\", \"item number 2\", \"item number 3\", \"item number 4\",\n            \"item number 5\", \"item number 6\", \"item number 7\",\n        ],\n    )\n",
     );
 }
 
@@ -116,7 +120,7 @@ fn a_comment_after_the_bracket_stops_hugging() {
 fn a_comment_after_the_item_stops_hugging() {
     check(
         "def f():\n    g(\n        [\"item number 0\", \"item number 1\", \"item number 2\", \"item number 3\", \"item number 4\", \"item number 5\", \"item number 6\", \"item number 7\"]  # why\n    )\n",
-        "def f():\n    g(\n        [\n            \"item number 0\",\n            \"item number 1\",\n            \"item number 2\",\n            \"item number 3\",\n            \"item number 4\",\n            \"item number 5\",\n            \"item number 6\",\n            \"item number 7\",\n        ],  # why\n    )\n",
+        "def f():\n    g(\n        [\n            \"item number 0\", \"item number 1\", \"item number 2\", \"item number 3\", \"item number 4\",\n            \"item number 5\", \"item number 6\", \"item number 7\",\n        ],  # why\n    )\n",
     );
 }
 
@@ -124,7 +128,7 @@ fn a_comment_after_the_item_stops_hugging() {
 fn a_comment_before_the_bracket_stops_hugging() {
     check(
         "def f():\n    g(\n        [\"item number 0\", \"item number 1\", \"item number 2\", \"item number 3\", \"item number 4\", \"item number 5\", \"item number 6\", \"item number 7\"]\n        # why\n    )\n",
-        "def f():\n    g(\n        [\n            \"item number 0\",\n            \"item number 1\",\n            \"item number 2\",\n            \"item number 3\",\n            \"item number 4\",\n            \"item number 5\",\n            \"item number 6\",\n            \"item number 7\",\n        ],\n        # why\n    )\n",
+        "def f():\n    g(\n        [\n            \"item number 0\", \"item number 1\", \"item number 2\", \"item number 3\", \"item number 4\",\n            \"item number 5\", \"item number 6\", \"item number 7\",\n        ],\n        # why\n    )\n",
     );
 }
 
@@ -137,10 +141,10 @@ fn an_empty_list_isnt_hugged() {
 }
 
 #[test]
-fn what_follows_a_list_counts_toward_its_width() {
+fn a_long_assignment_wraps_its_value_in_parentheses() {
     check(
         "def f():\n    value = compute(first_argument, second_argument) + another_long_name_to_add + one_more_name + more\n",
-        "def f():\n    value = compute(\n        first_argument,\n        second_argument,\n    ) + another_long_name_to_add + one_more_name + more\n",
+        "def f():\n    value = (\n        compute(first_argument, second_argument) + another_long_name_to_add + one_more_name + more\n    )\n",
     );
 }
 

@@ -1,0 +1,43 @@
+# Loops over lists that only index them read and change items in place, and copies made
+# before the loop never change.
+
+struct Particle:
+    x: float
+    speed: float
+
+    def nudge(mut self, by: float):
+        self.x += by
+
+def first_negative(xs: list[int]) -> int:
+    mut i = 0
+    while i < len(xs):
+        if xs[i] < 0: return i
+        i += 1
+    -1
+
+def main(stdout: Stdout):
+    mut xs = [1, 2, 3, 4]
+    copy = xs
+    for i in range(len(xs)):
+        xs[i] *= 10
+    stdout.print(xs, copy)
+
+    mut grid = [0 for _ in range(12)]
+    for row in range(3):
+        for col in range(4):
+            grid[row * 4 + col] = row * col
+    stdout.print(grid, first_negative([3, 1, -4, 1, -5]), first_negative([1]))
+
+    mut particles = [Particle(x=float(i), speed=0.5) for i in range(3)]
+    for step in range(2):
+        for i in range(len(particles)):
+            particles[i].x += particles[i].speed
+    for i in range(len(particles)):
+        particles[i].nudge(100.0)
+    stdout.print(particles[0].x, particles[2].x)
+
+    lists = [[1, 2], [3, 4]]
+    mut total = 0
+    for xs in lists:
+        total += xs[0] * xs[1]
+    stdout.print(total, xs)

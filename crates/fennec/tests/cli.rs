@@ -256,6 +256,49 @@ fn scratch(name: &str) -> std::io::Result<PathBuf> {
 }
 
 #[test]
+fn fmt_check_passes_on_the_examples() {
+    let output = fennec(&["fmt", "--check", "examples"], "").unwrap();
+    assert!(output.status.success(), "{}{}", text(&output.stdout), text(&output.stderr));
+    assert_eq!(text(&output.stdout), "");
+    assert!(text(&output.stderr).contains("raise.fen: it doesn't parse (2:5: Fennec doesn't have `raise`)"));
+    assert!(
+        text(&output.stderr).contains("tab_inside_line.fen: it doesn't parse (2:12: tabs aren't allowed)")
+    );
+}
+
+#[test]
+fn fmt_rewrites_a_folder_and_check_lists_what_it_would_change() {
+    let dir = scratch("fmt").unwrap();
+    std::fs::create_dir_all(dir.join("src/.hidden")).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"demo\"\n").unwrap();
+    std::fs::write(dir.join("src/main.fen"), "def main(stdout:Stdout):\n  stdout.print(1+2)\n").unwrap();
+    std::fs::write(dir.join("src/done.fen"), "def done():\n    pass\n").unwrap();
+    std::fs::write(dir.join("src/.hidden/skip.fen"), "def skip( ):\n  pass\n").unwrap();
+    let folder = dir.to_str().unwrap();
+
+    let check = fennec(&["fmt", "--check", folder], "").unwrap();
+    assert_eq!(check.status.code(), Some(1));
+    assert!(text(&check.stdout).trim_end().ends_with("main.fen"), "{}", text(&check.stdout));
+    assert!(text(&check.stderr).contains("1 file isn't formatted"));
+
+    let write = fennec(&["fmt", folder], "").unwrap();
+    assert!(write.status.success());
+    let main = std::fs::read_to_string(dir.join("src/main.fen")).unwrap();
+    assert_eq!(main, "def main(stdout: Stdout):\n    stdout.print(1 + 2)\n");
+    let hidden = std::fs::read_to_string(dir.join("src/.hidden/skip.fen")).unwrap();
+    assert_eq!(hidden, "def skip( ):\n  pass\n");
+    assert!(fennec(&["fmt", "--check", folder], "").unwrap().status.success());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn fmt_has_no_options() {
+    let output = fennec(&["fmt", "--line-width=80", "examples"], "").unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(text(&output.stderr).contains("has no option `--line-width=80`"));
+}
+
+#[test]
 fn run_with_no_path_runs_the_kit_around_the_current_folder() {
     let expected = std::fs::read_to_string(repo().join("examples/projects/arena.out")).unwrap();
     let kit = repo().join("examples/projects/arena");
@@ -369,5 +412,31 @@ fn new_makes_a_kit_that_runs_and_passes_its_tests() {
         assert_eq!(bad.status.code(), Some(1), "{bad_name:?}");
         assert!(text(&bad.stderr).contains("can't name a kit"), "{bad_name:?}");
     }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn fmt_with_no_path_formats_the_kit_around_the_current_folder() {
+    let dir = scratch("fmt-kit").unwrap();
+    std::fs::create_dir_all(dir.join("kit/src/combat")).unwrap();
+    std::fs::write(dir.join("kit/kit.toml"), "name = \"demo\"\n").unwrap();
+    std::fs::write(dir.join("kit/src/main.fen"), "def main(stdout:Stdout):\n  pass\n").unwrap();
+    std::fs::write(dir.join("kit/src/combat/hit.fen"), "def hit( ):\n  pass\n").unwrap();
+    std::fs::write(dir.join("outside.fen"), "def outside( ):\n  pass\n").unwrap();
+
+    let check = fennec_in(&dir.join("kit/src/combat"), &["fmt", "--check"], "").unwrap();
+    assert_eq!(check.status.code(), Some(1));
+    let listed = text(&check.stdout).replace('\\', "/");
+    assert_eq!(listed, "../../src/combat/hit.fen\n../../src/main.fen\n");
+
+    let write = fennec_in(&dir.join("kit/src/combat"), &["fmt"], "").unwrap();
+    assert!(write.status.success());
+    let hit = std::fs::read_to_string(dir.join("kit/src/combat/hit.fen")).unwrap();
+    assert_eq!(hit, "def hit():\n    pass\n");
+    let outside = std::fs::read_to_string(dir.join("outside.fen")).unwrap();
+    assert_eq!(outside, "def outside( ):\n  pass\n");
+
+    let plain = fennec_in(&dir, &["fmt", "--check"], "").unwrap();
+    assert_eq!(text(&plain.stdout).replace('\\', "/"), "outside.fen\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -44,7 +44,14 @@ def width(shape: Shape):
         case _: "no width"
 
 def main(stdout: Stdout):
-    stdout.print(name_int(0), name_int(-1), name_int(1), name_float(0.5), name_float(-0.5), name_float(1.5))
+    stdout.print(
+        name_int(0),
+        name_int(-1),
+        name_int(1),
+        name_float(0.5),
+        name_float(-0.5),
+        name_float(1.5),
+    )
     stdout.print(name_maybe(None), name_maybe(0))
     stdout.print(name_str("fox"), name_str("cat"), name_bool(True), name_bool(False))
     stdout.print(outcome(Ok(0)), outcome(Ok(5)), outcome(Err("no")))

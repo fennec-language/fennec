@@ -47,7 +47,8 @@ def next_move(i: int, facing: Dir) -> Move:
 def apply(robot: Robot, move: Move) -> Robot:
     match move:
         case .Step(dir, 0): Robot(at=robot.at, facing=dir, waited=robot.waited + 1)
-        case .Step(dir, count): Robot(at=step(robot.at, dir, count), facing=dir, waited=robot.waited)
+        case .Step(dir, count):
+            Robot(at=step(robot.at, dir, count), facing=dir, waited=robot.waited)
         case .Jump(to): Robot(at=to, facing=robot.facing, waited=robot.waited)
         case .Turn: Robot(at=robot.at, facing=turn(robot.facing), waited=robot.waited)
         case .Wait(turns): Robot(at=robot.at, facing=robot.facing, waited=robot.waited + turns)

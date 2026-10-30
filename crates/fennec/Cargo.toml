@@ -16,6 +16,7 @@ path = "tests/main.rs"
 
 [dependencies]
 fennec-check.workspace = true
+fennec-fmt.workspace = true
 fennec-interp.workspace = true
 fennec-jit.workspace = true
 fennec-kit.workspace = true

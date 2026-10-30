@@ -31,7 +31,9 @@ def main(stdout: Stdout):
     stdout.print(json.dumps(Settings(), indent=2))
     stdout.print(json.dumps([1, "two", 3.0, None, (4, 5), {"6": [], "7": {}}]))
     stdout.print(json.dumps("quotes \" and \\ and\nnew lines"))
-    stdout.print(json.loads(json.dumps(Settings()))? == json.loads(json.dumps(Settings(), indent=4))?)
+    stdout.print(
+        json.loads(json.dumps(Settings()))? == json.loads(json.dumps(Settings(), indent=4))?,
+    )
 
     stdout.print(describe("[1, 2.5e3, -0.5, \"\\u00e9\"]"))
     stdout.print(describe("[1, 2,]"))
@@ -39,5 +41,6 @@ def main(stdout: Stdout):
     stdout.print(describe("\"never ends"))
     stdout.print(describe("tru"))
     match json.loads("[\n  1,\n  oops\n]"):
-        case ParseError(_, line, column): stdout.print(f"the problem is on line {line}, column {column}")
+        case ParseError(_, line, column):
+            stdout.print(f"the problem is on line {line}, column {column}")
         case Ok(value): stdout.print(value)

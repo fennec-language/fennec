@@ -347,7 +347,12 @@ impl Lowerer<'_, '_> {
             let id = self.name_id(&name);
             let handle = self.help(Helper::Get, &[id])?;
             let value = self.convert(Some(handle), Ty::Obj, local.ty, span)?;
-            self.b.def_var(var, value);
+            if let Ty::Struct(id) = local.ty {
+                let own = self.b.use_var(var);
+                self.copy_struct(own, value, id)?;
+            } else {
+                self.b.def_var(var, value);
+            }
         }
         self.call_helper(Helper::PopScope, &[]).map(|_| ())
     }

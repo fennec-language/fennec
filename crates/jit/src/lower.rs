@@ -15,6 +15,7 @@ mod fallback;
 mod flow;
 mod objects;
 mod stmt;
+mod structs;
 
 use std::collections::{HashMap, HashSet};
 
@@ -27,6 +28,7 @@ use fennec_interp::embed::{self, Tables};
 use fennec_syntax::{Diagnostic, Span};
 
 use crate::helpers::{self, Helper};
+use crate::layout::Layouts;
 use crate::runtime::Entry;
 use crate::types::{Function, Program, Ty, unsupported};
 
@@ -72,10 +74,13 @@ fn internal(err: impl std::fmt::Debug, span: Span) -> Diagnostic {
 
 /// Compiles every function the JIT can. A function it can't compile runs in the
 /// interpreter instead, so this retries without each one that fails until all compile.
-pub(crate) fn compile(program: &Program<'_>) -> Result<(Entry, Tables, Compilation), Diagnostic> {
+pub(crate) fn compile(
+    program: &Program<'_>,
+    signatures: &fennec_check::Signatures,
+) -> Result<(Entry, Tables, Compilation), Diagnostic> {
     let mut skipped = HashSet::new();
     loop {
-        match attempt(program, &skipped) {
+        match attempt(program, signatures, &skipped) {
             Ok((entry, tables, (with_frames, handed_over))) => {
                 let mut interpreted: Vec<String> = skipped.into_iter().collect();
                 interpreted.sort();
@@ -108,7 +113,11 @@ type Attempt = Result<(Entry, Tables, (usize, usize)), (String, Diagnostic)>;
 
 /// One try at compiling the program, skipping some functions. On failure, the name of the
 /// function that couldn't be compiled.
-fn attempt(program: &Program<'_>, skipped: &HashSet<String>) -> Attempt {
+fn attempt(
+    program: &Program<'_>,
+    signatures: &fennec_check::Signatures,
+    skipped: &HashSet<String>,
+) -> Attempt {
     let span = program.main_span;
     let fatal = |diagnostic| ("main".to_owned(), diagnostic);
     let mut module = new_module(span).map_err(fatal)?;
@@ -128,8 +137,14 @@ fn attempt(program: &Program<'_>, skipped: &HashSet<String>) -> Attempt {
         let failed = |diagnostic| (function.key.clone(), diagnostic);
         let id = shared.compiled.get(&function.key).map(|compiled| compiled.id);
         let id = id.ok_or_else(|| failed(internal("undeclared function", function.def.span)))?;
-        let mut cx =
-            Cx { module: &mut module, ctx: &mut ctx, builder_ctx: &mut builder_ctx, shared: &mut shared };
+        let mut cx = Cx {
+            layouts: &program.layouts,
+            signatures,
+            module: &mut module,
+            ctx: &mut ctx,
+            builder_ctx: &mut builder_ctx,
+            shared: &mut shared,
+        };
         lower_function(&mut cx, function).map_err(failed)?;
         module.define_function(id, &mut ctx).map_err(|err| failed(internal(err, function.def.span)))?;
         module.clear_context(&mut ctx);
@@ -216,35 +231,49 @@ fn declare_all(
 
 fn abi(ty: Ty) -> Option<types::Type> {
     match ty {
-        Ty::Int | Ty::Obj => Some(types::I64),
+        Ty::Int | Ty::Obj | Ty::Struct(_) => Some(types::I64),
         Ty::Float => Some(types::F64),
         Ty::Bool => Some(types::I8),
         Ty::Unit | Ty::Stdout | Ty::Fs => None,
     }
 }
 
-/// A compiled function's machine signature: how deeply calls are nested, each parameter's
-/// value (and, for a `mut` object, the caller's name for it), then the result and each
+/// A compiled function's machine signature: how deeply calls are nested; for a function
+/// giving back a plain struct, where to put it; each parameter's value (the address of a
+/// struct, and for a `mut` object, also the caller's name for it); then the result and each
 /// `mut` number's final value. The depth travels in a register, so counting it is cheap.
 fn signature(module: &JITModule, function: &Function<'_>) -> cranelift_codegen::ir::Signature {
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64));
+    if matches!(function.ret, Ty::Struct(_)) {
+        sig.params.push(AbiParam::new(types::I64));
+    }
     for param in &function.params {
         sig.params.extend(abi(param.ty).map(AbiParam::new));
         if param.is_mut && param.ty == Ty::Obj {
             sig.params.push(AbiParam::new(types::I64));
         }
     }
-    sig.returns.extend(abi(function.ret).map(AbiParam::new));
+    if !matches!(function.ret, Ty::Struct(_)) {
+        sig.returns.extend(abi(function.ret).map(AbiParam::new));
+    }
     for param in &function.params {
-        if param.is_mut && param.ty != Ty::Obj {
+        if param.is_mut && returns_changes(param.ty) {
             sig.returns.extend(abi(param.ty).map(AbiParam::new));
         }
     }
     sig
 }
 
+/// Whether a `mut` parameter of this kind gives its final value back as a result: numbers
+/// do; objects and plain structs are changed where the caller holds them.
+fn returns_changes(ty: Ty) -> bool {
+    !matches!(ty, Ty::Obj | Ty::Struct(_))
+}
+
 struct Cx<'a> {
+    layouts: &'a Layouts,
+    signatures: &'a fennec_check::Signatures,
     module: &'a mut JITModule,
     ctx: &'a mut cranelift_codegen::Context,
     builder_ctx: &'a mut FunctionBuilderContext,
@@ -302,7 +331,9 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
     let params = b.block_params(entry).to_vec();
     let exit = b.create_block();
     let returns: Vec<_> = b.func.signature.returns.iter().map(|param| param.value_type).collect();
-    if let Some(ret) = abi(function.ret).and(returns.first().copied()) {
+    if let Some(ret) =
+        abi(function.ret).filter(|_| !matches!(function.ret, Ty::Struct(_))).and(returns.first().copied())
+    {
         b.append_block_param(exit, ret);
     }
     let bail = b.create_block();
@@ -311,6 +342,9 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         b,
         module: &mut *cx.module,
         shared: &mut *cx.shared,
+        layouts: cx.layouts,
+        signatures: cx.signatures,
+        dest: None,
         function,
         scopes: vec![Scope::default()],
         loops: Vec::new(),
@@ -385,14 +419,23 @@ pub(crate) struct Lowerer<'a, 'f> {
     /// The blocks for "the receiver is some other type", while calls on each compiled
     /// type are being lowered.
     pending: Vec<Block>,
+    layouts: &'a Layouts,
+    signatures: &'a fennec_check::Signatures,
+    /// Where a function giving back a plain struct puts it.
+    dest: Option<Value>,
 }
 
 impl Lowerer<'_, '_> {
     /// Counts the call, starts the frame and binds the parameters.
     fn prologue(&mut self, params: &[Value]) -> Result<(), Diagnostic> {
         let span = self.function.def.span;
-        let (depth, params) = params.split_first().ok_or_else(|| internal("missing depth", span))?;
+        let (depth, mut params) = params.split_first().ok_or_else(|| internal("missing depth", span))?;
         self.depth = Some(*depth);
+        if matches!(self.function.ret, Ty::Struct(_)) {
+            let (dest, rest) = params.split_first().ok_or_else(|| internal("missing destination", span))?;
+            self.dest = Some(*dest);
+            params = rest;
+        }
         if self.frame {
             let base = self.help(Helper::Mark, &[])?;
             self.bases.push(base);
@@ -441,7 +484,7 @@ impl Lowerer<'_, '_> {
             self.call_helper(Helper::Leave, &[])?;
         }
         for param in &function.params {
-            if param.is_mut && param.ty != Ty::Obj {
+            if param.is_mut && returns_changes(param.ty) {
                 let local = self.local_param(&param.name)?;
                 results.extend(local.var.map(|var| self.b.use_var(var)));
             }
@@ -615,6 +658,12 @@ impl Lowerer<'_, '_> {
         } else {
             match function.ret {
                 Ty::Unit | Ty::Stdout | Ty::Fs => None,
+                Ty::Struct(id) => {
+                    let value = self.convert(value, ty, Ty::Struct(id), span)?;
+                    let dest = self.dest.ok_or_else(|| internal("no destination", span))?;
+                    self.copy_struct(dest, value, id)?;
+                    None
+                }
                 ret => Some(self.convert(value, ty, ret, span)?),
             }
         };

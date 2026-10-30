@@ -41,11 +41,37 @@ pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Signatures {
     functions: BTreeMap<String, Signature>,
+    structs: BTreeMap<String, Struct>,
+    locals: BTreeMap<String, Type>,
+}
+
+/// A struct's fields, with their types, in the order they're written.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Struct {
+    pub fields: Vec<(String, Type)>,
+    /// Whether any field has a `where` rule, checked whenever a value is made.
+    pub rules: bool,
 }
 
 impl Signatures {
     pub fn get(&self, name: &str) -> Option<&Signature> {
         self.functions.get(name)
+    }
+
+    /// A struct's fields, the standard library's included.
+    pub fn structure(&self, name: &str) -> Option<&Struct> {
+        self.structs.get(name)
+    }
+
+    /// The name of every struct, the standard library's included.
+    pub fn structures(&self) -> impl Iterator<Item = &str> {
+        self.structs.keys().map(String::as_str)
+    }
+
+    /// The type a name holds in a function (`name`, `Type.name` or `outer.inner`), when it
+    /// holds the same type everywhere in it.
+    pub fn local(&self, function: &str, name: &str) -> Option<&Type> {
+        self.locals.get(&format!("{function}/{name}")).filter(|ty| **ty != Type::Unknown)
     }
 
     /// Every signature, by name in alphabetical order.

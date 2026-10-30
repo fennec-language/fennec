@@ -70,6 +70,11 @@ impl Lowerer<'_, '_> {
             return Ok((Some(self.help(Helper::PathGet, &[start, end])?), Ty::Obj));
         }
         let (value, ty) = self.expr(object)?;
+        if let (Ty::Struct(id), Some(address)) = (ty, value)
+            && let Some(field) = self.struct_field(id, name)?
+        {
+            return Ok(self.load_field(address, field));
+        }
         let handle = self.handle_of(value, ty, object.span)?;
         let name = self.name_id(name);
         let optional = self.b.ins().iconst(types::I8, i64::from(optional));
@@ -114,6 +119,20 @@ impl Lowerer<'_, '_> {
         span: Span,
     ) -> Result<Lowered, Diagnostic> {
         let code = binary_code(op).ok_or_else(|| internal("no operator code", span))?;
+        if let (Ty::Struct(id), Some(method)) = (left.1, op.method_name()) {
+            let key = format!("{}.{method}", self.layout(id)?.name);
+            let other = self
+                .shared
+                .compiled
+                .get(&key)
+                .filter(|compiled| compiled.takes_self)
+                .and_then(|compiled| compiled.params.get(1))
+                .map(|param| param.1);
+            if let (Some(address), Some(other)) = (left.0, other) {
+                let right = self.convert(right.0, right.1, other, span)?;
+                return self.call_key(&key, vec![address, right], span);
+            }
+        }
         let a = self.handle_of(left.0, left.1, span)?;
         let b = self.handle_of(right.0, right.1, span)?;
         let candidates = op.method_name().map(|method| self.methods_named(method, 1)).unwrap_or_default();
@@ -129,7 +148,14 @@ impl Lowerer<'_, '_> {
                     .and_then(|compiled| compiled.params.get(1))
                     .map(|param| param.1);
                 let b_param = self.convert(Some(b), Ty::Obj, other.unwrap_or(Ty::Obj), span)?;
-                let (value, ty) = self.call_key(&key, vec![a, b_param], span)?;
+                let self_ty = self
+                    .shared
+                    .compiled
+                    .get(&key)
+                    .and_then(|compiled| compiled.params.first())
+                    .map_or(Ty::Obj, |param| param.1);
+                let a_param = self.convert(Some(a), Ty::Obj, self_ty, span)?;
+                let (value, ty) = self.call_key(&key, vec![a_param, b_param], span)?;
                 arms.extend(self.arm_end(value, ty));
                 self.otherwise_type();
             }
@@ -191,6 +217,16 @@ impl Lowerer<'_, '_> {
         if candidates.is_empty() || args.iter().any(|arg| arg.name.is_some() || arg.is_mut) {
             return Ok(None);
         }
+        let struct_mut_self = candidates.iter().any(|(_, key)| {
+            self.shared
+                .compiled
+                .get(key)
+                .and_then(|compiled| compiled.params.first())
+                .is_some_and(|param| param.2 && matches!(param.1, Ty::Struct(_)))
+        });
+        if struct_mut_self {
+            return Ok(None);
+        }
         let changes_self = candidates.iter().any(|(_, key)| {
             self.shared
                 .compiled
@@ -227,7 +263,10 @@ impl Lowerer<'_, '_> {
                     values.push(self.help(Helper::Take, &[id])?);
                     values.push(id);
                 }
-                _ => values.push(receiver),
+                (Some((_, self_ty, _)), _) => {
+                    values.push(self.convert(Some(receiver), Ty::Obj, *self_ty, expr.span)?);
+                }
+                (None, _) => values.push(receiver),
             }
             for ((value, from), (_, to, _)) in lowered.iter().zip(params.iter().skip(1)) {
                 if !matches!(to, Ty::Stdout | Ty::Fs) {
@@ -291,9 +330,15 @@ impl Lowerer<'_, '_> {
         let hidden = format!("\0for{}", iter.span.start);
         let key = format!("\0key{}", iter.span.start);
         self.declare_object(&hidden, entries, false)?;
-        for placeholder in [&key, &name.to_owned()] {
+        let none = self.help(Helper::None, &[])?;
+        self.declare_object(&key, none, true)?;
+        // An item the checker knows is a plain struct lives natively for its turn.
+        if let Some(Ty::Struct(id)) = self.checked_ty(name) {
+            let own = self.new_struct(id)?;
+            self.bind_native(name, Ty::Struct(id), Some(own), true);
+        } else {
             let none = self.help(Helper::None, &[])?;
-            self.declare_object(placeholder, none, true)?;
+            self.declare_object(name, none, true)?;
         }
         let hidden_id = self.name_id(&hidden);
         let list = self.help(Helper::Get, &[hidden_id])?;
@@ -346,8 +391,12 @@ impl Lowerer<'_, '_> {
             let index = self.int(i64::try_from(index).unwrap_or(0));
             let [start, end] = self.span_args(span);
             let part = self.help(Helper::Unpack, &[copy, index, count, for_loop, start, end])?;
-            let id = self.name_id(name);
-            self.call_helper(Helper::Assign, &[id, part])?;
+            if let Some(local @ super::Local { ty: Ty::Struct(_), .. }) = self.local(name) {
+                self.set_local(name, local, Some(part), Ty::Obj, span)?;
+            } else {
+                let id = self.name_id(name);
+                self.call_helper(Helper::Assign, &[id, part])?;
+            }
         }
         self.drop_temps()
     }
@@ -357,8 +406,15 @@ impl Lowerer<'_, '_> {
         self.start_path(&put_back.root, &put_back.fields)?;
         let key = self.name_id(&put_back.key);
         let key = self.help(Helper::Get, &[key])?;
-        let item = self.name_id(&put_back.item);
-        let item = self.help(Helper::Get, &[item])?;
+        let item = if let Some(super::Local { var: Some(var), ty: ty @ Ty::Struct(_), .. }) =
+            self.local(&put_back.item)
+        {
+            let address = self.b.use_var(var);
+            self.handle_of(Some(address), ty, put_back.span)?
+        } else {
+            let item = self.name_id(&put_back.item);
+            self.help(Helper::Get, &[item])?
+        };
         let [start, end] = self.span_args(put_back.span);
         self.call_helper(Helper::PutItem, &[key, item, start, end])?;
         self.drop_temps()

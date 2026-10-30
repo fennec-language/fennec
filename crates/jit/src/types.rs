@@ -2,8 +2,10 @@
 //! machine values; every other value is an object the runtime holds, which native code
 //! refers to by a handle. Return types come from the type checker.
 
-use fennec_check::{Signatures, Type};
-use fennec_syntax::{Diagnostic, FnDef, Item, Module, Span, StmtKind, TypeExpr};
+use fennec_check::Signatures;
+use fennec_syntax::{Diagnostic, FnDef, Item, Module, Span, StmtKind};
+
+use crate::layout::Layouts;
 
 /// How native code holds a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,6 +21,9 @@ pub(crate) enum Ty {
     Fs,
     /// Anything else, held by the runtime.
     Obj,
+    /// A plain struct, in memory native code owns, which it refers to by address. The
+    /// number picks its layout.
+    Struct(u32),
 }
 
 impl Ty {
@@ -31,18 +36,7 @@ impl Ty {
             Ty::Stdout => "Stdout",
             Ty::Fs => "Fs",
             Ty::Obj => "value",
-        }
-    }
-
-    pub(crate) fn of(ty: &Type) -> Ty {
-        match ty {
-            Type::Int => Ty::Int,
-            Type::Float => Ty::Float,
-            Type::Bool => Ty::Bool,
-            Type::Unit => Ty::Unit,
-            Type::Named(name) if name == "Stdout" => Ty::Stdout,
-            Type::Named(name) if name == "Fs" => Ty::Fs,
-            _ => Ty::Obj,
+            Ty::Struct(_) => "struct",
         }
     }
 }
@@ -67,6 +61,7 @@ pub(crate) struct Function<'m> {
 
 pub(crate) struct Program<'m> {
     pub(crate) functions: Vec<Function<'m>>,
+    pub(crate) layouts: Layouts,
     /// Functions and methods the JIT doesn't try to compile, like generators.
     pub(crate) excluded: Vec<String>,
     pub(crate) main_span: Span,
@@ -85,6 +80,12 @@ impl<'m> Program<'m> {
         prelude: &'m [Module],
         signatures: &Signatures,
     ) -> Result<Self, Diagnostic> {
+        let mut layouts = Layouts::new(signatures, signatures.structures().map(str::to_owned));
+        for item in prelude.iter().chain(std::iter::once(module)).flat_map(|module| &module.items) {
+            if let Item::Struct(def) = item {
+                layouts.add_defaults(def);
+            }
+        }
         let mut functions = Vec::new();
         let mut excluded = Vec::new();
         let mut main_span = None;
@@ -92,7 +93,7 @@ impl<'m> Program<'m> {
             if signatures.get(&key).is_none() {
                 return;
             }
-            match function(def, key.clone(), signatures) {
+            match function(def, key.clone(), signatures, &layouts) {
                 Some(function) => functions.push(Function { prelude: from_prelude, ..function }),
                 None => excluded.push(key),
             }
@@ -122,35 +123,30 @@ impl<'m> Program<'m> {
         if !functions.iter().any(|function| function.def.name == "main") {
             return Err(unsupported("this `main`", main_span));
         }
-        Ok(Program { functions, excluded, main_span })
+        Ok(Program { functions, layouts, excluded, main_span })
     }
 }
 
-fn function<'m>(def: &'m FnDef, key: String, signatures: &Signatures) -> Option<Function<'m>> {
+fn function<'m>(
+    def: &'m FnDef,
+    key: String,
+    signatures: &Signatures,
+    layouts: &Layouts,
+) -> Option<Function<'m>> {
     let signature = signatures.get(&key)?;
     if signature.generator || def.body.iter().any(|stmt| matches!(stmt.kind, StmtKind::Def(_))) {
         return None;
     }
-    let mut params = Vec::with_capacity(def.params.len());
-    for param in &def.params {
-        let ty = if param.is_self { Ty::Obj } else { param_ty(param.ty.as_ref()?) };
-        params.push(Param { name: param.name.clone(), ty, is_mut: param.is_mut });
-    }
-    let ret = if signature.can_fail { Ty::Obj } else { Ty::of(&signature.returns) };
+    let params = def
+        .params
+        .iter()
+        .zip(&signature.params)
+        .map(|(param, typed)| Param {
+            name: param.name.clone(),
+            ty: layouts.ty(&typed.ty),
+            is_mut: param.is_mut,
+        })
+        .collect();
+    let ret = if signature.can_fail { Ty::Obj } else { layouts.ty(&signature.returns) };
     Some(Function { def, key, prelude: false, params, ret, fallible: signature.can_fail })
-}
-
-/// How a parameter of a written type is held.
-fn param_ty(ty: &TypeExpr) -> Ty {
-    if ty.optional || !ty.args.is_empty() {
-        return Ty::Obj;
-    }
-    match ty.name.as_str() {
-        "int" | "i64" => Ty::Int,
-        "float" | "f64" => Ty::Float,
-        "bool" => Ty::Bool,
-        "Stdout" => Ty::Stdout,
-        "Fs" => Ty::Fs,
-        _ => Ty::Obj,
-    }
 }

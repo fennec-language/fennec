@@ -22,6 +22,19 @@ impl Lowerer<'_, '_> {
             self.print(args, name == "print")?;
             return Ok((None, Ty::Unit));
         }
+        if let ExprKind::Attr { object, name, optional: false } = &callee.kind
+            && let Some(Ty::Struct(id)) = self.static_ty(object)
+            && let Some(result) = self.call_struct_method(expr, object, id, name, args)?
+        {
+            return Ok(result);
+        }
+        if let ExprKind::Name(type_name) = &callee.kind
+            && self.local(type_name).is_none()
+            && let Some(id) = self.layouts.id(type_name)
+            && let Some(result) = self.construct(id, args, expr.span)?
+        {
+            return Ok(result);
+        }
         if let ExprKind::Attr { object, name, optional: false } = &callee.kind {
             let result = match &object.kind {
                 ExprKind::Name(type_name) if self.local(type_name).is_none() => {
@@ -114,6 +127,11 @@ impl Lowerer<'_, '_> {
                     if *ty == Ty::Obj {
                         values.push(self.help(Helper::Take, &[id])?);
                         values.push(id);
+                    } else if let (Ty::Struct(_), Some(var)) =
+                        (ty, self.local(local).and_then(|local| local.var))
+                    {
+                        // The callee changes the caller's struct where it lives.
+                        values.push(self.b.use_var(var));
                     } else if let Some(var) = self.local(local).and_then(|local| local.var) {
                         values.push(self.b.use_var(var));
                         mut_natives.push(var);
@@ -122,8 +140,16 @@ impl Lowerer<'_, '_> {
                 _ => {}
             }
         }
+        let dest = self.dest_for(ret)?;
+        values.splice(0..0, dest);
         let mut results = self.raw_call(id, values, span)?.into_iter();
-        let value = if super::abi(ret).is_some() { results.next() } else { None };
+        let value = if let Some(dest) = dest {
+            Some(dest)
+        } else if super::abi(ret).is_some() {
+            results.next()
+        } else {
+            None
+        };
         for (var, result) in mut_natives.into_iter().zip(results) {
             self.b.def_var(var, result);
         }
@@ -143,8 +169,17 @@ impl Lowerer<'_, '_> {
     ) -> Result<Lowered, Diagnostic> {
         let compiled = self.shared.compiled.get(key).map(|compiled| (compiled.id, compiled.ret));
         let (id, ret) = compiled.ok_or_else(|| super::internal("unknown function", span))?;
+        let dest = self.dest_for(ret)?;
+        let mut values = values;
+        values.splice(0..0, dest);
         let results = self.raw_call(id, values, span)?;
-        let value = if super::abi(ret).is_some() { results.first().copied() } else { None };
+        let value = if dest.is_some() {
+            dest
+        } else if super::abi(ret).is_some() {
+            results.first().copied()
+        } else {
+            None
+        };
         if ret == Ty::Obj {
             self.dirty = true;
         }
@@ -176,10 +211,57 @@ impl Lowerer<'_, '_> {
         Ok(results)
     }
 
+    /// Memory for the plain struct a function gives back, when it gives one.
+    fn dest_for(&mut self, ret: Ty) -> Result<Option<Value>, Diagnostic> {
+        match ret {
+            Ty::Struct(id) => self.new_struct(id).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    /// `value.method(args)` on a plain struct: a direct native call to its type's method,
+    /// with `self` the struct's address, so a method that changes `self` changes it in place.
+    fn call_struct_method(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        id: u32,
+        method: &str,
+        args: &[Arg],
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let key = format!("{}.{method}", self.layout(id)?.name);
+        let Some(compiled) = self.shared.compiled.get(&key) else { return Ok(None) };
+        let params = compiled.params.clone();
+        if !compiled.takes_self
+            || params.len() != args.len() + 1
+            || args.iter().any(|arg| arg.name.is_some() || arg.is_mut)
+            || params.iter().skip(1).any(|(_, _, is_mut)| *is_mut)
+        {
+            return Ok(None);
+        }
+        let receiver = if let Some((address, _)) = self.struct_place(object)? {
+            address
+        } else {
+            let (value, ty) = self.expr(object)?;
+            self.convert(value, ty, Ty::Struct(id), object.span)?
+        };
+        let mut values = vec![receiver];
+        for (arg, (_, to, _)) in args.iter().zip(params.iter().skip(1)) {
+            let (value, from) = self.expr(&arg.value)?;
+            if !matches!(to, Ty::Stdout | Ty::Fs) {
+                values.push(self.convert(value, from, *to, arg.value.span)?);
+            }
+        }
+        self.call_key(&key, values, expr.span).map(Some)
+    }
+
     /// Builtins on numbers that compile to a few instructions.
     fn builtin(&mut self, name: &str, args: &[Arg], span: Span) -> Result<Option<Lowered>, Diagnostic> {
-        if !matches!(name, "abs" | "min" | "max" | "float" | "int") || self.shared.compiled.contains_key(name)
-        {
+        let known = matches!(
+            name,
+            "abs" | "min" | "max" | "float" | "int" | "sqrt" | "floor" | "ceil" | "sin" | "cos"
+        );
+        if !known || self.shared.compiled.contains_key(name) {
             return Ok(None);
         }
         let mut values = Vec::with_capacity(args.len());
@@ -205,7 +287,11 @@ impl Lowerer<'_, '_> {
             ("float", [(Some(x), Ty::Int)]) => (self.b.ins().fcvt_from_sint(types::F64, *x), Ty::Float),
             ("float", [(Some(x), Ty::Float)]) => (*x, Ty::Float),
             ("int", [(Some(x), Ty::Int)]) => (*x, Ty::Int),
-            ("int", [(Some(x), Ty::Float)]) => (self.b.ins().fcvt_to_sint_sat(types::I64, *x), Ty::Int),
+            ("int", [(Some(x), Ty::Float)]) => (self.float_to_int(*x, span), Ty::Int),
+            ("sqrt" | "floor" | "ceil" | "sin" | "cos", [(Some(x), ty @ (Ty::Int | Ty::Float))]) => {
+                let x = if *ty == Ty::Int { self.b.ins().fcvt_from_sint(types::F64, *x) } else { *x };
+                self.math(name, x, span)?
+            }
             _ => {
                 let callee = Expr { kind: ExprKind::Name(name.to_owned()), span };
                 let call =
@@ -214,6 +300,46 @@ impl Lowerer<'_, '_> {
             }
         };
         Ok(Some((Some(result.0), result.1)))
+    }
+
+    /// `int(x)` on a float: toward zero, failing like the interpreter for a float too big or
+    /// not finite.
+    fn float_to_int(&mut self, x: Value, span: Span) -> Value {
+        let size = self.b.ins().fabs(x);
+        let limit = self.b.ins().f64const(9.2e18);
+        // Not below the limit, which is also true of NaN.
+        let too_big = self.b.ins().fcmp(
+            cranelift_codegen::ir::condcodes::FloatCC::UnorderedOrGreaterThanOrEqual,
+            size,
+            limit,
+        );
+        self.fail_if(too_big, runtime::NOT_AN_INT, span);
+        self.b.ins().fcvt_to_sint_sat(types::I64, x)
+    }
+
+    /// The math builtins on a float.
+    fn math(&mut self, name: &str, x: Value, span: Span) -> Result<(Value, Ty), Diagnostic> {
+        Ok(match name {
+            "floor" => {
+                let floored = self.b.ins().floor(x);
+                (self.float_to_int(floored, span), Ty::Int)
+            }
+            "ceil" => {
+                let raised = self.b.ins().ceil(x);
+                (self.float_to_int(raised, span), Ty::Int)
+            }
+            "sqrt" => {
+                let zero = self.b.ins().f64const(0.0);
+                let negative =
+                    self.b.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::LessThan, x, zero);
+                self.fail_if(negative, runtime::NEGATIVE_SQRT, span);
+                (self.b.ins().sqrt(x), Ty::Float)
+            }
+            _ => {
+                let helper = if name == "sin" { Helper::Sin } else { Helper::Cos };
+                (self.help(helper, &[x])?, Ty::Float)
+            }
+        })
     }
 
     /// `stdout.print(...)`: each argument's text, separated by spaces, then a newline.
@@ -256,6 +382,10 @@ impl Lowerer<'_, '_> {
             Ty::Bool => Helper::PrintBool,
             Ty::Obj => Helper::PrintValue,
             Ty::Unit => return Ok(()),
+            Ty::Struct(_) => {
+                let handle = self.handle_of(value, ty, expr.span)?;
+                return self.call_helper(Helper::PrintValue, &[handle]).map(|_| ());
+            }
             Ty::Stdout | Ty::Fs => {
                 let fallback = self.fallback(expr)?;
                 let handle = self.handle_of(fallback.0, fallback.1, expr.span)?;

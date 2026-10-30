@@ -216,6 +216,9 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn declare_as(&mut self, name: &str, ty: Type, is_mut: bool, origin: Origin) {
+        if !name.contains('.') {
+            self.checker.note_local(&self.key, name, &ty);
+        }
         if let Some(scope) = self.scopes.last_mut() {
             scope.bindings.push(Binding { name: name.to_owned(), ty, is_mut, origin });
         }

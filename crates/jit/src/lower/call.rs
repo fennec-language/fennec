@@ -36,10 +36,7 @@ impl Lowerer<'_, '_> {
         {
             return if name == "len" { self.length(expr, object) } else { self.absolute(expr, object) };
         }
-        if let Some(total) = self.sum_call(expr, callee, args)? {
-            return Ok(total);
-        }
-        if let Some(made) = self.call_known(callee, args)? {
+        if let Some(made) = self.sum_or_known(expr, callee, args)? {
             return Ok(made);
         }
         if let Some(name) = self.std_member(callee) {
@@ -93,6 +90,19 @@ impl Lowerer<'_, '_> {
             }
         }
         self.fallback(expr)
+    }
+
+    /// A native `sum`, or a call to an arrow this specialized body was handed.
+    fn sum_or_known(
+        &mut self,
+        expr: &Expr,
+        callee: &Expr,
+        args: &[Arg],
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        if let Some(total) = self.sum_call(expr, callee, args)? {
+            return Ok(Some(total));
+        }
+        self.call_known(callee, args)
     }
 
     /// For `math.sqrt` where `math` is an imported module, or `std.math.sqrt` after

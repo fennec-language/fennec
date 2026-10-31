@@ -55,6 +55,9 @@ struct Found {
 
 const OUT_DIR: &str = "target/bench";
 
+/// How many times a twin is timed when it's pinned.
+const PIN_RUNS: usize = 7;
+
 /// `fennec-bench budgets`: fails when an enforced budget isn't met.
 fn budgets(mut args: impl Iterator<Item = String>) -> std::result::Result<bool, String> {
     let (mut fennec, mut runs, mut files) = (PathBuf::from("target/release/fennec"), 7, 140);
@@ -122,13 +125,22 @@ fn report(options: &Options, mut found: Found) -> ExitCode {
         }
     }
     for result in found.results.iter().filter(|result| result.meets_floor()) {
-        if !result.target.as_ref().is_some_and(|target| target.enforced) {
+        // A second twin's row is for comparison, and is never held to the floor.
+        if !result.target.as_ref().is_some_and(|target| target.enforced) && !result.kernel.contains('.') {
             println!(
                 "{} has reached the floor: mark it enforced in {}",
                 result.kernel,
                 options.targets.display()
             );
         }
+    }
+    for result in found.results.iter().filter(|result| result.not_native.is_some_and(|count| count > 0)) {
+        let (kernel, count) = (&result.kernel, result.not_native.unwrap_or(0));
+        // What falls off the fast path prints nothing when it runs, so the suite says so.
+        if on_github {
+            println!("::warning title=Not native::{kernel} has {count} places that aren't native code");
+        }
+        eprintln!("warning: {kernel} has {count} places that aren't native code: see `fennec dev fallbacks`");
     }
     for error in &found.errors {
         eprintln!("error: {error}");
@@ -200,10 +212,13 @@ fn pin(options: &Options) -> std::result::Result<(), String> {
         }
         let twin = kernel.twin(&options.fennec, &out_dir)?;
         let instructions = counter.count(&twin).ok_or_else(|| format!("couldn't count {}", kernel.name))?;
+        let timed = time_together(&[twin], PIN_RUNS)?;
+        let micros =
+            timed.first().map_or(0, |timing| u64::try_from(timing.median.as_micros()).unwrap_or(u64::MAX));
         let enforced = before.get(&kernel.name).is_some_and(|target| target.enforced);
         let output = kernel.output_hash(&ours.output);
         let source = kernel.source_hash()?;
-        pinned.insert(kernel.name.clone(), Target { instructions, output, source, enforced });
+        pinned.insert(kernel.name.clone(), Target { instructions, micros, output, source, enforced });
     }
     targets::write(&path, &pinned, &measure::rustc_version()?)?;
     println!("pinned {} kernels in {}", pinned.len(), path.display());
@@ -301,6 +316,7 @@ fn run_kernel(
         instructions: counter.and_then(|counter| counter.count(&kernel.run(&options.fennec))),
         startup_instructions: counter.and_then(|counter| counter.count(&kernel.startup(&options.fennec))),
         previous_instructions: None,
+        not_native: kernel.not_native(&options.fennec),
         target: target.cloned(),
         fell_back: ours.notes.contains("using the interpreter"),
     };

@@ -1,0 +1,14 @@
+## A dict in a struct's field, changed through a method: what a real program's state looks like.
+## It's small because each call takes far too long today, and grows once that's fixed.
+
+struct Counter:
+    counts: dict[int, int]
+
+    def bump(mut self, key: int):
+        self.counts[key] = self.counts.get(key, 0) + 1
+
+def main(stdout: Stdout):
+    mut counter = Counter(counts={})
+    for i in range(50_000):
+        counter.bump(i * 7919 % 64)
+    stdout.print(counter.counts.len(), counter.counts[0], counter.counts[63])

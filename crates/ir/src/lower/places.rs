@@ -172,7 +172,8 @@ impl Lowering<'_> {
         dest
     }
 
-    /// Changes a place to a value of the type it holds.
+    /// Changes a place to a value of the type it holds, then runs the `where` rule of every
+    /// field the write went through. A broken one stops the program.
     pub(super) fn store(
         &mut self,
         local: LocalId,
@@ -180,6 +181,57 @@ impl Lowering<'_> {
         value: Operand,
         span: Span,
     ) -> Lowered<()> {
+        self.write_place(local, steps, value, span)?;
+        let mut ty = self.local_type(local);
+        for (at, step) in steps.iter().enumerate() {
+            let held = self.step_type(&ty, step)?;
+            if let (Step::Field(field), Type::Named(owner)) = (step, &ty) {
+                let reached = steps.get(..=at).unwrap_or_default();
+                self.check_rule(owner, field, (local, reached), span)?;
+            }
+            ty = held;
+        }
+        Ok(())
+    }
+
+    /// Runs the `where` rule on a field, if it has one. The rule sees only that field.
+    fn check_rule(
+        &mut self,
+        owner: &str,
+        field: &str,
+        (local, steps): (LocalId, &[Step]),
+        span: Span,
+    ) -> Lowered<()> {
+        let context = self.context;
+        let copy = context.type_instance(owner);
+        let base = copy.as_ref().map_or(owner, |copy| copy.base.as_str());
+        let Some(rules) = context.rules.get(base) else { return Ok(()) };
+        let Some((_, rule)) = rules.iter().find(|(name, _)| *name == field) else { return Ok(()) };
+        let value = self.read_steps(local, steps, span)?;
+        let ty = crate::type_in(&self.locals, &value).ok_or("a value has no type")?;
+        let body = context.signatures.types().body(&format!("fields of {base}"));
+        let body = body.ok_or_else(|| format!("the fields of `{owner}` have no types"))?;
+        let subst = copy.map(|copy| copy.subst).unwrap_or_default();
+        let outer_body = std::mem::replace(&mut self.body, body);
+        let outer_scopes = std::mem::replace(&mut self.scopes, vec![std::collections::HashMap::new()]);
+        let outer_subst = std::mem::replace(&mut self.subst, subst);
+        let held = self.declare(field, ty);
+        self.emit(InstKind::Copy { dest: held, value }, span);
+        let cond = self.expr(rule);
+        self.body = outer_body;
+        self.scopes = outer_scopes;
+        self.subst = outer_subst;
+        let (then, broken) = (self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond: cond?, then, otherwise: broken });
+        self.current = broken;
+        let message = format!("this breaks the `where` rule on `{owner}.{field}`");
+        self.finish(Terminator::Stop { message, span });
+        self.current = then;
+        Ok(())
+    }
+
+    /// Changes a place, however deeply it's nested.
+    fn write_place(&mut self, local: LocalId, steps: &[Step], value: Operand, span: Span) -> Lowered<()> {
         let first_index = steps.iter().position(|step| matches!(step, Step::Index(_)));
         let Some(at) = first_index else {
             if steps.is_empty() {
@@ -204,7 +256,7 @@ impl Lowering<'_> {
             let item = self.item_type(&ty).ok_or("it changes an item of something that has none")?;
             let container = self.read_steps(local, prefix, span)?;
             let held = self.read_item(&ty, container, index.clone(), &item, span);
-            self.store(held, rest, value, span)?;
+            self.write_place(held, rest, value, span)?;
             Operand::Local(held)
         };
         if let Type::Named(owner) = &ty {
@@ -216,7 +268,7 @@ impl Lowering<'_> {
             let args = vec![Operand::Local(holder), index.clone(), value];
             self.emit(InstKind::Call { dest: None, function, args }, span);
             if !prefix.is_empty() {
-                self.store(local, prefix, Operand::Local(holder), span)?;
+                self.write_place(local, prefix, Operand::Local(holder), span)?;
             }
             return Ok(());
         }

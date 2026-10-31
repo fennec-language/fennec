@@ -4,48 +4,51 @@ import data from '../data/benchmarks.json';
 
 const base = import.meta.env.BASE_URL;
 const { ci, builds, targets } = data;
+const kernels = ci.kernels.map((kernel) => ({
+  name: kernel.name,
+  fennec_ms: kernel.fennec_ms,
+  target_ms: kernel.reference_ms / (targets.jit / 100),
+  of_target: (kernel.percent / targets.jit) * 100,
+}));
 ---
 
-<Base title="Benchmarks" description="Fennec's real benchmark numbers against Rust twins, measured in CI. In progress.">
+<Base title="Benchmarks" description="Fennec's real benchmark numbers against its speed targets, measured in CI. In progress.">
   <section class="wrap head">
     <span class="pill">In progress</span>
     <h1>Benchmarks</h1>
     <p class="lede">
-      Every kernel is a Fennec program and a Rust twin doing the same work, the idiomatic way. These are real numbers from CI, and they
-      aren't where we want them yet.
+      Every kernel has a speed target, and these are real numbers from CI against it. They aren't where we want them yet.
     </p>
   </section>
 
   <section class="wrap">
-    <h2>Speed against Rust</h2>
+    <h2>Speed against target</h2>
     <p class="note">
-      Today's only native engine is the JIT, whose target is {targets.jit}% of Rust's speed. Release builds, with a target of {targets.release}%,
-      don't exist yet.
+      Each target comes from idiomatic code for the same work in the fastest established systems language. Today's only native engine is the JIT, which aims for {targets.jit}% of that code's speed. Release builds, which aim for {targets.release}%, don't exist yet.
     </p>
     <div class="table">
       <div class="tr th">
-        <span>Kernel</span><span class="num">Rust</span><span class="num">Fennec JIT</span><span>Speed vs Rust</span>
+        <span>Kernel</span><span class="num">JIT target</span><span class="num">Fennec JIT</span><span>Speed, % of target</span>
       </div>
       {
-        ci.kernels.map((kernel) => (
+        kernels.map((kernel) => (
           <div class="tr">
             <span class="name">{kernel.name}</span>
-            <span class="num">{kernel.rust_ms.toFixed(1)} ms</span>
+            <span class="num">{kernel.target_ms.toFixed(1)} ms</span>
             <span class="num">{kernel.fennec_ms.toFixed(1)} ms</span>
             <span class="bar-cell">
               <span class="track">
-                <span class="fill" style={`width: ${kernel.percent}%`} />
-                <span class="target" style={`left: ${targets.jit}%`} title={`JIT target: ${targets.jit}%`} />
+                <span class="fill" style={`width: ${Math.min(kernel.of_target, 100)}%`} />
               </span>
-              <strong>{kernel.percent.toFixed(0)}%</strong>
+              <strong>{kernel.of_target.toFixed(0)}%</strong>
             </span>
           </div>
         ))
       }
     </div>
     <p class="note">
-      No kernel meets the {targets.jit}% target in this run. Medians of repeated runs, from commit <code>{ci.commit}</code> on {ci.date}, on {ci.machine}.
-      The line on each bar marks the target. A shared CI machine is noisy, so these move by several percent between runs.
+      No kernel meets its target in this run. Medians of repeated runs, from commit <code>{ci.commit}</code> on {ci.date}, on {ci.machine}.
+      A full bar means the target is met. A shared CI machine is noisy, so these move by several percent between runs.
     </p>
   </section>
 
@@ -62,8 +65,7 @@ const { ci, builds, targets } = data;
   <section class="wrap">
     <h2>How it's measured</h2>
     <p>
-      Both sides run on the same machine, taking turns, and must print the same result. The Rust twin is built with
-      <code>-C opt-level=3 -C target-cpu=native</code>. A failure is fixed in the compiler, never by changing the benchmark. The kernels and the
+      Each kernel and its reference run on the same machine, taking turns, and must print the same result. The reference is built at full optimization for that machine. A failure is fixed in the compiler, never by changing the benchmark. The kernels and the
       method are in <a href="https://github.com/fennec-language/fennec/tree/main/bench">the repository</a>, and you can{' '}
       <a href={`${base}speed/`}>read how the two speeds are designed</a>.
     </p>
@@ -177,14 +179,6 @@ const { ci, builds, targets } = data;
     inset: 0 auto 0 0;
     border-radius: 999px;
     background: var(--accent-bright);
-  }
-
-  .target {
-    position: absolute;
-    top: -4px;
-    bottom: -4px;
-    width: 2px;
-    background: var(--text);
   }
 
   .stats {

@@ -263,6 +263,7 @@ name = "fennec-bench"
 version = "0.0.1"
 dependencies = [
  "fennec-blake3",
+ "fennec-lsp",
 ]
 
 [[package]]

@@ -392,14 +392,13 @@ impl Lowerer<'_, '_> {
         let counter = self.b.declare_var(types::I64);
         let zero = self.int(0);
         self.b.def_var(counter, zero);
-        let [header, inside, advance, exit] = [(); 4].map(|()| self.b.create_block());
+        let [inside, advance, exit] = [(); 3].map(|()| self.b.create_block());
         let hoisted = self.hoist_lists(&[name.clone(), list_name.clone()], None, body)?;
-        self.b.ins().jump(header, &[]);
-        self.b.switch_to_block(header);
-        let at = self.b.use_var(counter);
-        let more = self.b.ins().icmp(IntCC::SignedLessThan, at, len);
+        // The test comes first, then again at the bottom, so going round takes one jump.
+        let more = self.b.ins().icmp(IntCC::SignedLessThan, zero, len);
         self.b.ins().brif(more, inside, &[], exit, &[]);
         self.b.switch_to_block(inside);
+        let at = self.b.use_var(counter);
         let depth = self.scopes.len();
         self.open_scope();
         let offset = self.b.ins().imul_imm_s(at, stride);
@@ -429,7 +428,8 @@ impl Lowerer<'_, '_> {
         let at = self.b.use_var(counter);
         let after = self.b.ins().iadd_imm_s(at, 1);
         self.b.def_var(counter, after);
-        self.b.ins().jump(header, &[]);
+        let more = self.b.ins().icmp(IntCC::SignedLessThan, after, len);
+        self.b.ins().brif(more, inside, &[], exit, &[]);
         self.b.switch_to_block(exit);
         Ok(true)
     }

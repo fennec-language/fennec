@@ -160,15 +160,14 @@ impl Lowerer<'_, '_> {
         let zero = self.int(0);
         self.b.def_var(at, zero);
         self.b.def_var(step, zero);
-        let [header, ascii, wide, inside, advance, exit] = [(); 6].map(|()| self.b.create_block());
+        let [ascii, wide, inside, advance, exit] = [(); 5].map(|()| self.b.create_block());
         self.b.set_cold_block(wide);
         self.b.append_block_param(inside, types::I64);
-        self.b.ins().jump(header, &[]);
-        self.b.switch_to_block(header);
-        let here = self.b.use_var(at);
-        let more = self.b.ins().icmp(IntCC::SignedLessThan, here, length);
+        // The test comes first, then again at the bottom, so going round takes one jump.
+        let more = self.b.ins().icmp(IntCC::SignedLessThan, zero, length);
         self.b.ins().brif(more, ascii, &[], exit, &[]);
         self.b.switch_to_block(ascii);
+        let here = self.b.use_var(at);
         let place = self.b.ins().iadd(text, here);
         let byte = self.b.ins().uload8(types::I64, MemFlagsData::trusted(), place, TEXT);
         let one = self.int(1);
@@ -216,7 +215,8 @@ impl Lowerer<'_, '_> {
         let (here, size) = (self.b.use_var(at), self.b.use_var(step));
         let after = self.b.ins().iadd(here, size);
         self.b.def_var(at, after);
-        self.b.ins().jump(header, &[]);
+        let more = self.b.ins().icmp(IntCC::SignedLessThan, after, length);
+        self.b.ins().brif(more, ascii, &[], exit, &[]);
         self.b.switch_to_block(exit);
         self.close_scope()
     }

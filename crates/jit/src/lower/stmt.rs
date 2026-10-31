@@ -422,25 +422,28 @@ impl Lowerer<'_, '_> {
     }
 
     fn while_loop(&mut self, cond: &Expr, body: &[Stmt]) -> Result<(), Diagnostic> {
-        let header = self.b.create_block();
+        let bottom = self.b.create_block();
         let inside = self.b.create_block();
         let exit = self.b.create_block();
         let hoisted = self.hoist_lists(&[], Some(cond), body)?;
-        self.b.ins().jump(header, &[]);
-        self.b.switch_to_block(header);
+        // The test comes first, then again at the bottom, so going round takes one jump.
         let test = self.condition(cond)?;
         self.drop_temps()?;
         self.b.ins().brif(test, inside, &[], exit, &[]);
         self.b.switch_to_block(inside);
-        self.loops.push(Loop { next: header, done: exit, depth: self.scopes.len(), put_back: None });
+        self.loops.push(Loop { next: bottom, done: exit, depth: self.scopes.len(), put_back: None });
         let lowered = self.block_tail(body);
         self.loops.pop();
         self.unhoist(hoisted);
         lowered?;
         self.drop_temps()?;
         if !self.is_dead() {
-            self.b.ins().jump(header, &[]);
+            self.b.ins().jump(bottom, &[]);
         }
+        self.b.switch_to_block(bottom);
+        let test = self.condition(cond)?;
+        self.drop_temps()?;
+        self.b.ins().brif(test, inside, &[], exit, &[]);
         self.b.switch_to_block(exit);
         Ok(())
     }
@@ -479,25 +482,20 @@ impl Lowerer<'_, '_> {
         self.fail_if(zero_step, runtime::ZERO_STEP, span);
         let counter = self.b.declare_var(types::I64);
         self.b.def_var(counter, start);
-        let header = self.b.create_block();
         let inside = self.b.create_block();
         let advance = self.b.create_block();
         let exit = self.b.create_block();
         let hoisted = self.hoist_lists(&[name.to_owned()], None, body)?;
-        self.b.ins().jump(header, &[]);
-        self.b.switch_to_block(header);
+        // The test comes first, then again at the bottom, so going round takes one jump.
+        let first = self.in_range(start, end, step);
+        self.b.ins().brif(first, inside, &[], exit, &[]);
+        self.b.switch_to_block(inside);
         let at = self.b.use_var(counter);
         let counts_up = self.constant(step) == Some(1);
         if counts_up {
             let (low, high) = (self.range(start), self.range(end));
-            self.note_range(at, (low.0, low.1.max(high.1)));
+            self.note_range(at, (low.0, high.1.saturating_sub(1).max(low.1)));
         }
-        let up = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, step, 0);
-        let below = self.b.ins().icmp(IntCC::SignedLessThan, at, end);
-        let above = self.b.ins().icmp(IntCC::SignedGreaterThan, at, end);
-        let test = self.b.ins().select(up, below, above);
-        self.b.ins().brif(test, inside, &[], exit, &[]);
-        self.b.switch_to_block(inside);
         let depth = self.scopes.len();
         self.open_scope();
         self.bind_native(name, Ty::Int, Some(at), false);
@@ -520,9 +518,21 @@ impl Lowerer<'_, '_> {
         let at = self.b.use_var(counter);
         let next = self.b.ins().iadd(at, step);
         self.b.def_var(counter, next);
-        self.b.ins().jump(header, &[]);
+        let more = self.in_range(next, end, step);
+        self.b.ins().brif(more, inside, &[], exit, &[]);
         self.b.switch_to_block(exit);
         Ok(())
+    }
+
+    /// Whether a `range` going by `step` hasn't reached `end` at `at`.
+    fn in_range(&mut self, at: Value, end: Value, step: Value) -> Value {
+        if self.constant(step) == Some(1) {
+            return self.b.ins().icmp(IntCC::SignedLessThan, at, end);
+        }
+        let up = self.b.ins().icmp_imm_s(IntCC::SignedGreaterThan, step, 0);
+        let below = self.b.ins().icmp(IntCC::SignedLessThan, at, end);
+        let above = self.b.ins().icmp(IntCC::SignedGreaterThan, at, end);
+        self.b.ins().select(up, below, above)
     }
 
     /// `for item in items`: the runtime lists the items, which a hidden name holds while

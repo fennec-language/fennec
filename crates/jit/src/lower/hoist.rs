@@ -153,7 +153,7 @@ fn rooted_at_item(expr: &Expr, name: &str) -> bool {
 }
 
 /// Calls `visit` on a statement and every statement inside it.
-fn each_stmt(stmt: &Stmt, visit: &mut dyn FnMut(&Stmt)) {
+pub(super) fn each_stmt(stmt: &Stmt, visit: &mut dyn FnMut(&Stmt)) {
     visit(stmt);
     for inner in inner_blocks(stmt).into_iter().flatten() {
         each_stmt(inner, visit);
@@ -208,7 +208,7 @@ fn each_stmt_expr_shallow(stmt: &Stmt, visit: &mut dyn FnMut(&Expr)) {
 }
 
 /// Calls `visit` on every expression in a statement, the blocks and arms inside it too.
-fn each_stmt_expr(stmt: &Stmt, visit: &mut dyn FnMut(&Expr)) {
+pub(super) fn each_stmt_expr(stmt: &Stmt, visit: &mut dyn FnMut(&Expr)) {
     for expr in own_exprs(stmt) {
         each_expr(expr, visit);
     }

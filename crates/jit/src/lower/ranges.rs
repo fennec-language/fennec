@@ -34,6 +34,8 @@ pub(super) struct Facts {
     lengths: HashMap<usize, Value>,
     /// Ranges narrowed by the branches being lowered, each with the range it replaced.
     narrowed: Vec<(Value, (i64, i64))>,
+    /// Strings a `for` loop over text gave: the one shared block for that character.
+    pub(super) one_chars: HashSet<Value>,
     /// A block where the stack is known to have room for a call.
     stack_ok: Option<Block>,
 }

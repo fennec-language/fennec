@@ -202,6 +202,19 @@ impl Lowerer<'_, '_> {
     }
 
     fn conditional(&mut self, then: &Expr, cond: &Expr, otherwise: &Expr) -> Result<Lowered, Diagnostic> {
+        if let Some(known) = self.known_test(cond) {
+            return self.expr(if known { then } else { otherwise });
+        }
+        // Literals live for the whole run, so choosing between two needs no owners or jumps.
+        if let (ExprKind::Str(_), ExprKind::Str(_)) = (&then.kind, &otherwise.kind) {
+            let test = self.condition(cond)?;
+            let (yes, _) = self.expr(then)?;
+            let (no, _) = self.expr(otherwise)?;
+            if let (Some(yes), Some(no)) = (yes, no) {
+                let chosen = self.b.ins().select(test, yes, no);
+                return Ok((Some(self.borrow(chosen)), Ty::Str));
+            }
+        }
         let test = self.condition(cond)?;
         let then_block = self.b.create_block();
         let else_block = self.b.create_block();
@@ -319,6 +332,10 @@ impl Lowerer<'_, '_> {
 
     /// `//` and `%` on ints, rounding toward negative infinity like Python.
     fn floor_div_mod(&mut self, op: BinOp, a: Value, b: Value, span: Span) -> Value {
+        // With nothing negative, flooring is what the machine's division does.
+        if self.range(a).0 >= 0 && self.range(b).0 > 0 {
+            return if op == BinOp::FloorDiv { self.b.ins().sdiv(a, b) } else { self.b.ins().srem(a, b) };
+        }
         // By a positive power of two, flooring is a shift and the remainder a mask.
         if let Some(divisor) = self.constant(b).filter(|divisor| *divisor > 0 && divisor.count_ones() == 1) {
             return if op == BinOp::FloorDiv {

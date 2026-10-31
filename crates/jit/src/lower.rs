@@ -33,6 +33,7 @@ mod strings;
 mod structs;
 mod symbols;
 mod test_entries;
+mod unswitch;
 
 pub(crate) use test_entries::{CompiledTests, compile_tests};
 
@@ -370,7 +371,9 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         literal_of: HashMap::new(),
         hoisted: Vec::new(),
         checked: Vec::new(),
+        addresses: Vec::new(),
         facts: ranges::Facts::default(),
+        flags: unswitch::Flags::new(),
         handed: 0,
         origin,
         inlined_origin: None,
@@ -459,8 +462,12 @@ pub(crate) struct Lowerer<'a, 'f> {
     hoisted: Vec<hoist::Hoisted>,
     /// Indexes checked in the straight-line code being lowered.
     checked: Vec<lists::Checked>,
+    /// Item addresses worked out in the straight-line code being lowered.
+    addresses: Vec<lists::KnownItem>,
     /// What's known about values, to leave out checks that can't fail.
     facts: ranges::Facts,
+    /// Bools a loop's copy being lowered knows the value of.
+    flags: unswitch::Flags,
     /// Where the table of runtime addresses is, in an executable.
     slots_base: Option<Value>,
     /// How many things this function has handed the runtime by number so far.

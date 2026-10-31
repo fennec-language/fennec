@@ -5,7 +5,11 @@ import data from '../data/benchmarks.json';
 const base = import.meta.env.BASE_URL;
 const { ci, builds, targets } = data;
 const kernels = ci.kernels;
-const met = kernels.filter((kernel) => kernel.percent >= targets.jit).length;
+const counted = kernels.filter((kernel) => !kernel.default_hash);
+const met = counted.filter((kernel) => kernel.percent >= targets.jit).length;
+// The bars run past 100%, since release builds aim beyond the target.
+const scale = 125;
+const at = (percent: number) => `${(percent / scale) * 100}%`;
 ---
 
 <Base title="Benchmarks" description="Fennec's real benchmark numbers against its speed targets, measured in CI. In progress.">
@@ -20,7 +24,7 @@ const met = kernels.filter((kernel) => kernel.percent >= targets.jit).length;
   <section class="wrap">
     <h2>Speed against target</h2>
     <p class="note">
-      Each target comes from idiomatic code for the same work in the fastest established systems language. Today's only native engine is the JIT, whose floor is {targets.jit}% of target on every kernel. Release builds, which aim for {targets.release}%, don't exist yet.
+      Each target comes from idiomatic code for the same work in the fastest established systems language. Each engine aims for its own share of the target, marked on every bar: the interpreter's {targets.interpreter[0]}–{targets.interpreter[1]}% as a band, the JIT's {targets.jit}%, going to {targets.jit_later}% later, and {targets.release}% for release builds, which don't exist yet. These numbers are the JIT's.
     </p>
     <div class="table">
       <div class="tr th">
@@ -29,12 +33,15 @@ const met = kernels.filter((kernel) => kernel.percent >= targets.jit).length;
       {
         kernels.map((kernel) => (
           <div class="tr">
-            <span class="name">{kernel.name}</span>
+            <span class="name">{kernel.name}{kernel.default_hash && <small> with a standard default hash</small>}</span>
             <span class="num">{kernel.startup_ms.toFixed(1)} ms</span>
             <span class="num">{kernel.work_ms.toFixed(1)} ms</span>
             <span class="bar-cell">
               <span class="track">
-                <span class="fill" style={`width: ${Math.min(kernel.percent, 100)}%`} />
+                <span class="band" style={`left: ${at(targets.interpreter[0])}; width: ${at(targets.interpreter[1] - targets.interpreter[0])}`} title={`Interpreter target: ${targets.interpreter[0]}–${targets.interpreter[1]}%`} />
+                <span class="fill" style={`width: ${at(Math.min(kernel.percent, scale))}`} />
+                <span class="mark" style={`left: ${at(targets.jit)}`} title={`JIT target: ${targets.jit}%`} />
+                <span class="mark" style={`left: ${at(targets.release)}`} title={`Release target: ${targets.release}%`} />
               </span>
               <strong>{kernel.percent.toFixed(0)}%</strong>
             </span>
@@ -43,7 +50,7 @@ const met = kernels.filter((kernel) => kernel.percent >= targets.jit).length;
       }
     </div>
     <p class="note">
-      {met} of {kernels.length} kernels are at the floor. From commit <code>{ci.commit}</code> on {ci.date}, on {ci.machine}. Speed is counted in instructions, which barely move when a machine is busy, so it can differ from the times shown. Times are medians of repeated runs, and they move by several percent between runs. Once a kernel reaches the floor, CI fails if it drops below.
+      {met} of {counted.length} kernels are at the JIT's target. The second <code>dicts</code> row compares with a target using a slower, attack-resistant default hash, so it isn't counted. From commit <code>{ci.commit}</code> on {ci.date}, on {ci.machine}. Speed is counted in instructions, which barely move when a machine is busy, so it can differ from the times shown. Times are medians of repeated runs, and they move by several percent between runs. Once a kernel reaches the JIT's target, CI fails if it drops below.
     </p>
   </section>
 
@@ -159,6 +166,20 @@ const met = kernels.filter((kernel) => kernel.percent >= targets.jit).length;
   .bar-cell strong {
     width: 2.75rem;
     text-align: right;
+  }
+
+  .band {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: var(--border);
+  }
+
+  .mark {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 2px;
+    background: var(--text, currentColor);
   }
 
   .track {

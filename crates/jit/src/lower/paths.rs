@@ -125,11 +125,20 @@ impl Lowerer<'_, '_> {
         let value = self.worked_out("value", value)?;
         let target = self.with_indexes_worked_out(target)?;
         let done = match self.holder(&target) {
-            Some(holder) => self.taken(holder, &mut |lowerer, held| {
-                let target = swapped(&target, holder, held);
-                lowerer.assign(&target, op, &value, false)?;
-                Ok((None, Ty::Unit))
-            }),
+            Some(holder) => {
+                let change = &mut |lowerer: &mut Self, held: &Expr| {
+                    let target = swapped(&target, holder, held);
+                    lowerer.assign(&target, op, &value, false)?;
+                    Ok((None, Ty::Unit))
+                };
+                // Assigning to an item or field never moves what holds it, so that can stay
+                // where it is. A dict can move when it gets a new key.
+                if matches!(self.place_ty(holder), Some(Ty::Dict(..))) {
+                    self.taken(holder, change)
+                } else {
+                    self.reached(holder, change)
+                }
+            }
             None => Err(internal("a place with nothing to take out", target.span)),
         };
         self.close_scope()?;

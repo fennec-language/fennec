@@ -54,6 +54,34 @@ impl Lowerer<'_, '_> {
             .filter(|ty| matches!(ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Dict(..) | Ty::List(_)))
     }
 
+    /// `object[start:end]`: natively for a list or a string, and in the interpreter for
+    /// anything else.
+    fn slice(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        start: Option<&Expr>,
+        end: Option<&Expr>,
+    ) -> Result<Lowered, Diagnostic> {
+        let span = expr.span;
+        match self.static_ty(object) {
+            Some(Ty::List(_)) => self.list_slice(object, (start, end), span),
+            Some(Ty::Str) => {
+                let (text, _) = self.expr(object)?;
+                let text = text.ok_or_else(|| unsupported("this string", span))?;
+                let mut bounds = [None, None];
+                for (bound, written) in bounds.iter_mut().zip([start, end]) {
+                    if let Some(written) = written {
+                        let (value, ty) = self.expr(written)?;
+                        *bound = Some(self.convert(value, ty, Ty::Int, written.span)?);
+                    }
+                }
+                self.string_slice(text, bounds, span)
+            }
+            _ => self.fallback(expr),
+        }
+    }
+
     fn expr_as_written(&mut self, expr: &Expr) -> Result<Lowered, Diagnostic> {
         let span = expr.span;
         if let Some(made) = self.comprehension(expr)? {
@@ -119,17 +147,9 @@ impl Lowerer<'_, '_> {
             ExprKind::Match { subject, arms } => self.match_value(subject, arms, span),
             ExprKind::Attr { object, name, optional } => self.read_field(expr, object, name, *optional),
             ExprKind::Index { object, index } => self.read_index_or_packed(expr, object, index),
-            ExprKind::Slice { object, start, end } if self.static_ty(object) == Some(Ty::Str) => {
-                let (text, _) = self.expr(object)?;
-                let text = text.ok_or_else(|| unsupported("this string", span))?;
-                let mut bounds = [None, None];
-                for (bound, written) in bounds.iter_mut().zip([start, end]) {
-                    if let Some(written) = written {
-                        let (value, ty) = self.expr(written)?;
-                        *bound = Some(self.convert(value, ty, Ty::Int, written.span)?);
-                    }
-                }
-                self.string_slice(text, bounds, span)
+            ExprKind::FStr(parts) => self.fstring(parts, span),
+            ExprKind::Slice { object, start, end } => {
+                self.slice(expr, object, start.as_deref(), end.as_deref())
             }
             _ => self.fallback(expr),
         }

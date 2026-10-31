@@ -367,6 +367,41 @@ pub extern "C" fn pop_empty(start: i64, end: i64) {
     });
 }
 
+/// A new list owned once of a list's items from one place to another, where a missing end is
+/// `i64::MIN`. Places from the end count back, and places past either end stop there.
+pub extern "C" fn slice(list: i64, from: i64, to: i64) -> i64 {
+    with(|state| {
+        let address = u64::try_from(list).unwrap_or(0);
+        let Some(block) = state.heap.block(address) else { return 0 };
+        let Some(element) = element_of(state, block) else { return 0 };
+        let Some(number) = block
+            .get(1)
+            .and_then(|shape| shape.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES))
+        else {
+            return 0;
+        };
+        let stride = element.words();
+        let words = items(block, stride);
+        let length = i64::try_from(words.len() / stride.max(1)).unwrap_or(0);
+        let place = |at: i64, missing: i64| {
+            if at == i64::MIN {
+                return missing;
+            }
+            (if at < 0 { at + length } else { at }).clamp(0, length)
+        };
+        let (begin, stop) = (place(from, 0), place(to, length));
+        let offset = |at: i64| usize::try_from(at).unwrap_or(0) * stride;
+        let kept = if begin < stop {
+            words.get(offset(begin)..offset(stop)).unwrap_or_default().to_vec()
+        } else {
+            Vec::new()
+        };
+        retain_items(state, &element, &kept);
+        let block = build(state, usize::try_from(number).unwrap_or(0), stride, &kept, 0);
+        state.heap.insert(block)
+    })
+}
+
 /// A new block owned once with a value's items, if it's a list of the kind of item given.
 pub(super) fn write_list(state: &mut State, element: &Rc<Element>, value: &Value) -> Option<i64> {
     let at = state.tables.elements.iter().position(|known| known == element).unwrap_or_else(|| {

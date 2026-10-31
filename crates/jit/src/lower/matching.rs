@@ -40,7 +40,13 @@ impl Lowerer<'_, '_> {
                 args.len() <= fields.len()
                     && args.iter().zip(fields).all(|(arg, field)| self.testable(arg, field.ty))
             }
-            Pattern::Tuple(_) | Pattern::Or(_) => false,
+            // Alternatives that bind names go to the interpreter, which keeps track of which matched.
+            Pattern::Or(alternatives) => alternatives.iter().all(|alternative| {
+                let mut names = Vec::new();
+                bound_names(alternative, &mut names);
+                names.is_empty() && self.testable(alternative, ty)
+            }),
+            Pattern::Tuple(_) => false,
         }
     }
 
@@ -102,7 +108,21 @@ impl Lowerer<'_, '_> {
     ) -> Result<bool, Diagnostic> {
         let mut tested = false;
         match pattern {
-            Pattern::Wildcard | Pattern::Bind(_) | Pattern::Tuple(_) | Pattern::Or(_) => {}
+            Pattern::Wildcard | Pattern::Bind(_) | Pattern::Tuple(_) => {}
+            Pattern::Or(alternatives) => {
+                let passed = self.b.create_block();
+                for alternative in alternatives {
+                    let next = self.b.create_block();
+                    self.test_into(alternative, value, false, next)?;
+                    self.b.ins().jump(passed, &[]);
+                    self.b.switch_to_block(next);
+                    self.b.seal_block(next);
+                }
+                self.b.ins().jump(fail, &[]);
+                self.b.switch_to_block(passed);
+                self.b.seal_block(passed);
+                tested = true;
+            }
             Pattern::Literal(expr) => {
                 let found = value.0.ok_or_else(|| internal("a missing value", expr.span))?;
                 let passes = match &expr.kind {
@@ -230,10 +250,7 @@ impl Lowerer<'_, '_> {
             for (case, entry) in cases.iter().zip(entries) {
                 self.b.switch_to_block(entry);
                 self.b.seal_block(entry);
-                let fitting = arms.iter().zip(&bodies).filter(|(arm, _)| match &arm.pattern {
-                    Pattern::Variant { name, .. } => *name == case.name,
-                    _ => true,
-                });
+                let fitting = arms.iter().zip(&bodies).filter(|(arm, _)| fits_case(&arm.pattern, &case.name));
                 if self.try_arms(fitting, subject, true)? {
                     self.b.ins().jump(no_match, &[]);
                     falls_through = true;
@@ -289,5 +306,27 @@ impl Lowerer<'_, '_> {
             self.b.seal_block(next);
         }
         Ok(true)
+    }
+}
+
+/// Whether a pattern could match an enum's case.
+fn fits_case(pattern: &Pattern, case: &str) -> bool {
+    match pattern {
+        Pattern::Variant { name, .. } => name == case,
+        Pattern::Or(alternatives) => alternatives.iter().any(|alternative| fits_case(alternative, case)),
+        _ => true,
+    }
+}
+
+/// The names a pattern binds.
+fn bound_names(pattern: &Pattern, names: &mut Vec<String>) {
+    match pattern {
+        Pattern::Bind(name) => names.push(name.clone()),
+        Pattern::Variant { args: parts, .. } | Pattern::Tuple(parts) | Pattern::Or(parts) => {
+            for part in parts {
+                bound_names(part, names);
+            }
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => {}
     }
 }

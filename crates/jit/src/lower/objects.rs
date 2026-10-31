@@ -10,7 +10,7 @@ use fennec_syntax::{Arg, BinOp, Diagnostic, Expr, ExprKind, Span, Stmt, UnaryOp}
 use super::expr::Lowered;
 use super::{Loop, Lowerer, internal};
 use crate::helpers::Helper;
-use crate::types::Ty;
+use crate::types::{ListItem, Ty};
 
 /// What a `for mut` loop puts back after each turn: the item's name, at its key, along the
 /// path it loops over.
@@ -90,6 +90,27 @@ impl Lowerer<'_, '_> {
                 }
                 loaded => Ok(loaded),
             };
+        }
+        // Likewise a field of an item of a list in a field or from a call.
+        if let ExprKind::Index { object: list, index } = &object.kind
+            && !optional
+            && !matches!(list.kind, ExprKind::Name(_))
+            && let Some(Ty::List(ListItem::Struct(id))) = self.static_ty(list)
+            && let Some(field) = self.struct_field(id, name)?
+        {
+            let quiet = !super::paths::has_call(index);
+            let (held, ty) = if quiet { self.lent_receiver(list)? } else { self.receiver(list)? };
+            let held = held.ok_or_else(|| internal("a lost list", expr.span))?;
+            return self.holding_list((held, ty), quiet, expr.span, |lowerer, list| {
+                let name = lowerer.packed(list).map(|(name, _)| name).unwrap_or_default();
+                let address = lowerer.item_address(&name, Ty::Struct(id), index, false, object.span)?;
+                match lowerer.load_field(address, id, field)? {
+                    (Some(inner), Ty::Struct(inner_id)) => {
+                        Ok((Some(lowerer.clone_struct(inner, inner_id)?), field.ty))
+                    }
+                    loaded => Ok(loaded),
+                }
+            });
         }
         let lending = self.lending;
         let (value, ty) = self.lent_receiver(object)?;

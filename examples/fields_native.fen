@@ -48,6 +48,30 @@ struct Bag:
         self.items[0].near.remove_where((n) => n > self.items.len())
         self.points[0].x
 
+enum Shape:
+    Dot
+    Line(length: int)
+    Group(parts: list[Shape], names: list[str])
+
+def describe(shape: Shape) -> int:
+    match shape:
+        case .Dot:
+            1
+        case .Line(length):
+            length * 10
+        case .Group(parts, names):
+            mut total = names.len()
+            for part in parts:
+                total += describe(part)
+            total
+
+def kind_of(shape: Shape) -> str:
+    match shape:
+        case .Dot | .Line(_):
+            "small"
+        case _:
+            "big"
+
 def fresh() -> Bag:
     Bag(
         items=[],
@@ -130,3 +154,12 @@ def main(stdout: Stdout):
     stdout.print(more.mean_near(), more.numbers, more.items[0].near, more.points)
     more.points.pop()
     stdout.print(more.points, more.first_big())
+    stdout.print(
+        describe(Shape.Group(parts=[Shape.Dot, Shape.Line(length=2)], names=["a"])),
+        describe(Shape.Dot),
+    )
+    stdout.print(
+        kind_of(Shape.Dot),
+        kind_of(Shape.Line(length=1)),
+        kind_of(Shape.Group(parts=[], names=[])),
+    )

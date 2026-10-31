@@ -1,15 +1,25 @@
 {
   "ci": {
-    "commit": "10db769",
-    "date": "2026-10-30",
+    "commit": "4437963",
+    "date": "2026-10-31",
     "machine": "GitHub Actions, ubuntu-latest",
     "kernels": [
-      { "name": "dicts", "reference_ms": 25.3, "fennec_ms": 34.8, "percent": 72.7 },
-      { "name": "sieve", "reference_ms": 49.5, "fennec_ms": 73.0, "percent": 67.8 },
-      { "name": "nbody", "reference_ms": 14.5, "fennec_ms": 38.9, "percent": 37.3 },
-      { "name": "strings", "reference_ms": 19.3, "fennec_ms": 55.2, "percent": 34.9 },
-      { "name": "fib", "reference_ms": 29.3, "fennec_ms": 89.7, "percent": 32.7 },
-      { "name": "spectral_norm", "reference_ms": 10.4, "fennec_ms": 36.8, "percent": 28.2 }
+      { "name": "dicts", "startup_ms": 5.5, "work_ms": 17.6, "percent": 182.3 },
+      { "name": "mandelbrot", "startup_ms": 5.8, "work_ms": 23.9, "percent": 83.4 },
+      { "name": "spectral_norm", "startup_ms": 6.4, "work_ms": 13.4, "percent": 59.9 },
+      { "name": "sieve", "startup_ms": 5.6, "work_ms": 52.1, "percent": 54.6 },
+      { "name": "binary_trees", "startup_ms": 6.3, "work_ms": 120.8, "percent": 51.3 },
+      { "name": "strings", "startup_ms": 6.0, "work_ms": 47.1, "percent": 40.4 },
+      { "name": "particles", "startup_ms": 6.1, "work_ms": 17.7, "percent": 36.1 },
+      { "name": "nbody", "startup_ms": 7.1, "work_ms": 22.1, "percent": 32.3 },
+      { "name": "fannkuch", "startup_ms": 7.0, "work_ms": 32.2, "percent": 28.4 },
+      { "name": "fib", "startup_ms": 5.9, "work_ms": 85.8, "percent": 28.1 },
+      { "name": "sort", "startup_ms": 6.1, "work_ms": 505.2, "percent": 8.5 },
+      { "name": "comprehensions", "startup_ms": 6.0, "work_ms": 453.3, "percent": 2.3 },
+      { "name": "json", "startup_ms": 10.0, "work_ms": 351.0, "percent": 1.0 },
+      { "name": "selfhost", "startup_ms": 176.1, "work_ms": 1195.2, "percent": 0.3 },
+      { "name": "generics", "startup_ms": 7.5, "work_ms": 535.4, "percent": 0.2 },
+      { "name": "closures", "startup_ms": 6.2, "work_ms": 440.8, "percent": 0.1 }
     ]
   },
   "builds": {

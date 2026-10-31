@@ -39,7 +39,7 @@ Each kernel also has to print exactly what its target expects, which the target 
 
 **The JIT's floor is 80% of target**, on every kernel. Past that is nice but not the goal. The 80% is a floor on work, not on startup.
 
-Once a kernel reaches the floor, the run says so. Mark it `yes` in the last column of both targets files, and from then on CI fails if it drops below. A failure is fixed in the compiler, never by changing the benchmark.
+Once a kernel reaches the floor, the run says so. Mark it `yes` in the last column of the targets file for the architecture CI runs on, `x86_64.txt`, and from then on CI fails if it drops below. A failure is fixed in the compiler, never by changing the benchmark.
 
 Release builds will aim for 97% of target when they exist.
 

@@ -76,7 +76,7 @@ fn main() {
     bodies[0].vy = -py / solar_mass;
     bodies[0].vz = -pz / solar_mass;
     println!("{:.9}", energy(&bodies));
-    for _ in 0..200_000 {
+    for _ in 0..std::hint::black_box(200_000) {
         advance(&mut bodies, 0.01);
     }
     println!("{:.9}", energy(&bodies));

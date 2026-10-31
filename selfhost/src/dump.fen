@@ -352,7 +352,7 @@ struct Tree:
         span = expr.span
         match expr.kind:
             case .Unary(op, operand):
-                self.open("unary " + ("-" if op == .Neg else "not"), span)
+                self.open("unary " + op.symbol(), span)
                 self.write_expr(operand)
             case .Binary(op, lhs, rhs):
                 self.open(f"binary {op.symbol()}", span)

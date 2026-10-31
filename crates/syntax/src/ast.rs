@@ -381,6 +381,8 @@ pub struct Arg {
 pub enum UnaryOp {
     Neg,
     Not,
+    /// `~x`: every bit of an int flipped.
+    BitNot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -404,6 +406,13 @@ pub enum BinOp {
     NotIn,
     Is,
     IsNot,
+    BitAnd,
+    BitOr,
+    BitXor,
+    /// `a << n`: bits shifted past the top are lost, and it can't overflow.
+    ShiftLeft,
+    /// `a >> n`: the sign is kept, so it rounds down.
+    ShiftRight,
 }
 
 impl BinOp {
@@ -428,6 +437,11 @@ impl BinOp {
             BinOp::NotIn => "not in",
             BinOp::Is => "is",
             BinOp::IsNot => "is not",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::ShiftLeft => "<<",
+            BinOp::ShiftRight => ">>",
         }
     }
 

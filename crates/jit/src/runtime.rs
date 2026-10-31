@@ -5,7 +5,7 @@ use fennec_interp::embed::{self, Tables};
 use fennec_syntax::{Diagnostic, Module};
 
 pub(crate) use fennec_interp::embed::checks::{
-    DIVISION_BY_ZERO, NEGATIVE_SQRT, NOT_AN_INT, OVERFLOW, TOO_DEEP, ZERO_STEP,
+    BAD_SHIFT, DIVISION_BY_ZERO, NEGATIVE_SQRT, NOT_AN_INT, OVERFLOW, TOO_DEEP, ZERO_STEP,
 };
 
 /// A compiled program's entry point.

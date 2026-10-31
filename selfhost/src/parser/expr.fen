@@ -92,14 +92,14 @@ extend Parser:
 
     ## Comparisons chain as in Python: `a < b <= c` means `a < b and b <= c`.
     def comparison(mut self) -> Expr:
-        mut lhs = self.sum()?
+        mut lhs = self.bit_or()?
         mut chain = None
         while True:
             op = comparison_op(self.peek(), self.peek_at(1))
             if op is None:
                 break
             self.pos += 2 if op == .NotIn or op == .IsNot else 1
-            rhs = self.sum()?
+            rhs = self.bit_or()?
             pair = binary(op, lhs, rhs)
             if chain is None:
                 chain = pair
@@ -107,6 +107,31 @@ extend Parser:
                 chain = binary(.And, chain, pair)
             lhs = rhs
         chain else lhs
+
+    def bit_or(mut self) -> Expr:
+        mut lhs = self.bit_xor()?
+        while self.eat_punct("|"):
+            lhs = binary(.BitOr, lhs, self.bit_xor()?)
+        lhs
+
+    def bit_xor(mut self) -> Expr:
+        mut lhs = self.bit_and()?
+        while self.eat_punct("^"):
+            lhs = binary(.BitXor, lhs, self.bit_and()?)
+        lhs
+
+    def bit_and(mut self) -> Expr:
+        mut lhs = self.shift()?
+        while self.eat_punct("&"):
+            lhs = binary(.BitAnd, lhs, self.shift()?)
+        lhs
+
+    def shift(mut self) -> Expr:
+        mut lhs = self.sum()?
+        while self.at_punct("<<") or self.at_punct(">>"):
+            op = BinOp.ShiftLeft if self.advance().tok == .Punct("<<") else BinOp.ShiftRight
+            lhs = binary(op, lhs, self.sum()?)
+        lhs
 
     def sum(mut self) -> Expr:
         mut lhs = self.term()?
@@ -130,6 +155,9 @@ extend Parser:
         if self.eat_punct("-"):
             operand = self.unary()?
             return Expr(kind=.Unary(UnaryOp.Neg, operand), span=start.to(operand.span))
+        if self.eat_punct("~"):
+            operand = self.unary()?
+            return Expr(kind=.Unary(UnaryOp.BitNot, operand), span=start.to(operand.span))
         base = self.postfix()?
         if self.eat_punct("**"):
             return binary(.Pow, base, self.unary()?)

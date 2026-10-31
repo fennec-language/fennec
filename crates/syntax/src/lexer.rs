@@ -215,7 +215,8 @@ impl Lexer<'_> {
 
     fn punct(&mut self, start: usize) -> Result<(), Diagnostic> {
         let rest = self.source.get(start..).unwrap_or("");
-        if let Some(&(text, punct)) = Punct::TWO_CHAR.iter().find(|(text, _)| rest.starts_with(text)) {
+        let longer = Punct::THREE_CHAR.iter().chain(&Punct::TWO_CHAR);
+        if let Some(&(text, punct)) = longer.into_iter().find(|(text, _)| rest.starts_with(text)) {
             self.pos += text.len();
             self.push(Tok::P(punct), start);
             return Ok(());

@@ -246,6 +246,7 @@ impl Lowerer<'_, '_> {
             }
             (UnaryOp::Neg, Ty::Float) => (Some(self.b.ins().fneg(value)), Ty::Float),
             (UnaryOp::Not, Ty::Bool) => (Some(self.b.ins().bxor_imm_u(value, 1)), Ty::Bool),
+            (UnaryOp::BitNot, Ty::Int) => (Some(self.b.ins().bnot(value)), Ty::Int),
             _ => return Ok(None),
         }))
     }
@@ -355,6 +356,9 @@ impl Lowerer<'_, '_> {
     /// Arithmetic on ints: without a check when what's known says it can't overflow, and
     /// remembering what's known about the result.
     fn int_arithmetic(&mut self, op: BinOp, a: Value, b: Value, span: Span) -> Option<(Value, Ty)> {
+        if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::ShiftLeft | BinOp::ShiftRight) {
+            return Some((self.bits(op, a, b, span), Ty::Int));
+        }
         if op == BinOp::Pow {
             let [start, end] = self.span_args(span);
             return Some((self.help(Helper::IntPower, &[a, b, start, end]).ok()?, Ty::Int));
@@ -375,6 +379,23 @@ impl Lowerer<'_, '_> {
             self.note_range(result.0, range);
         }
         Some(result)
+    }
+
+    /// `&`, `|`, `^`, `<<` and `>>` on ints. A shift by a count that isn't from 0 to 63 fails.
+    fn bits(&mut self, op: BinOp, a: Value, b: Value, span: Span) -> Value {
+        match op {
+            BinOp::BitAnd => self.b.ins().band(a, b),
+            BinOp::BitOr => self.b.ins().bor(a, b),
+            BinOp::BitXor => self.b.ins().bxor(a, b),
+            _ => {
+                let (low, high) = self.range(b);
+                if low < 0 || high > 63 {
+                    let bad = self.b.ins().icmp_imm_u(IntCC::UnsignedGreaterThan, b, 63);
+                    self.fail_if(bad, runtime::BAD_SHIFT, span);
+                }
+                if op == BinOp::ShiftLeft { self.b.ins().ishl(a, b) } else { self.b.ins().sshr(a, b) }
+            }
+        }
     }
 
     fn checked_arithmetic(&mut self, op: BinOp, a: Value, b: Value, span: Span) -> Option<(Value, Ty)> {

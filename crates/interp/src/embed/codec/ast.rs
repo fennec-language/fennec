@@ -62,10 +62,11 @@ macro_rules! units {
     };
 }
 
-units!(UnaryOp[Neg, Not]);
+units!(UnaryOp[Neg, Not, BitNot]);
 units!(CompKind[List, Generator, Set, Dict]);
 units!(BinOp[
     Add, Sub, Mul, Div, FloorDiv, Mod, Pow, Eq, NotEq, Lt, LtEq, Gt, GtEq, And, Or, In, NotIn, Is, IsNot,
+    BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight,
 ]);
 
 impl Encode for Item {

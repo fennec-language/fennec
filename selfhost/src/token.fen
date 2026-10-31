@@ -42,4 +42,7 @@ def is_reserved(word: str) -> bool:
     word == "extern" or word == "unsafe"
 
 def is_two_char_punct(text: str) -> bool:
-    text in ["->", "=>", "==", "!=", "<=", ">=", "//", "**", "+=", "-=", "*=", "/="]
+    text in ["->", "=>", "==", "!=", "<=", ">=", "//", "**", "+=", "-=", "*=", "/=", "<<", ">>", "&=", "|=", "^="]
+
+def is_three_char_punct(text: str) -> bool:
+    text == "<<=" or text == ">>="

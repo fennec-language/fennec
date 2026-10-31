@@ -2122,6 +2122,50 @@ It prints:
 45
 ```
 
+### `bits`
+
+```fennec
+# Bit operators work on ints. A shift by a count outside 0 to 63 stops the program.
+
+def flags(a: int, b: int) -> list[int]:
+    [a & b, a | b, a ^ b, ~a, a << 3, a >> 1]
+
+def hash_step(start: int, byte: int) -> int:
+    mut hash = start
+    hash ^= byte
+    hash <<= 5
+    hash |= byte & 15
+    hash >>= 1
+    hash &= 1048575
+    hash
+
+def main(stdout: Stdout):
+    stdout.print(flags(12, 10))
+    stdout.print(flags(-12, 10))
+    # Tighter than comparisons and looser than `+`, as in Python.
+    stdout.print(1 | 2 ^ 3 & 4, 1 + 2 << 3, 6 & 3 == 2, ~1 + 1)
+    # Bits shifted past the top are lost: `<<` doesn't overflow.
+    stdout.print(1 << 63, 3 << 63, -1 >> 63, -8 >> 1)
+    mut hash = 7
+    for byte in [1, 200, 33]:
+        hash = hash_step(hash, byte)
+    stdout.print(hash)
+    # A mask of the low 8 bits.
+    mask = (1 << 8) - 1
+    stdout.print(1000 & mask, 1000 >> 8)
+```
+
+It prints:
+
+```text
+[8, 14, 6, -13, 96, 6]
+[0, -2, -2, 11, -96, -6]
+3 24 True -1
+-9223372036854775808 -9223372036854775808 -1 -4
+43600
+232 3
+```
+
 ### `calculator`
 
 ```fennec

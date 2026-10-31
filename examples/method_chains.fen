@@ -1,0 +1,44 @@
+## Methods called on what other calls give back, with the type known from the checker.
+
+struct V:
+    x: int
+
+    def add(self, o: V) -> V:
+        V(x=self.x + o.x)
+
+    def bump(mut self) -> int:
+        self.x += 1
+        self.x
+
+enum E:
+    A(n: int)
+    B
+
+    def n(self) -> int:
+        match self:
+            case .A(n):
+                n
+            case .B:
+                0
+
+struct Tree:
+    left: Tree?
+    v: int
+
+    def me(self) -> Tree:
+        self
+
+    def val(self) -> int:
+        self.v
+
+def make() -> V:
+    V(x=1)
+
+def tree() -> Tree:
+    Tree(left=None, v=7)
+
+def main(stdout: Stdout):
+    stdout.print(make().add(make()).add(V(x=5)).x, make().bump(), E.A(n=3).n(), E.B.n())
+    stdout.print(tree().me().val(), tree().me().me().v)
+    mut v = make()
+    stdout.print(v.bump(), v.add(v).bump(), v.x, {1: 2}.get(1, 5), {"a": 1}.len())

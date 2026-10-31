@@ -23,7 +23,11 @@ pub(crate) fn unary(op: UnaryOp, value: Value, span: Span) -> Result<Value, Diag
             Err(Diagnostic::new(format!("`not` needs a bool, but this is a {}", other.type_name()), span)
                 .with_help("Fennec has no truthiness: compare explicitly, like `items.len() == 0`"))
         }
+        (UnaryOp::BitNot, Value::Int(n)) => Ok(Value::Int(!n)),
         (UnaryOp::Neg, other) => Err(Diagnostic::new(format!("can't negate a {}", other.type_name()), span)),
+        (UnaryOp::BitNot, other) => {
+            Err(Diagnostic::new(format!("`~` works on ints, but this is a {}", other.type_name()), span))
+        }
     }
 }
 
@@ -79,11 +83,25 @@ fn arithmetic(op: BinOp, lhs: Value, rhs: Value, span: Span) -> Result<Value, Di
     }
 }
 
+/// A shift by a count that isn't from 0 to 63.
+pub(crate) fn bad_shift(span: Span) -> Diagnostic {
+    Diagnostic::new("can't shift by a count outside 0 to 63", span)
+        .with_help("ints have 64 bits, so check the count first")
+}
+
 fn int_arithmetic(op: BinOp, a: i64, b: i64, span: Span) -> Result<Value, Diagnostic> {
     if b == 0 && matches!(op, BinOp::Div | BinOp::FloorDiv | BinOp::Mod) {
         return Err(Diagnostic::new("division by zero", span));
     }
     let result = match op {
+        BinOp::BitAnd => return Ok(Value::Int(a & b)),
+        BinOp::BitOr => return Ok(Value::Int(a | b)),
+        BinOp::BitXor => return Ok(Value::Int(a ^ b)),
+        BinOp::ShiftLeft | BinOp::ShiftRight => {
+            let count = u32::try_from(b).ok().filter(|count| *count < 64).ok_or_else(|| bad_shift(span))?;
+            let shifted = if op == BinOp::ShiftLeft { a.wrapping_shl(count) } else { a.wrapping_shr(count) };
+            return Ok(Value::Int(shifted));
+        }
         BinOp::Add => a.checked_add(b),
         BinOp::Sub => a.checked_sub(b),
         BinOp::Mul => a.checked_mul(b),

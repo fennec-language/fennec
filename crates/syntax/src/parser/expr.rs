@@ -1,6 +1,6 @@
 //! Expressions, from lowest precedence to highest: arrow functions and `match`; conditional
-//! expressions and `else` defaults; `or`; `and`; `not`; comparisons; `+ -`; `* / // %`;
-//! unary minus; `**`; then calls, attributes, indexing, `?` and `?.`.
+//! expressions and `else` defaults; `or`; `and`; `not`; comparisons; `|`; `^`; `&`; `<< >>`;
+//! `+ -`; `* / // %`; unary `-` and `~`; `**`; then calls, attributes, indexing, `?` and `?.`.
 
 use super::Parser;
 use crate::ast::{Arg, BinOp, CompKind, Expr, ExprKind, FStrPart, UnaryOp};
@@ -117,10 +117,10 @@ impl Parser {
 
     /// Comparisons chain as in Python: `a < b <= c` means `a < b and b <= c`.
     fn comparison(&mut self) -> Result<Expr, Diagnostic> {
-        let mut lhs = self.sum()?;
+        let mut lhs = self.bit_or()?;
         let mut chain: Option<Expr> = None;
         while let Some(op) = self.comparison_op() {
-            let rhs = self.sum()?;
+            let rhs = self.bit_or()?;
             let pair = binary(op, lhs, rhs.clone());
             chain = Some(match chain {
                 Some(previous) => binary(BinOp::And, previous, pair),
@@ -147,6 +147,47 @@ impl Parser {
         };
         self.pos += used;
         Some(op)
+    }
+
+    fn bit_or(&mut self) -> Result<Expr, Diagnostic> {
+        let mut lhs = self.bit_xor()?;
+        while self.eat_p(Punct::Pipe) {
+            let rhs = self.bit_xor()?;
+            lhs = binary(BinOp::BitOr, lhs, rhs);
+        }
+        Ok(lhs)
+    }
+
+    fn bit_xor(&mut self) -> Result<Expr, Diagnostic> {
+        let mut lhs = self.bit_and()?;
+        while self.eat_p(Punct::Caret) {
+            let rhs = self.bit_and()?;
+            lhs = binary(BinOp::BitXor, lhs, rhs);
+        }
+        Ok(lhs)
+    }
+
+    fn bit_and(&mut self) -> Result<Expr, Diagnostic> {
+        let mut lhs = self.shift()?;
+        while self.eat_p(Punct::Amp) {
+            let rhs = self.shift()?;
+            lhs = binary(BinOp::BitAnd, lhs, rhs);
+        }
+        Ok(lhs)
+    }
+
+    fn shift(&mut self) -> Result<Expr, Diagnostic> {
+        let mut lhs = self.sum()?;
+        loop {
+            let op = match self.peek() {
+                Tok::P(Punct::ShiftLeft) => BinOp::ShiftLeft,
+                Tok::P(Punct::ShiftRight) => BinOp::ShiftRight,
+                _ => return Ok(lhs),
+            };
+            self.advance();
+            let rhs = self.sum()?;
+            lhs = binary(op, lhs, rhs);
+        }
     }
 
     fn sum(&mut self) -> Result<Expr, Diagnostic> {
@@ -185,6 +226,11 @@ impl Parser {
             let expr = self.unary()?;
             let span = start.to(expr.span);
             return Ok(Expr { kind: ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(expr) }, span });
+        }
+        if self.eat_p(Punct::Tilde) {
+            let expr = self.unary()?;
+            let span = start.to(expr.span);
+            return Ok(Expr { kind: ExprKind::Unary { op: UnaryOp::BitNot, expr: Box::new(expr) }, span });
         }
         let base = self.postfix()?;
         if self.eat_p(Punct::StarStar) {

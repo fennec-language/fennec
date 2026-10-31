@@ -1,0 +1,13 @@
+5 ["car", "trailer"]
+Part(name="car", x=15.0) Part(name="door (left)", x=1.5) 17.5
+True None True None
+["wheel", "door (left)"] ["wheel", "car"]
+["wheel", "hub", "door (left)"]
+["door (left)"] ["wheel", "hub"]
+-2.5 17.5
+a node can't move under itself or its descendants
+a node can't move under itself or its descendants
+["car", "trailer", "wheel"] None
+3 ["car", "trailer"] None True
+["car"] 5 hub
+[]

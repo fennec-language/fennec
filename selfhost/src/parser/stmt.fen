@@ -97,7 +97,7 @@ extend Parser:
             for item in items:
                 span = span.to(item.span)
             target = Expr(kind=ExprKind.Tuple(items), span=span)
-        if self.peek() not in [.Punct("="), .Punct("+="), .Punct("-="), .Punct("*="), .Punct("/=")]:
+        if not starts_assignment(self.peek()):
             return StmtKind.Expr(target)
         op = assignment_op(self.advance().tok)
         if not is_assignable(target, op is None):
@@ -179,7 +179,16 @@ def assignment_op(tok: Tok) -> BinOp?:
         case .Punct("-="): .Sub
         case .Punct("*="): .Mul
         case .Punct("/="): .Div
+        case .Punct("&="): .BitAnd
+        case .Punct("|="): .BitOr
+        case .Punct("^="): .BitXor
+        case .Punct("<<="): .ShiftLeft
+        case .Punct(">>="): .ShiftRight
         case _: None
+
+## Whether a token makes what's before it the target of an assignment.
+def starts_assignment(tok: Tok) -> bool:
+    tok == .Punct("=") or assignment_op(tok) is not None
 
 def python_only(word: str, span: Span) -> Diagnostic:
     mut help = "Fennec has no exceptions: pass errors up with `?`, give a default with `else`, or handle them with `match`"

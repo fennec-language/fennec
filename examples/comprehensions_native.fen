@@ -40,3 +40,22 @@ def main(stdout: Stdout):
     copies = [g * 10 for g in grows]
     grows.append(3)
     stdout.print(grows, copies, 2 ** 62)
+
+    letters = [1.5, 2.5, 3.5]
+    for i, x in enumerate(letters):
+        stdout.print(i, x)
+    for a, b in zip(letters, numbers):
+        stdout.print(a, b)
+    stdout.print(
+        sum(a * float(b) for a, b in zip(letters, numbers)),
+        [i * 2 for i, _ in enumerate(letters)],
+    )
+    points = [Point(x=5, y=0.5), Point(x=6, y=1.5)]
+    for at, point in enumerate(points):
+        stdout.print(at, point.x, point.y)
+    for short, long in zip([1], [1, 2]):
+        stdout.print(short, long)
+    i = 9
+    for i, x in enumerate(letters):
+        stdout.print(i, x)
+    stdout.print(i)

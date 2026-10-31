@@ -473,7 +473,77 @@ impl Lowerer<'_, '_> {
             }
             return self.for_range(name, args, iter.span, body);
         }
+        if self.for_paired(names, iter, body)? {
+            return Ok(());
+        }
         self.for_items(names, iter, body)
+    }
+
+    /// `for i, item in enumerate(xs)` and `for a, b in zip(xs, ys)` over native lists, as a
+    /// count over positions. The lists have to be names the body doesn't mention, so nothing
+    /// changes them, and the loop's names new, so nothing outside can see them.
+    fn for_paired(&mut self, names: &[String], iter: &Expr, body: &[Stmt]) -> Result<bool, Diagnostic> {
+        let ExprKind::Call { callee, args } = &iter.kind else { return Ok(false) };
+        let ExprKind::Name(function) = &callee.kind else { return Ok(false) };
+        let paired = match (function.as_str(), names, args.as_slice()) {
+            ("enumerate", [_, _], [_]) | ("zip", [_, _], [_, _]) => true,
+            _ => false,
+        };
+        if !paired
+            || self.local(function).is_some()
+            || self.shared.compiled.contains_key(function.as_str())
+            || names.iter().any(|name| self.local(name).is_some())
+            || args.iter().any(|arg| arg.name.is_some() || arg.is_mut)
+        {
+            return Ok(false);
+        }
+        let mut lists = Vec::with_capacity(args.len());
+        for arg in args {
+            let Some((list, item)) = self.packed(&arg.value) else { return Ok(false) };
+            if Self::body_names(body, &list) {
+                return Ok(false);
+            }
+            lists.push((list, item));
+        }
+        let span = iter.span;
+        let mut shortest = None;
+        for (list, item) in &lists {
+            let length = self.list_length(list, *item)?;
+            shortest = Some(match shortest {
+                Some(other) => self.b.ins().smin(other, length),
+                None => length,
+            });
+        }
+        let at = if function == "zip" {
+            format!("\0at{}", span.start)
+        } else {
+            names.first().cloned().unwrap_or_default()
+        };
+        let count = format!("\0count{}", span.start);
+        self.open_scope();
+        self.bind_native(&count, Ty::Int, shortest, false);
+        let name_of = |name: &str| Expr { kind: ExprKind::Name(name.to_owned()), span };
+        let bound = names.iter().skip(usize::from(function == "enumerate"));
+        let mut lowered: Vec<Stmt> = bound
+            .zip(&lists)
+            .map(|(name, (list, _))| {
+                let index =
+                    ExprKind::Index { object: Box::new(name_of(list)), index: Box::new(name_of(&at)) };
+                let kind = StmtKind::Assign {
+                    target: name_of(name),
+                    op: None,
+                    value: Expr { kind: index, span },
+                    declare_mut: false,
+                    ty: None,
+                };
+                Stmt { kind, span }
+            })
+            .collect();
+        lowered.extend_from_slice(body);
+        let bound = [Arg { name: None, is_mut: false, value: name_of(&count) }];
+        self.for_range(&at, &bound, span, &lowered)?;
+        self.close_scope()?;
+        Ok(true)
     }
 
     /// `for name in range(...)`, counted natively.

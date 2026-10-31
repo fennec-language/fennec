@@ -1,8 +1,8 @@
-//! Lists for native code. A list of ints, floats, bools or plain structs is a block in the
-//! heap (see `heap`): its owner count, its shape, how many items it has, how many it has
-//! room for, then its items packed one after another, a word per number. Native code
-//! reads, changes and appends items itself while the list has one owner and room; copying
-//! a shared list and growing a full one happen here.
+//! Lists for native code. A native list is a block in the heap (see `heap`): its owner
+//! count, its shape, how many items it has, how many it has room for, then its items packed
+//! one after another, a word per number. A string or boxed item is the address of its own
+//! block, which the list owns. Native code reads, changes and appends items itself while the
+//! list has one owner and room; copying a shared list and growing a full one happen here.
 //!
 //! A list's shape is counted from the string shape, after the dicts' shapes: one for each
 //! kind of item, by the kind's number in the table of elements.
@@ -11,13 +11,18 @@ use std::rc::Rc;
 
 use fennec_syntax::Diagnostic;
 
-use super::heap::release;
+use super::heap::{block_text, read_block, release, write};
 use super::{State, attempt, span, with};
 use crate::packed::{Element, Packed};
 use crate::value::Value;
 
 /// Words a list's block starts with: owner count, shape, items, room.
 pub const LIST_HEADER_WORDS: usize = 4;
+
+/// How `sorted` orders words: as ints or bools, as floats, or as strings.
+pub const SORT_INTS: i64 = 0;
+pub const SORT_FLOATS: i64 = 1;
+pub const SORT_STRINGS: i64 = 2;
 
 /// The fewest items a new list has room for.
 const MIN_ROOM: usize = 4;
@@ -36,6 +41,24 @@ pub(super) fn element_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
 fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
     let at = usize::try_from(element).ok()?;
     Some((at, Rc::clone(state.tables.elements.get(at)?)))
+}
+
+/// Whether a list of this kind of item owns a block for each.
+pub(super) fn owns_items(element: &Element) -> bool {
+    matches!(element, Element::Str | Element::Boxed(_))
+}
+
+/// One more owner for each block a list of this kind of item holds, for a new list that
+/// holds them too.
+fn retain_items(state: &mut State, element: &Element, words: &[u64]) {
+    if !owns_items(element) {
+        return;
+    }
+    for word in words {
+        if let Some(count) = state.heap.block_mut(*word).and_then(|block| block.first_mut()) {
+            *count += 1;
+        }
+    }
 }
 
 /// A block owned once holding `items` words of items, with room for at least `room`.
@@ -98,6 +121,9 @@ fn grow_in(state: &mut State, list: i64, more: usize) -> Option<i64> {
     let shared = block.first() != Some(&1);
     let address = if shared || count + more > room {
         let kept = items(block, stride).to_vec();
+        if shared {
+            retain_items(state, &element, &kept);
+        }
         let grown =
             build(state, at, stride, &kept, if count + more > room { 2 * (count + more) } else { room });
         if shared {
@@ -120,59 +146,72 @@ fn grow_in(state: &mut State, list: i64, more: usize) -> Option<i64> {
 
 /// A number word as an int that orders the same way: floats in the order `total_cmp` gives
 /// them, which is how the interpreter sorts them, and ints and bools as they are.
-fn sort_word(word: u64, float: bool) -> i64 {
+fn sort_word(word: u64, kind: i64) -> i64 {
     let int = word.cast_signed();
-    if float { (word ^ ((int >> 63).cast_unsigned() >> 1)).cast_signed() } else { int }
+    if kind == SORT_FLOATS { (word ^ ((int >> 63).cast_unsigned() >> 1)).cast_signed() } else { int }
 }
 
-/// The number of a list block's kind of item, and how many words each item takes.
-fn kind_of(state: &State, block: &[u64]) -> Option<(usize, usize)> {
-    let at = block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
-    Some((usize::try_from(at).ok()?, element_of(state, block)?.words()))
-}
-
-/// A new list owned once of a list of numbers' items in order. Numbers that order the same
-/// are the same, so nothing can tell that this sort isn't stable.
-pub extern "C" fn sorted(list: i64, float: i64) -> i64 {
-    with(|state| sorted_in(state, list, float != 0).unwrap_or(0))
-}
-
-fn sorted_in(state: &mut State, list: i64, float: bool) -> Option<i64> {
-    let block = state.heap.block(u64::try_from(list).ok()?)?;
-    let (at, stride) = kind_of(state, block)?;
-    let mut words = items(block, stride).to_vec();
-    words.sort_unstable_by_key(|word| sort_word(*word, float));
-    let block = build(state, at, stride, &words, 0);
-    Some(state.heap.insert(block))
-}
-
-/// A new list owned once of a list's items in the order of their keys, a list of numbers
-/// as long as it. Items with the same key stay in the order they were in.
-pub extern "C" fn sorted_by(list: i64, keys: i64, float: i64) -> i64 {
-    with(|state| sorted_by_in(state, list, keys, float != 0).unwrap_or(0))
-}
-
-fn sorted_by_in(state: &mut State, list: i64, keys: i64, float: bool) -> Option<i64> {
-    let block = state.heap.block(u64::try_from(list).ok()?)?;
-    let (at, stride) = kind_of(state, block)?;
-    let keys = state.heap.block(u64::try_from(keys).ok()?)?;
-    // Each item's place breaks ties, which keeps the sort stable.
+/// The places of `keys` in sorted order. Each key's place breaks ties, which keeps the sort
+/// stable.
+fn sorted_places(state: &State, keys: &[u64], kind: i64) -> Vec<usize> {
+    if kind == SORT_STRINGS {
+        let mut order: Vec<(String, usize)> = keys
+            .iter()
+            .enumerate()
+            .map(|(place, key)| (state.heap.block(*key).map(block_text).unwrap_or_default(), place))
+            .collect();
+        order.sort_unstable();
+        return order.into_iter().map(|(_, place)| place).collect();
+    }
     let mut order: Vec<(i64, usize)> =
-        items(keys, 1).iter().enumerate().map(|(place, key)| (sort_word(*key, float), place)).collect();
+        keys.iter().enumerate().map(|(place, key)| (sort_word(*key, kind), place)).collect();
     order.sort_unstable();
-    let old = items(block, stride);
+    order.into_iter().map(|(_, place)| place).collect()
+}
+
+/// A new list owned once of a list's items in the order of `keys`, one for each.
+fn in_order(state: &mut State, list: u64, keys: &[u64], kind: i64) -> Option<i64> {
+    let block = state.heap.block(list)?;
+    let element = element_of(state, block)?;
+    let at = usize::try_from(block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
+        .ok()?;
+    let stride = element.words();
+    let old = items(block, stride).to_vec();
     let mut words = Vec::with_capacity(old.len());
-    for (_, place) in order {
+    for place in sorted_places(state, keys, kind) {
         words.extend_from_slice(old.get(place * stride..(place + 1) * stride)?);
     }
+    retain_items(state, &element, &words);
     let block = build(state, at, stride, &words, 0);
     Some(state.heap.insert(block))
+}
+
+/// A new list owned once of a list of numbers' or strings' items in order.
+pub extern "C" fn sorted(list: i64, kind: i64) -> i64 {
+    with(|state| {
+        let list = u64::try_from(list).unwrap_or(0);
+        let keys = state.heap.block(list).map(|block| items(block, 1).to_vec()).unwrap_or_default();
+        in_order(state, list, &keys, kind).unwrap_or(0)
+    })
+}
+
+/// A new list owned once of a list's items in the order of their keys, a list as long as it.
+/// Items with the same key stay in the order they were in.
+pub extern "C" fn sorted_by(list: i64, keys: i64, kind: i64) -> i64 {
+    with(|state| {
+        let keys = u64::try_from(keys).ok().and_then(|keys| state.heap.block(keys));
+        let keys = keys.map(|block| items(block, 1).to_vec()).unwrap_or_default();
+        in_order(state, u64::try_from(list).unwrap_or(0), &keys, kind).unwrap_or(0)
+    })
 }
 
 /// A list's block as the interpreter holds it: a packed list.
-pub(super) fn read(state: &State, block: &[u64]) -> Value {
+pub(super) fn read(state: &mut State, block: &[u64]) -> Value {
     let Some(element) = element_of(state, block) else { return Value::None };
     let words = items(block, element.words()).to_vec();
+    if owns_items(&element) {
+        return Value::list(words.iter().map(|word| read_block(state, *word)).collect());
+    }
     Value::Packed(Rc::new(Packed::new(element, words)))
 }
 
@@ -189,6 +228,15 @@ pub extern "C" fn from_value(value: i64, element: i64, start: i64, end: i64) -> 
         let value =
             usize::try_from(value).ok().and_then(|at| state.temps.get(at)).cloned().unwrap_or(Value::Unit);
         let (at, element) = self::element(state, element).ok_or_else(|| wrong(&value))?;
+        if owns_items(&element) {
+            let Value::List(items) = &value else { return Err(wrong(&value)) };
+            let mut words = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                write(state, &element, item, &mut words).ok_or_else(|| wrong(&value))?;
+            }
+            let block = build(state, at, 1, &words, 0);
+            return Ok(state.heap.insert(block));
+        }
         let packed = match &value {
             Value::Packed(packed) if packed.element == element => Rc::clone(packed),
             Value::List(items) => Rc::new(Packed::pack(&element, items).ok_or_else(|| wrong(&value))?),

@@ -84,6 +84,8 @@ impl Lowerer<'_, '_> {
             Ty::Int => Element::Int,
             Ty::Float => Element::Float,
             Ty::Bool => Element::Bool,
+            Ty::Str => Element::Str,
+            Ty::Boxed(id) => Element::Boxed(usize::try_from(id).unwrap_or(0)),
             Ty::Struct(id) if self.cases(id)?.is_some() => {
                 let layout = self.layout(id)?;
                 let mut cases = Vec::new();
@@ -288,7 +290,12 @@ impl Lowerer<'_, '_> {
         }
         let abi_ty = abi(item)
             .ok_or_else(|| internal("a list item without a machine type", self.function.def.span))?;
-        Ok((Some(self.b.ins().load(abi_ty, MemFlagsData::trusted(), address, 0)), item))
+        let value = self.b.ins().load(abi_ty, MemFlagsData::trusted(), address, 0);
+        // The list could let go of a counted item while this is still using it.
+        if item.counted() {
+            self.retain(value);
+        }
+        Ok((Some(value), item))
     }
 
     /// Writes a value into an item's memory.
@@ -302,6 +309,12 @@ impl Lowerer<'_, '_> {
         let value = self.convert(value, ty, item, span)?;
         if let Ty::Struct(id) = item {
             return self.write_place(&Place::Memory(address), value, id);
+        }
+        if item.counted() {
+            let value = self.own(value, item);
+            let old = self.b.ins().load(types::I64, MemFlagsData::trusted(), address, 0);
+            self.b.ins().store(MemFlagsData::trusted(), value, address, 0);
+            return self.release(old);
         }
         self.b.ins().store(MemFlagsData::trusted(), value, address, 0);
         Ok(())

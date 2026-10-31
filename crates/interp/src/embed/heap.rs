@@ -240,6 +240,12 @@ fn children(state: &State, block: &[u64]) -> Vec<u64> {
     if super::dicts::is_dict(state, block) {
         return super::dicts::children(state, block);
     }
+    if let Some(element) = super::lists::element_of(state, block) {
+        if !super::lists::owns_items(&element) {
+            return Vec::new();
+        }
+        return super::lists::items(block, 1).iter().copied().filter(|address| *address != 0).collect();
+    }
     let Some(shape) = shape_of(state, block) else { return Vec::new() };
     let fields = block.get(HEADER_WORDS..).unwrap_or_default();
     let mut at = 0;
@@ -427,7 +433,7 @@ fn write_block(state: &mut State, shape: usize, value: &Value) -> Option<i64> {
     Some(state.heap.insert(words.into_boxed_slice()))
 }
 
-fn write(state: &mut State, element: &Element, value: &Value, words: &mut Vec<u64>) -> Option<()> {
+pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: &mut Vec<u64>) -> Option<()> {
     match (element, value) {
         (Element::Int, Value::Int(n)) => words.push(u64::from_ne_bytes(n.to_ne_bytes())),
         (Element::Float, Value::Float(x)) => words.push(x.to_bits()),
@@ -487,7 +493,11 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
     if let Some(element) = super::lists::element_of(state, left) {
         // Items compare bit by bit, as the interpreter compares numbers and plain structs.
         let stride = element.words();
-        return super::lists::items(left, stride) == super::lists::items(right, stride);
+        let (mine, theirs) = (super::lists::items(left, stride), super::lists::items(right, stride));
+        if super::lists::owns_items(&element) {
+            return mine.len() == theirs.len() && mine.iter().zip(theirs).all(|(x, y)| same(state, *x, *y));
+        }
+        return mine == theirs;
     }
     if left.len() != right.len() {
         return false;

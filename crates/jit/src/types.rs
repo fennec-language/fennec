@@ -49,6 +49,10 @@ pub(crate) enum ListItem {
     Bool,
     /// A plain struct or enum, by its layout's number.
     Struct(u32),
+    /// The address of a string's block, which the list owns.
+    Str,
+    /// The address of a boxed value's block, which the list owns, by its layout's number.
+    Boxed(u32),
 }
 
 impl ListItem {
@@ -59,6 +63,8 @@ impl ListItem {
             Ty::Float => ListItem::Float,
             Ty::Bool => ListItem::Bool,
             Ty::Struct(id) => ListItem::Struct(id),
+            Ty::Str => ListItem::Str,
+            Ty::Boxed(id) => ListItem::Boxed(id),
             _ => return None,
         })
     }
@@ -70,6 +76,8 @@ impl ListItem {
             ListItem::Float => Ty::Float,
             ListItem::Bool => Ty::Bool,
             ListItem::Struct(id) => Ty::Struct(id),
+            ListItem::Str => Ty::Str,
+            ListItem::Boxed(id) => Ty::Boxed(id),
         }
     }
 }

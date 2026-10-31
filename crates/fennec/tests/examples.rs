@@ -434,6 +434,34 @@ def main(stdout: Stdout):
     assert_eq!(report.from_ir, ["mixed"]);
 }
 
+/// A small function is lowered into its caller from the IR, and goes into itself one level.
+/// A failure inside it is reported where it happens, as the interpreter does.
+#[test]
+fn small_functions_are_inlined_from_the_ir() {
+    let source = "def half(n: int) -> int:
+    if n == 0:
+        return 0
+    10 // (n - 1)
+
+def twice(n: int) -> int:
+    half(n) + half(n + 1)
+
+def main(stdout: Stdout):
+    stdout.print(twice(3), twice(0))
+    stdout.print(twice(1))
+";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    let mut out = Vec::new();
+    let result = fennec_jit::run_with_report(&module, &mut out);
+    let Err(JitError::Failed(failure)) = result else { panic!("half(1) should fail") };
+    assert_eq!(Err(failure.render("inlined.fen", source)), run(source, "inlined.fen"));
+    let mut module = fennec_syntax::parse(&source.replace("    stdout.print(twice(1))\n", "")).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    let report = fennec_jit::run_with_report(&module, &mut Vec::new()).unwrap();
+    assert_eq!(report.from_ir, ["half", "twice"]);
+}
+
 /// Number-only functions come from the typed IR.
 #[test]
 fn number_only_functions_are_lowered_from_the_ir() {
@@ -457,5 +485,5 @@ def main(stdout: Stdout):
     let mut out = Vec::new();
     let report = fennec_jit::run_with_report(&module, &mut out).unwrap();
     assert_eq!(String::from_utf8_lossy(&out), "55 111\n");
-    assert_eq!(report.from_ir, ["steps"], "fib stays on the syntax tree, which inlines it into itself");
+    assert_eq!(report.from_ir, ["fib", "steps"]);
 }

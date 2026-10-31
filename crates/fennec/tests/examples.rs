@@ -427,7 +427,8 @@ def main(stdout: Stdout):
     let Err(JitError::Failed(failure)) = result else { panic!("too_big should fail") };
     let text = String::from_utf8_lossy(&out).into_owned();
     assert_eq!(Err(failure.render("builtins.fen", source)), run(source, "builtins.fen").map(|_| text));
-    let mut module = fennec_syntax::parse(&source.replace("    stdout.print(too_big(1.0e300))\n", "")).unwrap();
+    let mut module =
+        fennec_syntax::parse(&source.replace("    stdout.print(too_big(1.0e300))\n", "")).unwrap();
     fennec_check::check_and_resolve(&mut module).unwrap();
     let report = fennec_jit::run_with_report(&module, &mut Vec::new()).unwrap();
     assert_eq!(report.from_ir, ["mixed"]);

@@ -43,7 +43,7 @@ fn run_prints_the_programs_output() {
 #[test]
 fn run_hands_main_its_arguments_and_input() {
     let program = "examples/args_and_stdin.fen";
-    for engine in [&["run"][..], &["run", "--jit"]] {
+    for engine in [&["run"][..], &["run", "--interp"]] {
         let args: Vec<&str> = engine.iter().copied().chain([program, "fire", "two words"]).collect();
         let output = fennec(&args, "one\ntwo\r\n").unwrap();
         assert!(output.status.success(), "{}", text(&output.stderr));
@@ -325,7 +325,7 @@ fn scratch(name: &str) -> std::io::Result<PathBuf> {
 fn fs_makes_lists_and_removes_files_and_folders() {
     let dir = scratch("fs").unwrap();
     std::fs::write(dir.join("main.fen"), PROGRAM_WITH_FILES).unwrap();
-    for engine in [&["run", "main.fen"][..], &["run", "--jit", "main.fen"]] {
+    for engine in [&["run", "main.fen"][..], &["run", "--interp", "main.fen"]] {
         let output = fennec_in(&dir, engine, "").unwrap();
         assert!(output.status.success(), "{}", text(&output.stderr));
         assert_eq!(
@@ -351,7 +351,7 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print(fs.read_bytes("note.txt")?, fs.read_bytes("missing.bin") else bytes())
 "#;
     std::fs::write(dir.join("main.fen"), program).unwrap();
-    for engine in [&["run", "main.fen"][..], &["run", "--jit", "main.fen"]] {
+    for engine in [&["run", "main.fen"][..], &["run", "--interp", "main.fen"]] {
         let output = fennec_in(&dir, engine, "").unwrap();
         assert!(output.status.success(), "{}", text(&output.stderr));
         assert_eq!(
@@ -442,7 +442,7 @@ fn run_with_no_path_runs_the_kit_around_the_current_folder() {
 #[test]
 fn run_takes_a_kits_folder_in_either_engine() {
     let expected = std::fs::read_to_string(repo().join("examples/projects/arena.out")).unwrap();
-    for args in [&["run", "examples/projects/arena"][..], &["run", "--jit", "examples/projects/arena"]] {
+    for args in [&["run", "examples/projects/arena"][..], &["run", "--interp", "examples/projects/arena"]] {
         let output = fennec(args, "").unwrap();
         assert!(output.status.success(), "{}", text(&output.stderr));
         assert_eq!(text(&output.stdout), expected);
@@ -528,8 +528,8 @@ fn new_makes_a_kit_that_runs_and_passes_its_tests() {
     let run = fennec_in(&kit, &["run"], "").unwrap();
     assert!(run.status.success(), "{}", text(&run.stderr));
     assert_eq!(text(&run.stdout), "Hello from star_fox!\n");
-    let jit = fennec_in(&kit, &["run", "--jit"], "").unwrap();
-    assert_eq!(text(&jit.stdout), "Hello from star_fox!\n");
+    let interpreted = fennec_in(&kit, &["run", "--interp"], "").unwrap();
+    assert_eq!(text(&interpreted.stdout), "Hello from star_fox!\n");
     let test = fennec_in(&kit, &["test"], "").unwrap();
     assert!(test.status.success(), "{}", text(&test.stderr));
     assert!(text(&test.stdout).ends_with("1 passed, 0 failed\n"));
@@ -810,5 +810,36 @@ fn dev_fallbacks_lists_what_isnt_native_hot_loops_first() {
     assert!(printed.contains("the interpreter calls the method `get`"), "{printed}");
     assert!(printed.contains("    groups[i % 3] = groups.get(i % 3, []) + [i]\n"), "{printed}");
     assert!(printed.ends_with("places aren't native\n"), "{printed}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn run_compiles_by_default_and_shows_output_before_it_reads_input() {
+    let dir = scratch("default-run").unwrap();
+    let program = dir.join("prompt.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout, stdin: Stdin):\n    stdout.print(\"name?\")\n    stdout.print(stdin.lines())\n",
+    )
+    .unwrap();
+    for engine in [&["run"][..], &["run", "--interp"]] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_fennec"))
+            .args(engine)
+            .arg(&program)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // The prompt arrives while the program is still waiting for its input.
+        let mut stdout = child.stdout.take().unwrap();
+        let mut prompt = [0; 6];
+        std::io::Read::read_exact(&mut stdout, &mut prompt).unwrap();
+        assert_eq!(&prompt, b"name?\n");
+        child.stdin.take().unwrap().write_all(b"fox\n").unwrap();
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut stdout, &mut rest).unwrap();
+        assert_eq!(rest, "[\"fox\"]\n");
+        assert!(child.wait().unwrap().success());
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }

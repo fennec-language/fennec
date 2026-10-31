@@ -70,7 +70,7 @@ impl Lowerer<'_, '_> {
         let [failed, fine, done] = [(); 3].map(|()| self.b.create_block());
         self.b.append_block_param(done, types::I64);
         self.b.set_cold_block(failed);
-        let tag = self.b.ins().band_imm_u(word, 1);
+        let tag = self.is_failure(word);
         self.b.ins().brif(tag, failed, &[], fine, &[]);
         self.b.switch_to_block(failed);
         self.b.seal_block(failed);
@@ -105,7 +105,7 @@ impl Lowerer<'_, '_> {
         }
         let [failed, fine, done] = [(); 3].map(|()| self.b.create_block());
         self.b.append_block_param(done, types::I64);
-        let tag = self.b.ins().band_imm_u(word, 1);
+        let tag = self.is_failure(word);
         self.b.ins().brif(tag, failed, &[], fine, &[]);
         self.b.switch_to_block(failed);
         self.b.seal_block(failed);
@@ -134,10 +134,9 @@ impl Lowerer<'_, '_> {
         Ok((lowered?, self.direct_result.take()))
     }
 
-    /// Whether a word from such a call is a failure, and the failure's temporary.
-    pub(super) fn failure_of(&mut self, word: Value) -> (Value, Value) {
-        let tag = self.b.ins().band_imm_u(word, 1);
-        (tag, word)
+    /// Whether a word from such a call is a failure.
+    pub(super) fn is_failure(&mut self, word: Value) -> Value {
+        self.b.ins().band_imm_u(word, 1)
     }
 
     /// The temporary a failure's word holds.

@@ -196,7 +196,7 @@ impl Lowerer<'_, '_> {
     pub(super) fn try_value(&mut self, value: &Expr, context: Option<&Expr>) -> Result<Lowered, Diagnostic> {
         let ((lowered, ty), direct) = self.tried_call(value)?;
         if let (Some(direct), Some(word)) = (direct, lowered) {
-            let (failed, word) = self.failure_of(word);
+            let failed = self.is_failure(word);
             let up = self.b.create_block();
             let present = self.b.create_block();
             self.b.set_cold_block(up);

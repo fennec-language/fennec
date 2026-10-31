@@ -5,6 +5,7 @@ use std::rc::Rc;
 use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind};
 
 use crate::format;
+use crate::generators::Position;
 use crate::interp::{Interp, PASSING_UP, callable};
 use crate::place::Step;
 use crate::value::Value;
@@ -17,6 +18,8 @@ pub(crate) enum Flow {
     PassUp(Value),
     Break,
     Continue,
+    /// A generator gave an item, and everything it's inside is keeping its place.
+    Yield(Value),
 }
 
 pub(crate) fn not_mut(name: &str, span: Span) -> Diagnostic {
@@ -32,16 +35,25 @@ fn unhandled(span: Span) -> Diagnostic {
 impl Interp<'_> {
     /// Runs a block in its own scope, so names created inside it don't outlive it.
     pub(crate) fn exec_block(&mut self, stmts: &[Stmt]) -> Result<Flow, Diagnostic> {
-        self.frame.push();
+        // A block a generator stopped in still has its scope.
+        if !self.is_resuming() {
+            self.frame.push();
+        }
         let flow = self.exec_stmts(stmts);
-        self.frame.pop();
+        if !matches!(flow, Ok(Flow::Yield(_))) {
+            self.frame.pop();
+        }
         flow
     }
 
     /// Runs statements in the current scope. A block's value is its last expression's.
     pub(crate) fn exec_stmts(&mut self, stmts: &[Stmt]) -> Result<Flow, Diagnostic> {
         let mut last = Value::Unit;
-        for (at, stmt) in stmts.iter().enumerate() {
+        let start = match self.is_resuming().then(|| self.resume_at()).flatten() {
+            Some(Position::Statement(at)) => at,
+            _ => 0,
+        };
+        for (at, stmt) in stmts.iter().enumerate().skip(start) {
             let flow = match self.exec(stmt) {
                 Ok(flow) => flow,
                 Err(diagnostic) if diagnostic.message == PASSING_UP => {
@@ -59,6 +71,13 @@ impl Interp<'_> {
                         return Err(unhandled(stmt.span));
                     }
                     last = value;
+                }
+                Flow::Yield(value) => {
+                    // After a `yield` itself comes the next statement; anything else has
+                    // kept its own place to go back to.
+                    let next = if matches!(stmt.kind, StmtKind::Yield(_)) { at + 1 } else { at };
+                    self.suspending.push(Position::Statement(next));
+                    return Ok(Flow::Yield(value));
                 }
                 other => return Ok(other),
             }
@@ -79,30 +98,15 @@ impl Interp<'_> {
 
     pub(crate) fn exec(&mut self, stmt: &Stmt) -> Result<Flow, Diagnostic> {
         self.step(stmt.span)?;
+        self.clean_up_abandoned()?;
         match &stmt.kind {
             StmtKind::Expr(expr) => Ok(Flow::Normal(self.eval(expr)?)),
             StmtKind::Assign { target, op, value, declare_mut, .. } => {
                 self.assign(target, *op, value, *declare_mut)?;
                 Ok(Flow::Normal(Value::Unit))
             }
-            StmtKind::If { branches, otherwise } => {
-                for (cond, body) in branches {
-                    if self.truth(cond, "if")? {
-                        return self.exec_block(body);
-                    }
-                }
-                otherwise.as_ref().map_or(Ok(Flow::Normal(Value::Unit)), |body| self.exec_block(body))
-            }
-            StmtKind::While { cond, body } => {
-                while self.truth(cond, "while")? {
-                    match self.exec_block(body)? {
-                        Flow::Break => break,
-                        Flow::Normal(_) | Flow::Continue => {}
-                        other => return Ok(other),
-                    }
-                }
-                Ok(Flow::Normal(Value::Unit))
-            }
+            StmtKind::If { branches, otherwise } => self.if_stmt(branches, otherwise.as_deref()),
+            StmtKind::While { cond, body } => self.while_loop(cond, body),
             StmtKind::For { names, is_mut, iter, body } => self.for_loop(names, *is_mut, iter, body),
             StmtKind::Return(value) => {
                 Ok(Flow::Return(value.as_ref().map_or(Ok(Value::Unit), |value| self.eval(value))?))
@@ -112,15 +116,7 @@ impl Interp<'_> {
                 check_error(&error, expr.span)?;
                 Ok(Flow::PassUp(Value::Err(Rc::new(error))))
             }
-            StmtKind::Yield(expr) => {
-                let value = self.eval(expr)?;
-                let collected = self
-                    .yields
-                    .last_mut()
-                    .ok_or_else(|| Diagnostic::new("`yield` outside a function", stmt.span))?;
-                collected.push(value);
-                Ok(Flow::Normal(Value::Unit))
-            }
+            StmtKind::Yield(expr) => Ok(Flow::Yield(self.eval(expr)?)),
             StmtKind::Assert(expr) => {
                 self.assert(expr)?;
                 Ok(Flow::Normal(Value::Unit))
@@ -194,6 +190,53 @@ impl Interp<'_> {
         }
     }
 
+    fn if_stmt(
+        &mut self,
+        branches: &[(Expr, Vec<Stmt>)],
+        otherwise: Option<&[Stmt]>,
+    ) -> Result<Flow, Diagnostic> {
+        if self.is_resuming()
+            && let Some(Position::Arm(at)) = self.resume_at()
+        {
+            let body = branches.get(at).map(|(_, body)| &body[..]).or(otherwise).unwrap_or_default();
+            return self.arm_block(at, body);
+        }
+        for (at, (cond, body)) in branches.iter().enumerate() {
+            if self.truth(cond, "if")? {
+                return self.arm_block(at, body);
+            }
+        }
+        match otherwise {
+            Some(body) => self.arm_block(branches.len(), body),
+            None => Ok(Flow::Normal(Value::Unit)),
+        }
+    }
+
+    fn arm_block(&mut self, at: usize, body: &[Stmt]) -> Result<Flow, Diagnostic> {
+        let flow = self.exec_block(body);
+        if matches!(flow, Ok(Flow::Yield(_))) {
+            self.suspending.push(Position::Arm(at));
+        }
+        flow
+    }
+
+    fn while_loop(&mut self, cond: &Expr, body: &[Stmt]) -> Result<Flow, Diagnostic> {
+        let mut inside = self.is_resuming() && matches!(self.resume_at(), Some(Position::Looping));
+        while inside || self.truth(cond, "while")? {
+            inside = false;
+            match self.exec_block(body)? {
+                Flow::Break => break,
+                Flow::Normal(_) | Flow::Continue => {}
+                Flow::Yield(value) => {
+                    self.suspending.push(Position::Looping);
+                    return Ok(Flow::Yield(value));
+                }
+                other => return Ok(other),
+            }
+        }
+        Ok(Flow::Normal(Value::Unit))
+    }
+
     fn with_block(
         &mut self,
         value: &Expr,
@@ -201,11 +244,22 @@ impl Interp<'_> {
         is_mut: bool,
         body: &[Stmt],
     ) -> Result<Flow, Diagnostic> {
-        let resource = self.eval(value)?;
-        self.frame.push();
-        self.frame.declare(name.unwrap_or("_with"), resource, is_mut);
+        let key = name.unwrap_or("_with");
+        if self.is_resuming() && matches!(self.resume_at(), Some(Position::With { .. })) {
+        } else {
+            let resource = self.eval(value)?;
+            self.frame.push();
+            self.frame.declare(key, resource, is_mut);
+        }
         let flow = self.exec_stmts(body);
-        let resource = self.frame.get(name.unwrap_or("_with")).map(|binding| binding.value.clone());
+        if matches!(flow, Ok(Flow::Yield(_))) {
+            if let Some(binding) = self.frame.get(key) {
+                let resource = binding.value.clone();
+                self.suspending.push(Position::With { resource, span: value.span });
+            }
+            return flow;
+        }
+        let resource = self.frame.get(key).map(|binding| binding.value.clone());
         self.frame.pop();
         if let Some(resource) = resource {
             self.clean_up(resource, value.span)?;
@@ -306,20 +360,35 @@ impl Interp<'_> {
         iter: &Expr,
         body: &[Stmt],
     ) -> Result<Flow, Diagnostic> {
-        let place =
-            if is_mut {
+        let (mut items, place, mut inside) = if self.is_resuming()
+            && let Some(Position::For { items, place, key }) = self.resume_at()
+        {
+            (items, place, Some(key))
+        } else {
+            let place = if is_mut {
                 Some(self.mut_place(
                     iter,
-                    "`for mut` changes each item, so loop over something held in a mut name",
+                    "`for mut` changes each item, so loop over something held in a mut name or field",
                 )?)
             } else {
                 None
             };
-        let source = self.eval(iter)?;
-        for (key, item) in self.entries(source, iter.span)? {
-            self.frame.push();
-            let bound = self.bind_names(names, item, is_mut, iter.span);
-            let flow = bound.and_then(|()| self.exec_stmts(body));
+            let source = self.eval(iter)?;
+            (self.items_of(source, iter.span)?, place, None)
+        };
+        loop {
+            let (key, flow) = if let Some(key) = inside.take() {
+                (key, self.exec_stmts(body))
+            } else {
+                let Some((key, item)) = self.next_item(&mut items, iter.span)? else { break };
+                self.frame.push();
+                let bound = self.bind_names(names, item, is_mut, iter.span);
+                (key, bound.and_then(|()| self.exec_stmts(body)))
+            };
+            if matches!(flow, Ok(Flow::Yield(_))) {
+                self.suspending.push(Position::For { items, place, key });
+                return flow;
+            }
             let changed = match (is_mut, names) {
                 (true, [name]) => self.frame.get(name).map(|binding| binding.value.clone()),
                 _ => None,

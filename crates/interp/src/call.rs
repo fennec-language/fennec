@@ -3,8 +3,9 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Param, Span};
+use fennec_syntax::{Arg, CompKind, Diagnostic, Expr, ExprKind, Param, Span};
 
+use crate::eval::Parts;
 use crate::exec::Flow;
 use crate::interp::Interp;
 use crate::place::Place;
@@ -67,8 +68,35 @@ impl Interp<'_> {
             _ => {}
         }
         let function = self.eval(callee)?;
-        let args = self.eval_args(args)?;
+        let args = match (&function, args) {
+            (Value::Builtin(name), [first, rest @ ..]) if pulls_it_all(name, first) => {
+                let items = self.items_in_place(&first.value)?;
+                let mut args = vec![CallArg {
+                    name: None,
+                    value: items,
+                    mut_place: None,
+                    literal: false,
+                    span: first.value.span,
+                }];
+                args.extend(self.eval_args(rest)?);
+                args
+            }
+            (Value::Builtin(name @ ("any" | "all")), [only]) if is_generator(&only.value) => {
+                return self.any_or_all_in_place(name, &only.value, span);
+            }
+            _ => self.eval_args(args)?,
+        };
         self.call_value(&function, args, span)
+    }
+
+    /// A generator written right inside what uses all of it, whose items are worked out here,
+    /// able to change the names around it.
+    fn items_in_place(&mut self, generator: &Expr) -> Result<Value, Diagnostic> {
+        let ExprKind::Comprehension { elem, names, iter, cond, .. } = &generator.kind else {
+            return self.eval(generator);
+        };
+        let parts = Parts { elem, value: None, cond: cond.as_deref() };
+        self.comprehension(CompKind::List, &parts, names, iter)
     }
 
     pub(crate) fn eval_args(&mut self, args: &[Arg]) -> Result<Vec<CallArg>, Diagnostic> {
@@ -130,7 +158,7 @@ impl Interp<'_> {
         self.call_user(function, args, span)
     }
 
-    fn enter(&mut self, span: Span) -> Result<Frame, Diagnostic> {
+    pub(crate) fn enter(&mut self, span: Span) -> Result<Frame, Diagnostic> {
         if self.depth >= self.max_depth {
             return Err(Diagnostic::new("calls nested too deeply", span)
                 .with_help("check for recursion that never stops"));
@@ -139,7 +167,7 @@ impl Interp<'_> {
         Ok(std::mem::replace(&mut self.frame, Frame::new()))
     }
 
-    fn leave(&mut self, caller: Frame) {
+    pub(crate) fn leave(&mut self, caller: Frame) {
         self.depth -= 1;
         self.frame = caller;
     }
@@ -174,10 +202,13 @@ impl Interp<'_> {
             self.frame.declare(&param.name, arg.value, param.is_mut);
         }
         if function.generator {
-            self.yields.push(Vec::new());
+            // Nothing runs until an item is asked for.
+            let frame = std::mem::replace(&mut self.frame, Frame::new());
+            self.leave(caller);
+            let generator = self.generator_of(Rc::clone(def), frame);
+            return Ok(if function.fallible { Value::Ok(Rc::new(generator)) } else { generator });
         }
         let flow = self.exec_stmts(&def.body).map_err(|diagnostic| at_call(diagnostic, span));
-        let yielded = if function.generator { self.yields.pop() } else { None };
         let changed: Vec<(Place, Value)> = mut_places
             .into_iter()
             .filter_map(|(place, name)| {
@@ -186,19 +217,21 @@ impl Interp<'_> {
             })
             .collect();
         self.leave(caller);
+        self.clean_up_abandoned()?;
         for (place, value) in changed {
             self.put(&place, value)?;
         }
         let value = match flow? {
-            Flow::PassUp(value) => return Ok(value),
+            Flow::PassUp(value) if function.fallible => return Ok(value),
+            Flow::PassUp(value) => {
+                // Only a generator it was handed can get a failure into a function like this.
+                return Err(crate::generators::nowhere_to_pass(&value, span));
+            }
             Flow::Normal(value) | Flow::Return(value) => value,
-            Flow::Break | Flow::Continue => {
+            Flow::Yield(_) | Flow::Break | Flow::Continue => {
                 return Err(Diagnostic::new("`break` or `continue` outside a loop", def.span));
             }
         };
-        if let Some(yielded) = yielded {
-            return Ok(Value::list(yielded));
-        }
         Ok(if function.fallible && !matches!(value, Value::Ok(_) | Value::Err(_)) {
             Value::Ok(Rc::new(value))
         } else {
@@ -404,4 +437,13 @@ fn check_mut(function: &str, param: &Param, arg: &CallArg) -> Result<(), Diagnos
         )),
         _ => Ok(()),
     }
+}
+
+fn is_generator(expr: &Expr) -> bool {
+    matches!(&expr.kind, ExprKind::Comprehension { kind: CompKind::Generator, .. })
+}
+
+/// Whether this builtin uses every item of a generator written right inside the call.
+fn pulls_it_all(name: &str, first: &Arg) -> bool {
+    is_generator(&first.value) && matches!(name, "sum" | "min" | "max" | "sorted" | "list" | "set" | "dict")
 }

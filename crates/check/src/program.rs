@@ -238,8 +238,8 @@ impl Program {
             // What a function gives back when it gives back nothing, for writing the return
             // type of one that calls itself.
             "nothing" => Type::Unit,
-            // A generator gives back an `Iterator[T]`, a list of what it yields.
-            "list" | "SoaList" | "Iterator" => Type::List(arg()),
+            "list" | "SoaList" => Type::List(arg()),
+            "Iterator" => Type::Iterator(arg()),
             "set" => Type::Set(arg()),
             "dict" => Type::Dict(arg(), arg()),
             "Result" => Type::Result(arg(), arg()),

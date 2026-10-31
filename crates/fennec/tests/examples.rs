@@ -18,6 +18,7 @@ const INTERPRETED: &[&str] = &[];
 const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] = &[
     ("case_guards.fen", &["describe", "first_word", "size"]),
     ("functions_more.fen", &["countdown"]),
+    ("generators.fen", &["checked", "countdown", "doubled", "holding", "naturals", "words"]),
     ("operators.fen", &["Grid.iter"]),
 ];
 
@@ -388,4 +389,61 @@ def main(stdout: Stdout):
     let report = fennec_jit::run_with_report(&module, &mut out).unwrap();
     assert_eq!(String::from_utf8_lossy(&out), "55 111\n");
     assert_eq!(report.from_ir, ["steps"], "fib stays on the syntax tree, which inlines it into itself");
+}
+
+/// Runs a program in both engines, giving each one's output and failure.
+fn run_both(source: &str) -> [(String, Option<String>); 2] {
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_to_run(&mut module).unwrap();
+    let mut interpreted = Vec::new();
+    let failure = fennec_interp::run(&module, &mut interpreted).err();
+    let first = (String::from_utf8_lossy(&interpreted).into_owned(), failure.map(|failed| failed.message));
+    let mut native = Vec::new();
+    let failure = fennec_jit::run_with_report(&module, &mut native).err();
+    let failure = failure.map(|failed| match failed {
+        fennec_jit::JitError::Unsupported(diagnostic) | fennec_jit::JitError::Failed(diagnostic) => {
+            diagnostic.message
+        }
+    });
+    let second = (String::from_utf8_lossy(&native).into_owned(), failure);
+    [first, second]
+}
+
+#[test]
+fn using_a_generator_twice_fails_in_both_engines() {
+    let source = "def main(stdout: Stdout):
+    made = (n for n in [1, 2])
+    stdout.print(list(made))
+    stdout.print(list(made))
+";
+    for (output, failure) in run_both(source) {
+        assert_eq!(output, "[1, 2]\n");
+        assert!(failure.unwrap().contains("this generator has already been used"));
+    }
+}
+
+#[test]
+fn a_failure_with_nowhere_to_go_fails_in_both_engines() {
+    let source = "error Bad:
+    at: int
+
+def checked() -> Iterator[int]:
+    yield 1
+    fail Bad(at=2)
+
+def total(numbers: Iterator[int]) -> int:
+    mut sum_so_far = 0
+    for n in numbers:
+        sum_so_far += n
+    sum_so_far
+
+def run_it() -> int:
+    total(checked()?)
+
+def main(stdout: Stdout):
+    stdout.print(run_it())
+";
+    for (_, failure) in run_both(source) {
+        assert!(failure.unwrap().contains("can't pass up Bad(at=2)"));
+    }
 }

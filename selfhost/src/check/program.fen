@@ -290,7 +290,7 @@ def builtin_type(name: str, args: list[Type]) -> Type:
         case "nothing": Type.Unit
         case "list": Type.List(args[0])
         case "SoaList": Type.List(args[0])
-        # A generator gives back an `Iterator[T]`, a list of what it yields.
+        # The self-hosted checker has no generators of its own yet, so it reads one as a list.
         case "Iterator": Type.List(args[0])
         case "set": Type.Set(args[0])
         case "dict": Type.Dict(args[0], args[1])

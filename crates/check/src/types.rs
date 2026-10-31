@@ -25,6 +25,8 @@ pub enum Type {
     List(Box<Type>),
     Set(Box<Type>),
     Dict(Box<Type>, Box<Type>),
+    /// A generator: items one at a time, as they're asked for, once.
+    Iterator(Box<Type>),
     Tuple(Vec<Type>),
     /// `T?`: a `T`, or `None`.
     Optional(Box<Type>),
@@ -99,6 +101,7 @@ impl Type {
             Type::Bytes => "bytes".to_owned(),
             Type::List(_) => "list".to_owned(),
             Type::Set(_) => "set".to_owned(),
+            Type::Iterator(_) => "Iterator".to_owned(),
             Type::Dict(..) => "dict".to_owned(),
             Type::Tuple(_) => "tuple".to_owned(),
             Type::Optional(inner) => format!("{}?", inner.kind()),
@@ -129,6 +132,7 @@ impl Type {
         match self {
             Type::List(inner)
             | Type::Set(inner)
+            | Type::Iterator(inner)
             | Type::Optional(inner)
             | Type::Id(inner)
             | Type::IdMap(inner) => {
@@ -148,6 +152,7 @@ impl Type {
         let mapped = match self {
             Type::List(item) => Type::List(inner(item)),
             Type::Set(item) => Type::Set(inner(item)),
+            Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Optional(item) => Type::optional(*inner(item)),
             Type::Id(item) => Type::Id(inner(item)),
             Type::IdMap(item) => Type::IdMap(inner(item)),
@@ -226,6 +231,7 @@ impl Type {
             Type::None => "None".to_owned(),
             Type::List(item) => format!("list[{}]", item.source()?),
             Type::Set(item) => format!("set[{}]", item.source()?),
+            Type::Iterator(item) => format!("Iterator[{}]", item.source()?),
             Type::Dict(key, value) => format!("dict[{}, {}]", key.source()?, value.source()?),
             Type::Tuple(items) => format!("({})", all(items)?),
             Type::Optional(inner) => format!("{}?", inner.source()?),
@@ -250,6 +256,7 @@ impl fmt::Display for Type {
         match self {
             Type::List(item) => write!(f, "list[{item}]"),
             Type::Set(item) => write!(f, "set[{item}]"),
+            Type::Iterator(item) => write!(f, "Iterator[{item}]"),
             Type::Dict(key, value) => write!(f, "dict[{key}, {value}]"),
             Type::Tuple(items) => {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();

@@ -276,6 +276,10 @@ impl State {
 
     /// Lets go of the blocks whose last lent copy has been dropped.
     fn let_go(&mut self) {
+        if let Err(failure) = self.interp.clean_up_abandoned() {
+            self.failure.get_or_insert(failure);
+            FAILED.set(1);
+        }
         loop {
             let blocks = crate::value::blocks_let_go();
             if blocks.is_empty() {
@@ -707,7 +711,7 @@ pub mod eval {
                     state.leaving = Some(flow);
                     Ok(())
                 }
-                Ok(Flow::Break | Flow::Continue) => {
+                Ok(Flow::Break | Flow::Continue | Flow::Yield(_)) => {
                     Err(Diagnostic::new("the JIT can't run this statement here", span(start, end)))
                 }
                 Err(diagnostic) => Err(diagnostic),
@@ -719,7 +723,7 @@ pub mod eval {
     /// 1 for a `return`, 2 for a failure passing up.
     pub extern "C" fn leaving() -> i8 {
         with(|state| match state.leaving {
-            None | Some(Flow::Normal(_) | Flow::Break | Flow::Continue) => 0,
+            None | Some(Flow::Normal(_) | Flow::Break | Flow::Continue | Flow::Yield(_)) => 0,
             Some(Flow::Return(_)) => 1,
             Some(Flow::PassUp(_)) => 2,
         })
@@ -827,8 +831,39 @@ pub mod io {
     pub extern "C" fn items(value: i64, start: i64, end: i64) -> i64 {
         attempt(|state: &mut State| {
             let value = state.temp(value);
-            let items = state.interp.iterate(value, super::span(start, end))?;
+            let span = super::span(start, end);
+            if let Value::Generator(generator) = &value {
+                state.interp.start_generator(generator, span)?;
+                return Ok(state.push(value));
+            }
+            let items = state.interp.iterate(value, span)?;
             Ok(state.push(Value::list(items)))
+        })
+    }
+
+    /// The next item of what `items` gave: -1 at the end, the item's temporary doubled, or
+    /// doubled plus one for a generator's failure, for native code to pass up.
+    pub extern "C" fn next(items: i64, at: i64, can_pass: i64, start: i64, end: i64) -> i64 {
+        attempt(|state: &mut State| {
+            let span = super::span(start, end);
+            match state.temp(items) {
+                Value::List(items) => Ok(usize::try_from(at)
+                    .ok()
+                    .and_then(|at| items.get(at))
+                    .cloned()
+                    .map_or(-1, |item| state.push(item) << 1)),
+                Value::Generator(generator) => match state.interp.pull(&generator, span)? {
+                    crate::generators::Pulled::Item(item) => Ok(state.push(item) << 1),
+                    crate::generators::Pulled::Done => Ok(-1),
+                    crate::generators::Pulled::Failed(failure) if can_pass != 0 => {
+                        Ok((state.push(failure) << 1) | 1)
+                    }
+                    crate::generators::Pulled::Failed(failure) => {
+                        Err(crate::generators::nowhere_to_pass(&failure, span))
+                    }
+                },
+                _ => Ok(-1),
+            }
         })
     }
 

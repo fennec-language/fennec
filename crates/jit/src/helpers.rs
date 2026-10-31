@@ -56,6 +56,7 @@ pub(crate) enum Helper {
     PrintValue,
     PrintSpec,
     Items,
+    Next,
     Count,
     Item,
     Binary,
@@ -121,7 +122,7 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 113] = [
+pub(crate) const ALL: [Helper; 114] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -172,6 +173,7 @@ pub(crate) const ALL: [Helper; 113] = [
     Helper::PrintValue,
     Helper::PrintSpec,
     Helper::Items,
+    Helper::Next,
     Helper::Count,
     Helper::Item,
     Helper::Binary,
@@ -304,6 +306,7 @@ impl Helper {
             Helper::PrintValue => shape("fennec_print_value", &[I64], &[]),
             Helper::PrintSpec => shape("fennec_print_spec", &[I64, I64, I64, I64], &[]),
             Helper::Items => shape("fennec_items", &[I64, I64, I64], &[I64]),
+            Helper::Next => shape("fennec_next", &[I64, I64, I64, I64, I64], &[I64]),
             Helper::Count => shape("fennec_count", &[I64], &[I64]),
             Helper::Item => shape("fennec_item", &[I64, I64], &[I64]),
             Helper::Binary => shape("fennec_binary", &[I64, I64, I64, I64, I64], &[I64]),
@@ -432,7 +435,8 @@ impl Helper {
     pub(crate) fn can_fail(self) -> bool {
         matches!(
             self,
-            Helper::ToInt
+            Helper::Next
+                | Helper::ToInt
                 | Helper::Binary
                 | Helper::Unary
                 | Helper::Field
@@ -529,6 +533,7 @@ impl Helper {
             Helper::PrintValue => io::print_value as *const u8,
             Helper::PrintSpec => io::print_spec as *const u8,
             Helper::Items => io::items as *const u8,
+            Helper::Next => io::next as *const u8,
             Helper::Count => io::count as *const u8,
             Helper::Item => io::item as *const u8,
             Helper::Binary => objects::binary as *const u8,

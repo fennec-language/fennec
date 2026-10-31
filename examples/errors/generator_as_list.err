@@ -1,0 +1,5 @@
+error: an Iterator can't be indexed
+ --> examples/errors/generator_as_list.fen:8:18
+  |
+8 |     stdout.print(countdown(3)[0])
+  |                  ^^^^^^^^^^^^^^^

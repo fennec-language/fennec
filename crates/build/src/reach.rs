@@ -43,9 +43,9 @@ struct Definition {
 
 /// The names a definition uses: plain names, and member names after a dot.
 #[derive(Default)]
-struct Uses {
-    names: BTreeSet<String>,
-    members: BTreeSet<String>,
+pub(crate) struct Uses {
+    pub(crate) names: BTreeSet<String>,
+    pub(crate) members: BTreeSet<String>,
 }
 
 struct Graph {
@@ -155,12 +155,7 @@ impl Graph {
 
     fn type_def(&mut self, def: &TypeDef) {
         let mut uses = Uses::default();
-        for field in def.fields.iter().chain(def.cases.iter().flat_map(|case| &case.fields)) {
-            if let Some(ty) = &field.ty {
-                uses.type_expr(ty);
-            }
-            field.default.iter().chain(&field.rule).for_each(|expr| uses.expr(expr));
-        }
+        uses.fields(def);
         let at = self.add(
             format!("type {}", def.name),
             tree_hash(&(&def.name, &def.fields, &def.cases)),
@@ -181,9 +176,7 @@ impl Graph {
         let at =
             self.add(format!("def {owner}.{}", method.name), tree_hash(method), function_uses(method), None);
         self.members.entry(method.name.clone()).or_default().push(at);
-        let implicit = IMPLICIT.contains(&method.name.as_str())
-            || !method.name.chars().all(|ch| ch.is_alphanumeric() || ch == '_');
-        if implicit {
+        if is_implicit(&method.name) {
             self.unowned.push((owner.to_owned(), at));
         }
     }
@@ -221,6 +214,11 @@ impl Graph {
     }
 }
 
+/// Whether the language calls a method by this name without the code naming it.
+pub(crate) fn is_implicit(name: &str) -> bool {
+    IMPLICIT.contains(&name) || !name.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
+}
+
 fn function_uses(def: &FnDef) -> Uses {
     let mut uses = Uses::default();
     uses.function(def);
@@ -228,7 +226,23 @@ fn function_uses(def: &FnDef) -> Uses {
 }
 
 impl Uses {
-    fn function(&mut self, def: &FnDef) {
+    /// What a type's fields and cases use.
+    fn fields(&mut self, def: &TypeDef) {
+        for field in def.fields.iter().chain(def.cases.iter().flat_map(|case| &case.fields)) {
+            if let Some(ty) = &field.ty {
+                self.type_expr(ty);
+            }
+            field.default.iter().chain(&field.rule).for_each(|expr| self.expr(expr));
+        }
+    }
+
+    /// What a type uses, all of its methods included.
+    pub(crate) fn type_def(&mut self, def: &TypeDef) {
+        self.fields(def);
+        def.methods.iter().for_each(|method| self.function(method));
+    }
+
+    pub(crate) fn function(&mut self, def: &FnDef) {
         for generic in &def.generics {
             for bound in &generic.bounds {
                 self.type_expr(bound);
@@ -241,7 +255,7 @@ impl Uses {
         self.stmts(&def.body);
     }
 
-    fn type_expr(&mut self, ty: &TypeExpr) {
+    pub(crate) fn type_expr(&mut self, ty: &TypeExpr) {
         self.names.insert(ty.name.clone());
         for arg in &ty.args {
             self.type_expr(arg);
@@ -254,7 +268,7 @@ impl Uses {
         }
     }
 
-    fn stmt(&mut self, stmt: &Stmt) {
+    pub(crate) fn stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Expr(expr) | StmtKind::Fail(expr) | StmtKind::Yield(expr) | StmtKind::Assert(expr) => {
                 self.expr(expr);
@@ -293,7 +307,7 @@ impl Uses {
         }
     }
 
-    fn expr(&mut self, expr: &Expr) {
+    pub(crate) fn expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Name(name) | ExprKind::Variant(name) => {
                 self.names.insert(name.clone());

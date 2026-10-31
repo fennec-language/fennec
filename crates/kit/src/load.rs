@@ -1,6 +1,6 @@
 //! Finding a kit, reading each file once, and following imports from file to file.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use fennec_syntax::{Diagnostic, Import, Item, Module, Sources, Span};
@@ -52,6 +52,7 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
         let mut modules = Vec::new();
         find_modules(&src, &mut Vec::new(), &mut modules);
         modules.sort();
+        loader.parse_ahead(modules.clone());
         for module in modules {
             let (real, shown) = loader.module_path(&module);
             loader.visit(&module.join("."), &real, shown, None);
@@ -115,6 +116,41 @@ fn find_modules(dir: &Path, prefix: &mut Vec<String>, found: &mut Vec<Vec<String
     }
 }
 
+/// The stack each thread parsing files gets, as much as the thread parsing one file has. It's
+/// only reserved, not used, until a file nests deeply.
+const PARSING_STACK: usize = 1 << 30;
+
+/// Parses each text at its offset, in order, on as many threads as there are CPUs.
+fn parse_all(texts: &[(String, u32)]) -> Vec<Result<Module, Diagnostic>> {
+    let parse = |chunk: &[(String, u32)]| -> Vec<Result<Module, Diagnostic>> {
+        chunk.iter().map(|(text, base)| fennec_syntax::parse_at(text, *base)).collect()
+    };
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    if threads < 2 || texts.len() < 2 {
+        return parse(texts);
+    }
+    let parse = &parse;
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = texts
+            .chunks(texts.len().div_ceil(threads))
+            .map(|chunk| {
+                let worker = std::thread::Builder::new()
+                    .stack_size(PARSING_STACK)
+                    .spawn_scoped(scope, move || parse(chunk));
+                (chunk, worker)
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|(chunk, worker)| match worker.map(std::thread::ScopedJoinHandle::join) {
+                Ok(Ok(parsed)) => parsed,
+                // A thread that couldn't start or that died: this one finds out what happened.
+                _ => parse(chunk),
+            })
+            .collect()
+    })
+}
+
 struct Loader<'a> {
     /// Text read in place of files on disk.
     overlay: &'a Overlay,
@@ -127,6 +163,8 @@ struct Loader<'a> {
     seen: HashSet<String>,
     /// The modules being loaded, outermost first, to find imports that go in a circle.
     stack: Vec<String>,
+    /// Modules parsed ahead of being visited, by name.
+    parsed: HashMap<String, Result<Module, Diagnostic>>,
     errors: Vec<Diagnostic>,
     /// Problems with no place in a file to point at.
     unplaced: Vec<String>,
@@ -142,6 +180,7 @@ impl<'a> Loader<'a> {
             files: Vec::new(),
             seen: HashSet::new(),
             stack: Vec::new(),
+            parsed: HashMap::new(),
             errors: Vec::new(),
             unplaced: Vec::new(),
         }
@@ -178,21 +217,24 @@ impl<'a> Loader<'a> {
         if !self.seen.insert(name.to_owned()) {
             return;
         }
-        let text = match self.read(real) {
-            Ok(text) => text,
-            Err(err) => {
-                match from {
-                    Some(span) => self.errors.push(
-                        Diagnostic::new(format!("there's no module called `{name}`"), span)
-                            .with_help(format!("it would be the file {shown}")),
-                    ),
-                    None => self.unplaced.push(format!("error: couldn't read {shown}: {err}\n")),
+        let parsed = if let Some(parsed) = self.parsed.remove(name) {
+            parsed
+        } else {
+            match self.read(real) {
+                Ok(text) => fennec_syntax::parse_at(&text, self.sources.add(shown.clone(), text.as_str())),
+                Err(err) => {
+                    match from {
+                        Some(span) => self.errors.push(
+                            Diagnostic::new(format!("there's no module called `{name}`"), span)
+                                .with_help(format!("it would be the file {shown}")),
+                        ),
+                        None => self.unplaced.push(format!("error: couldn't read {shown}: {err}\n")),
+                    }
+                    return;
                 }
-                return;
             }
         };
-        let base = self.sources.add(shown.clone(), text.as_str());
-        let module = match fennec_syntax::parse_at(&text, base) {
+        let module = match parsed {
             Ok(module) => module,
             Err(diagnostic) => {
                 self.errors.push(diagnostic);
@@ -209,12 +251,33 @@ impl<'a> Loader<'a> {
             .flatten()
             .collect();
         self.files.push(File { name: name.to_owned(), shown, module });
+        self.parse_ahead(imports.iter().map(|(module, _)| module.clone()).collect());
         self.stack.push(name.to_owned());
         for (module, span) in imports {
             let (real, shown) = self.module_path(&module);
             self.visit(&module.join("."), &real, shown, Some(span));
         }
         self.stack.pop();
+    }
+
+    /// Parses the modules that are about to be visited, side by side. One that can't be read
+    /// is left for its visit to report.
+    fn parse_ahead(&mut self, modules: Vec<Vec<String>>) {
+        let mut names = Vec::new();
+        let mut texts = Vec::new();
+        for module in modules {
+            let name = module.join(".");
+            if self.seen.contains(&name) || self.parsed.contains_key(&name) || names.contains(&name) {
+                continue;
+            }
+            let (real, shown) = self.module_path(&module);
+            if let Ok(text) = self.read(&real) {
+                let base = self.sources.add(shown, text.as_str());
+                names.push(name);
+                texts.push((text, base));
+            }
+        }
+        self.parsed.extend(names.into_iter().zip(parse_all(&texts)));
     }
 
     /// The modules an import loads. `from game import physics` loads `game/physics.fen` when

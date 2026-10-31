@@ -27,12 +27,14 @@ struct Budget {
 
 const FORMAT: Budget = Budget { name: "format one file", limit: Duration::from_millis(50), enforced: true };
 const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: false };
-const TESTS: Budget =
-    Budget { name: "affected tests after one edit", limit: Duration::from_secs(1), enforced: false };
+const VERDICT: Budget =
+    Budget { name: "edit to verdict, one function", limit: Duration::from_secs(1), enforced: true };
 const RUN: Budget =
     Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: false };
-const RUN_JIT: Budget =
-    Budget { name: "`fennec run --jit` startup", limit: Duration::from_millis(100), enforced: false };
+
+/// How many times longer an edit's verdict may take on the big kit than on one a tenth its
+/// size. It shouldn't depend on the size of a project at all; some allowance is for noise.
+const MOST_GROWTH: f64 = 1.5;
 
 /// How big a kit to measure on: files, each with this many functions and a tenth as many tests.
 const FUNCTIONS_PER_FILE: usize = 100;
@@ -62,13 +64,20 @@ pub(crate) fn run(fennec: &Path, runs: usize, files: usize) -> Result<bool, Stri
     let fennec = std::fs::canonicalize(fennec).map_err(|err| format!("{}: {err}", fennec.display()))?;
     let dir = std::env::temp_dir().join(format!("fennec-budgets-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let kit = Kit::write(&dir, fennec, files).map_err(|err| format!("couldn't write the kit: {err}"))?;
+    let kit =
+        Kit::write(&dir, fennec.clone(), files).map_err(|err| format!("couldn't write the kit: {err}"))?;
     let measured = measure(&kit, runs);
     let _ = kit.command(&["daemon", "stop"]).output();
     let _ = std::fs::remove_dir_all(&dir);
     let measured = measured?;
+    let small = smaller_verdict(&dir, fennec, runs, files)?;
+    let growth = measured
+        .iter()
+        .find(|measured| measured.budget.name == VERDICT.name)
+        .map_or(0.0, |verdict| verdict.warm.as_secs_f64() / small.as_secs_f64().max(f64::MIN_POSITIVE));
     let lines = format!("{} files, {} functions", files + 1, files * FUNCTIONS_PER_FILE);
-    let table = table(&measured, &lines);
+    let mut table = table(&measured, &lines);
+    let _ = writeln!(table, "\n{}", growth_line(growth, small));
     print!("{table}");
     if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
         crate::append(Path::new(&summary), &format!("## Instant-feedback budgets\n\n{table}"))
@@ -78,7 +87,30 @@ pub(crate) fn run(fennec: &Path, runs: usize, files: usize) -> Result<bool, Stri
         let Budget { name, limit, .. } = over.budget;
         println!("::warning title=Over budget::{name} took {}, over {}", millis(over.warm), millis(limit));
     }
+    if growth > MOST_GROWTH {
+        println!("::warning title=Over budget::{}", growth_line(growth, small));
+    }
     Ok(passes(&measured))
+}
+
+/// How long an edit's verdict takes on a kit a tenth the size of the big one.
+fn smaller_verdict(dir: &Path, fennec: PathBuf, runs: usize, files: usize) -> Result<Duration, String> {
+    let kit = Kit::write(dir, fennec, (files / 10).max(EDITED_FILE + 1))
+        .map_err(|err| format!("couldn't write the kit: {err}"))?;
+    kit.timed(&["fmt"])?;
+    let verdict = kit.verdict(runs);
+    let _ = kit.command(&["daemon", "stop"]).output();
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(verdict?.warm)
+}
+
+/// What growing a project tenfold does to an edit's verdict. It warns until #152 makes a
+/// verdict independent of the size of the project.
+fn growth_line(growth: f64, small: Duration) -> String {
+    format!(
+        "An edit's verdict takes {growth:.1} times as long on the big kit as on one a tenth its size ({}); it should take at most {MOST_GROWTH} times.",
+        millis(small)
+    )
 }
 
 /// Whether every enforced budget is met.
@@ -102,9 +134,8 @@ fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     let (check_warm, check_cold) = edit_to_checked(kit, runs)?;
     let mut measured =
         vec![Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold) }, kit.format(runs)?];
-    measured.push(kit.affected_tests(runs)?);
+    measured.push(kit.verdict(runs)?);
     measured.push(kit.repeated(RUN, &["run"], runs)?);
-    measured.push(kit.repeated(RUN_JIT, &["run", "--jit"], runs)?);
     Ok(measured)
 }
 
@@ -121,6 +152,7 @@ struct Kit {
 
 /// The file edits are made to, and the line in it that changes.
 const EDITED: &str = "src/m3.fen";
+const EDITED_FILE: usize = 3;
 const EDITED_LINE: &str = "    y = x + 300\n";
 
 /// A function that checks and runs natively, and that nothing else depends on.
@@ -203,8 +235,9 @@ impl Kit {
         Ok(measured)
     }
 
-    /// `fennec test` after changing one function each time, which must run exactly one test.
-    fn affected_tests(&self, runs: usize) -> Result<Measured, String> {
+    /// From changing one function to `fennec test` having a pass or fail, each time, which must
+    /// run exactly one test.
+    fn verdict(&self, runs: usize) -> Result<Measured, String> {
         let path = self.dir.join(EDITED);
         let original = std::fs::read_to_string(&path).map_err(|err| err.to_string())?;
         let (cold, _) = self.timed(&["test"])?;
@@ -219,7 +252,7 @@ impl Kit {
             times.push(took);
         }
         std::fs::write(&path, original).map_err(|err| err.to_string())?;
-        Ok(Measured { budget: TESTS, warm: median(times), cold: Some(cold) })
+        Ok(Measured { budget: VERDICT, warm: median(times), cold: Some(cold) })
     }
 }
 
@@ -313,6 +346,15 @@ mod tests {
         let table = table(&[measured(true, 1), measured(true, 200), measured(false, 200)], "a size");
         assert!(table.contains("| met |") && table.contains("| **over** |"), "{table}");
         assert!(table.contains("| over, not enforced yet |"), "{table}");
+    }
+
+    #[test]
+    fn the_growth_line_says_how_much_and_how_much_is_allowed() {
+        let line = super::growth_line(9.56, Duration::from_millis(50));
+        assert!(
+            line.contains("9.6 times") && line.contains("50.0 ms") && line.contains("1.5 times"),
+            "{line}"
+        );
     }
 
     #[test]

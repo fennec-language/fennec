@@ -195,11 +195,17 @@ impl Parser {
     /// Reads `{m}`, `{m,}`, `{,n}` or `{m,n}` without moving, giving its bounds and length.
     /// Anything else starting with `{` is a plain `{`, as in Python.
     fn counted(&self) -> Option<((u32, Option<u32>), usize)> {
-        let rest: String = self.chars.get(self.pos..)?.iter().take_while(|&&c| c != '}').collect();
-        let inner = rest.strip_prefix('{')?;
-        if self.chars.get(self.pos + rest.chars().count()) != Some(&'}') {
+        if self.peek() != Some('{') {
             return None;
         }
+        // Only digits and a comma can be inside, so a run of `{` is looked at once each.
+        let inside = self.chars.get(self.pos + 1..)?.iter().take_while(|c| c.is_ascii_digit() || **c == ',');
+        let inner: String = inside.collect();
+        let length = inner.chars().count() + 1;
+        if self.chars.get(self.pos + length) != Some(&'}') {
+            return None;
+        }
+        let inner = inner.as_str();
         let number = |text: &str| -> Option<u32> {
             if text.is_empty() || !text.chars().all(|c| c.is_ascii_digit()) {
                 return None;
@@ -220,7 +226,7 @@ impl Parser {
                 (min, max)
             }
         };
-        Some((bounds, rest.chars().count() + 1))
+        Some((bounds, length + 1))
     }
 
     fn atom(&mut self) -> Result<Node, Error> {

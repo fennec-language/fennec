@@ -262,3 +262,62 @@ fn abs_is_a_method_and_its_fix_moves_it_there() {
         ["a size is a method: write `x.abs()`, or `x => x.abs()` to pass it"]
     );
 }
+
+#[test]
+fn a_function_that_says_it_gives_back_a_value_cant_run_off_its_end() {
+    let looped = "
+        def all(n: int) -> list[int]:
+            mut found = []
+            for at in range(n):
+                found.append(at)
+    ";
+    let problems = problems_as_written(looped);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("but its last line gives back nothing"), "{problems:?}");
+
+    let failing = "
+        error TooBig:
+            limit: int
+
+        def word(n: int) -> str:
+            if n > 2: fail TooBig(limit=2)
+            \"\"
+
+        def all(n: int) -> list[str]:
+            mut found = []
+            for at in range(n):
+                found.append(word(at)?)
+    ";
+    assert_eq!(problems_as_written(failing).len(), 1, "a function that can fail too");
+}
+
+#[test]
+fn leaving_on_every_path_is_giving_something_back() {
+    let fine = "
+        def sign(n: int) -> int:
+            if n < 0:
+                return -1
+            else:
+                return 1
+
+        def forever(n: int) -> int:
+            while True:
+                if n > 0: return n
+    ";
+    assert_eq!(problems_as_written(fine), Vec::<String>::new());
+}
+
+#[test]
+fn a_bare_return_cant_stand_for_a_value() {
+    let problems = problems_as_written(
+        "
+        def f(n: int) -> int:
+            if n > 0:
+                return
+            n
+    ",
+    );
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("but this gives back nothing"), "{problems:?}");
+    assert_eq!(problems_as_written("def g(n: int):\n    if n > 0:\n        return\n"), Vec::<String>::new());
+}

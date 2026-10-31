@@ -1,0 +1,14 @@
+title = "game"
+version = 1
+ratio = 0.5
+enabled = true
+items = [1, 2, 3]
+
+[server]
+host = "localhost"
+
+[server.limits]
+most = 10
+
+[[players]]
+name = "Ash"

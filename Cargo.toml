@@ -56,6 +56,7 @@ fennec-build = { path = "crates/build" }
 fennec-check = { path = "crates/check" }
 fennec-count = { path = "crates/count" }
 fennec-fmt = { path = "crates/fmt" }
+fennec-fuzz = { path = "crates/fuzz" }
 fennec-ir = { path = "crates/ir" }
 fennec-jit = { path = "crates/jit" }
 fennec-interp = { path = "crates/interp" }

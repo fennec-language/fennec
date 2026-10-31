@@ -1,0 +1,2 @@
+\b\w+\b|(\s+)
+hello wörld 🦊 42

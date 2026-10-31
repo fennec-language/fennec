@@ -18,7 +18,7 @@ use fennec_check::Type;
 use fennec_ir::{BlockId, Count, Function, Inst, InstKind, LocalId, Operand, Terminator};
 use fennec_syntax::{BinOp, Diagnostic, Span};
 
-use super::{Lowerer, Shared, internal};
+use super::{Lowerer, Shared, internal, ranges};
 use crate::types::Ty;
 
 /// What the IR path knows about a function's locals as it lowers it.
@@ -32,6 +32,19 @@ struct Locals {
     ranges: HashMap<usize, (i64, i64)>,
     /// The loop each count is the count of.
     counts: HashMap<usize, Count>,
+    /// What branches say about locals that keep one value, in each block.
+    narrowed: Vec<Vec<Narrowed>>,
+    /// The block being lowered.
+    block: usize,
+}
+
+/// What a branch says about a local holding one value: `local op limit` came out as `holds`.
+#[derive(Clone, Copy)]
+struct Narrowed {
+    local: usize,
+    op: BinOp,
+    limit: i64,
+    holds: bool,
 }
 
 impl Locals {
@@ -39,10 +52,25 @@ impl Locals {
         self.vars.get(local.0).copied().ok_or_else(|| internal("no such local", span))
     }
 
+    /// Whether a local holds one value for as long as anything can read it.
+    fn keeps_one_value(&self, local: usize) -> bool {
+        let written = self.writes.get(local).copied().unwrap_or(2);
+        !self.counts.contains_key(&local) && if local < self.params { written == 0 } else { written == 1 }
+    }
+
     /// What's known about a local where it's read.
     fn range(&self, local: LocalId) -> Option<(i64, i64)> {
         let Some(count) = self.counts.get(&local.0) else {
-            return self.ranges.get(&local.0).copied();
+            if !self.keeps_one_value(local.0) {
+                return self.ranges.get(&local.0).copied();
+            }
+            let mut known = self.ranges.get(&local.0).copied().unwrap_or((i64::MIN, i64::MAX));
+            for fact in
+                self.narrowed.get(self.block).into_iter().flatten().filter(|fact| fact.local == local.0)
+            {
+                known = ranges::narrowed_range(known, fact.op, fact.limit, fact.holds).unwrap_or(known);
+            }
+            return Some(known);
         };
         let first = *self.ranges.get(&local.0)?;
         let stop = *self.ranges.get(&count.stop.0)?;
@@ -77,6 +105,70 @@ fn writes(ir: &Function) -> Vec<usize> {
         }
     }
     writes
+}
+
+/// What a block's branch says about one local, for the block it goes to when `holds`.
+fn branch_fact(block: &fennec_ir::Block, cond: &Operand, holds: bool) -> Option<Narrowed> {
+    let Operand::Local(cond) = cond else { return None };
+    let (op, lhs, rhs) = block.insts.iter().rev().find_map(|inst| match &inst.kind {
+        InstKind::Binary { dest, op, lhs, rhs } if dest == cond => Some((*op, lhs, rhs)),
+        _ => None,
+    })?;
+    match (lhs, rhs) {
+        (Operand::Local(local), Operand::Int(limit)) => {
+            Some(Narrowed { local: local.0, op, limit: *limit, holds })
+        }
+        (Operand::Int(limit), Operand::Local(local)) => {
+            Some(Narrowed { local: local.0, op: ranges::flipped(op)?, limit: *limit, holds })
+        }
+        _ => None,
+    }
+}
+
+/// What branches say about each block: a block only one branch leads to knows what that branch
+/// came out as, and what's known in the block before it.
+fn narrowings(ir: &Function) -> Vec<Vec<Narrowed>> {
+    let mut comes_from: Vec<Vec<usize>> = vec![Vec::new(); ir.blocks.len()];
+    for (at, block) in ir.blocks.iter().enumerate() {
+        for target in block.end.targets() {
+            if let Some(from) = comes_from.get_mut(target.0) {
+                from.push(at);
+            }
+        }
+    }
+    let mut known: Vec<Option<Vec<Narrowed>>> = vec![None; ir.blocks.len()];
+    for at in 0..ir.blocks.len() {
+        // Follows the blocks with one way in back to one whose facts are settled.
+        let mut chain = vec![at];
+        while let Some(&[from]) = chain.last().and_then(|last| comes_from.get(*last)).map(Vec::as_slice) {
+            if chain.contains(&from) || known.get(from).is_some_and(Option::is_some) {
+                chain.push(from);
+                break;
+            }
+            chain.push(from);
+        }
+        let mut facts = Vec::new();
+        for pair in chain.iter().rev().collect::<Vec<_>>().windows(2) {
+            let [from, to] = pair else { continue };
+            if let Some(Some(settled)) = known.get(**from) {
+                facts.clone_from(settled);
+            }
+            let fact = ir.blocks.get(**from).and_then(|block| match &block.end {
+                Terminator::Branch { cond, then, otherwise } if then.0 == **to && otherwise.0 != **to => {
+                    branch_fact(block, cond, true)
+                }
+                Terminator::Branch { cond, then, otherwise } if otherwise.0 == **to && then.0 != **to => {
+                    branch_fact(block, cond, false)
+                }
+                _ => None,
+            });
+            facts.extend(fact);
+            if let Some(slot) = known.get_mut(**to) {
+                *slot = Some(facts.clone());
+            }
+        }
+    }
+    known.into_iter().map(Option::unwrap_or_default).collect()
 }
 
 /// How native code holds a number or bool of this type.
@@ -207,6 +299,8 @@ impl Lowerer<'_, '_> {
             params: ir.params,
             ranges: HashMap::new(),
             counts: ir.counts.iter().map(|count| (count.count.0, *count)).collect(),
+            narrowed: narrowings(ir),
+            block: 0,
         };
         self.blocks_from_ir(ir, &mut vars, None, span)?;
         self.shared.from_ir.push(self.function.key.clone());
@@ -226,8 +320,9 @@ impl Lowerer<'_, '_> {
         let block_of = |id: BlockId| blocks.get(id.0).copied();
         let first = block_of(BlockId(0)).ok_or_else(|| internal("a function has no blocks", span))?;
         self.b.ins().jump(first, &[]);
-        for (block, written) in blocks.iter().zip(&ir.blocks) {
+        for (at, (block, written)) in blocks.iter().zip(&ir.blocks).enumerate() {
             self.b.switch_to_block(*block);
+            vars.block = at;
             for inst in &written.insts {
                 self.inst_from_ir(inst, vars)?;
             }
@@ -299,6 +394,8 @@ impl Lowerer<'_, '_> {
             params: ir.params,
             ranges,
             counts: ir.counts.iter().map(|count| (count.count.0, *count)).collect(),
+            narrowed: narrowings(ir),
+            block: 0,
         };
         let held = plain(&ir.returns).map(|ty| self.b.declare_var(super::abi(ty).unwrap_or(types::I64)));
         let after = self.b.create_block();

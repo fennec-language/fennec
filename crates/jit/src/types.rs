@@ -181,6 +181,38 @@ pub(crate) struct Program<'m> {
     pub(crate) constants: HashMap<String, Expr>,
 }
 
+/// The standard library modules a program imports, by the name it uses them under.
+fn std_modules(module: &Module) -> HashSet<String> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Import(import) => fennec_syntax::std_import(import).ok(),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|imported| match imported {
+            Imported::Module { alias, .. } => Some(alias),
+            Imported::Name { .. } => None,
+        })
+        .collect()
+}
+
+/// The constants native code can write out where they're used, by name.
+fn literal_constants(prelude: &[Module], module: &Module) -> HashMap<String, Expr> {
+    prelude
+        .iter()
+        .chain(std::iter::once(module))
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            Item::Const { name, ty: None, value, .. } if is_literal(value) => {
+                Some((name.clone(), value.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Whether a constant's value is a literal, or another constant, so reading it can't fail.
 fn is_literal(value: &Expr) -> bool {
     match &value.kind {
@@ -294,30 +326,7 @@ impl<'m> Program<'m> {
         if tests.is_empty() && !functions.iter().any(|function| function.def.name == "main") {
             return Err(unsupported("this `main`", main_span));
         }
-        let modules = module
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Import(import) => fennec_syntax::std_import(import).ok(),
-                _ => None,
-            })
-            .flatten()
-            .filter_map(|imported| match imported {
-                Imported::Module { alias, .. } => Some(alias),
-                Imported::Name { .. } => None,
-            })
-            .collect();
-        let constants = prelude
-            .iter()
-            .chain(std::iter::once(module))
-            .flat_map(|module| &module.items)
-            .filter_map(|item| match item {
-                Item::Const { name, ty: None, value, .. } if is_literal(value) => {
-                    Some((name.clone(), value.clone()))
-                }
-                _ => None,
-            })
-            .collect();
+        let (modules, constants) = (std_modules(module), literal_constants(prelude, module));
         Ok(Program { functions, layouts, excluded, main_span, modules, constants })
     }
 }

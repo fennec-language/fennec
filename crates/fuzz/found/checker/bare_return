@@ -1,0 +1,4 @@
+def o(values:list[float])->float:
+    mut m=0.0
+    for value in values:m=value
+    return

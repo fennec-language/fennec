@@ -1,0 +1,84 @@
+name: Fuzzing
+
+# Every day, each target gets a new seed for a few minutes. Anything found is cut down, kept as
+# an artifact and filed as an issue. Once it's fixed, its input goes in crates/fuzz/found/, which
+# every test run replays. No pull request waits on this: a seed that finds something isn't the
+# fault of whichever change happens to be running.
+on:
+  schedule:
+    - cron: "43 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Optimized for speed, keeping the checks that catch a mistake in the arithmetic.
+          - name: checked
+            toolchain: ""
+            flags: -C overflow-checks=on -C debug-assertions=on
+            target: ""
+          # AddressSanitizer needs a nightly compiler, and the standard library built for it.
+          - name: AddressSanitizer
+            toolchain: nightly
+            flags: -Zsanitizer=address -C overflow-checks=on -C debug-assertions=on
+            target: x86_64-unknown-linux-gnu
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the nightly compiler
+        if: matrix.toolchain == 'nightly'
+        run: |
+          rustup toolchain install nightly --profile minimal --component rust-src
+          echo "RUSTUP_TOOLCHAIN=nightly" >> "$GITHUB_ENV"
+      - name: Build the fuzzer
+        env:
+          RUSTFLAGS: ${{ matrix.flags }}
+          BUILD_FOR: ${{ matrix.target }}
+        run: |
+          if [ -n "$BUILD_FOR" ]; then
+            cargo build --release --locked -p fennec-fuzz -Zbuild-std --target "$BUILD_FOR"
+            cp "target/$BUILD_FOR/release/fennec-fuzz" fennec-fuzz
+          else
+            cargo build --release --locked -p fennec-fuzz
+            cp target/release/fennec-fuzz fennec-fuzz
+          fi
+      - name: Fuzz every target
+        id: fuzz
+        run: ./fennec-fuzz run --seed "$GITHUB_RUN_ID" --seconds 240 --found found | tee fuzz.txt
+      - name: Keep what was found
+        if: failure() && steps.fuzz.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-found-${{ matrix.name }}
+          path: found
+      - name: File an issue
+        if: failure() && steps.fuzz.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOW: ${{ matrix.name }}
+        run: |
+          {
+            echo "The daily fuzzing run ($HOW) found something: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo '```'
+            grep -E 'failures|kept in' fuzz.txt
+            echo '```'
+            echo
+            echo "The cut-down inputs are in the run's artifact. Each one runs with \`fennec-fuzz one <target> <file>\`. Once it's fixed, add it to \`crates/fuzz/found/<target>/\`."
+          } > issue.md
+          gh issue create --title "Fuzzing found a failure ($HOW)" --body-file issue.md --label "area: tooling" --repo "$GITHUB_REPOSITORY"

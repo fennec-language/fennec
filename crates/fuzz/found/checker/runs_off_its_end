@@ -1,0 +1,8 @@
+error TooBig:
+ limit:int
+def word(n:int)->str:
+    if n>2:fail TooBig(limit=2)
+    ""
+def o(n:int)->list[str]:
+    mut all=[]
+    for i in range(n):all.append(word(i)?)

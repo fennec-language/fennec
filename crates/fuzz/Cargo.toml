@@ -1,0 +1,22 @@
+[package]
+name = "fennec-fuzz"
+description = "Fuzzing Fennec's front end, standard library parsers and JIT"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+fennec-blake3.workspace = true
+fennec-build.workspace = true
+fennec-check.workspace = true
+fennec-fmt.workspace = true
+fennec-interp.workspace = true
+fennec-ir.workspace = true
+fennec-re.workspace = true
+fennec-syntax.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+def total(count: int) -> int:
+    mut sum_so_far = 0
+    for at in range(count):
+        sum_so_far += at
+    sum_so_far
+
+test "a total adds everything":
+    assert total(4) == 6
+
+bench "adding up a thousand numbers":
+    assert total(1000) == 499500
+
+def main(stdout: Stdout):
+    stdout.print(total(10))

@@ -13,7 +13,7 @@ mod tests_native;
 mod types;
 
 pub use lower::notes::Note;
-pub use tests_native::{NativeTests, run_tests};
+pub use tests_native::{BenchRun, NativeTests, run_bench, run_tests};
 
 use std::io::Write;
 

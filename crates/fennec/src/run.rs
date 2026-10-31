@@ -105,19 +105,19 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures)
 }
 
 /// The cache, unless `FENNEC_NO_CACHE` is set.
-fn cache() -> Option<fennec_build::Cache> {
+pub(crate) fn cache() -> Option<fennec_build::Cache> {
     fennec_build::fennec_home()
         .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
         .map(|home| fennec_build::Cache::new(&home))
 }
 
 /// A program's name in the cache: a hash of its absolute path.
-fn passed_name(path: &str) -> String {
+pub(crate) fn passed_name(path: &str) -> String {
     format!("{}.bin", fennec_blake3::hash(absolute(path).as_bytes()).to_hex())
 }
 
 /// A program's absolute path, which is what names it in the cache.
-fn absolute(path: &str) -> String {
+pub(crate) fn absolute(path: &str) -> String {
     std::fs::canonicalize(path).map_or_else(|_| path.to_owned(), |path| path.display().to_string())
 }
 

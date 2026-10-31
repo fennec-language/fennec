@@ -533,6 +533,73 @@ fn run_outside_a_kit_says_how_to_start_one() {
     assert!(stderr.contains("fennec new"), "{stderr}");
 }
 
+/// `fennec bench` on a program, with the cache in `home`, as on a person's machine.
+fn bench_in(home: &Path, program: &Path) -> std::io::Result<Output> {
+    Command::new(env!("CARGO_BIN_EXE_fennec"))
+        .arg("bench")
+        .arg(program)
+        .env("FENNEC_HOME", home)
+        .env_remove("FENNEC_NO_CACHE")
+        .output()
+}
+
+const BENCHED: &str = "def double(x: int) -> int:\n    x * 2\n\n\
+    bench \"doubling\":\n    assert double(21) == 42\n\n\
+    test \"a test\":\n    assert double(1) == 2\n\n\
+    def main(stdout: Stdout):\n    stdout.print(double(2))\n";
+
+#[test]
+fn bench_runs_blocks_natively_and_compares_with_the_last_run() {
+    let dir = scratch("bench").unwrap();
+    let (home, program) = (dir.join("home"), dir.join("game.fen"));
+    std::fs::write(&program, BENCHED).unwrap();
+    let first = bench_in(&home, &program).unwrap();
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    let printed = text(&first.stdout);
+    assert!(printed.starts_with("  doubling: ") && printed.contains(" ms"), "{printed}");
+    assert!(!printed.contains("last run"), "{printed}");
+    assert!(!printed.contains("a test"), "{printed}");
+
+    let second = text(&bench_in(&home, &program).unwrap().stdout);
+    assert!(second.contains("from the last run)"), "{second}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_bench_only_runs_for_fennec_bench() {
+    let source = BENCHED.replace("double(21) == 42", "double(21) == 43");
+    let tested = fennec_on("test", "failing_bench", &source).unwrap();
+    assert!(tested.status.success(), "{}", text(&tested.stderr));
+    assert_eq!(text(&tested.stdout), "1 passed, 0 failed\n");
+    assert_eq!(text(&fennec_on("run", "failing_bench", &source).unwrap().stdout), "4\n");
+
+    let benched = fennec_on("bench", "failing_bench", &source).unwrap();
+    assert_eq!(benched.status.code(), Some(1));
+    assert!(text(&benched.stderr).contains("the left side is 42"), "{}", text(&benched.stderr));
+}
+
+#[test]
+fn a_bench_is_checked_like_a_test() {
+    let source = BENCHED.replace("double(21) == 42", "double(\"no\") == 42");
+    let tested = fennec_on("test", "wrong_bench", &source).unwrap();
+    assert_eq!(tested.status.code(), Some(1));
+    assert!(text(&tested.stderr).starts_with("error: "), "{}", text(&tested.stderr));
+}
+
+#[test]
+fn a_bench_takes_no_inputs() {
+    let source = "bench \"b\" for x: int:\n    assert x == x\n";
+    assert_eq!(fennec_on("test", "bench_inputs", source).unwrap().status.code(), Some(1));
+}
+
+#[test]
+fn bench_without_blocks_says_so() {
+    let output =
+        fennec_on("bench", "no_benches", "def main(stdout: Stdout):\n    stdout.print(1)\n").unwrap();
+    assert!(output.status.success());
+    assert!(text(&output.stdout).starts_with("no benches in "), "{}", text(&output.stdout));
+}
+
 /// Every command the guidance tells an agent to run has to exist.
 #[test]
 fn the_guidance_names_only_commands_there_are() {

@@ -142,7 +142,8 @@ struct Tree:
                     label += ": " + ", ".join(bound_names(imported))
                 self.spanned(label, imported.span)
             case .Test(test):
-                self.open(f"test {quoted(test.name)}", test.span)
+                word = "bench" if test.bench else "test"
+                self.open(f"{word} {quoted(test.name)}", test.span)
                 for input in test.inputs:
                     self.write_param(input)
                 self.write_stmts(test.body)

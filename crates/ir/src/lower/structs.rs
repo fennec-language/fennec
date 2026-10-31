@@ -4,7 +4,7 @@ use fennec_check::{Checked, Type};
 use fennec_syntax::{Arg, Expr, ExprKind, Item, Module, Span};
 
 use super::{Lowered, Lowering};
-use crate::{InstKind, Operand, StructDef};
+use crate::{InstKind, Operand, StructDef, Terminator, type_in};
 
 /// The module's structs the IR can hold: not generic ones, or ones with `where` rules, which
 /// are checked whenever a value is made.
@@ -107,5 +107,41 @@ impl Lowering<'_> {
         let dest = self.temporary(declared);
         self.emit(InstKind::GetField { dest, object, field: field.to_owned() }, expr.span);
         self.narrowed(Operand::Local(dest), expr)
+    }
+
+    /// `object?.field`: the field if the object isn't `None`, and `None` if it is.
+    pub(super) fn optional_field(&mut self, expr: &Expr, object: &Expr, field: &str) -> Lowered<Operand> {
+        let value = self.expr(object)?;
+        let Some(Type::Optional(inner)) = type_in(&self.locals, &value) else {
+            return Err(format!("it uses `?.{field}` on something other than an optional"));
+        };
+        let Type::Named(owner) = inner.as_ref() else {
+            return Err(format!("it reads `?.{field}` of something else"));
+        };
+        let found = self.struct_fields(owner)?.iter().find(|(name, _)| name == field);
+        let declared =
+            found.map(|(_, ty)| ty.clone()).ok_or_else(|| format!("`{owner}` has no `{field}`"))?;
+        let ty = self.ty(expr)?;
+        let span = expr.span;
+        let dest = self.temporary(ty.clone());
+        let missing = self.temporary(Type::Bool);
+        self.emit(InstKind::IsNone { dest: missing, value: value.clone() }, span);
+        let (absent, present, join) = (self.new_block(), self.new_block(), self.new_block());
+        let cond = Operand::Local(missing);
+        self.finish(Terminator::Branch { cond, then: absent, otherwise: present });
+        self.current = absent;
+        self.emit(InstKind::Copy { dest, value: Operand::None }, span);
+        self.finish(Terminator::Jump(join));
+        self.current = present;
+        let inside = self.temporary(*inner);
+        self.emit(InstKind::GetSome { dest: inside, value }, span);
+        let read = self.temporary(declared);
+        let object = Operand::Local(inside);
+        self.emit(InstKind::GetField { dest: read, object, field: field.to_owned() }, span);
+        let read = self.coerce(Operand::Local(read), &ty, span)?;
+        self.emit(InstKind::Copy { dest, value: read }, span);
+        self.finish(Terminator::Jump(join));
+        self.current = join;
+        Ok(Operand::Local(dest))
     }
 }

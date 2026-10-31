@@ -1365,6 +1365,136 @@ def h(data: bytes, at: int) -> int:
 }
 
 #[test]
+fn a_generator_fills_a_list_as_it_runs() {
+    let source = "def countdown(n: int) -> Iterator[int]:
+    mut at = n
+    while at > 0:
+        yield at
+        if at == 5:
+            return
+        at -= 1
+
+def f() -> int:
+    mut total = 0
+    for at in countdown(3):
+        total += at
+    total
+";
+    assert_eq!(
+        printed(source, "countdown").unwrap(),
+        "fn countdown(_0) -> list[int]
+  local _0 n: int
+  local _1: list[int]
+  local _2 at: int
+  local _3: bool
+  local _4: bool
+  bb0:
+    _1 = []
+    _2 = _0
+    jump bb1
+  bb1:
+    _3 = _2 > 0
+    branch _3 bb2 bb3
+  bb2:
+    builtin list.append(mut _1, _2)
+    _4 = _2 == 5
+    branch _4 bb5 bb6
+  bb3:
+    return _1
+  bb4:
+    _2 = _2 - 1
+    jump bb1
+  bb5:
+    return _1
+  bb6:
+    jump bb4
+"
+    );
+}
+
+#[test]
+fn a_loop_over_a_type_goes_through_what_its_iter_gives() {
+    let source = "struct Bag:
+    all: list[int]
+
+    def iter(self) -> Iterator[int]:
+        for one in self.all:
+            yield one
+
+def f(bag: Bag) -> list[int]:
+    [one for one in bag]
+";
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("= call Bag.iter(_0)"), "{text}");
+}
+
+#[test]
+fn a_tuple_pattern_tests_each_part() {
+    let source = "def f(pair: (int, str)) -> int:
+    match pair:
+        case (0, _):
+            1
+        case (x, _):
+            x
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> int
+  local _0 pair: (int, str)
+  local _1: int
+  local _2: bool
+  local _3: int
+  local _4 x: int
+  bb0:
+    _1 = _0.0
+    _2 = _1 == 0
+    branch _2 bb2 bb1
+  bb1:
+    _3 = _0.0
+    _4 = _3
+    return _4
+  bb2:
+    return 1
+"
+    );
+}
+
+#[test]
+fn a_question_dot_gives_none_for_none() {
+    let source = "struct P:
+    level: int
+
+def f(p: P?) -> int?:
+    p?.level
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> int?
+  local _0 p: P?
+  local _1: int?
+  local _2: bool
+  local _3: P
+  local _4: int
+  local _5: int?
+  bb0:
+    _2 = _0 is none
+    branch _2 bb1 bb2
+  bb1:
+    _1 = none
+    jump bb3
+  bb2:
+    _3 = _0 as some
+    _4 = _3.level
+    _5 = some _4
+    _1 = _5
+    jump bb3
+  bb3:
+    return _1
+"
+    );
+}
+
+#[test]
 fn every_example_lowers_to_valid_ir_or_says_why() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut lowered_functions = Vec::new();
@@ -1388,7 +1518,7 @@ fn every_example_lowers_to_valid_ir_or_says_why() {
     }
     // How far lowering has got. This only goes up, until every function lowers.
     println!("{} functions lowered", lowered_functions.len());
-    assert!(lowered_functions.len() >= 235, "only {} functions lowered", lowered_functions.len());
+    assert!(lowered_functions.len() >= 245, "only {} functions lowered", lowered_functions.len());
     for expected in
         ["numbers.fen: fib", "numbers.fen: collatz_steps", "numbers.fen: is_prime", "numbers.fen: lerp"]
     {

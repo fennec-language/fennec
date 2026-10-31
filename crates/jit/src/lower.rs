@@ -598,13 +598,13 @@ impl Lowerer<'_, '_> {
                 results.extend(local.var.map(|var| self.b.use_var(var)));
             }
         }
-        results.push(self.b.ins().iconst(types::I8, 0));
+        results.push(self.b.ins().iconst(types::I64, 0));
         self.b.ins().return_(&results);
         self.b.switch_to_block(self.bail);
         let returns: Vec<_> = self.b.func.signature.returns.iter().map(|param| param.value_type).collect();
         let mut zeros: Vec<Value> = returns.into_iter().map(|ty| self.zero_of(ty)).collect();
         if let Some(failed) = zeros.last_mut() {
-            *failed = self.b.ins().iconst(types::I8, 1);
+            *failed = self.b.ins().iconst(types::I64, 1);
         }
         self.b.ins().return_(&zeros);
         self.b.seal_all_blocks();

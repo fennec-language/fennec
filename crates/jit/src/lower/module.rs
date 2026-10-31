@@ -168,7 +168,7 @@ pub(super) fn signature(module: &dyn Module, function: &Function<'_>) -> craneli
         }
     }
     // Last, whether it failed: a register the caller tests, cheaper than loading the flag.
-    sig.returns.push(AbiParam::new(types::I8));
+    sig.returns.push(AbiParam::new(types::I64));
     sig
 }
 

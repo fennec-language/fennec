@@ -1,10 +1,10 @@
 //! Building structs, reading and changing their fields, and calling functions and methods.
 
 use fennec_check::{Checked, Type};
-use fennec_syntax::{Arg, BinOp, Expr, ExprKind, Item, Module, Span};
+use fennec_syntax::{Arg, Expr, ExprKind, Item, Module, Span};
 
 use super::{Lowered, Lowering};
-use crate::{InstKind, LocalId, Operand, StructDef, type_in};
+use crate::{InstKind, Operand, StructDef};
 
 /// The module's structs the IR can hold: not generic ones, or ones with `where` rules, which
 /// are checked whenever a value is made.
@@ -24,7 +24,7 @@ pub(super) fn definitions(module: &Module, checked: &Checked) -> Vec<StructDef> 
 }
 
 impl Lowering<'_> {
-    fn struct_fields(&self, type_name: &str) -> Lowered<&[(String, Type)]> {
+    pub(super) fn struct_fields(&self, type_name: &str) -> Lowered<&[(String, Type)]> {
         let signatures = &self.context.checked.signatures;
         let found = signatures.structure(type_name).or_else(|| signatures.error_type(type_name));
         found.map(|found| found.fields.as_slice()).ok_or_else(|| format!("`{type_name}` has no fields"))
@@ -107,56 +107,5 @@ impl Lowering<'_> {
         let dest = self.temporary(declared);
         self.emit(InstKind::GetField { dest, object, field: field.to_owned() }, expr.span);
         self.narrowed(Operand::Local(dest), expr)
-    }
-
-    /// `object.path.to.field = value`, and `+=` and so on, on a struct held in a local.
-    pub(super) fn assign_field(
-        &mut self,
-        target: &Expr,
-        op: Option<BinOp>,
-        value: &Expr,
-        span: Span,
-    ) -> Lowered<()> {
-        let (object, path) = self.field_place(target)?;
-        let mut ty = type_in(&self.locals, &Operand::Local(object));
-        let mut read = Operand::Local(object);
-        let mut value = self.expr(value)?;
-        for field in &path {
-            let Some(Type::Named(owner)) = &ty else {
-                return Err(format!("it changes `.{field}` of something else"));
-            };
-            let found = self.struct_fields(owner)?.iter().find(|(name, _)| name == field);
-            ty = found.map(|(_, ty)| ty.clone());
-            let Some(held) = ty.clone().filter(|held| op.is_some() && self.context.holds(held)) else {
-                continue;
-            };
-            let dest = self.temporary(held);
-            self.emit(InstKind::GetField { dest, object: read, field: field.clone() }, span);
-            read = Operand::Local(dest);
-        }
-        if let Some(op) = op {
-            let held = ty.clone().ok_or("it changes a field that doesn't exist")?;
-            value = self.operate(op, (read, value), &held, span)?;
-        }
-        let wanted = ty.ok_or("it changes a field that doesn't exist")?;
-        let value = self.coerce(value, &wanted, span)?;
-        self.emit(InstKind::SetField { object, path, value }, span);
-        Ok(())
-    }
-
-    /// The local and path of fields `a.b.c` names.
-    pub(super) fn field_place(&self, target: &Expr) -> Lowered<(LocalId, Vec<String>)> {
-        let other = "it assigns to something other than a name or a field";
-        match &target.kind {
-            ExprKind::Name(name) => {
-                self.lookup(name).map(|local| (local, Vec::new())).ok_or_else(|| other.to_owned())
-            }
-            ExprKind::Attr { object, name, optional: false } => {
-                let (local, mut path) = self.field_place(object)?;
-                path.push(name.clone());
-                Ok((local, path))
-            }
-            _ => Err(other.to_owned()),
-        }
     }
 }

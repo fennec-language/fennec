@@ -9,6 +9,7 @@ mod failure;
 mod lists;
 mod matching;
 mod operators;
+mod places;
 mod structs;
 
 use std::collections::{HashMap, HashSet};
@@ -151,6 +152,8 @@ struct Lowering<'a> {
     /// The names in each block being lowered, innermost last.
     scopes: Vec<HashMap<String, LocalId>>,
     loops: Vec<Loop>,
+    /// The `for mut` loops being lowered, innermost last.
+    leaving: Vec<places::Leaving>,
 }
 
 impl<'a> Lowering<'a> {
@@ -164,6 +167,7 @@ impl<'a> Lowering<'a> {
             current: BlockId(0),
             scopes: vec![HashMap::new()],
             loops: Vec::new(),
+            leaving: Vec::new(),
         }
     }
 
@@ -188,7 +192,7 @@ impl<'a> Lowering<'a> {
         }
         let tail = if lowering.returns == Type::Unit { Tail::Drop } else { Tail::Return };
         lowering.stmts(&def.body, tail)?;
-        lowering.end_function(def.span);
+        lowering.end_function(def.span)?;
         Ok(Function {
             name: key.to_owned(),
             params: signature.params.len(),
@@ -286,7 +290,7 @@ impl<'a> Lowering<'a> {
             StmtKind::If { branches, otherwise } => self.if_stmt(branches, otherwise.as_deref(), tail)?,
             StmtKind::While { cond, body } => self.while_stmt(cond, body)?,
             StmtKind::Return(Some(value)) => self.return_value(value)?,
-            StmtKind::Return(None) => self.return_nothing(stmt.span),
+            StmtKind::Return(None) => self.return_nothing(stmt.span)?,
             StmtKind::Break | StmtKind::Continue => {
                 let target = self.loops.last().ok_or("`break` outside a loop")?;
                 let target = if matches!(stmt.kind, StmtKind::Break) { target.exit } else { target.next };
@@ -325,14 +329,11 @@ impl<'a> Lowering<'a> {
     }
 
     fn assign(&mut self, target: &Expr, op: Option<BinOp>, value: &Expr, span: Span) -> Lowered<()> {
-        if let ExprKind::Index { object, index } = &target.kind {
-            return self.assign_index((object, index), op, value, span);
-        }
         if let ExprKind::Tuple(targets) = &target.kind {
             return self.assign_unpacking(targets, value, span);
         }
         let ExprKind::Name(name) = &target.kind else {
-            return self.assign_field(target, op, value, span);
+            return self.assign_place(target, op, value, span);
         };
         let value = self.expr(value)?;
         let dest = self.named_target(target, name)?;

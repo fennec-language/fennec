@@ -190,38 +190,37 @@ impl Lowering<'_> {
     pub(super) fn return_value(&mut self, expr: &Expr) -> Lowered<()> {
         if matches!(self.body.expr(expr.span), Some(Type::Unit)) {
             self.effect(expr)?;
-            self.return_nothing(expr.span);
-            return Ok(());
+            return self.return_nothing(expr.span);
         }
         let value = self.expr(expr)?;
         let returns = self.returns.clone();
         let value = self.coerce(value, &returns, expr.span)?;
-        self.finish(Terminator::Return(Some(value)));
-        Ok(())
+        self.leave(Some(value), expr.span)
     }
 
     /// Leaves a function that gives back nothing, which is success if it can fail.
-    pub(super) fn return_nothing(&mut self, span: Span) {
+    pub(super) fn return_nothing(&mut self, span: Span) -> Lowered<()> {
         if matches!(self.returns, Type::Result(..)) {
             let dest = self.temporary(self.returns.clone());
             self.emit(InstKind::MakeOk { dest, value: None }, span);
-            self.finish(Terminator::Return(Some(Operand::Local(dest))));
+            self.leave(Some(Operand::Local(dest)), span)
         } else {
-            self.finish(Terminator::Return(None));
+            self.leave(None, span)
         }
     }
 
     /// Ends a function's last block. A function with a value to give back has already
     /// returned, or the checker would object.
-    pub(super) fn end_function(&mut self, span: Span) {
+    pub(super) fn end_function(&mut self, span: Span) -> Lowered<()> {
         if !self.is_open() {
-            return;
+            return Ok(());
         }
         match &self.returns {
             Type::Unit => self.finish(Terminator::Return(None)),
-            Type::Result(ok, _) if **ok == Type::Unit => self.return_nothing(span),
+            Type::Result(ok, _) if **ok == Type::Unit => self.return_nothing(span)?,
             _ => self.finish(Terminator::Unreachable),
         }
+        Ok(())
     }
 
     /// Carries on in a new block when `cond` is false, and goes to `fail` when it's true.

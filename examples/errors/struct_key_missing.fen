@@ -1,0 +1,9 @@
+## Reading a struct key a dict doesn't have fails, naming it.
+
+struct Cell:
+    x: int
+    y: int
+
+def main(stdout: Stdout):
+    seen = {Cell(x=1, y=2): 3}
+    stdout.print(seen[Cell(x=9, y=9)])

@@ -40,6 +40,10 @@ def name_of(shape: Shape) -> str:
             x, y = at
             f"{x},{y}"
 
+def maybe(holder: Holder, given: bool) -> Holder?:
+    if given: return holder
+    None
+
 def fresh() -> Holder:
     Holder(count=1, maybe=None, pair=(1, "one"), grid=[[1, 2], [3]], words=["a", None])
 
@@ -76,3 +80,16 @@ def main(stdout: Stdout):
     holders[0].pair = (5, "five")
     holders[1].bump()
     stdout.print(holders[0].pair, holders[1].pair, holders[1].total)
+
+    # A value handed over as an object stays as it was, whatever native code does next.
+    mut original = fresh()
+    original.grid = [[1]]
+    held = maybe(original, True)
+    kept = (original, 5)
+    original.count = 77
+    original.grid.append([2])
+    original.words.append("later")
+    stdout.print(held?.count, held?.grid, original.count, original.grid, kept)
+    stdout.print(held is None, held is not None, held == original, held?.pair)
+    missing = maybe(original, False)
+    stdout.print(missing is None, missing?.count)

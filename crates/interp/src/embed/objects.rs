@@ -38,6 +38,14 @@ pub fn binary_code(op: BinOp) -> Option<i64> {
 /// `a op b`, using the type's own definition (like `def +`) when it has one.
 pub extern "C" fn binary(op: i64, a: i64, b: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
+        // A native value is never None, so `is` needn't look inside one.
+        let tested = (Some(op) == binary_code(BinOp::Is), Some(op) == binary_code(BinOp::IsNot));
+        if tested.0 || tested.1 {
+            let (left, right) = (state.raw(a), state.raw(b));
+            if let (Value::Lent(_), Value::None) | (Value::None, Value::Lent(_)) = (&left, &right) {
+                return Ok(state.push(Value::Bool(tested.1)));
+            }
+        }
         let op = usize::try_from(op).ok().and_then(|at| BINARY.get(at)).copied();
         let op = op.ok_or_else(|| Diagnostic::new("the JIT passed an unknown operator", span(start, end)))?;
         let (a, b) = (state.take(a), state.take(b));
@@ -58,6 +66,10 @@ pub extern "C" fn unary(negate: i64, value: i64, start: i64, end: i64) -> i64 {
 /// `object.name`, or `object?.name` when `optional`.
 pub extern "C" fn field(object: i64, name: i64, optional: i8, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
+        let raw = state.raw(object);
+        if let Some(field) = super::heap::lent_field(state, &raw, name) {
+            return Ok(state.push(field));
+        }
         let object = state.take(object);
         let name = State::name_ref(&state.tables, name);
         let value = state.interp.attr(object, name, optional != 0, span(start, end))?;
@@ -77,9 +89,17 @@ pub extern "C" fn index(object: i64, at: i64, start: i64, end: i64) -> i64 {
 /// The name of an object's type, by its number in the name table, or -1 when it isn't an
 /// instance of a struct, enum or error, or its type's name isn't in the table.
 pub extern "C" fn type_of(value: i64) -> i64 {
-    with(|state| match state.temp(value) {
-        Value::Instance(instance) => state.name_ids.get(instance.type_name.as_ref()).copied().unwrap_or(-1),
-        _ => -1,
+    with(|state| {
+        let raw = state.raw(value);
+        if let Some(name) = super::heap::lent_type(state, &raw) {
+            return state.name_ids.get(name.as_ref()).copied().unwrap_or(-1);
+        }
+        match state.expanded(raw) {
+            Value::Instance(instance) => {
+                state.name_ids.get(instance.type_name.as_ref()).copied().unwrap_or(-1)
+            }
+            _ => -1,
+        }
     })
 }
 

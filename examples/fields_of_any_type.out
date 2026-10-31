@@ -13,3 +13,6 @@ anon:0 Shape.Named(name=None, parts=[])
 n:1 Shape.Named(name="n", parts=[Shape.Dot])
 1,2 Shape.Pair(at=(1, 2))
 (5, "five") (1, "one") 2
+1 [[1]] 77 [[1], [2]] (Holder(count=1, maybe=None, pair=(1, "one"), grid=[[1]], words=["a", None], total=0), 5)
+False True False (1, "one")
+True None

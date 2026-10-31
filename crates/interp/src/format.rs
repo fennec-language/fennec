@@ -14,7 +14,7 @@ pub(crate) fn display(value: &Value) -> String {
 /// The text a value shows inside a collection, or when the REPL echoes it: strings are quoted.
 pub(crate) fn repr(value: &Value) -> String {
     match value {
-        Value::Unit => String::new(),
+        Value::Unit | Value::Lent(_) => String::new(),
         Value::None => "None".to_owned(),
         Value::Bool(true) => "True".to_owned(),
         Value::Bool(false) => "False".to_owned(),

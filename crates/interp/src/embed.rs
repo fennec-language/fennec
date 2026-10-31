@@ -201,7 +201,9 @@ pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
     let state = STATE.take();
     FAILED.set(0);
     match state {
-        Some(state) => {
+        Some(mut state) => {
+            state.temps.clear();
+            state.let_go();
             let leftovers =
                 Leftovers { temps: state.temps.len(), frames: state.callers.len(), boxes: state.heap.live() };
             (state.output.0.take(), state.failure, leftovers)
@@ -251,15 +253,51 @@ impl State {
         handle(self.temps.len() - 1)
     }
 
-    /// A copy of a temporary, unpacked for the interpreter.
+    /// A copy of a temporary, as the interpreter holds values.
     fn temp(&self, at: i64) -> Value {
-        usize::try_from(at).ok().and_then(|at| self.temps.get(at)).cloned().unwrap_or(Value::Unit).unpacked()
+        self.expanded(self.raw(at)).unpacked()
+    }
+
+    /// A copy of a temporary as it is, for what doesn't need to look inside it.
+    fn raw(&self, at: i64) -> Value {
+        usize::try_from(at).ok().and_then(|at| self.temps.get(at)).cloned().unwrap_or(Value::Unit)
+    }
+
+    /// A value with any native value at its top turned into what the interpreter holds.
+    fn expanded(&self, value: Value) -> Value {
+        match value {
+            Value::Lent(lent) => heap::read_block(self, lent.address),
+            Value::Ok(inner) if matches!(*inner, Value::Lent(_)) => {
+                Value::Ok(Rc::new(self.expanded(inner.as_ref().clone()).unpacked()))
+            }
+            other => other,
+        }
+    }
+
+    /// Lets go of the blocks whose last lent copy has been dropped.
+    fn let_go(&mut self) {
+        loop {
+            let blocks = crate::value::blocks_let_go();
+            if blocks.is_empty() {
+                return;
+            }
+            for block in blocks {
+                heap::release(self, block);
+            }
+        }
     }
 
     /// Moves a temporary out, leaving nothing behind, so changing it can't copy it. It's
     /// unpacked for the interpreter.
     fn take(&mut self, at: i64) -> Value {
-        self.take_raw(at).unpacked()
+        let value = self.take_raw(at);
+        self.expanded(value).unpacked()
+    }
+
+    /// Moves a temporary out for a name to hold, which may be packed but not lent.
+    fn take_held(&mut self, at: i64) -> Value {
+        let value = self.take_raw(at);
+        self.expanded(value)
     }
 
     /// Moves a temporary out as it is, packed or not, for a name to hold.
@@ -335,7 +373,7 @@ pub mod names {
     /// Creates a name holding a temporary's value.
     pub extern "C" fn declare(name: i64, value: i64, is_mut: i8) {
         with(|state| {
-            let value = state.take_raw(value);
+            let value = state.take_held(value);
             let name = state.shared_name(name);
             state.interp.frame.declare_shared(name, value, is_mut != 0);
         });
@@ -344,7 +382,7 @@ pub mod names {
     /// Changes what a name holds.
     pub extern "C" fn assign(name: i64, value: i64) {
         with(|state| {
-            let value = state.take_raw(value);
+            let value = state.take_held(value);
             let name = state.shared_name(name);
             if let Some(binding) = state.interp.frame.get_mut(&name) {
                 binding.value = value;
@@ -412,14 +450,18 @@ pub mod temps {
     }
 
     pub extern "C" fn truncate(mark: i64) {
-        with(|state| state.temps.truncate(usize::try_from(mark).unwrap_or(0)));
+        with(|state| {
+            state.temps.truncate(usize::try_from(mark).unwrap_or(0));
+            state.let_go();
+        });
     }
 
     /// Drops a returning function's temporaries except the value it returns.
     pub extern "C" fn keep(mark: i64, value: i64) -> i64 {
         with(|state| {
-            let value = if value >= mark { state.take_raw(value) } else { state.temp(value) };
+            let value = if value >= mark { state.take_raw(value) } else { state.raw(value) };
             state.temps.truncate(usize::try_from(mark).unwrap_or(0));
+            state.let_go();
             state.push(value)
         })
     }
@@ -506,11 +548,11 @@ pub mod temps {
 
     /// Whether a value is a failed result.
     pub extern "C" fn is_err(value: i64) -> i8 {
-        with(|state| i8::from(state.temp(value).is_failure()))
+        with(|state| i8::from(state.raw(value).is_failure()))
     }
 
     pub extern "C" fn is_none(value: i64) -> i8 {
-        with(|state| i8::from(matches!(state.temp(value), Value::None)))
+        with(|state| i8::from(matches!(state.raw(value), Value::None)))
     }
 
     /// The value inside a successful result, or the value itself when it isn't a result.
@@ -540,14 +582,14 @@ pub mod temps {
     /// A copy of a temporary. Copies share memory until one changes.
     pub extern "C" fn copy(value: i64) -> i64 {
         with(|state| {
-            let value = state.temp(value);
+            let value = state.raw(value);
             state.push(value)
         })
     }
 
     pub extern "C" fn unwrap(value: i64) -> i64 {
         with(|state| {
-            let inner = match state.temp(value) {
+            let inner = match state.raw(value) {
                 Value::Ok(inner) => inner.as_ref().clone(),
                 other => other,
             };
@@ -566,7 +608,7 @@ pub mod temps {
 
     /// Whether `?` passes a value up: a failed result, or None.
     pub extern "C" fn passes(value: i64) -> i8 {
-        with(|state| i8::from(matches!(state.temp(value), Value::Err(_) | Value::None)))
+        with(|state| i8::from(matches!(state.raw(value), Value::Err(_) | Value::None)))
     }
 
     /// `value? from wrapper`: the wrapper error, caused by the one passing up.
@@ -583,7 +625,7 @@ pub mod temps {
     /// A successful result holding a value, unless it already is a result.
     pub extern "C" fn ok(value: i64) -> i64 {
         with(|state| {
-            let wrapped = match state.take(value) {
+            let wrapped = match state.take_raw(value) {
                 result @ (Value::Ok(_) | Value::Err(_)) => result,
                 other => Value::Ok(std::rc::Rc::new(other)),
             };

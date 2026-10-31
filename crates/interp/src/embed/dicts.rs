@@ -333,7 +333,7 @@ pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
 }
 
 /// A dict's block as the interpreter holds a dict.
-pub(super) fn read(state: &mut State, block: &[u64]) -> Value {
+pub(super) fn read(state: &State, block: &[u64]) -> Value {
     let Some((key_word, value_word)) = kind(state, block) else { return Value::None };
     if value_word == Word::Nothing {
         return read_set(state, key_word, block);
@@ -346,12 +346,12 @@ pub(super) fn read(state: &mut State, block: &[u64]) -> Value {
 }
 
 /// A set's block as the interpreter holds a set.
-fn read_set(state: &mut State, key_word: Word, block: &[u64]) -> Value {
+fn read_set(state: &State, key_word: Word, block: &[u64]) -> Value {
     let items = entries(block).into_iter().map(|[_, key, _]| word_value(state, key_word, key)).collect();
     Value::Set(std::rc::Rc::new(items))
 }
 
-fn word_value(state: &mut State, word: Word, bits: u64) -> Value {
+fn word_value(state: &State, word: Word, bits: u64) -> Value {
     match word {
         Word::Int => Value::Int(i64::from_ne_bytes(bits.to_ne_bytes())),
         Word::Float => Value::Float(f64::from_bits(bits)),

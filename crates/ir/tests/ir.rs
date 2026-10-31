@@ -1346,6 +1346,9 @@ fn a_key_goes_last_and_names_the_call() {
     return _2
 "
     );
+}
+
+#[test]
 fn a_tuple_of_one_type_and_the_arguments_index_by_a_value() {
     let source = "def f(pair: (int, int), at: int) -> int:
     pair[at]

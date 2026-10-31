@@ -38,6 +38,9 @@ const BUILT_IN_OWNERS: [&str; 2] = ["str", "list"];
 
 /// A running Fennec program: its declarations, the current call's names, and its output.
 pub struct Interp<'out> {
+    /// Whether a function of the program has run here since this was last cleared. Native
+    /// tests know what they ran only if everything ran natively.
+    pub(crate) ran_program_code: bool,
     pub(crate) functions: HashMap<String, Rc<Callable>>,
     /// The constants at the top level of the program, by name.
     pub(crate) constants: HashMap<String, crate::constants::Constant>,
@@ -83,6 +86,7 @@ impl<'out> Interp<'out> {
     /// Like `new`, owning where the output goes.
     pub fn with_output(out: Box<dyn Write + 'out>) -> Result<Self, Diagnostic> {
         let mut interp = Interp {
+            ran_program_code: false,
             functions: HashMap::new(),
             constants: HashMap::new(),
             types: HashMap::new(),

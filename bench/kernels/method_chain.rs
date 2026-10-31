@@ -32,7 +32,7 @@ fn iterations(c: Complex, limit: i64) -> i64 {
 }
 
 fn main() {
-    let size = std::hint::black_box(200);
+    let size = std::hint::black_box(500);
     let mut total = 0;
     for y in 0..size {
         let ci = 2.0 * f64::from(y) / f64::from(size) - 1.0;

@@ -231,7 +231,8 @@ pub enum InstKind {
     },
     /// Something the engines provide, by name: a function like `sum`, or a method like
     /// `list.append` or `Stdout.print` with its object first. `changes` says it changes the
-    /// local its first argument names.
+    /// local its first argument names. A call with `key=` is named with `.key` on the end,
+    /// like `sorted.key`, and the key comes last.
     Builtin {
         dest: Option<LocalId>,
         name: String,
@@ -286,6 +287,18 @@ pub enum InstKind {
         dest: LocalId,
         value: Operand,
     },
+    /// A closure of a function, whose first parameters take the values captured here.
+    MakeClosure {
+        dest: LocalId,
+        function: String,
+        captures: Vec<Operand>,
+    },
+    /// Calls a closure. `dest` is `None` when nothing keeps the result.
+    CallClosure {
+        dest: Option<LocalId>,
+        closure: Operand,
+        args: Vec<Operand>,
+    },
     /// The value of a constant in [`Program::constants`].
     Constant {
         dest: LocalId,
@@ -332,6 +345,12 @@ pub enum Terminator {
         value: Operand,
         span: Span,
     },
+    /// Ends the program: an `assert` that failed, or a `where` rule that a value written
+    /// out breaks.
+    Stop {
+        message: String,
+        span: Span,
+    },
     /// The checker has shown control never gets here.
     Unreachable,
 }
@@ -361,7 +380,10 @@ impl Terminator {
         match self {
             Terminator::Jump(target) => vec![*target],
             Terminator::Branch { then, otherwise, .. } => vec![*then, *otherwise],
-            Terminator::Return(_) | Terminator::NoMatch { .. } | Terminator::Unreachable => Vec::new(),
+            Terminator::Return(_)
+            | Terminator::NoMatch { .. }
+            | Terminator::Stop { .. }
+            | Terminator::Unreachable => Vec::new(),
         }
     }
 }

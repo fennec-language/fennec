@@ -208,7 +208,7 @@ def simulate() -> (int, int):
 def main(stdout: Stdout):
     mut queued = 0
     mut holds = 0
-    for _ in range(5):
+    for _ in range(25):
         one, other = simulate()
         queued = one
         holds = other

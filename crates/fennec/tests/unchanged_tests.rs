@@ -79,7 +79,7 @@ fn a_failing_test_runs_every_time_and_a_break_is_never_hidden() {
 }
 
 #[test]
-fn ci_runs_every_test() {
+fn ci_reuses_what_passed_like_anywhere_else() {
     let dir = scratch("ci").unwrap();
     run_tests(&dir, &[]).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_fennec"))
@@ -90,7 +90,7 @@ fn ci_runs_every_test() {
         .env_remove("FENNEC_NO_CACHE")
         .output()
         .unwrap();
-    assert_eq!(stdout(&output), "2 passed, 0 failed\n");
+    assert_eq!(stdout(&output), "2 passed, 0 failed (0 run, 2 unchanged)\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -121,5 +121,72 @@ fn a_change_in_another_file_of_a_kit_reaches_tests_through_aliases() {
     std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x + x\n").unwrap();
     let edited = stdout(&run());
     assert_eq!(edited, "3 passed, 0 failed (2 run, 1 unchanged)\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A program whose test takes one branch of a function, written to `dir`.
+fn with_branches(dir: &Path, taken: &str, untaken: &str, interface: &str) -> std::io::Result<()> {
+    let source = format!(
+        "def taken() -> int:\n    {taken}\n\ndef untaken() -> int:\n    {untaken}\n\n\
+         def choose(x: int) -> int:\n    if x > 0:\n        return taken()\n    untaken()\n\n\
+         interface Sized:\n    def size(self) -> int\n\n\
+         struct Box:\n    n: int\n\n    def size(self) -> int:\n        {interface}\n\n\
+         def size_of[T: Sized](s: T) -> int:\n    s.size()\n\n\
+         test \"branch\":\n    assert choose(1) == 1\n\n\
+         test \"through an interface\":\n    assert size_of(Box(n=1)) == 1\n"
+    );
+    std::fs::write(dir.join("game.fen"), source)
+}
+
+#[test]
+fn only_what_a_test_ran_can_make_it_run_again() {
+    let dir = scratch("traced").unwrap();
+    with_branches(&dir, "1", "2", "self.n").unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &[]).unwrap()), "2 passed, 0 failed\n");
+
+    with_branches(&dir, "1", "3", "self.n").unwrap();
+    let branch = run_tests(&dir, &[]).unwrap();
+    assert_eq!(stdout(&branch), "2 passed, 0 failed (0 run, 2 unchanged)\n", "a branch it never takes");
+
+    with_branches(&dir, "1 + 0", "3", "self.n").unwrap();
+    let taken = run_tests(&dir, &[]).unwrap();
+    assert_eq!(stdout(&taken), "2 passed, 0 failed (1 run, 1 unchanged)\n", "a function it calls");
+
+    with_branches(&dir, "1 + 0", "3", "self.n + 0").unwrap();
+    let method = run_tests(&dir, &[]).unwrap();
+    assert_eq!(stdout(&method), "2 passed, 0 failed (1 run, 1 unchanged)\n", "a method it finds at run time");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_test_of_inlined_code_still_knows_what_it_ran() {
+    let dir = scratch("inlined").unwrap();
+    let source = |body: &str| {
+        format!(
+            "def small(x: int) -> int:\n    x + {body}\n\ndef twice(x: int) -> int:\n    small(x) + small(x)\n\n\
+             test \"t\":\n    assert twice(1) > 0\n"
+        )
+    };
+    std::fs::write(dir.join("game.fen"), source("1")).unwrap();
+    run_tests(&dir, &[]).unwrap();
+    std::fs::write(dir.join("game.fen"), source("2")).unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &[]).unwrap()), "1 passed, 0 failed\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_property_test_depends_on_all_it_can_reach() {
+    let dir = scratch("property").unwrap();
+    let source = |untaken: &str| {
+        format!(
+            "def untaken() -> int:\n    {untaken}\n\ndef choose(x: int) -> int:\n    if x > 1000000:\n        return untaken()\n    x\n\n\
+             test \"any\" for x: int:\n    assert choose(0) == 0\n"
+        )
+    };
+    std::fs::write(dir.join("game.fen"), source("1")).unwrap();
+    run_tests(&dir, &[]).unwrap();
+    assert!(stdout(&run_tests(&dir, &[]).unwrap()).contains("(0 run, 1 unchanged)"));
+    std::fs::write(dir.join("game.fen"), source("2")).unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &[]).unwrap()), "1 passed, 0 failed\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }

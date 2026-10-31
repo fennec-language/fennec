@@ -34,7 +34,7 @@ use crate::place::Place;
 use crate::scope::Frame;
 use crate::value::{Capability, Value};
 
-pub use tests::next_test;
+pub use tests::{next_test, ran_in_interpreter};
 
 /// What the compiler registers before a program runs: the names, text and syntax its
 /// native code refers to by number.

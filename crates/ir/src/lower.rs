@@ -1,11 +1,13 @@
 //! Lowering a checked module to the IR, one function at a time. The types come from the
 //! checker's typed tree, never from working them out again.
 
-mod calls;
+pub(crate) mod calls;
+mod closures;
 mod collections;
 mod constants;
 mod defaults;
 mod failure;
+mod imports;
 mod lists;
 mod matching;
 mod operators;
@@ -36,11 +38,13 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
         structs: defs.iter().map(|def| def.name.as_str()).collect(),
         constants: constants::written(module),
         defaults: defaults::written(module),
+        rules: defaults::rules(module),
+        imports: imports::written(module),
     };
     let mut program = Program::default();
     for (key, def) in &functions {
-        match Lowering::function(key, def, &context) {
-            Ok(function) => program.functions.push(function),
+        match Lowering::function(key, def, &context, (&[], None)) {
+            Ok(functions) => program.functions.extend(functions),
             Err(why) => program.not_lowered.push(NotLowered { function: key.clone(), why }),
         }
     }
@@ -99,6 +103,8 @@ enum Tail {
 struct Loop {
     next: BlockId,
     exit: BlockId,
+    /// How many things to undo on leaving the function there were outside the loop.
+    depth: usize,
 }
 
 /// The capabilities, whose methods the engines provide.
@@ -119,16 +125,37 @@ struct Context<'a> {
     constants: HashMap<&'a str, constants::Written<'a>>,
     /// The fields with defaults, the standard library's included.
     defaults: HashMap<defaults::FieldKey<'a>, &'a Expr>,
+    /// The `where` rules of each struct, the standard library's included, in field order.
+    rules: HashMap<&'a str, Vec<(&'a str, &'a Expr)>>,
+    /// What the module imports from the standard library.
+    imports: imports::Imports,
 }
 
 impl Context<'_> {
+    /// The type of a function as a value, when the IR holds it.
+    fn arrow_of(&self, key: &str) -> Option<Type> {
+        let signature = self.checked.signatures.get(key)?;
+        let params = signature.params.iter().map(|param| param.ty.clone()).collect();
+        let ty = Type::Arrow(params, Box::new(signature.returns.clone()));
+        self.holds(&ty).then_some(ty)
+    }
+
     /// Whether the IR holds values of this type yet.
     fn holds(&self, ty: &Type) -> bool {
         match ty {
             Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::None => true,
-            Type::List(item) | Type::Set(item) | Type::Optional(item) => self.holds(item),
+            Type::List(item)
+            | Type::Set(item)
+            | Type::Optional(item)
+            | Type::IdMap(item)
+            | Type::Id(item) => self.holds(item),
             Type::Dict(key, value) => self.holds(key) && self.holds(value),
             Type::Tuple(items) => items.iter().all(|item| self.holds(item)),
+            Type::Arrow(params, returns) => {
+                params.iter().all(|param| self.holds(param))
+                    && (**returns == Type::Unit || self.holds(returns))
+            }
+            Type::Function(key) => self.arrow_of(key).is_some(),
             Type::Result(ok, error) => (**ok == Type::Unit || self.holds(ok)) && self.holds(error),
             Type::Errors(names) => names.iter().all(|name| self.errors.contains(name.as_str())),
             Type::Named(name) => {
@@ -143,6 +170,8 @@ impl Context<'_> {
 }
 
 struct Lowering<'a> {
+    /// The function's key.
+    name: String,
     context: &'a Context<'a>,
     body: &'a Body,
     returns: Type,
@@ -154,11 +183,16 @@ struct Lowering<'a> {
     loops: Vec<Loop>,
     /// The `for mut` loops being lowered, innermost last.
     leaving: Vec<places::Leaving>,
+    /// The closures' functions lifted out of this one.
+    lifted: Vec<Function>,
+    /// What a generator has yielded so far.
+    yielded: Option<LocalId>,
 }
 
 impl<'a> Lowering<'a> {
-    fn new(context: &'a Context<'a>, body: &'a Body, returns: Type) -> Self {
+    fn new(name: &str, context: &'a Context<'a>, body: &'a Body, returns: Type) -> Self {
         Lowering {
+            name: name.to_owned(),
             context,
             body,
             returns,
@@ -168,45 +202,55 @@ impl<'a> Lowering<'a> {
             scopes: vec![HashMap::new()],
             loops: Vec::new(),
             leaving: Vec::new(),
+            lifted: Vec::new(),
+            yielded: None,
         }
     }
 
-    fn function(key: &str, def: &FnDef, context: &'a Context<'a>) -> Lowered<Function> {
+    /// A function, and those lifted out of it. A nested function's first parameters are what
+    /// it captures, and it's given its own type if it names itself.
+    fn function(
+        key: &str,
+        def: &FnDef,
+        context: &'a Context<'a>,
+        (captures, itself): (&[(String, Type)], Option<&Type>),
+    ) -> Lowered<Vec<Function>> {
         let signature = context.checked.signatures.get(key).ok_or("it has no signature")?;
         let body = context.checked.types.body(key).ok_or("it has no types")?;
         if !def.generics.is_empty() {
             return Err("it's generic".to_owned());
         }
-        if signature.generator {
-            return Err("it's a generator".to_owned());
-        }
         if signature.returns != Type::Unit && !context.holds(&signature.returns) {
             return Err(format!("it gives back {}", signature.returns));
         }
-        let mut lowering = Lowering::new(context, body, signature.returns.clone());
+        let mut lowering = Lowering::new(key, context, body, signature.returns.clone());
+        for (name, ty) in captures {
+            lowering.declare(name, ty.clone());
+        }
         for param in &signature.params {
             if !context.holds(&param.ty) {
                 return Err(format!("`{}` is {}", param.name, param.ty));
             }
             lowering.declare(&param.name, param.ty.clone());
         }
-        let tail = if lowering.returns == Type::Unit { Tail::Drop } else { Tail::Return };
-        lowering.stmts(&def.body, tail)?;
+        if let Some(ty) = itself {
+            lowering.bind_itself(key, &def.name, ty, captures.len(), def.span);
+        }
+        if signature.generator {
+            let items = lowering.generator_items()?;
+            lowering.yielded = Some(items);
+        }
+        let plain = lowering.returns == Type::Unit || signature.generator;
+        lowering.stmts(&def.body, if plain { Tail::Drop } else { Tail::Return })?;
         lowering.end_function(def.span)?;
-        Ok(Function {
-            name: key.to_owned(),
-            params: signature.params.len(),
-            mut_params: signature
-                .params
-                .iter()
-                .enumerate()
-                .filter(|(_, param)| param.is_mut)
-                .map(|(at, _)| at)
-                .collect(),
-            returns: lowering.returns,
-            locals: lowering.locals,
-            blocks: reachable(lowering.blocks),
-        })
+        let mut_params = signature
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, param)| param.is_mut)
+            .map(|(at, _)| at + captures.len())
+            .collect();
+        Ok(lowering.finished(captures.len() + signature.params.len(), mut_params))
     }
 
     fn declare(&mut self, name: &str, ty: Type) -> LocalId {
@@ -259,7 +303,15 @@ impl<'a> Lowering<'a> {
     /// The type the typed tree has for an expression, when the IR can hold it.
     fn ty(&self, expr: &Expr) -> Lowered<Type> {
         let ty = self.body.expr(expr.span).ok_or("an expression has no type")?;
-        if self.context.holds(ty) { Ok(ty.clone()) } else { Err(format!("it uses a value of type {ty}")) }
+        self.held(ty).ok_or_else(|| format!("it uses a value of type {ty}"))
+    }
+
+    /// A type as the IR holds it, when it does: a function as a value is a closure.
+    fn held(&self, ty: &Type) -> Option<Type> {
+        match ty {
+            Type::Function(key) => self.context.arrow_of(key),
+            _ => self.context.holds(ty).then(|| ty.clone()),
+        }
     }
 
     /// Lowers statements in order. Code after leaving early never runs, so it's skipped.
@@ -293,7 +345,9 @@ impl<'a> Lowering<'a> {
             StmtKind::Return(None) => self.return_nothing(stmt.span)?,
             StmtKind::Break | StmtKind::Continue => {
                 let target = self.loops.last().ok_or("`break` outside a loop")?;
+                let depth = target.depth;
                 let target = if matches!(stmt.kind, StmtKind::Break) { target.exit } else { target.next };
+                self.undo_since(depth, stmt.span)?;
                 self.finish(Terminator::Jump(target));
             }
             StmtKind::Pass => {}
@@ -301,10 +355,12 @@ impl<'a> Lowering<'a> {
                 self.for_stmt((names, *is_mut), iter, body, stmt.span)?;
             }
             StmtKind::Fail(error) => self.fail(error, stmt.span)?,
-            StmtKind::Yield(_) => return Err("it has `yield`".to_owned()),
-            StmtKind::Assert(_) => return Err("it has `assert`".to_owned()),
-            StmtKind::With { .. } => return Err("it has `with`".to_owned()),
-            StmtKind::Def(_) => return Err("it has a nested function".to_owned()),
+            StmtKind::Yield(value) => self.yield_value(value, stmt.span)?,
+            StmtKind::Assert(cond) => self.assert(cond, stmt.span)?,
+            StmtKind::With { value, name, is_mut: _, body } => {
+                self.with_block(value, name.as_deref(), body, tail, stmt.span)?;
+            }
+            StmtKind::Def(def) => self.nested(def, stmt.span)?,
         }
         Ok(())
     }
@@ -360,10 +416,8 @@ impl<'a> Lowering<'a> {
             return Ok(dest);
         }
         let ty = self.body.name(target.span, name).ok_or_else(|| format!("`{name}` has no type"))?;
-        if !self.context.holds(ty) {
-            return Err(format!("`{name}` is {ty}"));
-        }
-        Ok(self.declare(name, ty.clone()))
+        let held = self.held(ty).ok_or_else(|| format!("`{name}` is {ty}"))?;
+        Ok(self.declare(name, held))
     }
 
     fn if_stmt(
@@ -403,7 +457,7 @@ impl<'a> Lowering<'a> {
             self.finish(Terminator::Branch { cond, then, otherwise: exit });
         }
         self.current = then;
-        self.loops.push(Loop { next: head, exit });
+        self.loops.push(Loop { next: head, exit, depth: self.leaving.len() });
         let lowered = self.block(body, Tail::Drop);
         self.loops.pop();
         lowered?;
@@ -463,6 +517,7 @@ impl<'a> Lowering<'a> {
             }
             ExprKind::Cond { then, cond, otherwise } => self.conditional(expr, (then, cond, otherwise)),
             ExprKind::Attr { object, name, optional: false } => self.get_field(expr, object, name),
+            ExprKind::Attr { object, name, optional: true } => self.optional_field(expr, object, name),
             ExprKind::Match { subject, arms } => {
                 let dest = self.temporary(self.ty(expr)?);
                 self.match_expr(subject, arms, Tail::Into(dest))?;
@@ -483,6 +538,7 @@ impl<'a> Lowering<'a> {
                 let parts = collections::Parts { elem, value: value.as_deref(), cond: cond.as_deref() };
                 self.comprehension(expr, *kind, &parts, (names, iter))
             }
+            ExprKind::Lambda { params, body } => self.arrow(expr, params, body, false),
             ExprKind::Index { object, index } => self.get_index(expr, object, index),
             ExprKind::Slice { object, start, end } => {
                 self.slice(expr, object, (start.as_deref(), end.as_deref()))
@@ -553,7 +609,6 @@ fn describe(kind: &ExprKind) -> &'static str {
         ExprKind::Else { .. } => "`else`",
         ExprKind::Try { .. } => "`?`",
         ExprKind::Attr { .. } => "a field or method",
-        ExprKind::Lambda { .. } => "an arrow function",
         _ => "something that isn't lowered yet",
     }
 }

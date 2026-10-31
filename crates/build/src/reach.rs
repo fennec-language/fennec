@@ -15,7 +15,6 @@ use fennec_syntax::{
     Expr, ExprKind, FStrPart, FnDef, Import, Item, Module, Pattern, Stmt, StmtKind, TypeDef, TypeExpr,
 };
 
-use crate::cache::VERSION;
 use crate::tree::tree_hash;
 
 /// Methods the language calls on a value without the code naming them: indexing, looping,
@@ -24,7 +23,7 @@ const IMPLICIT: [&str; 3] = ["[]", "iter", "del"];
 
 /// Each test's name and the key of everything its result depends on.
 pub fn test_keys(module: &Module) -> Vec<(String, Hash)> {
-    let graph = Graph::of(module);
+    let graph = Graph::of(module, "");
     graph
         .definitions
         .iter()
@@ -34,11 +33,11 @@ pub fn test_keys(module: &Module) -> Vec<(String, Hash)> {
 }
 
 /// A definition: its key and tree hash, the names it uses, and for a test, its name.
-struct Definition {
-    key: String,
-    hash: Hash,
-    uses: Uses,
-    test: Option<String>,
+pub(crate) struct Definition {
+    pub(crate) key: String,
+    pub(crate) hash: Hash,
+    pub(crate) uses: Uses,
+    pub(crate) test: Option<String>,
 }
 
 /// The names a definition uses: plain names, and member names after a dot.
@@ -48,27 +47,31 @@ pub(crate) struct Uses {
     pub(crate) members: BTreeSet<String>,
 }
 
-struct Graph {
-    definitions: Vec<Definition>,
+pub(crate) struct Graph {
+    pub(crate) definitions: Vec<Definition>,
     /// The definitions each plain name may refer to.
-    names: HashMap<String, Vec<usize>>,
+    pub(crate) names: HashMap<String, Vec<usize>>,
     /// The methods, by name, of every type.
-    members: HashMap<String, Vec<usize>>,
+    pub(crate) members: HashMap<String, Vec<usize>>,
     /// The methods each type has that the language calls by itself.
-    implicit: HashMap<usize, Vec<usize>>,
+    pub(crate) implicit: HashMap<usize, Vec<usize>>,
     /// Methods the language calls by itself, with the name of the type they're on, until
     /// every type is known.
     unowned: Vec<(String, usize)>,
+    /// Which build of Fennec the keys are for, since another one's compiler may behave
+    /// differently.
+    pub(crate) build: String,
 }
 
 impl Graph {
-    fn of(module: &Module) -> Self {
+    pub(crate) fn of(module: &Module, build: &str) -> Self {
         let mut graph = Graph {
             definitions: Vec::new(),
             names: HashMap::new(),
             members: HashMap::new(),
             implicit: HashMap::new(),
             unowned: Vec::new(),
+            build: build.to_owned(),
         };
         for item in &module.items {
             graph.item(item);
@@ -182,7 +185,7 @@ impl Graph {
     }
 
     /// The key of everything the definition at `start` reaches, itself included.
-    fn key(&self, start: usize) -> Hash {
+    pub(crate) fn key(&self, start: usize) -> Hash {
         let mut reached = BTreeSet::from([start]);
         let mut pending = vec![start];
         while let Some(at) = pending.pop() {
@@ -203,8 +206,7 @@ impl Graph {
             .collect();
         parts.sort();
         let mut hasher = Hasher::new_derive_key("fennec build cache 2026-10-30 test key");
-        hasher.update(VERSION.as_bytes());
-        hasher.update(&[0]);
+        crate::traced::platform(&mut hasher, &self.build);
         for (key, hash) in parts {
             hasher.update(key.as_bytes());
             hasher.update(&[0]);
@@ -396,23 +398,4 @@ impl Uses {
             Pattern::Bind(_) | Pattern::Wildcard => {}
         }
     }
-}
-
-impl crate::Cache {
-    /// The keys of the tests of `program` that passed last time, marking them as used.
-    pub fn passed_tests(&self, program: &str) -> std::collections::HashSet<Hash> {
-        let bytes = self.read("tests", &results_name(program)).unwrap_or_default();
-        bytes.as_chunks::<32>().0.iter().map(|key| Hash(*key)).collect()
-    }
-
-    /// Stores the keys of the tests of `program` that pass, replacing the last ones.
-    pub fn store_passed_tests(&self, program: &str, keys: &[Hash]) -> std::io::Result<()> {
-        let bytes: Vec<u8> = keys.iter().flat_map(|key| *key.as_bytes()).collect();
-        self.write("tests", &results_name(program), &bytes)
-    }
-}
-
-/// The name of a program's test results: a hash of what names the program, like its path.
-fn results_name(program: &str) -> String {
-    format!("{}.bin", fennec_blake3::hash(program.as_bytes()).to_hex())
 }

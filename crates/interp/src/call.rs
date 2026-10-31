@@ -151,6 +151,7 @@ impl Interp<'_> {
         span: Span,
     ) -> Result<Value, Diagnostic> {
         let def = &function.def;
+        self.ran_program_code |= !def.span.in_prelude();
         let bound = match bind(&def.name, &def.params, args, span) {
             Ok(bound) => bound,
             Err((diagnostic, args)) => {

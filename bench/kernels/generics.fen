@@ -39,7 +39,7 @@ def main(stdout: Stdout):
     circles = [Circle(radius=float(i % 10)) for i in range(5000)]
     squares = [Square(side=float(i % 13)) for i in range(5000)]
     mut sum_of = 0.0
-    for round in range(100):
+    for round in range(2500):
         by = float(round % 3) + 1.0
         sum_of += total(circles, by) + total(squares, by)
     biggest = largest(circles, (a, b) => a.radius > b.radius)

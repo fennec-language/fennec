@@ -264,7 +264,7 @@ fn simulate() -> (i64, i64) {
 
 fn main() {
     let (mut queued, mut holds) = (0, 0);
-    for _ in 0..std::hint::black_box(5) {
+    for _ in 0..std::hint::black_box(25) {
         (queued, holds) = simulate();
     }
     println!("{queued} {holds}");

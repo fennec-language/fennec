@@ -52,7 +52,7 @@ fn main() {
     let circles: Vec<Circle> = (0..count).map(|i| Circle { radius: f64::from(i % 10) }).collect();
     let squares: Vec<Square> = (0..count).map(|i| Square { side: f64::from(i % 13) }).collect();
     let mut sum = 0.0;
-    for round in 0..100 {
+    for round in 0..2500 {
         let by = f64::from(round % 3) + 1.0;
         sum += total(&circles, by) + total(&squares, by);
     }

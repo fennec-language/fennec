@@ -6,7 +6,7 @@ use fennec_syntax::{BinOp, Expr, ExprKind, Pattern, Span, UnaryOp};
 
 use super::{Lowered, Lowering};
 use crate::validate::fits;
-use crate::{BlockId, InstKind, Operand, StructDef, Terminator, type_in};
+use crate::{BlockId, InstKind, LocalId, Operand, StructDef, Terminator, type_in};
 
 /// Every error type the IR can hold: not ones with `where` rules, which are checked
 /// whenever a value is made.
@@ -54,6 +54,8 @@ impl Lowering<'_> {
             return Ok(value);
         };
         match (&from, read) {
+            // A local given a function by name holds it as a closure.
+            (Type::Arrow(..), Type::Function(_)) => Ok(value),
             (Type::Optional(_), Type::None) => Ok(Operand::None),
             (Type::Optional(inner), read) if **inner == *read => {
                 let dest = self.temporary(read.clone());
@@ -185,10 +187,38 @@ impl Lowering<'_> {
         Ok(Some(Operand::Local(dest)))
     }
 
+    /// Starts a generator's list of what it yields.
+    pub(super) fn generator_items(&mut self) -> Lowered<LocalId> {
+        let list = match &self.returns {
+            Type::Result(ok, _) => *ok.clone(),
+            other => other.clone(),
+        };
+        if !matches!(list, Type::List(_)) {
+            return Err(format!("it's a generator giving back {list}"));
+        }
+        let dest = self.temporary(list);
+        self.emit(InstKind::MakeList { dest, items: Vec::new() }, Span::default());
+        Ok(dest)
+    }
+
+    /// `yield value`: a generator's items are all worked out when it's called.
+    pub(super) fn yield_value(&mut self, value: &Expr, span: Span) -> Lowered<()> {
+        let items = self.yielded.ok_or("it has `yield` outside a generator")?;
+        let Type::List(item) = self.local_type(items) else {
+            return Err("a generator's items aren't a list".to_owned());
+        };
+        let lowered = self.expr(value)?;
+        let lowered = self.coerce(lowered, &item, span)?;
+        let args = vec![Operand::Local(items), lowered];
+        let name = "list.append".to_owned();
+        self.emit(InstKind::Builtin { dest: None, name, args, changes: true }, span);
+        Ok(())
+    }
+
     /// `return value`, or a function's last value. A last line that gives nothing runs, and
     /// the function gives back nothing.
     pub(super) fn return_value(&mut self, expr: &Expr) -> Lowered<()> {
-        if matches!(self.body.expr(expr.span), Some(Type::Unit)) {
+        if self.yielded.is_some() || matches!(self.body.expr(expr.span), Some(Type::Unit)) {
             self.effect(expr)?;
             return self.return_nothing(expr.span);
         }
@@ -200,6 +230,11 @@ impl Lowering<'_> {
 
     /// Leaves a function that gives back nothing, which is success if it can fail.
     pub(super) fn return_nothing(&mut self, span: Span) -> Lowered<()> {
+        if let Some(items) = self.yielded {
+            let returns = self.returns.clone();
+            let value = self.coerce(Operand::Local(items), &returns, span)?;
+            return self.leave(Some(value), span);
+        }
         if matches!(self.returns, Type::Result(..)) {
             let dest = self.temporary(self.returns.clone());
             self.emit(InstKind::MakeOk { dest, value: None }, span);
@@ -216,6 +251,7 @@ impl Lowering<'_> {
             return Ok(());
         }
         match &self.returns {
+            _ if self.yielded.is_some() => self.return_nothing(span)?,
             Type::Unit => self.finish(Terminator::Return(None)),
             Type::Result(..) => self.return_nothing(span)?,
             _ => self.finish(Terminator::Unreachable),

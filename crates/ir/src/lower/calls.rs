@@ -21,7 +21,9 @@ pub(super) fn external(program: &Program) -> Vec<String> {
         .flat_map(|function| &function.blocks)
         .flat_map(|block| &block.insts)
         .filter_map(|inst| match &inst.kind {
-            InstKind::Call { function, .. } => Some(function.clone()),
+            InstKind::Call { function, .. } | InstKind::MakeClosure { function, .. } => {
+                Some(function.clone())
+            }
             _ => None,
         })
         .filter(|name| {
@@ -42,6 +44,7 @@ pub(super) fn owner_name(ty: &Type) -> Option<&str> {
         Type::Dict(..) => Some("dict"),
         Type::Tuple(_) => Some("tuple"),
         Type::Bytes => Some("bytes"),
+        Type::IdMap(_) => Some("IdMap"),
         Type::Str => Some("str"),
         Type::Int => Some("int"),
         Type::Float => Some("float"),
@@ -61,9 +64,17 @@ impl Lowering<'_> {
         keep: Option<Type>,
         span: Span,
     ) -> Lowered<Option<LocalId>> {
+        if let Some(ty) = self.closure_callee(callee) {
+            return self.call_closure(callee, &ty, args, keep, span);
+        }
+        // `json.loads[T](text)`: the type it's given is the type of what it gives back.
+        let callee = match &callee.kind {
+            ExprKind::Index { object, .. } => object,
+            _ => callee,
+        };
         let mut write_backs = Vec::new();
         let dest;
-        if let Some((name, object, changes)) = self.builtin(callee) {
+        if let Some((mut name, object, changes)) = self.builtin(callee) {
             let mut values = Vec::with_capacity(args.len() + 1);
             if let Some(object) = object {
                 values.push(if changes {
@@ -72,11 +83,23 @@ impl Lowering<'_> {
                     self.expr(object)?
                 });
             }
+            let mut key = None;
             for arg in args {
-                if arg.name.is_some() || arg.is_mut {
+                let is_key = arg.name.as_deref() == Some("key");
+                if arg.is_mut || (arg.name.is_some() && !is_key) {
                     return Err(format!("its call to `{name}` has a named or `mut` argument"));
                 }
-                values.push(self.expr(&arg.value)?);
+                let value = match &arg.value.kind {
+                    ExprKind::Lambda { params, body } if name == "IdMap.modify" => {
+                        self.arrow(&arg.value, params, body, true)?
+                    }
+                    _ => self.expr(&arg.value)?,
+                };
+                if is_key { key = Some(value) } else { values.push(value) }
+            }
+            if let Some(key) = key {
+                values.push(key);
+                name.push_str(".key");
             }
             dest = keep.map(|ty| self.temporary(ty));
             self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);
@@ -99,24 +122,35 @@ impl Lowering<'_> {
     /// What the engines provide that a callee names: its name, its object for a method, and
     /// whether it changes that object.
     fn builtin<'e>(&self, callee: &'e Expr) -> Option<(String, Option<&'e Expr>, bool)> {
+        let signatures = &self.context.checked.signatures;
+        if let Some(member) = self.std_member(callee) {
+            return signatures.get(&member).is_none().then_some((member, None, false));
+        }
         match &callee.kind {
             ExprKind::Name(name) => {
                 // What the checker accepted and nothing here defines, like an import of
                 // `sqrt`, is the engines'.
-                let written = self.context.checked.signatures.get(name).is_some();
+                let written = signatures.get(name).is_some();
                 let plain = self.lookup(name).is_none()
                     && !self.context.functions.contains(name.as_str())
                     && (fennec_check::provided_everywhere(name) || !written);
                 plain.then(|| (name.clone(), None, false))
             }
             ExprKind::Attr { object, name, optional: false } => {
-                if matches!(&object.kind, ExprKind::Name(owner) if self.names_a_type(owner)) {
-                    return None;
+                if let ExprKind::Name(owner) = &object.kind
+                    && self.names_a_type(owner)
+                {
+                    // A function on a built-in type, like `str.from_code`.
+                    let key = format!("{owner}.{name}");
+                    return signatures.get(&key).is_none().then_some((key, None, false));
                 }
                 let ty = self.body.expr(object.span)?;
+                if matches!(ty, Type::Result(..)) && name == "expect" {
+                    return Some(("result.expect".to_owned(), Some(object.as_ref()), false));
+                }
                 let changes = fennec_check::builtin_method_changes(ty, name)?;
                 let owner = owner_name(ty)?;
-                let written = self.context.checked.signatures.get(&format!("{owner}.{name}")).is_some();
+                let written = signatures.get(&format!("{owner}.{name}")).is_some();
                 (!written).then(|| (format!("{owner}.{name}"), Some(object.as_ref()), changes))
             }
             _ => None,
@@ -133,6 +167,7 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<(String, Vec<Operand>)> {
         let (key, object) = match &callee.kind {
+            _ if self.std_member(callee).is_some() => (self.std_member(callee).unwrap_or_default(), None),
             ExprKind::Name(name) if self.lookup(name).is_none() => (name.clone(), None),
             ExprKind::Attr { object, name, optional: false } => match &object.kind {
                 // `Point.origin()`: a function on the type, with no object.
@@ -152,7 +187,7 @@ impl Lowering<'_> {
         let signature =
             self.context.checked.signatures.get(&key).ok_or_else(|| format!("it calls `{key}`"))?;
         let given = args.len() + usize::from(object.is_some());
-        if signature.generator || given != signature.params.len() {
+        if given != signature.params.len() {
             return Err(format!("its call to `{key}` isn't a plain call"));
         }
         if own && !signature.params.iter().all(|param| self.context.holds(&param.ty)) {

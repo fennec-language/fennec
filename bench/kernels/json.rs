@@ -157,7 +157,7 @@ fn document(records: i64) -> String {
 fn main() {
     let text = document(std::hint::black_box(300));
     let mut total = 0;
-    for _ in 0..8 {
+    for _ in 0..40 {
         let mut reader = Reader { text: text.as_bytes(), at: 0 };
         let value = reader.value();
         let mut out = String::new();

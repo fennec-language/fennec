@@ -84,6 +84,11 @@ pub(super) fn import(
 
 /// Gives every symbol this run's value, once all the functions are lowered.
 pub(super) fn define(module: &mut dyn Module, shared: &Shared) -> Result<(), Diagnostic> {
+    for id in shared.ran.iter().flat_map(HashMap::values) {
+        let mut data = DataDescription::new();
+        data.define_zeroinit(1);
+        module.define_data(*id, &data).map_err(|err| internal(err, Span::default()))?;
+    }
     for (id, value) in shared.symbols.values() {
         let mut data = DataDescription::new();
         data.define(value.to_le_bytes().to_vec().into_boxed_slice());
@@ -156,6 +161,30 @@ impl Lowerer<'_, '_> {
             self.inlined_origin = Some((value, start));
         }
         outer
+    }
+
+    /// For tests, sets the flag that says the program function `key` ran. A function lowered
+    /// into its caller sets it too, where its body starts. The flag is named by the function, so
+    /// machine code stays reusable.
+    pub(super) fn mark_ran(&mut self, key: &str) -> Result<(), Diagnostic> {
+        let Some(flags) = &mut self.shared.ran else { return Ok(()) };
+        let id = if let Some(id) = flags.get(key) {
+            *id
+        } else {
+            let id = self
+                .module
+                .declare_data(&format!("fennec.ran.{}", digest(key)), Linkage::Local, true, false)
+                .map_err(|err| internal(err, Span::default()))?;
+            flags.insert(key.to_owned(), id);
+            id
+        };
+        let module = &mut *self.module;
+        let func = &mut *self.b.func;
+        let global = *self.globals.entry(id).or_insert_with(|| module.declare_data_in_func(id, func));
+        let address = self.b.ins().symbol_value(self.pointer, global);
+        let set = self.b.ins().iconst(types::I8, 1);
+        self.b.ins().store(MemFlagsData::trusted(), set, address, 0);
+        Ok(())
     }
 
     pub(super) fn handed_number(&mut self, kind: &str, value: i64) -> Value {

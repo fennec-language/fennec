@@ -159,20 +159,13 @@ fn names_in_sibling_blocks_are_different_locals() {
 
 #[test]
 fn what_isnt_lowered_yet_says_why() {
-    let source = "struct Point:
-    x: int = 0
-
-struct Checked:
-    x: int where x > 0
-
-def checked() -> Checked:
-    Checked(1)
-
+    let source = "def first[T](items: list[T]) -> T:
+    items[0]
 ";
     let program = lowered(source).unwrap();
     let why: Vec<String> =
         program.not_lowered.iter().map(|skipped| format!("{}: {}", skipped.function, skipped.why)).collect();
-    assert_eq!(why, ["checked: it gives back Checked",]);
+    assert_eq!(why, ["first: it's generic"]);
 }
 
 #[test]
@@ -1007,7 +1000,7 @@ def f(x: float) -> float:
     sqrt(x) * PI
 ";
     let text = printed(source, "f").unwrap();
-    assert!(text.contains("builtin sqrt(_0)"), "{text}");
+    assert!(text.contains("builtin math.sqrt(_0)"), "{text}");
     assert!(text.contains("builtin PI()"), "{text}");
 }
 
@@ -1217,6 +1210,138 @@ def f(names: Names) -> str:
 }
 
 #[test]
+fn an_arrow_function_is_lifted_with_what_it_captures() {
+    let source = "def apply(value: int, change: (int) -> int) -> int:
+    change(value)
+
+def f(x: int) -> int:
+    offset = x + 1
+    apply(x, (n) => n + offset)
+";
+    let program = lowered(source).unwrap();
+    let shown: Vec<String> = program.functions.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        shown.join(""),
+        "fn apply(_0, _1) -> int
+  local _0 value: int
+  local _1 change: (int) -> int
+  local _2: int
+  bb0:
+    _2 = call closure _1(_0)
+    return _2
+fn f(_0) -> int
+  local _0 x: int
+  local _1: int
+  local _2 offset: int
+  local _3: (int) -> int
+  local _4: int
+  bb0:
+    _1 = _0 + 1
+    _2 = _1
+    _3 = closure f.arrow@125[_2]
+    _4 = call apply(_0, _3)
+    return _4
+fn f.arrow@125(_0, _1) -> int
+  local _0 offset: int
+  local _1 n: int
+  local _2: int
+  bb0:
+    _2 = _1 + _0
+    return _2
+"
+    );
+}
+
+#[test]
+fn a_nested_function_captures_and_can_call_itself() {
+    let source = "def f(start: int) -> int:
+    def down(n: int) -> int:
+        if n <= start:
+            return n
+        down(n - 1)
+    down(10)
+";
+    let program = lowered(source).unwrap();
+    let shown: Vec<String> = program.functions.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        shown.join(""),
+        "fn f(_0) -> int
+  local _0 start: int
+  local _1: (int) -> int
+  local _2 down: (int) -> int
+  local _3: int
+  bb0:
+    _1 = closure f.down[_0]
+    _2 = _1
+    _3 = call closure _2(10)
+    return _3
+fn f.down(_0, _1) -> int
+  local _0 start: int
+  local _1 n: int
+  local _2 down: (int) -> int
+  local _3: bool
+  local _4: int
+  local _5: int
+  bb0:
+    _2 = closure f.down[_0]
+    _3 = _1 <= _0
+    branch _3 bb2 bb3
+  bb1:
+    _4 = _1 - 1
+    _5 = call closure _2(_4)
+    return _5
+  bb2:
+    return _1
+  bb3:
+    jump bb1
+"
+    );
+}
+
+#[test]
+fn a_function_by_name_is_a_closure_of_nothing() {
+    let source = "def double(n: int) -> int:
+    n * 2
+
+def f() -> int:
+    g = double
+    g(2)
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f() -> int
+  local _0: (int) -> int
+  local _1 g: (int) -> int
+  local _2: int
+  bb0:
+    _0 = closure double[]
+    _1 = _0
+    _2 = call closure _1(2)
+    return _2
+"
+    );
+}
+
+#[test]
+fn a_key_goes_last_and_names_the_call() {
+    let source = "def f(xs: list[int]) -> list[int]:
+    sorted(xs, key=(n) => -n)
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> list[int]
+  local _0 xs: list[int]
+  local _1: (int) -> int
+  local _2: list[int]
+  bb0:
+    _1 = closure f.arrow@54[]
+    _2 = builtin sorted.key(_0, _1)
+    return _2
+"
+    );
+}
+
+#[test]
 fn a_tuple_of_one_type_and_the_arguments_index_by_a_value() {
     let source = "def f(pair: (int, int), at: int) -> int:
     pair[at]
@@ -1230,6 +1355,438 @@ def h(data: bytes, at: int) -> int:
     assert!(printed(source, "f").unwrap().contains("= _0[_1]"));
     assert!(printed(source, "g").unwrap().contains("= _0[_1]"));
     assert!(printed(source, "h").unwrap().contains("= _0[_1]"));
+}
+
+#[test]
+fn a_generator_fills_a_list_as_it_runs() {
+    let source = "def countdown(n: int) -> Iterator[int]:
+    mut at = n
+    while at > 0:
+        yield at
+        if at == 5:
+            return
+        at -= 1
+
+def f() -> int:
+    mut total = 0
+    for at in countdown(3):
+        total += at
+    total
+";
+    assert_eq!(
+        printed(source, "countdown").unwrap(),
+        "fn countdown(_0) -> list[int]
+  local _0 n: int
+  local _1: list[int]
+  local _2 at: int
+  local _3: bool
+  local _4: bool
+  bb0:
+    _1 = []
+    _2 = _0
+    jump bb1
+  bb1:
+    _3 = _2 > 0
+    branch _3 bb2 bb3
+  bb2:
+    builtin list.append(mut _1, _2)
+    _4 = _2 == 5
+    branch _4 bb5 bb6
+  bb3:
+    return _1
+  bb4:
+    _2 = _2 - 1
+    jump bb1
+  bb5:
+    return _1
+  bb6:
+    jump bb4
+"
+    );
+}
+
+#[test]
+fn a_loop_over_a_type_goes_through_what_its_iter_gives() {
+    let source = "struct Bag:
+    all: list[int]
+
+    def iter(self) -> Iterator[int]:
+        for one in self.all:
+            yield one
+
+def f(bag: Bag) -> list[int]:
+    [one for one in bag]
+";
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("= call Bag.iter(_0)"), "{text}");
+}
+
+#[test]
+fn a_tuple_pattern_tests_each_part() {
+    let source = "def f(pair: (int, str)) -> int:
+    match pair:
+        case (0, _):
+            1
+        case (x, _):
+            x
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> int
+  local _0 pair: (int, str)
+  local _1: int
+  local _2: bool
+  local _3: int
+  local _4 x: int
+  bb0:
+    _1 = _0.0
+    _2 = _1 == 0
+    branch _2 bb2 bb1
+  bb1:
+    _3 = _0.0
+    _4 = _3
+    return _4
+  bb2:
+    return 1
+"
+    );
+}
+
+#[test]
+fn a_question_dot_gives_none_for_none() {
+    let source = "struct P:
+    level: int
+
+def f(p: P?) -> int?:
+    p?.level
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> int?
+  local _0 p: P?
+  local _1: int?
+  local _2: bool
+  local _3: P
+  local _4: int
+  local _5: int?
+  bb0:
+    _2 = _0 is none
+    branch _2 bb1 bb2
+  bb1:
+    _1 = none
+    jump bb3
+  bb2:
+    _3 = _0 as some
+    _4 = _3.level
+    _5 = some _4
+    _1 = _5
+    jump bb3
+  bb3:
+    return _1
+"
+    );
+}
+
+#[test]
+fn a_where_rule_gives_an_error_unless_the_values_are_written_out() {
+    let source = "struct Score:
+    value: int where value >= 0
+
+def f(n: int) -> Score:
+    Score(n)?
+
+def g() -> Score:
+    Score(1)
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> result of Score
+  local _0 n: int
+  local _1: result of Score
+  local _2 value: int
+  local _3: bool
+  local _4: InvalidValue
+  local _5: Score
+  local _6: bool
+  local _7: InvalidValue
+  local _8: result of Score
+  local _9: Score
+  local _10: result of Score
+  bb0:
+    _2 = _0
+    _3 = _2 >= 0
+    branch _3 bb2 bb3
+  bb1:
+    _6 = _1 is err
+    branch _6 bb4 bb5
+  bb2:
+    _5 = make Score(_0)
+    _1 = ok _5
+    jump bb1
+  bb3:
+    _4 = make InvalidValue(\"Score.value breaks its `where` rule\")
+    _1 = err _4
+    jump bb1
+  bb4:
+    _7 = _1 as err
+    _8 = err _7
+    return _8
+  bb5:
+    _9 = _1 as ok
+    _10 = ok _9
+    return _10
+"
+    );
+    assert_eq!(
+        printed(source, "g").unwrap(),
+        "fn g() -> Score
+  local _0 value: int
+  local _1: bool
+  local _2: Score
+  bb0:
+    _0 = 1
+    _1 = _0 >= 0
+    branch _1 bb2 bb3
+  bb1:
+    return _2
+  bb2:
+    _2 = make Score(1)
+    jump bb1
+  bb3:
+    stop \"this breaks the `where` rule on `Score.value`\"
+"
+    );
+}
+
+#[test]
+fn std_module_calls_go_to_the_engines_by_their_full_name() {
+    let source = "from std import json as data
+import std.math as geometry
+from std.toml import loads as toml_loads
+
+def f(text: str) -> list[int]:
+    a = geometry.sqrt(16.0)
+    b = data.dumps(a)
+    t = toml_loads[dict[str, int]](text)?
+    data.loads[list[int]](b)? + t.values()
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> result of list[int]
+  local _0 text: str
+  local _1: float
+  local _2 a: float
+  local _3: str
+  local _4 b: str
+  local _5: result of dict[str, int]
+  local _6: bool
+  local _7: ParseError
+  local _8: result of list[int]
+  local _9: dict[str, int]
+  local _10 t: dict[str, int]
+  local _11: result of list[int]
+  local _12: bool
+  local _13: ParseError
+  local _14: result of list[int]
+  local _15: list[int]
+  local _16: list[int]
+  local _17: list[int]
+  local _18: result of list[int]
+  bb0:
+    _1 = builtin math.sqrt(16.0)
+    _2 = _1
+    _3 = builtin json.dumps(_2)
+    _4 = _3
+    _5 = builtin toml.loads(_0)
+    _6 = _5 is err
+    branch _6 bb1 bb2
+  bb1:
+    _7 = _5 as err
+    _8 = err _7
+    return _8
+  bb2:
+    _9 = _5 as ok
+    _10 = _9
+    _11 = builtin json.loads(_4)
+    _12 = _11 is err
+    branch _12 bb3 bb4
+  bb3:
+    _13 = _11 as err
+    _14 = err _13
+    return _14
+  bb4:
+    _15 = _11 as ok
+    _16 = builtin dict.values(_10)
+    _17 = _15 + _16
+    _18 = ok _17
+    return _18
+"
+    );
+}
+
+#[test]
+fn an_id_map_is_read_and_changed_by_id() {
+    let source = "from std.game import IdMap
+
+struct Enemy:
+    health: int
+
+    def hit(mut self):
+        self.health -= 1
+
+def f() -> int:
+    mut map = IdMap[Enemy]()
+    one = map.insert(Enemy(2))
+    map[one] = Enemy(3)
+    map.modify(one, e => e.hit())
+    for mut enemy in map:
+        enemy.hit()
+    map[one].health
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f() -> int
+  local _0: IdMap[Enemy]
+  local _1 map: IdMap[Enemy]
+  local _2: Enemy
+  local _3: Id[Enemy]
+  local _4 one: Id[Enemy]
+  local _5: Enemy
+  local _6: (Enemy) -> nothing
+  local _7: list[(Id[Enemy], Enemy)]
+  local _8: int
+  local _9: int
+  local _10: int
+  local _11: bool
+  local _12: (Id[Enemy], Enemy)
+  local _13: Id[Enemy]
+  local _14 enemy: Enemy
+  local _15: Enemy
+  local _16: int
+  bb0:
+    _0 = builtin IdMap()
+    _1 = _0
+    _2 = make Enemy(2)
+    _3 = builtin IdMap.insert(mut _1, _2)
+    _4 = _3
+    _5 = make Enemy(3)
+    _1[_4] = _5
+    _6 = closure f.arrow@228[]
+    builtin IdMap.modify(mut _1, _4, _6)
+    _7 = builtin IdMap.items(_1)
+    _8 = builtin list.len(_7)
+    _9 = 0
+    _10 = _8
+    jump bb1
+  bb1:
+    _11 = _9 < _10
+    branch _11 bb2 bb4
+  bb2:
+    _12 = _7[_9]
+    _13 = _12.0
+    _14 = _12.1
+    call Enemy.hit(_14)
+    jump bb3
+  bb3:
+    _1[_13] = _14
+    _9 = _9 + 1
+    jump bb1
+  bb4:
+    _15 = _1[_4]
+    _16 = _15.health
+    return _16
+"
+    );
+}
+
+#[test]
+fn with_cleans_up_however_its_block_is_left() {
+    let source = "struct File:
+    name: str
+
+    def del(self):
+        pass
+
+def f(n: int) -> int:
+    while n > 0:
+        with File(\"a\") as file:
+            if n == 1:
+                break
+            if n == 2:
+                return file.name.len()
+    with File(\"b\"):
+        pass
+    0
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> int
+  local _0 n: int
+  local _1: bool
+  local _2: File
+  local _3 file: File
+  local _4: bool
+  local _5: bool
+  local _6: str
+  local _7: int
+  local _8: int
+  local _9: File
+  local _10: File
+  bb0:
+    jump bb1
+  bb1:
+    _1 = _0 > 0
+    branch _1 bb2 bb3
+  bb2:
+    _2 = make File(\"a\")
+    _3 = _2
+    _4 = _0 == 1
+    branch _4 bb5 bb6
+  bb3:
+    _9 = make File(\"b\")
+    _10 = _9
+    call File.del(_10)
+    return 0
+  bb4:
+    _5 = _0 == 2
+    branch _5 bb8 bb9
+  bb5:
+    call File.del(_3)
+    jump bb3
+  bb6:
+    jump bb4
+  bb7:
+    call File.del(_3)
+    jump bb1
+  bb8:
+    _6 = _3.name
+    _7 = builtin str.len(_6)
+    _8 = _7
+    call File.del(_3)
+    return _8
+  bb9:
+    jump bb7
+"
+    );
+}
+
+#[test]
+fn an_assert_stops_the_program() {
+    let source = "def f(n: int):\n    assert n > 0\n";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0)
+  local _0 n: int
+  local _1: bool
+  bb0:
+    _1 = _0 > 0
+    branch _1 bb1 bb2
+  bb1:
+    return
+  bb2:
+    stop \"assertion failed\"
+"
+    );
 }
 
 #[test]
@@ -1256,7 +1813,7 @@ fn every_example_lowers_to_valid_ir_or_says_why() {
     }
     // How far lowering has got. This only goes up, until every function lowers.
     println!("{} functions lowered", lowered_functions.len());
-    assert!(lowered_functions.len() >= 196, "only {} functions lowered", lowered_functions.len());
+    assert!(lowered_functions.len() >= 257, "only {} functions lowered", lowered_functions.len());
     for expected in
         ["numbers.fen: fib", "numbers.fen: collatz_steps", "numbers.fen: is_prime", "numbers.fen: lerp"]
     {

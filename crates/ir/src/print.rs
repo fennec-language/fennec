@@ -161,6 +161,7 @@ impl fmt::Display for InstKind {
             InstKind::GetErr { dest, value } => write!(f, "{dest} = {value} as err"),
             InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
             InstKind::AsError { dest, value } => write!(f, "{dest} = {value} as error"),
+            InstKind::MakeClosure { .. } | InstKind::CallClosure { .. } => closure(self, f),
             InstKind::Constant { dest, name } => write!(f, "{dest} = constant {name}"),
             InstKind::Call { dest, function, args } => {
                 let args: Vec<String> = args.iter().map(ToString::to_string).collect();
@@ -197,6 +198,24 @@ fn collection(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     }
 }
 
+/// The instructions for closures.
+fn closure(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match inst {
+        InstKind::MakeClosure { dest, function, captures } => {
+            let captures: Vec<String> = captures.iter().map(ToString::to_string).collect();
+            write!(f, "{dest} = closure {function}[{}]", captures.join(", "))
+        }
+        InstKind::CallClosure { dest, closure, args } => {
+            let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+            if let Some(dest) = dest {
+                write!(f, "{dest} = ")?;
+            }
+            write!(f, "call closure {closure}({})", args.join(", "))
+        }
+        _ => Ok(()),
+    }
+}
+
 impl fmt::Display for Terminator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -205,6 +224,7 @@ impl fmt::Display for Terminator {
             Terminator::Return(Some(value)) => write!(f, "return {value}"),
             Terminator::Return(None) => write!(f, "return"),
             Terminator::NoMatch { value, .. } => write!(f, "no match {value}"),
+            Terminator::Stop { message, .. } => write!(f, "stop {message:?}"),
             Terminator::Unreachable => write!(f, "unreachable"),
         }
     }

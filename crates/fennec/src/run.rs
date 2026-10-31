@@ -125,9 +125,7 @@ fn absolute(path: &str) -> String {
 /// them, since another build's checker may find what this one doesn't.
 fn fingerprint(sources: &fennec_syntax::Sources) -> fennec_blake3::Hash {
     let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec build cache 2026-10-31 passed check");
-    let build = std::env::current_exe().and_then(std::fs::metadata);
-    let modified = build.as_ref().ok().and_then(|build| build.modified().ok());
-    hasher.update(format!("{:?} {modified:?}\n", build.as_ref().map(std::fs::Metadata::len).ok()).as_bytes());
+    hasher.update(env!("FENNEC_BUILD").as_bytes());
     for (path, text) in sources.files() {
         for part in [path, text] {
             hasher.update(&part.len().to_le_bytes());

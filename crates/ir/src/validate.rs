@@ -110,6 +110,10 @@ impl<'p> Check<'p> {
             InstKind::Format { .. } | InstKind::Builtin { .. } => self.engine_inst(inst),
             InstKind::Call { dest, function, args } => self.call(*dest, function, args),
             InstKind::Constant { dest, name } => self.constant(*dest, name),
+            InstKind::MakeClosure { dest, function, captures } => {
+                self.make_closure(*dest, function, captures);
+            }
+            InstKind::CallClosure { dest, closure, args } => self.call_closure(*dest, closure, args),
             _ => self.failure_inst(inst),
         }
     }
@@ -234,6 +238,7 @@ impl<'p> Check<'p> {
                 let (key, item) = match ty {
                     Some(Type::List(item)) => (Type::Int, *item),
                     Some(Type::Dict(key, item)) => (*key, *item),
+                    Some(Type::IdMap(item)) => (Type::Id(item.clone()), *item),
                     _ => {
                         self.problems.push(format!("`{inst}` changes an item of something else"));
                         return;
@@ -356,6 +361,53 @@ impl<'p> Check<'p> {
         }
     }
 
+    fn make_closure(&mut self, dest: LocalId, callee: &str, captures: &[Operand]) {
+        let Some(Type::Arrow(params, returns)) = self.local(dest) else {
+            self.problems.push(format!("keeps a closure of `{callee}` in another type"));
+            return;
+        };
+        let Some(target) = self.program.functions.iter().find(|function| function.name == callee) else {
+            let elsewhere = self.program.external.iter().any(|name| name == callee)
+                || self.program.not_lowered.iter().any(|skipped| skipped.function == callee);
+            if !elsewhere {
+                self.problems.push(format!("makes a closure of `{callee}`, which doesn't exist"));
+            }
+            return;
+        };
+        if target.params != captures.len() + params.len() || target.returns != *returns {
+            self.problems.push(format!("makes a closure of `{callee}` of the wrong shape"));
+        }
+        let wanted = captures.iter().map(Some).chain(params.iter().map(|_| None));
+        for (captured, param) in wanted.zip(&target.locals) {
+            if let Some(captured) = captured {
+                self.operand(captured, Some(&param.ty), "capture");
+            }
+        }
+        for (param, local) in params.iter().zip(target.locals.iter().skip(captures.len())) {
+            if *param != local.ty {
+                self.problems.push(format!("makes a closure of `{callee}` taking the wrong types"));
+            }
+        }
+    }
+
+    fn call_closure(&mut self, dest: Option<LocalId>, closure: &Operand, args: &[Operand]) {
+        let Some(Type::Arrow(params, returns)) = self.function.type_of(closure) else {
+            self.problems.push(format!("calls `{closure}`, which isn't a closure"));
+            return;
+        };
+        if args.len() != params.len() {
+            self.problems.push(format!("calls `{closure}` with {} arguments", args.len()));
+        }
+        for (arg, param) in args.iter().zip(&params) {
+            self.operand(arg, Some(param), "argument");
+        }
+        if let Some(dest) = dest
+            && self.local(dest).as_ref() != Some(&*returns)
+        {
+            self.problems.push(format!("keeps what `{closure}` gives back in the wrong type"));
+        }
+    }
+
     fn constant(&mut self, dest: LocalId, name: &str) {
         let wanted = self.local(dest);
         let found = self.program.constants.iter().find(|constant| constant.name == name);
@@ -419,7 +471,10 @@ impl<'p> Check<'p> {
                 self.problems.push("returns nothing, but has a return type".to_owned());
             }
             Terminator::NoMatch { value, .. } => self.operand(value, None, "value"),
-            Terminator::Return(None) | Terminator::Jump(_) | Terminator::Unreachable => {}
+            Terminator::Return(None)
+            | Terminator::Jump(_)
+            | Terminator::Stop { .. }
+            | Terminator::Unreachable => {}
         }
     }
 
@@ -462,6 +517,7 @@ fn indexed(ty: &Type) -> Option<(Type, Type)> {
         Type::Bytes => Some((Type::Int, Type::Int)),
         Type::Dict(key, value) => Some((*key.clone(), *value.clone())),
         Type::Named(name) if name == "Args" => Some((Type::Int, Type::Str)),
+        Type::IdMap(item) => Some((Type::Id(item.clone()), *item.clone())),
         Type::Tuple(items) => {
             let first = items.first()?;
             items.iter().all(|item| item == first).then(|| (Type::Int, first.clone()))

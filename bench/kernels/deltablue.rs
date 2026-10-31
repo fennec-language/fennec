@@ -406,7 +406,7 @@ fn projection_test(size: i64) -> i64 {
 fn main() {
     let size = std::hint::black_box(100);
     let mut total = 0;
-    for _ in 0..5 {
+    for _ in 0..100 {
         total += chain_test(size as usize) + projection_test(size);
     }
     println!("{total}");

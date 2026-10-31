@@ -103,12 +103,12 @@ impl Interp<'_> {
         put_in(&mut binding.value, &place.steps, value, place.span)
     }
 
-    /// The first step of a place into a type's own `def []`.
+    /// The first step of a place into a type with its own `def []=`.
     fn own_index<'p>(&self, root: &Value, place: &'p Place) -> Option<OwnIndex<'p>> {
         let mut value = root;
         for (at, step) in place.steps.iter().enumerate() {
             if let (Value::Instance(instance), Step::Index(key)) = (value, step)
-                && self.type_info(&instance.type_name).is_some_and(|info| info.methods.contains_key("[]"))
+                && self.type_info(&instance.type_name).is_some_and(|info| info.methods.contains_key("[]="))
             {
                 return Some(OwnIndex {
                     before: place.steps.get(..at)?,

@@ -300,10 +300,6 @@ impl Interp<'_> {
                 }
                 Ok(())
             }
-            ExprKind::Index { object, index } if op.is_none() && self.has_method(object, "[]=")? => {
-                let args = vec![index.as_ref().clone(), value.clone()];
-                self.call_mut_method(object, "[]=", &args, target.span).map(|_| ())
-            }
             _ => {
                 let place = self.mut_place(target, "this can't be assigned to")?;
                 let new_value = self.eval(value)?;

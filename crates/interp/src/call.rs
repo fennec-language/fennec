@@ -327,15 +327,6 @@ impl Interp<'_> {
         self.call_user(function, evaluated, span)
     }
 
-    pub(crate) fn has_method(&mut self, object: &Expr, method: &str) -> Result<bool, Diagnostic> {
-        Ok(match self.eval(object)? {
-            Value::Instance(instance) => {
-                self.type_info(&instance.type_name).is_some_and(|info| info.methods.contains_key(method))
-            }
-            _ => false,
-        })
-    }
-
     /// Runs a value's `def del` when a `with` block ends.
     pub(crate) fn clean_up(&mut self, value: Value, span: Span) -> Result<(), Diagnostic> {
         if let Value::Instance(instance) = &value

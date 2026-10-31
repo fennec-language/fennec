@@ -4428,6 +4428,8 @@ writing save.dat
 # A type's own `def []` and `def []=` act as places: changing part of an item reads it,
 # changes it, and writes it back, however deep it's nested.
 
+from std.game import IdMap
+
 struct Part:
     name: str
     x = 0.0
@@ -4489,6 +4491,16 @@ def main(stdout: Stdout):
     mut store = Store(rooms=[room])
     store.rooms[0]["back"][0].shift(1.0)
     stdout.print(store.rooms[0].shelf.parts, room.shelf.parts)
+
+    # Reached through a dict or an IdMap.
+    mut by_name = {"main": shelf}
+    by_name["main"][0].x = 20.0
+    stdout.print(by_name["main"].parts, shelf.parts)
+
+    mut shelves = IdMap[Shelf]()
+    id = shelves.insert(shelf)
+    shelves[id][0].x = 30.0
+    stdout.print(shelves[id].parts, shelf.parts)
 ```
 
 It prints:
@@ -4498,6 +4510,8 @@ It prints:
 [6, 6]
 [Part(name="bolt!", x=9.0)] 5 [Part(name="bolt!", x=3.0)]
 [Part(name="bolt!", x=10.0)] [Part(name="bolt!", x=9.0)]
+[Part(name="bolt!", x=20.0)] [Part(name="bolt!", x=3.0)]
+[Part(name="bolt!", x=30.0)] [Part(name="bolt!", x=3.0)]
 ```
 
 ### `packed_lists`

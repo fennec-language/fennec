@@ -20,3 +20,7 @@ sieve 0
 sort 3
 spectral_norm 0
 strings 0
+comp_helpers 0
+dict_field 11
+method_chain 0
+struct_keys 5

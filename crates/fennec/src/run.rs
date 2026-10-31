@@ -39,6 +39,30 @@ pub(crate) fn run(path: &str, jit: bool, arguments: &[String]) -> ExitCode {
     }
 }
 
+/// `fennec dev startup <path>`: everything `fennec run --jit` does before `main`, for the
+/// benchmark suite to tell how long a program takes to start from how long its work takes.
+pub(crate) fn startup(path: &str) -> ExitCode {
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
+    let signatures = match fennec_check::check_to_run(&mut program.module) {
+        Ok(signatures) => signatures,
+        Err(diagnostics) => return reject(&program, &diagnostics),
+    };
+    let Some(home) = fennec_build::fennec_home() else {
+        eprintln!("error: couldn't find a home folder; set FENNEC_HOME");
+        return ExitCode::FAILURE;
+    };
+    let cache = fennec_build::Cache::new(&home);
+    let name =
+        std::fs::canonicalize(path).map_or_else(|_| path.to_owned(), |path| path.display().to_string());
+    match fennec_jit::start_only(&program.module, &signatures, &cache, &name) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(fennec_jit::JitError::Failed(diagnostic) | fennec_jit::JitError::Unsupported(diagnostic)) => {
+            eprint!("{}", program.sources.render(&diagnostic));
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Runs a program as native code, or with the interpreter if it uses something the JIT
 /// can't compile yet. Nothing runs before the JIT decides, so nothing runs twice.
 fn native(

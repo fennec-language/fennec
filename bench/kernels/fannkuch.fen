@@ -1,0 +1,48 @@
+## Fannkuch: permuting a small list and flipping prefixes, all array reads and writes.
+
+def fannkuch(n: int) -> (int, int):
+    mut perm = [i for i in range(n)]
+    mut count = [0 for _ in range(n)]
+    mut flips = [0 for _ in range(n)]
+    mut most = 0
+    mut checksum = 0
+    mut sign = 1
+    mut r = n
+    while True:
+        for i in range(n):
+            flips[i] = perm[i]
+        mut total = 0
+        mut first = flips[0]
+        while first != 0:
+            mut low = 0
+            mut high = first
+            while low < high:
+                held = flips[low]
+                flips[low] = flips[high]
+                flips[high] = held
+                low += 1
+                high -= 1
+            total += 1
+            first = flips[0]
+        if total > most:
+            most = total
+        checksum += sign * total
+        sign = -sign
+        r = 1
+        mut going = True
+        while going:
+            if r == n: return (checksum, most)
+            moved = perm[0]
+            for i in range(r):
+                perm[i] = perm[i + 1]
+            perm[r] = moved
+            count[r] += 1
+            if count[r] <= r:
+                going = False
+            else:
+                count[r] = 0
+                r += 1
+
+def main(stdout: Stdout):
+    checksum, most = fannkuch(9)
+    stdout.print(checksum, most)

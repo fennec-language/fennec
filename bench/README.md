@@ -1,47 +1,63 @@
 # Benchmarks
 
-Each kernel in `kernels/` is a Fennec program and a Rust twin that does the same work, the
-idiomatic way. `fennec-bench` builds the twin with `rustc -C opt-level=3 -C target-cpu=native`,
-runs both on the same machine, taking turns, 7 times each, and compares medians. They must
-print the same thing.
+Each kernel in `kernels/` is a Fennec program that stands for one way a language has to be fast. Every kernel has a target pinned in `targets/`, and the suite reports how fast Fennec runs it as a percentage of that target.
 
 ```bash
 cargo build --release -p fennec -p fennec-bench
 ./target/release/fennec-bench
 ```
 
-To compare against another build of `fennec`, like the previous commit's, pass
-`--previous path/to/fennec`. CI does that on every pull request, merge and push to `main`.
-A kernel counts as slower when its median time is more than 10% slower than before and it
-also runs more than 1% more instructions. Counted by cachegrind, identical runs differ by
-about one part in ten million. For now CI runs the suite with `--report-only`: a
-slowdown shows as a warning on the pull request, and doesn't fail it, until the instruction
-counts have proven stable on pull requests that change nothing on the run path. A kernel whose
-Fennec and Rust versions print different things still fails the job. Time on a shared CI machine can jump by 10% or more when a
-neighbour is busy, or when code merely moves around in the binary; instruction counts don't.
+| Area | Kernels |
+|---|---|
+| Calls, recursion | `fib` |
+| Integer math and arrays | `sieve`, `fannkuch` |
+| Float math | `nbody`, `spectral_norm`, `mandelbrot` |
+| Allocation and recursive data | `binary_trees` |
+| Hash tables | `dicts` |
+| Strings and text | `strings`, `json` |
+| Structs in a game loop | `particles` |
+| Sorting and generics | `sort`, `generics` |
+| Closures and iterators | `comprehensions`, `closures` |
+| A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
 
-- Where the CPU's counters can be read, `perf stat` counts every run.
-- Where they can't, as on CI's virtual machines, Valgrind's cachegrind counts by simulating. It's
-  about 50 times slower, so it only confirms a kernel that looks slower.
-- With neither, a slowdown is measured again with three times the runs before it fails.
+## What it reports
 
-## Targets
+Startup and work are told apart:
 
-These are the speed goals from `docs/decisions.md`:
+- **Startup** is everything before `main`: loading, checking, compiling or reusing cached code. `fennec dev startup` stops there.
+- **Work** is the whole run minus startup. It's what's compared with the target, so a slow start can't hide a fast loop, or the other way around.
 
-- **Release builds:** within 3% of the Rust twin. This becomes a failing check when release
-  builds exist.
-- **The JIT:** at least 80% of Rust's speed. The table shows where each kernel stands.
+A kernel's speed is its target's instructions divided by the instructions its work takes. Instructions are the measure because they barely move when a machine is busy, and they don't depend on how fast it is. Times are shown too.
 
-A failure is fixed in the compiler, never by changing the benchmark.
+- Where the CPU's counters can be read, `perf stat` counts.
+- Where they can't, as on CI's virtual machines, Valgrind's cachegrind counts by simulating. It's about 50 times slower.
+- On a Mac, `time -l` counts. The targets are pinned on Linux, and starting any program on a Mac takes millions more instructions, so a Mac's percentages are only a guide, above all on the smallest kernels.
+
+Each kernel also has to print exactly what its target expects, which the target file holds as a hash.
+
+## The floor and the ratchet
+
+**The JIT's floor is 80% of target**, on every kernel. Past that is nice but not the goal. The 80% is a floor on work, not on startup.
+
+Once a kernel reaches the floor, the run says so. Mark it `yes` in the last column of both targets files, and from then on CI fails if it drops below. A failure is fixed in the compiler, never by changing the benchmark.
+
+Release builds will aim for 97% of target when they exist.
+
+To compare against another build of `fennec`, like the previous commit's, pass `--previous path/to/fennec`. CI does that on every pull request, merge and push to `main`. A kernel counts as slower when its median time is more than 10% slower than before and it also runs more than 1% more instructions. For now that's a warning, until the counts have proven stable on pull requests that change nothing on the run path.
+
+## Pinning targets
+
+The twins beside the kernels are idiomatic code for the same work, in Rust, built with `-C opt-level=3` for the architecture's baseline CPU. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.
+
+Everyday runs don't build or run the twins. They only read the targets.
+
+Re-pin only when a kernel's work or a twin changes, by running the **Pin benchmark targets** workflow, which pins each architecture the same way, then copying what it prints into `targets/`.
 
 ## Adding a kernel
 
-Add `name.fen` and `name.rs` to `kernels/`.
+Add `name.fen` and `name.rs` to `kernels/`, then re-pin.
 
-- Size the work so today's JIT finishes in a second or two, since every run happens 5 times in
-  CI.
+- Size the work so that Rust takes between about 10 and 100 ms. Valgrind counts every kernel on every CI run, and a kernel the JIT is still slow on takes far longer than its twin.
 - Print a result that depends on all of the work, so neither side can skip it.
-- In Rust, read the input size through `std::hint::black_box`, so the answer isn't computed
-  at compile time.
+- In Rust, read the input size through `std::hint::black_box`, so the answer isn't computed at compile time.
 - The Fennec code must be formatted; CI checks it with `fennec fmt --check`.

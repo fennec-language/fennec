@@ -1,0 +1,26 @@
+## The Mandelbrot set: plain float math in a tight loop, with nothing to allocate.
+
+def iterations(cr: float, ci: float, limit: int) -> int:
+    mut zr = 0.0
+    mut zi = 0.0
+    for i in range(limit):
+        zr2 = zr * zr
+        zi2 = zi * zi
+        if zr2 + zi2 > 4.0: return i
+        zi = 2.0 * zr * zi + ci
+        zr = zr2 - zi2 + cr
+    limit
+
+def main(stdout: Stdout):
+    size = 400
+    mut total = 0
+    mut inside = 0
+    for y in range(size):
+        ci = 2.0 * float(y) / float(size) - 1.0
+        for x in range(size):
+            cr = 2.0 * float(x) / float(size) - 1.5
+            count = iterations(cr, ci, 100)
+            total += count
+            if count == 100:
+                inside += 1
+    stdout.print(total, inside)

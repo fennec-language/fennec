@@ -370,6 +370,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         literal_of: HashMap::new(),
         hoisted: Vec::new(),
         checked: Vec::new(),
+        addresses: Vec::new(),
         facts: ranges::Facts::default(),
         handed: 0,
         origin,
@@ -459,6 +460,8 @@ pub(crate) struct Lowerer<'a, 'f> {
     hoisted: Vec<hoist::Hoisted>,
     /// Indexes checked in the straight-line code being lowered.
     checked: Vec<lists::Checked>,
+    /// Item addresses worked out in the straight-line code being lowered.
+    addresses: Vec<lists::Address>,
     /// What's known about values, to leave out checks that can't fail.
     facts: ranges::Facts,
     /// Where the table of runtime addresses is, in an executable.

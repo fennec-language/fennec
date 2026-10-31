@@ -374,13 +374,15 @@ struct Parser:
         generics = self.generic_params()?
         self.expect_punct("(")?
         mut params = []
+        mut seen_default = False
         while not self.at_punct(")"):
             param = self.param()?
-            if param.default is None and any(earlier.default is not None for earlier in params):
+            if param.default is None and seen_default:
                 fail Diagnostic(
                     message=f"`{param.name}` has no default, so it has to come before the ones that do",
                     span=param.span,
                 )
+            seen_default = param.default is not None
             params.append(param)
             if not self.eat_punct(","):
                 break

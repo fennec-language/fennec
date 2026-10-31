@@ -40,7 +40,7 @@ struct Generic:
 ## Whether an expression is a plain value written out: a number, string, bool or `None`.
 def is_plain_value(expr: Expr) -> bool:
     match expr.kind:
-        case .Int(_) | .Float(_) | .Str(_) | .Bool(_) | .None: True
+        case .Int(_) | .Float(_) | .Str(_) | .Bool(_) | .Nothing: True
         case .Unary(op, operand):
             match operand.kind:
                 case .Int(_) | .Float(_): op == .Neg

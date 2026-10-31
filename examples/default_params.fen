@@ -12,7 +12,7 @@ def offset(by: int = -1, scale: float = -0.5, label: str? = None) -> str:
     shown = label else "none"
     f"{by} {scale} {shown}"
 
-struct Counter:
+struct Tally:
     count: int
 
     def bump(mut self, by: int = 1, again: bool = False):
@@ -26,8 +26,8 @@ def main(stdout: Stdout):
     stdout.print(repeat("ab", between="-", times=3))
     stdout.print(repeat(text="cd", between="+"))
     stdout.print(offset(), offset(label="x"), offset(scale=2.0, by=4))
-    mut counter = Counter(count=0)
-    counter.bump()
-    counter.bump(by=5)
-    counter.bump(again=True, by=10)
-    stdout.print(counter.count)
+    mut tally = Tally(count=0)
+    tally.bump()
+    tally.bump(by=5)
+    tally.bump(again=True, by=10)
+    stdout.print(tally.count)

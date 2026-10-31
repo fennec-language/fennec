@@ -193,8 +193,33 @@ impl Lowerer<'_, '_> {
 
     /// `value?`: the value inside a result or optional, or else leave the function with the
     /// failure (wrapped in `context`'s error, given `from`) or None.
-    pub(super) fn try_value(&mut self, value: &Expr, context: Option<&Expr>) -> Result<Lowered, Diagnostic> {
-        let (lowered, ty) = self.expr(value)?;
+    pub(super) fn try_value(
+        &mut self,
+        value: &Expr,
+        context: Option<&Expr>,
+        span: Span,
+    ) -> Result<Lowered, Diagnostic> {
+        let ((lowered, ty), direct) = self.tried_call(value, span)?;
+        if let (Some(direct), Some(word)) = (direct, lowered) {
+            let failed = self.is_failure(word);
+            let up = self.b.create_block();
+            let present = self.b.create_block();
+            self.b.set_cold_block(up);
+            self.b.ins().brif(failed, up, &[], present, &[]);
+            self.b.switch_to_block(up);
+            let handle = self.failure_handle(word);
+            let failure = match context {
+                Some(context) => {
+                    let (wrapper, wrapper_ty) = self.expr(context)?;
+                    let wrapper = self.handle_of(wrapper, wrapper_ty, context.span)?;
+                    self.help(Helper::WithCause, &[wrapper, handle])?
+                }
+                None => handle,
+            };
+            self.pass_up(failure)?;
+            self.b.switch_to_block(present);
+            return Ok((Some(word), direct));
+        }
         if ty != Ty::Obj {
             return Ok((lowered, ty));
         }

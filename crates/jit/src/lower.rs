@@ -31,6 +31,7 @@ pub(crate) mod object;
 mod objects;
 mod paths;
 mod ranges;
+mod results;
 mod specialize;
 mod stmt;
 mod strings;
@@ -72,6 +73,8 @@ struct Compiled {
     inline: Option<std::rc::Rc<fennec_syntax::FnDef>>,
     /// Its body, to lower at a call for what it's passed.
     specialized: Option<std::rc::Rc<fennec_syntax::FnDef>>,
+    /// What it gives back directly as a block, when it's fallible and does.
+    direct: Option<Ty>,
     /// Whether it's from the standard library, whose failures are reported at the call.
     prelude: bool,
 }
@@ -376,7 +379,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         pending: Vec::new(),
         leaves_of: HashMap::new(),
         elements: HashMap::new(),
-        lending: false,
+        now: results::Now::default(),
         leaf_vars: HashMap::new(),
         borrowed: HashSet::new(),
         borrowed_names: HashSet::new(),
@@ -464,8 +467,8 @@ pub(crate) struct Lowerer<'a, 'f> {
     dest: Option<Value>,
     /// The kinds of packed list items registered with the runtime, by their number there.
     elements: HashMap<Ty, i64>,
-    /// Whether what's being read is used at once, with nothing changing meanwhile.
-    lending: bool,
+    /// What's true of the expression being lowered.
+    now: results::Now,
     /// The leaves of each struct value kept in registers.
     leaves_of: HashMap<Value, Vec<Value>>,
     /// The leaf variables of each struct name kept in registers, by the name's variable.
@@ -569,7 +572,11 @@ impl Lowerer<'_, '_> {
                 self.call_helper(Helper::PutBack, &[caller, param])?;
             }
             let base = self.base()?;
-            if function.ret == Ty::Obj {
+            if function.direct.is_some() {
+                if let Some(first) = results.first_mut() {
+                    *first = self.keep_direct(base, *first)?;
+                }
+            } else if function.ret == Ty::Obj {
                 if let Some(first) = results.first_mut() {
                     *first = self.help(Helper::Keep, &[base, *first])?;
                 }
@@ -747,47 +754,5 @@ impl Lowerer<'_, '_> {
         }
         self.dirty = false;
         Ok(())
-    }
-
-    /// Leaves the function from here with a value.
-    fn ret(&mut self, value: Option<Value>, ty: Ty, span: Span) -> Result<(), Diagnostic> {
-        self.put_back_all()?;
-        // What's given back outlives every name, so it needs an owner of its own.
-        let value = value.map(|value| self.own(value, ty));
-        self.release_scopes(0)?;
-        let function = self.function;
-        let value = if function.fallible {
-            let handle = self.handle_of(value, ty, span)?;
-            Some(self.help(Helper::Ok, &[handle])?)
-        } else {
-            match function.ret {
-                Ty::Unit | Ty::Cap(_) => None,
-                Ty::Struct(id) => {
-                    let value = self.convert(value, ty, Ty::Struct(id), span)?;
-                    let dest = self.dest.ok_or_else(|| internal("no destination", span))?;
-                    self.copy_struct(dest, value, id)?;
-                    None
-                }
-                ret => Some(self.convert(value, ty, ret, span)?),
-            }
-        };
-        self.jump_exit(value);
-        Ok(())
-    }
-
-    /// Leaves the function with a value that's already what it returns, like a failure
-    /// `?` passes up.
-    fn pass_up(&mut self, handle: Value) -> Result<(), Diagnostic> {
-        self.put_back_all()?;
-        self.release_scopes(0)?;
-        let value = abi(self.function.ret).map(|_| handle);
-        self.jump_exit(value);
-        Ok(())
-    }
-
-    fn jump_exit(&mut self, value: Option<Value>) {
-        let args: Vec<_> = value.into_iter().map(Into::into).collect();
-        self.b.ins().jump(self.exit, &args);
-        self.after_terminator();
     }
 }

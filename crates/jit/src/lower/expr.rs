@@ -40,9 +40,9 @@ impl Lowerer<'_, '_> {
     /// A receiver that's used at once, so reading it needn't count another owner when working
     /// it out can't change anything.
     pub(super) fn lent_receiver(&mut self, object: &Expr) -> Result<Lowered, Diagnostic> {
-        let outer = std::mem::replace(&mut self.lending, !super::paths::has_call(object));
+        let outer = std::mem::replace(&mut self.now.lending, !super::paths::has_call(object));
         let read = self.receiver(object);
-        self.lending = outer;
+        self.now.lending = outer;
         read
     }
 
@@ -142,7 +142,7 @@ impl Lowerer<'_, '_> {
             },
             ExprKind::Cond { then, cond, otherwise } => self.conditional(then, cond, otherwise),
             ExprKind::Else { value, default } => self.else_value(value, default),
-            ExprKind::Try { value, context } => self.try_value(value, context.as_deref()),
+            ExprKind::Try { value, context } => self.try_value(value, context.as_deref(), span),
             ExprKind::Call { callee, args } => self.call(expr, callee, args),
             ExprKind::Match { subject, arms } => self.match_value(subject, arms, span),
             ExprKind::Attr { object, name, optional } => self.read_field(expr, object, name, *optional),

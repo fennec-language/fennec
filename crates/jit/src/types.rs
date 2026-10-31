@@ -166,6 +166,8 @@ pub(crate) struct Function<'m> {
     pub(crate) ret: Ty,
     /// Whether it gives back a result: it contains `fail` or `?`.
     pub(crate) fallible: bool,
+    /// What it gives back directly when it's fallible and that's a counted block.
+    pub(crate) direct: Option<Ty>,
 }
 
 pub(crate) struct Program<'m> {
@@ -352,5 +354,8 @@ fn function<'m>(
         })
         .collect();
     let ret = if signature.can_fail { Ty::Obj } else { layouts.ty(&signature.returns) };
-    Some(Function { def, key, prelude: false, params, ret, fallible: signature.can_fail })
+    // `main` hands its result to whatever started the program.
+    let direct = Some(layouts.ty(&signature.returns))
+        .filter(|ty| signature.can_fail && ty.counted() && def.name != "main");
+    Some(Function { def, key, prelude: false, params, ret, fallible: signature.can_fail, direct })
 }

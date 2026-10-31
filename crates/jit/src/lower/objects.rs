@@ -112,7 +112,7 @@ impl Lowerer<'_, '_> {
                 }
             });
         }
-        let lending = self.lending;
+        let lending = self.now.lending;
         let (value, ty) = self.lent_receiver(object)?;
         if let (Ty::Struct(id), Some(address)) = (ty, value)
             && let Some(field) = self.struct_field(id, name)?

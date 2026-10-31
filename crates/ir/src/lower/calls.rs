@@ -5,11 +5,12 @@
 use fennec_check::Type;
 use fennec_syntax::{Arg, Expr, ExprKind, Span};
 
+use super::places::Place;
 use super::{Lowered, Lowering};
 use crate::{InstKind, LocalId, Operand, Program};
 
-/// A field to write back after a call: the local, the path to the field, and what holds it.
-type WriteBack = (LocalId, Vec<String>, LocalId);
+/// A place to write back after a call, and what holds its value for the call.
+type WriteBack = (Place, LocalId);
 
 /// The standard library's functions a program's calls reach, which aren't lowered yet.
 pub(super) fn external(program: &Program) -> Vec<String> {
@@ -84,8 +85,8 @@ impl Lowering<'_> {
             dest = keep.map(|ty| self.temporary(ty));
             self.emit(InstKind::Call { dest, function, args: values }, span);
         }
-        for (object, path, held) in write_backs {
-            self.emit(InstKind::SetField { object, path, value: Operand::Local(held) }, span);
+        for (place, held) in write_backs {
+            self.store(place.local, &place.steps, Operand::Local(held), span)?;
         }
         Ok(dest)
     }
@@ -188,17 +189,17 @@ impl Lowering<'_> {
         Ok((key, values.ok_or("a parameter has no argument")?))
     }
 
-    /// Something a call changes: a local itself, or a temporary holding a field that's
-    /// written back after the call.
+    /// Something a call changes: a local itself, or a temporary holding a field or item
+    /// that's written back after the call.
     fn place(&mut self, expr: &Expr, write_backs: &mut Vec<WriteBack>, span: Span) -> Lowered<Operand> {
-        let (object, path) = self.field_place(expr)?;
-        if path.is_empty() {
-            return Ok(Operand::Local(object));
+        let place = self.place_of(expr)?;
+        if place.steps.is_empty() {
+            return Ok(Operand::Local(place.local));
         }
-        let Operand::Local(held) = self.read_place(object, &path, span)? else {
-            return Err("it changes something other than a field".to_owned());
+        let Operand::Local(held) = self.read_steps(place.local, &place.steps, span)? else {
+            return Err("it changes something other than a field or item".to_owned());
         };
-        write_backs.push((object, path, held));
+        write_backs.push((place, held));
         Ok(Operand::Local(held))
     }
 }

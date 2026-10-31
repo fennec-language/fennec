@@ -1,3 +1,5 @@
+# decision: `Random` is a seeded value.
+
 from std.random import Random, random_int
 
 struct Enemy:

@@ -1,3 +1,5 @@
+# decision: They're called interfaces, not protocols.
+
 from std.math import PI
 
 interface Shape:

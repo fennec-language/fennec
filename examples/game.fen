@@ -1,3 +1,5 @@
+# decision: `IdMap` and `Id[T]` are the way to point at things.
+
 from std.game import Id, IdMap
 from std.math import Vec3
 

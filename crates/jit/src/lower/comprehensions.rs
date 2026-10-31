@@ -3,7 +3,7 @@
 //! native code fills it.
 
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::{InstBuilder, types};
+use cranelift_codegen::ir::{InstBuilder, Value, types};
 use fennec_syntax::{Arg, BinOp, CompKind, Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind};
 
 use super::Lowerer;
@@ -235,6 +235,23 @@ impl Lowerer<'_, '_> {
         Ok(Some((Some(made), ty)))
     }
 
+    /// Lowers something that needs a list by name, with a native list a call or the like
+    /// gave held under a hidden one until it's done.
+    pub(super) fn holding_list<T>(
+        &mut self,
+        (list, ty): (Value, Ty),
+        span: Span,
+        lower: impl FnOnce(&mut Self, &Expr) -> Result<T, Diagnostic>,
+    ) -> Result<T, Diagnostic> {
+        let list = self.own(list, ty);
+        let name = hidden("held", span);
+        self.open_scope();
+        self.bind_native(&name, ty, Some(list), false);
+        let lowered = lower(self, &name_expr(&name, span));
+        self.close_scope()?;
+        lowered
+    }
+
     /// Lowers a statement in the middle of an expression. Statements drop temporaries, so
     /// this drops only back to here, keeping the ones made earlier in the expression.
     fn stmt_inside_expr(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
@@ -365,7 +382,7 @@ impl Lowerer<'_, '_> {
         &mut self,
         name: &str,
         item: Ty,
-        (var, start, count): (&str, cranelift_codegen::ir::Value, cranelift_codegen::ir::Value),
+        (var, start, count): (&str, Value, Value),
         elem: &Expr,
     ) -> Result<(), Diagnostic> {
         let items = self.items_at(name, item, true)?;

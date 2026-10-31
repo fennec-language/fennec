@@ -381,6 +381,23 @@ impl Lowerer<'_, '_> {
         body: &[Stmt],
         is_mut: bool,
     ) -> Result<bool, Diagnostic> {
+        // A list a call gives is the loop's own. One held as an object is left for the
+        // runtime, which needn't copy it, and `range` is counted without making a list.
+        let held = match &list.kind {
+            ExprKind::Name(_) | ExprKind::Attr { .. } | ExprKind::Index { .. } => false,
+            ExprKind::Call { callee, .. } => !matches!(&callee.kind, ExprKind::Name(name) if name == "range"),
+            _ => true,
+        };
+        if held
+            && !is_mut
+            && let Some(ty @ Ty::List(_)) = self.checked_expr(list)
+        {
+            let (value, from) = self.expr(list)?;
+            let value = self.convert(value, from, ty, list.span)?;
+            return self.holding_list((value, ty), list.span, |lowerer, held| {
+                lowerer.for_packed(names, held, body, false)
+            });
+        }
         let (Some((list_name, item)), [name]) = (self.packed(list), names) else { return Ok(false) };
         if Self::body_names(body, &list_name) || (is_mut && !matches!(item, Ty::Struct(_))) {
             return Ok(false);

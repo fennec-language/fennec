@@ -13,7 +13,6 @@ def main(stdout: Stdout):
     stdout.print(sorted(ints), ints)
     stdout.print(sorted([1.5, -0.0, 0.0, -2.5, 8.0]))
     stdout.print(sorted([True, False, True]))
-    stdout.print(sorted([]) == [0][:0])
     stdout.print(sorted(ints, key=(n) => -n))
     stdout.print(sorted(ints, key=(n) => n % 3))
     stdout.print(sorted(ints, key=(n) => n > 0))

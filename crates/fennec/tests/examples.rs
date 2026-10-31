@@ -462,6 +462,30 @@ def main(stdout: Stdout):
     assert_eq!(report.from_ir, ["half", "twice"]);
 }
 
+/// What a branch shows about an int leaves out checks only where it's true: past the branch,
+/// the same sum still overflows and fails as the interpreter does.
+#[test]
+fn branches_from_the_ir_only_leave_out_checks_they_prove() {
+    let source = "def small(n: int) -> int:
+    if n > 5:
+        return n - 1
+    if 2 > n:
+        return n + 1
+    n + 9223372036854775802
+
+def main(stdout: Stdout):
+    stdout.print(small(9), small(0), small(5))
+    stdout.print(small(6), small(2))
+    stdout.print(9223372036854775807 + small(1))
+";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    let mut out = Vec::new();
+    let result = fennec_jit::run_with_report(&module, &mut out);
+    let Err(JitError::Failed(failure)) = result else { panic!("the last sum should overflow") };
+    assert_eq!(Err(failure.render("branches.fen", source)), run(source, "branches.fen"));
+}
+
 /// Number-only functions come from the typed IR.
 #[test]
 fn number_only_functions_are_lowered_from_the_ir() {

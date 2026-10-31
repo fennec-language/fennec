@@ -632,7 +632,15 @@ pub extern "C" fn from_value(value: i64, shape: i64, start: i64, end: i64) -> i6
     })
 }
 
-fn write_block(state: &mut State, shape: usize, value: &Value) -> Option<i64> {
+/// The number of the shape of a struct or enum, by its name.
+pub(super) fn shape_named(state: &State, name: &str) -> Option<usize> {
+    state.tables.shapes.iter().position(|shape| match shape.as_ref() {
+        Element::Struct { name: found, .. } | Element::Enum { name: found, .. } => found.as_ref() == name,
+        _ => false,
+    })
+}
+
+pub(super) fn write_block(state: &mut State, shape: usize, value: &Value) -> Option<i64> {
     if u64::try_from(shape).ok()? > state.tables.str_shape {
         return super::dicts::write(state, u64::try_from(shape).ok()?, value);
     }

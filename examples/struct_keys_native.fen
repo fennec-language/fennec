@@ -1,0 +1,101 @@
+## Dicts and sets keyed by plain structs and enums, native.
+
+struct Cell:
+    x: int
+    y: int
+
+struct Tagged:
+    at: Cell
+    weight: float
+    live: bool
+
+enum Dir:
+    North
+    East
+    Far(steps: int)
+
+struct Grid:
+    seen: dict[Cell, int]
+    marks: set[Cell]
+
+def visit(mut grid: Grid, cell: Cell):
+    grid.seen[cell] = grid.seen.get(cell, 0) + 1
+    grid.marks.add(cell)
+
+def main(stdout: Stdout):
+    mut seen: dict[Cell, int] = {}
+    for i in range(1000):
+        cell = Cell(x=i % 7, y=i % 5)
+        seen[cell] = seen.get(cell, 0) + 1
+    stdout.print(
+        seen.len(),
+        seen[Cell(x=0, y=0)],
+        Cell(x=1, y=1) in seen,
+        Cell(x=9, y=9) in seen,
+        Cell(x=9, y=9) not in seen,
+    )
+    stdout.print(seen.get(Cell(x=9, y=9), -1), seen.get(Cell(x=2, y=3), -1))
+
+    literal = {Cell(x=1, y=2): "a", Cell(x=3, y=4): "b", Cell(x=1, y=2): "c"}
+    stdout.print(literal, literal[Cell(x=1, y=2)], literal.len())
+    mut total = 0
+    for key in literal:
+        total += key.x + key.y
+    for key, word in literal.items():
+        stdout.print(key.x, key, word)
+    for key in literal.keys():
+        total += key.y
+    stdout.print(total, [word for word in literal.values()])
+
+    copy = seen
+    seen[Cell(x=100, y=100)] = 1
+    seen[Cell(x=0, y=0)] = 0
+    stdout.print(
+        copy.len(),
+        seen.len(),
+        copy[Cell(x=0, y=0)],
+        seen[Cell(x=0, y=0)],
+        copy == seen,
+        copy == copy,
+    )
+
+    tagged = {Tagged(at=Cell(x=1, y=1), weight=0.5, live=True): 1}
+    stdout.print(
+        tagged[Tagged(at=Cell(x=1, y=1), weight=0.5, live=True)],
+        Tagged(at=Cell(x=1, y=1), weight=0.5, live=False) in tagged,
+        tagged,
+    )
+    stdout.print(Tagged(at=Cell(x=1, y=1), weight=0.25, live=True) in tagged)
+
+    mut dirs: dict[Dir, str] = {}
+    dirs[Dir.North] = "n"
+    dirs[Dir.Far(steps=2)] = "far2"
+    dirs[Dir.Far(steps=3)] = "far3"
+    stdout.print(
+        dirs[Dir.North],
+        dirs[Dir.Far(steps=3)],
+        Dir.East in dirs,
+        Dir.Far(steps=4) in dirs,
+        dirs.len(),
+    )
+
+    mut marks = {Cell(x=1, y=1), Cell(x=2, y=2), Cell(x=1, y=1)}
+    marks.add(Cell(x=3, y=3))
+    marks.discard(Cell(x=2, y=2))
+    marks.discard(Cell(x=9, y=9))
+    marks.remove(Cell(x=3, y=3))
+    stdout.print(marks, marks.len(), Cell(x=1, y=1) in marks, Cell(x=3, y=3) in marks)
+    made = {Cell(x=i % 3, y=0) for i in range(10)}
+    stdout.print(made.len(), sorted([cell.x for cell in made]))
+
+    mut grid = Grid(seen={}, marks={Cell(x=0, y=0)})
+    visit(mut grid, Cell(x=1, y=0))
+    visit(mut grid, Cell(x=1, y=0))
+    grid.seen[Cell(x=5, y=5)] = 50
+    grid.marks.remove(Cell(x=0, y=0))
+    stdout.print(grid, grid.seen.get(Cell(x=1, y=0), 0))
+
+    mut large: dict[Cell, int] = {}
+    for i in range(5000):
+        large[Cell(x=i, y=i * 2)] = i
+    stdout.print(large.len(), large[Cell(x=4999, y=9998)], Cell(x=1, y=1) in large)

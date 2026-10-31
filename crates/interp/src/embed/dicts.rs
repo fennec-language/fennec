@@ -5,13 +5,14 @@
 //! key and its value. Native code looks keys up, changes values and adds keys itself while
 //! the dict has one owner and room; everything else happens here.
 //!
-//! Keys are ints or strings, values ints, floats, bools or strings, each one word. Which
+//! Keys are ints, strings or plain structs, a plain struct key being the address of a block of
+//! its own. Values are ints, floats, bools or strings, each one word. Which
 //! ones a dict holds is in its shape: the shapes after the string shape, one for each pair.
 //! A set is a dict whose values are nothing.
 
 use fennec_syntax::Diagnostic;
 
-use super::heap::{TEXT_HEADER_WORDS, release, same, text_address};
+use super::heap::{HEADER_WORDS, TEXT_HEADER_WORDS, release, same, text_address};
 use super::{State, attempt, span, with};
 use crate::value::Value;
 
@@ -38,9 +39,19 @@ pub enum Word {
     Str,
     /// What a set's keys have for values.
     Nothing,
+    /// A plain struct or enum as a key, by its layout's number, which native code knows. The
+    /// runtime goes by the shape of the key's block.
+    Plain(u32),
 }
 
-const KEYS: [Word; 2] = [Word::Int, Word::Str];
+impl Word {
+    /// Whether a word of this kind is the address of a block the dict owns.
+    fn owned(self) -> bool {
+        matches!(self, Word::Str | Word::Plain(_))
+    }
+}
+
+const KEYS: [Word; 3] = [Word::Int, Word::Str, Word::Plain(0)];
 const VALUES: [Word; 5] = [Word::Int, Word::Float, Word::Bool, Word::Str, Word::Nothing];
 
 /// How many shapes dicts take, after the string shape.
@@ -49,6 +60,7 @@ pub const SHAPES: u64 = (KEYS.len() * VALUES.len()) as u64;
 /// The shape of dicts with these keys and values, counted from the string shape, or `None`
 /// for a pair native dicts don't hold.
 pub fn shape(str_shape: u64, key: Word, value: Word) -> Option<u64> {
+    let key = if let Word::Plain(_) = key { Word::Plain(0) } else { key };
     let key = KEYS.iter().position(|word| *word == key)?;
     let value = VALUES.iter().position(|word| *word == value)?;
     u64::try_from(key * VALUES.len() + value).ok().map(|at| str_shape + 1 + at)
@@ -84,11 +96,26 @@ pub fn hash_text(length: u64, words: &[u64]) -> u64 {
     )
 }
 
+/// A plain struct key's hash, from its words. Native code works it out the same way.
+pub fn hash_words(words: &[u64]) -> u64 {
+    let count = u64::try_from(words.len()).unwrap_or(0);
+    finish(
+        words
+            .iter()
+            .fold(count.wrapping_mul(MIX), |hash, word| (hash.rotate_left(23) ^ word).wrapping_mul(MIX)),
+    )
+}
+
 fn finish(hash: u64) -> u64 {
     (hash ^ (hash >> 29)) >> 1
 }
 
 fn hash_key(state: &State, key_word: Word, key: u64) -> u64 {
+    if let Word::Plain(_) = key_word {
+        return hash_words(
+            state.heap.block(key).and_then(|block| block.get(HEADER_WORDS..)).unwrap_or_default(),
+        );
+    }
     if key_word != Word::Str {
         return hash_int(key);
     }
@@ -99,7 +126,7 @@ fn hash_key(state: &State, key_word: Word, key: u64) -> u64 {
 }
 
 fn keys_equal(state: &State, key_word: Word, a: u64, b: u64) -> bool {
-    a == b || (key_word == Word::Str && same(state, a, b))
+    a == b || (key_word.owned() && same(state, a, b))
 }
 
 /// The live entries of a dict's block, in order: hash, key and value.
@@ -207,7 +234,7 @@ fn set_in(state: &mut State, dict: i64, key: i64, value: i64) -> Option<i64> {
             let slot = block.get_mut(start + entry * ENTRY_WORDS + 2)?;
             let old = std::mem::replace(slot, value);
             for (word, address) in [(value_word, old), (key_word, key)] {
-                if word == Word::Str {
+                if word.owned() {
                     release(state, address);
                 }
             }
@@ -226,7 +253,7 @@ fn set_in(state: &mut State, dict: i64, key: i64, value: i64) -> Option<i64> {
 
 fn retain_entry(state: &mut State, key_word: Word, value_word: Word, [_, key, value]: &[u64; 3]) {
     for (word, address) in [(key_word, *key), (value_word, *value)] {
-        if word == Word::Str
+        if word.owned()
             && let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut())
         {
             *count += 1;
@@ -275,7 +302,7 @@ pub extern "C" fn set_remove(set: i64, key: i64, must: i8, start: i64, end: i64)
                         *keys -= 1;
                     }
                 }
-                if key_word == Word::Str {
+                if key_word.owned() {
                     release(state, held);
                 }
             }
@@ -308,7 +335,9 @@ pub extern "C" fn missing(dict: i64, key: i64, augmented: i8, start: i64, end: i
         let key_word =
             state.heap.block(u64::try_from(dict).unwrap_or(0)).and_then(|block| kind(state, block));
         let key = match key_word {
-            Some((Word::Str, _)) => super::heap::read_block(state, u64::try_from(key).unwrap_or(0)),
+            Some((word, _)) if word.owned() => {
+                super::heap::read_block(state, u64::try_from(key).unwrap_or(0))
+            }
             _ => Value::Int(key),
         };
         let message = format!("the dict has no key {}", crate::format::repr(&key));
@@ -326,7 +355,7 @@ pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
     let Some((key_word, value_word)) = kind(state, block) else { return Vec::new() };
     let mut found = Vec::new();
     for [_, key, value] in entries(block) {
-        found.extend((key_word == Word::Str).then_some(key));
+        found.extend(key_word.owned().then_some(key));
         found.extend((value_word == Word::Str).then_some(value));
     }
     found
@@ -356,7 +385,7 @@ fn word_value(state: &State, word: Word, bits: u64) -> Value {
         Word::Int => Value::Int(i64::from_ne_bytes(bits.to_ne_bytes())),
         Word::Float => Value::Float(f64::from_bits(bits)),
         Word::Bool => Value::Bool(bits != 0),
-        Word::Str => super::heap::read_block(state, bits),
+        Word::Str | Word::Plain(_) => super::heap::read_block(state, bits),
         Word::Nothing => Value::Unit,
     }
 }
@@ -382,6 +411,10 @@ pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64>
             (Word::Bool, Value::Bool(b)) => u64::from(*b),
             (Word::Str, Value::Str(text)) => u64::try_from(text_address(state, text)).ok()?,
             (Word::Nothing, Value::Unit) => 0,
+            (Word::Plain(_), Value::Instance(instance)) => {
+                let shape = super::heap::shape_named(state, &instance.type_name)?;
+                u64::try_from(super::heap::write_block(state, shape, value)?).ok()?
+            }
             _ => return None,
         })
     };
@@ -401,7 +434,7 @@ pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64>
 
 fn release_entry(state: &mut State, key_word: Word, value_word: Word, [_, key, value]: &[u64; 3]) {
     for (word, address) in [(key_word, *key), (value_word, *value)] {
-        if word == Word::Str {
+        if word.owned() {
             release(state, address);
         }
     }
@@ -417,7 +450,7 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
             Probe::Found(entry) => theirs_value(right, entry).is_some_and(|other| match value_word {
                 Word::Float => f64::from_bits(*value).total_cmp(&f64::from_bits(other)).is_eq(),
                 Word::Str => same(state, *value, other),
-                Word::Int | Word::Bool | Word::Nothing => *value == other,
+                Word::Int | Word::Bool | Word::Nothing | Word::Plain(_) => *value == other,
             }),
             Probe::Empty(_) => false,
         })

@@ -23,4 +23,4 @@ sieve 0
 sort 0
 spectral_norm 0
 strings 0
-struct_keys 5
+struct_keys 0

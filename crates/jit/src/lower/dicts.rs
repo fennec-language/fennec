@@ -35,6 +35,7 @@ pub(super) fn word_ty(word: Word) -> Ty {
         Word::Bool => Ty::Bool,
         Word::Str => Ty::Str,
         Word::Nothing => Ty::Unit,
+        Word::Plain(id) => Ty::Struct(id),
     }
 }
 
@@ -120,12 +121,17 @@ impl Lowerer<'_, '_> {
             }
             ("discard" | "remove", [item]) => {
                 let key = self.set_key(&item.value, key_word)?;
+                let key_held = self.key_block(key, key_word)?;
                 let must = self.b.ins().iconst(types::I8, i64::from(name == "remove"));
                 let [start, end] = self.span_args(span);
                 let held = self.b.use_var(var);
-                let changed = self.help(Helper::SetRemove, &[held, key, must, start, end])?;
+                let changed = self.help(Helper::SetRemove, &[held, key_held, must, start, end])?;
                 self.b.def_var(var, changed);
-                self.consume(Some(key), word_ty(key_word))?;
+                if let Word::Plain(_) = key_word {
+                    self.release(key_held)?;
+                } else {
+                    self.consume(Some(key), word_ty(key_word))?;
+                }
             }
             ("clear", []) => {
                 let held = self.b.use_var(var);
@@ -291,6 +297,12 @@ impl Lowerer<'_, '_> {
         };
         for (name, (offset, word)) in names.iter().zip(wanted) {
             let bits = self.b.ins().load(types::I64, flags, entry, *offset);
+            if let Word::Plain(id) = *word {
+                let words = self.block_words(bits, id)?;
+                let value = self.read_words(&words, Ty::Struct(id))?;
+                self.declare_struct(name, value, id, false)?;
+                continue;
+            }
             if *word == Word::Str {
                 self.retain(bits);
             }
@@ -373,11 +385,37 @@ impl Lowerer<'_, '_> {
 
     /// A key's hash, worked out as the runtime does.
     fn dict_hash(&mut self, key: Word, value: Value) -> Result<Value, Diagnostic> {
-        let mixed =
-            if key == Word::Str { self.text_hash(value)? } else { self.b.ins().imul_imm_s(value, MIX) };
+        let mixed = match key {
+            Word::Str => self.text_hash(value)?,
+            Word::Plain(id) => {
+                let words = self.key_words(value, id)?;
+                let count = i64::try_from(words.len()).unwrap_or(0).wrapping_mul(MIX);
+                let start = self.int(count);
+                words.into_iter().fold(start, |hash, word| {
+                    let turned = self.b.ins().rotl_imm_s(hash, 23);
+                    let mixed = self.b.ins().bxor(turned, word);
+                    self.b.ins().imul_imm_s(mixed, MIX)
+                })
+            }
+            _ => self.b.ins().imul_imm_s(value, MIX),
+        };
         let high = self.b.ins().ushr_imm_s(mixed, 29);
         let folded = self.b.ins().bxor(mixed, high);
         Ok(self.b.ins().ushr_imm_s(folded, 1))
+    }
+
+    /// A plain struct's words, as a key's block holds them.
+    fn key_words(&mut self, key: Value, id: u32) -> Result<Vec<Value>, Diagnostic> {
+        let mut words = Vec::new();
+        self.push_words(key, Ty::Struct(id), &mut words)?;
+        Ok(words)
+    }
+
+    /// A plain struct as a key's block of its own, owned once.
+    fn key_block(&mut self, key: Value, key_word: Word) -> Result<Value, Diagnostic> {
+        let Word::Plain(id) = key_word else { return Ok(key) };
+        let words = self.key_words(key, id)?;
+        self.new_block(id, &words)
     }
 
     /// A string's hash before it's finished: its length, then each word of its text mixed in.
@@ -446,6 +484,24 @@ impl Lowerer<'_, '_> {
         self.b.ins().brif(same_hash, compare, &[], next, &[]);
         self.b.switch_to_block(compare);
         let other = self.b.ins().load(types::I64, flags, entry, 8);
+        if let Word::Plain(id) = key_word {
+            // A key's block holds the same words as the struct, word by word.
+            for (at, word) in self.key_words(key, id)?.into_iter().enumerate() {
+                let offset = i32::try_from(at * 8 + 16).unwrap_or(0);
+                let theirs = self.b.ins().load(types::I64, flags, other, offset);
+                let same_word = self.b.ins().icmp(IntCC::Equal, theirs, word);
+                let more = self.b.create_block();
+                self.b.ins().brif(same_word, more, &[], next, &[]);
+                self.b.switch_to_block(more);
+                self.b.seal_block(more);
+            }
+            self.b.ins().jump(found, &[entry.into()]);
+            self.b.switch_to_block(next);
+            let after = self.b.ins().iadd_imm_s(at, 1);
+            let after = self.b.ins().band(after, mask);
+            self.b.ins().jump(head, &[after.into()]);
+            return Ok(());
+        }
         let same_key = self.b.ins().icmp(IntCC::Equal, other, key);
         if key_word == Word::Str {
             // Equal strings in different blocks: compare their text.
@@ -513,6 +569,7 @@ impl Lowerer<'_, '_> {
         self.b.switch_to_block(absent);
         let augmented = self.b.ins().iconst(types::I8, i64::from(matches!(missing, Missing::Augmented)));
         let [start, end] = self.span_args(span);
+        let key = self.key_block(key, key_word)?;
         self.call_helper(Helper::DictMissing, &[dict, key, augmented, start, end])?;
         let zero = self.int(0);
         self.b.ins().jump(done, &[zero.into()]);
@@ -629,7 +686,8 @@ impl Lowerer<'_, '_> {
         let entries = self.b.ins().iadd(dict, entries);
         let offset = self.b.ins().imul_imm_s(used, i64::try_from(ENTRY_WORDS * 8).unwrap_or(0));
         let entry = self.b.ins().iadd(entries, offset);
-        for (at, word) in [hash, key, value].into_iter().enumerate() {
+        let held = self.key_block(key, key_word)?;
+        for (at, word) in [hash, held, value].into_iter().enumerate() {
             self.b.ins().store(flags, word, entry, i32::try_from(at * 8).unwrap_or(0));
         }
         self.b.ins().store(flags, number, dict, USED);
@@ -638,7 +696,8 @@ impl Lowerer<'_, '_> {
         self.b.ins().store(flags, keys, dict, KEYS);
         self.b.ins().jump(done, &[dict.into()]);
         self.b.switch_to_block(slow);
-        let changed = self.help(Helper::DictSet, &[dict, key, value])?;
+        let held = self.key_block(key, key_word)?;
+        let changed = self.help(Helper::DictSet, &[dict, held, value])?;
         self.b.ins().jump(done, &[changed.into()]);
         self.b.switch_to_block(done);
         let changed = self.param(done)?;
@@ -651,7 +710,7 @@ impl Lowerer<'_, '_> {
         match word {
             Word::Float => self.b.ins().bitcast(types::I64, MemFlagsData::new(), value),
             Word::Bool => self.b.ins().uextend(types::I64, value),
-            Word::Int | Word::Str | Word::Nothing => value,
+            Word::Int | Word::Str | Word::Nothing | Word::Plain(_) => value,
         }
     }
 
@@ -660,7 +719,7 @@ impl Lowerer<'_, '_> {
         match word {
             Word::Float => self.b.ins().bitcast(types::F64, MemFlagsData::new(), bits),
             Word::Bool => self.b.ins().ireduce(types::I8, bits),
-            Word::Int | Word::Str | Word::Nothing => bits,
+            Word::Int | Word::Str | Word::Nothing | Word::Plain(_) => bits,
         }
     }
 }

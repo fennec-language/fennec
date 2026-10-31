@@ -372,14 +372,13 @@ impl<'a> Lowerer<'a, '_> {
     }
 }
 
-/// What the runtime needs to know about each layout's blocks, by the layout's number.
-/// Layouts that aren't boxed get a placeholder.
+/// What the runtime needs to know about each layout's blocks, by the layout's number. A plain
+/// layout has blocks too, for a dict's keys.
 pub(crate) fn shapes(layouts: &Layouts) -> Vec<Rc<Element>> {
     (0..layouts.len())
         .map(|id| {
             let id = u32::try_from(id).unwrap_or(0);
-            let described =
-                layouts.get(id).filter(|layout| layout.boxed).and_then(|_| describe(layouts, Ty::Struct(id)));
+            let described = describe(layouts, Ty::Struct(id));
             Rc::new(described.unwrap_or(Element::Int))
         })
         .chain(std::iter::once(Rc::new(Element::Str)))

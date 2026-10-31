@@ -1,0 +1,7 @@
+error: the dict has no key Cell(x=9, y=9)
+ --> examples/errors/struct_key_missing.fen:9:18
+  |
+9 |     stdout.print(seen[Cell(x=9, y=9)])
+  |                  ^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: use `.get(key)`, which gives None instead

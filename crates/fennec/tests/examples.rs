@@ -143,8 +143,8 @@ fn the_jit_runs_examples_exactly_like_the_interpreter() {
             let name = path.strip_prefix(&dir).unwrap().to_string_lossy().replace('\\', "/");
             let source = fs::read_to_string(&path).unwrap();
             let shown_as = format!("examples/{name}");
-            let Ok(module) = fennec_syntax::parse(&source) else { continue };
-            if fennec_check::check(&module).is_err() {
+            let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
+            if fennec_check::check_and_resolve(&mut module).is_err() {
                 continue;
             }
             let mut out = Vec::new();
@@ -180,8 +180,8 @@ fn a_run_checking_only_what_it_reaches_compiles_the_same() {
         for path in paths {
             let source = fs::read_to_string(&path).unwrap();
             let mut module = fennec_syntax::parse(&source).unwrap();
-            let Ok(whole) = fennec_jit::run_with_report(&module, &mut Vec::new()) else { continue };
             let signatures = fennec_check::check_to_run(&mut module).unwrap();
+            let Ok(whole) = fennec_jit::run_with_report(&module, &mut Vec::new()) else { continue };
             let inputs = fennec_interp::Inputs::default();
             let reached = fennec_jit::run_cached(
                 &module,

@@ -170,13 +170,16 @@ impl Interp<'_> {
                 let items = self.iterate(items, span)?;
                 self.extreme(name, items, key, span)
             }
-            ("sum", Some(items), None, None) => {
+            // The checker gives anything but ints a start, but the REPL runs without it.
+            ("sum", Some(items), start, None) => {
                 let items = self.iterate(items, span)?;
-                let mut total = if matches!(items.first(), Some(Value::Float(_))) {
-                    Value::Float(0.0)
-                } else {
-                    Value::Int(0)
-                };
+                let mut total = start.unwrap_or_else(|| {
+                    if matches!(items.first(), Some(Value::Float(_))) {
+                        Value::Float(0.0)
+                    } else {
+                        Value::Int(0)
+                    }
+                });
                 for item in items {
                     total = self.binary(BinOp::Add, total, item, span)?;
                 }

@@ -32,9 +32,10 @@ mod place;
 mod program;
 mod stdlib;
 mod stmt;
+mod sum;
 mod types;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fennec_syntax::{Diagnostic, Module, Span};
 
@@ -61,10 +62,17 @@ pub fn provided_everywhere(name: &str) -> bool {
         || program::BUILT_IN_INTERFACES.contains(&name)
 }
 
+/// Whether a method the engines provide on a type changes its value, like `list.append`.
+/// `None` when the type has no such method.
+pub fn builtin_method_changes(ty: &Type, name: &str) -> Option<bool> {
+    builtins::method(ty, name).map(|method| method.changes)
+}
+
 /// Checks a parsed module, then writes into it the enum of each leading-dot case whose name
 /// more than one enum has, as the type expected where it's written decided: `.Int(value)`
-/// given back as an `ExprKind` becomes `ExprKind.Int(value)`. Running a module needs this,
-/// since what runs it doesn't know types.
+/// given back as an `ExprKind` becomes `ExprKind.Int(value)`. A `sum` of floats gets its
+/// start of `0.0` written in. Running a module needs this, since what runs it doesn't know
+/// types.
 pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
     let checked = check_typed(module)?;
     Ok(resolved(module, checked))
@@ -79,10 +87,14 @@ pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> 
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
-    if !checked.cases.is_empty() {
+    if !checked.cases.is_empty() || !checked.float_sums.is_empty() {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
-            if let Some(owner) = checked.cases.get(&(expr.span.start, expr.span.end)) {
+            let span = (expr.span.start, expr.span.end);
+            if let Some(owner) = checked.cases.get(&span) {
                 fennec_syntax::visit::name_enum(expr, owner);
+            }
+            if checked.float_sums.contains(&span) {
+                fennec_syntax::visit::add_float_start(expr);
             }
         });
     }
@@ -96,6 +108,8 @@ pub struct Checked {
     pub types: Types,
     /// The enum the expected type chose for each leading-dot case more than one enum has.
     cases: BTreeMap<(u32, u32), String>,
+    /// The calls to `sum` of floats with no start, which start at `0.0`.
+    float_sums: BTreeSet<(u32, u32)>,
 }
 
 /// The typed tree: the type of every expression and every declared name in a program,

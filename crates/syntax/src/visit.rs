@@ -30,6 +30,15 @@ pub fn name_enum(case: &mut Expr, owner: &str) {
     case.kind = ExprKind::Attr { object, name, optional: false };
 }
 
+/// Gives a call to `sum` of floats its start: `sum(xs)` becomes `sum(xs, 0.0)`.
+pub fn add_float_start(call: &mut Expr) {
+    let at = crate::Span { start: call.span.end, end: call.span.end };
+    if let ExprKind::Call { args, .. } = &mut call.kind {
+        let value = Expr { kind: ExprKind::Float(0.0), span: at };
+        args.push(crate::ast::Arg { name: None, is_mut: false, value });
+    }
+}
+
 fn type_def(def: &mut TypeDef, change: &mut dyn FnMut(&mut Expr)) {
     let fields = def.fields.iter_mut().chain(def.cases.iter_mut().flat_map(|case| case.fields.iter_mut()));
     for field in fields {

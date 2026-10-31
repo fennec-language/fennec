@@ -1,6 +1,8 @@
 //! Lowering a checked module to the IR, one function at a time. The types come from the
 //! checker's typed tree, never from working them out again.
 
+mod calls;
+mod lists;
 mod matching;
 mod structs;
 
@@ -32,6 +34,7 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
             Err(why) => program.not_lowered.push(NotLowered { function: key.clone(), why }),
         }
     }
+    program.external = calls::external(&program);
     program.structs = defs;
     program.enums = enums;
     program
@@ -86,6 +89,9 @@ struct Loop {
     exit: BlockId,
 }
 
+/// The capabilities, whose methods the engines provide.
+const CAPABILITIES: [&str; 5] = ["Stdout", "Fs", "Clock", "Args", "Stdin"];
+
 /// What's known about the whole program.
 struct Context<'a> {
     checked: &'a Checked,
@@ -102,8 +108,11 @@ impl Context<'_> {
     fn holds(&self, ty: &Type) -> bool {
         match ty {
             Type::Int | Type::Float | Type::Bool | Type::Str => true,
+            Type::List(item) => self.holds(item),
             Type::Named(name) => {
-                self.structs.contains(name.as_str()) || self.enums.contains_key(name.as_str())
+                self.structs.contains(name.as_str())
+                    || self.enums.contains_key(name.as_str())
+                    || CAPABILITIES.contains(&name.as_str())
             }
             _ => false,
         }
@@ -149,9 +158,6 @@ impl<'a> Lowering<'a> {
             loops: Vec::new(),
         };
         for param in &signature.params {
-            if param.is_mut {
-                return Err(format!("`{}` is a `mut` parameter", param.name));
-            }
             if !context.holds(&param.ty) {
                 return Err(format!("`{}` is {}", param.name, param.ty));
             }
@@ -166,6 +172,13 @@ impl<'a> Lowering<'a> {
         Ok(Function {
             name: key.to_owned(),
             params: signature.params.len(),
+            mut_params: signature
+                .params
+                .iter()
+                .enumerate()
+                .filter(|(_, param)| param.is_mut)
+                .map(|(at, _)| at)
+                .collect(),
             returns: lowering.returns,
             locals: lowering.locals,
             blocks: reachable(lowering.blocks),
@@ -258,7 +271,9 @@ impl<'a> Lowering<'a> {
                 self.finish(Terminator::Jump(target));
             }
             StmtKind::Pass => {}
-            StmtKind::For { names, iter, body, .. } => self.for_stmt(names, iter, body, stmt.span)?,
+            StmtKind::For { names, is_mut, iter, body } => {
+                self.for_stmt((names, *is_mut), iter, body, stmt.span)?;
+            }
             StmtKind::Fail(_) => return Err("it has `fail`".to_owned()),
             StmtKind::Yield(_) => return Err("it has `yield`".to_owned()),
             StmtKind::Assert(_) => return Err("it has `assert`".to_owned()),
@@ -289,6 +304,9 @@ impl<'a> Lowering<'a> {
     }
 
     fn assign(&mut self, target: &Expr, op: Option<BinOp>, value: &Expr, span: Span) -> Lowered<()> {
+        if let ExprKind::Index { object, index } = &target.kind {
+            return self.assign_index((object, index), op, value, span);
+        }
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_field(target, op, value, span);
         };
@@ -359,90 +377,13 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// `for name in range(...)`, counting in a local of its own, so the loop's name is a
-    /// fresh value each time around. The limit is read once. Going one step at a time, the
-    /// count can't overflow, since it's short of the limit before each step.
-    fn for_stmt(&mut self, names: &[String], iter: &Expr, body: &[Stmt], span: Span) -> Lowered<()> {
-        const OVER: &str = "it has a `for` loop over something other than a `range` stepping by 1 or -1";
-        let ([name], Some((args, down))) = (names, self.range_args(iter)) else {
-            return Err(OVER.to_owned());
-        };
-        let (first, limit) = match args.as_slice() {
-            [limit] => (Operand::Int(0), self.expr(limit)?),
-            [first, limit] => (self.expr(first)?, self.expr(limit)?),
-            _ => return Err(OVER.to_owned()),
-        };
-        let count = self.temporary(Type::Int);
-        self.emit(InstKind::Copy { dest: count, value: first }, span);
-        let stop = self.temporary(Type::Int);
-        self.emit(InstKind::Copy { dest: stop, value: limit }, span);
-        let (head, then, next, exit) =
-            (self.new_block(), self.new_block(), self.new_block(), self.new_block());
-        self.finish(Terminator::Jump(head));
-        self.current = head;
-        let going = self.temporary(Type::Bool);
-        let (lhs, rhs) = (Operand::Local(count), Operand::Local(stop));
-        let op = if down { BinOp::Gt } else { BinOp::Lt };
-        self.emit(InstKind::Binary { dest: going, op, lhs, rhs }, span);
-        self.finish(Terminator::Branch { cond: Operand::Local(going), then, otherwise: exit });
-        self.current = then;
-        self.scopes.push(HashMap::new());
-        let item = self.declare(name, Type::Int);
-        self.emit(InstKind::Copy { dest: item, value: Operand::Local(count) }, span);
-        self.loops.push(Loop { next, exit });
-        let lowered = self.stmts(body, Tail::Drop);
-        self.loops.pop();
-        self.scopes.pop();
-        lowered?;
-        self.finish(Terminator::Jump(next));
-        self.current = next;
-        let op = if down { BinOp::Sub } else { BinOp::Add };
-        let lhs = Operand::Local(count);
-        self.emit(InstKind::Binary { dest: count, op, lhs, rhs: Operand::Int(1) }, span);
-        self.finish(Terminator::Jump(head));
-        self.current = exit;
-        Ok(())
-    }
-
-    /// The first and limit arguments of a call to the built-in `range` with a step of 1 or
-    /// -1, and whether it counts down.
-    fn range_args<'e>(&self, iter: &'e Expr) -> Option<(Vec<&'e Expr>, bool)> {
-        let ExprKind::Call { callee, args } = &iter.kind else { return None };
-        let ExprKind::Name(name) = &callee.kind else { return None };
-        let plain = args.iter().all(|arg| arg.name.is_none() && !arg.is_mut);
-        if name != "range"
-            || !plain
-            || self.lookup(name).is_some()
-            || self.context.functions.contains("range")
-        {
-            return None;
-        }
-        let values: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
-        match values.as_slice() {
-            [first, limit, step] => {
-                let down = match &step.kind {
-                    ExprKind::Int(1) => false,
-                    ExprKind::Int(-1) => true,
-                    ExprKind::Unary { op: UnaryOp::Neg, expr } if matches!(expr.kind, ExprKind::Int(1)) => {
-                        true
-                    }
-                    _ => return None,
-                };
-                Some((vec![first, limit], down))
-            }
-            _ => Some((values, false)),
-        }
-    }
-
     /// An expression whose value nothing keeps.
     fn effect(&mut self, expr: &Expr) -> Lowered<()> {
         if let ExprKind::Call { callee, args } = &expr.kind
             && self.constructs(callee).is_none()
             && self.built_case(expr).is_none()
         {
-            let (function, args) = self.call_parts(callee, args)?;
-            self.emit(InstKind::Call { dest: None, function, args }, expr.span);
-            return Ok(());
+            return self.call(callee, args, None, expr.span).map(|_| ());
         }
         self.expr(expr).map(|_| ())
     }
@@ -465,6 +406,9 @@ impl<'a> Lowering<'a> {
             ExprKind::Binary { op: op @ (BinOp::And | BinOp::Or), lhs, rhs } => {
                 self.short_circuit(*op, lhs, rhs, span)
             }
+            ExprKind::Binary { op: op @ (BinOp::In | BinOp::NotIn), lhs, rhs } => {
+                self.contains(*op, lhs, rhs, span)
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let ty = self.ty(expr)?;
                 let lhs = self.expr(lhs)?;
@@ -485,12 +429,12 @@ impl<'a> Lowering<'a> {
                 if let Some(type_name) = self.constructs(callee) {
                     return self.make(type_name, args, span);
                 }
-                let ty = self.ty(expr)?;
-                let (function, args) = self.call_parts(callee, args)?;
-                let dest = self.temporary(ty);
-                self.emit(InstKind::Call { dest: Some(dest), function, args }, span);
-                Ok(Operand::Local(dest))
+                let dest = self.call(callee, args, Some(self.ty(expr)?), span)?;
+                dest.map(Operand::Local).ok_or_else(|| "a call kept nothing".to_owned())
             }
+            ExprKind::List(items) => self.list(expr, items),
+            ExprKind::Index { object, index } => self.get_index(expr, object, index),
+            ExprKind::FStr(parts) => self.format(parts, span),
             other => Err(format!("it uses {}", describe(other))),
         }
     }

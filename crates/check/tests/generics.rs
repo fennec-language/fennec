@@ -313,3 +313,21 @@ fn self_in_an_interface_is_the_type_that_fits_it() {
         ]
     );
 }
+
+#[test]
+fn hashable_and_ordered_imply_eq_but_other_bounds_dont() {
+    let program = "
+        interface Named:
+            def name(self) -> str
+
+        def hashed[T: Hashable](a: T, b: T) -> bool:
+            a == b
+
+        def ordered[T: Ordered](a: T, b: T) -> bool:
+            a == b
+
+        def named[T: Named](a: T, b: T) -> bool:
+            a == b
+    ";
+    assert_eq!(problems(program), ["`T` could be any type, so `==` might not work on it @ a == b"]);
+}

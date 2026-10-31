@@ -161,6 +161,9 @@ distance = (a - b).abs()                  # method: a question about one value
 ```
 *Why:* A looping function belongs to no one type: it works on lists, sets, dicts and generator expressions alike. A question about a value is answered differently by each type, so it lives on the type.
 
+**`sum` needs a start for anything but numbers.** `sum(numbers)` needs nothing, and an empty `list[float]` gives `0.0`. Any other type passes a start: `sum(wallet, Money(cents=0))`. A missing start, a type with no `def +`, and a start of the wrong type are all compile errors.
+*Why:* It keeps the rule that a global uses nothing but looping and operators, with no `zero()` interface.
+
 **No global function serves only one type.** A global has to follow the rule above, or be a type's constructor, like `int(...)`, `float(...)` and `str(...)`. An operation on one type is a method. So a character's code is `"A".code()`, not Python's `ord("A")`, and `ord(c)` is an error whose fix writes `c.code()`.
 *Why:* Global functions that only fit one type crowd the namespace, can't be extended by other types, and hide where an operation lives.
 

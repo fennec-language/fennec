@@ -31,7 +31,7 @@ def narrowed(n: int) -> int:
     n + 9_223_372_036_854_775_797
 
 def main(stdout: Stdout):
-    stdout.print(down(500), fib(15), sign(-4), sign(4), sign(0))
+    stdout.print(down(50), fib(15), sign(-4), sign(4), sign(0))
     stdout.print(clamp(2.5), clamp(-1.0), clamp(0.25))
     tell(3, stdout)
     tell(1, stdout)

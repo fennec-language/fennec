@@ -1,0 +1,5 @@
+struct Tag:
+    name: str
+
+def main(stdout: Stdout):
+    stdout.print(sum([Tag(name="a")], Tag(name="")))

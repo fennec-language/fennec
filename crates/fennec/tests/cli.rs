@@ -229,6 +229,13 @@ fn repl_echoes_values_and_keeps_definitions() {
 }
 
 #[test]
+fn repl_sums_floats_without_the_checker() {
+    let output = fennec(&["repl"], "sum([1.5, 2.5])\nsum([1, 2])\nsum([1], 10)\nexit\n").unwrap();
+    let stdout = text(&output.stdout);
+    assert!(stdout.contains(">>> 4.0\n>>> 3\n>>> 11\n"), "{stdout}");
+}
+
+#[test]
 fn repl_says_which_module_to_import_from() {
     let output = fennec(&["repl"], "sqrt(2.0)\nloads(\"1\")\nexit\n").unwrap();
     let errors = text(&output.stderr);

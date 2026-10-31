@@ -600,6 +600,36 @@ fn bench_without_blocks_says_so() {
     assert!(text(&output.stdout).starts_with("no benches in "), "{}", text(&output.stdout));
 }
 
+#[test]
+fn dev_copies_lists_what_may_cost_hot_code_first() {
+    let source = "def unused() -> list[int]:\n    [1]\n\n\
+        def main(stdout: Stdout):\n    mut xs = [1]\n    snapshot = xs\n    xs.append(2)\n    \
+        for at in range(2):\n        stdout.print(f\"{at}\")\n    stdout.print(snapshot.len())\n";
+    let dir = scratch("copies").unwrap();
+    let program = dir.join("game.fen");
+    std::fs::write(&program, source).unwrap();
+    let output = fennec(&["dev", "copies", &program.to_string_lossy()], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let printed = text(&output.stdout);
+    let lines: Vec<&str> = printed.lines().filter(|line| line.contains(" in `")).collect();
+    assert!(lines[0].contains("(in a loop): this f-string may allocate"), "{printed}");
+    assert!(printed.contains("may copy `xs`: snapshot still refers to it"), "{printed}");
+    assert!(!printed.contains("unused"), "only what `main` reaches: {printed}");
+    assert!(printed.ends_with("of them in loops\n"), "{printed}");
+}
+
+#[test]
+fn dev_copies_reports_a_mistake_instead_of_a_list() {
+    let dir = scratch("copies_bad").unwrap();
+    let program = dir.join("bad.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(1 + \"a\")\n").unwrap();
+    let output = fennec(&["dev", "copies", &program.to_string_lossy()], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(text(&output.stderr).starts_with("error: "), "{}", text(&output.stderr));
+}
+
 /// Every command the guidance tells an agent to run has to exist.
 #[test]
 fn the_guidance_names_only_commands_there_are() {

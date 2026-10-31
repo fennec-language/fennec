@@ -1,0 +1,6 @@
+## Removing what a set doesn't hold fails, naming it.
+
+def main(stdout: Stdout):
+    mut items = {1, 2}
+    items.remove(3)
+    stdout.print(items)

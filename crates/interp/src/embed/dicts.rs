@@ -7,6 +7,7 @@
 //!
 //! Keys are ints or strings, values ints, floats, bools or strings, each one word. Which
 //! ones a dict holds is in its shape: the shapes after the string shape, one for each pair.
+//! A set is a dict whose values are nothing.
 
 use fennec_syntax::Diagnostic;
 
@@ -35,10 +36,12 @@ pub enum Word {
     Float,
     Bool,
     Str,
+    /// What a set's keys have for values.
+    Nothing,
 }
 
 const KEYS: [Word; 2] = [Word::Int, Word::Str];
-const VALUES: [Word; 4] = [Word::Int, Word::Float, Word::Bool, Word::Str];
+const VALUES: [Word; 5] = [Word::Int, Word::Float, Word::Bool, Word::Str, Word::Nothing];
 
 /// How many shapes dicts take, after the string shape.
 pub const SHAPES: u64 = (KEYS.len() * VALUES.len()) as u64;
@@ -231,6 +234,73 @@ fn retain_entry(state: &mut State, key_word: Word, value_word: Word, [_, key, va
     }
 }
 
+/// A block only one owner holds, taking over the owner `at` had.
+fn unshared(state: &mut State, at: u64) -> Option<u64> {
+    let block = state.heap.block(at)?;
+    if block.first() == Some(&1) {
+        return Some(at);
+    }
+    let (key_word, value_word) = kind(state, block)?;
+    let (shape, live) = (*block.get(1)?, entries(block));
+    for entry in &live {
+        retain_entry(state, key_word, value_word, entry);
+    }
+    release(state, at);
+    let copy = build(state, shape, &live, live.len());
+    u64::try_from(state.heap.insert(copy)).ok()
+}
+
+/// `set.discard(key)`, or `set.remove(key)` when `must`, failing like the interpreter for a
+/// key it doesn't have. Takes over the set's owner and gives back the set's.
+pub extern "C" fn set_remove(set: i64, key: i64, must: i8, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let key = key.cast_unsigned();
+        let at = u64::try_from(set).ok().and_then(|at| unshared(state, at)).unwrap_or(0);
+        let Some((block, (key_word, _))) =
+            state.heap.block(at).and_then(|block| Some((block, kind(state, block)?)))
+        else {
+            return Ok(set);
+        };
+        let hash = hash_key(state, key_word, key);
+        let mask = block.get(4).and_then(|mask| usize::try_from(*mask).ok()).unwrap_or(0);
+        match find(state, block, key_word, key, hash) {
+            Probe::Found(entry) => {
+                let place = DICT_HEADER_WORDS + mask + 1 + entry * ENTRY_WORDS;
+                let held = block.get(place + 1).copied().unwrap_or(0);
+                if let Some(block) = state.heap.block_mut(at) {
+                    if let Some(hash) = block.get_mut(place) {
+                        *hash = REMOVED;
+                    }
+                    if let Some(keys) = block.get_mut(2) {
+                        *keys -= 1;
+                    }
+                }
+                if key_word == Word::Str {
+                    release(state, held);
+                }
+            }
+            Probe::Empty(_) if must != 0 => {
+                let value = word_value(state, key_word, key);
+                let message = format!("{} isn't in the set", crate::format::repr(&value));
+                return Err(Diagnostic::new(message, span(start, end)));
+            }
+            Probe::Empty(_) => {}
+        }
+        Ok(i64::try_from(at).unwrap_or(0))
+    })
+}
+
+/// `set.clear()`: takes over the set's owner and gives back an empty set's.
+pub extern "C" fn set_clear(set: i64) -> i64 {
+    with(|state| {
+        let at = u64::try_from(set).unwrap_or(0);
+        let shape = state.heap.block(at).and_then(|block| block.get(1)).copied().unwrap_or(0);
+        release(state, at);
+        let empty = build(state, shape, &[], 0);
+        state.heap.insert(empty)
+    })
+}
+
 /// Fails with the interpreter's message for a key a dict doesn't have: reading it, or, for
 /// `augmented`, changing it with `+=` and the like.
 pub extern "C" fn missing(dict: i64, key: i64, augmented: i8, start: i64, end: i64) {
@@ -265,11 +335,20 @@ pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
 /// A dict's block as the interpreter holds a dict.
 pub(super) fn read(state: &mut State, block: &[u64]) -> Value {
     let Some((key_word, value_word)) = kind(state, block) else { return Value::None };
+    if value_word == Word::Nothing {
+        return read_set(state, key_word, block);
+    }
     let pairs = entries(block)
         .into_iter()
         .map(|[_, key, value]| (word_value(state, key_word, key), word_value(state, value_word, value)))
         .collect();
     Value::Dict(std::rc::Rc::new(pairs))
+}
+
+/// A set's block as the interpreter holds a set.
+fn read_set(state: &mut State, key_word: Word, block: &[u64]) -> Value {
+    let items = entries(block).into_iter().map(|[_, key, _]| word_value(state, key_word, key)).collect();
+    Value::Set(std::rc::Rc::new(items))
 }
 
 fn word_value(state: &mut State, word: Word, bits: u64) -> Value {
@@ -278,6 +357,7 @@ fn word_value(state: &mut State, word: Word, bits: u64) -> Value {
         Word::Float => Value::Float(f64::from_bits(bits)),
         Word::Bool => Value::Bool(bits != 0),
         Word::Str => super::heap::read_block(state, bits),
+        Word::Nothing => Value::Unit,
     }
 }
 
@@ -286,18 +366,27 @@ fn word_value(state: &mut State, word: Word, bits: u64) -> Value {
 pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64> {
     let at = usize::try_from(shape.checked_sub(state.tables.str_shape + 1)?).ok()?;
     let (key_word, value_word) = (*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?);
-    let Value::Dict(pairs) = value else { return None };
+    let set: Vec<(Value, Value)>;
+    let pairs = match value {
+        Value::Dict(pairs) if value_word != Word::Nothing => pairs.as_slice(),
+        Value::Set(items) if value_word == Word::Nothing => {
+            set = items.iter().map(|item| (item.clone(), Value::Unit)).collect();
+            &set
+        }
+        _ => return None,
+    };
     let words = |state: &mut State, word: Word, value: &Value| -> Option<u64> {
         Some(match (word, value) {
             (Word::Int, Value::Int(n)) => u64::from_ne_bytes(n.to_ne_bytes()),
             (Word::Float, Value::Float(x)) => x.to_bits(),
             (Word::Bool, Value::Bool(b)) => u64::from(*b),
             (Word::Str, Value::Str(text)) => u64::try_from(text_address(state, text)).ok()?,
+            (Word::Nothing, Value::Unit) => 0,
             _ => return None,
         })
     };
     let mut entries = Vec::with_capacity(pairs.len());
-    for (key, value) in pairs.iter() {
+    for (key, value) in pairs {
         let (Some(key), Some(value)) = (words(state, key_word, key), words(state, value_word, value)) else {
             for entry in &entries {
                 release_entry(state, key_word, value_word, entry);
@@ -328,7 +417,7 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
             Probe::Found(entry) => theirs_value(right, entry).is_some_and(|other| match value_word {
                 Word::Float => f64::from_bits(*value).total_cmp(&f64::from_bits(other)).is_eq(),
                 Word::Str => same(state, *value, other),
-                Word::Int | Word::Bool => *value == other,
+                Word::Int | Word::Bool | Word::Nothing => *value == other,
             }),
             Probe::Empty(_) => false,
         })

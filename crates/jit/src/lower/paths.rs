@@ -40,8 +40,8 @@ pub(super) fn has_call(expr: &Expr) -> bool {
 /// The list methods that change the list.
 const CHANGES_LIST: [&str; 7] = ["append", "clear", "insert", "pop", "remove", "remove_where", "sort"];
 
-/// The dict methods that change the dict.
-const CHANGES_DICT: [&str; 3] = ["clear", "pop", "remove"];
+/// The dict and set methods that change them.
+const CHANGES_DICT: [&str; 5] = ["add", "clear", "discard", "pop", "remove"];
 
 impl Lowerer<'_, '_> {
     /// What a place inside a changeable name holds natively, if it's one.

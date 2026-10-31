@@ -111,13 +111,15 @@ pub(crate) enum Helper {
     StrCode,
     StrJoin,
     ListSlice,
+    SetRemove,
+    SetClear,
     ListSorted,
     ListSortedBy,
     ListFromValue,
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 109] = [
+pub(crate) const ALL: [Helper; 111] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -223,6 +225,8 @@ pub(crate) const ALL: [Helper; 109] = [
     Helper::StrCode,
     Helper::StrJoin,
     Helper::ListSlice,
+    Helper::SetRemove,
+    Helper::SetClear,
     Helper::ListSorted,
     Helper::ListSortedBy,
     Helper::ListFromValue,
@@ -349,6 +353,8 @@ impl Helper {
                 | Helper::StrCode
                 | Helper::StrJoin
                 | Helper::ListSlice
+                | Helper::SetRemove
+                | Helper::SetClear
                 | Helper::ListClear
                 | Helper::ListRemoveAt
                 | Helper::ListInsert
@@ -391,6 +397,8 @@ impl Helper {
                     | Helper::ListSorted
                     | Helper::ListSortedBy
                     | Helper::ListInsert
+                    | Helper::SetRemove
+                    | Helper::SetClear
                     | Helper::IntText
                     | Helper::FloatText
                     | Helper::ValueText
@@ -440,6 +448,7 @@ impl Helper {
                 | Helper::IntPower
                 | Helper::ListFromValue
                 | Helper::SpecText
+                | Helper::SetRemove
                 | Helper::StrCode
                 | Helper::ListInsert
                 | Helper::ListRemove
@@ -562,6 +571,8 @@ impl Helper {
             Helper::StrCode => shape("fennec_str_code", &[I64, I64, I64], &[I64]),
             Helper::StrJoin => shape("fennec_str_join", &[I64, I64], &[I64]),
             Helper::ListSlice => shape("fennec_list_slice", &[I64, I64, I64], &[I64]),
+            Helper::SetRemove => shape("fennec_set_remove", &[I64, I64, I8, I64, I64], &[I64]),
+            Helper::SetClear => shape("fennec_set_clear", &[I64], &[I64]),
             Helper::ListSorted => shape("fennec_list_sorted", &[I64, I64], &[I64]),
             Helper::ListSortedBy => shape("fennec_list_sorted_by", &[I64, I64, I64], &[I64]),
             Helper::Alloc => shape("fennec_alloc", &[I64], &[I64]),
@@ -604,6 +615,8 @@ impl Helper {
             Helper::StrCode => strings::code as *const u8,
             Helper::StrJoin => strings::join as *const u8,
             Helper::ListSlice => lists::slice as *const u8,
+            Helper::SetRemove => dicts::set_remove as *const u8,
+            Helper::SetClear => dicts::set_clear as *const u8,
             Helper::ListSorted => lists::sorted as *const u8,
             Helper::ListSortedBy => lists::sorted_by as *const u8,
             Helper::Alloc => heap::alloc as *const u8,

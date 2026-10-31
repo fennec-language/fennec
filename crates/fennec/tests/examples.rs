@@ -436,6 +436,58 @@ def main(stdout: Stdout):
     assert_eq!(report.from_ir, ["mixed"]);
 }
 
+/// A small function is lowered into its caller from the IR, and goes into itself one level.
+/// A failure inside it is reported where it happens, as the interpreter does.
+#[test]
+fn small_functions_are_inlined_from_the_ir() {
+    let source = "def half(n: int) -> int:
+    if n == 0:
+        return 0
+    10 // (n - 1)
+
+def twice(n: int) -> int:
+    half(n) + half(n + 1)
+
+def main(stdout: Stdout):
+    stdout.print(twice(3), twice(5))
+    stdout.print(twice(0))
+";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    let mut out = Vec::new();
+    let result = fennec_jit::run_with_report(&module, &mut out);
+    let Err(JitError::Failed(failure)) = result else { panic!("half(1) in twice(0) should fail") };
+    assert_eq!(Err(failure.render("inlined.fen", source)), run(source, "inlined.fen"));
+    let mut module = fennec_syntax::parse(&source.replace("    stdout.print(twice(0))\n", "")).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    let report = fennec_jit::run_with_report(&module, &mut Vec::new()).unwrap();
+    assert_eq!(report.from_ir, ["half", "twice"]);
+}
+
+/// What a branch shows about an int leaves out checks only where it's true: past the branch,
+/// the same sum still overflows and fails as the interpreter does.
+#[test]
+fn branches_from_the_ir_only_leave_out_checks_they_prove() {
+    let source = "def small(n: int) -> int:
+    if n > 5:
+        return n - 1
+    if 2 > n:
+        return n + 1
+    n + 9223372036854775802
+
+def main(stdout: Stdout):
+    stdout.print(small(9), small(0), small(5))
+    stdout.print(small(6), small(2))
+    stdout.print(9223372036854775807 + small(1))
+";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    let mut out = Vec::new();
+    let result = fennec_jit::run_with_report(&module, &mut out);
+    let Err(JitError::Failed(failure)) = result else { panic!("the last sum should overflow") };
+    assert_eq!(Err(failure.render("branches.fen", source)), run(source, "branches.fen"));
+}
+
 /// Number-only functions come from the typed IR.
 #[test]
 fn number_only_functions_are_lowered_from_the_ir() {
@@ -459,7 +511,7 @@ def main(stdout: Stdout):
     let mut out = Vec::new();
     let report = fennec_jit::run_with_report(&module, &mut out).unwrap();
     assert_eq!(String::from_utf8_lossy(&out), "55 111\n");
-    assert_eq!(report.from_ir, ["steps"], "fib stays on the syntax tree, which inlines it into itself");
+    assert_eq!(report.from_ir, ["fib", "steps"]);
 }
 
 /// Runs a program in both engines, giving each one's output and failure.

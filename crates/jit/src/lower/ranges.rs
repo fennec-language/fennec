@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::{Block, InstBuilder, InstructionData, MemFlagsData, Opcode, Value, types};
 use cranelift_frontend::Variable;
+use fennec_ir::facts::{flipped, narrowed_range};
 use fennec_syntax::{BinOp, Expr, ExprKind, UnaryOp};
 
 use super::Lowerer;
@@ -136,16 +137,8 @@ impl Lowerer<'_, '_> {
     }
 
     fn narrow_to(&mut self, value: Value, op: BinOp, limit: i64, holds: bool) {
-        let op = if holds { Some(op) } else { negated(op) };
         let old = self.range(value);
-        let new = match op {
-            Some(BinOp::Lt) => (old.0, old.1.min(limit.saturating_sub(1))),
-            Some(BinOp::LtEq) => (old.0, old.1.min(limit)),
-            Some(BinOp::Gt) => (old.0.max(limit.saturating_add(1)), old.1),
-            Some(BinOp::GtEq) => (old.0.max(limit), old.1),
-            Some(BinOp::Eq) => (limit, limit),
-            _ => return,
-        };
+        let Some(new) = narrowed_range(old, op, limit, holds) else { return };
         self.facts.narrowed.push((value, old));
         self.facts.ranges.insert(value, new);
     }
@@ -248,31 +241,6 @@ fn literal_int(expr: &Expr) -> Option<i64> {
         ExprKind::Unary { op: UnaryOp::Neg, expr } => literal_int(expr)?.checked_neg(),
         _ => None,
     }
-}
-
-/// The comparison that says the same with its sides swapped.
-fn flipped(op: BinOp) -> Option<BinOp> {
-    Some(match op {
-        BinOp::Lt => BinOp::Gt,
-        BinOp::LtEq => BinOp::GtEq,
-        BinOp::Gt => BinOp::Lt,
-        BinOp::GtEq => BinOp::LtEq,
-        BinOp::Eq => BinOp::Eq,
-        BinOp::NotEq => BinOp::NotEq,
-        _ => return None,
-    })
-}
-
-/// The comparison that's true when this one is false.
-fn negated(op: BinOp) -> Option<BinOp> {
-    Some(match op {
-        BinOp::Lt => BinOp::GtEq,
-        BinOp::LtEq => BinOp::Gt,
-        BinOp::Gt => BinOp::LtEq,
-        BinOp::GtEq => BinOp::Lt,
-        BinOp::NotEq => BinOp::Eq,
-        _ => return None,
-    })
 }
 
 /// A range that can't be wider than an int's, once a check has stopped an overflow.

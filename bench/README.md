@@ -58,6 +58,8 @@ The target itself is 100%. Each engine aims for its own share of it:
 | The JIT | 80% now, 85% later |
 | The interpreter | 10–30% |
 
+The goal across the suite is 95% of target. Reports show it against both twins: unchecked, which is what's pinned today, and built with overflow checks, as Fennec is. Those checks cost Rust itself about 5% by cycles and 9% by instructions. The checked twins come when the tool adds them.
+
 To compare against another build of `fennec`, like the previous commit's, pass `--previous path/to/fennec`. CI does that on every pull request, merge and push to `main`. A kernel counts as slower when its median time is more than 10% slower than before and it also runs more than 1% more instructions. For now that's a warning, until the counts have proven stable on pull requests that change nothing on the run path.
 
 ## Keeping it honest

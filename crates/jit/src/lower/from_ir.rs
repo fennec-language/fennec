@@ -4,78 +4,41 @@
 //!
 //! So far it takes functions that only hold ints, floats and bools. It leaves a function on
 //! the syntax tree when that would make it slower: one calling something small enough to
-//! inline, since the IR has no inlining until the optimizer does it.
+//! inline that the IR path can't lower too. What it can lower it inlines the same way, until
+//! the optimizer does that on the IR.
 //!
-//! What's known about an int comes from locals written once, whose value is the same each time
-//! as far as anything reading it can tell, and from the IR's list of `for` loop counts.
+//! What's known about an int comes from `fennec_ir::facts`, which any backend can use.
 
-use std::collections::HashMap;
-
-use cranelift_codegen::ir::{InstBuilder, Value, types};
+use cranelift_codegen::ir::{Block, InstBuilder, Value, types};
 use cranelift_frontend::Variable;
 use fennec_check::Type;
-use fennec_ir::{BlockId, Count, Function, Inst, InstKind, LocalId, Operand, Terminator};
+use fennec_ir::facts::Facts;
+use fennec_ir::{BlockId, Function, Inst, InstKind, LocalId, Operand, Terminator};
 use fennec_syntax::{BinOp, Diagnostic, Span};
 
 use super::{Lowerer, Shared, internal};
 use crate::types::Ty;
 
-/// What the IR path knows about a function's locals as it lowers it.
+/// A function's locals as the IR path lowers it.
 struct Locals {
     vars: Vec<(Variable, Ty)>,
-    /// How many instructions write each local, and how many are parameters, which hold
-    /// something before anything writes them.
-    writes: Vec<usize>,
-    params: usize,
-    /// What's known about the value of each local written once, or a count's first value.
-    ranges: HashMap<usize, (i64, i64)>,
-    /// The loop each count is the count of.
-    counts: HashMap<usize, Count>,
+    facts: Facts,
+    /// The block being lowered.
+    block: usize,
 }
 
 impl Locals {
     fn var(&self, local: LocalId, span: Span) -> Result<(Variable, Ty), Diagnostic> {
         self.vars.get(local.0).copied().ok_or_else(|| internal("no such local", span))
     }
-
-    /// What's known about a local where it's read.
-    fn range(&self, local: LocalId) -> Option<(i64, i64)> {
-        let Some(count) = self.counts.get(&local.0) else {
-            return self.ranges.get(&local.0).copied();
-        };
-        let first = *self.ranges.get(&local.0)?;
-        let stop = *self.ranges.get(&count.stop.0)?;
-        Some(if count.down {
-            (stop.0.saturating_add(1).min(first.0), first.1)
-        } else {
-            (first.0, stop.1.saturating_sub(1).max(first.1))
-        })
-    }
-
-    /// Whether what's written to a local says what it holds: it's the only write, or a count's
-    /// first value.
-    fn keeps_range(&self, local: LocalId) -> bool {
-        let once = local.0 >= self.params && self.writes.get(local.0).is_some_and(|writes| *writes == 1);
-        once || (self.counts.contains_key(&local.0) && !self.ranges.contains_key(&local.0))
-    }
 }
 
-/// How many instructions write each local.
-fn writes(ir: &Function) -> Vec<usize> {
-    let mut writes = vec![0; ir.locals.len()];
-    for inst in ir.blocks.iter().flat_map(|block| &block.insts) {
-        let dest = match &inst.kind {
-            InstKind::Copy { dest, .. } | InstKind::Unary { dest, .. } | InstKind::Binary { dest, .. } => {
-                Some(dest)
-            }
-            InstKind::Call { dest, .. } | InstKind::Builtin { dest, .. } => dest.as_ref(),
-            _ => None,
-        };
-        if let Some(count) = dest.and_then(|dest| writes.get_mut(dest.0)) {
-            *count += 1;
-        }
-    }
-    writes
+/// The facts of a function being lowered: what it passes as `mut` is what the JIT compiled.
+fn facts_of(ir: &Function, shared: &Shared) -> Facts {
+    Facts::of(ir, &|callee| {
+        let params = shared.compiled.get(callee).map_or(&[][..], |compiled| compiled.params.as_slice());
+        params.iter().enumerate().filter(|(_, (_, _, is_mut))| *is_mut).map(|(at, _)| at).collect()
+    })
 }
 
 /// How native code holds a number or bool of this type.
@@ -97,8 +60,10 @@ fn number_builtin_name(name: &str) -> &str {
 }
 
 /// Whether the IR path can lower this instruction. A call has to be to a function that's
-/// called the plain way, with a value for each parameter.
-fn takes(inst: &InstKind, function: &Function, shared: &Shared) -> bool {
+/// called the plain way, with a value for each parameter. One small enough to inline has to be
+/// one the IR path can lower too, or the call would cost more than it does on the syntax tree.
+/// `open` holds the functions being looked at, which are fine to call if they get that far.
+fn takes(inst: &InstKind, function: &Function, shared: &Shared, open: &mut Vec<String>) -> bool {
     match inst {
         InstKind::Copy { .. } => true,
         InstKind::Unary { value, .. } => {
@@ -121,24 +86,29 @@ fn takes(inst: &InstKind, function: &Function, shared: &Shared) -> bool {
             )
         }
         InstKind::Call { function: callee, args, .. } => {
-            shared.compiled.get(callee).is_some_and(|compiled| {
+            let Some(compiled) = shared.compiled.get(callee) else { return false };
+            // Lowering a call for what it's passed is for arrows and generics, not numbers.
+            let plain_call = compiled.direct.is_none()
+                && compiled.params.len() == args.len()
+                && compiled
+                    .params
+                    .iter()
+                    .all(|(_, ty, is_mut)| !is_mut && matches!(ty, Ty::Int | Ty::Float | Ty::Bool))
+                && matches!(compiled.ret, Ty::Int | Ty::Float | Ty::Bool | Ty::Unit);
+            let mut inlines = || {
                 compiled.inline.is_none()
-                    && compiled.specialized.is_none()
-                    && compiled.direct.is_none()
-                    && compiled.params.len() == args.len()
-                    && compiled
-                        .params
-                        .iter()
-                        .all(|(_, ty, is_mut)| !is_mut && matches!(ty, Ty::Int | Ty::Float | Ty::Bool))
-                    && matches!(compiled.ret, Ty::Int | Ty::Float | Ty::Bool | Ty::Unit)
-            })
+                    || open.contains(callee)
+                    || shared.ir.get(callee).is_some_and(|ir| body_taken(ir, shared, open))
+            };
+            plain_call && inlines()
         }
         _ => false,
     }
 }
 
-/// Whether the IR path can lower a function.
-pub(super) fn taken(function: &Function, written: &crate::types::Function<'_>, shared: &Shared) -> bool {
+/// Whether the IR path can lower a function that can't fail.
+fn body_taken(function: &Function, shared: &Shared, open: &mut Vec<String>) -> bool {
+    open.push(function.name.clone());
     let locals = function.locals.iter().all(|local| plain(&local.ty).is_some());
     let returns = function.returns == Type::Unit || plain(&function.returns).is_some();
     let ends = function.blocks.iter().all(|block| {
@@ -148,7 +118,21 @@ pub(super) fn taken(function: &Function, written: &crate::types::Function<'_>, s
         )
     });
     let mut insts = function.blocks.iter().flat_map(|block| &block.insts);
-    !written.fallible && locals && returns && ends && insts.all(|inst| takes(&inst.kind, function, shared))
+    let taken = locals && returns && ends && insts.all(|inst| takes(&inst.kind, function, shared, open));
+    open.pop();
+    taken
+}
+
+/// Whether the IR path can lower a function.
+pub(super) fn taken(function: &Function, written: &crate::types::Function<'_>, shared: &Shared) -> bool {
+    !written.fallible && body_taken(function, shared, &mut Vec::new())
+}
+
+/// Where an inlined function's `return` goes: what holds its value, and where to carry on.
+#[derive(Clone, Copy)]
+struct Leave {
+    value: Option<Variable>,
+    after: Block,
 }
 
 impl Lowerer<'_, '_> {
@@ -179,21 +163,30 @@ impl Lowerer<'_, '_> {
             };
             vars.push((var.ok_or_else(|| internal("a parameter has no variable", span))?, ty));
         }
-        let mut vars = Locals {
-            vars,
-            writes: writes(ir),
-            params: ir.params,
-            ranges: HashMap::new(),
-            counts: ir.counts.iter().map(|count| (count.count.0, *count)).collect(),
-        };
+        let mut vars = Locals { vars, facts: facts_of(ir, self.shared), block: 0 };
+        self.blocks_from_ir(ir, &mut vars, None, span)?;
+        self.shared.from_ir.push(self.function.key.clone());
+        Ok(())
+    }
+
+    /// Lowers a function's blocks, going to the first from here. Leaving it returns from this
+    /// function, unless `leave` says it's being lowered into a caller.
+    fn blocks_from_ir(
+        &mut self,
+        ir: &Function,
+        vars: &mut Locals,
+        leave: Option<Leave>,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
         let blocks: Vec<_> = ir.blocks.iter().map(|_| self.b.create_block()).collect();
         let block_of = |id: BlockId| blocks.get(id.0).copied();
         let first = block_of(BlockId(0)).ok_or_else(|| internal("a function has no blocks", span))?;
         self.b.ins().jump(first, &[]);
-        for (block, written) in blocks.iter().zip(&ir.blocks) {
+        for (at, (block, written)) in blocks.iter().zip(&ir.blocks).enumerate() {
             self.b.switch_to_block(*block);
+            vars.block = at;
             for inst in &written.insts {
-                self.inst_from_ir(inst, &mut vars)?;
+                self.inst_from_ir(inst, vars)?;
             }
             match &written.end {
                 Terminator::Jump(target) => {
@@ -201,16 +194,23 @@ impl Lowerer<'_, '_> {
                     self.b.ins().jump(target, &[]);
                 }
                 Terminator::Branch { cond, then, otherwise } => {
-                    let cond = self.operand_from_ir(cond, &vars, span)?;
+                    let cond = self.operand_from_ir(cond, vars, span)?;
                     let then = block_of(*then).ok_or_else(|| internal("no such block", span))?;
                     let otherwise = block_of(*otherwise).ok_or_else(|| internal("no such block", span))?;
                     self.b.ins().brif(cond, then, &[], otherwise, &[]);
                 }
                 Terminator::Return(value) => {
                     let value =
-                        value.as_ref().map(|value| self.operand_from_ir(value, &vars, span)).transpose()?;
-                    let ty = plain(&ir.returns).unwrap_or(Ty::Unit);
-                    self.ret(value, ty, span)?;
+                        value.as_ref().map(|value| self.operand_from_ir(value, vars, span)).transpose()?;
+                    if let Some(Leave { value: held, after }) = leave {
+                        if let (Some(held), Some(value)) = (held, value) {
+                            self.b.def_var(held, value);
+                        }
+                        self.b.ins().jump(after, &[]);
+                    } else {
+                        let ty = plain(&ir.returns).unwrap_or(Ty::Unit);
+                        self.ret(value, ty, span)?;
+                    }
                 }
                 // The checker has shown control never gets here.
                 _ => {
@@ -218,8 +218,48 @@ impl Lowerer<'_, '_> {
                 }
             }
         }
-        self.shared.from_ir.push(self.function.key.clone());
         Ok(())
+    }
+
+    /// Lowers a call by lowering the function's body here, as the syntax tree path does, with
+    /// its parameters holding `values`. Gives back what it gives back.
+    fn inline_from_ir(
+        &mut self,
+        (key, def, ir): (&str, &fennec_syntax::FnDef, &Function),
+        values: &[Value],
+        span: Span,
+    ) -> Result<Option<Value>, Diagnostic> {
+        self.inlining.push((key.to_owned(), self.scopes.len()));
+        let outer_site = self.call_site;
+        if !def.span.in_prelude() {
+            self.mark_ran(key)?;
+        }
+        let outer_origin = self.enter_origin(key, def);
+        if self.call_site.is_none() && !span.in_prelude() {
+            self.call_site = Some(span);
+        }
+        let mut vars = Vec::with_capacity(ir.locals.len());
+        for local in &ir.locals {
+            let ty = plain(&local.ty).ok_or_else(|| internal("a local isn't a number", span))?;
+            vars.push((self.b.declare_var(super::abi(ty).unwrap_or(types::I64)), ty));
+        }
+        let mut facts = facts_of(ir, self.shared);
+        for (at, (value, (var, ty))) in values.iter().zip(&vars).enumerate() {
+            self.b.def_var(*var, *value);
+            if *ty == Ty::Int {
+                facts.note_param(LocalId(at), self.range(*value));
+            }
+        }
+        let mut vars = Locals { vars, facts, block: 0 };
+        let held = plain(&ir.returns).map(|ty| self.b.declare_var(super::abi(ty).unwrap_or(types::I64)));
+        let after = self.b.create_block();
+        let lowered = self.blocks_from_ir(ir, &mut vars, Some(Leave { value: held, after }), span);
+        self.inlining.pop();
+        self.call_site = outer_site;
+        self.inlined_origin = outer_origin;
+        lowered?;
+        self.b.switch_to_block(after);
+        Ok(held.map(|held| self.b.use_var(held)))
     }
 
     fn inst_from_ir(&mut self, inst: &Inst, vars: &mut Locals) -> Result<(), Diagnostic> {
@@ -266,6 +306,15 @@ impl Lowerer<'_, '_> {
                     args.iter()
                         .map(|arg| self.operand_from_ir(arg, vars, span))
                         .collect::<Result<Vec<Value>, Diagnostic>>()?;
+                if let Some(def) = self.inlinable(function) {
+                    let all = std::rc::Rc::clone(&self.shared.ir);
+                    let ir = all.get(function).ok_or_else(|| internal("no IR to inline", span))?;
+                    let result = self.inline_from_ir((function, &def, ir), &values, span)?;
+                    if let (Some(dest), Some(result)) = (dest, result) {
+                        self.set_from_ir(*dest, result, vars, span)?;
+                    }
+                    return Ok(());
+                }
                 let compiled = self.shared.compiled.get(function);
                 let compiled = compiled.ok_or_else(|| internal("a call to nothing", span))?;
                 let (id, prelude) = (compiled.id, compiled.prelude);
@@ -288,8 +337,8 @@ impl Lowerer<'_, '_> {
         span: Span,
     ) -> Result<(), Diagnostic> {
         let (var, ty) = vars.var(dest, span)?;
-        if ty == Ty::Int && vars.keeps_range(dest) {
-            vars.ranges.insert(dest.0, self.range(value));
+        if ty == Ty::Int {
+            vars.facts.note_write(dest, self.range(value));
         }
         self.b.def_var(var, value);
         Ok(())
@@ -300,7 +349,7 @@ impl Lowerer<'_, '_> {
             Operand::Local(local) => {
                 let (var, _) = vars.var(*local, span)?;
                 let value = self.b.use_var(var);
-                if let Some(range) = vars.range(*local) {
+                if let Some(range) = vars.facts.range_in(*local, vars.block) {
                     self.note_range(value, range);
                 }
                 Ok(value)

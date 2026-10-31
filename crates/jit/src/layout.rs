@@ -95,11 +95,7 @@ impl Layouts {
             .filter_map(|name| Some((name.clone(), written(sources, name)?)))
             .collect();
         loop {
-            let fits = |ty: &Type| match ty {
-                Type::Int | Type::Float | Type::Bool | Type::Str => true,
-                Type::Named(name) => self.by_name.contains_key(name) || candidates.contains_key(name),
-                _ => false,
-            };
+            let fits = |ty: &Type| self.fits_boxed(ty, &candidates);
             let unfit: Vec<String> = candidates
                 .iter()
                 .filter(|(_, written)| !written.types().all(&fits))
@@ -118,19 +114,7 @@ impl Layouts {
             .enumerate()
             .filter_map(|(at, name)| Some((name.clone(), u32::try_from(first + at).ok()?)))
             .collect();
-        let ty_of = |layouts: &Layouts, ty: &Type| -> Option<Ty> {
-            Some(match ty {
-                Type::Int => Ty::Int,
-                Type::Float => Ty::Float,
-                Type::Bool => Ty::Bool,
-                Type::Str => Ty::Str,
-                Type::Named(name) => match reserved.get(name) {
-                    Some(id) => Ty::Boxed(*id),
-                    None => Ty::Struct(layouts.id(name)?),
-                },
-                _ => return None,
-            })
-        };
+        let ty_of = |layouts: &Layouts, ty: &Type| boxed_field_ty(layouts, &reserved, ty);
         let mut built = Vec::with_capacity(candidates.len());
         for (name, written) in &candidates {
             let place = |layouts: &Layouts, fields: &[(String, Type, Option<Expr>)], start: u32| {
@@ -168,6 +152,19 @@ impl Layouts {
                 self.by_name.insert(layout.name.clone(), *id);
             }
             self.all.push(layout);
+        }
+    }
+
+    /// Whether a boxed type's field can be of a type, given the types that might be boxed.
+    fn fits_boxed(&self, ty: &Type, candidates: &BTreeMap<String, Written>) -> bool {
+        match ty {
+            Type::Int | Type::Float | Type::Bool | Type::Str => true,
+            Type::Named(name) => self.by_name.contains_key(name) || candidates.contains_key(name),
+            Type::List(item) => {
+                !matches!(**item, Type::List(_) | Type::Dict(..)) && self.fits_boxed(item, candidates)
+            }
+            Type::Dict(key, value) => dict_ty(key, value) != Ty::Obj,
+            _ => false,
         }
     }
 
@@ -316,6 +313,23 @@ impl Layouts {
             _ => Ty::Obj,
         }
     }
+}
+
+/// How a boxed type's field is held, given the numbers the boxed types will have.
+fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type) -> Option<Ty> {
+    Some(match ty {
+        Type::Int => Ty::Int,
+        Type::Float => Ty::Float,
+        Type::Bool => Ty::Bool,
+        Type::Str => Ty::Str,
+        Type::Named(name) => match reserved.get(name) {
+            Some(id) => Ty::Boxed(*id),
+            None => Ty::Struct(layouts.id(name)?),
+        },
+        Type::List(item) => Ty::List(ListItem::of(boxed_field_ty(layouts, reserved, item)?)?),
+        Type::Dict(key, value) => Some(dict_ty(key, value)).filter(|ty| *ty != Ty::Obj)?,
+        _ => return None,
+    })
 }
 
 /// A dict natively, when its keys are ints or strings and its values plain words.

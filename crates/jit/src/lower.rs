@@ -22,12 +22,14 @@ mod fallback;
 mod flow;
 mod hoist;
 mod inline;
+mod list_methods;
 mod lists;
 mod matching;
 mod module;
 pub(crate) mod notes;
 pub(crate) mod object;
 mod objects;
+mod paths;
 mod ranges;
 mod specialize;
 mod stmt;
@@ -381,6 +383,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         pending: Vec::new(),
         leaves_of: HashMap::new(),
         elements: HashMap::new(),
+        lending: false,
         leaf_vars: HashMap::new(),
         borrowed: HashSet::new(),
         borrowed_names: HashSet::new(),
@@ -465,6 +468,8 @@ pub(crate) struct Lowerer<'a, 'f> {
     dest: Option<Value>,
     /// The kinds of packed list items registered with the runtime, by their number there.
     elements: HashMap<Ty, i64>,
+    /// Whether what's being read is used at once, with nothing changing meanwhile.
+    lending: bool,
     /// The leaves of each struct value kept in registers.
     leaves_of: HashMap<Value, Vec<Value>>,
     /// The leaf variables of each struct name kept in registers, by the name's variable.

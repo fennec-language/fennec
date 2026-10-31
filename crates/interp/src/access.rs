@@ -102,6 +102,7 @@ impl Interp<'_> {
             Value::Tuple(items) | Value::Set(items) => keyless(&items),
             Value::Capability(Capability::Args) => keyless(&self.arguments()),
             Value::Dict(pairs) => pairs.iter().map(|(key, _)| (None, key.clone())).collect(),
+            Value::Packed(packed) => return self.entries(packed.unpack(), span),
             Value::Str(text) => {
                 text.chars().map(|c| (None, Value::str(c.encode_utf8(&mut [0; 4])))).collect()
             }

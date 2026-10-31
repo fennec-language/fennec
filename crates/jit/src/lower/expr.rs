@@ -37,6 +37,15 @@ impl Lowerer<'_, '_> {
         }
     }
 
+    /// A receiver that's used at once, so reading it needn't count another owner when working
+    /// it out can't change anything.
+    pub(super) fn lent_receiver(&mut self, object: &Expr) -> Result<Lowered, Diagnostic> {
+        let outer = std::mem::replace(&mut self.lending, !super::paths::has_call(object));
+        let read = self.receiver(object);
+        self.lending = outer;
+        read
+    }
+
     /// How native code can hold what the checker says an expression gives.
     pub(super) fn checked_expr(&self, expr: &Expr) -> Option<Ty> {
         let signatures = self.signatures;
@@ -284,6 +293,9 @@ impl Lowerer<'_, '_> {
             return Ok(result);
         }
         if let Some(result) = self.dict_binary(op, left, right, span)? {
+            return Ok(result);
+        }
+        if let Some(result) = self.list_binary(op, left, right)? {
             return Ok(result);
         }
         match self.struct_equality(op, left, right)? {

@@ -185,7 +185,7 @@ impl Lowerer<'_, '_> {
     }
 
     /// Binds a name to a value the caller keeps alive for as long as the name lasts.
-    fn bind_lent(&mut self, name: &str, (value, ty): Lowered) -> Result<(), Diagnostic> {
+    pub(super) fn bind_lent(&mut self, name: &str, (value, ty): Lowered) -> Result<(), Diagnostic> {
         if let (Ty::Struct(id), Some(value)) = (ty, value) {
             return self.declare_struct(name, value, id, false);
         }

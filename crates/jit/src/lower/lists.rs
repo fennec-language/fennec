@@ -293,7 +293,11 @@ impl Lowerer<'_, '_> {
         let value = self.b.ins().load(abi_ty, MemFlagsData::trusted(), address, 0);
         // The list could let go of a counted item while this is still using it.
         if item.counted() {
-            self.retain(value);
+            if self.lending {
+                self.borrow(value);
+            } else {
+                self.retain(value);
+            }
         }
         Ok((Some(value), item))
     }
@@ -394,20 +398,25 @@ impl Lowerer<'_, '_> {
         body: &[Stmt],
         is_mut: bool,
     ) -> Result<bool, Diagnostic> {
-        // A list a call gives is the loop's own. One held as an object is left for the
-        // runtime, which needn't copy it, and `range` is counted without making a list.
+        // A list a call gives is the loop's own, and one in a field needn't be copied. One held
+        // as an object is left for the runtime, which needn't copy it, and `range` is counted
+        // without making a list.
         let held = match &list.kind {
-            ExprKind::Name(_) | ExprKind::Attr { .. } | ExprKind::Index { .. } => false,
+            ExprKind::Name(_) => false,
+            ExprKind::Attr { .. } | ExprKind::Index { .. } => {
+                matches!(self.static_ty(list), Some(Ty::List(_)))
+            }
             ExprKind::Call { callee, .. } => !matches!(&callee.kind, ExprKind::Name(name) if name == "range"),
             _ => true,
         };
         if held
             && !is_mut
+            && let [_] = names
             && let Some(ty @ Ty::List(_)) = self.checked_expr(list)
         {
             let (value, from) = self.expr(list)?;
             let value = self.convert(value, from, ty, list.span)?;
-            return self.holding_list((value, ty), list.span, |lowerer, held| {
+            return self.holding_list((value, ty), false, list.span, |lowerer, held| {
                 lowerer.for_packed(names, held, body, false)
             });
         }

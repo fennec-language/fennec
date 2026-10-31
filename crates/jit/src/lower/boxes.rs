@@ -1,5 +1,5 @@
-//! Boxed values natively: structs and enums that contain themselves, and the types that
-//! hold them. A boxed value is the address of a block the runtime owns: an owner count,
+//! Boxed values natively: structs and enums that contain themselves, the types that hold
+//! them, and structs that hold lists or dicts. A boxed value is the address of a block the runtime owns: an owner count,
 //! the block's shape, then its fields as words, as an enum's are (see `layout`).
 //!
 //! Native code counts owners itself. A name owns its value, except a name that can't
@@ -228,8 +228,8 @@ impl<'a> Lowerer<'a, '_> {
         let params = compiled.params.clone();
         if !compiled.takes_self
             || params.len() != args.len() + 1
-            || args.iter().any(|arg| arg.name.is_some() || arg.is_mut)
-            || params.iter().skip(1).any(|(_, _, is_mut)| *is_mut)
+            || args.iter().any(|arg| arg.name.is_some())
+            || !self.mut_args_fit(args, params.get(1..).unwrap_or_default())
         {
             return Ok(None);
         }
@@ -250,17 +250,47 @@ impl<'a> Lowerer<'a, '_> {
             let (receiver, ty) = self.receiver(object)?;
             vec![self.convert(receiver, ty, Ty::Boxed(id), object.span)?]
         };
-        for (arg, (_, to, _)) in args.iter().zip(params.iter().skip(1)) {
+        // What's passed may be inside `self`, which the method can change, so it gets an owner
+        // of its own for the call.
+        let mut given = Vec::new();
+        given.extend(changes);
+        for (arg, (_, to, is_mut)) in args.iter().zip(params.iter().skip(1)) {
+            if *is_mut {
+                let var = self.mut_arg(arg, span)?;
+                values.push(self.b.use_var(var));
+                given.push(var);
+                continue;
+            }
             let (value, from) = self.expr(&arg.value)?;
             if !matches!(to, Ty::Cap(_)) {
-                values.push(self.convert(value, from, *to, arg.value.span)?);
+                let value = self.convert(value, from, *to, arg.value.span)?;
+                values.push(if changes.is_some() { self.own(value, *to) } else { value });
             }
         }
         let (result, given_back) = self.call_key_changing(&key, values, span)?;
-        if let (Some(var), Some(changed)) = (changes, given_back.first()) {
-            self.b.def_var(var, *changed);
+        for (var, changed) in given.into_iter().zip(given_back) {
+            self.b.def_var(var, changed);
         }
         Ok(Some(result))
+    }
+
+    /// Whether each argument for a `mut` parameter is one a method can hand back: a name
+    /// holding a list, dict or boxed value natively.
+    fn mut_args_fit(&self, args: &[Arg], params: &[(String, Ty, bool)]) -> bool {
+        args.iter().zip(params).all(|(arg, (_, ty, is_mut))| match (arg.is_mut, is_mut, &arg.value.kind) {
+            (false, false, _) => true,
+            (true, true, fennec_syntax::ExprKind::Name(name)) => {
+                ty.counted() && self.local(name).is_some_and(|local| local.ty == *ty && local.var.is_some())
+            }
+            _ => false,
+        })
+    }
+
+    fn mut_arg(&self, arg: &Arg, span: Span) -> Result<cranelift_frontend::Variable, Diagnostic> {
+        let fennec_syntax::ExprKind::Name(name) = &arg.value.kind else {
+            return Err(internal("a `mut` argument without a name", span));
+        };
+        self.local(name).and_then(|local| local.var).ok_or_else(|| internal("a lost name", span))
     }
 
     /// The name and field an assignment like `node.value = 1` changes, when the name holds
@@ -370,6 +400,12 @@ pub(crate) fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Bool => Element::Bool,
         Ty::Boxed(id) => Element::Boxed(usize::try_from(id).ok()?),
         Ty::Str => Element::Str,
+        Ty::List(item) => Element::List(Rc::new(describe(layouts, item.ty())?)),
+        Ty::Dict(key, value) => {
+            let str_shape = u64::try_from(layouts.len()).ok()?;
+            let shape = fennec_interp::embed::dicts::shape(str_shape, key, value)?;
+            Element::Boxed(usize::try_from(shape).ok()?)
+        }
         Ty::Struct(id) => {
             let layout = layouts.get(id)?;
             let name = Rc::from(layout.name.as_str());

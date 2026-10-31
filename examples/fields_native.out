@@ -1,0 +1,17 @@
+0 1 12 seven
+2 [1] ["seven"]
+4 2.0 2 [8, 11, 2] {"a": 2, "b": 6}
+6 2.5 bag! 51 ["VII", "more"] 13
+[1] [1, 100] [8, 11, 2] [8, 11, 2, 4]
+2 3 7 -1 False
+4 [8, 11, 2] -1 1
+[2, 11, 42] [2, 11, 42] True True
+[2, 11] 0 2
+a
+b
+c
+4
+9
+10 13 [4, 22]
+[] Bag(items=[Item(id=51, tags=["five"], near=[1, 100])], points=[Point(x=5, y=2.0), Point(x=10, y=9.0)], counts={"a": 2, "b": 6, "c": 1}, numbers=[], spot=Point(x=6, y=2.5), name="bag!", total=13)
+2 3

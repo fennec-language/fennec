@@ -39,6 +39,9 @@ impl Lowerer<'_, '_> {
         if let Some(made) = self.sum_or_known(expr, callee, args)? {
             return Ok(made);
         }
+        if let Some(changed) = self.call_inside(expr, callee, args)? {
+            return Ok(changed);
+        }
         if let Some(name) = self.std_member(callee) {
             if let Some(id) = self.layouts.id(name)
                 && let Some(result) = self.construct(id, args, expr.span)?
@@ -104,6 +107,9 @@ impl Lowerer<'_, '_> {
         }
         if let Some(ordered) = self.sorted_call(expr, callee, args)? {
             return Ok(Some(ordered));
+        }
+        if let Some(changed) = self.list_method(callee, args, expr.span)? {
+            return Ok(Some(changed));
         }
         self.call_known(callee, args)
     }
@@ -526,7 +532,7 @@ impl Lowerer<'_, '_> {
         if let Some((list, item)) = self.packed(object) {
             return Ok((Some(self.list_length(&list, item)?), Ty::Int));
         }
-        let (value, ty) = self.receiver(object)?;
+        let (value, ty) = self.lent_receiver(object)?;
         match (value, ty) {
             (Some(text), Ty::Str) => Ok((Some(self.string_length(text)?), Ty::Int)),
             (Some(dict), Ty::Dict(..)) => {

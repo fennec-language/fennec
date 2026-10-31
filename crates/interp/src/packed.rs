@@ -29,6 +29,9 @@ pub enum Element {
     /// A string inside a boxed value, by the address of its block. Packed lists never hold
     /// these either.
     Str,
+    /// A list inside a boxed value, by the address of its block, with the kind of its items.
+    /// Packed lists never hold these either.
+    List(Rc<Element>),
     /// An enum, with each case's fields in the order they're written, taking `words`
     /// words.
     Enum {
@@ -118,7 +121,7 @@ fn unpack_item<'w>(element: &Element, words: &mut dyn Iterator<Item = &'w u64>) 
         Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
         Element::Float => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
-        Element::Boxed(_) | Element::Str => {
+        Element::Boxed(_) | Element::Str | Element::List(_) => {
             word(words);
             Value::None
         }

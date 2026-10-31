@@ -1,0 +1,94 @@
+## Structs that hold lists and dicts, read and changed where they are, native.
+
+struct Point:
+    x: int
+    y: float
+
+struct Item:
+    id: int
+    tags: list[str]
+    near: list[int]
+
+struct Bag:
+    items: list[Item]
+    points: list[Point]
+    counts: dict[str, int]
+    numbers: list[int]
+    spot: Point
+    name: str
+    total = 0
+
+    def add(mut self, id: int, tag: str) -> int:
+        self.items.append(Item(id=id, tags=[tag], near=[]))
+        self.total += id
+        self.items.len() - 1
+
+    def tag_of(self, at: int) -> str:
+        self.items[at].tags[0]
+
+    def bump(mut self) -> int:
+        self.total += 1
+        self.total
+
+    def link(mut self, a: int, b: int):
+        self.items[a].near.append(b)
+        self.items[b].near.append(a)
+
+def fresh() -> Bag:
+    Bag(items=[], points=[Point(x=1, y=0.5)], counts={}, numbers=[3, 1, 2], spot=Point(x=0, y=0.0), name="bag")
+
+def total_near(bag: Bag) -> int:
+    mut sum_of = 0
+    for item in bag.items:
+        sum_of += item.near.len()
+    sum_of
+
+def main(stdout: Stdout):
+    mut bag = fresh()
+    stdout.print(bag.add(5, "five"), bag.add(7, "seven"), bag.total, bag.tag_of(1))
+    bag.link(0, 1)
+    stdout.print(total_near(bag), bag.items[0].near, bag.items[1].tags)
+
+    bag.points[0].x = 4
+    bag.points[0].y += 1.5
+    bag.points.append(Point(x=9, y=9.0))
+    bag.numbers[0] = 8
+    bag.numbers[1] += 10
+    bag.counts["a"] = 1
+    bag.counts["a"] += 1
+    bag.counts["b"] = bag.counts["a"] * 3
+    bag.spot.x = 6
+    bag.spot.y = 2.5
+    bag.name = bag.name + "!"
+    bag.items[0].id = 50
+    bag.items[1].tags[0] = "VII"
+    bag.items[1].tags.append("more")
+    bag.items[bag.bump() - bag.total].id += 1
+    stdout.print(bag.points[0].x, bag.points[0].y, bag.points.len(), bag.numbers, bag.counts)
+    stdout.print(bag.spot.x, bag.spot.y, bag.name, bag.items[0].id, bag.items[1].tags, bag.total)
+
+    copy = bag
+    bag.items[0].near.append(100)
+    bag.numbers.append(4)
+    bag.counts["c"] = 1
+    bag.items[1].id = -1
+    stdout.print(copy.items[0].near, bag.items[0].near, copy.numbers, bag.numbers)
+    stdout.print(copy.counts.len(), bag.counts.len(), copy.items[1].id, bag.items[1].id, copy == bag)
+
+    stdout.print(bag.numbers.pop(), bag.numbers, bag.items.pop().id, bag.items.len())
+    bag.numbers.insert(0, 42)
+    bag.numbers.remove(8)
+    bag.numbers.sort()
+    stdout.print(bag.numbers, sorted(bag.numbers), 42 in bag.numbers, "a" in bag.counts)
+    bag.numbers.remove_where((n) => n > 40)
+    stdout.print(bag.numbers, bag.counts.get("zz", 0), bag.counts.get("a", 0))
+    for key in bag.counts:
+        stdout.print(key)
+    for point in bag.points:
+        stdout.print(point.x)
+    for mut point in bag.points:
+        point.x += 1
+    stdout.print(bag.points[1].x, sum(bag.numbers), [n * 2 for n in bag.numbers])
+    bag.numbers.clear()
+    stdout.print(bag.numbers, bag)
+    stdout.print(fresh().numbers[2], fresh().name.len())

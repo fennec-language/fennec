@@ -1,0 +1,35 @@
+## Structs in a game loop: a list of plain structs, changed in place by their methods each frame.
+
+struct Vec2:
+    x: float
+    y: float
+
+struct Particle:
+    position: Vec2
+    velocity: Vec2
+    bounces = 0
+
+    def step(mut self, dt: float):
+        self.velocity.y -= 9.8 * dt
+        self.position.x += self.velocity.x * dt
+        self.position.y += self.velocity.y * dt
+        if self.position.y < 0.0:
+            self.position.y = -self.position.y
+            self.velocity.y = -self.velocity.y * 0.9
+            self.bounces += 1
+
+def main(stdout: Stdout):
+    mut particles = []
+    for i in range(2000):
+        position = Vec2(x=float(i), y=float(i % 50))
+        velocity = Vec2(x=float(i % 7) - 3.0, y=float(i % 11))
+        particles.append(Particle(position=position, velocity=velocity))
+    for _ in range(2500):
+        for mut particle in particles:
+            particle.step(0.01)
+    mut bounces = 0
+    mut height = 0.0
+    for particle in particles:
+        bounces += particle.bounces
+        height += particle.position.y
+    stdout.print(bounces, f"{height:.6f}")

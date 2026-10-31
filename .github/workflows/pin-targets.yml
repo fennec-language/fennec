@@ -1,0 +1,39 @@
+# Measures the benchmark suite's targets from the kernels' twins, once per architecture. Everyday
+# runs only read them. Run this when a kernel's work or a twin changes, then copy each file this
+# prints into bench/targets/.
+name: Pin benchmark targets
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/benchmark-suite]
+
+permissions:
+  contents: read
+
+jobs:
+  pin:
+    name: Pin (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked -p fennec -p fennec-bench
+      - name: Install what counts instructions
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq valgrind
+      - run: ./target/release/fennec-bench pin
+      - name: Print the targets
+        run: |
+          for file in bench/targets/*.txt; do
+            echo "== $file"
+            cat "$file"
+            { echo "## $file"; echo '```'; cat "$file"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          done

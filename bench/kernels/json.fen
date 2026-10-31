@@ -1,0 +1,132 @@
+## JSON: parsing text into recursive values and printing them back, by hand on both sides.
+
+enum Json:
+    Null
+    Flag(value: bool)
+    Number(value: int)
+    Text(value: str)
+    Items(values: list[Json])
+    Fields(names: list[str], values: list[Json])
+
+struct Reader:
+    text: str
+    at = 0
+
+    def skip_space(mut self):
+        while self.at < self.text.len() and self.text[self.at] == " ":
+            self.at += 1
+
+    def expect_text(mut self) -> str:
+        self.at += 1
+        start = self.at
+        while self.text[self.at] != "\"":
+            self.at += 1
+        found = self.text[start:self.at]
+        self.at += 1
+        found
+
+    def number(mut self) -> int:
+        mut value = 0
+        while self.at < self.text.len() and self.text[self.at].isdigit():
+            value = value * 10 + self.text[self.at].code() - 48
+            self.at += 1
+        value
+
+    def items(mut self) -> Json:
+        self.at += 1
+        mut values = []
+        self.skip_space()
+        while self.text[self.at] != "]":
+            values.append(self.value())
+            self.skip_space()
+            if self.text[self.at] == ",":
+                self.at += 1
+                self.skip_space()
+        self.at += 1
+        Json.Items(values=values)
+
+    def fields(mut self) -> Json:
+        self.at += 1
+        mut names = []
+        mut values = []
+        self.skip_space()
+        while self.text[self.at] != "}":
+            names.append(self.expect_text())
+            self.skip_space()
+            self.at += 1
+            values.append(self.value())
+            self.skip_space()
+            if self.text[self.at] == ",":
+                self.at += 1
+                self.skip_space()
+        self.at += 1
+        Json.Fields(names=names, values=values)
+
+    def value(mut self) -> Json:
+        self.skip_space()
+        first = self.text[self.at]
+        if first == "{": return self.fields()
+        if first == "[": return self.items()
+        if first == "\"": return Json.Text(value=self.expect_text())
+        if first == "t":
+            self.at += 4
+            return Json.Flag(value=True)
+        if first == "f":
+            self.at += 5
+            return Json.Flag(value=False)
+        if first == "n":
+            self.at += 4
+            return Json.Null
+        Json.Number(value=self.number())
+
+def printed(value: Json, mut out: list[str]):
+    match value:
+        case .Null:
+            out.append("null")
+        case .Flag(flag):
+            out.append("true" if flag else "false")
+        case .Number(number):
+            out.append(str(number))
+        case .Text(text):
+            out.append(f"\"{text}\"")
+        case .Items(values):
+            out.append("[")
+            for at, item in enumerate(values):
+                if at > 0:
+                    out.append(",")
+                printed(item, mut out)
+            out.append("]")
+        case .Fields(names, values):
+            out.append("{")
+            for at, name in enumerate(names):
+                if at > 0:
+                    out.append(",")
+                out.append(f"\"{name}\":")
+                printed(values[at], mut out)
+            out.append("}")
+
+def document(records: int) -> str:
+    mut parts = ["["]
+    for i in range(records):
+        if i > 0:
+            parts.append(", ")
+        active = "true" if i % 2 == 0 else "false"
+        parts.append(
+            f"{{\"id\": {i}, \"name\": \"fox{i}\", \"active\": {active}, \"parent\": null, ",
+        )
+        parts.append(
+            f"\"tags\": [\"a\", \"b\", {i % 7}], \"at\": {{\"x\": {i * 3}, \"y\": {i * 5}}}}}",
+        )
+    parts.append("]")
+    "".join(parts)
+
+def main(stdout: Stdout):
+    text = document(300)
+    mut total = 0
+    for _ in range(8):
+        mut reader = Reader(text=text)
+        value = reader.value()
+        mut out = []
+        printed(value, mut out)
+        total += "".join(out).len()
+    stdout.print(text.len(), total)

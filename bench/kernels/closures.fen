@@ -1,0 +1,19 @@
+## Closures: functions passed as values, capturing what's around them.
+
+def apply_all(values: list[int], change: (int) -> int) -> int:
+    mut total = 0
+    for value in values:
+        total += change(value)
+    total
+
+def twice(value: int, change: (int) -> int) -> int:
+    change(change(value))
+
+def main(stdout: Stdout):
+    values = [i % 1000 for i in range(10_000)]
+    mut total = 0
+    for round in range(20):
+        offset = round % 17
+        total += apply_all(values, (n) => n + offset)
+        total += apply_all(values, (n) => twice(n, (m) => m * 3 % 1001 + offset))
+    stdout.print(total)

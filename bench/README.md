@@ -44,6 +44,8 @@ The table also counts the places in each kernel's compiled code that aren't nati
 
 Each kernel also has to print exactly what its target expects, which the target file holds as a hash.
 
+Targets come from twins built with overflow checks on, because Fennec always checks and that's the work being compared. The run's last column shows the percentage against the same twins without those checks, from `targets/unchecked/`. It's for reference only: nothing is judged on it.
+
 ## The floor and the ratchet
 
 **The JIT's floor is 80% of target**, on every kernel, rising to 85% later. Past that is nice but not the goal. The 80% is a floor on work, not on startup.

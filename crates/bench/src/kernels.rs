@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::measure::Program;
+use crate::measure::{Overflow, Program};
 
 /// One program the suite measures.
 pub(crate) struct Kernel {
@@ -115,10 +115,10 @@ impl Kernel {
     }
 
     /// Its twin, built if it needs to be.
-    pub(crate) fn twin(&self, fennec: &Path, out_dir: &Path) -> Result<Program, String> {
+    pub(crate) fn twin(&self, fennec: &Path, out_dir: &Path, checks: Overflow) -> Result<Program, String> {
         match &self.twin {
             Twin::Source(source) => {
-                let command = crate::measure::build_twin(source, out_dir)?;
+                let command = crate::measure::build_twin(source, out_dir, checks)?;
                 Ok(Program { command, args: Vec::new(), stdin: None })
             }
             Twin::FrontEnd(corpus) => Ok(Program {

@@ -67,6 +67,23 @@ fn engine_for(source: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
     Ok(vec!["--extern".to_owned(), format!("fennec_re={}", library.display())])
 }
 
+/// Whether a twin checks its arithmetic. Targets do, because Fennec does: it's the same work.
+/// The unchecked numbers are kept only for reference.
+#[derive(Clone, Copy)]
+pub(crate) enum Overflow {
+    Checked,
+    Unchecked,
+}
+
+impl Overflow {
+    fn flag(self) -> &'static str {
+        match self {
+            Overflow::Checked => "overflow-checks=on",
+            Overflow::Unchecked => "overflow-checks=off",
+        }
+    }
+}
+
 /// How twins are optimized: as far as the compiler goes.
 const OPTIMIZED: [&str; 8] =
     ["-C", "opt-level=3", "-C", "codegen-units=1", "-C", "panic=abort", "-C", "debug-assertions=no"];
@@ -88,9 +105,12 @@ pub(crate) fn rustc_version() -> Result<String, String> {
 }
 
 /// Compiles a Rust twin, fully optimized, with link-time optimization across everything it uses.
-pub(crate) fn build_twin(source: &Path, out_dir: &Path) -> Result<PathBuf, String> {
+pub(crate) fn build_twin(source: &Path, out_dir: &Path, checks: Overflow) -> Result<PathBuf, String> {
     let name = source.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
-    let binary = out_dir.join(name);
+    let binary = match checks {
+        Overflow::Checked => out_dir.join(name),
+        Overflow::Unchecked => out_dir.join(format!("{name}.unchecked")),
+    };
     let engine = engine_for(source, out_dir)?;
     let crate_name =
         binary.file_name().map_or_else(String::new, |name| name.to_string_lossy().replace('.', "_"));
@@ -99,6 +119,7 @@ pub(crate) fn build_twin(source: &Path, out_dir: &Path) -> Result<PathBuf, Strin
         .args(["--edition", "2024", "-C", "lto=fat"])
         .args(OPTIMIZED)
         .args(twin_cpu())
+        .args(["-C", checks.flag()])
         .args(engine)
         // A name like `dicts.std` isn't a crate's name, whatever its file is called.
         .args(["--crate-name", &crate_name])

@@ -1,6 +1,6 @@
 # Measures the benchmark suite's targets from the kernels' twins, once per architecture. Everyday
 # runs only read them. Run this when a kernel's work or a twin changes, then copy each file this
-# prints into bench/targets/.
+# prints into bench/targets/, the unchecked ones too.
 name: Pin benchmark targets
 
 on:
@@ -29,7 +29,7 @@ jobs:
       - run: ./target/release/fennec-bench pin
       - name: Print the targets
         run: |
-          for file in bench/targets/*.txt; do
+          for file in bench/targets/*.txt bench/targets/unchecked/*.txt; do
             echo "== $file"
             cat "$file"
             { echo "## $file"; echo '```'; cat "$file"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

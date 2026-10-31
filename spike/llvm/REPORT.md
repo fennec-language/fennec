@@ -1,5 +1,98 @@
 # Can LLVM replace Cranelift for development?
 
+## Follow-up: no JIT at all, with range facts
+
+Run later the same day at load 2–10, with the disk stalling at times. From here the main target is the Rust twin **with overflow checks**, as decided; the unchecked twin is for reference. The rest of this report, from "A throwaway spike" on, is the first round and uses the unchecked twin.
+
+**Added to the emitter:** range facts, known-inside bounds, list reservation, and one level of self-inlining, all copied from what the JIT does. The first round's numbers below don't have them.
+
+### Edit to running, no JIT, 1000-function program (about 20,000 lines)
+
+Per-function `-O3`, cached, each stage timed for real on a quiet run (load about 3). Each edited program's output matched the JIT's.
+
+| Stage | One function edited | Small function, inlined into 12 callers |
+|---|---|---|
+| Front end, whole program | 155 ms | 155 ms |
+| — load / check / check again / lower / hash | 20 / 52 / 52 / 21 / 10 | same |
+| Emit changed functions | under 1 ms | 5 ms |
+| LLVM `-O3` | 3–11 ms | about 80 ms |
+| Link | 45–90 ms | about 70–90 ms |
+| Start and run this small program | 20–60 ms | 30 ms |
+| **Total** | **about 250–300 ms** | **about 350–400 ms** |
+
+The JIT on the same edits took 413–712 ms, without running `main`, with stalls up to 17.9 s.
+
+**Linkers:** `ld` and `rust-lld` are about equal, at 45–100 ms. `mold` isn't installed, and as far as I recall it no longer supports Mac. Flags like `-no_uuid` changed nothing visible. Sixteen pre-merged shards barely help a normal edit: 30–50 ms to link, plus 27–70 ms to re-merge the changed shard.
+
+**To stay well under 1 s:**
+
+1. **Bound the ripple from inlining.** A helper called by everything rebuilt 1001 functions: **7.9 s** on one core at `-O3`. The same edit without inlining took 265 ms. So rebuild only the edited function at first, with no inlining, and redo callers in the background.
+2. **Stop redoing the front end as programs grow.** At 5000 functions (about 100,000 lines) it took 0.8 s or more, and it's the largest stage at every size measured. It checks everything twice today; a daemon keeping its state should remove nearly all of it. That isn't built yet.
+3. **Keep the cache out of thousands of small files.** Reading 1061 tiny objects from the USB SSD took 44–72 s on some passes and 0.02 ms a file on others, and I couldn't isolate why. Linking stalled the same way, up to 3.8 s, and `rust-lld` once passed the 60 s limit. The JIT stalled too, up to 17.9 s, so it isn't only LLVM, but a pack file or merged shards is the safer design. It wasn't tested on the internal disk.
+
+**At 5000 functions** (load about 3, noisy): first build took 66 s of LLVM time, 239 s with file writes. Cache is 7.4 MB, the binary 4 MB, link 240–370 ms. Only one edit finished before the watchdog stopped a stalled `rust-lld`, so I have no reliable total. From its stages I'd expect over 1 s without a daemon.
+
+### Kernels: instructions / cycles, % of the Rust twin with overflow checks
+
+Minimum of 15 rounds taking turns, startup subtracted. All outputs matched the twins. Above 100 beats the twin.
+
+| Kernel | JIT | `-O3` per function | `-O3` with copies (cacheable) | `-O3` whole program | Unchecked twin |
+|---|---|---|---|---|---|
+| fib | 75 / 125 | 95 / 131 | **95 / 134** | 95 / 130 | 128 / 133 |
+| sieve | 48 / 91 | 32 / 77 | **32 / 74** | 48 / 87 | 86 / 100 |
+| mandelbrot | 75 / 92 | 98 / 100 | **99 / 100** | 99 / 100 | 100 / 100 |
+| nbody | 37 / 81 | 74 / 94 | **74 / 93** | 76 / 93 | 100 / 101 |
+| spectral_norm | 73 / 84 | 47 / 47 | **74 / 69** | 74 / 69 | 150 / 99 |
+| fannkuch | 32 / 80 | 68 / 102 | **68 / 102** | 107 / 113 | 106 / 102 |
+| **Geomean** | **54 / 91** | 64 / 87 | **69 / 93** | 81 / 97 | 110 / 105 |
+| **Slowest** | 32 / 80 | 32 / 47 | **32 / 69** | 48 / 69 | 86 / 99 |
+
+Against the unchecked twin, for reference: JIT 49 / 86, `-O3` with copies 63 / 88, whole program 73 / 92.
+
+- **Cacheable `-O3` now beats the JIT on both geomeans,** but not on every kernel.
+- **It loses to the JIT on sieve** by both measures, and **on spectral_norm by cycles** (69 against 84); spectral_norm ties on instructions (74 against 73).
+- **sieve's** low instruction count comes from `-O3`'s unrolling, which costs instructions; trimmed `-O1` scores 69 / 95 on it.
+- **Reference counting is still missing,** which flatters LLVM on any kernel that would need it.
+
+### ORC, briefly
+
+It works, and it's optional. Running `step` was swapped in a live program through slots, and later rounds printed the new values (checked by hand).
+
+| | Result |
+|---|---|
+| Swap, one function | 4 ms best, 4–13 ms in the running program |
+| Swap, 12 functions | 31 ms |
+| Load the whole program from one merged object | 28 ms, against 45–90 ms to link |
+| Run speed through ORC | 74 / 96, no worse than the executable |
+
+A call through a slot is one extra load and an indirect call. A function already on the stack keeps old code until it returns, and a caller that inlined the old code has to be swapped too.
+
+**Hot reload doesn't exist in the JIT either.** Nothing in `crates/jit` or `daemon.rs` does it, and it would need the same slots. So it isn't a point in Cranelift's favor today.
+
+### Memory
+
+| Process | Resident | Its own (footprint) |
+|---|---|---|
+| Today's `fennec daemon` on this program | 37 MB | not measured |
+| LLVM loaded, nothing else | 20 MB | 4 MB |
+| LLVM with all 1061 functions loaded through ORC | 42 MB | 21 MB |
+| After 10 swaps, old code kept | 55 MB | 24 MB |
+| Compiling, per-function `-O3` | about 45 MB | |
+| JIT, whole process including front end | about 120 MB | about 100 MB |
+
+Much of the resident figure is a shared, mapped `libLLVM.dylib`. No front-end state is included for LLVM.
+
+### What would stop one LLVM backend
+
+1. **The language isn't covered.** No reference counting, strings, enums, optionals, closures or dicts, and only 6 of the 25 kernels. This is the biggest risk, and today's numbers can only get worse from adding it.
+2. **sieve and spectral_norm still lose to the JIT,** and nothing's beaten the checked twin overall except on a few kernels.
+3. **The first build** took 16 s of LLVM time on one core at 1000 functions (up to 45 s with file writes), against 0.8 s, and again after every compiler upgrade.
+4. **Toolchain size:** 143.6 MB against 5.1 MB, unless a static build with few targets is much smaller. Not measured.
+5. **A daemon that reuses front-end state** is needed for large programs, and isn't built.
+6. **x86-64** and failure paths with real source locations and debug info are unmeasured.
+
+---
+
 A throwaway spike, run 2026-10-31 on an Apple M3 (8 cores, 16 GB) with LLVM 23.1.1 from the Rust toolchain. Nothing was installed. Load was 5–20 from other sessions, so times are noisy; instruction counts aren't.
 
 ## Verdict
@@ -111,6 +204,10 @@ python3 measure.py speed
 python3 measure.py scale 1000 L0 L1d O1 O3
 python3 cycles.py
 python3 report.py c
+python3 edit_to_run.py 1000
+python3 orc_measure.py live llvm_idle kernels scale1000
+python3 cycles_report.py
+python3 e2r_report.py
 ```
 
 `measure.py` expects `fennec` built at `/Volumes/BuildSSD/fennec-worktrees/llvm-spike/release/fennec`. Raw numbers are in `results/`. Every run went through `wd.py`, one at a time, niced, and limited to 4 GB and 60 s; nothing hit a limit.

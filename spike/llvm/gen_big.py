@@ -7,6 +7,7 @@ usage: gen_big.py N > big.fen
 import random, sys
 
 n = int(sys.argv[1])
+wide = len(sys.argv) > 2 and sys.argv[2] == "wide"
 rng = random.Random(1234)
 GROUP = 50
 out = ["## Generated. Every function is reached, and each does a tiny amount of work.", "", "from std.math import sqrt", ""]
@@ -16,6 +17,9 @@ for s in range(max(1, n // 50)):
             f"def step_{s}(p: P{s}, dt: float) -> P{s}:", "    mut q = p", "    q.x = q.x + q.vx * dt", "    q.y = q.y + q.vy * dt",
             "    q.vx = q.vx * 0.99", "    q.vy = q.vy * 0.99 - 0.1 * dt", "    q", ""]
 structs = max(1, n // 50)
+# With `wide`, every function calls one small helper, the worst case for inlining and the cache.
+if wide:
+    out += ["def helper(x: int) -> int:", "    x * 3 + 7", ""]
 names = []
 for i in range(n):
     name = f"f{i}"
@@ -43,6 +47,8 @@ for i in range(n):
         out += [f"def {name}(n: int) -> int:", "    mut sum = 0.0", "    mut vs = [1.5, 2.5, " + f"{c1}.5, {c3}.25]", "    for i in range(vs.len()):",
                 f"        sum = sum + vs[i] * float(i + {c3})", "    mut count = 0", "    for a in range(n + 2):", "        for b in range(n + 2):",
                 f"            if (a * b + {c1}) % {c3} == 0:", "                count = count + 1", "    r = 0 if sum < 0.0 else 1", "    if n <= 0:", "        return count + r", f"    count + r + {call}", ""]
+    if wide:
+        out[-2] = "    helper(n) + (" + out[-2].strip() + ")" if out[-2].startswith("    ") and "return" not in out[-2] else out[-2]
     names.append(name)
 for g in range(0, n, GROUP):
     out += [f"def group{g}(n: int) -> int:", "    mut total = 0"]

@@ -119,6 +119,24 @@ def driver(files, passes, cg, isel, out, quiet_rows=True):
     return json.loads(r["stdout"]), r
 
 
+def driver_all(files, passes, cg, isel, out):
+    """The driver in batches, so a long cold build stays under the watchdog's limit."""
+    totals = {"parse_ms": 0.0, "opt_ms": 0.0, "cg_ms": 0.0, "obj_bytes": 0, "text_bytes": 0, "init_ms": 0.0}
+    run = {"rss": 0, "footprint": 0, "wall_ms_outer": 0.0, "instructions": 0}
+    files = list(files)
+    for at in range(0, len(files), 100):
+        stats, r = driver(files[at:at + 100], passes, cg, isel, out)
+        if stats is None:
+            raise SystemExit(f"driver failed ({r['killed']}): {r['stderr'][-400:]}")
+        for key in totals:
+            totals[key] += stats[key]
+        run["rss"] = max(run["rss"], r["rss"] or 0)
+        run["footprint"] = max(run["footprint"], r["footprint"] or 0)
+        run["wall_ms_outer"] += r["wall_ms_outer"]
+        run["instructions"] += r["instructions"] or 0
+    return totals, run
+
+
 def link_args(out, objects):
     return [f"-o", out, "-arch", "arm64", "-platform_version", "macos", "14.0", "14.0", "-syslibroot", SDK, "-lSystem", "-dead_strip"] + [str(o) for o in objects]
 

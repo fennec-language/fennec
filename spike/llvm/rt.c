@@ -58,6 +58,13 @@ void fen_list_grow(List *list, int64_t size) {
     list->items = realloc(list->items, (size_t)(size * list->cap));
 }
 
+void fen_list_reserve(List *list, int64_t size, int64_t count) {
+    if (count > list->cap) {
+        list->cap = count;
+        list->items = realloc(list->items, (size_t)(size * list->cap));
+    }
+}
+
 void fen_print_int(int64_t value) { printf("%lld", (long long)value); }
 void fen_print_float(double value) { printf("%g", value); }
 void fen_print_bool(bool value) { fputs(value ? "True" : "False", stdout); }

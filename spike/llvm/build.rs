@@ -5,4 +5,5 @@ fn main() {
     let lib = format!("{}/lib", sysroot.trim());
     println!("cargo:rustc-link-search=native={lib}");
     println!("cargo:rustc-link-arg-bin=driver=-Wl,-rpath,{lib}");
+    println!("cargo:rustc-link-arg-bin=orc=-Wl,-rpath,{lib}");
 }

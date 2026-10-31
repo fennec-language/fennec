@@ -1,0 +1,14 @@
+## A program that keeps running while `step` is swapped: `round` calls it and returns often.
+
+def step(i: int) -> int:
+    i * 2 + 1
+
+def round(n: int) -> int:
+    mut total = 0
+    for i in range(n):
+        total = (total + step(i)) % 1000003
+    total
+
+def main(stdout: Stdout):
+    for r in range(60):
+        stdout.print(round(1_000_000))

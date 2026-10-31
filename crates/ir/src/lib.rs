@@ -345,6 +345,12 @@ pub enum Terminator {
         value: Operand,
         span: Span,
     },
+    /// Ends the program: an `assert` that failed, or a `where` rule that a value written
+    /// out breaks.
+    Stop {
+        message: String,
+        span: Span,
+    },
     /// The checker has shown control never gets here.
     Unreachable,
 }
@@ -374,7 +380,10 @@ impl Terminator {
         match self {
             Terminator::Jump(target) => vec![*target],
             Terminator::Branch { then, otherwise, .. } => vec![*then, *otherwise],
-            Terminator::Return(_) | Terminator::NoMatch { .. } | Terminator::Unreachable => Vec::new(),
+            Terminator::Return(_)
+            | Terminator::NoMatch { .. }
+            | Terminator::Stop { .. }
+            | Terminator::Unreachable => Vec::new(),
         }
     }
 }

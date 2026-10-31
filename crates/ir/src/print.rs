@@ -224,6 +224,7 @@ impl fmt::Display for Terminator {
             Terminator::Return(Some(value)) => write!(f, "return {value}"),
             Terminator::Return(None) => write!(f, "return"),
             Terminator::NoMatch { value, .. } => write!(f, "no match {value}"),
+            Terminator::Stop { message, .. } => write!(f, "stop {message:?}"),
             Terminator::Unreachable => write!(f, "unreachable"),
         }
     }

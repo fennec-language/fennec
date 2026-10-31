@@ -62,6 +62,11 @@ pub fn provided_everywhere(name: &str) -> bool {
         || program::BUILT_IN_INTERFACES.contains(&name)
 }
 
+/// Whether the engines provide a function of this name, like `sum` or `math.sqrt`.
+pub fn is_builtin(name: &str) -> bool {
+    builtins::is_builtin(name)
+}
+
 /// Whether a method the engines provide on a type changes its value, like `list.append`.
 /// `None` when the type has no such method.
 pub fn builtin_method_changes(ty: &Type, name: &str) -> Option<bool> {

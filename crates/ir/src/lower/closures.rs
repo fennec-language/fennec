@@ -36,7 +36,14 @@ impl Lowering<'_> {
     }
 
     /// `(x) => body`.
-    pub(super) fn arrow(&mut self, expr: &Expr, params: &[String], body: &Expr) -> Lowered<Operand> {
+    /// `changes` says whoever calls it gets its first parameter back, changed.
+    pub(super) fn arrow(
+        &mut self,
+        expr: &Expr,
+        params: &[String],
+        body: &Expr,
+        changes: bool,
+    ) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
         let Type::Arrow(types, returns) = &ty else {
             return Err("an arrow function has another type".to_owned());
@@ -62,7 +69,8 @@ impl Lowering<'_> {
         lifted.tail_expr(body, if **returns == Type::Unit { Tail::Drop } else { Tail::Return })?;
         lifted.end_function(expr.span)?;
         let count = captures.len() + params.len();
-        self.lifted.extend(lifted.finished(count, Vec::new()));
+        let mut_params = if changes { vec![captures.len()] } else { Vec::new() };
+        self.lifted.extend(lifted.finished(count, mut_params));
         Ok(Operand::Local(self.make_closure(key, &captures, ty, expr.span)))
     }
 

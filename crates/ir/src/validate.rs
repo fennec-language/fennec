@@ -238,6 +238,7 @@ impl<'p> Check<'p> {
                 let (key, item) = match ty {
                     Some(Type::List(item)) => (Type::Int, *item),
                     Some(Type::Dict(key, item)) => (*key, *item),
+                    Some(Type::IdMap(item)) => (Type::Id(item.clone()), *item),
                     _ => {
                         self.problems.push(format!("`{inst}` changes an item of something else"));
                         return;
@@ -470,7 +471,10 @@ impl<'p> Check<'p> {
                 self.problems.push("returns nothing, but has a return type".to_owned());
             }
             Terminator::NoMatch { value, .. } => self.operand(value, None, "value"),
-            Terminator::Return(None) | Terminator::Jump(_) | Terminator::Unreachable => {}
+            Terminator::Return(None)
+            | Terminator::Jump(_)
+            | Terminator::Stop { .. }
+            | Terminator::Unreachable => {}
         }
     }
 
@@ -513,6 +517,7 @@ fn indexed(ty: &Type) -> Option<(Type, Type)> {
         Type::Bytes => Some((Type::Int, Type::Int)),
         Type::Dict(key, value) => Some((*key.clone(), *value.clone())),
         Type::Named(name) if name == "Args" => Some((Type::Int, Type::Str)),
+        Type::IdMap(item) => Some((Type::Id(item.clone()), *item.clone())),
         Type::Tuple(items) => {
             let first = items.first()?;
             items.iter().all(|item| item == first).then(|| (Type::Int, first.clone()))

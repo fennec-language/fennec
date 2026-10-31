@@ -1,0 +1,6 @@
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+# The website's playground runs the interpreter as WebAssembly.
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

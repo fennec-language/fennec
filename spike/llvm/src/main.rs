@@ -1,0 +1,945 @@
+//! Throwaway spike: lowers Fennec's typed IR to LLVM IR text, as one whole-program module and as
+//! one module per function, to measure whether LLVM could replace Cranelift for development.
+//!
+//! `llvm-spike <file.fen> <out dir> [--abi checked|plain] [--import N] [--dump]`
+//!
+//! Covers ints, floats, bools, structs, tuples, lists, direct calls, printing and f-strings:
+//! enough for fib, sieve, mandelbrot, nbody, spectral_norm, fannkuch and the generated program.
+//! No reference counting or freeing, so a list copy shares its items. That's only right for
+//! programs that never change a list after copying it, which holds for those above; their output
+//! is compared with the Rust twins' to be sure.
+//!
+//! `checked` does the work the JIT does on a call: a stack check and a failure flag handed back
+//! from every call. `plain` has neither, and a failure ends the program on the spot.
+
+use std::collections::{BTreeSet, HashMap};
+use std::fmt::Write as _;
+use std::path::Path;
+use std::time::Instant;
+
+use fennec_check::Type;
+use fennec_ir::{BlockId, FormatPart, Function, InstKind, LocalId, Operand, Program, StructDef, Terminator};
+use fennec_syntax::{BinOp, UnaryOp};
+
+const HEADER: &str = "target datalayout = \"e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32\"\n\
+target triple = \"arm64-apple-macosx14.0.0\"\n\n";
+// What the IR knows and LLVM can't work out: a list's header and its items never overlap, and a
+// list's length is far from overflowing anything.
+const ATTRS: &str = "attributes #0 = { nounwind \"frame-pointer\"=\"non-leaf\" }\nattributes #1 = { cold nounwind }\nattributes #2 = { alwaysinline nounwind \"frame-pointer\"=\"non-leaf\" }\n\
+!0 = !{!\"fen\"}\n!1 = !{!\"header\", !0, i64 0}\n!2 = !{!\"item\", !0, i64 0}\n\
+!3 = !{!1, !1, i64 0}\n!4 = !{!2, !2, i64 0}\n!5 = !{i64 0, i64 281474976710656}\n";
+
+type Result<T> = std::result::Result<T, String>;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Abi {
+    Checked,
+    Plain,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Linkage {
+    /// The module is the whole program, so everything but `main` can go.
+    Internal,
+    External,
+    /// A copy of a function compiled elsewhere, there only to be inlined.
+    Imported,
+}
+
+struct Module<'a> {
+    program: &'a Program,
+    abi: Abi,
+    structs: HashMap<&'a str, &'a StructDef>,
+    functions: HashMap<&'a str, &'a Function>,
+    declares: BTreeSet<String>,
+    strings: Vec<String>,
+    bodies: String,
+    defined: BTreeSet<String>,
+}
+
+/// One function being emitted.
+struct Emit<'m, 'a> {
+    m: &'m mut Module<'a>,
+    f: &'a Function,
+    out: String,
+    cold: String,
+    next: usize,
+    failed_ret: String,
+    needs_prop: bool,
+}
+
+fn quote(name: &str) -> String {
+    format!("@\"f_{name}\"")
+}
+
+fn float_literal(value: f64) -> String {
+    format!("0x{:016X}", value.to_bits())
+}
+
+fn escape(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b" .,:;_-+=()[]{}<>!?/%".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            let _ = write!(out, "\\{byte:02X}");
+        }
+    }
+    out
+}
+
+impl<'a> Module<'a> {
+    fn new(program: &'a Program, abi: Abi) -> Self {
+        Module {
+            program,
+            abi,
+            structs: program.structs.iter().map(|def| (def.name.as_str(), def)).collect(),
+            functions: program.functions.iter().map(|def| (def.name.as_str(), def)).collect(),
+            declares: BTreeSet::new(),
+            strings: Vec::new(),
+            bodies: String::new(),
+            defined: BTreeSet::new(),
+        }
+    }
+
+    fn ty(&self, ty: &Type) -> Result<String> {
+        Ok(match ty {
+            Type::Int => "i64".into(),
+            Type::Float => "double".into(),
+            Type::Bool => "i1".into(),
+            Type::Unit => "void".into(),
+            Type::Str | Type::List(_) => "ptr".into(),
+            Type::Tuple(items) => {
+                let items: Result<Vec<String>> = items.iter().map(|item| self.ty(item)).collect();
+                format!("{{ {} }}", items?.join(", "))
+            }
+            Type::Named(name) if self.structs.contains_key(name.as_str()) => format!("%\"{name}\""),
+            Type::Named(name) if name == "Stdout" => "ptr".into(),
+            other => return Err(format!("type not covered: {other:?}")),
+        })
+    }
+
+    fn ret_ty(&self, returns: &Type) -> Result<String> {
+        let ty = self.ty(returns)?;
+        Ok(match (self.abi, ty.as_str()) {
+            (Abi::Plain, _) => ty,
+            (Abi::Checked, "void") => "i1".into(),
+            (Abi::Checked, _) => format!("{{ {ty}, i1 }}"),
+        })
+    }
+
+    fn signature(&self, f: &Function) -> Result<(String, String)> {
+        let mut params = Vec::new();
+        for (at, local) in f.locals.iter().take(f.params).enumerate() {
+            params.push(format!("{} %p{at}", self.ty(&local.ty)?));
+        }
+        Ok((self.ret_ty(&f.returns)?, params.join(", ")))
+    }
+
+    fn declare_function(&mut self, name: &str) -> Result<()> {
+        if self.defined.contains(name) {
+            return Ok(());
+        }
+        let f = self.functions.get(name).ok_or_else(|| format!("no function {name}"))?;
+        let mut params = Vec::new();
+        for local in f.locals.iter().take(f.params) {
+            params.push(self.ty(&local.ty)?);
+        }
+        let line = format!("declare {} {}({}) #0\n", self.ret_ty(&f.returns)?, quote(name), params.join(", "));
+        self.declares.insert(line);
+        Ok(())
+    }
+
+    fn type_defs(&self) -> Result<String> {
+        let mut out = String::new();
+        for def in &self.program.structs {
+            if let Ok(fields) = def.fields.iter().map(|(_, ty)| self.ty(ty)).collect::<Result<Vec<_>>>() {
+                let _ = writeln!(out, "%\"{}\" = type {{ {} }}", def.name, fields.join(", "));
+            }
+        }
+        Ok(out)
+    }
+
+    fn finish(self) -> Result<String> {
+        let mut out = String::from(HEADER);
+        out += &self.type_defs()?;
+        out.push('\n');
+        for (at, text) in self.strings.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "@.s{at} = private unnamed_addr constant [{} x i8] c\"{}\\00\"",
+                text.len() + 1,
+                escape(text)
+            );
+        }
+        for line in &self.declares {
+            out += line;
+        }
+        out.push('\n');
+        out += &self.bodies;
+        out += ATTRS;
+        Ok(out)
+    }
+
+    fn function(&mut self, f: &'a Function, linkage: Linkage) -> Result<()> {
+        let (ret, params) = self.signature(f)?;
+        let word = match linkage {
+            Linkage::Internal if f.name != "main" => "internal ",
+            Linkage::Imported => "available_externally ",
+            _ => "",
+        };
+        let failed_ret = match (self.abi, ret.as_str()) {
+            (Abi::Checked, "i1") => "ret i1 true".to_owned(),
+            (Abi::Checked, _) => {
+                let inner = self.ty(&f.returns)?;
+                format!("ret {ret} {{ {inner} poison, i1 true }}")
+            }
+            (Abi::Plain, _) => "unreachable".to_owned(),
+        };
+        let abi = self.abi;
+        let mut emit =
+            Emit { m: self, f, out: String::new(), cold: String::new(), next: 0, failed_ret, needs_prop: false };
+        // The JIT inlines what's small by its own rule, and so does this: a small function that
+        // calls nothing. LLVM can't see its failure paths are cold and would leave it.
+        let attrs = if size(f) <= 16 && callees(f).is_empty() && f.name != "main" { 2 } else { 0 };
+        let _ = writeln!(emit.out, "define {word}{ret} {}({params}) #{attrs} {{\nentry:", quote(&f.name));
+        emit.body(abi)?;
+        let (out, cold, prop) = (emit.out, emit.cold, emit.needs_prop);
+        let text = emit.failed_ret;
+        self.bodies += &out;
+        self.bodies += &cold;
+        if prop {
+            let _ = writeln!(self.bodies, "prop:\n  {text}");
+        }
+        self.bodies += "}\n\n";
+        if f.name == "main" {
+            self.main_wrapper(f)?;
+        }
+        Ok(())
+    }
+
+    /// The program's real `main`, which sets up and calls Fennec's.
+    fn main_wrapper(&mut self, f: &Function) -> Result<()> {
+        self.declares.insert("declare void @fen_init()\n".into());
+        self.declares.insert("declare i32 @fen_finish(i1)\n".into());
+        let args = vec!["ptr null"; f.params].join(", ");
+        let body = match self.abi {
+            Abi::Checked => format!(
+                "  call void @fen_init()\n  %r = call i1 {}({args})\n  %c = call i32 @fen_finish(i1 %r)\n  ret i32 %c\n",
+                quote(&f.name)
+            ),
+            Abi::Plain => format!(
+                "  call void @fen_init()\n  call void {}({args})\n  %c = call i32 @fen_finish(i1 false)\n  ret i32 %c\n",
+                quote(&f.name)
+            ),
+        };
+        let _ = write!(self.bodies, "define i32 @main() #0 {{\n{body}}}\n\n");
+        Ok(())
+    }
+
+    fn string(&mut self, text: &str) -> String {
+        let at = self.strings.iter().position(|held| held == text).unwrap_or_else(|| {
+            self.strings.push(text.to_owned());
+            self.strings.len() - 1
+        });
+        format!("@.s{at}")
+    }
+}
+
+impl<'a> Emit<'_, 'a> {
+    fn temp(&mut self) -> String {
+        self.next += 1;
+        format!("%t{}", self.next)
+    }
+
+    fn label(&mut self, word: &str) -> String {
+        self.next += 1;
+        format!("{word}{}", self.next)
+    }
+
+    fn line(&mut self, text: &str) {
+        self.out.push_str("  ");
+        self.out.push_str(text);
+        self.out.push('\n');
+    }
+
+    fn local_ty(&self, id: LocalId) -> Result<&'a Type> {
+        self.f.locals.get(id.0).map(|local| &local.ty).ok_or_else(|| "no such local".to_owned())
+    }
+
+    fn body(&mut self, abi: Abi) -> Result<()> {
+        for (at, local) in self.f.locals.iter().enumerate() {
+            let ty = self.m.ty(&local.ty)?;
+            if ty != "void" {
+                self.line(&format!("%l{at} = alloca {ty}"));
+            }
+        }
+        for (at, local) in self.f.locals.iter().take(self.f.params).enumerate() {
+            let ty = self.m.ty(&local.ty)?;
+            self.line(&format!("store {ty} %p{at}, ptr %l{at}"));
+        }
+        // A function that calls nothing has a known, small frame: the margin covers it.
+        if abi == Abi::Checked && !callees(self.f).is_empty() {
+            self.m.declares.insert("declare ptr @llvm.frameaddress.p0(i32)\n".into());
+            self.m.declares.insert("@fen_stack_limit = external dso_local global i64\n".into());
+            let (sp, limit) = (self.temp(), self.temp());
+            self.line(&format!("{sp} = call ptr @llvm.frameaddress.p0(i32 0)"));
+            self.line(&format!("{limit} = load i64, ptr @fen_stack_limit"));
+            let cmp = self.temp();
+            let sp_int = self.temp();
+            self.line(&format!("{sp_int} = ptrtoint ptr {sp} to i64"));
+            self.line(&format!("{cmp} = icmp ult i64 {sp_int}, {limit}"));
+            self.check(&cmp, 9, 0);
+        }
+        self.line("br label %bb0");
+        for (at, block) in self.f.blocks.iter().enumerate() {
+            let _ = writeln!(self.out, "bb{at}:");
+            for inst in &block.insts {
+                self.inst(&inst.kind, inst.span.start as u64)?;
+            }
+            self.terminator(&block.end)?;
+        }
+        Ok(())
+    }
+
+    /// Branches away to fail when `bad` holds.
+    fn check(&mut self, bad: &str, kind: u32, span: u64) {
+        let fail = self.label("fail");
+        let ok = self.label("ok");
+        self.line(&format!("br i1 {bad}, label %{fail}, label %{ok}"));
+        let _ = writeln!(self.out, "{ok}:");
+        let died = self.m.abi == Abi::Plain;
+        let callee = if died { "fen_die" } else { "fen_fail" };
+        self.m.declares.insert(format!("declare void @{callee}(i32, i64) #1\n"));
+        let end = self.failed_ret.clone();
+        let _ = writeln!(self.cold, "{fail}:\n  call void @{callee}(i32 {kind}, i64 {span})\n  {end}");
+    }
+
+    fn operand(&mut self, operand: &Operand) -> Result<(String, Type)> {
+        Ok(match operand {
+            Operand::Local(id) => {
+                let ty = self.local_ty(*id)?;
+                let text = self.m.ty(ty)?;
+                let temp = self.temp();
+                self.line(&format!("{temp} = load {text}, ptr %l{}", id.0));
+                (temp, ty.clone())
+            }
+            Operand::Int(value) => (value.to_string(), Type::Int),
+            Operand::Float(value) => (float_literal(*value), Type::Float),
+            Operand::Bool(value) => (value.to_string(), Type::Bool),
+            Operand::Str(text) => (self.m.string(text), Type::Str),
+            Operand::None => return Err("None isn't covered".to_owned()),
+        })
+    }
+
+    fn store(&mut self, dest: LocalId, value: &str) -> Result<()> {
+        let ty = self.m.ty(self.local_ty(dest)?)?;
+        if ty != "void" {
+            self.line(&format!("store {ty} {value}, ptr %l{}", dest.0));
+        }
+        Ok(())
+    }
+
+    fn field_ptr(&mut self, base: &str, owner: &Type, field: &str) -> Result<(String, Type)> {
+        let Type::Named(name) = owner else { return Err("a field of a non-struct".to_owned()) };
+        let def = *self.m.structs.get(name.as_str()).ok_or("no such struct")?;
+        let at = def.fields.iter().position(|(held, _)| held == field).ok_or("no such field")?;
+        let temp = self.temp();
+        self.line(&format!("{temp} = getelementptr inbounds %\"{name}\", ptr {base}, i32 0, i32 {at}"));
+        Ok((temp, def.fields[at].1.clone()))
+    }
+
+    fn walk(&mut self, object: LocalId, path: &[String]) -> Result<(String, Type)> {
+        let mut base = format!("%l{}", object.0);
+        let mut ty = self.local_ty(object)?.clone();
+        for field in path {
+            (base, ty) = self.field_ptr(&base, &ty, field)?;
+        }
+        Ok((base, ty))
+    }
+
+    fn elem_size(&mut self, elem: &str) -> String {
+        format!("ptrtoint (ptr getelementptr ({elem}, ptr null, i32 1) to i64)")
+    }
+
+    /// The address of a list's item, after its bounds check.
+    fn item_ptr(&mut self, list: &str, elem: &str, index: &str, span: u64) -> String {
+        let (len, bad, items_at, items, at) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{len} = load i64, ptr {list}, !tbaa !3, !range !5"));
+        self.line(&format!("{bad} = icmp uge i64 {index}, {len}"));
+        self.check(&bad, 3, span);
+        self.line(&format!("{items_at} = getelementptr inbounds i8, ptr {list}, i64 16"));
+        self.line(&format!("{items} = load ptr, ptr {items_at}, !tbaa !3"));
+        self.line(&format!("{at} = getelementptr inbounds {elem}, ptr {items}, i64 {index}"));
+        at
+    }
+
+    fn append(&mut self, list: &str, elem: &str, value: &str) {
+        let (len, cap_at, cap, full) = (self.temp(), self.temp(), self.temp(), self.temp());
+        let (grow, room) = (self.label("grow"), self.label("room"));
+        let size = self.elem_size(elem);
+        self.m.declares.insert("declare void @fen_list_grow(ptr, i64)\n".into());
+        self.line(&format!("{len} = load i64, ptr {list}, !tbaa !3, !range !5"));
+        self.line(&format!("{cap_at} = getelementptr inbounds i8, ptr {list}, i64 8"));
+        self.line(&format!("{cap} = load i64, ptr {cap_at}, !tbaa !3"));
+        self.line(&format!("{full} = icmp eq i64 {len}, {cap}"));
+        self.line(&format!("br i1 {full}, label %{grow}, label %{room}"));
+        let _ = write!(self.out, "{grow}:\n  call void @fen_list_grow(ptr {list}, i64 {size})\n  br label %{room}\n{room}:\n");
+        let (items_at, items, at, next) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{items_at} = getelementptr inbounds i8, ptr {list}, i64 16"));
+        self.line(&format!("{items} = load ptr, ptr {items_at}, !tbaa !3"));
+        self.line(&format!("{at} = getelementptr inbounds {elem}, ptr {items}, i64 {len}"));
+        self.line(&format!("store {elem} {value}, ptr {at}, !tbaa !4"));
+        self.line(&format!("{next} = add i64 {len}, 1"));
+        self.line(&format!("store i64 {next}, ptr {list}, !tbaa !3"));
+    }
+
+    fn new_list(&mut self, elem: &str, capacity: usize) -> String {
+        let temp = self.temp();
+        let size = self.elem_size(elem);
+        self.m.declares.insert("declare ptr @fen_list_new(i64, i64)\n".into());
+        self.line(&format!("{temp} = call ptr @fen_list_new(i64 {size}, i64 {capacity})"));
+        temp
+    }
+
+    fn overflow(&mut self, name: &str, lhs: &str, rhs: &str, span: u64) -> String {
+        let intrinsic = format!("@llvm.{name}.with.overflow.i64");
+        self.m.declares.insert(format!("declare {{ i64, i1 }} {intrinsic}(i64, i64)\n"));
+        let (pair, value, bad) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{pair} = call {{ i64, i1 }} {intrinsic}(i64 {lhs}, i64 {rhs})"));
+        self.line(&format!("{value} = extractvalue {{ i64, i1 }} {pair}, 0"));
+        self.line(&format!("{bad} = extractvalue {{ i64, i1 }} {pair}, 1"));
+        self.check(&bad, 1, span);
+        value
+    }
+
+    fn binary(&mut self, dest: LocalId, op: BinOp, lhs: &Operand, rhs: &Operand, span: u64) -> Result<()> {
+        let (a, ty) = self.operand(lhs)?;
+        let (b, _) = self.operand(rhs)?;
+        // A `for` loop's count, an unnamed local stepping itself, stops below a limit that fits.
+        let unnamed = self.f.locals.get(dest.0).is_some_and(|local| local.name.is_none());
+        if op == BinOp::Add && unnamed && *lhs == Operand::Local(dest) && *rhs == Operand::Int(1) {
+            let temp = self.temp();
+            self.line(&format!("{temp} = add nsw i64 {a}, 1"));
+            return self.store(dest, &temp);
+        }
+        let result = match ty {
+            Type::Int => self.int_binary(op, &a, &b, span)?,
+            Type::Float => self.float_binary(op, &a, &b, span)?,
+            Type::Bool => {
+                let cc = match op {
+                    BinOp::Eq => "eq",
+                    BinOp::NotEq => "ne",
+                    other => return Err(format!("bool operator {other:?}")),
+                };
+                let temp = self.temp();
+                self.line(&format!("{temp} = icmp {cc} i1 {a}, {b}"));
+                temp
+            }
+            other => return Err(format!("operator on {other:?}")),
+        };
+        self.store(dest, &result)
+    }
+
+    fn int_binary(&mut self, op: BinOp, a: &str, b: &str, span: u64) -> Result<String> {
+        let compare = match op {
+            BinOp::Eq => Some("eq"),
+            BinOp::NotEq => Some("ne"),
+            BinOp::Lt => Some("slt"),
+            BinOp::LtEq => Some("sle"),
+            BinOp::Gt => Some("sgt"),
+            BinOp::GtEq => Some("sge"),
+            _ => None,
+        };
+        if let Some(cc) = compare {
+            let temp = self.temp();
+            self.line(&format!("{temp} = icmp {cc} i64 {a}, {b}"));
+            return Ok(temp);
+        }
+        Ok(match op {
+            BinOp::Add => self.overflow("sadd", a, b, span),
+            BinOp::Sub => self.overflow("ssub", a, b, span),
+            BinOp::Mul => self.overflow("smul", a, b, span),
+            BinOp::FloorDiv | BinOp::Mod => {
+                let zero = self.temp();
+                self.line(&format!("{zero} = icmp eq i64 {b}, 0"));
+                self.check(&zero, 2, span);
+                let (m1, min, both) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{m1} = icmp eq i64 {b}, -1"));
+                self.line(&format!("{min} = icmp eq i64 {a}, -9223372036854775808"));
+                self.line(&format!("{both} = and i1 {m1}, {min}"));
+                self.check(&both, 1, span);
+                let (quotient, remainder, signs, nonzero, adjust) =
+                    (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+                self.line(&format!("{quotient} = sdiv i64 {a}, {b}"));
+                self.line(&format!("{remainder} = srem i64 {a}, {b}"));
+                let xor = self.temp();
+                self.line(&format!("{xor} = xor i64 {a}, {b}"));
+                self.line(&format!("{signs} = icmp slt i64 {xor}, 0"));
+                self.line(&format!("{nonzero} = icmp ne i64 {remainder}, 0"));
+                self.line(&format!("{adjust} = and i1 {signs}, {nonzero}"));
+                let result = self.temp();
+                if op == BinOp::FloorDiv {
+                    let wide = self.temp();
+                    self.line(&format!("{wide} = zext i1 {adjust} to i64"));
+                    self.line(&format!("{result} = sub i64 {quotient}, {wide}"));
+                } else {
+                    let plus = self.temp();
+                    self.line(&format!("{plus} = add i64 {remainder}, {b}"));
+                    self.line(&format!("{result} = select i1 {adjust}, i64 {plus}, i64 {remainder}"));
+                }
+                result
+            }
+            other => return Err(format!("int operator {other:?}")),
+        })
+    }
+
+    fn float_binary(&mut self, op: BinOp, a: &str, b: &str, span: u64) -> Result<String> {
+        let compare = match op {
+            BinOp::Eq => Some("oeq"),
+            BinOp::NotEq => Some("une"),
+            BinOp::Lt => Some("olt"),
+            BinOp::LtEq => Some("ole"),
+            BinOp::Gt => Some("ogt"),
+            BinOp::GtEq => Some("oge"),
+            _ => None,
+        };
+        let temp;
+        if let Some(cc) = compare {
+            temp = self.temp();
+            self.line(&format!("{temp} = fcmp {cc} double {a}, {b}"));
+            return Ok(temp);
+        }
+        let word = match op {
+            BinOp::Add => "fadd",
+            BinOp::Sub => "fsub",
+            BinOp::Mul => "fmul",
+            BinOp::Div => {
+                let zero = self.temp();
+                self.line(&format!("{zero} = fcmp oeq double {b}, 0x0000000000000000"));
+                self.check(&zero, 2, span);
+                "fdiv"
+            }
+            other => return Err(format!("float operator {other:?}")),
+        };
+        temp = self.temp();
+        self.line(&format!("{temp} = {word} double {a}, {b}"));
+        Ok(temp)
+    }
+
+    fn call(&mut self, dest: Option<LocalId>, name: &str, args: &[Operand]) -> Result<()> {
+        self.m.declare_function(name)?;
+        let callee = *self.m.functions.get(name).ok_or_else(|| format!("no function {name}"))?;
+        for (at, local) in callee.locals.iter().take(callee.params).enumerate() {
+            if callee.mut_params.contains(&at) && !matches!(local.ty, Type::List(_)) {
+                return Err(format!("a `mut` parameter of {name} isn't a list"));
+            }
+        }
+        let mut shown = Vec::new();
+        for arg in args {
+            let (value, ty) = self.operand(arg)?;
+            shown.push(format!("{} {value}", self.m.ty(&ty)?));
+        }
+        let ret = self.m.ret_ty(&callee.returns)?;
+        let shown = shown.join(", ");
+        let target = quote(name);
+        if ret == "void" {
+            self.line(&format!("call void {target}({shown})"));
+            return Ok(());
+        }
+        let result = self.temp();
+        self.line(&format!("{result} = call {ret} {target}({shown})"));
+        let value = match self.m.abi {
+            Abi::Plain => result,
+            Abi::Checked => {
+                let flag = if ret == "i1" {
+                    result.clone()
+                } else {
+                    let flag = self.temp();
+                    self.line(&format!("{flag} = extractvalue {ret} {result}, 1"));
+                    flag
+                };
+                let ok = self.label("ok");
+                self.needs_prop = true;
+                self.line(&format!("br i1 {flag}, label %prop, label %{ok}"));
+                let _ = writeln!(self.out, "{ok}:");
+                if ret == "i1" {
+                    return Ok(());
+                }
+                let value = self.temp();
+                self.line(&format!("{value} = extractvalue {ret} {result}, 0"));
+                value
+            }
+        };
+        if let Some(dest) = dest {
+            self.store(dest, &value)?;
+        }
+        Ok(())
+    }
+
+    fn print(&mut self, args: &[Operand]) -> Result<()> {
+        for (at, arg) in args.iter().enumerate() {
+            if at > 0 {
+                self.m.declares.insert("declare void @fen_print_sep()\n".into());
+                self.line("call void @fen_print_sep()");
+            }
+            let (value, ty) = self.operand(arg)?;
+            let (callee, text) = match ty {
+                Type::Int => ("fen_print_int", "i64"),
+                Type::Float => ("fen_print_float", "double"),
+                Type::Bool => ("fen_print_bool", "i1"),
+                Type::Str => ("fen_print_str", "ptr"),
+                other => return Err(format!("printing {other:?}")),
+            };
+            self.m.declares.insert(format!("declare void @{callee}({text})\n"));
+            self.line(&format!("call void @{callee}({text} {value})"));
+        }
+        self.m.declares.insert("declare void @fen_print_nl()\n".into());
+        self.line("call void @fen_print_nl()");
+        Ok(())
+    }
+
+    fn builtin(&mut self, dest: Option<LocalId>, name: &str, args: &[Operand]) -> Result<()> {
+        let list_of = |ty: &Type| match ty {
+            Type::List(item) => Ok((**item).clone()),
+            other => Err(format!("{name} on {other:?}")),
+        };
+        match name {
+            "Stdout.print" => self.print(args.get(1..).unwrap_or_default()),
+            "list.len" => {
+                let (list, _) = self.operand(args.first().ok_or("no argument")?)?;
+                let len = self.temp();
+                self.line(&format!("{len} = load i64, ptr {list}, !tbaa !3, !range !5"));
+                self.store(dest.ok_or("no dest")?, &len)
+            }
+            "list.append" => {
+                let (list, ty) = self.operand(args.first().ok_or("no argument")?)?;
+                let elem = self.m.ty(&list_of(&ty)?)?;
+                let (value, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                self.append(&list, &elem, &value);
+                Ok(())
+            }
+            "float" => {
+                let (value, ty) = self.operand(args.first().ok_or("no argument")?)?;
+                if ty != Type::Int {
+                    return Err("float() of a non-int".to_owned());
+                }
+                let temp = self.temp();
+                self.line(&format!("{temp} = sitofp i64 {value} to double"));
+                self.store(dest.ok_or("no dest")?, &temp)
+            }
+            "math.sqrt" => {
+                let (value, _) = self.operand(args.first().ok_or("no argument")?)?;
+                self.m.declares.insert("declare double @llvm.sqrt.f64(double)\n".into());
+                let temp = self.temp();
+                self.line(&format!("{temp} = call double @llvm.sqrt.f64(double {value})"));
+                self.store(dest.ok_or("no dest")?, &temp)
+            }
+            other => Err(format!("builtin not covered: {other}")),
+        }
+    }
+
+    fn format(&mut self, dest: LocalId, parts: &[FormatPart]) -> Result<()> {
+        self.m.declares.insert("declare void @fen_fmt_begin()\n".into());
+        self.m.declares.insert("declare ptr @fen_fmt_end()\n".into());
+        self.line("call void @fen_fmt_begin()");
+        for part in parts {
+            match part {
+                FormatPart::Text(text) => {
+                    let text = self.m.string(text);
+                    self.m.declares.insert("declare void @fen_fmt_text(ptr)\n".into());
+                    self.line(&format!("call void @fen_fmt_text(ptr {text})"));
+                }
+                FormatPart::Value { value, spec } => {
+                    let (value, ty) = self.operand(value)?;
+                    let spec = self.m.string(spec.as_deref().unwrap_or(""));
+                    let (callee, text) = match ty {
+                        Type::Int => ("fen_fmt_int", "i64"),
+                        Type::Float => ("fen_fmt_float", "double"),
+                        other => return Err(format!("formatting {other:?}")),
+                    };
+                    self.m.declares.insert(format!("declare void @{callee}({text}, ptr)\n"));
+                    self.line(&format!("call void @{callee}({text} {value}, ptr {spec})"));
+                }
+            }
+        }
+        let temp = self.temp();
+        self.line(&format!("{temp} = call ptr @fen_fmt_end()"));
+        self.store(dest, &temp)
+    }
+
+    fn inst(&mut self, inst: &InstKind, span: u64) -> Result<()> {
+        match inst {
+            InstKind::Copy { dest, value } => {
+                let (value, _) = self.operand(value)?;
+                self.store(*dest, &value)
+            }
+            InstKind::Unary { dest, op, value } => {
+                let (value, ty) = self.operand(value)?;
+                let result = match (op, ty) {
+                    (UnaryOp::Neg, Type::Int) => self.overflow("ssub", "0", &value, span),
+                    (UnaryOp::Neg, Type::Float) => {
+                        let temp = self.temp();
+                        self.line(&format!("{temp} = fneg double {value}"));
+                        temp
+                    }
+                    (UnaryOp::Not, Type::Bool) => {
+                        let temp = self.temp();
+                        self.line(&format!("{temp} = xor i1 {value}, true"));
+                        temp
+                    }
+                    (_, other) => return Err(format!("unary operator on {other:?}")),
+                };
+                self.store(*dest, &result)
+            }
+            InstKind::Binary { dest, op, lhs, rhs } => self.binary(*dest, *op, lhs, rhs, span),
+            InstKind::Make { dest, type_name, fields } => {
+                let def = *self.m.structs.get(type_name.as_str()).ok_or("no such struct")?;
+                for (at, value) in fields.iter().enumerate() {
+                    let (value, _) = self.operand(value)?;
+                    let field_ty = self.m.ty(&def.fields[at].1)?;
+                    let ptr = self.temp();
+                    self.line(&format!(
+                        "{ptr} = getelementptr inbounds %\"{type_name}\", ptr %l{}, i32 0, i32 {at}",
+                        dest.0
+                    ));
+                    self.line(&format!("store {field_ty} {value}, ptr {ptr}"));
+                }
+                Ok(())
+            }
+            InstKind::GetField { dest, object, field } => {
+                let Operand::Local(id) = object else { return Err("a field of a literal".to_owned()) };
+                let owner = self.local_ty(*id)?.clone();
+                let (ptr, ty) = self.field_ptr(&format!("%l{}", id.0), &owner, field)?;
+                let text = self.m.ty(&ty)?;
+                let temp = self.temp();
+                self.line(&format!("{temp} = load {text}, ptr {ptr}"));
+                self.store(*dest, &temp)
+            }
+            InstKind::SetField { object, path, value } => {
+                let (value, _) = self.operand(value)?;
+                let (ptr, ty) = self.walk(*object, path)?;
+                let text = self.m.ty(&ty)?;
+                self.line(&format!("store {text} {value}, ptr {ptr}"));
+                Ok(())
+            }
+            InstKind::MakeList { dest, items } => {
+                let Type::List(elem) = self.local_ty(*dest)? else { return Err("a list that isn't".to_owned()) };
+                let elem = self.m.ty(elem)?;
+                let list = self.new_list(&elem, items.len());
+                for item in items {
+                    let (value, _) = self.operand(item)?;
+                    self.append(&list, &elem, &value);
+                }
+                self.store(*dest, &list)
+            }
+            InstKind::MakeTuple { dest, items } => {
+                let ty = self.m.ty(self.local_ty(*dest)?)?;
+                for (at, item) in items.iter().enumerate() {
+                    let (value, item_ty) = self.operand(item)?;
+                    let text = self.m.ty(&item_ty)?;
+                    let ptr = self.temp();
+                    self.line(&format!("{ptr} = getelementptr inbounds {ty}, ptr %l{}, i32 0, i32 {at}", dest.0));
+                    self.line(&format!("store {text} {value}, ptr {ptr}"));
+                }
+                Ok(())
+            }
+            InstKind::GetTupleItem { dest, value, at } => {
+                let Operand::Local(id) = value else { return Err("an item of a literal".to_owned()) };
+                let ty = self.m.ty(self.local_ty(*id)?)?;
+                let item = self.m.ty(self.local_ty(*dest)?)?;
+                let (ptr, temp) = (self.temp(), self.temp());
+                self.line(&format!("{ptr} = getelementptr inbounds {ty}, ptr %l{}, i32 0, i32 {at}", id.0));
+                self.line(&format!("{temp} = load {item}, ptr {ptr}"));
+                self.store(*dest, &temp)
+            }
+            InstKind::GetIndex { dest, object, index } => {
+                let (list, ty) = self.operand(object)?;
+                let Type::List(elem) = ty else { return Err(format!("indexing {ty:?}")) };
+                let elem = self.m.ty(&elem)?;
+                let (index, _) = self.operand(index)?;
+                let at = self.item_ptr(&list, &elem, &index, span);
+                let temp = self.temp();
+                self.line(&format!("{temp} = load {elem}, ptr {at}, !tbaa !4"));
+                self.store(*dest, &temp)
+            }
+            InstKind::SetIndex { object, path, index, value } => {
+                let (ptr, ty) = self.walk(*object, path)?;
+                let Type::List(elem) = ty else { return Err(format!("indexing {ty:?}")) };
+                let elem = self.m.ty(&elem)?;
+                let list = self.temp();
+                self.line(&format!("{list} = load ptr, ptr {ptr}"));
+                let (index, _) = self.operand(index)?;
+                let (value, _) = self.operand(value)?;
+                let at = self.item_ptr(&list, &elem, &index, span);
+                self.line(&format!("store {elem} {value}, ptr {at}, !tbaa !4"));
+                Ok(())
+            }
+            InstKind::Format { dest, parts } => self.format(*dest, parts),
+            InstKind::Builtin { dest, name, args, .. } => self.builtin(*dest, name, args),
+            InstKind::Call { dest, function, args } => self.call(*dest, function, args),
+            other => Err(format!("instruction not covered: {other}")),
+        }
+    }
+
+    fn terminator(&mut self, end: &Terminator) -> Result<()> {
+        match end {
+            Terminator::Jump(BlockId(to)) => self.line(&format!("br label %bb{to}")),
+            Terminator::Branch { cond, then, otherwise } => {
+                let (cond, _) = self.operand(cond)?;
+                self.line(&format!("br i1 {cond}, label %bb{}, label %bb{}", then.0, otherwise.0));
+            }
+            Terminator::Return(value) => {
+                let value = value.as_ref().map(|value| self.operand(value)).transpose()?;
+                let ret = self.m.ret_ty(&self.f.returns)?;
+                match (self.m.abi, value, ret.as_str()) {
+                    (Abi::Plain, _, "void") => self.line("ret void"),
+                    (Abi::Plain, Some((value, _)), _) => self.line(&format!("ret {ret} {value}")),
+                    (Abi::Checked, _, "i1") => self.line("ret i1 false"),
+                    (Abi::Checked, Some((value, _)), _) => {
+                        let inner = self.m.ty(&self.f.returns)?;
+                        let temp = self.temp();
+                        self.line(&format!(
+                            "{temp} = insertvalue {ret} {{ {inner} poison, i1 false }}, {inner} {value}, 0"
+                        ));
+                        self.line(&format!("ret {ret} {temp}"));
+                    }
+                    _ => return Err("a return with no value".to_owned()),
+                }
+            }
+            Terminator::Stop { span, .. } | Terminator::NoMatch { span, .. } => {
+                let done = "true";
+                let (fail, ok) = (self.label("stop"), self.label("dead"));
+                self.line(&format!("br i1 {done}, label %{fail}, label %{ok}"));
+                let _ = writeln!(self.out, "{ok}:\n  unreachable");
+                let died = self.m.abi == Abi::Plain;
+                let callee = if died { "fen_die" } else { "fen_fail" };
+                self.m.declares.insert(format!("declare void @{callee}(i32, i64) #1\n"));
+                let text = self.failed_ret.clone();
+                let _ = writeln!(self.cold, "{fail}:\n  call void @{callee}(i32 4, i64 {})\n  {text}", span.start);
+            }
+            Terminator::Unreachable => self.line("unreachable"),
+        }
+        Ok(())
+    }
+}
+
+/// How much a function is, for choosing what's small enough to copy for inlining.
+fn size(f: &Function) -> usize {
+    f.blocks.iter().map(|block| block.insts.len() + 1).sum()
+}
+
+fn callees(f: &Function) -> Vec<&str> {
+    f.blocks
+        .iter()
+        .flat_map(|block| &block.insts)
+        .filter_map(|inst| match &inst.kind {
+            InstKind::Call { function, .. } => Some(function.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One module holding one function, plus copies of small functions it calls, up to two calls deep.
+fn single(program: &Program, f: &Function, abi: Abi, import: usize) -> Result<String> {
+    let mut module = Module::new(program, abi);
+    module.defined.insert(f.name.clone());
+    let mut imports: Vec<&Function> = Vec::new();
+    if import > 0 {
+        let mut level: Vec<&Function> = vec![f];
+        for _ in 0..2 {
+            let mut next = Vec::new();
+            for caller in level {
+                for name in callees(caller) {
+                    let Some(callee) = module.functions.get(name).copied() else { continue };
+                    if size(callee) <= import && module.defined.insert(callee.name.clone()) {
+                        imports.push(callee);
+                        next.push(callee);
+                    }
+                }
+            }
+            level = next;
+        }
+    }
+    module.function(f, Linkage::External)?;
+    for callee in imports {
+        module.function(callee, Linkage::Imported)?;
+    }
+    module.finish()
+}
+
+fn whole(program: &Program, abi: Abi) -> Result<String> {
+    let mut module = Module::new(program, abi);
+    for f in &program.functions {
+        module.defined.insert(f.name.clone());
+    }
+    for f in &program.functions {
+        module.function(f, Linkage::Internal)?;
+    }
+    module.finish()
+}
+
+fn run() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let [path, out_dir, rest @ ..] = args.as_slice() else {
+        return Err("usage: llvm-spike <file.fen> <out dir> [--abi checked|plain] [--import N] [--dump]".to_owned());
+    };
+    let mut abi = Abi::Checked;
+    let mut import = 0;
+    let mut dump = false;
+    let mut flags = rest.iter();
+    while let Some(flag) = flags.next() {
+        match flag.as_str() {
+            "--abi" => abi = if flags.next().is_some_and(|word| word == "plain") { Abi::Plain } else { Abi::Checked },
+            "--import" => import = flags.next().and_then(|word| word.parse().ok()).ok_or("--import needs a number")?,
+            "--dump" => dump = true,
+            other => return Err(format!("unknown flag {other}")),
+        }
+    }
+
+    let started = Instant::now();
+    let mut loaded =
+        fennec_kit::load(Path::new(path), path, fennec_kit::Entry::Main).map_err(|err| format!("load: {err}"))?;
+    fennec_check::check(&loaded.module).map_err(|_| "check failed")?;
+    fennec_build::keep_what_main_reaches(&mut loaded.module);
+    let checked = fennec_check::check(&loaded.module).map_err(|_| "check failed")?;
+    let program = fennec_ir::lower(&loaded.module, &checked);
+    let front = started.elapsed();
+    if dump {
+        println!("{program}");
+    }
+    if !program.not_lowered.is_empty() {
+        return Err(format!("not lowered: {:?}", program.not_lowered));
+    }
+
+    let started = Instant::now();
+    let dir = Path::new(out_dir);
+    let functions_dir = dir.join("fn");
+    std::fs::create_dir_all(&functions_dir).map_err(|err| err.to_string())?;
+    let mut bytes = 0;
+    for (at, f) in program.functions.iter().enumerate() {
+        let text = single(&program, f, abi, import).map_err(|err| format!("{}: {err}", f.name))?;
+        bytes += text.len();
+        std::fs::write(functions_dir.join(format!("f{at:05}.ll")), text).map_err(|err| err.to_string())?;
+    }
+    let text = whole(&program, abi)?;
+    std::fs::write(dir.join("whole.ll"), &text).map_err(|err| err.to_string())?;
+    let emit = started.elapsed();
+    let insts: usize = program.functions.iter().map(size).sum();
+    println!(
+        "{{\"functions\":{},\"ir_insts\":{insts},\"front_ms\":{:.3},\"emit_all_ms\":{:.3},\"whole_ll\":{},\"split_ll\":{bytes}}}",
+        program.functions.len(),
+        front.as_secs_f64() * 1e3,
+        emit.as_secs_f64() * 1e3,
+        text.len(),
+    );
+    Ok(())
+}
+
+fn main() {
+    if let Err(err) = run() {
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }
+}

@@ -1,0 +1,17 @@
+[package]
+name = "llvm-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+fennec-check = { path = "../../crates/check" }
+fennec-syntax = { path = "../../crates/syntax" }
+fennec-ir = { path = "../../crates/ir" }
+fennec-kit = { path = "../../crates/kit" }
+fennec-build = { path = "../../crates/build" }
+
+[profile.release]
+debug = false

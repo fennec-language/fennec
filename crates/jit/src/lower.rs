@@ -411,15 +411,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         lowerer.mark_ran(&function.key)?;
     }
     lowerer.prologue(&params)?;
-    let ir = std::rc::Rc::clone(&lowerer.shared.ir);
-    if let Some(ir) = ir.get(&function.key).filter(|ir| from_ir::taken(ir, function, lowerer.shared)) {
-        lowerer.body_from_ir(ir)?;
-        return lowerer.finish();
-    }
-    let (tail, tail_ty) = lowerer.tail(&function.def.body)?;
-    if !lowerer.is_dead() {
-        lowerer.ret(tail, tail_ty, function.def.span)?;
-    }
+    lowerer.body()?;
     lowerer.finish()
 }
 

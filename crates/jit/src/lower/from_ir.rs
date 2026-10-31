@@ -2,9 +2,9 @@
 //! function at a time: a function the IR path doesn't take yet stays on the syntax tree, so
 //! the two work side by side and call each other the same way.
 //!
-//! So far it takes functions that only hold ints, floats and bools. It leaves a function
-//! calling something small enough to inline on the syntax tree, since the IR has no inlining
-//! until the optimizer does it.
+//! So far it takes functions that only hold ints, floats and bools. It leaves a function on
+//! the syntax tree when that would make it slower: one calling something small enough to
+//! inline, since the IR has no inlining until the optimizer does it, and one with a `for` loop.
 
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use cranelift_frontend::Variable;
@@ -55,6 +55,17 @@ fn takes(inst: &InstKind, function: &Function, shared: &Shared) -> bool {
     }
 }
 
+/// Whether a `for` loop counts in this function: a local with no name steps itself. The syntax
+/// tree knows a loop's count can't overflow or go below its start, which saves checks on
+/// everything computed from it, and the IR doesn't say so yet.
+fn counts_in_a_loop(function: &Function) -> bool {
+    let unnamed = |local: &LocalId| function.locals.get(local.0).is_some_and(|held| held.name.is_none());
+    function.blocks.iter().flat_map(|block| &block.insts).any(|inst| match &inst.kind {
+        InstKind::Binary { dest, lhs: Operand::Local(lhs), .. } => dest == lhs && unnamed(dest),
+        _ => false,
+    })
+}
+
 /// Whether the IR path can lower a function.
 pub(super) fn taken(function: &Function, written: &crate::types::Function<'_>, shared: &Shared) -> bool {
     let locals = function.locals.iter().all(|local| plain(&local.ty).is_some());
@@ -66,12 +77,31 @@ pub(super) fn taken(function: &Function, written: &crate::types::Function<'_>, s
         )
     });
     let mut insts = function.blocks.iter().flat_map(|block| &block.insts);
-    !written.fallible && locals && returns && ends && insts.all(|inst| takes(&inst.kind, function, shared))
+    !written.fallible
+        && locals
+        && returns
+        && ends
+        && !counts_in_a_loop(function)
+        && insts.all(|inst| takes(&inst.kind, function, shared))
 }
 
 impl Lowerer<'_, '_> {
+    /// Lowers a function's body, from its IR when the IR path takes it.
+    pub(super) fn body(&mut self) -> Result<(), Diagnostic> {
+        let function = self.function;
+        let ir = std::rc::Rc::clone(&self.shared.ir);
+        if let Some(ir) = ir.get(&function.key).filter(|ir| taken(ir, function, self.shared)) {
+            return self.body_from_ir(ir);
+        }
+        let (tail, tail_ty) = self.tail(&function.def.body)?;
+        if !self.is_dead() {
+            self.ret(tail, tail_ty, function.def.span)?;
+        }
+        Ok(())
+    }
+
     /// Lowers a function's body from its IR. Its parameters are already bound.
-    pub(super) fn body_from_ir(&mut self, ir: &Function) -> Result<(), Diagnostic> {
+    fn body_from_ir(&mut self, ir: &Function) -> Result<(), Diagnostic> {
         let mut vars = Vec::with_capacity(ir.locals.len());
         let span = self.function.def.span;
         for (at, local) in ir.locals.iter().enumerate() {
@@ -127,7 +157,7 @@ impl Lowerer<'_, '_> {
                 self.set_from_ir(*dest, value, vars, span)
             }
             InstKind::Unary { dest, op, value } => {
-                let ty = self.operand_type(value, vars, span)?;
+                let ty = operand_type(value, vars, span)?;
                 let value = self.operand_from_ir(value, vars, span)?;
                 let result = self.unary(*op, (Some(value), ty), span)?;
                 let value = result.and_then(|(value, _)| value);
@@ -135,7 +165,7 @@ impl Lowerer<'_, '_> {
                 self.set_from_ir(*dest, value, vars, span)
             }
             InstKind::Binary { dest, op, lhs, rhs } => {
-                let ty = self.operand_type(lhs, vars, span)?;
+                let ty = operand_type(lhs, vars, span)?;
                 let (lhs, rhs) =
                     (self.operand_from_ir(lhs, vars, span)?, self.operand_from_ir(rhs, vars, span)?);
                 let result = self.binary(*op, (Some(lhs), ty), (Some(rhs), ty), span);
@@ -174,18 +204,6 @@ impl Lowerer<'_, '_> {
         Ok(())
     }
 
-    fn operand_type(&self, operand: &Operand, vars: &[(Variable, Ty)], span: Span) -> Result<Ty, Diagnostic> {
-        match operand {
-            Operand::Local(local) => {
-                vars.get(local.0).map(|(_, ty)| *ty).ok_or_else(|| internal("no such local", span))
-            }
-            Operand::Int(_) => Ok(Ty::Int),
-            Operand::Float(_) => Ok(Ty::Float),
-            Operand::Bool(_) => Ok(Ty::Bool),
-            Operand::Str(_) | Operand::None => Err(internal("a value the IR path doesn't take", span)),
-        }
-    }
-
     fn operand_from_ir(
         &mut self,
         operand: &Operand,
@@ -202,5 +220,17 @@ impl Lowerer<'_, '_> {
             Operand::Bool(value) => Ok(self.b.ins().iconst(types::I8, i64::from(*value))),
             Operand::Str(_) | Operand::None => Err(internal("a value the IR path doesn't take", span)),
         }
+    }
+}
+
+fn operand_type(operand: &Operand, vars: &[(Variable, Ty)], span: Span) -> Result<Ty, Diagnostic> {
+    match operand {
+        Operand::Local(local) => {
+            vars.get(local.0).map(|(_, ty)| *ty).ok_or_else(|| internal("no such local", span))
+        }
+        Operand::Int(_) => Ok(Ty::Int),
+        Operand::Float(_) => Ok(Ty::Float),
+        Operand::Bool(_) => Ok(Ty::Bool),
+        Operand::Str(_) | Operand::None => Err(internal("a value the IR path doesn't take", span)),
     }
 }

@@ -387,5 +387,5 @@ def main(stdout: Stdout):
     let mut out = Vec::new();
     let report = fennec_jit::run_with_report(&module, &mut out).unwrap();
     assert_eq!(String::from_utf8_lossy(&out), "55 111\n");
-    assert_eq!(report.from_ir, ["fib", "steps"]);
+    assert_eq!(report.from_ir, ["steps"], "fib stays on the syntax tree, which inlines it into itself");
 }

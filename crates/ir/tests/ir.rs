@@ -2069,6 +2069,21 @@ def h() -> list[int]:
 }
 
 #[test]
+fn a_generic_that_calls_itself_with_a_bigger_type_stops() {
+    let source = "def grow[T](x: T, n: int) -> int:
+    if n == 0:
+        return 0
+    grow([x], n - 1)
+
+def f() -> int:
+    grow(1, 3)
+";
+    let program = lowered(source).unwrap();
+    assert_ne!(program.not_lowered, []);
+    assert!(program.functions.len() <= 2001, "{}", program.functions.len());
+}
+
+#[test]
 fn every_example_kit_lowers_to_valid_ir() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/projects");
     let mut kits = 0;

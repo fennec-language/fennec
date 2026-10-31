@@ -258,6 +258,7 @@ dependencies = [
  "fennec-kit",
  "fennec-llvm",
  "fennec-lsp",
+ "fennec-reference",
  "fennec-syntax",
 ]
 
@@ -384,6 +385,10 @@ dependencies = [
 
 [[package]]
 name = "fennec-re"
+version = "0.0.1"
+
+[[package]]
+name = "fennec-reference"
 version = "0.0.1"
 
 [[package]]

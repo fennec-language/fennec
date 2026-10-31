@@ -19,7 +19,7 @@ const RUNTIME: &str = "libfennec_runtime.a";
 
 pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
     if cfg!(windows) {
-        eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run --jit`");
+        eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run`");
         return ExitCode::FAILURE;
     }
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };

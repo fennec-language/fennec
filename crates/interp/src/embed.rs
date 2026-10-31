@@ -81,16 +81,29 @@ impl Tables {
 
 /// Collects what the program prints.
 #[derive(Clone, Default)]
-struct Output(Rc<RefCell<Vec<u8>>>);
+struct Output(Rc<RefCell<Vec<u8>>>, bool);
+
+/// How much output is kept before a live run writes it.
+const LIVE_OUTPUT: usize = 1 << 13;
 
 impl Write for Output {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0.borrow_mut().extend_from_slice(bytes);
+        if self.1 && self.0.borrow().len() >= LIVE_OUTPUT {
+            self.flush()?;
+        }
         Ok(bytes.len())
     }
 
+    /// Writes what a live run has kept. Any other run's output stays for its host.
     fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+        if !self.1 {
+            return Ok(());
+        }
+        let mut stdout = std::io::stdout();
+        stdout.write_all(&self.0.borrow())?;
+        self.0.borrow_mut().clear();
+        stdout.flush()
     }
 }
 
@@ -148,7 +161,7 @@ fn capability(kind: i64) -> Capability {
 /// Sets up the runtime to run `module` with `tables` and `inputs`, replacing any earlier
 /// run's.
 pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Result<(), Diagnostic> {
-    let output = Output::default();
+    let output = Output(Rc::default(), inputs.live);
     let mut interp = Interp::with_output(Box::new(output.clone()))?;
     interp.give(inputs);
     interp.load(module)?;

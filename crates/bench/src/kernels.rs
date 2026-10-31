@@ -8,7 +8,7 @@ use crate::measure::Program;
 /// One program the suite measures.
 pub(crate) struct Kernel {
     pub(crate) name: String,
-    /// What `fennec run --jit` is given: a file or a kit.
+    /// What `fennec run` is given: a file or a kit.
     path: String,
     /// What it reads on standard input.
     stdin: Option<PathBuf>,
@@ -75,6 +75,8 @@ impl Kernel {
     pub(crate) fn run(&self, fennec: &Path) -> Program {
         Program {
             command: fennec.to_path_buf(),
+            // `--jit` says when the interpreter stands in, and means native code in older
+            // builds too, which the suite compares against.
             args: vec!["run".to_owned(), "--jit".to_owned(), self.path.clone()],
             stdin: self.stdin.clone(),
         }

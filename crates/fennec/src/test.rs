@@ -1,5 +1,6 @@
-//! `fennec test`: checks a program, then runs its `test` blocks and reports each one. For a
-//! kit, that's the tests in every file under `src`.
+//! `fennec test`: checks a program, then runs its `test` blocks. For a kit, that's the tests in
+//! every file under `src`. It prints each failure and a line of totals, and lists the tests
+//! that pass only for `--verbose`, so that passing tests cost an agent nothing to read.
 //!
 //! A test that passed is run again only when something it depends on changed: the test
 //! itself, or anything it can reach (see `fennec_build::test_keys`). The keys of the tests
@@ -15,7 +16,34 @@ use std::process::ExitCode;
 use fennec_blake3::Hash;
 use fennec_build::Cache;
 
-pub(crate) fn test(path: &str, all: bool) -> ExitCode {
+/// How `fennec test` was asked to run.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Options {
+    /// Run every test, not only what a change affects.
+    all: bool,
+    /// List the tests that pass too.
+    verbose: bool,
+}
+
+impl Options {
+    /// The path and options in what follows `fennec test`: any order, and at most one path.
+    pub(crate) fn of(args: &[&str]) -> Option<(String, Self)> {
+        let mut options = Options::default();
+        let mut path = None;
+        for arg in args {
+            match *arg {
+                "--all" => options.all = true,
+                "--verbose" | "-v" => options.verbose = true,
+                flag if flag.starts_with("--") => return None,
+                written if path.is_none() => path = Some(written),
+                _ => return None,
+            }
+        }
+        Some((path.unwrap_or(".").to_owned(), options))
+    }
+}
+
+pub(crate) fn test(path: &str, options: Options) -> ExitCode {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Everything) else {
         return ExitCode::FAILURE;
     };
@@ -29,7 +57,7 @@ pub(crate) fn test(path: &str, all: bool) -> ExitCode {
     let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
     let keyed = fennec_build::test_keys(&program.module);
     let keys: HashMap<String, Hash> = keyed.iter().cloned().collect();
-    let results = Results::open(path, all);
+    let results = Results::open(path, options.all);
     let unchanged: HashSet<&str> =
         keys.iter().filter(|(_, key)| results.passed.contains(*key)).map(|(name, _)| name.as_str()).collect();
     let wanted: Vec<String> = keyed
@@ -64,7 +92,9 @@ pub(crate) fn test(path: &str, all: bool) -> ExitCode {
         let cases = if outcome.cases > 1 { format!(" ({} inputs)", outcome.cases) } else { String::new() };
         match &outcome.failure {
             None => {
-                println!("  ✓ {}{cases}", outcome.name);
+                if options.verbose {
+                    println!("  ✓ {}{cases}", outcome.name);
+                }
                 passing.extend(keys.get(&outcome.name).copied());
             }
             Some(diagnostic) => {
@@ -75,12 +105,12 @@ pub(crate) fn test(path: &str, all: bool) -> ExitCode {
         }
     }
     results.store(&passing);
-    if !unchanged.is_empty() {
-        let total = outcomes.len() + unchanged.len();
-        println!("{total} tests: {} run, {} unchanged", outcomes.len(), unchanged.len());
-    }
     let passed = outcomes.len() + unchanged.len() - failed;
-    println!("{passed} passed, {failed} failed");
+    if unchanged.is_empty() {
+        println!("{passed} passed, {failed} failed");
+    } else {
+        println!("{passed} passed, {failed} failed ({} run, {} unchanged)", outcomes.len(), unchanged.len());
+    }
     if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 

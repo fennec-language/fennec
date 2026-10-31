@@ -101,12 +101,30 @@ fn dev_check_dumps_the_checkers_diagnostics() {
 }
 
 #[test]
-fn test_lists_each_test_and_a_summary() {
+fn test_prints_only_a_summary_when_everything_passes() {
     let output = fennec(&["test", "examples/testing.fen"], "").unwrap();
     assert!(output.status.success());
-    let stdout = text(&output.stdout);
-    assert!(stdout.contains("✓ reversing twice gives the original (100 inputs)"));
-    assert!(stdout.ends_with("3 passed, 0 failed\n"));
+    assert_eq!(text(&output.stdout), "3 passed, 0 failed\n");
+}
+
+#[test]
+fn test_lists_each_test_when_asked() {
+    for flags in [["--verbose", "examples/testing.fen"], ["examples/testing.fen", "-v"]] {
+        let output = fennec(&["test", flags[0], flags[1]], "").unwrap();
+        assert!(output.status.success());
+        let stdout = text(&output.stdout);
+        assert!(stdout.contains("✓ reversing twice gives the original (100 inputs)"));
+        assert!(stdout.ends_with("3 passed, 0 failed\n"));
+    }
+}
+
+#[test]
+fn test_says_how_to_use_it_when_its_arguments_are_wrong() {
+    for args in [&["test", "--verbos"][..], &["test", "--verbos", "a.fen"], &["test", "a.fen", "b.fen"]] {
+        let output = fennec(args, "").unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(text(&output.stderr).starts_with("usage:"), "{args:?}");
+    }
 }
 
 /// Runs `fennec <command>` on a program written to a temporary file of its own.
@@ -135,7 +153,7 @@ fn test_fails_when_a_test_fails() {
     let source = "test \"one is one\":\n    assert 1 == 1\n\ntest \"one is two\":\n    assert 1 == 2\n";
     let output = fennec_on("test", "failing", source).unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert_eq!(text(&output.stdout), "  ✓ one is one\n  ✗ one is two\n1 passed, 1 failed\n");
+    assert_eq!(text(&output.stdout), "  ✗ one is two\n1 passed, 1 failed\n");
     assert!(text(&output.stderr).contains("the left side is 1 and the right side is 2"));
 }
 
@@ -143,7 +161,8 @@ fn test_fails_when_a_test_fails() {
 fn test_shrinks_and_replays_property_failures() {
     let output = fennec(&["test", "crates/fennec/tests/fixtures/failing_properties.fen"], "").unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(text(&output.stdout).ends_with("  ✓ this one passes\n1 passed, 15 failed\n"));
+    let stdout = text(&output.stdout);
+    assert!(stdout.ends_with("1 passed, 15 failed\n") && !stdout.contains('✓'), "{stdout}");
     let stderr = text(&output.stderr);
     let reported: Vec<&str> = stderr
         .lines()
@@ -452,7 +471,7 @@ fn run_takes_a_kits_folder_in_either_engine() {
 
 #[test]
 fn test_runs_the_tests_in_every_file_of_a_kit() {
-    let output = fennec(&["test", "examples/projects/arena"], "").unwrap();
+    let output = fennec(&["test", "--verbose", "examples/projects/arena"], "").unwrap();
     assert!(output.status.success(), "{}", text(&output.stderr));
     let stdout = text(&output.stdout);
     assert!(stdout.contains("✓ a wave has as many enemies as asked"), "{stdout}");

@@ -119,6 +119,10 @@ impl Lowerer<'_, '_> {
             ExprKind::Match { subject, arms } => self.match_value(subject, arms, span),
             ExprKind::Attr { object, name, optional } => self.read_field(expr, object, name, *optional),
             ExprKind::Index { object, index } => self.read_index_or_packed(expr, object, index),
+            ExprKind::FStr(parts) => self.fstring(parts, span),
+            ExprKind::Slice { object, start, end } if matches!(self.static_ty(object), Some(Ty::List(_))) => {
+                self.list_slice(object, (start.as_deref(), end.as_deref()), span)
+            }
             ExprKind::Slice { object, start, end } if self.static_ty(object) == Some(Ty::Str) => {
                 let (text, _) = self.expr(object)?;
                 let text = text.ok_or_else(|| unsupported("this string", span))?;

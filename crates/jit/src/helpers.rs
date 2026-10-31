@@ -104,13 +104,20 @@ pub(crate) enum Helper {
     ListRemove,
     ListContains,
     PopEmpty,
+    IntText,
+    FloatText,
+    ValueText,
+    SpecText,
+    StrCode,
+    StrJoin,
+    ListSlice,
     ListSorted,
     ListSortedBy,
     ListFromValue,
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 102] = [
+pub(crate) const ALL: [Helper; 109] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -209,6 +216,13 @@ pub(crate) const ALL: [Helper; 102] = [
     Helper::ListRemove,
     Helper::ListContains,
     Helper::PopEmpty,
+    Helper::IntText,
+    Helper::FloatText,
+    Helper::ValueText,
+    Helper::SpecText,
+    Helper::StrCode,
+    Helper::StrJoin,
+    Helper::ListSlice,
     Helper::ListSorted,
     Helper::ListSortedBy,
     Helper::ListFromValue,
@@ -330,6 +344,11 @@ impl Helper {
                 | Helper::ListUnshare
                 | Helper::ListSorted
                 | Helper::ListSortedBy
+                | Helper::IntText
+                | Helper::FloatText
+                | Helper::StrCode
+                | Helper::StrJoin
+                | Helper::ListSlice
                 | Helper::ListClear
                 | Helper::ListRemoveAt
                 | Helper::ListInsert
@@ -372,6 +391,13 @@ impl Helper {
                     | Helper::ListSorted
                     | Helper::ListSortedBy
                     | Helper::ListInsert
+                    | Helper::IntText
+                    | Helper::FloatText
+                    | Helper::ValueText
+                    | Helper::SpecText
+                    | Helper::StrCode
+                    | Helper::StrJoin
+                    | Helper::ListSlice
                     | Helper::ListFromValue
                     | Helper::CaseOf
                     | Helper::Alloc
@@ -413,6 +439,8 @@ impl Helper {
                 | Helper::DictMissing
                 | Helper::IntPower
                 | Helper::ListFromValue
+                | Helper::SpecText
+                | Helper::StrCode
                 | Helper::ListInsert
                 | Helper::ListRemove
                 | Helper::PopEmpty
@@ -527,6 +555,13 @@ impl Helper {
             Helper::ListRemove => shape("fennec_list_remove", &[I64, I64, I64, I64], &[]),
             Helper::ListContains => shape("fennec_list_contains", &[I64, I64], &[I8]),
             Helper::PopEmpty => shape("fennec_pop_empty", &[I64, I64], &[]),
+            Helper::IntText => shape("fennec_int_text", &[I64], &[I64]),
+            Helper::FloatText => shape("fennec_float_text", &[F64], &[I64]),
+            Helper::ValueText => shape("fennec_value_text", &[I64], &[I64]),
+            Helper::SpecText => shape("fennec_spec_text", &[I64, I64, I64, I64], &[I64]),
+            Helper::StrCode => shape("fennec_str_code", &[I64, I64, I64], &[I64]),
+            Helper::StrJoin => shape("fennec_str_join", &[I64, I64], &[I64]),
+            Helper::ListSlice => shape("fennec_list_slice", &[I64, I64, I64], &[I64]),
             Helper::ListSorted => shape("fennec_list_sorted", &[I64, I64], &[I64]),
             Helper::ListSortedBy => shape("fennec_list_sorted_by", &[I64, I64, I64], &[I64]),
             Helper::Alloc => shape("fennec_alloc", &[I64], &[I64]),
@@ -562,6 +597,13 @@ impl Helper {
             Helper::ListRemove => lists::remove as *const u8,
             Helper::ListContains => lists::contains as *const u8,
             Helper::PopEmpty => lists::pop_empty as *const u8,
+            Helper::IntText => strings::int_text as *const u8,
+            Helper::FloatText => strings::float_text as *const u8,
+            Helper::ValueText => strings::value_text as *const u8,
+            Helper::SpecText => strings::spec_text as *const u8,
+            Helper::StrCode => strings::code as *const u8,
+            Helper::StrJoin => strings::join as *const u8,
+            Helper::ListSlice => lists::slice as *const u8,
             Helper::ListSorted => lists::sorted as *const u8,
             Helper::ListSortedBy => lists::sorted_by as *const u8,
             Helper::Alloc => heap::alloc as *const u8,

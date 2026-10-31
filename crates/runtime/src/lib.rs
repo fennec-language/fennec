@@ -105,6 +105,13 @@ export! {
     fennec_list_remove(a0: i64, a1: i64, a2: i64, a3: i64) => lists::remove(a0, a1, a2, a3);
     fennec_list_contains(a0: i64, a1: i64) -> i8 => lists::contains(a0, a1);
     fennec_pop_empty(a0: i64, a1: i64) => lists::pop_empty(a0, a1);
+    fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
+    fennec_float_text(a0: f64) -> i64 => strings::float_text(a0);
+    fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);
+    fennec_spec_text(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::spec_text(a0, a1, a2, a3);
+    fennec_str_code(a0: i64, a1: i64, a2: i64) -> i64 => strings::code(a0, a1, a2);
+    fennec_str_join(a0: i64, a1: i64) -> i64 => strings::join(a0, a1);
+    fennec_list_slice(a0: i64, a1: i64, a2: i64) -> i64 => lists::slice(a0, a1, a2);
     fennec_list_sorted(a0: i64, a1: i64) -> i64 => lists::sorted(a0, a1);
     fennec_list_sorted_by(a0: i64, a1: i64, a2: i64) -> i64 => lists::sorted_by(a0, a1, a2);
     fennec_list_from_value(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::from_value(a0, a1, a2, a3);

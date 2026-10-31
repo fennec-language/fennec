@@ -211,3 +211,66 @@ pub extern "C" fn print(address: i64) {
         super::io::write(state, &printed)
     });
 }
+
+/// A new string with an int's text.
+pub extern "C" fn int_text(n: i64) -> i64 {
+    with(|state| text_address(state, &n.to_string()))
+}
+
+/// A new string with a float's text, as it prints.
+pub extern "C" fn float_text(x: f64) -> i64 {
+    with(|state| text_address(state, &crate::format::display(&Value::Float(x))))
+}
+
+/// A new string with a temporary's text, as `str` gives it.
+pub extern "C" fn value_text(value: i64) -> i64 {
+    with(|state| {
+        let value = state.temp(value);
+        text_address(state, &crate::format::display(&value))
+    })
+}
+
+/// A new string with a temporary's text, formatted by a spec, failing like the interpreter
+/// for a spec that doesn't fit.
+pub extern "C" fn spec_text(value: i64, spec: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let value = state.temp(value);
+        let spec = text(state, spec).unwrap_or_default();
+        let piece = crate::format::with_spec(&value, &spec)
+            .map_err(|message| Diagnostic::new(message, span(start, end)))?;
+        Ok(text_address(state, &piece))
+    })
+}
+
+/// `text.code()`, failing like the interpreter for anything but one character.
+pub extern "C" fn code(address: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let whole = text(state, address).unwrap_or_default();
+        let mut chars = whole.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            return Ok(i64::from(u32::from(c)));
+        }
+        let count = whole.chars().count();
+        Err(Diagnostic::new(format!("`code` needs one character, but this has {count}"), span(start, end))
+            .with_help("use `codes()` for the code of every character"))
+    })
+}
+
+/// `separator.join(list)`, for a list of strings.
+pub extern "C" fn join(separator: i64, list: i64) -> i64 {
+    with(|state| {
+        let between = text(state, separator).unwrap_or_default();
+        let block = u64::try_from(list).ok().and_then(|list| state.heap.block(list));
+        let words = block.map(|block| super::lists::items(block, 1).to_vec()).unwrap_or_default();
+        let mut joined = String::new();
+        for (at, word) in words.iter().enumerate() {
+            if at > 0 {
+                joined.push_str(&between);
+            }
+            if let Some(part) = state.heap.block(*word) {
+                joined.push_str(&block_text(part));
+            }
+        }
+        text_address(state, &joined)
+    })
+}

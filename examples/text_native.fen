@@ -1,0 +1,52 @@
+## Text native code makes itself: f-strings, `str`, `join`, `code` and slices of lists.
+
+struct Point:
+    x: int
+    y: float
+
+def label(n: int) -> str:
+    f"n={n}"
+
+def main(stdout: Stdout):
+    name = "fox"
+    stdout.print(f"plain", f"{name}", f"{name}!", f"<{name}>", f"")
+    stdout.print(f"{1} {2.5} {True} {False} {-7} {name} {1 + 2}")
+    stdout.print(f"{3.14159:.2f} {1234567:,} {name}", f"{{braces}} {2 ** 10}")
+    stdout.print(f"{[1, 2]} {Point(x=1, y=2.0)} {(1, 2)} {{}}", f"{label(4)}{label(5)}")
+    stdout.print(str(5), str(-5), str(2.5), str(True), str(name), str([1]), str(Point(x=0, y=0.5)))
+    stdout.print(label(10).len(), str(12345).len(), f"é{name}é".len())
+
+    mut built = ""
+    for i in range(30):
+        built = f"{built}{i % 10}"
+    stdout.print(built)
+
+    stdout.print("a".code(), "é".code(), "fox"[1].code(), "7".isdigit(), "x".isdigit())
+    stdout.print(
+        ",".join(["a", "b", "c"]),
+        "".join(["x"]),
+        "-".join([]),
+        ", ".join([str(n) for n in range(3)]),
+    )
+
+    numbers = [0, 1, 2, 3, 4, 5]
+    stdout.print(
+        numbers[1:3],
+        numbers[:2],
+        numbers[4:],
+        numbers[:],
+        numbers[-2:],
+        numbers[:-4],
+        numbers[3:1],
+        numbers[9:],
+        numbers[:99],
+    )
+    words = ["a", "b", "c"]
+    part = words[1:]
+    stdout.print(part, words, part[0], words[1:][1].len())
+    points = [Point(x=1, y=1.0), Point(x=2, y=2.0)]
+    stdout.print(points[1:][0].x, points[:1])
+    mut changing = numbers[2:]
+    changing.append(9)
+    changing[0] = 7
+    stdout.print(changing, numbers)

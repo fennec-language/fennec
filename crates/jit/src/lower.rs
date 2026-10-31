@@ -37,6 +37,7 @@ mod strings;
 mod structs;
 mod symbols;
 mod test_entries;
+mod text;
 mod unswitch;
 
 pub(crate) use test_entries::{CompiledTests, compile_tests};

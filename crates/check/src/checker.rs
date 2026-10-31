@@ -110,14 +110,14 @@ impl Checker {
         for test in self.program.tests.clone() {
             FnCx::check_test(&mut self, &test);
         }
-        let user_types: Vec<String> = self
+        let types: Vec<String> = self
             .program
             .types
             .values()
-            .filter(|info| !info.prelude)
+            .filter(|info| !(reached_only && info.prelude))
             .map(|info| info.def.name.clone())
             .collect();
-        for name in user_types {
+        for name in types {
             FnCx::check_fields(&mut self, &name);
         }
         let structs = self.structs(TypeKind::Struct);

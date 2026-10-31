@@ -231,8 +231,8 @@ pub enum InstKind {
     },
     /// Something the engines provide, by name: a function like `sum`, or a method like
     /// `list.append` or `Stdout.print` with its object first. `changes` says it changes the
-    /// local its first argument names. A call with `key=` is named with `.key` on the end,
-    /// like `sorted.key`, and the key comes last.
+    /// local its first argument names. A call with named arguments has their names on the
+    /// end, in name order, like `sorted.key`, and they come last in that order.
     Builtin {
         dest: Option<LocalId>,
         name: String,

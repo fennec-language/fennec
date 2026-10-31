@@ -1,6 +1,6 @@
 //! Building structs, reading and changing their fields, and calling functions and methods.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use fennec_check::{Checked, Type};
 use fennec_syntax::{Arg, Expr, ExprKind, Item, Module, Span};
@@ -9,17 +9,16 @@ use super::{Lowered, Lowering};
 use crate::{InstKind, LocalId, Operand, StructDef, Terminator, type_in};
 
 /// The module's structs the IR can hold: not generic ones.
-pub(super) fn definitions(module: &Module, checked: &Checked) -> Vec<StructDef> {
-    module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Struct(def) if def.generics.is_empty() => {
-                let found = checked.signatures.structure(&def.name)?;
-                let fields = found.fields.clone();
-                Some(StructDef { name: def.name.clone(), fields })
-            }
-            _ => None,
+pub(super) fn definitions(modules: &[&Module], checked: &Checked) -> Vec<StructDef> {
+    let mut seen = HashSet::new();
+    let defs = modules.iter().flat_map(|module| &module.items).filter_map(|item| match item {
+        Item::Struct(def) if def.generics.is_empty() => Some(def),
+        _ => None,
+    });
+    defs.filter(|def| seen.insert(def.name.as_str()))
+        .filter_map(|def| {
+            let found = checked.signatures.structure(&def.name)?;
+            Some(StructDef { name: def.name.clone(), fields: found.fields.clone() })
         })
         .collect()
 }
@@ -174,6 +173,16 @@ impl Lowering<'_> {
         if let Some(member) = self.std_member(expr) {
             return self.std_value(member, expr);
         }
+        if let ExprKind::Name(owner) = &object.kind
+            && self.lookup(owner).is_none()
+            && self.context.checked.signatures.get(&format!("{owner}.{field}")).is_some()
+        {
+            // A function on a type that takes nothing needs no parentheses.
+            let dest = self.temporary(self.ty(expr)?);
+            let function = format!("{owner}.{field}");
+            self.emit(InstKind::Call { dest: Some(dest), function, args: Vec::new() }, expr.span);
+            return Ok(Operand::Local(dest));
+        }
         let owner = self.struct_of(object).ok_or_else(|| format!("it reads `.{field}` of something else"))?;
         let declared = self.struct_fields(&owner)?.iter().find(|(name, _)| name == field);
         let declared =
@@ -220,6 +229,27 @@ impl Lowering<'_> {
         self.emit(InstKind::Copy { dest, value: read }, span);
         self.finish(Terminator::Jump(join));
         self.current = join;
+        Ok(Operand::Local(dest))
+    }
+
+    /// `replace(value, field=new)`: a copy with some fields changed. Rules aren't checked
+    /// again.
+    pub(super) fn replace(&mut self, args: &[Arg], span: Span) -> Lowered<Operand> {
+        let [value, changes @ ..] = args else { return Err("`replace` has no value".to_owned()) };
+        let copied = self.expr(&value.value)?;
+        let ty = type_in(&self.locals, &copied).ok_or("a value has no type")?;
+        let Type::Named(owner) = &ty else { return Err(format!("it replaces fields of {ty}")) };
+        let dest = self.temporary(ty.clone());
+        self.emit(InstKind::Copy { dest, value: copied }, span);
+        for change in changes {
+            let field = change.name.clone().ok_or("`replace` needs its fields named")?;
+            let found = self.struct_fields(owner)?.iter().find(|(name, _)| *name == field);
+            let wanted =
+                found.map(|(_, ty)| ty.clone()).ok_or_else(|| format!("`{owner}` has no `{field}`"))?;
+            let lowered = self.expr(&change.value)?;
+            let value = self.coerce(lowered, &wanted, change.value.span)?;
+            self.emit(InstKind::SetField { object: dest, path: vec![field], value }, span);
+        }
         Ok(Operand::Local(dest))
     }
 }

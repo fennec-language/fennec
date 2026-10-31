@@ -24,36 +24,60 @@ use crate::{
     Terminator,
 };
 
-/// Lowers a module's functions and methods. The standard library's aren't included.
+/// Lowers a module's functions and methods, and the standard library's that they reach.
 pub fn lower(module: &Module, checked: &Checked) -> Program {
+    let library = fennec_syntax::prelude_modules().unwrap_or_default();
+    let modules: Vec<&Module> = std::iter::once(module).chain(library).collect();
     let functions = definitions(module);
-    let defs = structs::definitions(module, checked);
-    let enums = matching::definitions(module, checked);
+    let reachable_later: HashMap<String, &FnDef> = library
+        .iter()
+        .flat_map(definitions)
+        .filter(|(key, _)| !functions.iter().any(|(own, _)| own == key))
+        .collect();
+    let defs = structs::definitions(&modules, checked);
+    let enums = matching::definitions(&modules, checked);
     let errors = failure::definitions(checked);
     let context = Context {
         checked,
         errors: errors.iter().map(|def| def.name.as_str()).collect(),
         enums: enums.iter().map(|def| (def.name.as_str(), def)).collect(),
-        functions: functions.iter().map(|(key, _)| key.as_str()).collect(),
+        functions: functions
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .chain(reachable_later.keys().map(String::as_str))
+            .collect(),
         structs: defs.iter().map(|def| def.name.as_str()).collect(),
         constants: constants::written(module),
         defaults: defaults::written(module),
         rules: defaults::rules(module),
         imports: imports::written(module),
+        library_imports: imports::of_library(library),
+        library: reachable_later.keys().map(String::as_str).collect(),
     };
     let mut program = Program::default();
     for (key, def) in &functions {
-        match Lowering::function(key, def, &context, (&[], None)) {
-            Ok(functions) => program.functions.extend(functions),
-            Err(why) => program.not_lowered.push(NotLowered { function: key.clone(), why }),
-        }
+        lower_into(&mut program, key, def, &context);
     }
     constants::lower_all(&context, &mut program);
+    // The standard library's functions come in as they're reached.
+    while let Some((key, def)) =
+        calls::external(&program).into_iter().find_map(|key| reachable_later.get(&key).map(|def| (key, *def)))
+    {
+        lower_into(&mut program, &key, def, &context);
+        constants::lower_all(&context, &mut program);
+    }
     program.external = calls::external(&program);
     program.structs = defs;
     program.enums = enums;
     program.errors = errors;
     program
+}
+
+fn lower_into(program: &mut Program, key: &str, def: &FnDef, context: &Context<'_>) {
+    match Lowering::function(key, def, context, (&[], None)) {
+        Ok(functions) => program.functions.extend(functions),
+        Err(why) => program.not_lowered.push(NotLowered { function: key.to_owned(), why }),
+    }
 }
 
 /// Every function and method in a module, by its key in the typed tree.
@@ -129,6 +153,10 @@ struct Context<'a> {
     rules: HashMap<&'a str, Vec<(&'a str, &'a Expr)>>,
     /// What the module imports from the standard library.
     imports: imports::Imports,
+    /// What the standard library's own code imports.
+    library_imports: imports::Imports,
+    /// The keys of the standard library's functions and methods.
+    library: HashSet<&'a str>,
 }
 
 impl Context<'_> {
@@ -526,6 +554,11 @@ impl<'a> Lowering<'a> {
             ExprKind::Call { callee, args } => {
                 if let Some(type_name) = self.constructs(callee) {
                     return self.make(type_name, args, span);
+                }
+                if matches!(&callee.kind, ExprKind::Name(name) if name == "replace" && self.lookup(name).is_none())
+                    && !self.context.functions.contains("replace")
+                {
+                    return self.replace(args, span);
                 }
                 let dest = self.call(callee, args, Some(self.ty(expr)?), span)?;
                 dest.map(Operand::Local).ok_or_else(|| "a call kept nothing".to_owned())

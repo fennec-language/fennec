@@ -407,7 +407,7 @@ impl Lowerer<'_, '_> {
         let put_back = PutBack { root, fields, key, item: name.to_owned(), span: iter.span };
         self.loops.push(Loop { next, done, depth: self.scopes.len(), put_back: Some(put_back.clone()) });
         self.open_scope();
-        let lowered = self.tail(body);
+        let lowered = self.statements(body);
         let closed = self.close_scope();
         self.loops.pop();
         lowered?;

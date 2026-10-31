@@ -226,7 +226,7 @@ impl Lowerer<'_, '_> {
             self.bind_native(name, word_ty(*word), Some(value), false);
         }
         self.loops.push(super::Loop { next: advance, done: exit, depth, put_back: None });
-        let lowered = self.tail(body);
+        let lowered = self.statements(body);
         self.loops.pop();
         lowered?;
         self.close_scope()?;

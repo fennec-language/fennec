@@ -5,7 +5,7 @@ use std::fmt;
 use fennec_check::Type;
 use fennec_syntax::UnaryOp;
 
-use crate::{BlockId, Function, InstKind, LocalId, Operand, Program, Terminator};
+use crate::{BlockId, FormatPart, Function, InstKind, LocalId, Operand, Program, Terminator};
 
 impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -26,6 +26,9 @@ impl fmt::Display for Program {
         for function in &self.functions {
             writeln!(f, "{function}")?;
         }
+        for name in &self.external {
+            writeln!(f, "# standard library: {name}")?;
+        }
         for skipped in &self.not_lowered {
             writeln!(f, "# not lowered: {}: {}", skipped.function, skipped.why)?;
         }
@@ -35,7 +38,12 @@ impl fmt::Display for Program {
 
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let params: Vec<String> = (0..self.params).map(|at| LocalId(at).to_string()).collect();
+        let params: Vec<String> = (0..self.params)
+            .map(|at| {
+                let word = if self.mut_params.contains(&at) { "mut " } else { "" };
+                format!("{word}{}", LocalId(at))
+            })
+            .collect();
         write!(f, "fn {}({})", self.name, params.join(", "))?;
         if self.returns != Type::Unit {
             write!(f, " -> {}", self.returns)?;
@@ -102,6 +110,39 @@ impl fmt::Display for InstKind {
             InstKind::IsCase { dest, value, case } => write!(f, "{dest} = {value} is .{case}"),
             InstKind::GetCaseField { dest, value, case, field } => {
                 write!(f, "{dest} = {value}.{case}.{field}")
+            }
+            InstKind::MakeList { dest, items } => {
+                let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+                write!(f, "{dest} = [{}]", items.join(", "))
+            }
+            InstKind::GetIndex { dest, object, index } => write!(f, "{dest} = {object}[{index}]"),
+            InstKind::SetIndex { object, path, index, value } => {
+                write!(f, "{object}")?;
+                for field in path {
+                    write!(f, ".{field}")?;
+                }
+                write!(f, "[{index}] = {value}")
+            }
+            InstKind::Format { dest, parts } => {
+                let parts: Vec<String> = parts
+                    .iter()
+                    .map(|part| match part {
+                        FormatPart::Text(text) => format!("{text:?}"),
+                        FormatPart::Value { value, spec: Some(spec) } => format!("{{{value}:{spec}}}"),
+                        FormatPart::Value { value, spec: None } => format!("{{{value}}}"),
+                    })
+                    .collect();
+                write!(f, "{dest} = format {}", parts.join(" "))
+            }
+            InstKind::Builtin { dest, name, args, changes } => {
+                let mut shown: Vec<String> = args.iter().map(ToString::to_string).collect();
+                if let (true, Some(first)) = (*changes, shown.first_mut()) {
+                    *first = format!("mut {first}");
+                }
+                if let Some(dest) = dest {
+                    write!(f, "{dest} = ")?;
+                }
+                write!(f, "builtin {name}({})", shown.join(", "))
             }
             InstKind::Call { dest, function, args } => {
                 let args: Vec<String> = args.iter().map(ToString::to_string).collect();

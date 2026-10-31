@@ -9,11 +9,13 @@
 //! meaning: each backend has to end the program the same way, at the instruction's span.
 //!
 //! Lowering grows in slices. So far it handles functions over ints, floats, bools, strs and
-//! the program's own structs and enums: operators, names, `if`, `while`, `for` over a
-//! `range`, `match`, `return`, direct calls, building structs and enum cases, and reading and
-//! changing fields. Structs and enums are values, so copying one copies it. A `match` is a
-//! run of tests, one case after another, which a backend can turn into a jump table. A
-//! function using anything else is listed in [`Program::not_lowered`], with why.
+//! the program's own structs and enums, lists and capabilities: operators, names, `if`,
+//! `while`, `for` over a `range`, list or str, `match`, `return`, direct calls, what the
+//! engines provide, building values, and reading and changing fields and items. All of them
+//! are values, so copying one copies it. A `match` is a run of tests, one case after another,
+//! which a backend can turn into a jump table. A `mut` parameter is copied back: when the
+//! call returns, the local passed for it holds what the parameter held. A function using
+//! anything else is listed in [`Program::not_lowered`], with why.
 
 mod lower;
 mod print;
@@ -32,6 +34,9 @@ pub struct Program {
     pub enums: Vec<EnumDef>,
     pub functions: Vec<Function>,
     pub not_lowered: Vec<NotLowered>,
+    /// The standard library's functions the program calls, written in Fennec. They aren't
+    /// lowered yet.
+    pub external: Vec<String>,
 }
 
 /// A struct of the program, with its fields' types in the order they're written.
@@ -68,6 +73,8 @@ pub struct Function {
     pub name: String,
     /// How many of the first locals are parameters.
     pub params: usize,
+    /// Which parameters are `mut`, by position.
+    pub mut_params: Vec<usize>,
     /// `Type::Unit` for a function that gives back nothing.
     pub returns: Type,
     pub locals: Vec<Local>,
@@ -160,12 +167,50 @@ pub enum InstKind {
         case: String,
         field: String,
     },
+    MakeList {
+        dest: LocalId,
+        items: Vec<Operand>,
+    },
+    /// An item of a list or str. An index out of range ends the program.
+    GetIndex {
+        dest: LocalId,
+        object: Operand,
+        index: Operand,
+    },
+    /// Changes an item of a list held in a local, following `path` to reach it.
+    SetIndex {
+        object: LocalId,
+        path: Vec<String>,
+        index: Operand,
+        value: Operand,
+    },
+    /// An f-string.
+    Format {
+        dest: LocalId,
+        parts: Vec<FormatPart>,
+    },
+    /// Something the engines provide, by name: a function like `sum`, or a method like
+    /// `list.append` or `Stdout.print` with its object first. `changes` says it changes the
+    /// local its first argument names.
+    Builtin {
+        dest: Option<LocalId>,
+        name: String,
+        args: Vec<Operand>,
+        changes: bool,
+    },
     /// A direct call, by the callee's key. `dest` is `None` when nothing keeps the result.
     Call {
         dest: Option<LocalId>,
         function: String,
         args: Vec<Operand>,
     },
+}
+
+/// One piece of an f-string.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FormatPart {
+    Text(String),
+    Value { value: Operand, spec: Option<String> },
 }
 
 /// A value an instruction reads.

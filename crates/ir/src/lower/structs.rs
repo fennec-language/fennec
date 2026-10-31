@@ -80,14 +80,6 @@ impl Lowering<'_> {
         }
     }
 
-    /// The struct or enum type of an expression, for calling its methods.
-    fn owner_of(&self, expr: &Expr) -> Option<String> {
-        match self.body.expr(expr.span)? {
-            Type::Named(name) if self.context.holds(&Type::Named(name.clone())) => Some(name.clone()),
-            _ => None,
-        }
-    }
-
     /// `object.field`. A field that's been narrowed, like an optional known not to be
     /// `None`, reads as a different type than it's declared with, which isn't lowered yet.
     pub(super) fn get_field(&mut self, expr: &Expr, object: &Expr, field: &str) -> Lowered<Operand> {
@@ -143,7 +135,7 @@ impl Lowering<'_> {
     }
 
     /// The local and path of fields `a.b.c` names.
-    fn field_place(&self, target: &Expr) -> Lowered<(LocalId, Vec<String>)> {
+    pub(super) fn field_place(&self, target: &Expr) -> Lowered<(LocalId, Vec<String>)> {
         let other = "it assigns to something other than a name or a field";
         match &target.kind {
             ExprKind::Name(name) => {
@@ -156,46 +148,5 @@ impl Lowering<'_> {
             }
             _ => Err(other.to_owned()),
         }
-    }
-
-    /// The callee and arguments of a direct call to a function or method of this program,
-    /// with one plain value given for each parameter. A method's object comes first.
-    pub(super) fn call_parts(&mut self, callee: &Expr, args: &[Arg]) -> Lowered<(String, Vec<Operand>)> {
-        let (key, object) = match &callee.kind {
-            ExprKind::Name(name) if self.lookup(name).is_none() => (name.clone(), None),
-            ExprKind::Attr { object, name, optional: false } => match &object.kind {
-                // `Point.origin()`: a function on the type, with no object.
-                ExprKind::Name(owner) if self.lookup(owner).is_none() => (format!("{owner}.{name}"), None),
-                _ => {
-                    let owner = self
-                        .owner_of(object)
-                        .ok_or_else(|| format!("it calls `.{name}` on something else"))?;
-                    (format!("{owner}.{name}"), Some(object.as_ref()))
-                }
-            },
-            _ => return Err("it calls something other than a function by name".to_owned()),
-        };
-        if !self.context.functions.contains(key.as_str()) {
-            return Err(format!("it calls `{key}`, which isn't a function of this program"));
-        }
-        let signature = self.context.checked.signatures.get(&key).ok_or("a callee has no signature")?;
-        let given = args.len() + usize::from(object.is_some());
-        if signature.can_fail || signature.generator || given != signature.params.len() {
-            return Err(format!("its call to `{key}` isn't a plain call"));
-        }
-        if !signature.params.iter().all(|param| !param.is_mut && self.context.holds(&param.ty)) {
-            return Err(format!("`{key}` takes something other than plain values"));
-        }
-        let mut values = Vec::with_capacity(given);
-        if let Some(object) = object {
-            values.push(self.expr(object)?);
-        }
-        for arg in args {
-            if arg.name.is_some() || arg.is_mut {
-                return Err(format!("its call to `{key}` has a named or `mut` argument"));
-            }
-            values.push(self.expr(&arg.value)?);
-        }
-        Ok((key, values))
     }
 }

@@ -350,8 +350,16 @@ fn dict_ty(key: &Type, value: &Type) -> Ty {
 /// The type a field's written type names, when it's a plain one: a number, a bool, or a
 /// struct or enum by name.
 fn written_type(written: &TypeExpr) -> Option<Type> {
-    if written.optional || !written.args.is_empty() {
+    if written.optional {
         return None;
+    }
+    match (written.name.as_str(), written.args.as_slice()) {
+        ("list", [item]) => return Some(Type::List(Box::new(written_type(item)?))),
+        ("dict", [key, value]) => {
+            return Some(Type::Dict(Box::new(written_type(key)?), Box::new(written_type(value)?)));
+        }
+        (_, [_, ..]) => return None,
+        _ => {}
     }
     Some(match written.name.as_str() {
         "int" => Type::Int,

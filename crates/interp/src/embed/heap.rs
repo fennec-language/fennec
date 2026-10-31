@@ -58,6 +58,31 @@ pub(crate) struct Heap {
     /// The interpreter values cells hold, by the number in each cell, and unused numbers.
     cells: Vec<Value>,
     spare_cells: Vec<usize>,
+    /// What native code's run has cost so far.
+    pub(super) counts: Counts,
+}
+
+/// What a run of native code allocated and copied. Blocks that live for the whole run, and what
+/// the interpreter holds for it, aren't counted. Blocks are made and copied in the runtime,
+/// which does far more than add to these, so counting costs a run nothing it would notice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub allocations: u64,
+    pub allocated_bytes: u64,
+    /// Shared values copied so that one owner could change them.
+    pub copies: u64,
+    pub copied_bytes: u64,
+    pub largest_copy: u64,
+}
+
+impl Counts {
+    /// Notes that a shared value of `words` words was copied.
+    pub(super) fn copied(&mut self, words: usize) {
+        let bytes = u64::try_from(words).unwrap_or(0) * 8;
+        self.copies += 1;
+        self.copied_bytes += bytes;
+        self.largest_copy = self.largest_copy.max(bytes);
+    }
 }
 
 /// The shape of a cell: a block holding an interpreter value for a boxed value's field.
@@ -83,6 +108,7 @@ impl Heap {
         for block in statics {
             heap.insert(block);
         }
+        heap.counts = Counts::default();
         heap
     }
 
@@ -90,9 +116,11 @@ impl Heap {
     /// executable's string literals.
     pub(crate) fn adopt(&mut self, statics: &mut Vec<Box<[u64]>>) {
         self.statics += statics.len();
+        let counts = self.counts;
         for block in statics.drain(..) {
             self.insert(block);
         }
+        self.counts = counts;
     }
 
     /// A zeroed block of `words` words, reusing a freed one when there is one.
@@ -126,6 +154,8 @@ impl Heap {
     }
 
     pub(crate) fn insert(&mut self, block: Box<[u64]>) -> i64 {
+        self.counts.allocations += 1;
+        self.counts.allocated_bytes += u64::try_from(block.len()).unwrap_or(0) * 8;
         let address = block.as_ptr().addr();
         self.blocks.insert(address, block);
         i64::try_from(address).unwrap_or(0)
@@ -457,6 +487,7 @@ pub extern "C" fn unshare(address: i64) -> i64 {
         if let Some(count) = copy.first_mut() {
             *count = 1;
         }
+        state.heap.counts.copied(copy.len());
         for child in children(state, &copy) {
             if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
                 *count += 1;

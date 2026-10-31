@@ -47,6 +47,8 @@ pub struct Report {
     pub leftover_boxes: usize,
     /// How many functions' machine code came from the cache rather than being compiled.
     pub cached: usize,
+    /// What the run allocated and copied.
+    pub counts: fennec_interp::embed::Counts,
 }
 
 /// Compiles `module` to native code and runs its `main`, writing what it prints to `out`.
@@ -192,6 +194,7 @@ fn compile_and_run(
             leftover_temps: result.leftovers.temps,
             leftover_frames: result.leftovers.frames,
             leftover_boxes: result.leftovers.boxes,
+            counts: result.leftovers.counts,
             cached: compilation.cached,
         }),
     };

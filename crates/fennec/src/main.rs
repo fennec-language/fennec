@@ -18,7 +18,8 @@ mod test;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
-  fennec run [path] [args]  run a kit's main, or a single .fen file's, passing it args
+  fennec run [path] [args]  run the tests a change affects, then a kit's main or a single .fen file's
+  fennec run --no-test [path] [args]  run it without running the tests first
   fennec run --interp [path]  run it with the interpreter instead of compiling it
   fennec build [path] [-o out]  compile it to a standalone executable
   fennec build --llvm [path] [-o out]  the same through LLVM, for what that backend takes so far
@@ -45,6 +46,8 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["run"] => run(run::Engine::Native, ".", &[]),
+        ["run", "--no-test"] => run(run::Engine::Untested, ".", &[]),
+        ["run", "--no-test", path, arguments @ ..] => run(run::Engine::Untested, path, arguments),
         ["run", "--interp"] => run(run::Engine::Interpreter, ".", &[]),
         ["run", "--interp", path, arguments @ ..] => run(run::Engine::Interpreter, path, arguments),
         ["run", "--jit"] => run(run::Engine::NativeNoted, ".", &[]),

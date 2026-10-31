@@ -91,7 +91,8 @@ impl Lowerer<'_, '_> {
                 loaded => Ok(loaded),
             };
         }
-        let (value, ty) = self.receiver(object)?;
+        let lending = self.lending;
+        let (value, ty) = self.lent_receiver(object)?;
         if let (Ty::Struct(id), Some(address)) = (ty, value)
             && let Some(field) = self.struct_field(id, name)?
         {
@@ -101,7 +102,14 @@ impl Lowerer<'_, '_> {
             && self.layout(id)?.cases.is_none()
             && let Some(field) = self.struct_field(id, name)?
         {
-            return self.boxed_field((address, id), field);
+            let (read, read_ty) = self.boxed_field((address, id), field)?;
+            // What a changeable name holds can change while this is still in use.
+            return Ok(match read {
+                Some(read) if !lending && self.place_ty(object).is_some() => {
+                    (Some(self.own(read, read_ty)), read_ty)
+                }
+                _ => (read, read_ty),
+            });
         }
         self.note(expr.span, format!("the runtime reads the field `{name}` of an object"));
         let handle = self.handle_of(value, ty, object.span)?;
@@ -130,7 +138,8 @@ impl Lowerer<'_, '_> {
         object: &Expr,
         index: &Expr,
     ) -> Result<Lowered, Diagnostic> {
-        let (value, ty) = self.receiver(object)?;
+        let quiet = !super::paths::has_call(index);
+        let (value, ty) = if quiet { self.lent_receiver(object)? } else { self.receiver(object)? };
         if let (Some(text), Ty::Str) = (value, ty) {
             let (at, at_ty) = self.expr(index)?;
             let at = self.convert(at, at_ty, Ty::Int, index.span)?;
@@ -140,7 +149,7 @@ impl Lowerer<'_, '_> {
             return self.read_dict(dict, (key, value), index, expr.span);
         }
         if let (Some(list), Ty::List(item)) = (value, ty) {
-            return self.holding_list((list, ty), expr.span, |lowerer, held| {
+            return self.holding_list((list, ty), quiet, expr.span, |lowerer, held| {
                 let name = lowerer.packed(held).map(|(name, _)| name).unwrap_or_default();
                 lowerer.read_packed(&name, item.ty(), index, expr.span)
             });

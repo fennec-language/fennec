@@ -247,6 +247,146 @@ pub extern "C" fn from_value(value: i64, element: i64, start: i64, end: i64) -> 
     })
 }
 
+/// Empties a list only one owner holds, letting go of what it held. The room left is zero,
+/// as native code expects past a list's end.
+pub extern "C" fn clear(list: i64) {
+    with(|state| {
+        let address = u64::try_from(list).unwrap_or(0);
+        let Some(block) = state.heap.block(address) else { return };
+        let Some(element) = element_of(state, block) else { return };
+        let stride = element.words();
+        let old = items(block, stride).to_vec();
+        if owns_items(&element) {
+            for word in &old {
+                release(state, *word);
+            }
+        }
+        if let Some(block) = state.heap.block_mut(address) {
+            block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + old.len()).unwrap_or_default().fill(0);
+            if let Some(length) = block.get_mut(2) {
+                *length = 0;
+            }
+        }
+    });
+}
+
+/// Moves the items after `at`, a place in words past the header, one place down, and gives up
+/// the list's owner of the item that was there, if it has one. The list has one owner.
+fn close_up(state: &mut State, address: u64, at: usize) -> Option<()> {
+    let block = state.heap.block(address)?;
+    let element = element_of(state, block)?;
+    let stride = element.words();
+    let end = LIST_HEADER_WORDS + items(block, stride).len();
+    let removed = owns_items(&element).then(|| block.get(at).copied()).flatten();
+    let block = state.heap.block_mut(address)?;
+    block.get_mut(at..end)?.copy_within(stride.., 0);
+    block.get_mut(end - stride..end)?.fill(0);
+    *block.get_mut(2)? -= 1;
+    if let Some(removed) = removed {
+        release(state, removed);
+    }
+    Some(())
+}
+
+/// Takes out the item at an address native code worked out in a list only one owner holds.
+pub extern "C" fn remove_at(list: i64, item: i64) {
+    with(|state| {
+        let at = item.saturating_sub(list) / 8;
+        close_up(state, u64::try_from(list).unwrap_or(0), usize::try_from(at).unwrap_or(0));
+    });
+}
+
+/// Takes over a list's owner and gives back a list only that owner holds with a zeroed item
+/// at `at`, for native code to fill, failing like the interpreter for a place that isn't in
+/// the list or just past its end.
+pub extern "C" fn insert(list: i64, at: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let block = u64::try_from(list).ok().and_then(|list| state.heap.block(list));
+        let length = block.and_then(|block| block.get(2)).copied().unwrap_or(0);
+        let place = u64::try_from(at).ok().filter(|place| *place <= length);
+        let Some(place) = place.and_then(|place| usize::try_from(place).ok()) else {
+            let message = format!("can't insert at {at} in a list of length {length}");
+            return Err(Diagnostic::new(message, span(start, end)));
+        };
+        let grown = grow_in(state, list, 1).unwrap_or(list);
+        let address = u64::try_from(grown).unwrap_or(0);
+        let stride =
+            state.heap.block(address).and_then(|block| element_of(state, block)).map_or(1, |e| e.words());
+        if let Some(block) = state.heap.block_mut(address) {
+            let from = LIST_HEADER_WORDS + place * stride;
+            let to = LIST_HEADER_WORDS + (usize::try_from(length).unwrap_or(0) + 1) * stride;
+            let moved = block.get_mut(from..to).unwrap_or_default();
+            moved.copy_within(..moved.len().saturating_sub(stride), stride);
+            moved.get_mut(..stride).unwrap_or_default().fill(0);
+        }
+        Ok(grown)
+    })
+}
+
+/// Whether an item of a word equals a word, as the interpreter compares them.
+fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
+    match element {
+        Element::Float => f64::from_bits(item).total_cmp(&f64::from_bits(word)).is_eq(),
+        Element::Str | Element::Boxed(_) => super::heap::same(state, item, word),
+        _ => item == word,
+    }
+}
+
+/// The place of the first item of a list that equals a word, in words past the header.
+fn place_of(state: &State, list: u64, word: u64) -> Option<usize> {
+    let block = state.heap.block(list)?;
+    let element = element_of(state, block)?;
+    let at = items(block, 1).iter().position(|item| same_item(state, &element, *item, word))?;
+    Some(LIST_HEADER_WORDS + at)
+}
+
+/// `list.remove(word)` on a list of items of a word each, only one owner holds.
+pub extern "C" fn remove(list: i64, word: i64, start: i64, end: i64) {
+    attempt(|state: &mut State| {
+        let (address, word) = (u64::try_from(list).unwrap_or(0), word.cast_unsigned());
+        if let Some(at) = place_of(state, address, word) {
+            close_up(state, address, at);
+            return Ok(());
+        }
+        let element = state.heap.block(address).and_then(|block| element_of(state, block));
+        let value = element.map_or(Value::None, |element| super::heap::read_word(state, &element, word));
+        let message = format!("{} isn't in the list", crate::format::repr(&value));
+        Err(Diagnostic::new(message, span(start, end)))
+    });
+}
+
+/// `word in list`, on a list of items of a word each.
+pub extern "C" fn contains(list: i64, word: i64) -> i8 {
+    with(|state| i8::from(place_of(state, u64::try_from(list).unwrap_or(0), word.cast_unsigned()).is_some()))
+}
+
+/// Fails with the interpreter's message for `pop` on an empty list.
+pub extern "C" fn pop_empty(start: i64, end: i64) {
+    attempt(|_: &mut State| -> Result<(), Diagnostic> {
+        Err(Diagnostic::new("can't pop from an empty list", span(start, end)))
+    });
+}
+
+/// A new block owned once with a value's items, if it's a list of the kind of item given.
+pub(super) fn write_list(state: &mut State, element: &Rc<Element>, value: &Value) -> Option<i64> {
+    let at = state.tables.elements.iter().position(|known| known == element).unwrap_or_else(|| {
+        state.tables.elements.push(Rc::clone(element));
+        state.tables.elements.len() - 1
+    });
+    let mut words = Vec::new();
+    match value {
+        Value::Packed(packed) if packed.element == *element => words.extend_from_slice(&packed.words),
+        Value::List(items) => {
+            for item in items.iter() {
+                write(state, element, item, &mut words)?;
+            }
+        }
+        _ => return None,
+    }
+    let block = build(state, at, element.words(), &words, 0);
+    Some(state.heap.insert(block))
+}
+
 /// `a ** b` on ints, failing like the interpreter.
 pub extern "C" fn int_power(a: i64, b: i64, start: i64, end: i64) -> i64 {
     attempt(|_: &mut State| {

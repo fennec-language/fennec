@@ -170,24 +170,35 @@ impl Lowerer<'_, '_> {
     ) -> Result<Option<Lowered>, Diagnostic> {
         let builtin = matches!(&callee.kind, ExprKind::Name(name) if name == "sorted" && self.local(name).is_none())
             && !self.shared.compiled.contains_key("sorted");
-        let (true, Some(ty @ Ty::List(item)), Some(items)) = (builtin, self.checked_expr(call), args.first())
+        let (true, Some(ty @ Ty::List(_)), Some(items)) = (builtin, self.checked_expr(call), args.first())
         else {
             return Ok(None);
         };
         if items.name.is_some() || items.is_mut || self.checked_expr(&items.value) != Some(ty) {
             return Ok(None);
         }
+        self.sorted_as(&items.value, args.get(1..).unwrap_or_default(), ty, call.span)
+    }
+
+    /// A list sorted, given the arguments after the list, or `None` when native code can't.
+    pub(super) fn sorted_as(
+        &mut self,
+        items: &Expr,
+        args: &[Arg],
+        ty: Ty,
+        span: Span,
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let Ty::List(item) = ty else { return Ok(None) };
         match args {
-            [_] if !matches!(item, ListItem::Struct(_) | ListItem::Boxed(_)) => {
-                let (value, from) = self.expr(&items.value)?;
-                let list = self.convert(value, from, ty, call.span)?;
+            [] if !matches!(item, ListItem::Struct(_) | ListItem::Boxed(_)) => {
+                let (value, from) = self.expr(items)?;
+                let list = self.convert(value, from, ty, span)?;
                 let kind = self.int(sort_kind(item.ty()));
                 let made = self.help(Helper::ListSorted, &[list, kind])?;
                 self.consume(Some(list), ty)?;
                 Ok(Some((Some(made), ty)))
             }
             [
-                _,
                 Arg {
                     name: Some(key),
                     is_mut: false,
@@ -195,7 +206,7 @@ impl Lowerer<'_, '_> {
                 },
             ] if key == "key" => {
                 let [param] = params.as_slice() else { return Ok(None) };
-                self.sorted_by(&items.value, param, body, ty, call.span)
+                self.sorted_by(items, param, body, ty, span)
             }
             _ => Ok(None),
         }
@@ -247,20 +258,61 @@ impl Lowerer<'_, '_> {
     }
 
     /// Lowers something that needs a list by name, with a native list a call or the like
-    /// gave held under a hidden one until it's done.
+    /// gave held under a hidden one until it's done. A list that's lent keeps its owners.
     pub(super) fn holding_list<T>(
         &mut self,
         (list, ty): (Value, Ty),
+        lent: bool,
         span: Span,
         lower: impl FnOnce(&mut Self, &Expr) -> Result<T, Diagnostic>,
     ) -> Result<T, Diagnostic> {
-        let list = self.own(list, ty);
         let name = hidden("held", span);
         self.open_scope();
-        self.bind_native(&name, ty, Some(list), false);
+        if lent && self.borrowed.contains(&list) {
+            self.bind_lent(&name, (Some(list), ty))?;
+        } else {
+            let list = self.own(list, ty);
+            self.bind_native(&name, ty, Some(list), false);
+        }
         let lowered = lower(self, &name_expr(&name, span));
         self.close_scope()?;
         lowered
+    }
+
+    /// A new list of the items a list a name holds gives, for which `test` is true.
+    pub(super) fn filtered(
+        &mut self,
+        name: &str,
+        param: &str,
+        test: &Expr,
+        item: ListItem,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        let kept = hidden("kept", span);
+        let element = self.element(item.ty())?;
+        let none = self.int(0);
+        let made = self.help(Helper::ListNew, &[element, none])?;
+        self.open_scope();
+        self.bind_native(&kept, Ty::List(item), Some(made), true);
+        let append = Expr {
+            kind: ExprKind::Attr {
+                object: Box::new(name_expr(&kept, span)),
+                name: "append".to_owned(),
+                optional: false,
+            },
+            span,
+        };
+        let arg = Arg { name: None, is_mut: false, value: name_expr(param, span) };
+        let call = Expr { kind: ExprKind::Call { callee: Box::new(append), args: vec![arg] }, span };
+        let names = [param.to_owned()];
+        let each = comp_loop(&names, &name_expr(name, span), Some(test), StmtKind::Expr(call), span);
+        self.stmt_inside_expr(&each)?;
+        let made = self.local(&kept).and_then(|local| local.var).map(|var| self.b.use_var(var));
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.locals.remove(&kept);
+        }
+        self.close_scope()?;
+        made.ok_or_else(|| super::internal("a lost list", span))
     }
 
     /// Lowers a statement in the middle of an expression. Statements drop temporaries, so

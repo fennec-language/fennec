@@ -92,7 +92,8 @@ impl Lowerer<'_, '_> {
         self.fallback(expr)
     }
 
-    /// A native `sum` or `sorted`, or a call to an arrow this specialized body was handed.
+    /// A native `sum` or `sorted`, a change to a list or to what's inside a native value, or a
+    /// call to an arrow this specialized body was handed.
     fn sum_or_known(
         &mut self,
         expr: &Expr,
@@ -104,6 +105,12 @@ impl Lowerer<'_, '_> {
         }
         if let Some(ordered) = self.sorted_call(expr, callee, args)? {
             return Ok(Some(ordered));
+        }
+        if let Some(changed) = self.call_inside(expr, callee, args)? {
+            return Ok(Some(changed));
+        }
+        if let Some(changed) = self.list_method(callee, args, expr.span)? {
+            return Ok(Some(changed));
         }
         self.call_known(callee, args)
     }
@@ -526,7 +533,7 @@ impl Lowerer<'_, '_> {
         if let Some((list, item)) = self.packed(object) {
             return Ok((Some(self.list_length(&list, item)?), Ty::Int));
         }
-        let (value, ty) = self.receiver(object)?;
+        let (value, ty) = self.lent_receiver(object)?;
         match (value, ty) {
             (Some(text), Ty::Str) => Ok((Some(self.string_length(text)?), Ty::Int)),
             (Some(dict), Ty::Dict(..)) => {

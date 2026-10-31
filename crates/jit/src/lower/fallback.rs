@@ -160,10 +160,16 @@ impl Lowerer<'_, '_> {
     /// Whether a method call's receiver must stay as written: what `keeps_receiver` keeps,
     /// and a `mut` struct held natively, which a method that changes `self` changes.
     fn keeps_call_receiver(&self, object: &Expr) -> bool {
+        // No method changes a string or a number, and reading one needn't hand over all that
+        // holds it.
+        if matches!(self.place_ty(object), Some(Ty::Str | Ty::Int | Ty::Float | Ty::Bool)) {
+            return false;
+        }
         match &object.kind {
             ExprKind::Name(name) => self.local(name).is_none_or(|local| {
                 local.ty == Ty::Obj
-                    || (local.is_mut && matches!(local.ty, Ty::Struct(_) | Ty::Dict(..) | Ty::List(_)))
+                    || (local.is_mut
+                        && matches!(local.ty, Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) | Ty::List(_)))
             }),
             ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => {
                 self.keeps_call_receiver(object)

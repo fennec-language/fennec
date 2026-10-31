@@ -210,7 +210,7 @@ pub fn ascii_table(tables: &mut Tables) -> i64 {
 /// Where each boxed field of a value sits among its words, from `at`.
 fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<usize>) {
     match element {
-        Element::Boxed(_) | Element::Str => {
+        Element::Boxed(_) | Element::Str | Element::List(_) => {
             found.push(*at);
             *at += 1;
         }
@@ -369,6 +369,11 @@ pub(super) fn read_block(state: &mut State, address: u64) -> Value {
     read(state, &shape, &mut words)
 }
 
+/// A value of a word, as the interpreter holds it.
+pub(super) fn read_word(state: &mut State, element: &Element, word: u64) -> Value {
+    read(state, element, &mut std::iter::once(&word))
+}
+
 fn read<'w>(state: &mut State, element: &Element, words: &mut dyn Iterator<Item = &'w u64>) -> Value {
     let word = |words: &mut dyn Iterator<Item = &'w u64>| words.next().copied().unwrap_or(0);
     match element {
@@ -376,6 +381,8 @@ fn read<'w>(state: &mut State, element: &Element, words: &mut dyn Iterator<Item 
         Element::Float => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
         Element::Boxed(_) | Element::Str => read_block(state, word(words)),
+        // Only the top of a value the interpreter is handed may be a packed list.
+        Element::List(_) => read_block(state, word(words)).unpacked(),
         Element::Struct { name, fields } => {
             let fields =
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, words)));
@@ -443,6 +450,9 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             words.push(u64::try_from(address).ok()?);
         }
         (Element::Str, Value::Str(text)) => words.push(u64::try_from(text_address(state, text)).ok()?),
+        (Element::List(item), value) => {
+            words.push(u64::try_from(super::lists::write_list(state, item, value)?).ok()?);
+        }
         (Element::Struct { name, fields }, Value::Instance(instance))
             if instance.type_name == *name && instance.case.is_none() && !instance.is_error =>
         {

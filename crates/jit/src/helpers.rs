@@ -98,13 +98,19 @@ pub(crate) enum Helper {
     ListNew,
     ListGrow,
     ListUnshare,
+    ListClear,
+    ListRemoveAt,
+    ListInsert,
+    ListRemove,
+    ListContains,
+    PopEmpty,
     ListSorted,
     ListSortedBy,
     ListFromValue,
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 96] = [
+pub(crate) const ALL: [Helper; 102] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -197,6 +203,12 @@ pub(crate) const ALL: [Helper; 96] = [
     Helper::ListNew,
     Helper::ListGrow,
     Helper::ListUnshare,
+    Helper::ListClear,
+    Helper::ListRemoveAt,
+    Helper::ListInsert,
+    Helper::ListRemove,
+    Helper::ListContains,
+    Helper::PopEmpty,
     Helper::ListSorted,
     Helper::ListSortedBy,
     Helper::ListFromValue,
@@ -318,6 +330,12 @@ impl Helper {
                 | Helper::ListUnshare
                 | Helper::ListSorted
                 | Helper::ListSortedBy
+                | Helper::ListClear
+                | Helper::ListRemoveAt
+                | Helper::ListInsert
+                | Helper::ListRemove
+                | Helper::ListContains
+                | Helper::PopEmpty
                 | Helper::OutOfRange
                 | Helper::DictNew
                 | Helper::DictSet
@@ -353,6 +371,7 @@ impl Helper {
                     | Helper::ListUnshare
                     | Helper::ListSorted
                     | Helper::ListSortedBy
+                    | Helper::ListInsert
                     | Helper::ListFromValue
                     | Helper::CaseOf
                     | Helper::Alloc
@@ -394,6 +413,9 @@ impl Helper {
                 | Helper::DictMissing
                 | Helper::IntPower
                 | Helper::ListFromValue
+                | Helper::ListInsert
+                | Helper::ListRemove
+                | Helper::PopEmpty
                 | Helper::OutOfRange
                 | Helper::MainResult
                 | Helper::Unpack
@@ -499,6 +521,12 @@ impl Helper {
         Some(match self {
             Helper::MakeVariant => shape("fennec_make_variant", &[I64, I64, I64, I64, I64], &[I64]),
             Helper::CaseOf => shape("fennec_case_of", &[I64, I64, I64, I64], &[I64]),
+            Helper::ListClear => shape("fennec_list_clear", &[I64], &[]),
+            Helper::ListRemoveAt => shape("fennec_list_remove_at", &[I64, I64], &[]),
+            Helper::ListInsert => shape("fennec_list_insert", &[I64, I64, I64, I64], &[I64]),
+            Helper::ListRemove => shape("fennec_list_remove", &[I64, I64, I64, I64], &[]),
+            Helper::ListContains => shape("fennec_list_contains", &[I64, I64], &[I8]),
+            Helper::PopEmpty => shape("fennec_pop_empty", &[I64, I64], &[]),
             Helper::ListSorted => shape("fennec_list_sorted", &[I64, I64], &[I64]),
             Helper::ListSortedBy => shape("fennec_list_sorted_by", &[I64, I64, I64], &[I64]),
             Helper::Alloc => shape("fennec_alloc", &[I64], &[I64]),
@@ -528,6 +556,12 @@ impl Helper {
         Some(match self {
             Helper::MakeVariant => objects::make_variant as *const u8,
             Helper::CaseOf => objects::case_of as *const u8,
+            Helper::ListClear => lists::clear as *const u8,
+            Helper::ListRemoveAt => lists::remove_at as *const u8,
+            Helper::ListInsert => lists::insert as *const u8,
+            Helper::ListRemove => lists::remove as *const u8,
+            Helper::ListContains => lists::contains as *const u8,
+            Helper::PopEmpty => lists::pop_empty as *const u8,
             Helper::ListSorted => lists::sorted as *const u8,
             Helper::ListSortedBy => lists::sorted_by as *const u8,
             Helper::Alloc => heap::alloc as *const u8,

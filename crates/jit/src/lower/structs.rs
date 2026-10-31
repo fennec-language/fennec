@@ -407,6 +407,15 @@ impl<'a> Lowerer<'a, '_> {
                 _ => Ok(None),
             },
             ExprKind::Attr { object, name, optional: false } => {
+                // A struct in a boxed value: the block has to be this name's alone.
+                if let ExprKind::Name(root) = &object.kind
+                    && let Some(Local { ty: Ty::Boxed(id), var: Some(var), is_mut: true }) = self.local(root)
+                    && let Some(Field { ty: Ty::Struct(inner), offset, .. }) = self.struct_field(id, name)?
+                {
+                    let fields = self.unshare(var)?;
+                    let address = self.b.ins().iadd_imm_s(fields, i64::from(*offset));
+                    return Ok(Some((Place::Memory(address), *inner)));
+                }
                 let Some((place, id)) = self.struct_place(object)? else { return Ok(None) };
                 match self.struct_field(id, name)? {
                     Some(field @ Field { ty: Ty::Struct(inner), .. }) => {
@@ -467,7 +476,7 @@ impl<'a> Lowerer<'a, '_> {
         match &expr.kind {
             ExprKind::Name(name) => self.local(name).map(|local| local.ty),
             ExprKind::Attr { object, name, optional: false } => match self.static_ty(object)? {
-                Ty::Struct(id) => self.struct_field(id, name).ok()?.map(|field| field.ty),
+                Ty::Struct(id) | Ty::Boxed(id) => self.struct_field(id, name).ok()?.map(|field| field.ty),
                 _ => None,
             },
             // An item of a list of dicts stays an object: reading it mustn't copy the dict.

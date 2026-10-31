@@ -155,6 +155,9 @@ impl Lowerer<'_, '_> {
                 Ok(())
             }
             StmtKind::Pass => Ok(()),
+            StmtKind::For { names, is_mut: true, iter, body } if self.loops_inside(iter, body) => {
+                self.for_mut_inside(names, iter, body)
+            }
             StmtKind::For { names, is_mut: true, iter, body } => {
                 match (names.as_slice(), self.field_path(iter)) {
                     ([name], Some(path)) => self.for_mut(name, path, iter, body),
@@ -167,7 +170,7 @@ impl Lowerer<'_, '_> {
         }
     }
 
-    fn assign(
+    pub(super) fn assign(
         &mut self,
         target: &Expr,
         op: Option<BinOp>,
@@ -217,6 +220,7 @@ impl Lowerer<'_, '_> {
                 let new = self.assigned(target, op, value)?;
                 self.write_boxed_field(var, field, new, span)
             }
+            _ if self.changes_inside(target) => self.assign_inside(target, op, value),
             _ if let Some((place, id, field)) = self.struct_target(target)? => {
                 let span = target.span.to(value.span);
                 let new = self.assigned(target, op, value)?;

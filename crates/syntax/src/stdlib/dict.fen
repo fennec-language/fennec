@@ -1,0 +1,13 @@
+## `dict`'s methods written in Fennec. Reading, writing and walking its pairs are machine
+## operations the engines provide.
+extend dict[K: Hashable, V]:
+    ## Adds every pair of `more`, replacing the values of keys it already has.
+    def update(mut self, more: dict[K, V]):
+        for key, value in more.items():
+            self[key] = value
+
+    ## The value of `key`, adding `default` as its value when it has none.
+    def setdefault(mut self, key: K, default: V) -> V:
+        if key in self: return self[key]
+        self[key] = default
+        default

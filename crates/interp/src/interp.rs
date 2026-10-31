@@ -34,7 +34,7 @@ pub(crate) struct TypeInfo {
 }
 
 /// The built-in types the standard library's code gives methods to with `extend`.
-const BUILT_IN_OWNERS: [&str; 2] = ["str", "list"];
+const BUILT_IN_OWNERS: [&str; 4] = ["str", "list", "dict", "set"];
 
 /// A running Fennec program: its declarations, the current call's names, and its output.
 pub struct Interp<'out> {
@@ -223,6 +223,8 @@ impl<'out> Interp<'out> {
         let owner = match value {
             Value::Str(_) => "str",
             Value::List(_) | Value::Packed(_) => "list",
+            Value::Dict(_) => "dict",
+            Value::Set(_) => "set",
             _ => return None,
         };
         self.built_in_methods.get(owner)?.get(method).cloned()

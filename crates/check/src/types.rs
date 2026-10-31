@@ -178,6 +178,8 @@ impl Type {
         match self {
             Type::Str => Some("str"),
             Type::List(_) => Some("list"),
+            Type::Dict(..) => Some("dict"),
+            Type::Set(_) => Some("set"),
             other => other.type_name(),
         }
     }
@@ -187,6 +189,8 @@ impl Type {
     pub(crate) fn built_in_generic(name: &str, args: &[Type]) -> Option<Type> {
         match (name, args) {
             ("list", [item]) => Some(Type::list(item.clone())),
+            ("dict", [key, value]) => Some(Type::Dict(Box::new(key.clone()), Box::new(value.clone()))),
+            ("set", [item]) => Some(Type::Set(Box::new(item.clone()))),
             _ => None,
         }
     }
@@ -195,7 +199,8 @@ impl Type {
     pub(crate) fn type_args(&self) -> Vec<Type> {
         match self {
             Type::Generic(_, args) => args.clone(),
-            Type::List(item) => vec![item.as_ref().clone()],
+            Type::List(item) | Type::Set(item) => vec![item.as_ref().clone()],
+            Type::Dict(key, value) => vec![key.as_ref().clone(), value.as_ref().clone()],
             _ => Vec::new(),
         }
     }

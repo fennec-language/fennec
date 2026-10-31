@@ -41,8 +41,13 @@ modules! {
 
 /// What's available everywhere without an import: the errors standard operations fail
 /// with, and the built-in types' methods written in Fennec.
-const CORE: [&str; 3] =
-    [include_str!("stdlib/errors.fen"), include_str!("stdlib/str.fen"), include_str!("stdlib/list.fen")];
+const CORE: [&str; 5] = [
+    include_str!("stdlib/errors.fen"),
+    include_str!("stdlib/str.fen"),
+    include_str!("stdlib/list.fen"),
+    include_str!("stdlib/dict.fen"),
+    include_str!("stdlib/set.fen"),
+];
 
 /// The standard library written in Fennec, loaded before every program by both the
 /// interpreter and the type checker: the core, then each module's code.

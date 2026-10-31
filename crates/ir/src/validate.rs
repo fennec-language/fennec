@@ -81,7 +81,47 @@ impl Check<'_> {
                 }
                 self.operand(value, ty.as_ref(), "field value");
             }
+            InstKind::MakeCase { dest, type_name, case, fields } => {
+                self.make_case(*dest, type_name, case, fields);
+            }
+            InstKind::IsCase { dest, value, case } => {
+                if self.local(*dest) != Some(Type::Bool) || self.case_fields(value, case).is_none() {
+                    self.problems.push(format!("`{inst}` tests the wrong thing"));
+                }
+            }
+            InstKind::GetCaseField { dest, value, case, field } => {
+                let wanted = self.local(*dest);
+                let fields = self.case_fields(value, case).unwrap_or_default();
+                let found = fields.iter().find(|(name, _)| name == field).map(|(_, ty)| ty.clone());
+                if found.is_none() || found != wanted {
+                    self.problems.push(format!("`{inst}` reads the wrong field or type"));
+                }
+            }
             InstKind::Call { dest, function, args } => self.call(*dest, function, args),
+        }
+    }
+
+    /// The fields of a case of the enum a value is of.
+    fn case_fields(&self, value: &Operand, case: &str) -> Option<Vec<(String, Type)>> {
+        let Some(Type::Named(name)) = self.function.type_of(value) else { return None };
+        let def = self.program.enums.iter().find(|def| def.name == name)?;
+        def.cases.iter().find(|written| written.name == case).map(|found| found.fields.clone())
+    }
+
+    fn make_case(&mut self, dest: LocalId, type_name: &str, case: &str, fields: &[Operand]) {
+        if self.local(dest) != Some(Type::Named(type_name.to_owned())) {
+            self.problems.push(format!("keeps a new `{type_name}` in the wrong type"));
+        }
+        let def = self.program.enums.iter().find(|def| def.name == type_name);
+        let Some(found) = def.and_then(|def| def.cases.iter().find(|written| written.name == case)) else {
+            self.problems.push(format!("makes `{type_name}.{case}`, which doesn't exist"));
+            return;
+        };
+        if fields.len() != found.fields.len() {
+            self.problems.push(format!("makes `{type_name}.{case}` with {} fields", fields.len()));
+        }
+        for (value, (_, ty)) in fields.iter().zip(&found.fields) {
+            self.operand(value, Some(ty), "field value");
         }
     }
 
@@ -175,6 +215,7 @@ impl Check<'_> {
             Terminator::Return(None) if self.function.returns != Type::Unit => {
                 self.problems.push("returns nothing, but has a return type".to_owned());
             }
+            Terminator::NoMatch { value, .. } => self.operand(value, None, "value"),
             Terminator::Return(None) | Terminator::Jump(_) | Terminator::Unreachable => {}
         }
     }

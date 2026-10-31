@@ -56,8 +56,10 @@ pub struct Layouts {
 
 /// What laying out types needs to see: the checker's structs, and the enums as written.
 struct Sources<'s> {
-    signatures: &'s Signatures,
+    signatures: Option<&'s Signatures>,
     enums: HashMap<&'s str, &'s TypeDef>,
+    /// Types already worked out, like the copies of generic ones the IR makes.
+    definitions: HashMap<&'s str, &'s Written>,
 }
 
 impl Layouts {
@@ -68,7 +70,11 @@ impl Layouts {
         names: impl Iterator<Item = String>,
         enums: impl Iterator<Item = &'s TypeDef>,
     ) -> Layouts {
-        let sources = Sources { signatures, enums: enums.map(|def| (def.name.as_str(), def)).collect() };
+        let sources = Sources {
+            signatures: Some(signatures),
+            definitions: HashMap::new(),
+            enums: enums.map(|def| (def.name.as_str(), def)).collect(),
+        };
         let mut layouts = Layouts::default();
         for def in sources.enums.values() {
             for case in &def.cases {
@@ -83,6 +89,70 @@ impl Layouts {
         }
         layouts.add_boxed(&sources, &names);
         layouts
+    }
+
+    /// The layouts of types already worked out, each given by name, like the copies of generic
+    /// types the IR makes. What contains itself is boxed, and everything else is plain.
+    #[must_use]
+    pub fn from_definitions(definitions: &[(String, Written)]) -> Layouts {
+        let sources = Sources {
+            signatures: None,
+            enums: HashMap::new(),
+            definitions: definitions.iter().map(|(name, def)| (name.as_str(), def)).collect(),
+        };
+        let mut layouts = Layouts::default();
+        for (name, def) in definitions {
+            if let Written::Enum(cases) = def {
+                for (case, _) in cases {
+                    layouts.owners.entry(case.clone()).or_default().push(name.clone());
+                }
+            }
+        }
+        let names: Vec<String> = definitions.iter().map(|(name, _)| name.clone()).collect();
+        for name in &names {
+            layouts.add(&sources, name, &mut Vec::new());
+        }
+        layouts.add_boxed(&sources, &names);
+        layouts
+    }
+
+    /// Lays out a type given by name if it's plain.
+    fn add_definition(
+        &mut self,
+        sources: &Sources<'_>,
+        name: &str,
+        def: &Written,
+        visiting: &mut Vec<String>,
+    ) -> Option<Layout> {
+        let mut place = |fields: &[WrittenField], start: u32| {
+            let mut typed = Vec::with_capacity(fields.len());
+            for (field, ty, default) in fields {
+                typed.push((field.clone(), self.field_ty(sources, ty, visiting)?, default.clone()));
+            }
+            self.place_fields(typed, start)
+        };
+        match def {
+            Written::Struct(fields) => {
+                let (fields, size) = place(fields, 0)?;
+                Some(Layout {
+                    name: name.to_owned(),
+                    fields,
+                    size: size.max(WORD),
+                    cases: None,
+                    boxed: false,
+                })
+            }
+            Written::Enum(cases) => {
+                let mut placed = Vec::with_capacity(cases.len());
+                let mut size = WORD;
+                for (case, fields) in cases {
+                    let (fields, end) = place(fields, WORD)?;
+                    size = size.max(end);
+                    placed.push(Case { name: case.clone(), fields });
+                }
+                Some(enum_of(name, placed, size, false))
+            }
+        }
     }
 
     /// Lays out the boxed types: every struct and enum that isn't plain and has no `where`
@@ -150,7 +220,12 @@ impl Layouts {
             return None;
         }
         visiting.push(name.to_owned());
-        let layout = match sources.signatures.structure(name) {
+        let structure = sources.signatures.and_then(|signatures| signatures.structure(name));
+        let layout = match structure {
+            _ if sources.definitions.contains_key(name) => {
+                let def = sources.definitions.get(name)?;
+                self.add_definition(sources, name, def, visiting)?
+            }
             Some(structure) if !structure.rules => {
                 let mut fields = Vec::with_capacity(structure.fields.len());
                 for (field, ty) in &structure.fields {
@@ -392,17 +467,21 @@ fn enum_of(name: &str, cases: Vec<Case>, size: u32, boxed: bool) -> Layout {
 }
 
 /// A field as written: its name, type and default.
-type WrittenField = (String, Type, Option<Expr>);
+pub type WrittenField = (String, Type, Option<Expr>);
 
 /// A type's fields as written: a struct's, or each case's.
-enum Written {
+#[derive(Clone)]
+pub enum Written {
     Struct(Vec<WrittenField>),
     Enum(Vec<(String, Vec<WrittenField>)>),
 }
 
 /// A struct's or enum's fields as written, when none has a `where` rule.
 fn written(sources: &Sources<'_>, name: &str) -> Option<Written> {
-    if let Some(structure) = sources.signatures.structure(name) {
+    if let Some(def) = sources.definitions.get(name) {
+        return Some((*def).clone());
+    }
+    if let Some(structure) = sources.signatures.and_then(|signatures| signatures.structure(name)) {
         // Native code doesn't know what a generic type's parameters are.
         if structure.rules || structure.fields.iter().any(|(_, ty)| has_param(ty)) {
             return None;
@@ -424,4 +503,56 @@ fn written(sources: &Sources<'_>, name: &str) -> Option<Written> {
         cases.push((case.name.clone(), fields));
     }
     (!cases.is_empty()).then_some(Written::Enum(cases))
+}
+
+#[cfg(test)]
+mod tests {
+    use fennec_check::Type;
+
+    use super::{Layouts, Written};
+    use crate::Ty;
+
+    fn fields(names: &[(&str, Type)]) -> Vec<super::WrittenField> {
+        names.iter().map(|(name, ty)| ((*name).to_owned(), ty.clone(), None)).collect()
+    }
+
+    #[test]
+    fn a_copy_of_a_generic_type_gets_its_own_layout() {
+        let pair = Type::Named("Pair[int]".to_owned());
+        let definitions = vec![
+            ("Pair[int]".to_owned(), Written::Struct(fields(&[("a", Type::Int), ("b", Type::Int)]))),
+            ("Outer".to_owned(), Written::Struct(fields(&[("pair", pair.clone()), ("c", Type::Float)]))),
+            (
+                "Shape".to_owned(),
+                Written::Enum(vec![
+                    ("Dot".to_owned(), Vec::new()),
+                    ("Line".to_owned(), fields(&[("from", pair.clone()), ("to", pair.clone())])),
+                ]),
+            ),
+        ];
+        let layouts = Layouts::from_definitions(&definitions);
+        let id = layouts.id("Pair[int]").unwrap();
+        assert_eq!(layouts.ty(&pair), Ty::Struct(id));
+        assert_eq!(layouts.get(id).unwrap().size, 16);
+        let outer = layouts.get(layouts.id("Outer").unwrap()).unwrap();
+        assert_eq!((outer.size, outer.fields[1].offset), (24, 16));
+        let shape = layouts.get(layouts.id("Shape").unwrap()).unwrap();
+        assert_eq!(shape.size, 40);
+        assert_eq!(layouts.owner("Line"), Some("Shape"));
+    }
+
+    #[test]
+    fn a_type_containing_itself_is_boxed() {
+        let tree = Type::Named("Tree".to_owned());
+        let definitions = vec![(
+            "Tree".to_owned(),
+            Written::Enum(vec![
+                ("Leaf".to_owned(), fields(&[("value", Type::Int)])),
+                ("Node".to_owned(), fields(&[("left", tree.clone()), ("right", tree.clone())])),
+            ]),
+        )];
+        let layouts = Layouts::from_definitions(&definitions);
+        let id = layouts.id("Tree").unwrap();
+        assert_eq!(layouts.ty(&tree), Ty::Boxed(id));
+    }
 }

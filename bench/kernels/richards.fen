@@ -1,0 +1,215 @@
+## Richards from Are We Fast Yet: an operating system's scheduler, passing packets between tasks of
+## four kinds. Tasks and packets link to each other by their place in a list, -1 being none.
+
+NONE = -1
+IDLE = 0
+WORKER = 1
+HANDLER_A = 2
+HANDLER_B = 3
+DEVICE_A = 4
+DEVICE_B = 5
+DEVICE_PACKET = 0
+WORK_PACKET = 1
+
+enum Kind:
+    Idle
+    Worker
+    Handler
+    Device
+
+struct Packet:
+    link: int
+    id: int
+    kind: int
+    a1 = 0
+    a2: list[int]
+
+struct Task:
+    kind: Kind
+    priority: int
+    link: int
+    queue: int
+    held = False
+    suspended = True
+    runnable = False
+    v1 = 0
+    v2 = 0
+
+struct Scheduler:
+    tasks: list[Task]
+    packets: list[Packet]
+    newest = NONE
+    current = NONE
+    queued = 0
+    holds = 0
+
+    def add_task(mut self, kind: Kind, priority: int, queue: int, v1: int, v2: int):
+        self.tasks.append(
+            Task(
+                kind=kind,
+                priority=priority,
+                link=self.newest,
+                queue=queue,
+                runnable=queue != NONE,
+                v1=v1,
+                v2=v2,
+            ),
+        )
+        self.newest = self.tasks.len() - 1
+
+    def add_packet(mut self, link: int, id: int, kind: int) -> int:
+        self.packets.append(Packet(link=link, id=id, kind=kind, a2=[0, 0, 0, 0]))
+        self.packets.len() - 1
+
+    def schedule(mut self):
+        mut at = self.newest
+        while at != NONE:
+            if self.tasks[at].held or (self.tasks[at].suspended and not self.tasks[at].runnable):
+                at = self.tasks[at].link
+            else:
+                self.current = at
+                at = self.run(at)
+
+    def run(mut self, at: int) -> int:
+        mut packet = NONE
+        if self.tasks[at].suspended and self.tasks[at].runnable:
+            packet = self.tasks[at].queue
+            self.tasks[at].queue = self.packets[packet].link
+            self.tasks[at].suspended = False
+            self.tasks[at].runnable = self.tasks[at].queue != NONE
+        match self.tasks[at].kind:
+            case .Idle:
+                self.run_idle(at)
+            case .Worker:
+                self.run_worker(at, packet)
+            case .Handler:
+                self.run_handler(at, packet)
+            case .Device:
+                self.run_device(at, packet)
+
+    def release(mut self, id: int) -> int:
+        self.tasks[id].held = False
+        if self.tasks[id].priority > self.tasks[self.current].priority: return id
+        self.current
+
+    def hold_current(mut self) -> int:
+        self.holds += 1
+        self.tasks[self.current].held = True
+        self.tasks[self.current].link
+
+    def suspend_current(mut self) -> int:
+        self.tasks[self.current].suspended = True
+        self.current
+
+    def send(mut self, packet: int) -> int:
+        to = self.packets[packet].id
+        self.queued += 1
+        self.packets[packet].link = NONE
+        self.packets[packet].id = self.current
+        if self.tasks[to].queue == NONE:
+            self.tasks[to].queue = packet
+            self.tasks[to].runnable = True
+            if self.tasks[to].priority > self.tasks[self.current].priority: return to
+        else:
+            self.tasks[to].queue = self.appended(packet, self.tasks[to].queue)
+        self.current
+
+    def appended(mut self, packet: int, queue: int) -> int:
+        self.packets[packet].link = NONE
+        if queue == NONE: return packet
+        mut last = queue
+        while self.packets[last].link != NONE:
+            last = self.packets[last].link
+        self.packets[last].link = packet
+        queue
+
+    def run_idle(mut self, at: int) -> int:
+        self.tasks[at].v2 -= 1
+        if self.tasks[at].v2 == 0: return self.hold_current()
+        state = self.tasks[at].v1
+        if state % 2 == 0:
+            self.tasks[at].v1 = state // 2
+            return self.release(DEVICE_A)
+        self.tasks[at].v1 = xor_d008(state // 2)
+        self.release(DEVICE_B)
+
+    def run_device(mut self, at: int, packet: int) -> int:
+        if packet != NONE:
+            self.tasks[at].v1 = packet
+            return self.hold_current()
+        waiting = self.tasks[at].v1
+        if waiting == NONE: return self.suspend_current()
+        self.tasks[at].v1 = NONE
+        self.send(waiting)
+
+    def run_worker(mut self, at: int, packet: int) -> int:
+        if packet == NONE: return self.suspend_current()
+        handler = HANDLER_B if self.tasks[at].v1 == HANDLER_A else HANDLER_A
+        self.tasks[at].v1 = handler
+        self.packets[packet].id = handler
+        self.packets[packet].a1 = 0
+        for i in range(4):
+            mut next = self.tasks[at].v2 + 1
+            if next > 26:
+                next = 1
+            self.tasks[at].v2 = next
+            self.packets[packet].a2[i] = next
+        self.send(packet)
+
+    def run_handler(mut self, at: int, packet: int) -> int:
+        if packet != NONE:
+            if self.packets[packet].kind == WORK_PACKET:
+                self.tasks[at].v1 = self.appended(packet, self.tasks[at].v1)
+            else:
+                self.tasks[at].v2 = self.appended(packet, self.tasks[at].v2)
+        work = self.tasks[at].v1
+        if work != NONE:
+            count = self.packets[work].a1
+            if count < 4:
+                device = self.tasks[at].v2
+                if device != NONE:
+                    self.tasks[at].v2 = self.packets[device].link
+                    self.packets[device].a1 = self.packets[work].a2[count]
+                    self.packets[work].a1 = count + 1
+                    return self.send(device)
+            else:
+                self.tasks[at].v1 = self.packets[work].link
+                return self.send(work)
+        self.suspend_current()
+
+## `value ^ 0xD008` for a value under 0x8000, since Fennec has no bit operators yet.
+def xor_d008(value: int) -> int:
+    mut result = value + 32768
+    result += -16384 if value // 16384 % 2 == 1 else 16384
+    result += -4096 if value // 4096 % 2 == 1 else 4096
+    result += -8 if value // 8 % 2 == 1 else 8
+    result
+
+def simulate() -> (int, int):
+    mut scheduler = Scheduler(tasks=[], packets=[])
+    scheduler.add_task(Kind.Idle, 0, NONE, 1, 10000)
+    scheduler.tasks[IDLE].suspended = False
+    work = scheduler.add_packet(NONE, WORKER, WORK_PACKET)
+    work_queue = scheduler.add_packet(work, WORKER, WORK_PACKET)
+    scheduler.add_task(Kind.Worker, 1000, work_queue, HANDLER_A, 0)
+    mut queue = NONE
+    for _ in range(3):
+        queue = scheduler.add_packet(queue, DEVICE_A, DEVICE_PACKET)
+    scheduler.add_task(Kind.Handler, 2000, queue, NONE, NONE)
+    queue = NONE
+    for _ in range(3):
+        queue = scheduler.add_packet(queue, DEVICE_B, DEVICE_PACKET)
+    scheduler.add_task(Kind.Handler, 3000, queue, NONE, NONE)
+    scheduler.add_task(Kind.Device, 4000, NONE, NONE, 0)
+    scheduler.add_task(Kind.Device, 5000, NONE, NONE, 0)
+    scheduler.schedule()
+    (scheduler.queued, scheduler.holds)
+
+def main(stdout: Stdout):
+    mut queued = 0
+    mut holds = 0
+    for _ in range(5):
+        one, other = simulate()
+        queued = one
+        holds = other
+    stdout.print(queued, holds)

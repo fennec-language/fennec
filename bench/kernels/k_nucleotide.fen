@@ -1,0 +1,25 @@
+## K-nucleotide from the Benchmarks Game: slicing a long string and counting the pieces in a dict.
+
+def sequence(length: int) -> str:
+    mut seed = 42
+    mut letters = []
+    for _ in range(length):
+        seed = (seed * 3877 + 29573) % 139968
+        letters.append("acgt"[seed * 4 // 139968])
+    "".join(letters)
+
+def counted(dna: str, size: int) -> dict[str, int]:
+    mut counts: dict[str, int] = {}
+    for at in range(dna.len() - size + 1):
+        piece = dna[at:at + size]
+        counts[piece] = counts.get(piece, 0) + 1
+    counts
+
+def main(stdout: Stdout):
+    dna = sequence(100_000)
+    for size in [1, 2]:
+        counts = counted(dna, size)
+        for negative, piece in sorted([(-count, piece) for piece, count in counts.items()]):
+            stdout.print(piece, -negative)
+    for piece in ["ggt", "ggta", "ggtatt", "ggtattttaatt", "ggtattttaatttatagt"]:
+        stdout.print(counted(dna, piece.len()).get(piece, 0), piece)

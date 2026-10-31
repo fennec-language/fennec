@@ -104,6 +104,15 @@ impl Kernel {
         }
     }
 
+    /// A hash of the kernel and its twin, which locks them to what was pinned. The self-hosted
+    /// front end changes with the language, so only what it prints locks it.
+    pub(crate) fn source_hash(&self) -> Result<String, String> {
+        let Twin::Source(twin) = &self.twin else { return Ok("-".to_owned()) };
+        let read =
+            |path: &Path| std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()));
+        Ok(hash(&(read(Path::new(&self.path))? + &read(twin)?)))
+    }
+
     /// A hash of what it printed, for comparing with its target. The self-hosted front end
     /// starts by naming its input, which the Rust front end doesn't.
     pub(crate) fn output_hash(&self, output: &str) -> String {

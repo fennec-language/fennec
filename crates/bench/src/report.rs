@@ -181,7 +181,12 @@ mod tests {
             kernel: "k".to_owned(),
             instructions: Some(100 + work),
             startup_instructions: Some(100),
-            target: Some(Target { instructions: target, output: String::new(), enforced }),
+            target: Some(Target {
+                instructions: target,
+                output: String::new(),
+                source: String::new(),
+                enforced,
+            }),
             ..Result::default()
         }
     }

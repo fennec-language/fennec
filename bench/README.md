@@ -14,11 +14,14 @@ cargo build --release -p fennec -p fennec-bench
 | Float math | `nbody`, `spectral_norm`, `mandelbrot` |
 | Allocation and recursive data | `binary_trees` |
 | Hash tables | `dicts` |
-| Strings and text | `strings`, `json` |
+| Strings and text | `strings`, `json`, `k_nucleotide`, `regex` |
 | Structs in a game loop | `particles` |
 | Sorting and generics | `sort`, `generics` |
 | Closures and iterators | `comprehensions`, `closures` |
+| Object-heavy code with dispatch | `richards`, `deltablue` |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
+
+These are what languages have historically been judged on: most of the Computer Language Benchmarks Game, and `richards` and `deltablue` from Are We Fast Yet. **The suite is locked.** Each target records a hash of its kernel and twin, and a run fails if they've changed, or if a kernel has come or gone. Changing one means pinning it again, and the pull request has to say why. The fix for a slow kernel goes in the compiler.
 
 ## What it reports
 
@@ -47,7 +50,7 @@ To compare against another build of `fennec`, like the previous commit's, pass `
 
 ## Pinning targets
 
-The twins beside the kernels are idiomatic code for the same work, in Rust, built with `-C opt-level=3` for the architecture's baseline CPU. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.
+The twins beside the kernels are idiomatic code for the same work, in Rust, built with `-C opt-level=3` for a fixed CPU level: `x86-64-v3` on x86-64, since the JIT uses the features of the CPU it runs on, and the baseline on 64-bit Arm. `regex`'s twin runs on `crates/re`, the engine behind `std.re`. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.
 
 Everyday runs don't build or run the twins. They only read the targets.
 
@@ -55,7 +58,7 @@ Re-pin only when a kernel's work or a twin changes, by running the **Pin benchma
 
 ## Adding a kernel
 
-Add `name.fen` and `name.rs` to `kernels/`, then re-pin.
+The suite is locked, so a new kernel needs a stated reason. Add `name.fen` and `name.rs` to `kernels/`, then re-pin.
 
 - Size the work so that Rust takes between about 10 and 100 ms. Valgrind counts every kernel on every CI run, and a kernel the JIT is still slow on takes far longer than its twin.
 - Print a result that depends on all of the work, so neither side can skip it.

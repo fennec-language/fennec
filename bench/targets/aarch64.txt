@@ -1,19 +1,19 @@
 # Written by `fennec-bench pin`. Only the last column is edited by hand: `yes` once a kernel
 # reaches the JIT's floor, so it can't drop below it again.
-# kernel instructions output enforced
-binary_trees 435974435 085da71cd358d51a no
-closures 4620748 86672a2132954f6c no
-comprehensions 61889067 87157abf370b4b8b no
-dicts 194404271 03f09d5e6aacdd93 no
-fannkuch 88334424 baaaef315c659f3c no
-fib 263332961 c1a7256e0480b2dc no
-generics 5130077 a481a9a0bfd872a4 no
-json 30959768 1c9a8c994d1b00d2 no
-mandelbrot 94359686 c573d05d2a7a670c no
-nbody 76294652 4d092d7db6fae7b2 no
-particles 66147916 9e927a27bf9d8df9 no
-selfhost 24451969 bc5ffd62d8e8766b no
-sieve 130034892 84a70b39ecced192 no
-sort 182304761 bd713ad39cc2e9f8 no
-spectral_norm 70877327 b4e227d5abb9fd3a no
-strings 176314041 f1a0bd22994baaf5 no
+# kernel instructions output source enforced
+binary_trees 435974435 085da71cd358d51a - no
+closures 4620748 86672a2132954f6c - no
+comprehensions 61889067 87157abf370b4b8b - no
+dicts 194404271 03f09d5e6aacdd93 - no
+fannkuch 88334424 baaaef315c659f3c - no
+fib 263332961 c1a7256e0480b2dc - no
+generics 5130077 a481a9a0bfd872a4 - no
+json 30959768 1c9a8c994d1b00d2 - no
+mandelbrot 94359686 c573d05d2a7a670c - no
+nbody 76294652 4d092d7db6fae7b2 - no
+particles 66147916 9e927a27bf9d8df9 - no
+selfhost 24451969 bc5ffd62d8e8766b - no
+sieve 130034892 84a70b39ecced192 - no
+sort 182304761 bd713ad39cc2e9f8 - no
+spectral_norm 70877327 b4e227d5abb9fd3a - no
+strings 176314041 f1a0bd22994baaf5 - no

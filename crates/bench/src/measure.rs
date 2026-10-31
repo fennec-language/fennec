@@ -171,14 +171,55 @@ pub(crate) fn time_together(programs: &[Program], runs: usize) -> Result<Vec<Tim
     Ok(timings)
 }
 
-/// Compiles a Rust twin the way a release build does, for the architecture's baseline CPU, so
-/// its count doesn't depend on which machine pinned it.
+/// Builds the regular expression engine behind `std.re`, for a twin that runs on it, and gives
+/// back the arguments that link it.
+fn engine_for(source: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
+    let uses_it = std::fs::read_to_string(source).is_ok_and(|text| text.contains("fennec_re"));
+    if !uses_it {
+        return Ok(Vec::new());
+    }
+    let library = out_dir.join("libfennec_re.rlib");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let output = Command::new(rustc)
+        .args([
+            "--edition",
+            "2024",
+            "--crate-type",
+            "rlib",
+            "--crate-name",
+            "fennec_re",
+            "-C",
+            "opt-level=3",
+            "-o",
+        ])
+        .arg(&library)
+        .arg("crates/re/src/lib.rs")
+        .output()
+        .map_err(|err| format!("couldn't run rustc: {err}"))?;
+    if !output.status.success() {
+        return Err(format!("crates/re didn't compile:\n{}", String::from_utf8_lossy(&output.stderr)));
+    }
+    Ok(vec!["--extern".to_owned(), format!("fennec_re={}", library.display())])
+}
+
+/// The CPU level twins are built for: fixed, so a target doesn't depend on which machine pinned
+/// it, and on x86-64 a modern one, since the JIT uses what the CPU it runs on has too. On
+/// 64-bit Arm, the baseline already has what the JIT uses.
+fn twin_cpu() -> &'static [&'static str] {
+    if cfg!(target_arch = "x86_64") { &["-C", "target-cpu=x86-64-v3"] } else { &[] }
+}
+
+/// Compiles a Rust twin the way a release build does, for a fixed CPU level.
 pub(crate) fn build_twin(source: &Path, out_dir: &Path) -> Result<PathBuf, String> {
     let name = source.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     let binary = out_dir.join(name);
+    let engine = engine_for(source, out_dir)?;
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let output = Command::new(rustc)
-        .args(["-C", "opt-level=3", "-o"])
+        .args(["--edition", "2024", "-C", "opt-level=3"])
+        .args(twin_cpu())
+        .args(engine)
+        .arg("-o")
         .arg(&binary)
         .arg(source)
         .output()

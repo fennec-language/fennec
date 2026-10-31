@@ -188,7 +188,7 @@ fn a_second_run_reuses_every_function_and_an_edit_compiles_only_that_function() 
         let module = fennec_syntax::parse(source).unwrap();
         let mut out = Vec::new();
         let inputs = fennec_interp::Inputs::default();
-        let report = fennec_jit::run_cached(&module, &mut out, inputs, cache, "cached.fen").unwrap();
+        let report = fennec_jit::run_cached(&module, None, &mut out, inputs, cache, "cached.fen").unwrap();
         (String::from_utf8_lossy(&out).into_owned(), report.cached)
     };
     let program = |greeting: &str| {

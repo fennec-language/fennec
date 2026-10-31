@@ -51,6 +51,17 @@ pub fn prelude() -> impl Iterator<Item = &'static str> {
     CORE.into_iter().chain(modules)
 }
 
+/// The prelude's sources parsed, once for the whole process: the checker, the compiler and
+/// the interpreter all read it, and a run uses them all.
+pub fn prelude_modules() -> Result<&'static [crate::Module], crate::Diagnostic> {
+    static PARSED: std::sync::OnceLock<Result<Vec<crate::Module>, crate::Diagnostic>> =
+        std::sync::OnceLock::new();
+    match PARSED.get_or_init(|| prelude().map(crate::parser::parse_prelude).collect()) {
+        Ok(modules) => Ok(modules),
+        Err(diagnostic) => Err(diagnostic.clone()),
+    }
+}
+
 /// Standard library types a program gets values of without naming them, by the method
 /// that gives one back, like `Instant` from `now`.
 pub fn given() -> impl Iterator<Item = (&'static str, &'static str)> {

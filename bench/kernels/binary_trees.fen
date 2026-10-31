@@ -1,0 +1,26 @@
+## Binary trees: allocating many small recursive values, then walking and dropping them.
+
+enum Tree:
+    Leaf
+    Node(left: Tree, right: Tree)
+
+def build(depth: int) -> Tree:
+    if depth == 0: return Tree.Leaf
+    Tree.Node(left=build(depth - 1), right=build(depth - 1))
+
+def count(tree: Tree) -> int:
+    match tree:
+        case .Leaf:
+            1
+        case .Node(left, right):
+            1 + count(left) + count(right)
+
+def main(stdout: Stdout):
+    longest = build(14)
+    mut total = 0
+    mut depth = 4
+    while depth <= 14:
+        for _ in range(2 ** (14 - depth + 4)):
+            total += count(build(depth))
+        depth += 4
+    stdout.print(total, count(longest))

@@ -55,6 +55,10 @@ fn main() -> ExitCode {
         ["fmt", rest @ ..] => fmt::fmt(rest),
         ["fix"] => fix::fix("."),
         ["fix", path] => fix::fix(path),
+        ["dev", "startup", path] => {
+            let path = (*path).to_owned();
+            big_stack(move || run::startup(&path))
+        }
         ["dev", "tokens", path] => dev(fennec_syntax::dump::tokens, path),
         ["dev", "tree", path] => dev(fennec_syntax::dump::tree, path),
         ["dev", "check", path] => dev(check_dump, path),

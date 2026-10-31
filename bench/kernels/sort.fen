@@ -1,0 +1,13 @@
+## Sorting: the built-in sort on ints and on strings, and a sort by key.
+
+def main(stdout: Stdout):
+    mut seed = 42
+    mut numbers = []
+    for _ in range(300_000):
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        numbers.append(seed)
+    ordered = sorted(numbers)
+    by_digit = sorted(numbers, key=(n) => n % 1000)
+    words = [f"fox{n % 100000}" for n in numbers[:50_000]]
+    alphabetical = sorted(words)
+    stdout.print(ordered[0], ordered[150_000], by_digit[0], by_digit[150_000], alphabetical[25_000])

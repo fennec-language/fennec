@@ -9,13 +9,16 @@
 //! meaning: each backend has to end the program the same way, at the instruction's span.
 //!
 //! Lowering grows in slices. So far it handles functions over ints, floats, bools, strs and
-//! the program's own structs and enums, lists and capabilities: operators, names, `if`,
-//! `while`, `for` over a `range`, list or str, `match`, `return`, direct calls, what the
-//! engines provide, building values, and reading and changing fields and items. All of them
-//! are values, so copying one copies it. A `match` is a run of tests, one case after another,
-//! which a backend can turn into a jump table. A `mut` parameter is copied back: when the
-//! call returns, the local passed for it holds what the parameter held. A function using
-//! anything else is listed in [`Program::not_lowered`], with why.
+//! the program's own structs and enums, lists, capabilities, optionals and results:
+//! operators, names, `if`, `while`, `for` over a `range`, list or str, `match`, `return`,
+//! `fail`, `?`, `else`, direct calls, what the engines provide, building values, and reading
+//! and changing fields and items. All of them are values, so copying one copies it. A `match`
+//! is a run of tests, one case after another, which a backend can turn into a jump table. A
+//! `mut` parameter is copied back: when the call returns, the local passed for it holds what
+//! the parameter held. Nothing is implicit: a value going where an optional or a result goes
+//! is wrapped by an instruction, and a name known not to be `None` is unwrapped where it's
+//! read. An error of one type can go where a set of error types is expected as it is. A
+//! function using anything else is listed in [`Program::not_lowered`], with why.
 
 mod lower;
 mod print;
@@ -32,6 +35,8 @@ pub use validate::validate;
 pub struct Program {
     pub structs: Vec<StructDef>,
     pub enums: Vec<EnumDef>,
+    /// Every error type, the standard library's included, which programs get values of.
+    pub errors: Vec<StructDef>,
     pub functions: Vec<Function>,
     pub not_lowered: Vec<NotLowered>,
     /// The standard library's functions the program calls, written in Fennec. They aren't
@@ -198,6 +203,54 @@ pub enum InstKind {
         args: Vec<Operand>,
         changes: bool,
     },
+    /// `T` to `T?`. `None` itself is [`Operand::None`].
+    MakeSome {
+        dest: LocalId,
+        value: Operand,
+    },
+    IsNone {
+        dest: LocalId,
+        value: Operand,
+    },
+    /// The value inside an optional known not to be `None`.
+    GetSome {
+        dest: LocalId,
+        value: Operand,
+    },
+    /// A result that succeeded, holding nothing when `value` is `None`.
+    MakeOk {
+        dest: LocalId,
+        value: Option<Operand>,
+    },
+    MakeErr {
+        dest: LocalId,
+        error: Operand,
+    },
+    IsErr {
+        dest: LocalId,
+        value: Operand,
+    },
+    /// The value inside a result known to have succeeded.
+    GetOk {
+        dest: LocalId,
+        value: Operand,
+    },
+    /// The error inside a result known to have failed.
+    GetErr {
+        dest: LocalId,
+        value: Operand,
+    },
+    /// Whether an error from a set of error types is of this one.
+    IsError {
+        dest: LocalId,
+        value: Operand,
+        type_name: String,
+    },
+    /// An error from a set of error types, known to be of the type `dest` holds.
+    AsError {
+        dest: LocalId,
+        value: Operand,
+    },
     /// A direct call, by the callee's key. `dest` is `None` when nothing keeps the result.
     Call {
         dest: Option<LocalId>,
@@ -221,6 +274,7 @@ pub enum Operand {
     Float(f64),
     Bool(bool),
     Str(String),
+    None,
 }
 
 /// How a block ends.
@@ -257,6 +311,7 @@ fn type_in(locals: &[Local], operand: &Operand) -> Option<Type> {
         Operand::Float(_) => Some(Type::Float),
         Operand::Bool(_) => Some(Type::Bool),
         Operand::Str(_) => Some(Type::Str),
+        Operand::None => Some(Type::None),
     }
 }
 

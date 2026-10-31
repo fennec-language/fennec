@@ -37,17 +37,17 @@ Each kernel also has to print exactly what its target expects, which the target 
 
 ## The floor and the ratchet
 
-**The JIT's floor is 80% of target**, on every kernel. Past that is nice but not the goal. The 80% is a floor on work, not on startup.
+**The JIT's floor is 80% of target**, on every kernel, rising to 85% later. Past that is nice but not the goal. The 80% is a floor on work, not on startup.
 
 Once a kernel reaches the floor, the run says so. Mark it `yes` in the last column of both targets files, and from then on CI fails if it drops below. A failure is fixed in the compiler, never by changing the benchmark.
 
-Release builds will aim for 97% of target when they exist.
+Release builds will aim for 110% of target when they exist. The interpreter's range is 10–30%.
 
 To compare against another build of `fennec`, like the previous commit's, pass `--previous path/to/fennec`. CI does that on every pull request, merge and push to `main`. A kernel counts as slower when its median time is more than 10% slower than before and it also runs more than 1% more instructions. For now that's a warning, until the counts have proven stable on pull requests that change nothing on the run path.
 
 ## Pinning targets
 
-The twins beside the kernels are idiomatic code for the same work, in Rust, built with `-C opt-level=3` for the architecture's baseline CPU. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.
+The twins beside the kernels are idiomatic code for the same work, in Rust, Pinning uses `-C opt-level=3` for the architecture's baseline CPU today. The decided setting is fully optimized: optimization level 3, fat LTO, `codegen-units=1`, abort on panic and no debug assertions, for x86-64-v3 on x86-64 and the baseline CPU on Arm. Pinned targets move to it when the tool does. Where a twin's standard library choice measures something Fennec doesn't do, like SipHash in `dicts`, the target uses a same-hash twin, with the standard default shown as a separately labeled number.
 
 Everyday runs don't build or run the twins. They only read the targets.
 

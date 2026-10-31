@@ -90,7 +90,19 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 ## Speed
 
-**The target is enforced.** Every program in the benchmark suite also exists as idiomatic code in the fastest established systems language. CI fails if a benchmark runs more than 3% slower than that twin, or slower than the previous run. The fix for a failure goes into the compiler, never into tricks in the benchmark.
+**Speed targets are measured against each benchmark's twin, fully optimized.** Every program in the benchmark suite also exists as idiomatic code in the fastest established systems language.
+- Release builds: 110% of the twin's speed.
+- The JIT: 80% to start, then 85%.
+- The interpreter: 10–30%.
+
+Benchmarks do realistic work that neither side's optimizer can delete.
+
+"Fully optimized" means optimization level 3, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. Twins are built for x86-64-v3 on x86-64 and for the baseline CPU on Arm, so their counts are reproducible and don't hold the twin back against a JIT that uses the running CPU's features.
+
+Where a twin's standard library choice measures something Fennec doesn't do, like a slower default hash in `dicts`, the target uses a twin with the same hash as Fennec, and the standard default is shown as a separately labeled number.
+*Why:* The whole 20-benchmark suite meeting these targets shows the language's fundamentals carry well.
+
+**The targets are enforced.** CI fails if a benchmark misses its target or runs slower than the previous run. The fix for a failure goes into the compiler, never into tricks in the benchmark.
 
 ### Matching the fastest languages
 
@@ -280,6 +292,18 @@ with db.transaction() as mut tx:
 
 ## Standard library
 
+**A module is in `std` if most programs need it, it's security-sensitive, or it has to be consistent everywhere.** Everything else is a kit. Only reachable code gets compiled, so unused `std` costs nothing.
+
+**`std.net` holds TCP, UDP, TLS, an HTTP client and server, and WebSocket, all through the `Net` capability.** The HTTP server is the plain kind, a function that handles requests; routing frameworks stay kits. Its design takes lessons from Go's `net` and `net/http`, in Fennec's own code. QUIC comes later as a first-party kit.
+
+**`std.sql` is one standard database interface,** modeled on the ideas of Python's DB-API. Drivers are first-party kits, with Postgres and MySQL in pure Fennec.
+
+**`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
+
+**`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.**
+
+**First-party kits, not `std`:** `fennec/ml`, database drivers, windowing and input for games, and image formats.
+
 **Names live in their modules.** A standard library module provides nothing until it's imported: `from std.math import Vec3, sqrt`, or `from std import math` and then `math.Vec3` and `math.sqrt(x)`. That's every module so far: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`. Using a name without its import is reported with the import to add.
 *Why:* A file's imports show everything it uses from the standard library, as in Python.
 
@@ -287,6 +311,8 @@ with db.transaction() as mut tx:
 *Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
 
 **Network access is a capability, `Net`, like `Fs`.** Its API, for HTTP, sockets and limiting it to certain hosts, is decided when it's built.
+
+**Environment variables and running other programs are capabilities too, `Env` and `Process`,** handed to `main`. `std.process` goes through `Process`.
 
 **Command-line arguments and standard input are capabilities.** `def main(stdout: Stdout, args: Args, stdin: Stdin):`. `for arg in args:` gives the arguments, not the program's name, which is `args.program`. `stdin.lines()` reads input a line at a time. A program that doesn't name them can't read them, and both are recorded for replay.
 *Why:* A program's input decides what it does, so it comes in the same visible way as files and the clock.
@@ -628,8 +654,8 @@ These are default lints, and the Den requires them.
 
 **`fennec build` makes an executable with Cranelift.** It's the fast build, and the path the self-hosted compiler bootstraps through. `fennec build --release` uses the bundled LLVM at full optimization for small, stripped, portable executables.
 
-**The JIT aims for about 80–85% of the speed of the benchmark suite's twins, and no further.** Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
-*Why:* Development builds are for changing code and seeing it run at once. The 3% target applies to release builds.
+**The JIT aims for 80% of the speed of the benchmark suite's twins to start, then 85%, and no further.** Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
+*Why:* Development builds are for changing code and seeing it run at once. The 110% target applies to release builds.
 
 The JIT, release builds and the language server all share one build engine and cache, described under Builds.
 
@@ -818,6 +844,10 @@ The order:
 Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compiler can run on the Cranelift JIT, since the interpreter is too slow to run a compiler.
 *Why:* Every language change after the compiler is self-hosted has to be made in two compilers.
 
+## Recording decisions
+
+**Architecture decision records (ADRs) come at the language freeze.** They're generated from this document and its pull request history, and labeled as reconstructed. After the freeze, a language change means a new ADR.
+
 ## License
 
 **The compiler and tools are `MIT OR Apache-2.0`, and the runtime library and standard library add a runtime library exception,** modeled on Swift's. A program compiled with Fennec owes no attribution for the runtime and standard library code built into it. The exception is in `RUNTIME-LIBRARY-EXCEPTION`.
@@ -829,12 +859,12 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 
 - How a type marks that its finishing method must be called.
 - Decorators. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.
+- SQLite: whether and how Fennec includes it. Porting it isn't realistic.
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.
 - The syntax for units of measure.
 - The file extension (currently `.fen`).
 - Whether files of a kit may reuse a top-level name, reached through `import` by their module's name.
 - These security proposals:
-  - `Env` and `Process` as capabilities.
   - Types that make injection impossible: `sql"..."` templates, `Path`, argument lists for commands, escaping HTML templates.
   - `Secret[str]`, which can't be printed or logged.

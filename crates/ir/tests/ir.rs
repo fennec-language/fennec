@@ -1217,6 +1217,138 @@ def f(names: Names) -> str:
 }
 
 #[test]
+fn an_arrow_function_is_lifted_with_what_it_captures() {
+    let source = "def apply(value: int, change: (int) -> int) -> int:
+    change(value)
+
+def f(x: int) -> int:
+    offset = x + 1
+    apply(x, (n) => n + offset)
+";
+    let program = lowered(source).unwrap();
+    let shown: Vec<String> = program.functions.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        shown.join(""),
+        "fn apply(_0, _1) -> int
+  local _0 value: int
+  local _1 change: (int) -> int
+  local _2: int
+  bb0:
+    _2 = call closure _1(_0)
+    return _2
+fn f(_0) -> int
+  local _0 x: int
+  local _1: int
+  local _2 offset: int
+  local _3: (int) -> int
+  local _4: int
+  bb0:
+    _1 = _0 + 1
+    _2 = _1
+    _3 = closure f.arrow@125[_2]
+    _4 = call apply(_0, _3)
+    return _4
+fn f.arrow@125(_0, _1) -> int
+  local _0 offset: int
+  local _1 n: int
+  local _2: int
+  bb0:
+    _2 = _1 + _0
+    return _2
+"
+    );
+}
+
+#[test]
+fn a_nested_function_captures_and_can_call_itself() {
+    let source = "def f(start: int) -> int:
+    def down(n: int) -> int:
+        if n <= start:
+            return n
+        down(n - 1)
+    down(10)
+";
+    let program = lowered(source).unwrap();
+    let shown: Vec<String> = program.functions.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        shown.join(""),
+        "fn f(_0) -> int
+  local _0 start: int
+  local _1: (int) -> int
+  local _2 down: (int) -> int
+  local _3: int
+  bb0:
+    _1 = closure f.down[_0]
+    _2 = _1
+    _3 = call closure _2(10)
+    return _3
+fn f.down(_0, _1) -> int
+  local _0 start: int
+  local _1 n: int
+  local _2 down: (int) -> int
+  local _3: bool
+  local _4: int
+  local _5: int
+  bb0:
+    _2 = closure f.down[_0]
+    _3 = _1 <= _0
+    branch _3 bb2 bb3
+  bb1:
+    _4 = _1 - 1
+    _5 = call closure _2(_4)
+    return _5
+  bb2:
+    return _1
+  bb3:
+    jump bb1
+"
+    );
+}
+
+#[test]
+fn a_function_by_name_is_a_closure_of_nothing() {
+    let source = "def double(n: int) -> int:
+    n * 2
+
+def f() -> int:
+    g = double
+    g(2)
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f() -> int
+  local _0: (int) -> int
+  local _1 g: (int) -> int
+  local _2: int
+  bb0:
+    _0 = closure double[]
+    _1 = _0
+    _2 = call closure _1(2)
+    return _2
+"
+    );
+}
+
+#[test]
+fn a_key_goes_last_and_names_the_call() {
+    let source = "def f(xs: list[int]) -> list[int]:
+    sorted(xs, key=(n) => -n)
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> list[int]
+  local _0 xs: list[int]
+  local _1: (int) -> int
+  local _2: list[int]
+  bb0:
+    _1 = closure f.arrow@54[]
+    _2 = builtin sorted.key(_0, _1)
+    return _2
+"
+    );
+}
+
+#[test]
 fn a_tuple_of_one_type_and_the_arguments_index_by_a_value() {
     let source = "def f(pair: (int, int), at: int) -> int:
     pair[at]
@@ -1256,7 +1388,7 @@ fn every_example_lowers_to_valid_ir_or_says_why() {
     }
     // How far lowering has got. This only goes up, until every function lowers.
     println!("{} functions lowered", lowered_functions.len());
-    assert!(lowered_functions.len() >= 196, "only {} functions lowered", lowered_functions.len());
+    assert!(lowered_functions.len() >= 235, "only {} functions lowered", lowered_functions.len());
     for expected in
         ["numbers.fen: fib", "numbers.fen: collatz_steps", "numbers.fen: is_prime", "numbers.fen: lerp"]
     {

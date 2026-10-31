@@ -54,6 +54,8 @@ impl Lowering<'_> {
             return Ok(value);
         };
         match (&from, read) {
+            // A local given a function by name holds it as a closure.
+            (Type::Arrow(..), Type::Function(_)) => Ok(value),
             (Type::Optional(_), Type::None) => Ok(Operand::None),
             (Type::Optional(inner), read) if **inner == *read => {
                 let dest = self.temporary(read.clone());

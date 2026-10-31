@@ -231,7 +231,8 @@ pub enum InstKind {
     },
     /// Something the engines provide, by name: a function like `sum`, or a method like
     /// `list.append` or `Stdout.print` with its object first. `changes` says it changes the
-    /// local its first argument names.
+    /// local its first argument names. A call with `key=` is named with `.key` on the end,
+    /// like `sorted.key`, and the key comes last.
     Builtin {
         dest: Option<LocalId>,
         name: String,
@@ -285,6 +286,18 @@ pub enum InstKind {
     AsError {
         dest: LocalId,
         value: Operand,
+    },
+    /// A closure of a function, whose first parameters take the values captured here.
+    MakeClosure {
+        dest: LocalId,
+        function: String,
+        captures: Vec<Operand>,
+    },
+    /// Calls a closure. `dest` is `None` when nothing keeps the result.
+    CallClosure {
+        dest: Option<LocalId>,
+        closure: Operand,
+        args: Vec<Operand>,
     },
     /// The value of a constant in [`Program::constants`].
     Constant {

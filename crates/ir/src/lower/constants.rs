@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use fennec_check::Type;
 use fennec_syntax::{Expr, ExprKind, Item, Module, UnaryOp};
 
-use super::{Context, Lowered, Lowering, Tail, reachable};
+use super::{Context, Lowered, Lowering, Tail};
 use crate::{Function, InstKind, NotLowered, Operand, Program};
 
 /// A constant's value, as written. `prelude` says it's the standard library's.
@@ -50,9 +50,10 @@ pub(super) fn lower_all(context: &Context<'_>, program: &mut Program) {
             continue;
         }
         match Lowering::constant(&name, context) {
-            Ok(function) => {
-                waiting.extend(read_by(std::slice::from_ref(&function)));
-                program.constants.push(function);
+            Ok(mut functions) => {
+                waiting.extend(read_by(&functions));
+                program.functions.extend(functions.drain(1..));
+                program.constants.extend(functions);
             }
             Err(why) => program.not_lowered.push(NotLowered { function: name, why }),
         }
@@ -88,30 +89,26 @@ fn literal(value: &Expr) -> Option<Operand> {
 }
 
 impl<'a> Lowering<'a> {
-    /// A function giving a constant's value.
-    fn constant(name: &str, context: &'a Context<'a>) -> Lowered<Function> {
+    /// A function giving a constant's value, and those lifted out of it.
+    fn constant(name: &str, context: &'a Context<'a>) -> Lowered<Vec<Function>> {
         let written = context.constants.get(name).ok_or("there's no such constant")?;
         let body = context.checked.types.body(&format!("const {name}")).ok_or("it has no types")?;
         let returns = body.name(written.value.span, name).ok_or("it has no type")?.clone();
         if !context.holds(&returns) {
             return Err(format!("it is {returns}"));
         }
-        let mut lowering = Lowering::new(context, body, returns);
+        let mut lowering = Lowering::new(name, context, body, returns);
         lowering.tail_expr(written.value, Tail::Return)?;
-        Ok(Function {
-            name: name.to_owned(),
-            params: 0,
-            mut_params: Vec::new(),
-            returns: lowering.returns,
-            locals: lowering.locals,
-            blocks: reachable(lowering.blocks),
-        })
+        Ok(lowering.finished(0, Vec::new()))
     }
 
     /// Reads a name that isn't a local: a constant's value, when that's a literal of the type
     /// it's read as, or else the constant, or a value the engines provide, like an import of
     /// `PI`.
     pub(super) fn read_constant(&mut self, name: &str, expr: &Expr) -> Lowered<Operand> {
+        if let Some(Type::Function(key)) = self.body.expr(expr.span) {
+            return self.function_value(&key.clone(), expr);
+        }
         let Some(written) = self.context.constants.get(name) else {
             let dest = self.temporary(self.ty(expr)?);
             let kind = InstKind::Builtin {

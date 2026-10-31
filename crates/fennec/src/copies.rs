@@ -67,7 +67,7 @@ pub(crate) fn copies(path: &str) -> ExitCode {
     }
     // Only what runs matters. It checked whole, so what's left does too.
     fennec_build::keep_what_main_reaches(&mut program.module);
-    let checked = match fennec_check::check(&program.module) {
+    let checked = match fennec_check::check_and_resolve(&mut program.module) {
         Ok(checked) => checked,
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));

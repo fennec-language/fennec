@@ -175,6 +175,10 @@ impl<'c> FnCx<'c> {
         }
         cx.push(false);
         for (param, written) in params.iter().zip(&def.params) {
+            if let Some(default) = &written.default {
+                let actual = cx.expr_as(default, &param.ty);
+                cx.check_arg(param, &actual, default.span);
+            }
             cx.declare_as(&param.name, param.ty.clone(), param.is_mut, Origin::Param, written.span);
         }
         cx.tail = if cx.generator { None } else { cx.declared.clone() };

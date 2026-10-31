@@ -389,6 +389,12 @@ fn bind(
             }
         }
     }
+    // A standard library function's calls have no defaults written into them.
+    for (param, slot) in params.iter().zip(&mut slots) {
+        if let (None, Some(value)) = (slot.as_ref(), param.default.as_ref().and_then(plain_value)) {
+            *slot = Some(CallArg { name: None, value, mut_place: None, literal: true, span });
+        }
+    }
     let missing = params.iter().zip(&slots).find(|(_, slot)| slot.is_none()).map(|(param, _)| param);
     let problem = problem.or_else(|| {
         missing.map(|param| {
@@ -402,6 +408,24 @@ fn bind(
         }
         None => Ok(slots.into_iter().flatten().collect()),
     }
+}
+
+/// The value of a parameter's default.
+fn plain_value(default: &Expr) -> Option<Value> {
+    use fennec_syntax::UnaryOp;
+    Some(match &default.kind {
+        ExprKind::Int(value) => Value::Int(*value),
+        ExprKind::Float(value) => Value::Float(*value),
+        ExprKind::Str(value) => Value::str(value),
+        ExprKind::Bool(value) => Value::Bool(*value),
+        ExprKind::None => Value::None,
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => match expr.kind {
+            ExprKind::Int(value) => Value::Int(value.wrapping_neg()),
+            ExprKind::Float(value) => Value::Float(-value),
+            _ => return None,
+        },
+        _ => return None,
+    })
 }
 
 /// A failure inside the standard library is reported where the program called it.

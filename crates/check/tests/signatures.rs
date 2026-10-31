@@ -139,8 +139,8 @@ fn signatures_cover_methods_nested_functions_and_the_standard_library() {
     assert_eq!(
         take_damage.params,
         [
-            ParamType { name: "self".to_owned(), ty: named("Enemy"), is_mut: true },
-            ParamType { name: "amount".to_owned(), ty: Type::Int, is_mut: false },
+            ParamType { name: "self".to_owned(), ty: named("Enemy"), is_mut: true, default: None },
+            ParamType { name: "amount".to_owned(), ty: Type::Int, is_mut: false, default: None },
         ]
     );
     assert_eq!(take_damage.returns, Type::Unit);

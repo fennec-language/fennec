@@ -12,5 +12,8 @@ publish.workspace = true
 fennec-check.workspace = true
 fennec-syntax.workspace = true
 
+[dev-dependencies]
+fennec-kit.workspace = true
+
 [lints]
 workspace = true

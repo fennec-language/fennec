@@ -7,6 +7,7 @@ mod collections;
 mod constants;
 mod defaults;
 mod failure;
+mod generics;
 mod imports;
 mod lists;
 mod matching;
@@ -29,6 +30,11 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
     let library = fennec_syntax::prelude_modules().unwrap_or_default();
     let modules: Vec<&Module> = std::iter::once(module).chain(library).collect();
     let functions = definitions(module);
+    let every: HashMap<String, &FnDef> = library
+        .iter()
+        .flat_map(definitions)
+        .chain(functions.iter().map(|(key, def)| (key.clone(), *def)))
+        .collect();
     let reachable_later: HashMap<String, &FnDef> = library
         .iter()
         .flat_map(definitions)
@@ -53,31 +59,68 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
         imports: imports::written(module),
         library_imports: imports::of_library(library),
         library: reachable_later.keys().map(String::as_str).collect(),
+        generic_types: generic_types(&modules),
+        instances: generics::Instances::default(),
     };
     let mut program = Program::default();
     for (key, def) in &functions {
-        lower_into(&mut program, key, def, &context);
+        // Something generic is only lowered as the copies a program uses.
+        let generic = checked.signatures.get(key).is_some_and(generics::is_generic);
+        if !generic && def.generics.is_empty() {
+            lower_into(&mut program, &generics::FunctionInstance::plain(key), def, &context);
+        }
     }
     constants::lower_all(&context, &mut program);
-    // The standard library's functions come in as they're reached.
-    while let Some((key, def)) =
-        calls::external(&program).into_iter().find_map(|key| reachable_later.get(&key).map(|def| (key, *def)))
-    {
-        lower_into(&mut program, &key, def, &context);
-        constants::lower_all(&context, &mut program);
+    // Copies of generics, and the standard library's functions, come in as they're reached.
+    loop {
+        let waiting = context.instances.waiting.borrow_mut().pop();
+        let next = waiting.or_else(|| {
+            calls::external(&program)
+                .into_iter()
+                .find(|key| reachable_later.contains_key(key))
+                .map(|key| generics::FunctionInstance::plain(&key))
+        });
+        let Some(next) = next else { break };
+        if let Some(def) = every.get(&next.base) {
+            lower_into(&mut program, &next, def, &context);
+            constants::lower_all(&context, &mut program);
+        } else {
+            let why = format!("it has no definition: `{}`", next.base);
+            program.not_lowered.push(NotLowered { function: next.name, why });
+        }
     }
     program.external = calls::external(&program);
+    let (mut defs, mut enums) = (defs.clone(), enums.iter().map(|def| (*def).clone()).collect::<Vec<_>>());
+    structs::add_copies(&context, &mut defs, &mut enums);
     program.structs = defs;
     program.enums = enums;
     program.errors = errors;
     program
 }
 
-fn lower_into(program: &mut Program, key: &str, def: &FnDef, context: &Context<'_>) {
-    match Lowering::function(key, def, context, (&[], None)) {
+fn lower_into(
+    program: &mut Program,
+    instance: &generics::FunctionInstance,
+    def: &FnDef,
+    context: &Context<'_>,
+) {
+    match Lowering::function(instance, def, context, (&[], None)) {
         Ok(functions) => program.functions.extend(functions),
-        Err(why) => program.not_lowered.push(NotLowered { function: key.to_owned(), why }),
+        Err(why) => program.not_lowered.push(NotLowered { function: instance.name.clone(), why }),
     }
+}
+
+/// The generic structs and enums of a module and the standard library.
+fn generic_types<'a>(modules: &[&'a Module]) -> HashMap<&'a str, &'a fennec_syntax::TypeDef> {
+    let mut found = HashMap::new();
+    for item in modules.iter().rev().flat_map(|module| &module.items) {
+        if let Item::Struct(def) | Item::Enum(def) = item
+            && !def.generics.is_empty()
+        {
+            found.insert(def.name.as_str(), def);
+        }
+    }
+    found
 }
 
 /// Every function and method in a module, by its key in the typed tree.
@@ -157,6 +200,10 @@ struct Context<'a> {
     library_imports: imports::Imports,
     /// The keys of the standard library's functions and methods.
     library: HashSet<&'a str>,
+    /// The generic structs and enums, the standard library's included.
+    generic_types: HashMap<&'a str, &'a fennec_syntax::TypeDef>,
+    /// The copies of generics a program uses.
+    instances: generics::Instances,
 }
 
 impl Context<'_> {
@@ -188,6 +235,7 @@ impl Context<'_> {
             Type::Errors(names) => names.iter().all(|name| self.errors.contains(name.as_str())),
             Type::Named(name) => {
                 self.structs.contains(name.as_str())
+                    || self.instances.types.borrow().contains_key(name.as_str())
                     || self.enums.contains_key(name.as_str())
                     || self.errors.contains(name.as_str())
                     || CAPABILITIES.contains(&name.as_str())
@@ -198,8 +246,12 @@ impl Context<'_> {
 }
 
 struct Lowering<'a> {
-    /// The function's key.
+    /// The function's name in the IR.
     name: String,
+    /// The function's key in the typed tree.
+    base: String,
+    /// What its type parameters stand for.
+    subst: generics::Subst,
     context: &'a Context<'a>,
     body: &'a Body,
     returns: Type,
@@ -218,9 +270,16 @@ struct Lowering<'a> {
 }
 
 impl<'a> Lowering<'a> {
-    fn new(name: &str, context: &'a Context<'a>, body: &'a Body, returns: Type) -> Self {
+    fn new(
+        instance: &generics::FunctionInstance,
+        context: &'a Context<'a>,
+        body: &'a Body,
+        returns: Type,
+    ) -> Self {
         Lowering {
-            name: name.to_owned(),
+            name: instance.name.clone(),
+            base: instance.base.clone(),
+            subst: instance.subst.clone(),
             context,
             body,
             returns,
@@ -238,20 +297,19 @@ impl<'a> Lowering<'a> {
     /// A function, and those lifted out of it. A nested function's first parameters are what
     /// it captures, and it's given its own type if it names itself.
     fn function(
-        key: &str,
+        instance: &generics::FunctionInstance,
         def: &FnDef,
         context: &'a Context<'a>,
         (captures, itself): (&[(String, Type)], Option<&Type>),
     ) -> Lowered<Vec<Function>> {
-        let signature = context.checked.signatures.get(key).ok_or("it has no signature")?;
-        let body = context.checked.types.body(key).ok_or("it has no types")?;
-        if !def.generics.is_empty() {
-            return Err("it's generic".to_owned());
-        }
+        let key = instance.name.as_str();
+        let raw = context.checked.signatures.get(&instance.base).ok_or("it has no signature")?;
+        let signature = context.instantiate(raw, &instance.subst);
+        let body = context.checked.types.body(&instance.base).ok_or("it has no types")?;
         if signature.returns != Type::Unit && !context.holds(&signature.returns) {
             return Err(format!("it gives back {}", signature.returns));
         }
-        let mut lowering = Lowering::new(key, context, body, signature.returns.clone());
+        let mut lowering = Lowering::new(instance, context, body, signature.returns.clone());
         for (name, ty) in captures {
             lowering.declare(name, ty.clone());
         }
@@ -330,8 +388,8 @@ impl<'a> Lowering<'a> {
 
     /// The type the typed tree has for an expression, when the IR can hold it.
     fn ty(&self, expr: &Expr) -> Lowered<Type> {
-        let ty = self.body.expr(expr.span).ok_or("an expression has no type")?;
-        self.held(ty).ok_or_else(|| format!("it uses a value of type {ty}"))
+        let ty = self.type_at(expr.span).ok_or("an expression has no type")?;
+        self.held(&ty).ok_or_else(|| format!("it uses a value of type {ty}"))
     }
 
     /// A type as the IR holds it, when it does: a function as a value is a closure.
@@ -444,7 +502,8 @@ impl<'a> Lowering<'a> {
             return Ok(dest);
         }
         let ty = self.body.name(target.span, name).ok_or_else(|| format!("`{name}` has no type"))?;
-        let held = self.held(ty).ok_or_else(|| format!("`{name}` is {ty}"))?;
+        let ty = self.concrete(ty);
+        let held = self.held(&ty).ok_or_else(|| format!("`{name}` is {ty}"))?;
         Ok(self.declare(name, held))
     }
 
@@ -497,7 +556,7 @@ impl<'a> Lowering<'a> {
     /// An expression whose value nothing keeps.
     fn effect(&mut self, expr: &Expr) -> Lowered<()> {
         if let ExprKind::Call { callee, args } = &expr.kind
-            && self.constructs(callee).is_none()
+            && self.constructs(callee, expr.span).is_none()
             && self.built_case(expr).is_none()
         {
             return self.call(callee, args, None, expr.span).map(|_| ());
@@ -552,8 +611,8 @@ impl<'a> Lowering<'a> {
                 Ok(Operand::Local(dest))
             }
             ExprKind::Call { callee, args } => {
-                if let Some(type_name) = self.constructs(callee) {
-                    return self.make(type_name, args, span);
+                if let Some(type_name) = self.constructs(callee, span) {
+                    return self.make(&type_name, args, span);
                 }
                 if matches!(&callee.kind, ExprKind::Name(name) if name == "replace" && self.lookup(name).is_none())
                     && !self.context.functions.contains("replace")

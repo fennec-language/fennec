@@ -97,7 +97,8 @@ impl<'a> Lowering<'a> {
         if !context.holds(&returns) {
             return Err(format!("it is {returns}"));
         }
-        let mut lowering = Lowering::new(name, context, body, returns);
+        let instance = super::generics::FunctionInstance::plain(name);
+        let mut lowering = Lowering::new(&instance, context, body, returns);
         lowering.tail_expr(written.value, Tail::Return)?;
         Ok(lowering.finished(0, Vec::new()))
     }
@@ -106,8 +107,8 @@ impl<'a> Lowering<'a> {
     /// it's read as, or else the constant, or a value the engines provide, like an import of
     /// `PI`.
     pub(super) fn read_constant(&mut self, name: &str, expr: &Expr) -> Lowered<Operand> {
-        if let Some(Type::Function(key)) = self.body.expr(expr.span) {
-            return self.function_value(&key.clone(), expr);
+        if let Some(Type::Function(key)) = self.type_at(expr.span) {
+            return self.function_value(&key, expr);
         }
         let Some(written) = self.context.constants.get(name) else {
             return self.std_value(self.std_member(expr).unwrap_or_else(|| name.to_owned()), expr);

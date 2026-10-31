@@ -66,16 +66,21 @@ impl Lowering<'_> {
         ty: &Type,
     ) -> Lowered<Operand> {
         let context = self.context;
+        let instance = context.type_instance(owner);
+        let base = instance.as_ref().map_or(owner, |copy| copy.base.as_str());
         let shown = case.map_or_else(|| owner.to_owned(), |case| format!("{owner}.{case}"));
-        let default = context.defaults.get(&(owner, case, field)).copied();
+        let default = context.defaults.get(&(base, case, field)).copied();
         let default = default.ok_or_else(|| format!("`{shown}` has no default for `{field}`"))?;
-        let body = context.checked.types.body(&format!("fields of {owner}"));
+        let body = context.checked.types.body(&format!("fields of {base}"));
         let body = body.ok_or_else(|| format!("the fields of `{owner}` have no types"))?;
+        let copy_of = instance.as_ref().map(|copy| copy.subst.clone()).unwrap_or_default();
+        let outer_subst = std::mem::replace(&mut self.subst, copy_of);
         let outer_body = std::mem::replace(&mut self.body, body);
         let outer_scopes = std::mem::replace(&mut self.scopes, vec![HashMap::new()]);
         let value = self.expr(default);
         self.body = outer_body;
         self.scopes = outer_scopes;
+        self.subst = outer_subst;
         self.coerce(value?, ty, default.span)
     }
 }

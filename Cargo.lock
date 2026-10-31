@@ -349,6 +349,7 @@ dependencies = [
  "fennec-check",
  "fennec-interp",
  "fennec-ir",
+ "fennec-layout",
  "fennec-runtime",
  "fennec-syntax",
 ]
@@ -362,13 +363,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fennec-layout"
+version = "0.0.1"
+dependencies = [
+ "fennec-check",
+ "fennec-interp",
+ "fennec-syntax",
+]
+
+[[package]]
 name = "fennec-llvm"
 version = "0.0.1"
 dependencies = [
  "fennec-blake3",
  "fennec-build",
  "fennec-check",
+ "fennec-interp",
  "fennec-ir",
+ "fennec-layout",
  "fennec-syntax",
 ]
 

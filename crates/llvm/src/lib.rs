@@ -3,33 +3,68 @@
 //! Editing a function recompiles it and what copied it to inline, and nothing else.
 //!
 //! So that a change elsewhere leaves a function's text alone, nothing that depends on the rest
-//! of the program is written in it. Where a function starts in its file and which number a string
-//! has are read from symbols, all defined in one small module made fresh each build.
+//! of the program is written in it. Where a function starts in its file and the numbers strings
+//! and kinds of list item have are read from symbols, all defined in one small module made fresh
+//! each build.
 //!
-//! So far this takes functions that only hold ints, floats and bools, and says which it can't
-//! take rather than running them some other way.
+//! So far this takes ints, floats, bools, plain structs, tuples, lists of those, and f-strings,
+//! laid out as `fennec_layout` says, on the same runtime as the JIT. It says which function it
+//! can't take rather than running it some other way.
 //!
 //! A function that can fail hands that back in a register kept for it, so that succeeding costs
 //! no write: LLVM's `swifterror`. One that can't fail, knowing nothing it does can, doesn't.
+//!
+//! Owners are counted as the runtime's blocks ask. A local holding a list or string owns it,
+//! except a parameter nothing writes, which the caller lends. A copy from a local nothing else
+//! reads takes over its owner, and a list with other owners is copied before it changes. A
+//! failure ends the program, so the way out on failing releases nothing.
 
 mod analysis;
 mod build;
 mod emit;
 mod entry;
+mod kinds;
+mod lists;
+mod text;
 
 use std::collections::BTreeMap;
 
+use fennec_ir::{EnumDef, Program};
+use fennec_layout::{Layouts, ListItem, Written};
+
 pub use build::{Built, Tools, compile};
 pub use emit::{Unit, emit};
-pub use entry::entry;
+pub use entry::{Image, entry};
 
-/// What the rest of the program's text depends on, for the module made fresh each build.
+/// What functions' text leaves to the module made fresh each build.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Shared {
     /// Each function's symbol for where it starts in its file, and that place.
     pub starts: BTreeMap<String, u32>,
     /// Each string's symbol for its number, and its text.
     pub strings: BTreeMap<String, String>,
+    /// Each literal's symbol for its block's address, and its text.
+    pub literals: BTreeMap<String, String>,
+    /// Each kind of list item's symbol for its number, and the kind.
+    pub elements: BTreeMap<String, ListItem>,
+}
+
+/// The layouts of everything a program defines, generic types' copies included.
+pub fn layouts_of(program: &Program) -> Layouts {
+    let fields = |fields: &[(String, fennec_check::Type)]| {
+        fields.iter().map(|(name, ty)| (name.clone(), ty.clone(), None)).collect::<Vec<_>>()
+    };
+    let enums = |def: &EnumDef| {
+        let cases = def.cases.iter().map(|case| (case.name.clone(), fields(&case.fields))).collect();
+        (def.name.clone(), Written::Enum(cases))
+    };
+    let definitions: Vec<(String, Written)> = program
+        .structs
+        .iter()
+        .map(|def| (def.name.clone(), Written::Struct(fields(&def.fields))))
+        .chain(program.enums.iter().map(enums))
+        .collect();
+    Layouts::from_definitions(&definitions)
 }
 
 /// The module text for this machine starts with this, or says what's missing.

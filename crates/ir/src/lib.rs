@@ -27,6 +27,7 @@
 //! Tests aren't lowered yet.
 
 mod costs;
+pub mod facts;
 mod lower;
 mod print;
 mod validate;
@@ -371,6 +372,46 @@ pub enum Terminator {
     },
     /// The checker has shown control never gets here.
     Unreachable,
+}
+
+impl InstKind {
+    /// The local this instruction gives a new value to, if it does.
+    pub fn dest(&self) -> Option<LocalId> {
+        match self {
+            InstKind::Copy { dest, .. }
+            | InstKind::Unary { dest, .. }
+            | InstKind::Binary { dest, .. }
+            | InstKind::Make { dest, .. }
+            | InstKind::GetField { dest, .. }
+            | InstKind::MakeCase { dest, .. }
+            | InstKind::IsCase { dest, .. }
+            | InstKind::GetCaseField { dest, .. }
+            | InstKind::MakeList { dest, .. }
+            | InstKind::MakeSet { dest, .. }
+            | InstKind::MakeDict { dest, .. }
+            | InstKind::MakeTuple { dest, .. }
+            | InstKind::GetTupleItem { dest, .. }
+            | InstKind::GetIndex { dest, .. }
+            | InstKind::Slice { dest, .. }
+            | InstKind::Format { dest, .. }
+            | InstKind::MakeSome { dest, .. }
+            | InstKind::IsNone { dest, .. }
+            | InstKind::GetSome { dest, .. }
+            | InstKind::MakeOk { dest, .. }
+            | InstKind::MakeErr { dest, .. }
+            | InstKind::IsErr { dest, .. }
+            | InstKind::GetOk { dest, .. }
+            | InstKind::GetErr { dest, .. }
+            | InstKind::IsError { dest, .. }
+            | InstKind::AsError { dest, .. }
+            | InstKind::MakeClosure { dest, .. }
+            | InstKind::Constant { dest, .. } => Some(*dest),
+            InstKind::Builtin { dest, .. }
+            | InstKind::Call { dest, .. }
+            | InstKind::CallClosure { dest, .. } => *dest,
+            InstKind::SetField { .. } | InstKind::SetIndex { .. } => None,
+        }
+    }
 }
 
 impl Function {

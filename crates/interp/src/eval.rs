@@ -5,6 +5,7 @@ use std::rc::Rc;
 use fennec_syntax::{BinOp, CompKind, Diagnostic, Expr, ExprKind, FStrPart, MatchArm, Span};
 
 use crate::exec::Flow;
+use crate::generators::Position;
 use crate::interp::{Interp, PASSING_UP};
 use crate::value::{Lambda, Value};
 use crate::{builtins, format, ops};
@@ -182,17 +183,25 @@ impl Interp<'_> {
         Ok(Value::str(&text))
     }
 
-    fn comprehension(
+    pub(crate) fn comprehension(
         &mut self,
         kind: CompKind,
         parts: &Parts<'_>,
         names: &[String],
         iter: &Expr,
     ) -> Result<Value, Diagnostic> {
+        if kind == CompKind::Generator {
+            let shown = match parts.value.map(|shown| &shown.kind) {
+                Some(ExprKind::Str(shown)) => shown.as_str(),
+                _ => "Iterator",
+            };
+            return self.generator_expression((parts.elem, parts.cond, shown), names, iter);
+        }
         let source = self.eval(iter)?;
         let mut items = Vec::new();
         let mut pairs = crate::pairs::Pairs::default();
-        for item in self.iterate(source, iter.span)? {
+        let mut source = self.items_of(source, iter.span)?;
+        while let Some((_, item)) = self.next_item(&mut source, iter.span)? {
             self.frame.push();
             let result = self.comprehension_step(names, item, iter.span, parts);
             self.frame.pop();
@@ -207,6 +216,33 @@ impl Interp<'_> {
             CompKind::Set => Value::Set(Rc::new(dedupe(items))),
             CompKind::Dict => Value::Dict(Rc::new(pairs)),
         })
+    }
+
+    /// `any(...)` or `all(...)` of a generator written right inside: stops at the first item
+    /// that decides it, and can change the names around it.
+    pub(crate) fn any_or_all_in_place(
+        &mut self,
+        name: &str,
+        generator: &Expr,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        let ExprKind::Comprehension { elem, names, iter, cond, .. } = &generator.kind else {
+            return Err(Diagnostic::new("`any` and `all` need a generator here", span));
+        };
+        let parts = Parts { elem, value: None, cond: cond.as_deref() };
+        let source = self.eval(iter)?;
+        let mut source = self.items_of(source, iter.span)?;
+        while let Some((_, item)) = self.next_item(&mut source, iter.span)? {
+            self.frame.push();
+            let step = self.comprehension_step(names, item, iter.span, &parts);
+            self.frame.pop();
+            if let Some((item, _)) = step?
+                && let Some(decided) = deciding(name, &item, span)?
+            {
+                return Ok(decided);
+            }
+        }
+        Ok(Value::Bool(name == "all"))
     }
 
     /// One item of a comprehension: the element (and value, for a dict), or nothing if filtered out.
@@ -250,8 +286,15 @@ impl Interp<'_> {
     }
 
     fn match_value(&mut self, subject: &Expr, arms: &[MatchArm]) -> Result<Value, Diagnostic> {
+        // Back into the case a `yield` left, whose names are still in the frame.
+        if self.is_resuming()
+            && let Some(Position::Arm(at)) = self.resume_at()
+            && let Some(arm) = arms.get(at)
+        {
+            return self.finish_arm(at, arm);
+        }
         let value = self.eval(subject)?;
-        for arm in arms {
+        for (at, arm) in arms.iter().enumerate() {
             let Some(bindings) = self.matches(&arm.pattern, &value, arm.span)? else { continue };
             self.frame.push();
             for (name, bound) in bindings {
@@ -266,18 +309,27 @@ impl Interp<'_> {
                     continue;
                 }
             }
-            let flow = self.exec_stmts(&arm.body);
-            self.frame.pop();
-            return match flow? {
-                Flow::Normal(value) => Ok(value),
-                other => {
-                    self.passing_up = Some(other);
-                    Err(Diagnostic::new(PASSING_UP, arm.span))
-                }
-            };
+            return self.finish_arm(at, arm);
         }
         Err(Diagnostic::new(format!("no case matches {}", format::repr(&value)), subject.span)
             .with_help("add a case for it, or `case _:` for everything else"))
+    }
+
+    /// Runs a case's body, in the scope of the names it bound.
+    fn finish_arm(&mut self, at: usize, arm: &MatchArm) -> Result<Value, Diagnostic> {
+        let flow = self.exec_stmts(&arm.body);
+        if matches!(flow, Ok(Flow::Yield(_))) {
+            self.suspending.push(Position::Arm(at));
+        } else {
+            self.frame.pop();
+        }
+        match flow? {
+            Flow::Normal(value) => Ok(value),
+            other => {
+                self.passing_up = Some(other);
+                Err(Diagnostic::new(PASSING_UP, arm.span))
+            }
+        }
     }
 
     /// An operator, using the type's own definition (like `def +`) when it has one.
@@ -317,10 +369,10 @@ impl Interp<'_> {
 }
 
 /// The parts of a comprehension evaluated for each item.
-struct Parts<'a> {
-    elem: &'a Expr,
-    value: Option<&'a Expr>,
-    cond: Option<&'a Expr>,
+pub(crate) struct Parts<'a> {
+    pub(crate) elem: &'a Expr,
+    pub(crate) value: Option<&'a Expr>,
+    pub(crate) cond: Option<&'a Expr>,
 }
 
 pub(crate) fn unhandled_result(span: Span) -> Diagnostic {
@@ -365,5 +417,14 @@ pub(crate) fn unknown_name(name: &str, span: Span) -> Diagnostic {
                 modules.join(" or std.")
             )),
         },
+    }
+}
+
+/// What `any` or `all` gives back if this item decides it.
+pub(crate) fn deciding(name: &str, item: &Value, span: Span) -> Result<Option<Value>, Diagnostic> {
+    match item {
+        Value::Bool(b) => Ok((*b == (name == "any")).then_some(Value::Bool(*b))),
+        other => Err(Diagnostic::new(format!("`{name}` needs bools, but got a {}", other.type_name()), span)
+            .with_help("Fennec has no truthiness: compare explicitly, like `any(x > 0 for x in xs)`")),
     }
 }

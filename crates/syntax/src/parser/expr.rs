@@ -327,7 +327,14 @@ impl Parser {
         let mut items = Vec::new();
         let mut trailing_comma = false;
         while !self.at_p(Punct::RParen) {
-            items.push(self.expr()?);
+            let item = self.expr()?;
+            // `(x for x in xs)`: a generator, to keep and use later.
+            if items.is_empty() && self.at_kw(Kw::For) {
+                let made = self.comprehension(CompKind::Generator, item, None)?;
+                let span = start.to(self.expect_p(Punct::RParen)?);
+                return Ok(Expr { span, ..made });
+            }
+            items.push(item);
             trailing_comma = self.eat_p(Punct::Comma);
             if !trailing_comma {
                 break;

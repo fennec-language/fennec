@@ -49,6 +49,15 @@ pub fn add_float_start(call: &mut Expr) {
     }
 }
 
+/// Gives a generator expression the type printing it shows, in the slot only dict
+/// comprehensions otherwise use.
+pub fn name_generator_type(comprehension: &mut Expr, shown: &str) {
+    let span = comprehension.span;
+    if let ExprKind::Comprehension { value, .. } = &mut comprehension.kind {
+        *value = Some(Box::new(Expr { kind: ExprKind::Str(shown.to_owned()), span }));
+    }
+}
+
 fn type_def(def: &mut TypeDef, change: &mut dyn FnMut(&mut Expr)) {
     let fields = def.fields.iter_mut().chain(def.cases.iter_mut().flat_map(|case| case.fields.iter_mut()));
     for field in fields {

@@ -531,10 +531,17 @@ pub(super) fn stmt_names(stmt: &Stmt, names: &mut Vec<String>) {
 
 /// Whether an expression the interpreter runs can leave the function: it has a `?`, or a
 /// `match` arm that returns or fails. Arrow functions are functions of their own.
+const PULLS_ITEMS: [&str; 11] =
+    ["list", "set", "dict", "sum", "any", "all", "min", "max", "sorted", "zip", "enumerate"];
+
 fn expr_leaves(expr: &Expr) -> bool {
     let mut leaves = false;
     visit(expr, &mut |expr| match &expr.kind {
-        ExprKind::Try { .. } => leaves = true,
+        ExprKind::Try { .. } | ExprKind::Comprehension { .. } => leaves = true,
+        // Each can be taking items from a generator, whose failure passes up.
+        ExprKind::Call { callee, .. } => {
+            leaves |= matches!(&callee.kind, ExprKind::Name(name) if PULLS_ITEMS.contains(&name.as_str()));
+        }
         ExprKind::Match { arms, .. } => leaves |= arms.iter().any(|arm| arm.body.iter().any(stmt_leaves)),
         _ => {}
     });

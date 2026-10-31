@@ -25,7 +25,7 @@ fn return_types_come_from_the_last_expression_and_returns() {
         ("def f(n: int):\n    if n > 0:\n        'a'\n", Type::Unit),
         ("def f(n: int):\n    while True:\n        return n\n", Type::Int),
         ("def f(n: int):\n    while True:\n        if n > 0:\n            break\n    'done'\n", Type::Str),
-        ("def f(n: int):\n    for i in [n]:\n        yield i\n", list(Type::Int)),
+        ("def f(n: int):\n    for i in [n]:\n        yield i\n", Type::Iterator(Box::new(Type::Int))),
         ("def f(n: float) -> float:\n    n * 1.0\n", Type::Float),
         ("def f(n: int):\n    [n] + [n]\n", list(Type::Int)),
         ("def f(n: int):\n    'x' if n > 0 else None\n", optional(Type::Str)),

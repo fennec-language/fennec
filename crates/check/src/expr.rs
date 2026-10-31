@@ -129,7 +129,12 @@ impl FnCx<'_> {
                 let parts = (elem.as_ref(), value.as_deref(), cond.as_deref());
                 let (elem, value) = self.comprehension(parts, names, iter, span);
                 match kind {
-                    CompKind::List | CompKind::Generator => Type::list(elem),
+                    CompKind::List => Type::list(elem),
+                    CompKind::Generator => {
+                        let made = Type::Iterator(Box::new(elem));
+                        self.checker.generator_types.insert((span.start, span.end), made.to_string());
+                        made
+                    }
                     CompKind::Set => Type::Set(Box::new(elem)),
                     CompKind::Dict => Type::Dict(Box::new(elem), Box::new(value)),
                 }
@@ -567,7 +572,11 @@ impl FnCx<'_> {
     /// The type of each item when looping over a value.
     pub(crate) fn item_type(&mut self, ty: &Type, span: Span) -> Type {
         match self.checker.settled(ty) {
-            Type::List(item) | Type::Set(item) | Type::IdMap(item) | Type::Dict(item, _) => *item,
+            Type::List(item)
+            | Type::Set(item)
+            | Type::Iterator(item)
+            | Type::IdMap(item)
+            | Type::Dict(item, _) => *item,
             Type::Tuple(items) => {
                 if let Some(joined) = self.checker.join_all(&items) {
                     return joined;
@@ -604,7 +613,7 @@ impl FnCx<'_> {
         let name = ty.type_name().unwrap_or_default();
         if let Some((key, _)) = self.checker.program.method(name, "iter") {
             return match self.method_signature(ty, &key).map(|signature| signature.returns) {
-                Some(Type::List(item)) => *item,
+                Some(Type::List(item) | Type::Iterator(item)) => *item,
                 Some(Type::Unknown) | None => Type::Unknown,
                 Some(other) => {
                     let message =

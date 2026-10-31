@@ -205,7 +205,7 @@ impl<'c> FnCx<'c> {
             declared.clone()
         } else if cx.generator {
             let yields = cx.yields.clone();
-            Type::list(cx.joined(&yields, def.span, "yields"))
+            Type::Iterator(Box::new(cx.joined(&yields, def.span, "yields")))
         } else if values.is_empty() {
             // A body that never finishes, like `while True:` with no `break`, gives nothing.
             Type::Unit

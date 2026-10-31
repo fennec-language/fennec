@@ -251,7 +251,8 @@ impl FnCx<'_> {
         let path = *ty == Type::named("Fs");
         for ((actual, at), expected) in plain.iter().zip(&method.params) {
             let as_path = path && *expected == Type::Str && *actual == Type::named("Path");
-            if as_path || self.checker.fits(expected, actual) {
+            let generated = name == "join" && *actual == Type::Iterator(Box::new(Type::Str));
+            if as_path || generated || self.checker.fits(expected, actual) {
                 continue;
             }
             if path && *expected == Type::Str {
@@ -455,11 +456,23 @@ impl FnCx<'_> {
             "reversed" if first == Type::Str => Type::Str,
             "sorted" | "list" | "parallel" | "reversed" => Type::list(items(self)),
             "set" => Type::Set(Box::new(items(self))),
-            "enumerate" => Type::list(Type::Tuple(vec![Type::Int, items(self)])),
+            "enumerate" => {
+                let pairs = Type::Tuple(vec![Type::Int, items(self)]);
+                if plain.iter().any(|(ty, _)| matches!(ty, Type::Iterator(_))) {
+                    Type::Iterator(Box::new(pairs))
+                } else {
+                    Type::list(pairs)
+                }
+            }
             "zip" => {
                 let first = items(self);
                 let second = plain.get(1).map_or(Type::Unknown, |(ty, at)| self.item_type(ty, *at));
-                Type::list(Type::Tuple(vec![first, second]))
+                let pairs = Type::Tuple(vec![first, second]);
+                if plain.iter().any(|(ty, _)| matches!(ty, Type::Iterator(_))) {
+                    Type::Iterator(Box::new(pairs))
+                } else {
+                    Type::list(pairs)
+                }
             }
             _ => Type::Unknown,
         }
@@ -531,7 +544,11 @@ impl FnCx<'_> {
 /// The item type of a value looped over, without reporting anything.
 fn peek_item(ty: &Type) -> Type {
     match ty {
-        Type::List(item) | Type::Set(item) | Type::IdMap(item) | Type::Dict(item, _) => item.as_ref().clone(),
+        Type::List(item)
+        | Type::Set(item)
+        | Type::Iterator(item)
+        | Type::IdMap(item)
+        | Type::Dict(item, _) => item.as_ref().clone(),
         Type::Tuple(items) if items.windows(2).all(|pair| pair.first() == pair.last()) => {
             items.first().cloned().unwrap_or(Type::Unknown)
         }

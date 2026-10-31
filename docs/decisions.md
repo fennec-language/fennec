@@ -432,6 +432,28 @@ if entry is not None:
 ```
 *Why:* The walrus needs parentheses to mean what it looks like, which is a trap, and generators and narrowing already cover what it's for.
 
+**A generator is a lazy stream, used once.** A function with `yield` and `(x for x in xs)` both make an `Iterator[T]`, which gives one item each time it's asked and can go on forever. Nothing runs until the first item is asked for. Its opening lines included.
+```fennec
+def naturals() -> Iterator[int]:
+    mut n = 0
+    while True:
+        yield n
+        n += 1
+
+lines = (line.strip() for line in source)
+rows = (parse(line) for line in lines if line != "")
+total = sum(row.amount for row in rows)
+```
+- It's a handle: `b = a` is two names for one generator. A second use fails with `this generator has already been used`, never quietly giving nothing.
+- It isn't a list: `gen()[0]` and `gen().len()` are compile errors. `list(gen())` keeps the items.
+- What it sees is fixed when it's made, as with a nested `def`. `(x * k for x in xs)` works out `xs` at once and copies `k`.
+- Written right inside `sum`, `min`, `max`, `sorted`, `list`, `set`, `dict`, `any` or `all`, it runs in place, so it can change the names around it.
+- `yield` is allowed inside `with`. A generator left partway closes what it holds when its owner goes away.
+- A failure comes out when the item that fails is asked for, and acts like a failure from a call: the loop exits, `with` blocks close, and it passes up. A generator that wants to go on past bad items yields errors as values. Getting one that can fail takes `?`, as in `for x in checked()?:`.
+- Printing one shows `<Iterator[int]>` and doesn't use it.
+
+*Why:* Streaming lets a chain of stages read like the steps it is, handles input too big to hold, and can compile to a single loop with nothing allocated per item. Being used once is what keeps that honest: a second loop quietly finding nothing is Python's trap.
+
 **Raw strings are `r"..."`.** Backslashes stay as written, so a pattern reads `r"\d+"`. A raw string can't contain `"`.
 *Why:* Regular expressions are unreadable with every backslash doubled. Python has the same strings, so people and AI already write them.
 

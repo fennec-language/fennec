@@ -56,6 +56,7 @@ pub(crate) enum Helper {
     PrintValue,
     PrintSpec,
     Items,
+    Next,
     Count,
     Item,
     Binary,
@@ -121,7 +122,7 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 113] = [
+pub(crate) const ALL: [Helper; 114] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -172,6 +173,7 @@ pub(crate) const ALL: [Helper; 113] = [
     Helper::PrintValue,
     Helper::PrintSpec,
     Helper::Items,
+    Helper::Next,
     Helper::Count,
     Helper::Item,
     Helper::Binary,
@@ -432,7 +434,8 @@ impl Helper {
     pub(crate) fn can_fail(self) -> bool {
         matches!(
             self,
-            Helper::ToInt
+            Helper::Next
+                | Helper::ToInt
                 | Helper::Binary
                 | Helper::Unary
                 | Helper::Field
@@ -561,6 +564,7 @@ impl Helper {
     /// The machine signature of a helper for enums, boxed values or strings.
     fn data_shape(self) -> Option<Shape> {
         Some(match self {
+            Helper::Next => shape("fennec_next", &[I64, I64, I64, I64, I64], &[I64]),
             Helper::MakeVariant => shape("fennec_make_variant", &[I64, I64, I64, I64, I64], &[I64]),
             Helper::CaseOf => shape("fennec_case_of", &[I64, I64, I64, I64], &[I64]),
             Helper::ListClear => shape("fennec_list_clear", &[I64], &[]),
@@ -607,6 +611,7 @@ impl Helper {
     /// Where a helper for enums, boxed values or strings is.
     fn data_address(self) -> Option<*const u8> {
         Some(match self {
+            Helper::Next => io::next as *const u8,
             Helper::MakeVariant => objects::make_variant as *const u8,
             Helper::CaseOf => objects::case_of as *const u8,
             Helper::ListClear => lists::clear as *const u8,

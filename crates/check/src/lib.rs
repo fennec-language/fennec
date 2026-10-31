@@ -92,7 +92,7 @@ pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> 
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
-    if !checked.cases.is_empty() || !checked.float_sums.is_empty() {
+    if !checked.cases.is_empty() || !checked.float_sums.is_empty() || !checked.generator_types.is_empty() {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
             let span = (expr.span.start, expr.span.end);
             if let Some(owner) = checked.cases.get(&span) {
@@ -100,6 +100,9 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             }
             if checked.float_sums.contains(&span) {
                 fennec_syntax::visit::add_float_start(expr);
+            }
+            if let Some(shown) = checked.generator_types.get(&span) {
+                fennec_syntax::visit::name_generator_type(expr, shown);
             }
         });
     }
@@ -122,6 +125,8 @@ pub struct Checked {
     cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     float_sums: BTreeSet<(u32, u32)>,
+    /// The type of each generator expression, which printing one shows.
+    generator_types: BTreeMap<(u32, u32), String>,
 }
 
 /// The typed tree: the type of every expression and every declared name in a program,

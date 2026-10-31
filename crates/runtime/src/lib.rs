@@ -77,6 +77,7 @@ export! {
     fennec_print_value(a0: i64) => io::print_value(a0);
     fennec_print_spec(a0: i64, a1: i64, a2: i64, a3: i64) => io::print_spec(a0, a1, a2, a3);
     fennec_items(a0: i64, a1: i64, a2: i64) -> i64 => io::items(a0, a1, a2);
+    fennec_next(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => io::next(a0, a1, a2, a3, a4);
     fennec_count(a0: i64) -> i64 => io::count(a0);
     fennec_item(a0: i64, a1: i64) -> i64 => io::item(a0, a1);
     fennec_binary(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => objects::binary(a0, a1, a2, a3, a4);

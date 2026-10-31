@@ -1,0 +1,5 @@
+error: an Iterator has no method `len`
+ --> examples/errors/generator_len.fen:8:18
+  |
+8 |     stdout.print(countdown(3).len())
+  |                  ^^^^^^^^^^^^^^^^^^

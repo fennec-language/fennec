@@ -90,7 +90,15 @@ impl Interp<'_> {
             Value::Str(text) if method == "encode" && args.is_empty() => {
                 Ok(Value::Bytes(Rc::from(Rc::clone(text))))
             }
-            Value::Str(text) => str_method(text, method, &args, span),
+            Value::Str(text) => {
+                if method == "join"
+                    && let [items @ Value::Generator(_)] = args.as_slice()
+                {
+                    let items = self.iterate(items.clone(), span)?;
+                    return str_method(text, method, &[Value::list(items)], span);
+                }
+                str_method(text, method, &args, span)
+            }
             Value::Bytes(data) if method == "decode" && args.is_empty() => match std::str::from_utf8(data) {
                 Ok(text) => Ok(Value::Ok(Rc::new(Value::str(text)))),
                 Err(error) => {

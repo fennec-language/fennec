@@ -59,6 +59,111 @@ pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
     }
 }
 
+/// `fennec build --llvm`: the same through LLVM, which says what it can't take yet rather than
+/// falling back to anything.
+pub(crate) fn build_llvm(path: &str, output: Option<&str>) -> ExitCode {
+    if cfg!(windows) {
+        eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run`");
+        return ExitCode::FAILURE;
+    }
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
+    if !crate::run::check(&mut program) {
+        return ExitCode::FAILURE;
+    }
+    let output = output.map_or_else(|| default_output(path, &program), PathBuf::from);
+    let started = Instant::now();
+    match llvm_objects(&program) {
+        Ok((objects, total, fresh)) => {
+            let compiled = started.elapsed();
+            match link_objects(&objects, &output) {
+                Ok(linked) => {
+                    println!(
+                        "🦊 built {} with LLVM: compiled {fresh} of {total} functions in {} ms, linked in {} ms",
+                        output.display(),
+                        compiled.as_millis(),
+                        linked.as_millis(),
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(message) => {
+                    eprintln!("error: {message}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(message) => {
+            eprintln!("error: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Lowers what the program reaches and compiles it: the objects, how many functions, and how
+/// many weren't already in the cache.
+fn llvm_objects(program: &fennec_kit::Program) -> Result<(Vec<Vec<u8>>, usize, usize), String> {
+    let mut reached = program.module.clone();
+    fennec_build::keep_what_main_reaches(&mut reached);
+    let checked =
+        fennec_check::check(&reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
+    let lowered = fennec_ir::lower(&reached, &checked);
+    if let Some(skipped) = lowered.not_lowered.first() {
+        return Err(format!("`{}` isn't lowered yet: {}", skipped.function, skipped.why));
+    }
+    let (units, shared) = fennec_llvm::emit(&lowered)?;
+    let tools = fennec_llvm::Tools::find()?;
+    let tables = fennec_interp::embed::Tables {
+        strings: shared.strings.values().cloned().collect(),
+        ..fennec_interp::embed::Tables::default()
+    };
+    let image = fennec_interp::embed::codec::Image {
+        module: program.module.clone(),
+        sources: program.sources.clone(),
+        tables,
+        literals: Vec::new(),
+    }
+    .to_bytes();
+    let entry = fennec_llvm::entry(&lowered, &shared, &image)?;
+    let home = fennec_build::fennec_home();
+    let cache = home
+        .as_deref()
+        .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
+        .map(fennec_build::Cache::new);
+    let work = std::env::temp_dir().join(format!("fennec-llvm-{}", std::process::id()));
+    let built = fennec_llvm::compile(&tools, &units, &entry, cache.as_ref(), &work);
+    let _ = std::fs::remove_dir_all(&work);
+    let built = built?;
+    Ok((built.objects, units.len(), built.compiled))
+}
+
+/// Links object files with the runtime library, giving back how long linking took.
+fn link_objects(objects: &[Vec<u8>], output: &Path) -> Result<std::time::Duration, String> {
+    let runtime = runtime_library()?;
+    let work = std::env::temp_dir().join(format!("fennec-link-{}", std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
+    let mut paths = Vec::with_capacity(objects.len());
+    for (at, object) in objects.iter().enumerate() {
+        let path = work.join(format!("{at}.o"));
+        std::fs::write(&path, object).map_err(|err| format!("couldn't write an object file: {err}"))?;
+        paths.push(path);
+    }
+    let started = Instant::now();
+    let linked = Command::new("cc")
+        .args(&paths)
+        .arg(&runtime)
+        .args(SYSTEM_LIBRARIES)
+        .arg("-o")
+        .arg(output)
+        .output()
+        .map_err(|err| format!("couldn't run the system's C compiler, `cc`, to link: {err}"))?;
+    let took = started.elapsed();
+    let _ = std::fs::remove_dir_all(&work);
+    if linked.status.success() {
+        Ok(took)
+    } else {
+        Err(format!("linking failed:\n{}", String::from_utf8_lossy(&linked.stderr)))
+    }
+}
+
 /// Where an executable goes when no `-o` says: named after the kit, or the file, in the
 /// current folder.
 fn default_output(path: &str, program: &fennec_kit::Program) -> PathBuf {

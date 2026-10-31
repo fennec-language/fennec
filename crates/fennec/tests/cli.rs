@@ -675,6 +675,13 @@ fn dev_copies_reports_a_mistake_instead_of_a_list() {
     assert!(text(&output.stderr).starts_with("error: "), "{}", text(&output.stderr));
 }
 
+/// The language reference is written from the examples, so it says what runs.
+#[test]
+fn the_language_reference_is_up_to_date() {
+    let output = fennec(&["dev", "reference", "--check"], "").unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+}
+
 /// Every command the guidance tells an agent to run has to exist.
 #[test]
 fn the_guidance_names_only_commands_there_are() {

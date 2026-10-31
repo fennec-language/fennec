@@ -1228,35 +1228,7 @@ def f(x: int) -> int:
     let program = lowered(source).unwrap();
     let shown: Vec<String> = program.functions.iter().map(ToString::to_string).collect();
     assert_eq!(
-        shown.join(
-            "fn apply(_0, _1) -> int
-  local _0 value: int
-  local _1 change: (int) -> int
-  local _2: int
-  bb0:
-    _2 = call closure _1(_0)
-    return _2
-fn f(_0) -> int
-  local _0 x: int
-  local _1: int
-  local _2 offset: int
-  local _3: (int) -> int
-  local _4: int
-  bb0:
-    _1 = _0 + 1
-    _2 = _1
-    _3 = closure f.arrow@125[_2]
-    _4 = call apply(_0, _3)
-    return _4
-fn f.arrow@125(_0, _1) -> int
-  local _0 offset: int
-  local _1 n: int
-  local _2: int
-  bb0:
-    _2 = _1 + _0
-    return _2
-"
-        ),
+        shown.join(""),
         "fn apply(_0, _1) -> int
   local _0 value: int
   local _1 change: (int) -> int
@@ -1299,38 +1271,7 @@ fn a_nested_function_captures_and_can_call_itself() {
     let program = lowered(source).unwrap();
     let shown: Vec<String> = program.functions.iter().map(ToString::to_string).collect();
     assert_eq!(
-        shown.join(
-            "fn f(_0) -> int
-  local _0 start: int
-  local _1: (int) -> int
-  local _2 down: (int) -> int
-  local _3: int
-  bb0:
-    _1 = closure f.down[_0]
-    _2 = _1
-    _3 = call closure _2(10)
-    return _3
-fn f.down(_0, _1) -> int
-  local _0 start: int
-  local _1 n: int
-  local _2 down: (int) -> int
-  local _3: bool
-  local _4: int
-  local _5: int
-  bb0:
-    _2 = closure f.down[_0]
-    _3 = _1 <= _0
-    branch _3 bb2 bb3
-  bb1:
-    _4 = _1 - 1
-    _5 = call closure _2(_4)
-    return _5
-  bb2:
-    return _1
-  bb3:
-    jump bb1
-"
-        ),
+        shown.join(""),
         "fn f(_0) -> int
   local _0 start: int
   local _1: (int) -> int

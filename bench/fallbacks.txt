@@ -5,7 +5,7 @@ binary_trees 0
 closures 0
 comp_helpers 0
 comprehensions 2
-deltablue 304
+deltablue 266
 dict_field 11
 dicts 0
 fannkuch 1
@@ -18,7 +18,7 @@ method_chain 0
 nbody 0
 particles 0
 regex 20
-richards 264
+richards 221
 sieve 0
 sort 3
 spectral_norm 0

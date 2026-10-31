@@ -26,6 +26,17 @@ impl Lowerer<'_, '_> {
         Ok((value, ty))
     }
 
+    /// What a method, field or index is used on. A list or dict already held as an object
+    /// stays one: making a native copy of it would take as long as it is long, for every read.
+    pub(super) fn receiver(&mut self, object: &Expr) -> Result<Lowered, Diagnostic> {
+        match object.kind {
+            ExprKind::Name(_) | ExprKind::Attr { .. } | ExprKind::Index { .. } => {
+                self.expr_as_written(object)
+            }
+            _ => self.expr(object),
+        }
+    }
+
     /// How native code can hold what the checker says an expression gives.
     pub(super) fn checked_expr(&self, expr: &Expr) -> Option<Ty> {
         let signatures = self.signatures;

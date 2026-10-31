@@ -1,0 +1,36 @@
+## Lists, dicts and strings held as objects, read and changed where they are.
+
+struct Shelf:
+    items: list[int]
+    counts: dict[str, int]
+    name: str
+
+def first(shelf: Shelf) -> int:
+    return shelf.items[0]
+
+def main(stdout: Stdout):
+    mut shelf = Shelf(items=[3, 1, 2], counts={"a": 1}, name="oak")
+    stdout.print(shelf.items[1], shelf.items.len(), shelf.items[-1])
+    stdout.print(shelf.counts["a"], shelf.counts.len(), shelf.counts.get("b", 7))
+    stdout.print(shelf.name.len(), shelf.name[0], shelf.name.upper())
+
+    shelf.items.append(9)
+    shelf.items[0] = 4
+    shelf.counts["b"] = 2
+    stdout.print(shelf.items, shelf.counts, first(shelf))
+
+    kept = shelf.items
+    shelf.items.append(5)
+    stdout.print(kept, shelf.items)
+
+    grid = [[1, 2], [3, 4]]
+    stdout.print(grid[1][0], grid[0].len())
+    for row in grid:
+        stdout.print(row[1], row.len())
+
+    dicts = [{"x": 1}, {"y": 2}]
+    stdout.print(dicts[1].get("y", 0), dicts[0].get("y", 8), dicts[0]["x"], dicts[1].len())
+    for key in dicts[0]:
+        stdout.print(key)
+    words = ["ab", "cde"]
+    stdout.print(words[1].len(), words[1][2])

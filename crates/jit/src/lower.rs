@@ -326,7 +326,6 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
     let bail = b.create_block();
     b.set_cold_block(bail);
     let pointer_ty = pointer;
-    let limit = b.ins().get_pinned_reg(pointer_ty);
     // Compiled to run here, the runtime's addresses are known; in an executable, they're
     // read from a table filled in when it starts.
     let slots_base = cx.shared.slots.as_ref().map(|slots| {
@@ -360,7 +359,6 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         entry,
         pointer,
         mut_names: Vec::new(),
-        limit,
         failed_flag,
         pending: Vec::new(),
         leaves_of: HashMap::new(),
@@ -435,8 +433,7 @@ pub(crate) struct Lowerer<'a, 'f> {
     /// name for it.
     mut_names: Vec<(String, Variable)>,
     /// The lowest the stack may grow to before a call fails as nested too deeply.
-    /// The stack limit and the failure flag's address, computed once on entry.
-    limit: Value,
+    /// The failure flag's address, computed once on entry.
     failed_flag: Value,
     /// The blocks for "the receiver is some other type", while calls on each compiled
     /// type are being lowered.

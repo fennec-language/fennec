@@ -21,7 +21,7 @@ description: Where Fennec is today, what gets built first, and the design questi
 - Every example in the repository's `examples/` folder is a test, including the error messages.
 - A first type checker, run before every program and test: unknown names, `mut`, arguments and fields, bool conditions, int and float mixing, unhandled errors and `None`, `match` over every case, and inferred return types.
 - The first standard library modules: `std.collections` (`Deque`, `Heap`, `PriorityQueue`, `Counter`), `std.random` (seeded, the same on every machine), `std.time` (`Duration`, and a monotonic `Clock` passed to `main`) `std.re` (regular expressions in linear time) and `std.hash` (BLAKE3, written in-house).
-- A first native compiler: `fennec run --jit` compiles programs to machine code with Cranelift, and every example runs with exactly the interpreter's output. Numbers stay in machine registers, so numeric code runs about 70 times faster than in the interpreter; other values still go through the interpreter's runtime for now.
+- A first native compiler: `fennec run` compiles programs to machine code with Cranelift, and every example runs with exactly the interpreter's output. Numbers stay in machine registers, so numeric code runs about 70 times faster than in the interpreter; other values still go through the interpreter's runtime for now.
 
 ## v0.1: checked before it runs
 

@@ -169,7 +169,7 @@ pub(crate) struct Program<'m> {
 
 pub(crate) fn unsupported(what: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("the JIT can't compile {what} yet"), span)
-        .with_help("run the program without `--jit` to use the interpreter")
+        .with_help("run the program with `--interp` to use the interpreter")
 }
 
 impl<'m> Program<'m> {

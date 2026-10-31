@@ -1,29 +1,40 @@
-//! `fennec run`: checks a program, then runs its `main`, with the interpreter or, with
-//! `--jit`, as native code.
+//! `fennec run`: checks a program, then runs its `main` as native code, or with the
+//! interpreter for `--interp` or for what can't be compiled yet.
 
 use std::io::{BufReader, BufWriter, Write};
 use std::process::ExitCode;
 
 use fennec_interp::Inputs;
 
+/// What runs a program.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Engine {
+    /// Native code, or the interpreter for what can't be compiled yet.
+    Native,
+    /// Native code, saying when the interpreter stands in. The benchmarks ask for this.
+    NativeNoted,
+    Interpreter,
+}
+
 /// Runs the program at `path`, handing `main` the `arguments` and this process's input.
-pub(crate) fn run(path: &str, jit: bool, arguments: &[String]) -> ExitCode {
+pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
     let signatures = match fennec_check::check_to_run(&mut program.module) {
         Ok(signatures) => signatures,
         Err(diagnostics) => return reject(&program, &diagnostics),
     };
     let module = &program.module;
-    let mut out = BufWriter::new(std::io::stdout().lock());
+    // Not locked: native code writes to standard output itself as the program runs.
+    let mut out = BufWriter::new(std::io::stdout());
     let inputs = || Inputs {
         program: path.to_owned(),
         arguments: arguments.to_vec(),
         stdin: Box::new(BufReader::new(std::io::stdin())),
+        live: true,
     };
-    let result = if jit {
-        native(module, &signatures, path, &mut out, inputs)
-    } else {
-        interpret(module, &mut out, inputs())
+    let result = match engine {
+        Engine::Interpreter => interpret(module, &mut out, inputs()),
+        _ => native(module, &signatures, (path, engine == Engine::NativeNoted), &mut out, inputs),
     };
     let flushed = out.flush();
     match (result, flushed) {
@@ -68,7 +79,7 @@ pub(crate) fn startup(path: &str) -> ExitCode {
 fn native(
     module: &fennec_syntax::Module,
     signatures: &fennec_check::Signatures,
-    path: &str,
+    (path, noted): (&str, bool),
     out: &mut dyn Write,
     inputs: impl Fn() -> Inputs,
 ) -> Result<(), fennec_syntax::Diagnostic> {
@@ -89,7 +100,9 @@ fn native(
         Ok(()) => Ok(()),
         Err(fennec_jit::JitError::Failed(diagnostic)) => Err(diagnostic),
         Err(fennec_jit::JitError::Unsupported(diagnostic)) => {
-            eprintln!("note: {}; using the interpreter", diagnostic.message);
+            if noted {
+                eprintln!("note: {}; using the interpreter", diagnostic.message);
+            }
             interpret(module, out, inputs())
         }
     }

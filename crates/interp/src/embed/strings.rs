@@ -18,7 +18,7 @@ fn text(state: &State, address: i64) -> Option<String> {
 
 fn lost(start: i64, end: i64) -> Diagnostic {
     Diagnostic::new("the JIT lost a string", span(start, end))
-        .with_help("this is a bug in Fennec; run without `--jit` and please report it")
+        .with_help("this is a bug in Fennec; run with `--interp` and please report it")
 }
 
 /// A string block owned once with a temporary's text, failing like the interpreter when

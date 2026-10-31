@@ -18,11 +18,19 @@ pub struct Inputs {
     /// The arguments after the program's name, as `for arg in args`.
     pub arguments: Vec<String>,
     pub stdin: Box<dyn BufRead + Send>,
+    /// Whether native code's output goes straight to this process's standard output as the
+    /// program runs, rather than being kept for the host.
+    pub live: bool,
 }
 
 impl Default for Inputs {
     fn default() -> Self {
-        Inputs { program: String::new(), arguments: Vec::new(), stdin: Box::new(std::io::empty()) }
+        Inputs {
+            program: String::new(),
+            arguments: Vec::new(),
+            stdin: Box::new(std::io::empty()),
+            live: false,
+        }
     }
 }
 
@@ -74,6 +82,8 @@ impl Interp<'_> {
             return Err(no_method(&Value::Capability(Capability::Stdin), method, span));
         }
         let mut lines = Vec::new();
+        // A prompt shows before the program waits for an answer.
+        self.flush()?;
         for line in (&mut self.given.stdin).lines() {
             let line = line.map_err(|err| Diagnostic::new(format!("couldn't read input: {err}"), span))?;
             lines.push(Value::str(line.strip_suffix('\r').unwrap_or(&line)));

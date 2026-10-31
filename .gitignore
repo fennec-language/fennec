@@ -3,6 +3,7 @@ node_modules/
 site/dist/
 site/.astro/
 site/public/fennec.wasm
+site/src/pages/reference.md
 .claude/
 target/
 mutants.out/

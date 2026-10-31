@@ -1,14 +1,16 @@
-//! `fennec dev reference`: writes the language reference from `examples/`, so what it says is
-//! what runs. Every example is a test, so nothing in the page can stop working unnoticed.
+//! The language reference, written from `examples/`, so what it says is what runs. Every
+//! example is a test, so nothing in the page can stop working unnoticed.
 //!
 //! An example says which decisions in `docs/decisions.md` it shows, with a comment like
 //! `# decision: Collections are values.` at its top. A decision of the language that no example
-//! shows is listed as planned, however far along it is. `--check` fails if the page is out of
-//! date or an example names a decision that isn't there.
+//! shows is listed as planned, however far along it is.
+//!
+//! The page isn't kept in the repository, so adding an example can't conflict with anything: the
+//! website's build writes it, with `fennec-reference`, and so does `fennec dev reference`. This
+//! crate has nothing else in it, so that build doesn't compile the compiler.
 
 use std::fmt::Write as _;
 use std::path::Path;
-use std::process::ExitCode;
 
 const PAGE: &str = "site/src/pages/reference.md";
 
@@ -54,7 +56,7 @@ struct Decision {
 }
 
 /// An example program.
-pub(crate) struct Example {
+struct Example {
     name: String,
     source: String,
     output: String,
@@ -96,7 +98,7 @@ fn decisions(text: &str) -> Vec<Decision> {
 }
 
 /// The whole page, or what's wrong with the examples.
-pub(crate) fn page(text: &str, examples: &[Example]) -> Result<String, Vec<String>> {
+fn page(text: &str, examples: &[Example]) -> Result<String, Vec<String>> {
     let decisions = decisions(text);
     let stale: Vec<String> = examples
         .iter()
@@ -178,37 +180,18 @@ fn examples(folder: &Path) -> std::io::Result<Vec<Example>> {
     Ok(found)
 }
 
-/// Writes the page, or with `check`, says whether it's up to date. Runs from the repository.
-pub(crate) fn reference(check: bool) -> ExitCode {
-    let written = (|| -> std::io::Result<_> {
-        let text = std::fs::read_to_string("docs/decisions.md")?;
-        Ok(page(&text, &examples(Path::new("examples"))?))
-    })();
-    let made = match written {
-        Ok(Ok(made)) => made,
-        Ok(Err(problems)) => {
-            eprintln!("error: {}", problems.join("\nerror: "));
-            return ExitCode::FAILURE;
-        }
-        Err(err) => {
-            eprintln!("error: run this from the repository: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
+/// Writes the page, or with `check` only makes sure it can be written: that every decision the
+/// examples name exists. Runs from the repository, giving back what's wrong.
+pub fn write(check: bool) -> Result<(), String> {
+    let text = std::fs::read_to_string("docs/decisions.md")
+        .map_err(|err| format!("run this from the repository: {err}"))?;
+    let examples =
+        examples(Path::new("examples")).map_err(|err| format!("run this from the repository: {err}"))?;
+    let made = page(&text, &examples).map_err(|problems| problems.join("\nerror: "))?;
     if check {
-        if std::fs::read_to_string(PAGE).is_ok_and(|current| current == made) {
-            return ExitCode::SUCCESS;
-        }
-        eprintln!("error: {PAGE} is out of date; run `fennec dev reference`");
-        return ExitCode::FAILURE;
+        return Ok(());
     }
-    match std::fs::write(PAGE, made) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("error: couldn't write {PAGE}: {err}");
-            ExitCode::FAILURE
-        }
-    }
+    std::fs::write(PAGE, made).map_err(|err| format!("couldn't write {PAGE}: {err}"))
 }
 
 #[cfg(test)]

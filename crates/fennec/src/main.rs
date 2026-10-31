@@ -11,7 +11,6 @@ mod fallbacks;
 mod fix;
 mod fmt;
 mod lsp;
-mod reference;
 mod repl;
 mod run;
 mod test;
@@ -87,8 +86,8 @@ fn main() -> ExitCode {
         ["dev", "copies", "--run"] => on_big_stack(copies::copies_in_a_run, "."),
         ["dev", "copies", "--run", path] => on_big_stack(copies::copies_in_a_run, path),
         ["dev", "copies", path] => on_big_stack(copies::copies, path),
-        ["dev", "reference"] => reference::reference(false),
-        ["dev", "reference", "--check"] => reference::reference(true),
+        ["dev", "reference"] => reference(false),
+        ["dev", "reference", "--check"] => reference(true),
         ["dev", "changes"] => changes::changes("."),
         ["dev", "changes", path] => changes::changes(path),
         ["--version" | "-V"] => {
@@ -98,6 +97,17 @@ fn main() -> ExitCode {
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
+        }
+    }
+}
+
+/// `fennec dev reference [--check]`: writes the language reference, or checks it can be.
+fn reference(check: bool) -> ExitCode {
+    match fennec_reference::write(check) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("error: {message}");
+            ExitCode::FAILURE
         }
     }
 }

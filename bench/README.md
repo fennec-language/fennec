@@ -17,7 +17,7 @@ cargo build --release -p fennec -p fennec-bench
 | Strings and text | `strings`, `json`, `k_nucleotide`, `regex` |
 | Structs in a game loop | `particles` |
 | Sorting and generics | `sort`, `generics` |
-| Closures and iterators | `comprehensions`, `closures` |
+| Closures and iterators | `comprehensions`, `closures`, `generators` |
 | Object-heavy code with dispatch | `richards`, `deltablue` |
 | What falls off the fast path | `dict_field`, `struct_keys`, `method_chain`, `comp_helpers` |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |

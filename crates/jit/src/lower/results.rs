@@ -77,21 +77,16 @@ impl Lowerer<'_, '_> {
         let span = self.function.def.span;
         let empty = Expr { kind: ExprKind::List(Vec::new()), span };
         let ExprKind::Name(name) = yielded(span).kind else { return Ok(()) };
-        let item = self.shared_yield_type();
-        match item {
-            Some(ty @ Ty::List(item)) => {
-                let element = self.element(item.ty())?;
-                let none = self.int(0);
-                let list = self.help(Helper::ListNew, &[element, none])?;
-                self.bind_native(&name, ty, Some(list), true);
-                Ok(())
-            }
-            _ => {
-                let (handle, _) = self.fallback(&empty)?;
-                let handle = handle.ok_or_else(|| internal("a lost list", span))?;
-                self.declare_object(&name, handle, true)
-            }
+        if let Some(ty @ Ty::List(item)) = self.yield_type() {
+            let element = self.element(item.ty())?;
+            let none = self.int(0);
+            let list = self.help(Helper::ListNew, &[element, none])?;
+            self.bind_native(&name, ty, Some(list), true);
+            return Ok(());
         }
+        let (handle, _) = self.fallback(&empty)?;
+        let handle = handle.ok_or_else(|| internal("a lost list", span))?;
+        self.declare_object(&name, handle, true)
     }
 
     /// `yield value`: adds it to what the generator gives back.
@@ -111,7 +106,7 @@ impl Lowerer<'_, '_> {
     }
 
     /// How a generator holds what it yields, when native code can hold it.
-    fn shared_yield_type(&self) -> Option<Ty> {
+    fn yield_type(&self) -> Option<Ty> {
         let function = self.function;
         function.direct.or(Some(function.ret)).filter(|ty| matches!(ty, Ty::List(_)))
     }

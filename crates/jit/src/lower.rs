@@ -401,9 +401,6 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         lowerer.mark_ran(&function.key)?;
     }
     lowerer.prologue(&params)?;
-    if function.generator {
-        lowerer.start_yielding()?;
-    }
     let (tail, tail_ty) = lowerer.tail(&function.def.body)?;
     if !lowerer.is_dead() {
         lowerer.ret(tail, tail_ty, function.def.span)?;
@@ -560,6 +557,9 @@ impl Lowerer<'_, '_> {
             }
         }
         self.dirty = false;
+        if self.function.generator {
+            self.start_yielding()?;
+        }
         Ok(())
     }
 

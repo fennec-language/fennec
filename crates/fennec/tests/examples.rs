@@ -246,7 +246,6 @@ fn a_second_run_reuses_every_function_and_an_edit_compiles_only_that_function() 
     let (first, none) = cached_run(&program("hello"), &cache);
     let (second, all) = cached_run(&program("hello"), &cache);
     let (edited, rest) = cached_run(&program("hi there"), &cache);
-    let _ = fs::remove_dir_all(&home);
     assert_eq!(
         (first.as_str(), second.as_str(), edited.as_str()),
         ("hello, kit 42\n", "hello, kit 42\n", "hi there, kit 42\n")
@@ -254,4 +253,71 @@ fn a_second_run_reuses_every_function_and_an_edit_compiles_only_that_function() 
     assert_eq!(none, 0, "the first run finds nothing");
     assert!(all >= 3, "the second run reuses every function, but reused {all}");
     assert_eq!(rest, all - 1, "the edit compiles only the edited function");
+    let (_, added) =
+        cached_run(&format!("def unrelated(x: int) -> int:\n    x + 1\n\n{}", program("hi there")), &cache);
+    assert_eq!(added, all, "a new function leaves the machine code of everything else alone");
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// Each test's name and how it failed, if it did, sorted by name.
+type Results = Vec<(String, Option<fennec_syntax::Diagnostic>)>;
+
+fn results(outcomes: Vec<fennec_interp::TestOutcome>) -> Results {
+    let mut results: Results = outcomes.into_iter().map(|outcome| (outcome.name, outcome.failure)).collect();
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+    results
+}
+
+/// What a program's tests give natively, with the interpreter running those left over; what
+/// they give in the interpreter alone; and how many ran natively.
+fn native_and_interpreted(source: &str) -> Result<(Results, Results, usize), fennec_syntax::Diagnostic> {
+    let mut module = fennec_syntax::parse(source)?;
+    let signatures = fennec_check::check_and_resolve(&mut module).map_err(|mut found| found.remove(0))?;
+    let names: Vec<String> = fennec_build::test_keys(&module).into_iter().map(|(name, _)| name).collect();
+    let native = fennec_jit::run_tests(&module, &signatures, &names, None);
+    let count = native.outcomes.len();
+    let mut out = std::io::sink();
+    let mut interp = fennec_interp::Interp::new(&mut out)?;
+    interp.load(&module)?;
+    let mut together = native.outcomes;
+    together.extend(interp.run_tests_where(&|name| native.left.iter().any(|left| left == name)));
+    let alone = interp.run_tests();
+    Ok((results(together), results(alone), count))
+}
+
+#[test]
+fn tests_give_the_same_results_natively_and_in_the_interpreter() {
+    on_big_stack(|| {
+        let mut natively = 0;
+        for path in programs(&examples_dir()).unwrap() {
+            let source = fs::read_to_string(&path).unwrap();
+            if !source.contains("\ntest \"") {
+                continue;
+            }
+            let (native, interpreted, count) = native_and_interpreted(&source).unwrap();
+            assert_eq!(native, interpreted, "{}", path.display());
+            natively += count;
+        }
+        assert!(natively > 0, "no example's tests ran natively");
+    })
+    .unwrap();
+}
+
+#[test]
+fn failing_tests_report_the_same_natively_and_in_the_interpreter() {
+    on_big_stack(|| {
+        let source = "error Oops:\n    why: str\n\ndef double(x: int) -> int:\n    x * 2\n\n\
+            def risky(x: int) -> int:\n    if x > 1: fail Oops(\"big\")\n    x\n\n\
+            test \"passes\":\n    assert double(2) == 4\n\n\
+            test \"compares wrongly\":\n    assert double(2) == 5\n\n\
+            test \"plain condition\":\n    assert double(2) > 5 or double(1) == 9\n\n\
+            test \"fails with an error\":\n    risky(3)?\n    assert True\n\n\
+            test \"overflows\":\n    big = 9223372036854775807\n    assert double(big) == 0\n\n\
+            test \"indexes past the end\":\n    items = [1]\n    assert items[double(2)] == 1\n\n\
+            test \"passes after failures\":\n    assert double(1) == 2\n";
+        let (native, interpreted, count) = native_and_interpreted(source).unwrap();
+        assert_eq!(native, interpreted);
+        assert_eq!(count, 7, "every test here runs natively");
+    })
+    .unwrap();
 }

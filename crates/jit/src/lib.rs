@@ -9,9 +9,11 @@ mod layout;
 mod lower;
 mod reach;
 mod runtime;
+mod tests_native;
 mod types;
 
 pub use lower::notes::Note;
+pub use tests_native::{NativeTests, run_tests};
 
 use std::io::Write;
 

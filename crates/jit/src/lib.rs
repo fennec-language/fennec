@@ -129,16 +129,15 @@ fn compile_and_run(
     let here = 0_u8;
     let stack_limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
     let checked;
-    let signatures = match signatures {
-        Some(signatures) => signatures,
-        None => {
-            checked = fennec_check::check(module).map_err(|diagnostics| {
-                JitError::Unsupported(
-                    diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default())),
-                )
-            })?;
-            &checked
-        }
+    let signatures = if let Some(signatures) = signatures {
+        signatures
+    } else {
+        checked = fennec_check::check(module).map_err(|diagnostics| {
+            JitError::Unsupported(
+                diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default())),
+            )
+        })?;
+        &checked
     };
     let prelude = fennec_syntax::prelude_modules().unwrap_or_default();
     let program = types::Program::from_module(module, prelude, signatures).map_err(JitError::Unsupported)?;

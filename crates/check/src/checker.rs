@@ -83,9 +83,17 @@ impl Checker {
         }
     }
 
-    pub(crate) fn run(mut self) -> Result<Checked, Vec<Diagnostic>> {
+    /// Checks everything, or for `reached_only`, the program's own code and just the
+    /// standard library functions it reaches: the library's other code can't affect a run.
+    pub(crate) fn run(mut self, reached_only: bool) -> Result<Checked, Vec<Diagnostic>> {
         self.check_declarations();
-        let keys: Vec<String> = self.program.functions.keys().cloned().collect();
+        let keys: Vec<String> = self
+            .program
+            .functions
+            .iter()
+            .filter(|(_, entry)| !(reached_only && entry.prelude))
+            .map(|(key, _)| key.clone())
+            .collect();
         for key in &keys {
             if !self.states.contains_key(key) {
                 self.check_function(key);

@@ -9,7 +9,10 @@ use fennec_interp::Inputs;
 /// Runs the program at `path`, handing `main` the `arguments` and this process's input.
 pub(crate) fn run(path: &str, jit: bool, arguments: &[String]) -> ExitCode {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    let Some(signatures) = checked(&mut program) else { return ExitCode::FAILURE };
+    let signatures = match fennec_check::check_to_run(&mut program.module) {
+        Ok(signatures) => signatures,
+        Err(diagnostics) => return reject(&program, &diagnostics),
+    };
     let module = &program.module;
     let mut out = BufWriter::new(std::io::stdout().lock());
     let inputs = || Inputs {
@@ -81,16 +84,17 @@ fn interpret(
 /// Type-checks a program before it runs, printing every problem found, and names the enum
 /// of each leading-dot case its expected type decided. Returns whether it passed.
 pub(crate) fn check(program: &mut fennec_kit::Program) -> bool {
-    checked(program).is_some()
-}
-
-/// Type-checks a program like `check`, giving back what the check found.
-fn checked(program: &mut fennec_kit::Program) -> Option<fennec_check::Signatures> {
     match fennec_check::check_and_resolve(&mut program.module) {
-        Ok(signatures) => Some(signatures),
+        Ok(_) => true,
         Err(diagnostics) => {
-            eprint!("{}", program.sources.render_all(&diagnostics));
-            None
+            reject(program, &diagnostics);
+            false
         }
     }
+}
+
+/// Prints the problems a check found.
+fn reject(program: &fennec_kit::Program, diagnostics: &[fennec_syntax::Diagnostic]) -> ExitCode {
+    eprint!("{}", program.sources.render_all(diagnostics));
+    ExitCode::FAILURE
 }

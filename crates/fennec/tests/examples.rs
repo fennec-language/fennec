@@ -170,6 +170,52 @@ fn the_jit_runs_examples_exactly_like_the_interpreter() {
 }
 
 #[test]
+fn a_run_checking_only_what_it_reaches_compiles_the_same() {
+    let home = std::env::temp_dir().join(format!("fennec-examples-reached-{}", std::process::id()));
+    let cache = fennec_build::Cache::new(&home);
+    let dir = examples_dir();
+    let mut paths = programs(&dir).unwrap();
+    paths.extend(programs(&dir.join("../bench/kernels")).unwrap());
+    let on_a_big_stack = std::thread::Builder::new().stack_size(1 << 28).spawn(move || {
+        for path in paths {
+            let source = fs::read_to_string(&path).unwrap();
+            let mut module = fennec_syntax::parse(&source).unwrap();
+            let Ok(whole) = fennec_jit::run_with_report(&module, &mut Vec::new()) else { continue };
+            let signatures = fennec_check::check_to_run(&mut module).unwrap();
+            let inputs = fennec_interp::Inputs::default();
+            let reached = fennec_jit::run_cached(
+                &module,
+                Some(&signatures),
+                &mut Vec::new(),
+                inputs,
+                &cache,
+                "reached",
+            )
+            .unwrap();
+            assert_eq!(
+                (reached.interpreted, reached.handed_over, reached.with_frames),
+                (whole.interpreted, whole.handed_over, whole.with_frames),
+                "{} compiled differently",
+                path.display()
+            );
+        }
+    });
+    on_a_big_stack.unwrap().join().unwrap();
+    fs::remove_dir_all(home).ok();
+}
+
+#[test]
+fn a_run_checking_only_what_it_reaches_finds_the_same_mistakes() {
+    for path in programs(&examples_dir().join("errors")).unwrap() {
+        let source = fs::read_to_string(&path).unwrap();
+        let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
+        let whole = fennec_check::check(&module).err();
+        let reached = fennec_check::check_to_run(&mut module).err();
+        assert_eq!(reached, whole, "{} found different mistakes", path.display());
+    }
+}
+
+#[test]
 fn math_compiles_to_machine_code_however_it_is_imported() {
     let source = "import std.math\nfrom std import math\nfrom std.math import sqrt\n\ndef main(stdout: Stdout):\n    x = 2.25\n    stdout.print(sqrt(x) + math.sqrt(x) + std.math.sqrt(x), math.floor(x))\n";
     let module = fennec_syntax::parse(source).unwrap();

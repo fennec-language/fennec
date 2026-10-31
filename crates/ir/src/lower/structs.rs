@@ -39,6 +39,20 @@ impl Lowering<'_> {
     /// field.
     pub(super) fn make(&mut self, type_name: &str, args: &[Arg], span: Span) -> Lowered<Operand> {
         let fields = self.struct_fields(type_name)?.to_vec();
+        let fields = self.field_values(type_name, &fields, args)?;
+        let dest = self.temporary(Type::Named(type_name.to_owned()));
+        self.emit(InstKind::Make { dest, type_name: type_name.to_owned(), fields }, span);
+        Ok(Operand::Local(dest))
+    }
+
+    /// A value for each field: arguments run in the order they're written, and each lands
+    /// in its field. `shown` names what's being built.
+    pub(super) fn field_values(
+        &mut self,
+        shown: &str,
+        fields: &[(String, Type)],
+        args: &[Arg],
+    ) -> Lowered<Vec<Operand>> {
         let mut values: Vec<Option<Operand>> = vec![None; fields.len()];
         for (position, arg) in args.iter().enumerate() {
             let at = match &arg.name {
@@ -48,23 +62,28 @@ impl Lowering<'_> {
             let value = self.expr(&arg.value)?;
             let field = at.and_then(|at| fields.get(at)).ok_or("an argument matches no field")?;
             if type_in(&self.locals, &value).as_ref() != Some(&field.1) {
-                return Err(format!("`{type_name}.{}` holds {}", field.0, field.1));
+                return Err(format!("`{shown}.{}` holds {}", field.0, field.1));
             }
             if let Some(slot) = at.and_then(|at| values.get_mut(at)) {
                 *slot = Some(value);
             }
         }
-        let fields: Option<Vec<Operand>> = values.into_iter().collect();
-        let fields = fields.ok_or_else(|| format!("it leaves a field of `{type_name}` to its default"))?;
-        let dest = self.temporary(Type::Named(type_name.to_owned()));
-        self.emit(InstKind::Make { dest, type_name: type_name.to_owned(), fields }, span);
-        Ok(Operand::Local(dest))
+        let values: Option<Vec<Operand>> = values.into_iter().collect();
+        values.ok_or_else(|| format!("it leaves a field of `{shown}` to its default"))
     }
 
     /// The struct type of an expression, when it's one the IR holds.
     fn struct_of(&self, expr: &Expr) -> Option<String> {
         match self.body.expr(expr.span)? {
             Type::Named(name) if self.context.structs.contains(name.as_str()) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
+    /// The struct or enum type of an expression, for calling its methods.
+    fn owner_of(&self, expr: &Expr) -> Option<String> {
+        match self.body.expr(expr.span)? {
+            Type::Named(name) if self.context.holds(&Type::Named(name.clone())) => Some(name.clone()),
             _ => None,
         }
     }
@@ -149,7 +168,7 @@ impl Lowering<'_> {
                 ExprKind::Name(owner) if self.lookup(owner).is_none() => (format!("{owner}.{name}"), None),
                 _ => {
                     let owner = self
-                        .struct_of(object)
+                        .owner_of(object)
                         .ok_or_else(|| format!("it calls `.{name}` on something else"))?;
                     (format!("{owner}.{name}"), Some(object.as_ref()))
                 }

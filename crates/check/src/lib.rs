@@ -169,6 +169,7 @@ impl Body {
 pub struct Signatures {
     functions: BTreeMap<String, Signature>,
     structs: BTreeMap<String, Struct>,
+    enums: BTreeMap<String, Enum>,
     locals: BTreeMap<String, Type>,
 }
 
@@ -176,6 +177,14 @@ pub struct Signatures {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Struct {
     pub fields: Vec<(String, Type)>,
+    /// Whether any field has a `where` rule, checked whenever a value is made.
+    pub rules: bool,
+}
+
+/// An enum's cases, in the order they're written, each with its fields and their types.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Enum {
+    pub cases: Vec<(String, Vec<(String, Type)>)>,
     /// Whether any field has a `where` rule, checked whenever a value is made.
     pub rules: bool,
 }
@@ -188,6 +197,11 @@ impl Signatures {
     /// A struct's fields, the standard library's included.
     pub fn structure(&self, name: &str) -> Option<&Struct> {
         self.structs.get(name)
+    }
+
+    /// An enum's cases, the standard library's included.
+    pub fn enumeration(&self, name: &str) -> Option<&Enum> {
+        self.enums.get(name)
     }
 
     /// The name of every struct, the standard library's included.

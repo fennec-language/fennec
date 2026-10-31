@@ -5,6 +5,7 @@
 mod aot;
 mod bench;
 mod changes;
+mod copies;
 mod daemon;
 mod fallbacks;
 mod fix;
@@ -76,6 +77,8 @@ fn main() -> ExitCode {
         ["lsp"] => lsp::lsp(),
         ["dev", "fallbacks"] => on_big_stack(fallbacks::fallbacks, "."),
         ["dev", "fallbacks", path] => on_big_stack(fallbacks::fallbacks, path),
+        ["dev", "copies"] => on_big_stack(copies::copies, "."),
+        ["dev", "copies", path] => on_big_stack(copies::copies, path),
         ["dev", "changes"] => changes::changes("."),
         ["dev", "changes", path] => changes::changes(path),
         ["--version" | "-V"] => {

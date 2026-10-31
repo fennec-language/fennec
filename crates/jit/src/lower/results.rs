@@ -5,13 +5,18 @@
 //! uses the result gets an object, as from any other fallible function.
 
 use cranelift_codegen::ir::{InstBuilder, Value, types};
-use fennec_syntax::{Diagnostic, Expr, ExprKind, Span, Stmt};
+use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Span, Stmt};
 
 use super::expr::Lowered;
 use super::hoist::each_stmt_expr_shallow;
 use super::{Lowerer, abi, internal};
 use crate::helpers::Helper;
 use crate::types::Ty;
+
+/// The hidden name holding what a generator has yielded so far.
+fn yielded(span: Span) -> Expr {
+    Expr { kind: ExprKind::Name("\0yielded".to_owned()), span }
+}
 
 /// What's true of the expression being lowered.
 #[derive(Default)]
@@ -29,6 +34,8 @@ impl Lowerer<'_, '_> {
     /// Leaves the function from here with a value.
     pub(super) fn ret(&mut self, value: Option<Value>, ty: Ty, span: Span) -> Result<(), Diagnostic> {
         self.put_back_all()?;
+        // A generator gives back what it yielded, however it ends.
+        let (value, ty) = if self.function.generator { self.expr(&yielded(span))? } else { (value, ty) };
         // What's given back outlives every name, so it needs an owner of its own.
         let value = value.map(|value| self.own(value, ty));
         self.release_scopes(0)?;
@@ -63,6 +70,50 @@ impl Lowerer<'_, '_> {
         let value = abi(self.function.ret).map(|_| handle);
         self.jump_exit(value);
         Ok(())
+    }
+
+    /// Starts a generator, with nothing yielded yet.
+    pub(super) fn start_yielding(&mut self) -> Result<(), Diagnostic> {
+        let span = self.function.def.span;
+        let empty = Expr { kind: ExprKind::List(Vec::new()), span };
+        let ExprKind::Name(name) = yielded(span).kind else { return Ok(()) };
+        let item = self.shared_yield_type();
+        match item {
+            Some(ty @ Ty::List(item)) => {
+                let element = self.element(item.ty())?;
+                let none = self.int(0);
+                let list = self.help(Helper::ListNew, &[element, none])?;
+                self.bind_native(&name, ty, Some(list), true);
+                Ok(())
+            }
+            _ => {
+                let (handle, _) = self.fallback(&empty)?;
+                let handle = handle.ok_or_else(|| internal("a lost list", span))?;
+                self.declare_object(&name, handle, true)
+            }
+        }
+    }
+
+    /// `yield value`: adds it to what the generator gives back.
+    pub(super) fn yield_value(&mut self, value: &Expr, span: Span) -> Result<(), Diagnostic> {
+        let append = Expr {
+            kind: ExprKind::Attr {
+                object: Box::new(yielded(span)),
+                name: "append".to_owned(),
+                optional: false,
+            },
+            span,
+        };
+        let arg = Arg { name: None, is_mut: false, value: value.clone() };
+        let call = Expr { kind: ExprKind::Call { callee: Box::new(append), args: vec![arg] }, span };
+        let (result, ty) = self.expr(&call)?;
+        self.consume(result, ty)
+    }
+
+    /// How a generator holds what it yields, when native code can hold it.
+    fn shared_yield_type(&self) -> Option<Ty> {
+        let function = self.function;
+        function.direct.or(Some(function.ret)).filter(|ty| matches!(ty, Ty::List(_)))
     }
 
     fn jump_exit(&mut self, value: Option<Value>) {

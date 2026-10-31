@@ -167,7 +167,8 @@ impl Lowerer<'_, '_> {
             }
             StmtKind::Assert(condition) => self.interpret_assert(condition, stmt.span),
             StmtKind::With { .. } => self.interpret_stmt(stmt),
-            StmtKind::Yield(_) | StmtKind::Def(_) => Err(unsupported("this kind of statement", stmt.span)),
+            StmtKind::Yield(value) => self.yield_value(value, stmt.span),
+            StmtKind::Def(_) => Err(unsupported("this kind of statement", stmt.span)),
         }
     }
 
@@ -511,7 +512,9 @@ impl Lowerer<'_, '_> {
         let mut lists = Vec::with_capacity(args.len());
         for arg in args {
             let Some((list, item)) = self.packed(&arg.value) else { return Ok(false) };
-            if Self::body_names(body, &list) {
+            // A list that can't change is safe to read in the body too.
+            let changeable = self.local(&list).is_some_and(|local| local.is_mut);
+            if changeable && Self::body_names(body, &list) {
                 return Ok(false);
             }
             lists.push((list, item));

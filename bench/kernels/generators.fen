@@ -1,0 +1,27 @@
+## Generators: functions that yield, one fed from another, folded with `sum`.
+
+def count_up(n: int) -> Iterator[int]:
+    mut at = 0
+    while at < n:
+        yield at
+        at += 1
+
+def odd_squares(items: list[int]) -> Iterator[int]:
+    for item in items:
+        if item % 2 == 1:
+            yield item * item % 1000
+
+def windows(items: list[int], size: int) -> Iterator[int]:
+    mut total = 0
+    for at, item in enumerate(items):
+        total += item
+        if at >= size:
+            total -= items[at - size]
+        yield total
+
+def main(stdout: Stdout):
+    mut result = 0
+    for round in range(30):
+        squares = odd_squares(count_up(100_000 + round))
+        result += sum(n % 7 for n in windows(squares, 16))
+    stdout.print(result)

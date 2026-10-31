@@ -1,0 +1,74 @@
+## Functions that yield, native: what they yield is collected and given back.
+
+struct Point:
+    x: int
+    y: float
+
+def count_up(n: int) -> Iterator[int]:
+    mut at = 0
+    while at < n:
+        yield at
+        at += 1
+
+def evens(items: list[int]) -> Iterator[int]:
+    for item in items:
+        if item % 2 == 0:
+            yield item
+
+def stops_early(n: int) -> Iterator[int]:
+    for i in range(n):
+        if i == 2: return
+        yield i * 10
+
+def nothing() -> Iterator[int]:
+    if False:
+        yield 1
+
+def words(n: int) -> Iterator[str]:
+    for i in range(n):
+        yield f"w{i}"
+
+def points(n: int) -> Iterator[Point]:
+    for i in range(n):
+        yield Point(x=i, y=float(i) / 2.0)
+
+def pairs(n: int) -> Iterator[(int, str)]:
+    for i in range(n):
+        yield (i, str(i))
+
+def noisy(stdout: Stdout) -> Iterator[int]:
+    for i in range(2):
+        stdout.print("made", i)
+        yield i
+
+def rolling(items: list[int]) -> Iterator[int]:
+    for at, item in enumerate(items):
+        yield item + items[0] + (items[at - 1] if at > 0 else 0)
+    for first, second in zip(items, items):
+        yield first + second + items.len()
+
+def main(stdout: Stdout):
+    stdout.print(rolling(count_up(3)))
+    mut changing = [1, 2, 3]
+    for at, item in enumerate(changing):
+        if at == 0:
+            changing.append(item + 9)
+        stdout.print(at, item, changing.len())
+    stdout.print(count_up(3), evens(count_up(6)), stops_early(9), nothing())
+    stdout.print(words(2), points(2), pairs(2))
+    stdout.print(
+        sum(count_up(5)),
+        sum(n * 2 for n in count_up(3)),
+        count_up(4)[2],
+        count_up(4).len(),
+    )
+    mut total = 0
+    for item in evens(count_up(10)):
+        total += item
+    stdout.print(total, [w + "!" for w in words(2)], sorted(count_up(3), key=(n) => -n))
+    for point in points(2):
+        stdout.print(point.x, point.y)
+    for at, word in pairs(2):
+        stdout.print(at, word)
+    for item in noisy(stdout):
+        stdout.print("got", item)

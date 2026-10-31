@@ -40,6 +40,7 @@ pub(super) fn inline_body(function: &Function<'_>) -> Option<Rc<FnDef>> {
     let simple = body.iter().all(|stmt| simple_stmt(stmt, &mut nodes));
     (params_fit
         && !function.fallible
+        && !function.generator
         && !matches!(function.ret, Ty::Obj | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_))
         && simple
         && nodes <= MAX_NODES)

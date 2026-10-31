@@ -168,6 +168,8 @@ pub(crate) struct Function<'m> {
     pub(crate) fallible: bool,
     /// What it gives back directly when it's fallible and that's a counted block.
     pub(crate) direct: Option<Ty>,
+    /// Whether it's a generator: what it yields, collected, is what it gives back.
+    pub(crate) generator: bool,
 }
 
 pub(crate) struct Program<'m> {
@@ -340,7 +342,10 @@ fn function<'m>(
     layouts: &Layouts,
 ) -> Option<Function<'m>> {
     let signature = signatures.get(&key)?;
-    if signature.generator || def.body.iter().any(|stmt| matches!(stmt.kind, StmtKind::Def(_))) {
+    // A generator that can fail gives back something its type doesn't say.
+    if (signature.generator && signature.can_fail)
+        || def.body.iter().any(|stmt| matches!(stmt.kind, StmtKind::Def(_)))
+    {
         return None;
     }
     let params = def
@@ -357,5 +362,14 @@ fn function<'m>(
     // `main` hands its result to whatever started the program.
     let direct = Some(layouts.ty(&signature.returns))
         .filter(|ty| signature.can_fail && ty.counted() && def.name != "main");
-    Some(Function { def, key, prelude: false, params, ret, fallible: signature.can_fail, direct })
+    Some(Function {
+        def,
+        key,
+        prelude: false,
+        params,
+        ret,
+        fallible: signature.can_fail,
+        direct,
+        generator: signature.generator,
+    })
 }

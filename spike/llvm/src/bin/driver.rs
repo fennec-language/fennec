@@ -35,6 +35,7 @@ unsafe extern "C" {
         code_model: c_int,
     ) -> Ptr;
     fn LLVMCreatePassBuilderOptions() -> Ptr;
+    fn LLVMPassBuilderOptionsSetLoopUnrolling(options: Ptr, on: c_int);
     fn LLVMRunPasses(m: Ptr, passes: *const c_char, tm: Ptr, options: Ptr) -> Ptr;
     fn LLVMGetErrorMessage(err: Ptr) -> *mut c_char;
     fn LLVMTargetMachineEmitToMemoryBuffer(tm: Ptr, m: Ptr, kind: c_int, err: *mut *mut c_char, buf: *mut Ptr) -> c_int;
@@ -90,6 +91,9 @@ fn main() {
             _ => {}
         }
         let options = LLVMCreatePassBuilderOptions();
+        if std::env::var_os("FEN_NO_UNROLL").is_some() {
+            LLVMPassBuilderOptionsSetLoopUnrolling(options, 0);
+        }
         let init_ms = ms(init);
         let pipeline = cstr(&passes);
         let (mut parse_total, mut opt_total, mut cg_total, mut obj_total, mut text_total) = (0.0, 0.0, 0.0, 0_usize, 0);

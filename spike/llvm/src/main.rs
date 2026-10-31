@@ -14,9 +14,10 @@
 
 mod facts;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use fennec_check::Type;
@@ -31,7 +32,8 @@ target triple = \"arm64-apple-macosx14.0.0\"\n\n";
 // list's length is far from overflowing anything.
 const ATTRS: &str = "attributes #0 = { nounwind \"frame-pointer\"=\"non-leaf\" }\nattributes #1 = { cold nounwind }\nattributes #2 = { alwaysinline nounwind \"frame-pointer\"=\"non-leaf\" }\n\
 !0 = !{!\"fen\"}\n!1 = !{!\"header\", !0, i64 0}\n!2 = !{!\"item\", !0, i64 0}\n\
-!3 = !{!1, !1, i64 0}\n!4 = !{!2, !2, i64 0}\n!5 = !{i64 0, i64 281474976710656}\n";
+!3 = !{!1, !1, i64 0}\n!4 = !{!2, !2, i64 0}\n!5 = !{i64 0, i64 281474976710656}\n\
+!6 = !{!\"branch_weights\", i32 1, i32 100000}\n";
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -39,6 +41,73 @@ type Result<T> = std::result::Result<T, String>;
 enum Abi {
     Checked,
     Plain,
+    /// The failure flag in a register no one else uses: nothing to write on the way out.
+    Reg,
+}
+
+/// What to try on calls, each by itself, to see what it's worth.
+#[derive(Default)]
+struct Options {
+    /// A guard page and a signal handler in place of checking the stack on every call.
+    guard: bool,
+    /// Tells LLVM a call's failure path is cold, as well as a check's.
+    weights: bool,
+    /// No failure flag on a function that can't fail, or anything it calls.
+    nofail: bool,
+    /// The calling convention, with its trailing space.
+    cc: String,
+}
+
+static OPTIONS: OnceLock<Options> = OnceLock::new();
+static CAN_FAIL: OnceLock<HashSet<String>> = OnceLock::new();
+
+fn options() -> &'static Options {
+    OPTIONS.get_or_init(Options::default)
+}
+
+/// Which functions can fail: those with a check that can't be shown to pass, and their callers.
+fn can_fail(program: &Program) -> HashSet<String> {
+    let by_name: HashMap<&str, &Function> = program.functions.iter().map(|f| (f.name.as_str(), f)).collect();
+    let mut failing = HashSet::new();
+    for f in &program.functions {
+        let facts = Facts::of(f, &|callee, at| by_name.get(callee).is_some_and(|c| c.mut_params.contains(&at)));
+        let unnamed = |dest: LocalId| f.locals.get(dest.0).is_some_and(|local| local.name.is_none());
+        let inst_fails = |inst: &InstKind| match inst {
+            InstKind::Binary { dest, op, lhs, rhs } => match (f.type_of(lhs), op) {
+                (Some(Type::Int), BinOp::Add | BinOp::Sub | BinOp::Mul) => {
+                    let steps = *op == BinOp::Add && unnamed(*dest) && *lhs == Operand::Local(*dest) && *rhs == Operand::Int(1);
+                    !steps && !facts.safe.contains(&dest.0)
+                }
+                (Some(Type::Int), BinOp::FloorDiv | BinOp::Mod) => !matches!(rhs, Operand::Int(d) if *d > 0),
+                (Some(Type::Float), BinOp::Div) => !facts.nonzero(rhs),
+                _ => false,
+            },
+            InstKind::Unary { op: UnaryOp::Neg, value, .. } => f.type_of(value) == Some(Type::Int),
+            InstKind::GetIndex { object, index, .. } => !facts.inside(object, index),
+            InstKind::SetIndex { object, path, index, .. } => {
+                !path.is_empty() || !facts.inside(&Operand::Local(*object), index)
+            }
+            _ => false,
+        };
+        let fails = f.blocks.iter().any(|block| {
+            matches!(block.end, Terminator::Stop { .. } | Terminator::NoMatch { .. })
+                || block.insts.iter().any(|inst| inst_fails(&inst.kind))
+        });
+        if fails {
+            failing.insert(f.name.clone());
+        }
+    }
+    loop {
+        let before = failing.len();
+        for f in &program.functions {
+            if callees(f).iter().any(|callee| failing.contains(*callee)) {
+                failing.insert(f.name.clone());
+            }
+        }
+        if failing.len() == before {
+            return failing;
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -143,10 +212,20 @@ impl<'a> Module<'a> {
         })
     }
 
-    fn ret_ty(&self, returns: &Type) -> Result<String> {
+    /// How a function hands back failure: not at all, if it can't fail.
+    fn abi_of(&self, name: &str) -> Abi {
+        let no_failure = options().nofail && options().guard && !CAN_FAIL.get().is_some_and(|set| set.contains(name));
+        if no_failure { Abi::Plain } else { self.abi }
+    }
+
+    fn cc(&self) -> &'static str {
+        options().cc.as_str()
+    }
+
+    fn ret_ty(&self, returns: &Type, name: &str) -> Result<String> {
         let ty = self.ty(returns)?;
-        Ok(match (self.abi, ty.as_str()) {
-            (Abi::Plain, _) => ty,
+        Ok(match (self.abi_of(name), ty.as_str()) {
+            (Abi::Plain | Abi::Reg, _) => ty,
             (Abi::Checked, "void") => "i1".into(),
             (Abi::Checked, _) => format!("{{ {ty}, i1 }}"),
         })
@@ -157,7 +236,10 @@ impl<'a> Module<'a> {
         for (at, local) in f.locals.iter().take(f.params).enumerate() {
             params.push(format!("{} %p{at}", self.ty(&local.ty)?));
         }
-        Ok((self.ret_ty(&f.returns)?, params.join(", ")))
+        if self.abi_of(&f.name) == Abi::Reg {
+            params.push("ptr swifterror %err".to_owned());
+        }
+        Ok((self.ret_ty(&f.returns, &f.name)?, params.join(", ")))
     }
 
     fn declare_function(&mut self, name: &str) -> Result<()> {
@@ -173,7 +255,10 @@ impl<'a> Module<'a> {
         for local in f.locals.iter().take(f.params) {
             params.push(self.ty(&local.ty)?);
         }
-        let line = format!("declare {} {}({}) #0\n", self.ret_ty(&f.returns)?, quote(name), params.join(", "));
+        if self.abi_of(name) == Abi::Reg {
+            params.push("ptr swifterror".to_owned());
+        }
+        let line = format!("declare {}{} {}({}) #0\n", self.cc(), self.ret_ty(&f.returns, name)?, quote(name), params.join(", "));
         self.declares.insert(line);
         Ok(())
     }
@@ -205,7 +290,12 @@ impl<'a> Module<'a> {
         }
         out.push('\n');
         out += &self.bodies;
-        out += ATTRS;
+        if options().guard {
+            // A frame bigger than a page mustn't step over the guard page.
+            out += &ATTRS.replace("nounwind \"frame-pointer\"", "nounwind \"probe-stack\"=\"inline-asm\" \"frame-pointer\"");
+        } else {
+            out += ATTRS;
+        }
         Ok(out)
     }
 
@@ -245,7 +335,9 @@ impl<'a> Module<'a> {
         self_target: Option<String>,
     ) -> Result<()> {
         let (ret, params) = self.signature(f)?;
-        let failed_ret = match (self.abi, ret.as_str()) {
+        let failed_ret = match (self.abi_of(&f.name), ret.as_str()) {
+            (Abi::Reg, "void") => "store ptr inttoptr (i64 1 to ptr), ptr %err\n  ret void".to_owned(),
+            (Abi::Reg, _) => format!("store ptr inttoptr (i64 1 to ptr), ptr %err\n  ret {ret} poison"),
             (Abi::Checked, "i1") => "ret i1 true".to_owned(),
             (Abi::Checked, _) => {
                 let inner = self.ty(&f.returns)?;
@@ -253,7 +345,7 @@ impl<'a> Module<'a> {
             }
             (Abi::Plain, _) => "unreachable".to_owned(),
         };
-        let abi = self.abi;
+        let abi = self.abi_of(&f.name);
         let functions = &self.functions;
         let facts = Facts::of(f, &|callee, at| {
             functions.get(callee).is_some_and(|callee| callee.mut_params.contains(&at))
@@ -269,7 +361,7 @@ impl<'a> Module<'a> {
             facts,
             self_target,
         };
-        let _ = writeln!(emit.out, "define {word}{ret} {symbol}({params}) #{attrs} {{\nentry:");
+        let _ = writeln!(emit.out, "define {word}{}{ret} {symbol}({params}) #{attrs} {{\nentry:", options().cc);
         emit.body(abi, stack_check)?;
         let (out, cold, prop) = (emit.out, emit.cold, emit.needs_prop);
         let text = emit.failed_ret;
@@ -287,13 +379,19 @@ impl<'a> Module<'a> {
         self.declares.insert("declare void @fen_init()\n".into());
         self.declares.insert("declare i32 @fen_finish(i1)\n".into());
         let args = vec!["ptr null"; f.params].join(", ");
-        let body = match self.abi {
+        let cc = self.cc();
+        let body = match self.abi_of(&f.name) {
+            Abi::Reg => format!(
+                "  %e = alloca swifterror ptr\n  store ptr null, ptr %e\n  call void @fen_init()\n  call {cc}void {}({}ptr swifterror %e)\n  %v = load ptr, ptr %e\n  %r = icmp ne ptr %v, null\n  %c = call i32 @fen_finish(i1 %r)\n  ret i32 %c\n",
+                quote(&f.name),
+                if args.is_empty() { String::new() } else { format!("{args}, ") },
+            ),
             Abi::Checked => format!(
-                "  call void @fen_init()\n  %r = call i1 {}({args})\n  %c = call i32 @fen_finish(i1 %r)\n  ret i32 %c\n",
+                "  call void @fen_init()\n  %r = call {cc}i1 {}({args})\n  %c = call i32 @fen_finish(i1 %r)\n  ret i32 %c\n",
                 quote(&f.name)
             ),
             Abi::Plain => format!(
-                "  call void @fen_init()\n  call void {}({args})\n  %c = call i32 @fen_finish(i1 false)\n  ret i32 %c\n",
+                "  call void @fen_init()\n  call {cc}void {}({args})\n  %c = call i32 @fen_finish(i1 false)\n  ret i32 %c\n",
                 quote(&f.name)
             ),
         };
@@ -343,7 +441,7 @@ impl<'a> Emit<'_, 'a> {
             self.line(&format!("store {ty} %p{at}, ptr %l{at}"));
         }
         // A function that calls nothing has a known, small frame: the margin covers it.
-        if stack_check && abi == Abi::Checked && !callees(self.f).is_empty() {
+        if stack_check && abi != Abi::Plain && !options().guard && !callees(self.f).is_empty() {
             self.m.declares.insert("declare ptr @llvm.frameaddress.p0(i32)\n".into());
             self.m.declares.insert("@fen_stack_limit = external dso_local global i64\n".into());
             let (sp, limit) = (self.temp(), self.temp());
@@ -373,9 +471,10 @@ impl<'a> Emit<'_, 'a> {
     fn check(&mut self, bad: &str, kind: u32, span: u64) {
         let fail = self.label("fail");
         let ok = self.label("ok");
-        self.line(&format!("br i1 {bad}, label %{fail}, label %{ok}"));
+        let weights = if options().weights { ", !prof !6" } else { "" };
+        self.line(&format!("br i1 {bad}, label %{fail}, label %{ok}{weights}"));
         let _ = writeln!(self.out, "{ok}:");
-        let died = self.m.abi == Abi::Plain;
+        let died = self.m.abi_of(&self.f.name) == Abi::Plain;
         let callee = if died { "fen_die" } else { "fen_fail" };
         self.m.declares.insert(format!("declare void @{callee}(i32, i64) #1\n"));
         let end = self.failed_ret.clone();
@@ -635,8 +734,14 @@ impl<'a> Emit<'_, 'a> {
             let (value, ty) = self.operand(arg)?;
             shown.push(format!("{} {value}", self.m.ty(&ty)?));
         }
-        let ret = self.m.ret_ty(&callee.returns)?;
+        let ret = self.m.ret_ty(&callee.returns, name)?;
+        let callee_abi = self.m.abi_of(name);
+        if callee_abi == Abi::Reg {
+            shown.push("ptr swifterror %err".to_owned());
+        }
         let shown = shown.join(", ");
+        let cc = self.m.cc();
+        let weights = if options().weights { ", !prof !6" } else { "" };
         let target = if name == self.f.name {
             self.self_target.clone().unwrap_or_else(|| quote(name))
         } else if self.m.indirect && !self.m.defined.contains(name) {
@@ -647,14 +752,28 @@ impl<'a> Emit<'_, 'a> {
         } else {
             quote(name)
         };
-        if ret == "void" {
-            self.line(&format!("call void {target}({shown})"));
-            return Ok(());
-        }
         let result = self.temp();
-        self.line(&format!("{result} = call {ret} {target}({shown})"));
-        let value = match self.m.abi {
+        if ret == "void" {
+            self.line(&format!("call {cc}void {target}({shown})"));
+        } else {
+            self.line(&format!("{result} = call {cc}{ret} {target}({shown})"));
+        }
+        let value = match callee_abi {
+            Abi::Plain if ret == "void" => return Ok(()),
             Abi::Plain => result,
+            Abi::Reg => {
+                let (held, flag) = (self.temp(), self.temp());
+                let ok = self.label("ok");
+                self.line(&format!("{held} = load ptr, ptr %err"));
+                self.line(&format!("{flag} = icmp ne ptr {held}, null"));
+                self.needs_prop = true;
+                self.line(&format!("br i1 {flag}, label %prop, label %{ok}{weights}"));
+                let _ = writeln!(self.out, "{ok}:");
+                if ret == "void" {
+                    return Ok(());
+                }
+                result
+            }
             Abi::Checked => {
                 let flag = if ret == "i1" {
                     result.clone()
@@ -665,7 +784,7 @@ impl<'a> Emit<'_, 'a> {
                 };
                 let ok = self.label("ok");
                 self.needs_prop = true;
-                self.line(&format!("br i1 {flag}, label %prop, label %{ok}"));
+                self.line(&format!("br i1 {flag}, label %prop, label %{ok}{weights}"));
                 let _ = writeln!(self.out, "{ok}:");
                 if ret == "i1" {
                     return Ok(());
@@ -905,10 +1024,10 @@ impl<'a> Emit<'_, 'a> {
             }
             Terminator::Return(value) => {
                 let value = value.as_ref().map(|value| self.operand(value)).transpose()?;
-                let ret = self.m.ret_ty(&self.f.returns)?;
-                match (self.m.abi, value, ret.as_str()) {
-                    (Abi::Plain, _, "void") => self.line("ret void"),
-                    (Abi::Plain, Some((value, _)), _) => self.line(&format!("ret {ret} {value}")),
+                let ret = self.m.ret_ty(&self.f.returns, &self.f.name)?;
+                match (self.m.abi_of(&self.f.name), value, ret.as_str()) {
+                    (Abi::Plain | Abi::Reg, _, "void") => self.line("ret void"),
+                    (Abi::Plain | Abi::Reg, Some((value, _)), _) => self.line(&format!("ret {ret} {value}")),
                     (Abi::Checked, _, "i1") => self.line("ret i1 false"),
                     (Abi::Checked, Some((value, _)), _) => {
                         let inner = self.m.ty(&self.f.returns)?;
@@ -926,7 +1045,7 @@ impl<'a> Emit<'_, 'a> {
                 let (fail, ok) = (self.label("stop"), self.label("dead"));
                 self.line(&format!("br i1 {done}, label %{fail}, label %{ok}"));
                 let _ = writeln!(self.out, "{ok}:\n  unreachable");
-                let died = self.m.abi == Abi::Plain;
+                let died = self.m.abi_of(&self.f.name) == Abi::Plain;
                 let callee = if died { "fen_die" } else { "fen_fail" };
                 self.m.declares.insert(format!("declare void @{callee}(i32, i64) #1\n"));
                 let text = self.failed_ret.clone();
@@ -1001,13 +1120,24 @@ fn run() -> Result<()> {
         return Err("usage: llvm-spike <file.fen> <out dir> [--abi checked|plain] [--import N] [--dump]".to_owned());
     };
     let mut abi = Abi::Checked;
+    let mut choices = Options::default();
     let mut import = 0;
     let mut dump = false;
     let mut indirect = false;
     let mut flags = rest.iter();
     while let Some(flag) = flags.next() {
         match flag.as_str() {
-            "--abi" => abi = if flags.next().is_some_and(|word| word == "plain") { Abi::Plain } else { Abi::Checked },
+            "--abi" => {
+                abi = match flags.next().map(String::as_str) {
+                    Some("plain") => Abi::Plain,
+                    Some("reg") => Abi::Reg,
+                    _ => Abi::Checked,
+                }
+            }
+            "--guard" => choices.guard = true,
+            "--weights" => choices.weights = true,
+            "--nofail" => choices.nofail = true,
+            "--cc" => choices.cc = format!("{} ", flags.next().ok_or("--cc needs a name")?),
             "--import" => import = flags.next().and_then(|word| word.parse().ok()).ok_or("--import needs a number")?,
             "--dump" => dump = true,
             "--indirect" => indirect = true,
@@ -1028,6 +1158,11 @@ fn run() -> Result<()> {
     let recheck_ms = at.elapsed().as_secs_f64() * 1e3;
     let at = Instant::now();
     let program = fennec_ir::lower(&loaded.module, &checked);
+    if abi == Abi::Reg {
+        choices.cc = "swiftcc ".to_owned();
+    }
+    let _ = CAN_FAIL.set(can_fail(&program));
+    let _ = OPTIONS.set(choices);
     let lower_ms = at.elapsed().as_secs_f64() * 1e3;
     let front = started.elapsed();
     // What finding the changed functions costs: printing and hashing every one's IR.

@@ -1,5 +1,7 @@
 // The spike's runtime: lists, printing and failure, enough for the kernels it lowers.
 #include <pthread.h>
+#include <signal.h>
+#include <unistd.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -16,7 +18,24 @@ uint64_t fen_stack_limit = 0;
 static int failed_kind = 0;
 static int64_t failed_span = 0;
 
+// The stack's guard page, when nothing checks on each call: running into it ends the program.
+static void on_fault(int sig) {
+    (void)sig;
+    static const char text[] = "failed: the stack overflowed\n";
+    fflush(stdout);
+    (void)!write(2, text, sizeof text - 1);
+    _exit(1);
+}
+
 void fen_init(void) {
+    static char alternate[1 << 16];
+    stack_t stack = {.ss_sp = alternate, .ss_size = sizeof alternate, .ss_flags = 0};
+    sigaltstack(&stack, NULL);
+    struct sigaction action = {0};
+    action.sa_handler = on_fault;
+    action.sa_flags = SA_ONSTACK;
+    sigaction(SIGSEGV, &action, NULL);
+    sigaction(SIGBUS, &action, NULL);
     pthread_t self = pthread_self();
     fen_stack_limit = (uint64_t)pthread_get_stackaddr_np(self) - pthread_get_stacksize_np(self) + 65536;
     static char buffer[1 << 16];

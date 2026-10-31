@@ -148,9 +148,10 @@ fn bytes(state: &State, address: i64) -> Option<(Vec<u8>, usize)> {
     Some((words.iter().flat_map(|word| word.to_le_bytes()).take(length).collect(), chars))
 }
 
-/// The bytes `from..to` of an ASCII string's block, copying only those.
-fn ascii_part(state: &State, address: i64, from: i64, to: i64) -> Option<String> {
-    let block = state.heap.block(u64::try_from(address).ok()?)?;
+/// A new string with the bytes `from..to` of an ASCII string's block, copying only those.
+fn ascii_part(state: &mut State, address: i64, from: i64, to: i64) -> Option<i64> {
+    let source = u64::try_from(address).ok()?;
+    let block = state.heap.block(source)?;
     let (length, chars) = (*block.get(2)?, *block.get(3)?);
     if !super::heap::is_text(state, block) || length != chars {
         return None;
@@ -163,18 +164,45 @@ fn ascii_part(state: &State, address: i64, from: i64, to: i64) -> Option<String>
         usize::try_from(at.clamp(0, length)).unwrap_or(0)
     };
     let (from, to) = (bound(from, 0), bound(to, length));
-    let words = block.get(TEXT_HEADER_WORDS..)?;
-    let part: Vec<u8> = (from..to.max(from))
-        .filter_map(|at| words.get(at / 8).and_then(|word| word.to_le_bytes().get(at % 8).copied()))
-        .collect();
-    String::from_utf8(part).ok()
+    let size = to.saturating_sub(from);
+    if size == 1 {
+        let word = block.get(TEXT_HEADER_WORDS + from / 8)?;
+        let byte = word.to_le_bytes().get(from % 8).copied()?;
+        return state.tables.ascii.get(usize::from(byte)).and_then(|at| i64::try_from(*at).ok());
+    }
+    let words = size.div_ceil(8).max(1);
+    let mut made = state.heap.fresh(TEXT_HEADER_WORDS + words);
+    let number = |n: usize| u64::try_from(n).unwrap_or(0);
+    made.get_mut(..TEXT_HEADER_WORDS)?.copy_from_slice(&[
+        1,
+        state.tables.str_shape,
+        number(size),
+        number(size),
+        number(words * 8),
+    ]);
+    let text = state.heap.block(source)?.get(TEXT_HEADER_WORDS..)?;
+    // Each word of the part is made of the end of one word and the start of the next.
+    let shift = u32::try_from(from % 8).unwrap_or(0) * 8;
+    for (at, to_word) in made.get_mut(TEXT_HEADER_WORDS..)?.iter_mut().enumerate().take(size.div_ceil(8)) {
+        let low = text.get(from / 8 + at).copied().unwrap_or(0) >> shift;
+        let high =
+            if shift == 0 { 0 } else { text.get(from / 8 + at + 1).copied().unwrap_or(0) << (64 - shift) };
+        *to_word = low | high;
+    }
+    // What's past the end of the part reads as zero, as native code expects.
+    if size % 8 != 0
+        && let Some(last) = made.get_mut(TEXT_HEADER_WORDS + size / 8)
+    {
+        *last &= (1_u64 << (u32::try_from(size % 8).unwrap_or(0) * 8)) - 1;
+    }
+    Some(state.heap.insert(made))
 }
 
 /// `text[from:to]`, where a missing end is `i64::MIN`.
 pub extern "C" fn slice(address: i64, from: i64, to: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         if let Some(part) = ascii_part(state, address, from, to) {
-            return Ok(text_address(state, &part));
+            return Ok(part);
         }
         let (all, _) = bytes(state, address).ok_or_else(|| lost(start, end))?;
         let whole = Value::str(&String::from_utf8(all).unwrap_or_default());

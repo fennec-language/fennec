@@ -160,6 +160,76 @@ impl Lowerer<'_, '_> {
         if builtin { self.native_sum(call, args) } else { Ok(None) }
     }
 
+    /// `any(...)` or `all(...)` of a generator, made by an ordinary native loop that stops at
+    /// the first item that settles it, when the call is to the built-in one.
+    pub(super) fn any_or_all_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Arg],
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let ExprKind::Name(name) = &callee.kind else { return Ok(None) };
+        let any = name == "any";
+        if (!any && name != "all") || self.local(name).is_some() || self.shared.compiled.contains_key(name) {
+            return Ok(None);
+        }
+        let [
+            Arg {
+                name: None,
+                is_mut: false,
+                value:
+                    Expr {
+                        kind:
+                            ExprKind::Comprehension {
+                                kind: CompKind::Generator,
+                                elem,
+                                value: None,
+                                names,
+                                iter,
+                                cond,
+                            },
+                        span,
+                    },
+            },
+        ] = args
+        else {
+            return Ok(None);
+        };
+        if self.checked_expr(elem) != Some(Ty::Bool) {
+            return Ok(None);
+        }
+        let span = *span;
+        let answer = hidden("answer", span);
+        let start = self.b.ins().iconst(types::I8, i64::from(!any));
+        let settled = Stmt {
+            kind: StmtKind::Assign {
+                target: name_expr(&answer, span),
+                op: None,
+                value: Expr { kind: ExprKind::Bool(any), span },
+                declare_mut: false,
+                ty: None,
+            },
+            span,
+        };
+        let test = if any {
+            (**elem).clone()
+        } else {
+            Expr {
+                kind: ExprKind::Unary { op: fennec_syntax::UnaryOp::Not, expr: elem.clone() },
+                span: elem.span,
+            }
+        };
+        let stop = StmtKind::If {
+            branches: vec![(test, vec![settled, Stmt { kind: StmtKind::Break, span }])],
+            otherwise: None,
+        };
+        self.open_scope();
+        self.bind_native(&answer, Ty::Bool, Some(start), true);
+        self.stmt_inside_expr(&comp_loop(names, iter, cond.as_deref(), stop, span))?;
+        let made = self.local(&answer).and_then(|local| local.var).map(|var| self.b.use_var(var));
+        self.close_scope()?;
+        Ok(Some((made, Ty::Bool)))
+    }
+
     /// `sorted(items)` when the list holds numbers or strings, or `sorted(items, key=(item) =>
     /// ...)` when the keys are, for any native list. The runtime does the sorting.
     pub(super) fn sorted_call(

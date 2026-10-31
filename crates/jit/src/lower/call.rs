@@ -109,6 +109,9 @@ impl Lowerer<'_, '_> {
         if let Some(text) = self.str_call(callee, args)? {
             return Ok(Some(text));
         }
+        if let Some(settled) = self.any_or_all_call(callee, args)? {
+            return Ok(Some(settled));
+        }
         if let Some(changed) = self.call_inside(expr, callee, args)? {
             return Ok(Some(changed));
         }

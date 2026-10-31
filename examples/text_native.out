@@ -11,3 +11,9 @@ a,b,c x  0, 1, 2
 ["b", "c"] ["a", "b", "c"] b 1
 2 [Point(x=1, y=1.0)]
 [7, 3, 4, 5, 9] [0, 1, 2, 3, 4, 5]
+True False True False
+False True True
+False True False True False True False
+abcdefghi defghijk h bcdefghijklmnopq  uvwxyz xyz 0 8
+True abcdefghijklmnop écde é éb
+2 True

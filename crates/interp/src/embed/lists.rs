@@ -390,10 +390,10 @@ pub extern "C" fn slice(list: i64, from: i64, to: i64) -> i64 {
             }
             (if at < 0 { at + length } else { at }).clamp(0, length)
         };
-        let (first, last) = (place(from, 0), place(to, length));
-        let word = |at: i64| usize::try_from(at).unwrap_or(0) * stride;
-        let kept = if first < last {
-            words.get(word(first)..word(last)).unwrap_or_default().to_vec()
+        let (begin, stop) = (place(from, 0), place(to, length));
+        let offset = |at: i64| usize::try_from(at).unwrap_or(0) * stride;
+        let kept = if begin < stop {
+            words.get(offset(begin)..offset(stop)).unwrap_or_default().to_vec()
         } else {
             Vec::new()
         };

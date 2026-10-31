@@ -146,9 +146,13 @@ impl<'a> Analyzer<'_, 'a> {
             (Role::Keyword, "in" | "is") if binary => 3,
             (Role::Keyword, "not") if binary && next == "in" => 3,
             (Role::Operator, "==" | "!=" | "<" | "<=" | ">" | ">=") => 3,
-            (Role::Operator, "+" | "-") => 4,
-            (Role::Operator, "*" | "/" | "//" | "%") => 5,
-            (Role::Operator, "**") => 6,
+            (Role::Operator, "|") => 4,
+            (Role::Operator, "^") => 5,
+            (Role::Operator, "&") => 6,
+            (Role::Operator, "<<" | ">>") => 7,
+            (Role::Operator, "+" | "-") => 8,
+            (Role::Operator, "*" | "/" | "//" | "%") => 9,
+            (Role::Operator, "**") => 10,
             _ => 0,
         }
     }
@@ -200,7 +204,7 @@ impl<'a> Analyzer<'_, 'a> {
             "." if after_operand => Role::Attr,
             "." => Role::VariantDot,
             "?" => Role::Postfix,
-            "-" if !after_operand => Role::UnaryMinus,
+            "-" | "~" if !after_operand => Role::UnaryMinus,
             "=" if self.is_kwarg(at) => Role::KwargEq,
             _ => Role::Operator,
         }

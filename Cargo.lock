@@ -332,6 +332,7 @@ dependencies = [
  "fennec-build",
  "fennec-check",
  "fennec-interp",
+ "fennec-ir",
  "fennec-runtime",
  "fennec-syntax",
 ]

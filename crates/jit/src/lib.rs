@@ -49,6 +49,8 @@ pub struct Report {
     pub cached: usize,
     /// What the run allocated and copied.
     pub counts: fennec_interp::embed::Counts,
+    /// The functions lowered from the typed IR rather than the syntax tree.
+    pub from_ir: Vec<String>,
 }
 
 /// Compiles `module` to native code and runs its `main`, writing what it prints to `out`.
@@ -196,6 +198,7 @@ fn compile_and_run(
             leftover_boxes: result.leftovers.boxes,
             counts: result.leftovers.counts,
             cached: compilation.cached,
+            from_ir: compilation.from_ir,
         }),
     };
     Ok((result.output, report))

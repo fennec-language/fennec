@@ -61,13 +61,13 @@ fn bytes(count: u64) -> String {
 
 pub(crate) fn copies(path: &str) -> ExitCode {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    if let Err(diagnostics) = fennec_check::check_typed(&program.module) {
+    if let Err(diagnostics) = fennec_check::check(&program.module) {
         eprint!("{}", program.sources.render_all(&diagnostics));
         return ExitCode::FAILURE;
     }
     // Only what runs matters. It checked whole, so what's left does too.
     fennec_build::keep_what_main_reaches(&mut program.module);
-    let checked = match fennec_check::check_typed(&program.module) {
+    let checked = match fennec_check::check(&program.module) {
         Ok(checked) => checked,
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));

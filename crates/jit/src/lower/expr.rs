@@ -230,7 +230,7 @@ impl Lowerer<'_, '_> {
         self.help(boxing, &[value])
     }
 
-    fn unary(
+    pub(super) fn unary(
         &mut self,
         op: UnaryOp,
         (value, ty): Lowered,

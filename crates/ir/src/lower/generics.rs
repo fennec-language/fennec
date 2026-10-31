@@ -10,6 +10,26 @@ use fennec_check::{Signature, Type};
 
 use super::{Context, Lowering};
 
+/// How many copies of generic functions a program can ask for.
+const MOST_COPIES: usize = 2000;
+
+/// How deeply a type a generic function is copied for can nest.
+const DEEPEST_TYPE: usize = 32;
+
+/// How deeply a type nests.
+fn depth(ty: &Type) -> usize {
+    let deepest = |types: &[Type]| types.iter().map(depth).max().unwrap_or(0);
+    1 + match ty {
+        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::IdMap(item) | Type::Id(item) => {
+            depth(item)
+        }
+        Type::Dict(first, second) | Type::Result(first, second) => depth(first).max(depth(second)),
+        Type::Tuple(items) | Type::Generic(_, items) => deepest(items),
+        Type::Arrow(params, returns) => deepest(params).max(depth(returns)),
+        _ => 0,
+    }
+}
+
 /// What each type parameter stands for.
 pub(super) type Subst = BTreeMap<String, Type>;
 
@@ -125,15 +145,25 @@ impl Context<'_> {
         filled
     }
 
-    /// Asks for a copy of a generic function, and gives its name.
-    fn request(&self, base: &str, subst: Subst) -> String {
+    /// Asks for a copy of a generic function, and gives its name. `None` once a program has
+    /// asked for too many, as one does when a generic calls itself with a bigger type each
+    /// time, which would never finish.
+    fn request(&self, base: &str, subst: Subst) -> Option<String> {
+        if subst.values().any(|ty| depth(ty) > DEEPEST_TYPE) {
+            return None;
+        }
         let args: Vec<String> = subst.values().map(ToString::to_string).collect();
         let name = format!("{base}[{}]", args.join(", "));
-        if self.instances.seen.borrow_mut().insert(name.clone()) {
+        let mut seen = self.instances.seen.borrow_mut();
+        if !seen.contains(&name) {
+            if seen.len() >= MOST_COPIES {
+                return None;
+            }
+            seen.insert(name.clone());
             let instance = FunctionInstance { base: base.to_owned(), name: name.clone(), subst };
             self.instances.waiting.borrow_mut().push(instance);
         }
-        name
+        Some(name)
     }
 
     /// Works out what the type parameters in `pattern` stand for, given a value's type.
@@ -204,7 +234,7 @@ impl Lowering<'_> {
     ) -> Option<(String, Signature)> {
         let context = self.context;
         let base = context.base_key(key);
-        let raw = context.checked.signatures.get(&base)?;
+        let raw = context.signatures.get(&base)?;
         let mut subst = key
             .rsplit_once('.')
             .and_then(|(owner, _)| context.type_instance(owner))
@@ -225,6 +255,6 @@ impl Lowering<'_> {
         if is_generic(&filled) {
             return None;
         }
-        Some((context.request(&base, subst), filled))
+        Some((context.request(&base, subst)?, filled))
     }
 }

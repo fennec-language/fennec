@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Target {
     pub(crate) instructions: u64,
+    /// How long its work took when pinned, in microseconds, on the machine that pinned it.
+    pub(crate) micros: u64,
     /// A hash of what the kernel must print.
     pub(crate) output: String,
     /// A hash of the kernel and its twin as they were pinned. The suite is locked: a kernel
@@ -25,7 +27,7 @@ pub(crate) type Targets = BTreeMap<String, Target>;
 
 const HEADER: &str = "# Written by `fennec-bench pin`. Only the last column is edited by hand: `yes` once a kernel\n\
                       # reaches the JIT's floor, so it can't drop below it again.\n\
-                      # kernel instructions output source enforced\n";
+                      # kernel instructions micros output source enforced\n";
 
 /// This machine's targets file under `dir`.
 pub(crate) fn path(dir: &Path) -> PathBuf {
@@ -45,10 +47,11 @@ fn parse(text: &str) -> Result<Targets, String> {
     let mut targets = Targets::new();
     for line in text.lines().filter(|line| !line.is_empty() && !line.starts_with('#')) {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        let [kernel, instructions, output, source, enforced] = parts.as_slice() else {
+        let [kernel, instructions, micros, output, source, enforced] = parts.as_slice() else {
             return Err(line.to_owned());
         };
         let instructions = instructions.parse().map_err(|_| line.to_owned())?;
+        let micros = micros.parse().map_err(|_| line.to_owned())?;
         let enforced = match *enforced {
             "yes" => true,
             "no" => false,
@@ -56,7 +59,13 @@ fn parse(text: &str) -> Result<Targets, String> {
         };
         targets.insert(
             (*kernel).to_owned(),
-            Target { instructions, output: (*output).to_owned(), source: (*source).to_owned(), enforced },
+            Target {
+                instructions,
+                micros,
+                output: (*output).to_owned(),
+                source: (*source).to_owned(),
+                enforced,
+            },
         );
     }
     Ok(targets)
@@ -76,8 +85,11 @@ fn text(targets: &Targets) -> String {
     let mut text = HEADER.to_owned();
     for (kernel, target) in targets {
         let enforced = if target.enforced { "yes" } else { "no" };
-        let _ =
-            writeln!(text, "{kernel} {} {} {} {enforced}", target.instructions, target.output, target.source);
+        let _ = writeln!(
+            text,
+            "{kernel} {} {} {} {} {enforced}",
+            target.instructions, target.micros, target.output, target.source
+        );
     }
     text
 }
@@ -91,19 +103,31 @@ mod tests {
         let mut targets = Targets::new();
         targets.insert(
             "fib".to_owned(),
-            Target { instructions: 5, output: "abc".to_owned(), source: "s".to_owned(), enforced: true },
+            Target {
+                instructions: 5,
+                micros: 9,
+                output: "abc".to_owned(),
+                source: "s".to_owned(),
+                enforced: true,
+            },
         );
         targets.insert(
             "sort".to_owned(),
-            Target { instructions: 7, output: "def".to_owned(), source: "t".to_owned(), enforced: false },
+            Target {
+                instructions: 7,
+                micros: 8,
+                output: "def".to_owned(),
+                source: "t".to_owned(),
+                enforced: false,
+            },
         );
         assert_eq!(parse(&text(&targets)), Ok(targets));
     }
 
     #[test]
     fn a_broken_line_is_named() {
-        assert_eq!(parse("fib 5 abc s\n"), Err("fib 5 abc s".to_owned()));
-        assert_eq!(parse("fib five abc s yes\n"), Err("fib five abc s yes".to_owned()));
-        assert_eq!(parse("fib 5 abc s maybe\n"), Err("fib 5 abc s maybe".to_owned()));
+        assert_eq!(parse("fib 5 9 abc s\n"), Err("fib 5 9 abc s".to_owned()));
+        assert_eq!(parse("fib five 9 abc s yes\n"), Err("fib five 9 abc s yes".to_owned()));
+        assert_eq!(parse("fib 5 9 abc s maybe\n"), Err("fib 5 9 abc s maybe".to_owned()));
     }
 }

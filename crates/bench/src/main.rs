@@ -6,10 +6,14 @@
 //!
 //! ```text
 //! fennec-bench [--fennec PATH] [--previous PATH] [--runs N] [--kernels DIR] [--report-only]
+//! fennec-bench budgets [--fennec PATH] [--runs N] [--files N]
 //! ```
+//!
+//! `budgets` measures something else: see the `budgets` module.
 #![expect(clippy::print_stdout, reason = "the suite prints its table")]
 #![expect(clippy::print_stderr, reason = "the suite reports failures")]
 
+mod budgets;
 mod measure;
 mod report;
 
@@ -36,8 +40,36 @@ struct Found {
     errors: Vec<String>,
 }
 
+/// `fennec-bench budgets`: fails when an enforced budget isn't met.
+fn budgets(mut args: impl Iterator<Item = String>) -> std::result::Result<bool, String> {
+    let (mut fennec, mut runs, mut files) = (PathBuf::from("target/release/fennec"), 7, 140);
+    while let Some(flag) = args.next() {
+        let value = args.next().ok_or_else(|| format!("`{flag}` needs a value"))?;
+        let number = || value.parse().map_err(|_| format!("`{flag}` needs a number, not `{value}`"));
+        match flag.as_str() {
+            "--fennec" => fennec = PathBuf::from(&value),
+            "--runs" => runs = number()?,
+            "--files" => files = number()?,
+            _ => return Err(format!("unknown option `{flag}`")),
+        }
+    }
+    budgets::run(&fennec, runs, files)
+}
+
 fn main() -> ExitCode {
-    let options = match options(std::env::args().skip(1)) {
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().is_some_and(|first| first == "budgets") {
+        args.next();
+        return match budgets(args) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let options = match options(args) {
         Ok(options) => options,
         Err(message) => {
             eprintln!("error: {message}");

@@ -265,3 +265,51 @@ fn function_types_let_arrow_functions_be_passed_to_your_own_functions() {
         ]
     );
 }
+
+#[test]
+fn self_in_an_interface_is_the_type_that_fits_it() {
+    let program = "
+        interface Addable:
+            def +(self, other: Self) -> Self
+
+        interface Before:
+            def <(self, other: Self) -> bool
+
+        interface Signed:
+            def abs(self) -> Self
+
+        struct Point:
+            x = 0
+
+        def twice[T: Addable](x: T) -> T:
+            x + x
+
+        def size[T: Signed](x: T) -> T:
+            x.abs() + x
+
+        def first[T: Before](xs: list[T]) -> T:
+            min(xs)
+
+        def any_first[T](xs: list[T]) -> T:
+            max(xs)
+
+        def main(stdout: Stdout):
+            stdout.print(twice(1) + 'a', twice('a') + 1, size(1.5) + 'a')
+            stdout.print(twice(True), twice(Point()), size('a'), first([1]) + 'a', first([Point()]))
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "can't use `+` on a T and a T @ x.abs() + x",
+            "`max` compares its items with `<`, but `T` could be any type @ max(xs)",
+            "can't use `+` on an int and a str @ twice(1) + \"a\"",
+            "can't use `+` on a str and an int @ twice(\"a\") + 1",
+            "can't use `+` on a float and a str @ size(1.5) + \"a\"",
+            "a bool isn't an `Addable`: it has no `+(self, other: Self) -> Self` @ twice(True)",
+            "`Point` isn't an `Addable`: it has no `+(self, other: Self) -> Self` @ twice(Point())",
+            "a str isn't a `Signed`: it has no `abs(self) -> Self` @ size(\"a\")",
+            "can't use `+` on an int and a str @ first([1]) + \"a\"",
+            "`Point` isn't a `Before`: it has no `<(self, other: Self) -> bool` @ first([Point()])",
+        ]
+    );
+}

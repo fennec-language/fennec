@@ -57,7 +57,7 @@ The next milestone moves Fennec's checks from runtime to compile time.
 - Waiting on I/O without `async`: the runtime runs other work, and independent reads overlap automatically.
 - `parallel(...)` loops, with the compiler suggesting where they're safe and worthwhile.
 - Tasks scoped to a `with` block, locks and channels.
-- `http`, `net`, `tls` and `sqlite`.
+- `net`, for TCP, UDP, TLS, HTTP and WebSocket, and `sql`.
 
 ## Later
 

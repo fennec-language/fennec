@@ -136,16 +136,8 @@ impl Lowerer<'_, '_> {
     }
 
     fn narrow_to(&mut self, value: Value, op: BinOp, limit: i64, holds: bool) {
-        let op = if holds { Some(op) } else { negated(op) };
         let old = self.range(value);
-        let new = match op {
-            Some(BinOp::Lt) => (old.0, old.1.min(limit.saturating_sub(1))),
-            Some(BinOp::LtEq) => (old.0, old.1.min(limit)),
-            Some(BinOp::Gt) => (old.0.max(limit.saturating_add(1)), old.1),
-            Some(BinOp::GtEq) => (old.0.max(limit), old.1),
-            Some(BinOp::Eq) => (limit, limit),
-            _ => return,
-        };
+        let Some(new) = narrowed_range(old, op, limit, holds) else { return };
         self.facts.narrowed.push((value, old));
         self.facts.ranges.insert(value, new);
     }
@@ -241,6 +233,20 @@ impl Lowerer<'_, '_> {
     }
 }
 
+/// What's known about an int once `int op limit` has come out as `holds`, when that says
+/// anything.
+pub(super) fn narrowed_range(old: (i64, i64), op: BinOp, limit: i64, holds: bool) -> Option<(i64, i64)> {
+    let op = if holds { Some(op) } else { negated(op) };
+    Some(match op {
+        Some(BinOp::Lt) => (old.0, old.1.min(limit.saturating_sub(1))),
+        Some(BinOp::LtEq) => (old.0, old.1.min(limit)),
+        Some(BinOp::Gt) => (old.0.max(limit.saturating_add(1)), old.1),
+        Some(BinOp::GtEq) => (old.0.max(limit), old.1),
+        Some(BinOp::Eq) => (limit, limit),
+        _ => return None,
+    })
+}
+
 /// An int written in the program.
 fn literal_int(expr: &Expr) -> Option<i64> {
     match &expr.kind {
@@ -251,7 +257,7 @@ fn literal_int(expr: &Expr) -> Option<i64> {
 }
 
 /// The comparison that says the same with its sides swapped.
-fn flipped(op: BinOp) -> Option<BinOp> {
+pub(super) fn flipped(op: BinOp) -> Option<BinOp> {
     Some(match op {
         BinOp::Lt => BinOp::Gt,
         BinOp::LtEq => BinOp::GtEq,

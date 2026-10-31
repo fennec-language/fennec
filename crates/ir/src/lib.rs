@@ -26,6 +26,7 @@
 //! can't be lowered is listed in [`Program::not_lowered`], with why, and no example has one.
 //! Tests aren't lowered yet.
 
+mod costs;
 mod lower;
 mod print;
 mod validate;
@@ -33,6 +34,7 @@ mod validate;
 use fennec_check::Type;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
+pub use costs::{Cost, Finding, costs};
 pub use lower::lower;
 pub use validate::validate;
 

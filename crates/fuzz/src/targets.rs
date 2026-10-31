@@ -90,7 +90,9 @@ const PATTERNS: [&str; 20] = [
 
 const BYTES: [&str; 8] = ["\u{7f}", "é", "🦊", "\u{800}", "\u{10ffff}", "\0", "a", "\u{fffd}"];
 
-pub(crate) const TARGETS: [Target; 7] = [
+const ANYTHING: [&str; 4] = ["\0", "\u{7f}", "é", "🦊"];
+
+pub(crate) const TARGETS: [Target; 9] = [
     Target { name: "lexer", corpus: &PROGRAMS, tokens: &SYNTAX, run: lexer },
     Target { name: "parser", corpus: &PROGRAMS, tokens: &SYNTAX, run: parser },
     Target { name: "formatter", corpus: &PROGRAMS, tokens: &SYNTAX, run: formatter },
@@ -98,6 +100,13 @@ pub(crate) const TARGETS: [Target; 7] = [
     Target { name: "json", corpus: &["crates/fuzz/seeds/json"], tokens: &JSON, run: json },
     Target { name: "toml", corpus: &["crates/fuzz/seeds/toml"], tokens: &TOML, run: toml },
     Target { name: "regex", corpus: &["crates/fuzz/seeds/regex"], tokens: &PATTERNS, run: regex },
+    Target { name: "jit", corpus: &["crates/fuzz/seeds/jit"], tokens: &ANYTHING, run: crate::engines::jit },
+    Target {
+        name: "runtime",
+        corpus: &["crates/fuzz/seeds/abi"],
+        tokens: &ANYTHING,
+        run: crate::engines::runtime,
+    },
 ];
 
 /// The UTF-8 reader is fuzzed with the bytes it's given, so it has its own way to be run.

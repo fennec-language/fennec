@@ -198,13 +198,12 @@ impl Lowerer<'_, '_> {
         let at = self.b.declare_var(types::I64);
         let zero = self.int(0);
         self.b.def_var(at, zero);
-        let [header, live, inside, advance, exit] = [(); 5].map(|()| self.b.create_block());
-        self.b.ins().jump(header, &[]);
-        self.b.switch_to_block(header);
-        let here = self.b.use_var(at);
-        let more = self.b.ins().icmp(IntCC::UnsignedLessThan, here, used);
+        let [live, inside, advance, exit] = [(); 4].map(|()| self.b.create_block());
+        // The test comes first, then again at the bottom, so going round takes one jump.
+        let more = self.b.ins().icmp(IntCC::UnsignedLessThan, zero, used);
         self.b.ins().brif(more, live, &[], exit, &[]);
         self.b.switch_to_block(live);
+        let here = self.b.use_var(at);
         let offset = self.b.ins().imul_imm_s(here, i64::try_from(ENTRY_WORDS * 8).unwrap_or(0));
         let entry = self.b.ins().iadd(entries, offset);
         let hash = self.b.ins().load(types::I64, flags, entry, 0);
@@ -238,7 +237,8 @@ impl Lowerer<'_, '_> {
         let here = self.b.use_var(at);
         let after = self.b.ins().iadd_imm_s(here, 1);
         self.b.def_var(at, after);
-        self.b.ins().jump(header, &[]);
+        let more = self.b.ins().icmp(IntCC::UnsignedLessThan, after, used);
+        self.b.ins().brif(more, live, &[], exit, &[]);
         self.b.switch_to_block(exit);
         self.close_scope()
     }

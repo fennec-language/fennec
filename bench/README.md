@@ -40,7 +40,7 @@ Each kernel also has to print exactly what its target expects, which the target 
 
 ## The floor and the ratchet
 
-**The JIT's floor is 80% of target**, on every kernel. Past that is nice but not the goal. The 80% is a floor on work, not on startup.
+**The JIT's floor is 80% of target**, on every kernel, rising to 85% later. Past that is nice but not the goal. The 80% is a floor on work, not on startup.
 
 Once a kernel reaches the floor, the run says so. Mark it `yes` in the last column of `x86_64.txt`, the only architecture CI measures, and from then on CI fails if it drops below. Reaching the floor on x86-64 says nothing about 64-bit Arm, so that file's marks wait until Arm is measured the same way. A `.std` row is never marked. A failure is fixed in the compiler, never by changing the benchmark.
 

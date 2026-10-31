@@ -4,6 +4,7 @@
 //! through a table of one-character strings, and compares against short literals word by
 //! word. Making new strings, and anything that walks UTF-8, goes to the runtime.
 
+use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value, types};
 use fennec_interp::embed::heap;
@@ -35,6 +36,11 @@ impl Lowerer<'_, '_> {
         };
         self.literal_of.insert(value, text.to_owned());
         (Some(self.borrow(value)), Ty::Str)
+    }
+
+    /// Whether a string is the shared block for its one character.
+    fn is_one_char(&self, text: Value) -> bool {
+        self.facts.one_chars.contains(&self.b.func.dfg.resolve_aliases(text))
     }
 
     /// The text of a literal a value is, when it's one.
@@ -154,15 +160,14 @@ impl Lowerer<'_, '_> {
         let zero = self.int(0);
         self.b.def_var(at, zero);
         self.b.def_var(step, zero);
-        let [header, ascii, wide, inside, advance, exit] = [(); 6].map(|()| self.b.create_block());
+        let [ascii, wide, inside, advance, exit] = [(); 5].map(|()| self.b.create_block());
         self.b.set_cold_block(wide);
         self.b.append_block_param(inside, types::I64);
-        self.b.ins().jump(header, &[]);
-        self.b.switch_to_block(header);
-        let here = self.b.use_var(at);
-        let more = self.b.ins().icmp(IntCC::SignedLessThan, here, length);
+        // The test comes first, then again at the bottom, so going round takes one jump.
+        let more = self.b.ins().icmp(IntCC::SignedLessThan, zero, length);
         self.b.ins().brif(more, ascii, &[], exit, &[]);
         self.b.switch_to_block(ascii);
+        let here = self.b.use_var(at);
         let place = self.b.ins().iadd(text, here);
         let byte = self.b.ins().uload8(types::I64, MemFlagsData::trusted(), place, TEXT);
         let one = self.int(1);
@@ -190,6 +195,14 @@ impl Lowerer<'_, '_> {
         let depth = self.scopes.len();
         self.open_scope();
         self.bind_native(name, Ty::Str, Some(char), false);
+        // Every character's block lives for the whole run, so the name owns nothing, and
+        // one character is the same block wherever it comes from.
+        if let Some(var) = self.local(name).and_then(|local| local.var) {
+            self.borrowed_names.insert(var.index());
+        }
+        let char = self.borrow(char);
+        let shared = self.b.func.dfg.resolve_aliases(char);
+        self.facts.one_chars.insert(shared);
         self.loops.push(super::Loop { next: advance, done: exit, depth, put_back: None });
         let lowered = self.tail(body);
         self.loops.pop();
@@ -202,7 +215,8 @@ impl Lowerer<'_, '_> {
         let (here, size) = (self.b.use_var(at), self.b.use_var(step));
         let after = self.b.ins().iadd(here, size);
         self.b.def_var(at, after);
-        self.b.ins().jump(header, &[]);
+        let more = self.b.ins().icmp(IntCC::SignedLessThan, after, length);
+        self.b.ins().brif(more, ascii, &[], exit, &[]);
         self.b.switch_to_block(exit);
         self.close_scope()
     }
@@ -310,6 +324,9 @@ impl Lowerer<'_, '_> {
             }
             BinOp::Eq | BinOp::NotEq => {
                 let same = match (self.literal_text(a), self.literal_text(b)) {
+                    (_, Some(literal)) if self.is_one_char(a) && literal.chars().count() == 1 => {
+                        self.b.ins().icmp(IntCC::Equal, a, b)
+                    }
                     (_, Some(literal)) => self.equals_literal(a, &literal)?,
                     (Some(literal), None) => self.equals_literal(b, &literal)?,
                     (None, None) => self.help(Helper::BoxEqual, &[a, b])?,

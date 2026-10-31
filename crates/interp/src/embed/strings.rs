@@ -102,13 +102,25 @@ fn set_lengths(block: &mut [u64], length: usize, chars: u64) {
     }
 }
 
-/// The character starting `at` bytes into a string, as a string owned once.
+/// The character starting `at` bytes into a string. Each character has one block, which
+/// lives for the whole run, as a literal's does.
 pub extern "C" fn char_at(text: i64, at: i64) -> i64 {
     with(|state| {
         let (all, _) = bytes(state, text).unwrap_or_default();
         let rest = all.get(usize::try_from(at).unwrap_or(0)..).unwrap_or_default();
-        let one = String::from_utf8_lossy(rest).chars().next().map(String::from).unwrap_or_default();
-        text_address(state, &one)
+        // A character is at most four bytes.
+        let start = rest.get(..rest.len().min(4)).unwrap_or_default();
+        let valid = match std::str::from_utf8(start) {
+            Ok(text) => text,
+            Err(err) => {
+                start.get(..err.valid_up_to()).and_then(|good| std::str::from_utf8(good).ok()).unwrap_or("")
+            }
+        };
+        let one = valid.chars().next().map(String::from).unwrap_or_default();
+        let address = super::heap::literal(&mut state.tables, &one);
+        let mut made = std::mem::take(&mut state.tables.statics);
+        state.heap.adopt(&mut made);
+        address
     })
 }
 

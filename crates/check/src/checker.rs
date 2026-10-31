@@ -120,7 +120,8 @@ impl Checker {
         for name in user_types {
             FnCx::check_fields(&mut self, &name);
         }
-        let structs = self.structs();
+        let structs = self.structs(TypeKind::Struct);
+        let errors = self.structs(TypeKind::Error);
         self.settle_typed();
         if self.diagnostics.is_empty() {
             self.unknowns_left();
@@ -138,7 +139,7 @@ impl Checker {
                     State::Checking => None,
                 })
                 .collect();
-            let signatures = Signatures { functions, structs, enums, locals };
+            let signatures = Signatures { functions, structs, enums, errors, locals };
             let types = Types { functions: self.typed };
             return Ok(Checked { signatures, types, cases: self.cases, float_sums: self.float_sums });
         }
@@ -539,12 +540,12 @@ impl Checker {
     }
 
     /// Every struct's fields and their types, in the order they're written.
-    fn structs(&mut self) -> BTreeMap<String, crate::Struct> {
+    fn structs(&mut self, kind: TypeKind) -> BTreeMap<String, crate::Struct> {
         let structs: Vec<(String, Vec<String>, bool)> = self
             .program
             .types
             .values()
-            .filter(|info| info.kind == TypeKind::Struct)
+            .filter(|info| info.kind == kind)
             .map(|info| {
                 let names = info.def.fields.iter().map(|field| field.name.clone()).collect();
                 let rules = info.def.fields.iter().any(|field| field.rule.is_some());

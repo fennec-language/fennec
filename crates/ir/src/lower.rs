@@ -2,6 +2,7 @@
 //! checker's typed tree, never from working them out again.
 
 mod calls;
+mod failure;
 mod lists;
 mod matching;
 mod structs;
@@ -21,8 +22,10 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
     let functions = definitions(module);
     let defs = structs::definitions(module, checked);
     let enums = matching::definitions(module, checked);
+    let errors = failure::definitions(checked);
     let context = Context {
         checked,
+        errors: errors.iter().map(|def| def.name.as_str()).collect(),
         enums: enums.iter().map(|def| (def.name.as_str(), def)).collect(),
         functions: functions.iter().map(|(key, _)| key.as_str()).collect(),
         structs: defs.iter().map(|def| def.name.as_str()).collect(),
@@ -37,6 +40,7 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
     program.external = calls::external(&program);
     program.structs = defs;
     program.enums = enums;
+    program.errors = errors;
     program
 }
 
@@ -97,6 +101,8 @@ struct Context<'a> {
     checked: &'a Checked,
     /// The program's enums that the IR can hold.
     enums: HashMap<&'a str, &'a EnumDef>,
+    /// The error types that the IR can hold.
+    errors: HashSet<&'a str>,
     /// The keys of the program's functions and methods.
     functions: HashSet<&'a str>,
     /// The names of the program's structs that the IR can hold.
@@ -107,11 +113,14 @@ impl Context<'_> {
     /// Whether the IR holds values of this type yet.
     fn holds(&self, ty: &Type) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Str => true,
-            Type::List(item) => self.holds(item),
+            Type::Int | Type::Float | Type::Bool | Type::Str | Type::None => true,
+            Type::List(item) | Type::Optional(item) => self.holds(item),
+            Type::Result(ok, error) => (**ok == Type::Unit || self.holds(ok)) && self.holds(error),
+            Type::Errors(names) => names.iter().all(|name| self.errors.contains(name.as_str())),
             Type::Named(name) => {
                 self.structs.contains(name.as_str())
                     || self.enums.contains_key(name.as_str())
+                    || self.errors.contains(name.as_str())
                     || CAPABILITIES.contains(&name.as_str())
             }
             _ => false,
@@ -141,9 +150,6 @@ impl<'a> Lowering<'a> {
         if signature.generator {
             return Err("it's a generator".to_owned());
         }
-        if signature.can_fail {
-            return Err("it can fail".to_owned());
-        }
         if signature.returns != Type::Unit && !context.holds(&signature.returns) {
             return Err(format!("it gives back {}", signature.returns));
         }
@@ -165,10 +171,7 @@ impl<'a> Lowering<'a> {
         }
         let tail = if lowering.returns == Type::Unit { Tail::Drop } else { Tail::Return };
         lowering.stmts(&def.body, tail)?;
-        // A function with a return type has already returned, or the checker would object.
-        let end =
-            if lowering.returns == Type::Unit { Terminator::Return(None) } else { Terminator::Unreachable };
-        lowering.finish(end);
+        lowering.end_function(def.span);
         Ok(Function {
             name: key.to_owned(),
             params: signature.params.len(),
@@ -192,6 +195,10 @@ impl<'a> Lowering<'a> {
             scope.insert(name.to_owned(), id);
         }
         id
+    }
+
+    fn local_type(&self, local: LocalId) -> Type {
+        self.locals.get(local.0).map_or(Type::Unknown, |held| held.ty.clone())
     }
 
     fn temporary(&mut self, ty: Type) -> LocalId {
@@ -261,10 +268,8 @@ impl<'a> Lowering<'a> {
             }
             StmtKind::If { branches, otherwise } => self.if_stmt(branches, otherwise.as_deref(), tail)?,
             StmtKind::While { cond, body } => self.while_stmt(cond, body)?,
-            StmtKind::Return(value) => {
-                let value = value.as_ref().map(|value| self.expr(value)).transpose()?;
-                self.finish(Terminator::Return(value));
-            }
+            StmtKind::Return(Some(value)) => self.return_value(value)?,
+            StmtKind::Return(None) => self.return_nothing(stmt.span),
             StmtKind::Break | StmtKind::Continue => {
                 let target = self.loops.last().ok_or("`break` outside a loop")?;
                 let target = if matches!(stmt.kind, StmtKind::Break) { target.exit } else { target.next };
@@ -274,7 +279,7 @@ impl<'a> Lowering<'a> {
             StmtKind::For { names, is_mut, iter, body } => {
                 self.for_stmt((names, *is_mut), iter, body, stmt.span)?;
             }
-            StmtKind::Fail(_) => return Err("it has `fail`".to_owned()),
+            StmtKind::Fail(error) => self.fail(error, stmt.span)?,
             StmtKind::Yield(_) => return Err("it has `yield`".to_owned()),
             StmtKind::Assert(_) => return Err("it has `assert`".to_owned()),
             StmtKind::With { .. } => return Err("it has `with`".to_owned()),
@@ -291,12 +296,11 @@ impl<'a> Lowering<'a> {
         }
         match tail {
             Tail::Drop => self.effect(expr)?,
-            Tail::Return => {
-                let value = self.expr(expr)?;
-                self.finish(Terminator::Return(Some(value)));
-            }
+            Tail::Return => self.return_value(expr)?,
             Tail::Into(dest) => {
                 let value = self.expr(expr)?;
+                let ty = self.local_type(dest);
+                let value = self.coerce(value, &ty, expr.span)?;
                 self.emit(InstKind::Copy { dest, value }, expr.span);
             }
         }
@@ -320,13 +324,14 @@ impl<'a> Lowering<'a> {
             }
             self.declare(name, ty.clone())
         };
-        match op {
-            Some(op) => {
-                self.check_operands(op, &Operand::Local(dest), &value)?;
-                let kind = InstKind::Binary { dest, op, lhs: Operand::Local(dest), rhs: value };
-                self.emit(kind, span);
-            }
-            None => self.emit(InstKind::Copy { dest, value }, span),
+        if let Some(op) = op {
+            self.check_operands(op, &Operand::Local(dest), &value)?;
+            let kind = InstKind::Binary { dest, op, lhs: Operand::Local(dest), rhs: value };
+            self.emit(kind, span);
+        } else {
+            let ty = self.local_type(dest);
+            let value = self.coerce(value, &ty, span)?;
+            self.emit(InstKind::Copy { dest, value }, span);
         }
         Ok(())
     }
@@ -385,6 +390,9 @@ impl<'a> Lowering<'a> {
         {
             return self.call(callee, args, None, expr.span).map(|_| ());
         }
+        if let ExprKind::Try { value, context } = &expr.kind {
+            return self.try_value(value, context.as_deref(), expr.span).map(|_| ());
+        }
         self.expr(expr).map(|_| ())
     }
 
@@ -398,10 +406,19 @@ impl<'a> Lowering<'a> {
             ExprKind::Float(value) => Ok(Operand::Float(*value)),
             ExprKind::Bool(value) => Ok(Operand::Bool(*value)),
             ExprKind::Str(value) => Ok(Operand::Str(value.clone())),
-            ExprKind::Name(name) => self
-                .lookup(name)
-                .map(Operand::Local)
-                .ok_or_else(|| format!("it reads `{name}`, which isn't a local")),
+            ExprKind::None => Ok(Operand::None),
+            ExprKind::Name(name) => {
+                let local =
+                    self.lookup(name).ok_or_else(|| format!("it reads `{name}`, which isn't a local"))?;
+                self.narrowed(Operand::Local(local), expr)
+            }
+            ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs } => {
+                self.is_none(*op, lhs, rhs, span)
+            }
+            ExprKind::Else { value, default } => self.else_value(expr, value, default),
+            ExprKind::Try { value, context } => self
+                .try_value(value, context.as_deref(), span)?
+                .ok_or_else(|| "it uses the nothing `?` gives back".to_owned()),
             ExprKind::Unary { op, expr: inner } => self.unary(*op, inner, expr),
             ExprKind::Binary { op: op @ (BinOp::And | BinOp::Or), lhs, rhs } => {
                 self.short_circuit(*op, lhs, rhs, span)
@@ -481,6 +498,8 @@ impl<'a> Lowering<'a> {
         for (block, side) in [(yes, then), (no, otherwise)] {
             self.current = block;
             let value = self.expr(side)?;
+            let ty = self.local_type(dest);
+            let value = self.coerce(value, &ty, side.span)?;
             self.emit(InstKind::Copy { dest, value }, side.span);
             self.finish(Terminator::Jump(join));
         }

@@ -35,6 +35,24 @@ pub(super) struct Checked {
     resolved: Value,
 }
 
+/// The most facts about items kept at once. Lookups go through them all.
+const MOST_KEPT: usize = 32;
+
+fn trim<T>(facts: &mut Vec<T>) {
+    if facts.len() > MOST_KEPT {
+        facts.drain(..facts.len() - MOST_KEPT);
+    }
+}
+
+/// Where an item is, which straight-line code after it can use again: `at` items into the
+/// list whose items start at `items`.
+pub(super) struct KnownItem {
+    block: Block,
+    items: Value,
+    at: Value,
+    address: Value,
+}
+
 impl Lowerer<'_, '_> {
     /// A runtime object as an owned native list, failing like the interpreter when it isn't
     /// a list of the kind of item expected.
@@ -220,18 +238,44 @@ impl Lowerer<'_, '_> {
 
     fn item_at(&mut self, name: &str, item: Ty, write: bool, resolved: Value) -> Result<Value, Diagnostic> {
         let items = self.items_at(name, item, write)?;
+        let (here, items, at) = (
+            self.b.current_block(),
+            self.b.func.dfg.resolve_aliases(items),
+            self.b.func.dfg.resolve_aliases(resolved),
+        );
+        let known = self
+            .addresses
+            .iter()
+            .find(|done| Some(done.block) == here && done.items == items && done.at == at);
+        if let Some(address) = known.map(|done| done.address) {
+            return Ok(address);
+        }
         let stride = self.stride(item)?;
         let offset = self.b.ins().imul_imm_s(resolved, stride);
-        Ok(self.b.ins().iadd(items, offset))
+        let address = self.b.ins().iadd(items, offset);
+        if let Some(block) = here {
+            self.addresses.push(KnownItem { block, items, at, address });
+        }
+        Ok(address)
     }
 
     /// Goes on in `next`, a block only `from` leads to other than to a failure, so every
-    /// index checked in `from` stays checked there. Others are forgotten.
+    /// index checked in `from` stays checked there. What's known in other blocks stays with
+    /// them: a failure's cold path goes through here too, and comes back to none of it.
     pub(super) fn carry_on(&mut self, from: Option<Block>, next: Block) {
         self.carry_stack(from, next);
-        self.checked.retain(|done| Some(done.block) == from);
+        // Few lists are indexed at once, so an old entry is a lost chance at most.
+        trim(&mut self.addresses);
+        trim(&mut self.checked);
+        for done in &mut self.addresses {
+            if Some(done.block) == from {
+                done.block = next;
+            }
+        }
         for done in &mut self.checked {
-            done.block = next;
+            if Some(done.block) == from {
+                done.block = next;
+            }
         }
         self.b.switch_to_block(next);
     }
@@ -348,14 +392,13 @@ impl Lowerer<'_, '_> {
         let counter = self.b.declare_var(types::I64);
         let zero = self.int(0);
         self.b.def_var(counter, zero);
-        let [header, inside, advance, exit] = [(); 4].map(|()| self.b.create_block());
+        let [inside, advance, exit] = [(); 3].map(|()| self.b.create_block());
         let hoisted = self.hoist_lists(&[name.clone(), list_name.clone()], None, body)?;
-        self.b.ins().jump(header, &[]);
-        self.b.switch_to_block(header);
-        let at = self.b.use_var(counter);
-        let more = self.b.ins().icmp(IntCC::SignedLessThan, at, len);
+        // The test comes first, then again at the bottom, so going round takes one jump.
+        let more = self.b.ins().icmp(IntCC::SignedLessThan, zero, len);
         self.b.ins().brif(more, inside, &[], exit, &[]);
         self.b.switch_to_block(inside);
+        let at = self.b.use_var(counter);
         let depth = self.scopes.len();
         self.open_scope();
         let offset = self.b.ins().imul_imm_s(at, stride);
@@ -385,7 +428,8 @@ impl Lowerer<'_, '_> {
         let at = self.b.use_var(counter);
         let after = self.b.ins().iadd_imm_s(at, 1);
         self.b.def_var(counter, after);
-        self.b.ins().jump(header, &[]);
+        let more = self.b.ins().icmp(IntCC::SignedLessThan, after, len);
+        self.b.ins().brif(more, inside, &[], exit, &[]);
         self.b.switch_to_block(exit);
         Ok(true)
     }

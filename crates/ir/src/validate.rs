@@ -5,7 +5,7 @@
 use fennec_check::Type;
 use fennec_syntax::{BinOp, UnaryOp};
 
-use crate::{FormatPart, Function, InstKind, LocalId, Operand, Program, Terminator};
+use crate::{FormatPart, Function, InstKind, LocalId, Operand, Program, StructDef, Terminator};
 
 /// Every way a program's IR is malformed, each naming its function. Empty when it's sound.
 pub fn validate(program: &Program) -> Result<(), Vec<String>> {
@@ -27,7 +27,7 @@ struct Check<'p> {
     problems: Vec<String>,
 }
 
-impl Check<'_> {
+impl<'p> Check<'p> {
     fn function(&mut self) {
         let function = self.function;
         if function.params > function.locals.len() {
@@ -103,6 +103,58 @@ impl Check<'_> {
             | InstKind::Format { .. }
             | InstKind::Builtin { .. } => self.list_inst(inst),
             InstKind::Call { dest, function, args } => self.call(*dest, function, args),
+            _ => self.failure_inst(inst),
+        }
+    }
+
+    /// Optionals and results.
+    fn failure_inst(&mut self, inst: &InstKind) {
+        let held = |check: &Self, value: &Operand| check.function.type_of(value);
+        let fine = match inst {
+            InstKind::MakeSome { dest, value } => match self.local(*dest) {
+                Some(Type::Optional(inner)) => held(self, value).is_some_and(|ty| fits(&inner, &ty)),
+                _ => false,
+            },
+            InstKind::GetSome { dest, value } => match held(self, value) {
+                Some(Type::Optional(inner)) => self.local(*dest) == Some(*inner),
+                _ => false,
+            },
+            InstKind::MakeOk { dest, value } => match (self.local(*dest), value) {
+                (Some(Type::Result(ok, _)), Some(value)) => {
+                    held(self, value).is_some_and(|ty| fits(&ok, &ty))
+                }
+                (Some(Type::Result(ok, _)), None) => *ok == Type::Unit,
+                _ => false,
+            },
+            InstKind::MakeErr { dest, error } => match self.local(*dest) {
+                Some(Type::Result(_, wanted)) => held(self, error).is_some_and(|ty| fits(&wanted, &ty)),
+                _ => false,
+            },
+            InstKind::GetOk { dest, value } => match held(self, value) {
+                Some(Type::Result(ok, _)) => self.local(*dest) == Some(*ok),
+                _ => false,
+            },
+            InstKind::GetErr { dest, value } => match held(self, value) {
+                Some(Type::Result(_, error)) => self.local(*dest) == Some(*error),
+                _ => false,
+            },
+            InstKind::IsNone { dest, value } => {
+                self.local(*dest) == Some(Type::Bool) && matches!(held(self, value), Some(Type::Optional(_)))
+            }
+            InstKind::IsErr { dest, value } => {
+                self.local(*dest) == Some(Type::Bool) && matches!(held(self, value), Some(Type::Result(..)))
+            }
+            InstKind::IsError { dest, value, .. } => {
+                self.local(*dest) == Some(Type::Bool) && matches!(held(self, value), Some(Type::Errors(_)))
+            }
+            InstKind::AsError { dest, value } => match (self.local(*dest), held(self, value)) {
+                (Some(Type::Named(name)), Some(Type::Errors(names))) => names.contains(&name),
+                _ => false,
+            },
+            _ => true,
+        };
+        if !fine {
+            self.problems.push(format!("`{inst}` has the wrong types"));
         }
     }
 
@@ -192,10 +244,16 @@ impl Check<'_> {
         }
     }
 
+    /// A struct or error type, which both hold named fields.
+    fn struct_like(&self, name: &str) -> Option<&'p StructDef> {
+        let program = self.program;
+        program.structs.iter().chain(&program.errors).find(|def| def.name == name)
+    }
+
     /// The type of a field of a struct type.
     fn field(&self, ty: &Type, field: &str) -> Option<Type> {
         let Type::Named(name) = ty else { return None };
-        let def = self.program.structs.iter().find(|def| def.name == *name)?;
+        let def = self.struct_like(name)?;
         def.fields.iter().find(|(written, _)| written == field).map(|(_, ty)| ty.clone())
     }
 
@@ -203,7 +261,7 @@ impl Check<'_> {
         if self.local(dest) != Some(Type::Named(type_name.to_owned())) {
             self.problems.push(format!("keeps a new `{type_name}` in the wrong type"));
         }
-        let Some(def) = self.program.structs.iter().find(|def| def.name == type_name) else {
+        let Some(def) = self.struct_like(type_name) else {
             self.problems.push(format!("makes `{type_name}`, which doesn't exist"));
             return;
         };
@@ -307,10 +365,22 @@ impl Check<'_> {
     fn operand(&mut self, operand: &Operand, wanted: Option<&Type>, what: &str) {
         match self.function.type_of(operand) {
             None => self.problems.push(format!("uses {operand}, which doesn't exist")),
-            Some(ty) if wanted.is_some_and(|wanted| *wanted != ty) => {
+            Some(ty) if wanted.is_some_and(|wanted| !fits(wanted, &ty)) => {
                 self.problems.push(format!("{what} `{operand}` has the wrong type"));
             }
             Some(_) => {}
         }
+    }
+}
+
+/// Whether a value of type `actual` can go where `wanted` goes as it is: `None` where an
+/// optional goes, and errors where a set of error types that includes them goes.
+pub(crate) fn fits(wanted: &Type, actual: &Type) -> bool {
+    match (wanted, actual) {
+        (Type::Optional(_), Type::None) => true,
+        (Type::Errors(names), Type::Named(name)) => names.contains(name),
+        (Type::Errors(names), Type::Errors(some)) => some.iter().all(|name| names.contains(name)),
+        (Type::Result(ok, wanted), Type::Result(same, error)) => ok == same && fits(wanted, error),
+        _ => wanted == actual,
     }
 }

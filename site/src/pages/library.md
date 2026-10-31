@@ -1,7 +1,7 @@
 ---
 layout: ../layouts/Doc.astro
 title: Standard library
-description: Fennec's batteries-included standard library, from files and JSON to HTTP, SQLite and game math.
+description: Fennec's batteries-included standard library, from files and JSON to HTTP, SQL and game math.
 ---
 
 # Standard library
@@ -16,13 +16,13 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | --- | --- |
 | Basics | `math`, `random`, `time`, `datetime`, `string`, `re`, `unicode` |
 | Collections | `collections`: `Deque`, `Counter`, `SortedDict`, heaps, `IdMap`, ring buffers |
-| Files and the OS | `fs`, `path`, `env`, `process`, `args` |
+| Files and the OS | `fs`, `path`, `env`, `process`, `cli` |
 | Data formats | `json`, `toml`, `csv`, `base64`, `compress` |
-| Networking | `http` (client and server), `url`, `net`, `tls` |
-| Security | `hash`, `hmac`, `uuid`, secure random numbers |
-| Storage | `sqlite` |
+| Networking | `net`: TCP, UDP, TLS, an HTTP client and server, and WebSocket; `url` |
+| Security | `crypto`: hashes, HMAC and secure random numbers; `uuid` |
+| Storage | `sql`: one interface, with drivers as first-party kits |
 | Diagnostics | `log`, `profile`, `test` |
-| Games | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat4`, `simd`, `layout`, `arena`; later `window`, `input`, `audio` and `gpu` |
+| Games | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat4`, `simd`, `layout`, `arena`; later `audio` and `gpu` |
 
 ## Importing what you use
 
@@ -62,4 +62,4 @@ The same works for TOML and CSV.
 
 The stable core is reliable to build on. New modules start in `std.next`, where they can still change, and graduate once they've settled. That way a module never gets stuck with an early mistake.
 
-C-based pieces like SQLite and compression are part of the audited core, the one place besides `extern` modules where unsafe code is allowed. Packages you download stay free of unsafe code.
+The standard library is written in Fennec wherever possible, and only its OS layer calls C. Windows, input, image formats, machine learning and database drivers come as first-party kits rather than `std`.

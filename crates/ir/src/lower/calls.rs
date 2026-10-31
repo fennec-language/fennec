@@ -164,7 +164,7 @@ impl Lowering<'_> {
         let signature =
             self.context.checked.signatures.get(&key).ok_or_else(|| format!("it calls `{key}`"))?;
         let given = args.len() + usize::from(object.is_some());
-        if signature.generator || given != signature.params.len() {
+        if given != signature.params.len() {
             return Err(format!("its call to `{key}` isn't a plain call"));
         }
         if own && !signature.params.iter().all(|param| self.context.holds(&param.ty)) {

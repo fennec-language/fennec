@@ -46,7 +46,7 @@ fn trim<T>(facts: &mut Vec<T>) {
 
 /// Where an item is, which straight-line code after it can use again: `at` items into the
 /// list whose items start at `items`.
-pub(super) struct Address {
+pub(super) struct KnownItem {
     block: Block,
     items: Value,
     at: Value,
@@ -254,7 +254,7 @@ impl Lowerer<'_, '_> {
         let offset = self.b.ins().imul_imm_s(resolved, stride);
         let address = self.b.ins().iadd(items, offset);
         if let Some(block) = here {
-            self.addresses.push(Address { block, items, at, address });
+            self.addresses.push(KnownItem { block, items, at, address });
         }
         Ok(address)
     }

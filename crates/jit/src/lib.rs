@@ -229,6 +229,8 @@ pub fn fallbacks(module: &Module) -> Result<Vec<Note>, Diagnostic> {
         .filter(|note| !note.span.in_prelude())
         .collect();
     notes.sort_by_key(|note| (note.span.start, note.span.end));
+    // A loop lowered twice notes the same places twice.
+    notes.dedup_by(|a, b| a.span == b.span && a.what == b.what);
     Ok(notes)
 }
 

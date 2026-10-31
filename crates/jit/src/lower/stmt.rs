@@ -63,6 +63,15 @@ impl Lowerer<'_, '_> {
         branches: &[(Expr, Vec<Stmt>)],
         otherwise: &[Stmt],
     ) -> Result<(Option<Value>, Ty), Diagnostic> {
+        if let Some(((cond, body), rest)) = branches.split_first()
+            && let Some(known) = self.known_test(cond)
+        {
+            return match (known, rest) {
+                (true, _) => self.block_tail(body),
+                (false, []) => self.block_tail(otherwise),
+                (false, rest) => self.tail_if(rest, otherwise),
+            };
+        }
         let mut arms = Vec::new();
         let mark = self.narrow_mark();
         for (cond, body) in branches {
@@ -368,6 +377,16 @@ impl Lowerer<'_, '_> {
         branches: &[(Expr, Vec<Stmt>)],
         otherwise: Option<&[Stmt]>,
     ) -> Result<(), Diagnostic> {
+        if let Some(((cond, body), rest)) = branches.split_first()
+            && let Some(known) = self.known_test(cond)
+        {
+            return match (known, rest, otherwise) {
+                (true, _, _) => self.block_tail(body).map(|_| ()),
+                (false, [], Some(otherwise)) => self.block_tail(otherwise).map(|_| ()),
+                (false, [], None) => Ok(()),
+                (false, rest, otherwise) => self.if_stmt(rest, otherwise),
+            };
+        }
         let done = self.b.create_block();
         let mark = self.narrow_mark();
         let mut all_leave = true;
@@ -431,6 +450,10 @@ impl Lowerer<'_, '_> {
             && matches!(&callee.kind, ExprKind::Name(callee) if callee == "range" && self.local(callee).is_none())
             && args.iter().all(|arg| arg.name.is_none() && !arg.is_mut)
         {
+            let mut lower = |lowerer: &mut Self| lowerer.for_range(name, args, iter.span, body);
+            if self.unswitched(body, &mut lower)? {
+                return Ok(());
+            }
             return self.for_range(name, args, iter.span, body);
         }
         self.for_items(names, iter, body)

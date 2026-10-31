@@ -59,6 +59,7 @@ fennec-fmt = { path = "crates/fmt" }
 fennec-fuzz = { path = "crates/fuzz" }
 fennec-ir = { path = "crates/ir" }
 fennec-jit = { path = "crates/jit" }
+fennec-layout = { path = "crates/layout" }
 fennec-interp = { path = "crates/interp" }
 fennec-runtime = { path = "crates/runtime" }
 fennec-kit = { path = "crates/kit" }

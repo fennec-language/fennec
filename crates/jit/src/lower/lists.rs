@@ -11,6 +11,7 @@
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{Block, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::Variable;
+use fennec_interp::embed::layout::{LIST_LENGTH, LIST_ROOM};
 use fennec_interp::packed::Element;
 use fennec_syntax::{Diagnostic, Expr, ExprKind, Span, Stmt};
 
@@ -21,10 +22,7 @@ use crate::helpers::Helper;
 use crate::layout::WORD;
 use crate::types::{ListItem, Ty};
 
-/// Where a list's count of items, its room and its items are.
-const LIST_LENGTH: i32 = 16;
-const LIST_ROOM: i32 = 24;
-pub(super) const LIST_ITEMS: i64 = 32;
+pub(super) const LIST_ITEMS: i64 = fennec_interp::embed::layout::LIST_ITEMS as i64;
 
 /// An index already checked against a list's length, which straight-line code after it
 /// needn't check again: in `block`, `at` resolved to `resolved` for a list `length` long.

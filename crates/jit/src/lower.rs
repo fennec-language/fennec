@@ -192,7 +192,7 @@ pub(crate) fn compile(
 impl Shared {
     pub(super) fn new(program: &Program<'_>, stack_limit: i64) -> Shared {
         let tables = Tables {
-            shapes: boxes::shapes(&program.layouts),
+            shapes: fennec_layout::shapes(&program.layouts),
             str_shape: u64::try_from(program.layouts.len()).unwrap_or(0),
             ..Tables::default()
         };

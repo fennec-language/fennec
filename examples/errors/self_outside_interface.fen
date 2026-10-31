@@ -1,0 +1,5 @@
+def same(x: Self) -> int:
+    1
+
+def main(stdout: Stdout):
+    stdout.print(same(1))

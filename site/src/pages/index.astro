@@ -7,7 +7,7 @@ import data from '../data/benchmarks.json';
 const base = import.meta.env.BASE_URL;
 const themes = { light: 'vitesse-light', dark: 'vitesse-dark' } as const;
 const { ci, builds, targets } = data;
-const percents = ci.kernels.map((kernel) => kernel.percent);
+const percents = ci.kernels.map((kernel) => (kernel.percent / targets.jit) * 100);
 const low = Math.round(Math.min(...percents));
 const high = Math.round(Math.max(...percents));
 
@@ -31,8 +31,8 @@ const pillars = [
   {
     title: 'Runs fast',
     number: `${low}–${high}%`,
-    caption: "of Rust's speed today, in the JIT",
-    body: `Native code with no garbage collector. The JIT's target is ${targets.jit}% and no kernel meets it yet. Release builds, targeting ${targets.release}%, aren't built yet.`,
+    caption: "of its speed target today, in the JIT",
+    body: `Native code with no garbage collector. No benchmark meets its target yet, and release builds, the fastest path, aren't built yet.`,
   },
   {
     title: 'Built for agents',
@@ -80,13 +80,12 @@ const pillars = [
         <div class="meter wide">
           <div class="meter-head">
             <strong>{low}–{high}%</strong>
-            <span>of Rust's speed across our kernels</span>
+            <span>of the speed target, across our benchmarks</span>
           </div>
-          <div class="range" role="img" aria-label={`Today ${low} to ${high} percent of Rust's speed; target ${targets.jit} percent`}>
+          <div class="range" role="img" aria-label={`Today ${low} to ${high} percent of the speed target`}>
             <span class="range-fill" style={`left: ${low}%; width: ${high - low}%`}></span>
-            <span class="range-target" style={`left: ${targets.jit}%`}></span>
           </div>
-          <span class="range-note">JIT today · line marks the {targets.jit}% target</span>
+          <span class="range-note">JIT today · a full bar means the target is met</span>
         </div>
       </div>
     </div>
@@ -317,14 +316,6 @@ fixed area.fen</code></pre>
     bottom: 0;
     border-radius: 999px;
     background: var(--accent-bright);
-  }
-
-  .range .range-target {
-    position: absolute;
-    top: -4px;
-    bottom: -4px;
-    width: 2px;
-    background: var(--text);
   }
 
   .range-note {

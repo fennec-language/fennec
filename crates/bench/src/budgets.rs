@@ -1,0 +1,323 @@
+//! `fennec-bench budgets`: how long the things done on every keystroke and save take on a big
+//! kit, against the limits they must stay under. Writing, checking, testing and formatting have
+//! to feel instant. Only warm numbers count, with the daemon running and the cache full; cold
+//! ones are shown too.
+//!
+//! A budget that's met fails the run when it's exceeded. One that hasn't been met yet is a
+//! warning, since it would fail every pull request; it starts failing runs once `enforced`
+//! is set, which happens in the change that meets it.
+
+use std::fmt::Write as _;
+use std::io::BufReader;
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use fennec_lsp::Json;
+
+use crate::report::millis;
+
+/// A limit on how long something may take, warm.
+#[derive(Clone, Copy)]
+struct Budget {
+    name: &'static str,
+    limit: Duration,
+    enforced: bool,
+}
+
+const FORMAT: Budget = Budget { name: "format one file", limit: Duration::from_millis(50), enforced: true };
+const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: false };
+const TESTS: Budget =
+    Budget { name: "affected tests after one edit", limit: Duration::from_secs(1), enforced: false };
+const RUN: Budget =
+    Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: false };
+const RUN_JIT: Budget =
+    Budget { name: "`fennec run --jit` startup", limit: Duration::from_millis(100), enforced: false };
+
+/// How big a kit to measure on: files, each with this many functions and a tenth as many tests.
+const FUNCTIONS_PER_FILE: usize = 100;
+
+/// A budget and what was measured against it.
+struct Measured {
+    budget: Budget,
+    warm: Duration,
+    cold: Option<Duration>,
+}
+
+impl Measured {
+    fn over(&self) -> bool {
+        self.warm > self.budget.limit
+    }
+
+    fn verdict(&self) -> &'static str {
+        match (self.over(), self.budget.enforced) {
+            (false, _) => "met",
+            (true, true) => "**over**",
+            (true, false) => "over, not enforced yet",
+        }
+    }
+}
+
+pub(crate) fn run(fennec: &Path, runs: usize, files: usize) -> Result<bool, String> {
+    let fennec = std::fs::canonicalize(fennec).map_err(|err| format!("{}: {err}", fennec.display()))?;
+    let dir = std::env::temp_dir().join(format!("fennec-budgets-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let kit = Kit::write(&dir, fennec, files).map_err(|err| format!("couldn't write the kit: {err}"))?;
+    let measured = measure(&kit, runs);
+    let _ = kit.command(&["daemon", "stop"]).output();
+    let _ = std::fs::remove_dir_all(&dir);
+    let measured = measured?;
+    let lines = format!("{} files, {} functions", files + 1, files * FUNCTIONS_PER_FILE);
+    let table = table(&measured, &lines);
+    print!("{table}");
+    if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+        crate::append(Path::new(&summary), &format!("## Instant-feedback budgets\n\n{table}"))
+            .map_err(|err| format!("couldn't write the summary: {err}"))?;
+    }
+    for over in measured.iter().filter(|measured| measured.over() && !measured.budget.enforced) {
+        let Budget { name, limit, .. } = over.budget;
+        println!("::warning title=Over budget::{name} took {}, over {}", millis(over.warm), millis(limit));
+    }
+    Ok(passes(&measured))
+}
+
+/// Whether every enforced budget is met.
+fn passes(measured: &[Measured]) -> bool {
+    measured.iter().all(|measured| !measured.budget.enforced || !measured.over())
+}
+
+fn table(measured: &[Measured], size: &str) -> String {
+    let mut table = format!("On a kit of {size}.\n\n| | limit | warm | cold | |\n|---|---:|---:|---:|---|\n");
+    for measured in measured {
+        let cold = measured.cold.map_or_else(String::new, millis);
+        let Budget { name, limit, .. } = measured.budget;
+        let (limit, warm, verdict) = (millis(limit), millis(measured.warm), measured.verdict());
+        let _ = writeln!(table, "| {name} | {limit} | {warm} | {cold} | {verdict} |");
+    }
+    table
+}
+
+fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
+    kit.timed(&["fmt"])?;
+    let (check_warm, check_cold) = edit_to_checked(kit, runs)?;
+    let mut measured =
+        vec![Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold) }, kit.format(runs)?];
+    measured.push(kit.affected_tests(runs)?);
+    measured.push(kit.repeated(RUN, &["run"], runs)?);
+    measured.push(kit.repeated(RUN_JIT, &["run", "--jit"], runs)?);
+    Ok(measured)
+}
+
+fn median(mut times: Vec<Duration>) -> Duration {
+    times.sort();
+    times.get(times.len() / 2).copied().unwrap_or_default()
+}
+
+/// A big kit on disk, with a Fennec folder of its own.
+struct Kit {
+    dir: PathBuf,
+    fennec: PathBuf,
+}
+
+/// The file edits are made to, and the line in it that changes.
+const EDITED: &str = "src/m3.fen";
+const EDITED_LINE: &str = "    y = x + 300\n";
+
+/// A function that checks and runs natively, and that nothing else depends on.
+fn function(number: usize) -> String {
+    format!(
+        "def f{number}(x: int) -> int:\n    y = x + {number}\n    if y > 100:\n        return y - 1\n    \
+         z = y * 2\n    z + 1\n\n"
+    )
+}
+
+impl Kit {
+    fn write(dir: &Path, fennec: PathBuf, files: usize) -> std::io::Result<Kit> {
+        std::fs::create_dir_all(dir.join("src"))?;
+        let manifest =
+            format!("name = \"big\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+        std::fs::write(dir.join("kit.toml"), manifest)?;
+        let mut imports: Vec<String> = Vec::new();
+        for file in 0..files {
+            let first = file * FUNCTIONS_PER_FILE;
+            let mut text = String::new();
+            for number in first..first + FUNCTIONS_PER_FILE {
+                text.push_str(&function(number));
+            }
+            for number in (first..first + FUNCTIONS_PER_FILE).step_by(10) {
+                let _ = write!(text, "test \"t{number}\":\n    assert f{number}(1) > 0\n\n");
+            }
+            std::fs::write(dir.join(format!("src/m{file}.fen")), text)?;
+            imports.push(format!("from m{file} import f{first}\n"));
+        }
+        imports.sort();
+        let calls: Vec<String> =
+            (0..files).map(|file| format!("f{}(1)", file * FUNCTIONS_PER_FILE)).collect();
+        let main = format!(
+            "{}\ndef main(stdout: Stdout):\n    stdout.print({})\n",
+            imports.concat(),
+            calls.join(" + ")
+        );
+        std::fs::write(dir.join("src/main.fen"), main)?;
+        Ok(Kit { dir: dir.to_path_buf(), fennec })
+    }
+
+    /// `fennec` in this kit, with the environment of a person's machine rather than CI's.
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(&self.fennec);
+        command
+            .args(args)
+            .current_dir(&self.dir)
+            .env("FENNEC_HOME", self.dir.join("home"))
+            .env_remove("CI")
+            .env_remove("FENNEC_NO_CACHE")
+            .env_remove("FENNEC_NO_DAEMON");
+        command
+    }
+
+    /// How long a command takes, and what it prints. It has to succeed.
+    fn timed(&self, args: &[&str]) -> Result<(Duration, String), String> {
+        let start = Instant::now();
+        let output = self.command(args).output().map_err(|err| format!("couldn't run fennec: {err}"))?;
+        let took = start.elapsed();
+        if !output.status.success() {
+            let why = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("`fennec {}` failed:\n{why}", args.join(" ")));
+        }
+        Ok((took, String::from_utf8_lossy(&output.stdout).into_owned()))
+    }
+
+    /// The median of running a command `runs` times, after a first run that fills the cache.
+    fn repeated(&self, budget: Budget, args: &[&str], runs: usize) -> Result<Measured, String> {
+        let (cold, _) = self.timed(args)?;
+        let mut times = Vec::with_capacity(runs);
+        for _ in 0..runs {
+            times.push(self.timed(args)?.0);
+        }
+        Ok(Measured { budget, warm: median(times), cold: Some(cold) })
+    }
+
+    fn format(&self, runs: usize) -> Result<Measured, String> {
+        let mut measured = self.repeated(FORMAT, &["fmt", "--check", EDITED], runs)?;
+        measured.cold = None;
+        Ok(measured)
+    }
+
+    /// `fennec test` after changing one function each time, which must run exactly one test.
+    fn affected_tests(&self, runs: usize) -> Result<Measured, String> {
+        let path = self.dir.join(EDITED);
+        let original = std::fs::read_to_string(&path).map_err(|err| err.to_string())?;
+        let (cold, _) = self.timed(&["test"])?;
+        let mut times = Vec::with_capacity(runs);
+        for run in 1..=runs {
+            let edited = original.replace(EDITED_LINE, &format!("    y = x + 300 + {run}\n"));
+            std::fs::write(&path, edited).map_err(|err| err.to_string())?;
+            let (took, printed) = self.timed(&["test"])?;
+            if !printed.contains(": 1 run,") {
+                return Err(format!("an edit to one function should run one test, but:\n{printed}"));
+            }
+            times.push(took);
+        }
+        std::fs::write(&path, original).map_err(|err| err.to_string())?;
+        Ok(Measured { budget: TESTS, warm: median(times), cold: Some(cold) })
+    }
+}
+
+/// A language server session, which is how an edit gets checked.
+struct Editor {
+    child: Child,
+    input: ChildStdin,
+    output: BufReader<ChildStdout>,
+}
+
+impl Editor {
+    fn send(&mut self, message: &Json) -> Result<(), String> {
+        fennec_lsp::write(&mut self.input, message).map_err(|err| err.to_string())
+    }
+
+    /// Sends a notification, then waits until the server has finished with it: it answers
+    /// messages in order, so that's when a request sent after it comes back.
+    fn settled(&mut self, method: &str, params: Json) -> Result<Duration, String> {
+        let start = Instant::now();
+        self.send(&Json::object([("method", Json::string(method)), ("params", params)]))?;
+        self.send(&Json::object([("id", Json::number(1)), ("method", Json::string("fennec/settled"))]))?;
+        loop {
+            let message = fennec_lsp::read(&mut self.output).map_err(|err| err.to_string())?;
+            let message = message.ok_or("the language server stopped")?;
+            if message.get("id").is_some() {
+                return Ok(start.elapsed());
+            }
+        }
+    }
+}
+
+/// From sending a document's new text to having all of the program's diagnostics, warm and
+/// cold.
+fn edit_to_checked(kit: &Kit, runs: usize) -> Result<(Duration, Duration), String> {
+    let mut child = kit
+        .command(&["lsp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("couldn't start the language server: {err}"))?;
+    let (Some(input), Some(output)) = (child.stdin.take(), child.stdout.take()) else {
+        return Err("the language server has no pipes".to_owned());
+    };
+    let mut editor = Editor { child, input, output: BufReader::new(output) };
+    let path = std::fs::canonicalize(kit.dir.join(EDITED)).map_err(|err| err.to_string())?;
+    let uri = fennec_lsp::uri_of(&path);
+    let text = std::fs::read_to_string(&path).map_err(|err| err.to_string())?;
+    let document = Json::object([
+        ("uri", Json::string(uri.as_str())),
+        ("languageId", Json::string("fennec")),
+        ("version", Json::number(1)),
+        ("text", Json::string(text.as_str())),
+    ]);
+    let cold = editor.settled("textDocument/didOpen", Json::object([("textDocument", document)]))?;
+    let mut times = Vec::with_capacity(runs);
+    for run in 1..=runs {
+        let edited = text.replace(EDITED_LINE, &format!("    y = x + 300 + {run}\n"));
+        let document =
+            Json::object([("uri", Json::string(uri.as_str())), ("version", Json::number(run + 1))]);
+        let changes = Json::Array(vec![Json::object([("text", Json::string(edited))])]);
+        let params = Json::object([("textDocument", document), ("contentChanges", changes)]);
+        times.push(editor.settled("textDocument/didChange", params)?);
+    }
+    editor.send(&Json::object([("id", Json::number(2)), ("method", Json::string("shutdown"))]))?;
+    editor.send(&Json::object([("method", Json::string("exit"))]))?;
+    drop(editor.input);
+    let _ = editor.child.wait();
+    Ok((median(times), cold))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{Budget, Measured, median, passes, table};
+
+    fn measured(enforced: bool, warm: u64) -> Measured {
+        let budget = Budget { name: "this", limit: Duration::from_millis(100), enforced };
+        Measured { budget, warm: Duration::from_millis(warm), cold: None }
+    }
+
+    #[test]
+    fn only_an_enforced_budget_fails_the_run() {
+        assert!(passes(&[measured(true, 100), measured(false, 900)]));
+        assert!(!passes(&[measured(true, 101), measured(false, 1)]));
+    }
+
+    #[test]
+    fn the_table_says_where_each_budget_stands() {
+        let table = table(&[measured(true, 1), measured(true, 200), measured(false, 200)], "a size");
+        assert!(table.contains("| met |") && table.contains("| **over** |"), "{table}");
+        assert!(table.contains("| over, not enforced yet |"), "{table}");
+    }
+
+    #[test]
+    fn the_median_is_the_middle_time() {
+        let times = [5, 1, 3].map(Duration::from_millis).to_vec();
+        assert_eq!(median(times), Duration::from_millis(3));
+    }
+}

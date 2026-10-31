@@ -49,8 +49,8 @@ struct Checker:
         for name, interface in self.program.interfaces.items():
             for method in interface.methods:
                 for param in method.params:
-                    self.check_written(param.ty, [])
-                self.check_written(method.ret, [])
+                    self.check_written(param.ty, ["Self"])
+                self.check_written(method.ret, ["Self"])
         for name, info in self.program.types.items():
             if not info.prelude:
                 self.check_bounds(info.type_def.generics)

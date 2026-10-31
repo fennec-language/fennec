@@ -171,11 +171,24 @@ jobs:
           # proves stable on no-op pull requests. Wrong output still fails the job.
           ./target/release/fennec-bench --report-only "${previous[@]}"
 
+  # Limits on how long editing, checking, testing and formatting take. A budget that's enforced
+  # fails this job; one not met yet shows as a warning. See crates/bench/src/budgets.rs.
+  budgets:
+    name: Instant-feedback budgets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked -p fennec -p fennec-bench
+      - run: ./target/release/fennec-bench budgets
+
   # One status for branch protection to require, so adding jobs never means changing settings.
   ok:
     name: CI passed
     if: always()
-    needs: [lint, test, coverage, deny, site, workflows]
+    needs: [lint, test, coverage, deny, site, workflows, budgets]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

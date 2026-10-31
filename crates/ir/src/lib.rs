@@ -9,10 +9,11 @@
 //! meaning: each backend has to end the program the same way, at the instruction's span.
 //!
 //! Lowering grows in slices. So far it handles functions over ints, floats, bools, strs and
-//! the program's own structs: operators, names, `if`, `while`, `for` over a `range`,
-//! `return`, direct calls, building structs, and reading and changing their fields. Structs
-//! are values, so copying one copies it. A function using anything else is listed in
-//! [`Program::not_lowered`], with why.
+//! the program's own structs and enums: operators, names, `if`, `while`, `for` over a
+//! `range`, `match`, `return`, direct calls, building structs and enum cases, and reading and
+//! changing fields. Structs and enums are values, so copying one copies it. A `match` is a
+//! run of tests, one case after another, which a backend can turn into a jump table. A
+//! function using anything else is listed in [`Program::not_lowered`], with why.
 
 mod lower;
 mod print;
@@ -28,6 +29,7 @@ pub use validate::validate;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Program {
     pub structs: Vec<StructDef>,
+    pub enums: Vec<EnumDef>,
     pub functions: Vec<Function>,
     pub not_lowered: Vec<NotLowered>,
 }
@@ -35,6 +37,20 @@ pub struct Program {
 /// A struct of the program, with its fields' types in the order they're written.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<(String, Type)>,
+}
+
+/// An enum of the program, with its cases in the order they're written.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnumDef {
+    pub name: String,
+    pub cases: Vec<CaseDef>,
+}
+
+/// One case of an enum, with its fields' types in the order they're written.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaseDef {
     pub name: String,
     pub fields: Vec<(String, Type)>,
 }
@@ -124,6 +140,26 @@ pub enum InstKind {
         path: Vec<String>,
         value: Operand,
     },
+    /// A new value of one case of an enum, with a value for each of its fields in order.
+    MakeCase {
+        dest: LocalId,
+        type_name: String,
+        case: String,
+        fields: Vec<Operand>,
+    },
+    /// Whether an enum value is of a case.
+    IsCase {
+        dest: LocalId,
+        value: Operand,
+        case: String,
+    },
+    /// A field of an enum value known to be of `case`.
+    GetCaseField {
+        dest: LocalId,
+        value: Operand,
+        case: String,
+        field: String,
+    },
     /// A direct call, by the callee's key. `dest` is `None` when nothing keeps the result.
     Call {
         dest: Option<LocalId>,
@@ -152,6 +188,11 @@ pub enum Terminator {
         otherwise: BlockId,
     },
     Return(Option<Operand>),
+    /// No case of a `match` took the value, which ends the program.
+    NoMatch {
+        value: Operand,
+        span: Span,
+    },
     /// The checker has shown control never gets here.
     Unreachable,
 }
@@ -180,7 +221,7 @@ impl Terminator {
         match self {
             Terminator::Jump(target) => vec![*target],
             Terminator::Branch { then, otherwise, .. } => vec![*then, *otherwise],
-            Terminator::Return(_) | Terminator::Unreachable => Vec::new(),
+            Terminator::Return(_) | Terminator::NoMatch { .. } | Terminator::Unreachable => Vec::new(),
         }
     }
 }

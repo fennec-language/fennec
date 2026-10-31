@@ -259,6 +259,24 @@ impl FnCx<'_> {
         signature.returns
     }
 
+    /// An operator on a value of a type parameter, from one of its interfaces, like `def +`
+    /// in `T: Addable`. `None` when none of them has it.
+    pub(crate) fn interface_operator(
+        &mut self,
+        left: &Type,
+        method: &str,
+        right: &Type,
+        span: Span,
+    ) -> Option<Type> {
+        let Type::Param(name) = left else { return None };
+        let (_, def) = self.bound_method(name, method)?;
+        let signature = self.interface_method(&def, left);
+        if let Some(param) = signature.params.get(1) {
+            self.check_arg(param, right, span);
+        }
+        Some(signature.returns)
+    }
+
     fn method_call(&mut self, object: &Expr, method: &str, optional: bool, args: &[Arg], span: Span) -> Type {
         if let Some(type_name) = self.as_type_name(object) {
             return self.static_call(type_name, method, args, span);

@@ -1,15 +1,30 @@
 {
   "ci": {
-    "commit": "10db769",
-    "date": "2026-10-30",
+    "commit": "284b80a",
+    "date": "2026-10-31",
     "machine": "GitHub Actions, ubuntu-latest",
     "kernels": [
-      { "name": "dicts", "reference_ms": 25.3, "fennec_ms": 34.8, "percent": 72.7 },
-      { "name": "sieve", "reference_ms": 49.5, "fennec_ms": 73.0, "percent": 67.8 },
-      { "name": "nbody", "reference_ms": 14.5, "fennec_ms": 38.9, "percent": 37.3 },
-      { "name": "strings", "reference_ms": 19.3, "fennec_ms": 55.2, "percent": 34.9 },
-      { "name": "fib", "reference_ms": 29.3, "fennec_ms": 89.7, "percent": 32.7 },
-      { "name": "spectral_norm", "reference_ms": 10.4, "fennec_ms": 36.8, "percent": 28.2 }
+      { "name": "dicts", "startup_ms": 4.6, "work_ms": 12.0, "percent": 190.5, "default_hash": true },
+      { "name": "strings", "startup_ms": 4.7, "work_ms": 26.6, "percent": 71.6 },
+      { "name": "regex", "startup_ms": 5.6, "work_ms": 82.6, "percent": 69.0 },
+      { "name": "dicts", "startup_ms": 4.5, "work_ms": 12.3, "percent": 62.0 },
+      { "name": "mandelbrot", "startup_ms": 4.9, "work_ms": 19.2, "percent": 61.3 },
+      { "name": "fib", "startup_ms": 4.7, "work_ms": 35.2, "percent": 50.3 },
+      { "name": "sieve", "startup_ms": 4.7, "work_ms": 53.0, "percent": 50.2 },
+      { "name": "binary_trees", "startup_ms": 5.1, "work_ms": 91.3, "percent": 49.2 },
+      { "name": "spectral_norm", "startup_ms": 5.3, "work_ms": 9.3, "percent": 40.0 },
+      { "name": "fannkuch", "startup_ms": 5.2, "work_ms": 23.0, "percent": 37.5 },
+      { "name": "nbody", "startup_ms": 6.3, "work_ms": 13.5, "percent": 37.3 },
+      { "name": "particles", "startup_ms": 5.3, "work_ms": 14.3, "percent": 24.8 },
+      { "name": "k_nucleotide", "startup_ms": 5.3, "work_ms": 250.9, "percent": 9.4 },
+      { "name": "sort", "startup_ms": 5.0, "work_ms": 402.8, "percent": 8.2 },
+      { "name": "comprehensions", "startup_ms": 4.9, "work_ms": 359.9, "percent": 2.3 },
+      { "name": "json", "startup_ms": 8.5, "work_ms": 269.9, "percent": 1.0 },
+      { "name": "selfhost", "startup_ms": 146.2, "work_ms": 3343.8, "percent": 0.2 },
+      { "name": "closures", "startup_ms": 5.2, "work_ms": 346.6, "percent": 0.1 },
+      { "name": "deltablue", "startup_ms": 21.5, "work_ms": 451.7, "percent": 0.1 },
+      { "name": "generics", "startup_ms": 6.0, "work_ms": 408.8, "percent": 0.1 },
+      { "name": "richards", "startup_ms": 13.3, "work_ms": 2339.7, "percent": 0.1 }
     ]
   },
   "builds": {
@@ -22,5 +37,5 @@
     "fib_first_s": 0.14,
     "tests_unchanged_s": 0.01
   },
-  "targets": { "jit": 80, "release": 110 }
+  "targets": { "jit": 80, "jit_later": 85, "release": 110, "interpreter": [10, 30] }
 }

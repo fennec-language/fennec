@@ -7,7 +7,7 @@ import data from '../data/benchmarks.json';
 const base = import.meta.env.BASE_URL;
 const themes = { light: 'vitesse-light', dark: 'vitesse-dark' } as const;
 const { ci, builds, targets } = data;
-const percents = ci.kernels.map((kernel) => (kernel.percent / targets.jit) * 100);
+const percents = ci.kernels.filter((kernel) => !kernel.default_hash).map((kernel) => kernel.percent);
 const low = Math.round(Math.min(...percents));
 const high = Math.round(Math.max(...percents));
 
@@ -83,9 +83,9 @@ const pillars = [
             <span>of the speed target, across our benchmarks</span>
           </div>
           <div class="range" role="img" aria-label={`Today ${low} to ${high} percent of the speed target`}>
-            <span class="range-fill" style={`left: ${low}%; width: ${high - low}%`}></span>
+            <span class="range-fill" style={`left: ${Math.min(low, 100)}%; width: ${Math.min(high, 100) - Math.min(low, 100)}%`}></span>
           </div>
-          <span class="range-note">JIT today · a full bar means the target is met</span>
+          <span class="range-note">JIT today · the floor is {targets.jit}% on every benchmark</span>
         </div>
       </div>
     </div>

@@ -1,0 +1,326 @@
+## DeltaBlue from Are We Fast Yet: a constraint solver over a graph of variables and constraints.
+## They refer to each other by their place in a list, -1 being none.
+
+NONE = -1
+
+REQUIRED = 0
+STRONG_PREFERRED = 1
+PREFERRED = 2
+STRONG_DEFAULT = 3
+NORMAL = 4
+WEAK_DEFAULT = 5
+WEAKEST = 6
+
+UNDECIDED = 0
+FORWARD = 1
+BACKWARD = 2
+
+enum Kind:
+    Stay
+    Edit
+    Equal
+    Scale
+
+struct Variable:
+    value: int
+    constraints: list[int]
+    determined_by = NONE
+    mark = 0
+    walk = WEAKEST
+    stay = True
+
+struct Constraint:
+    kind: Kind
+    strength: int
+    first: int
+    second = NONE
+    scale = NONE
+    offset = NONE
+    direction = UNDECIDED
+
+    ## Whether this is a constraint on one variable.
+    def unary(self) -> bool:
+        match self.kind:
+            case .Stay | .Edit:
+                True
+            case _:
+                False
+
+    def is_input(self) -> bool:
+        match self.kind:
+            case .Edit:
+                True
+            case _:
+                False
+
+    def satisfied(self) -> bool:
+        self.direction != UNDECIDED
+
+    def output(self) -> int:
+        self.first if self.unary() or self.direction == BACKWARD else self.second
+
+    def input(self) -> int:
+        self.second if self.direction == BACKWARD else self.first
+
+struct Planner:
+    variables: list[Variable]
+    constraints: list[Constraint]
+    current_mark = 0
+
+    def variable(mut self, value: int) -> int:
+        self.variables.append(Variable(value=value, constraints=[]))
+        self.variables.len() - 1
+
+    def new_mark(mut self) -> int:
+        self.current_mark += 1
+        self.current_mark
+
+    def add(mut self, constraint: Constraint) -> int:
+        self.constraints.append(constraint)
+        at = self.constraints.len() - 1
+        self.add_to_graph(at)
+        self.incremental_add(at)
+        at
+
+    def add_to_graph(mut self, at: int):
+        c = self.constraints[at]
+        self.variables[c.first].constraints.append(at)
+        if not c.unary():
+            self.variables[c.second].constraints.append(at)
+        if c.scale != NONE:
+            self.variables[c.scale].constraints.append(at)
+            self.variables[c.offset].constraints.append(at)
+        self.constraints[at].direction = UNDECIDED
+
+    def remove_from_graph(mut self, at: int):
+        c = self.constraints[at]
+        for place in [c.first, c.second, c.scale, c.offset]:
+            if place != NONE:
+                self.variables[place].constraints.remove_where((other) => other == at)
+                if self.variables[place].determined_by == at:
+                    self.variables[place].determined_by = NONE
+        self.constraints[at].direction = UNDECIDED
+
+    def choose_method(mut self, at: int, mark: int):
+        c = self.constraints[at]
+        if c.unary():
+            walk = self.variables[c.first].walk
+            taken = self.variables[c.first].mark != mark and c.strength < walk
+            self.constraints[at].direction = FORWARD if taken else UNDECIDED
+            return
+        first = self.variables[c.first]
+        second = self.variables[c.second]
+        mut direction = UNDECIDED
+        if first.mark == mark:
+            if second.mark != mark and c.strength < second.walk:
+                direction = FORWARD
+        elif second.mark == mark:
+            if first.mark != mark and c.strength < first.walk:
+                direction = BACKWARD
+        elif first.walk > second.walk:
+            if c.strength < first.walk:
+                direction = BACKWARD
+        elif c.strength < second.walk:
+            direction = FORWARD
+        self.constraints[at].direction = direction
+
+    def mark_inputs(mut self, at: int, mark: int):
+        c = self.constraints[at]
+        if c.unary(): return
+        self.variables[c.input()].mark = mark
+        if c.scale != NONE:
+            self.variables[c.scale].mark = mark
+            self.variables[c.offset].mark = mark
+
+    def inputs_known(mut self, at: int, mark: int) -> bool:
+        c = self.constraints[at]
+        if c.unary(): return True
+        input = self.variables[c.input()]
+        input.mark == mark or input.stay or input.determined_by == NONE
+
+    def recalculate(mut self, at: int):
+        c = self.constraints[at]
+        out = c.output()
+        if c.unary():
+            self.variables[out].walk = c.strength
+            self.variables[out].stay = not c.is_input()
+            return
+        input = c.input()
+        self.variables[out].walk = c.strength if c.strength > self.variables[
+            input
+        ].walk else self.variables[input].walk
+        mut stay = self.variables[input].stay
+        if c.scale != NONE:
+            stay = stay and self.variables[c.scale].stay and self.variables[c.offset].stay
+        self.variables[out].stay = stay
+        if stay:
+            self.execute(at)
+
+    def execute(mut self, at: int):
+        c = self.constraints[at]
+        match c.kind:
+            case .Stay | .Edit:
+                pass
+            case .Equal:
+                self.variables[c.output()].value = self.variables[c.input()].value
+            case .Scale:
+                scale = self.variables[c.scale].value
+                offset = self.variables[c.offset].value
+                if c.direction == FORWARD:
+                    self.variables[c.second].value = self.variables[c.first].value * scale + offset
+                else:
+                    self.variables[c.first].value = (
+                        (self.variables[c.second].value - offset) // scale
+                    )
+
+    def satisfy(mut self, at: int, mark: int) -> int:
+        self.choose_method(at, mark)
+        if not self.constraints[at].satisfied(): return NONE
+        self.mark_inputs(at, mark)
+        out = self.constraints[at].output()
+        overridden = self.variables[out].determined_by
+        if overridden != NONE:
+            self.constraints[overridden].direction = UNDECIDED
+        self.variables[out].determined_by = at
+        self.add_propagate(at, mark)
+        self.variables[out].mark = mark
+        overridden
+
+    def incremental_add(mut self, at: int):
+        mark = self.new_mark()
+        mut overridden = self.satisfy(at, mark)
+        while overridden != NONE:
+            overridden = self.satisfy(overridden, mark)
+
+    def incremental_remove(mut self, at: int):
+        out = self.constraints[at].output()
+        self.constraints[at].direction = UNDECIDED
+        self.remove_from_graph(at)
+        unsatisfied = self.remove_propagate_from(out)
+        for strength in range(REQUIRED, WEAKEST):
+            for other in unsatisfied:
+                if self.constraints[other].strength == strength:
+                    self.incremental_add(other)
+
+    def destroy(mut self, at: int):
+        if self.constraints[at].satisfied():
+            self.incremental_remove(at)
+        else:
+            self.remove_from_graph(at)
+
+    def add_propagate(mut self, at: int, mark: int):
+        mut todo = [at]
+        while todo.len() > 0:
+            next = todo.pop()
+            self.recalculate(next)
+            self.consuming(self.constraints[next].output(), mut todo)
+
+    def consuming(mut self, place: int, mut into: list[int]):
+        determining = self.variables[place].determined_by
+        for other in self.variables[place].constraints:
+            if other != determining and self.constraints[other].satisfied():
+                into.append(other)
+
+    def remove_propagate_from(mut self, place: int) -> list[int]:
+        self.variables[place].determined_by = NONE
+        self.variables[place].walk = WEAKEST
+        self.variables[place].stay = True
+        mut unsatisfied = []
+        mut todo = [place]
+        while todo.len() > 0:
+            next = todo.pop()
+            determining = self.variables[next].determined_by
+            for other in self.variables[next].constraints:
+                if not self.constraints[other].satisfied():
+                    unsatisfied.append(other)
+            for other in self.variables[next].constraints:
+                if other != determining and self.constraints[other].satisfied():
+                    self.recalculate(other)
+                    todo.append(self.constraints[other].output())
+        unsatisfied
+
+    def plan_from(mut self, sources: list[int]) -> list[int]:
+        mark = self.new_mark()
+        mut plan = []
+        mut todo = sources
+        while todo.len() > 0:
+            next = todo.pop()
+            out = self.constraints[next].output()
+            if self.variables[out].mark != mark and self.inputs_known(next, mark):
+                plan.append(next)
+                self.variables[out].mark = mark
+                self.consuming(out, mut todo)
+        plan
+
+    def run_plan(mut self, plan: list[int]):
+        for at in plan:
+            self.execute(at)
+
+    def change(mut self, place: int, value: int):
+        edit = self.add(Constraint(kind=Kind.Edit, strength=PREFERRED, first=place))
+        plan = self.plan_from([edit])
+        for _ in range(10):
+            self.variables[place].value = value
+            self.run_plan(plan)
+        self.destroy(edit)
+
+## A chain of variables held equal: changing one end changes the other.
+def chain_test(size: int) -> int:
+    mut planner = Planner(variables=[], constraints=[])
+    places = [planner.variable(0) for _ in range(size + 1)]
+    for i in range(size):
+        planner.add(
+            Constraint(kind=Kind.Equal, strength=REQUIRED, first=places[i], second=places[i + 1]),
+        )
+    last = places[size]
+    planner.add(Constraint(kind=Kind.Stay, strength=STRONG_DEFAULT, first=last))
+    edit = planner.add(Constraint(kind=Kind.Edit, strength=PREFERRED, first=places[0]))
+    plan = planner.plan_from([edit])
+    mut total = 0
+    for value in range(100):
+        planner.variables[places[0]].value = value
+        planner.run_plan(plan)
+        total += planner.variables[last].value
+    planner.destroy(edit)
+    total
+
+## Pairs of variables related by a scale and an offset, changed from each end.
+def projection_test(size: int) -> int:
+    mut planner = Planner(variables=[], constraints=[])
+    scale = planner.variable(10)
+    offset = planner.variable(1000)
+    mut sources = []
+    mut targets = []
+    for i in range(size):
+        source = planner.variable(i)
+        target = planner.variable(i)
+        sources.append(source)
+        targets.append(target)
+        planner.add(Constraint(kind=Kind.Stay, strength=NORMAL, first=source))
+        planner.add(
+            Constraint(
+                kind=Kind.Scale,
+                strength=REQUIRED,
+                first=source,
+                second=target,
+                scale=scale,
+                offset=offset,
+            ),
+        )
+    planner.change(sources[0], 17)
+    mut total = planner.variables[targets[0]].value
+    planner.change(targets[0], 1050)
+    total += planner.variables[sources[0]].value
+    planner.change(scale, 5)
+    for target in targets:
+        total += planner.variables[target].value
+    planner.change(offset, 2000)
+    for target in targets:
+        total += planner.variables[target].value
+    total
+
+def main(stdout: Stdout):
+    mut total = 0
+    for _ in range(5):
+        total += chain_test(100) + projection_test(100)
+    stdout.print(total)

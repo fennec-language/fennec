@@ -1,19 +1,25 @@
+# Pinned with rustc 1.99.0 (b940084d7 2026-09-28).
 # Written by `fennec-bench pin`. Only the last column is edited by hand: `yes` once a kernel
 # reaches the JIT's floor, so it can't drop below it again.
-# kernel instructions output enforced
-binary_trees 435974435 085da71cd358d51a no
-closures 4620748 86672a2132954f6c no
-comprehensions 61889067 87157abf370b4b8b no
-dicts 194404271 03f09d5e6aacdd93 no
-fannkuch 88334424 baaaef315c659f3c no
-fib 263332961 c1a7256e0480b2dc no
-generics 5130077 a481a9a0bfd872a4 no
-json 30959768 1c9a8c994d1b00d2 no
-mandelbrot 94359686 c573d05d2a7a670c no
-nbody 76294652 4d092d7db6fae7b2 no
-particles 66147916 9e927a27bf9d8df9 no
-selfhost 24451969 bc5ffd62d8e8766b no
-sieve 130034892 84a70b39ecced192 no
-sort 182304761 bd713ad39cc2e9f8 no
-spectral_norm 70877327 b4e227d5abb9fd3a no
-strings 176314041 f1a0bd22994baaf5 no
+# kernel instructions output source enforced
+binary_trees 407640986 085da71cd358d51a ead86640e9975b37 no
+closures 4612050 86672a2132954f6c da1a1f61bc0d2370 no
+comprehensions 71252229 87157abf370b4b8b c4a5957e3cddd893 no
+deltablue 5629787 a88d59a251d263b5 cfe4a5d933138def no
+dicts 67452142 03f09d5e6aacdd93 f3f7672ae5da1df2 no
+dicts.std 182301942 03f09d5e6aacdd93 87059166fc420392 no
+fannkuch 88688576 baaaef315c659f3c 60bc9da8c4bd86df no
+fib 263326551 c1a7256e0480b2dc 9fd3e96e952c4d92 no
+generics 5119045 a481a9a0bfd872a4 88cd972e1203ff47 no
+json 29808661 1c9a8c994d1b00d2 3fbd507353928017 no
+k_nucleotide 207667956 1542cb4fe1d1d1d7 866e603e6b0a9e7f no
+mandelbrot 94351019 c573d05d2a7a670c 0c29d0217007938c no
+nbody 92283400 4d092d7db6fae7b2 2a7c803ede255443 no
+particles 66138942 9e927a27bf9d8df9 6892dd618c1632ed no
+regex 978360053 bee675fb854041e9 0303b9aa3220aa0e no
+richards 20963164 c34a6cd35b11d1b8 df6c6408ff721618 no
+selfhost 52279002 4e501a7e8333fdfe - no
+sieve 130026192 84a70b39ecced192 032ffa192568f63f no
+sort 179357668 bd713ad39cc2e9f8 119ad39ea06fd9f6 no
+spectral_norm 70867780 b4e227d5abb9fd3a f9de590075b4f0d7 no
+strings 166300599 f1a0bd22994baaf5 51aa1c281149b6ee no

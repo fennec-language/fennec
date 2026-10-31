@@ -4,12 +4,12 @@ import data from '../data/benchmarks.json';
 
 const base = import.meta.env.BASE_URL;
 const { ci, builds, targets } = data;
-const kernels = ci.kernels.map((kernel) => ({
-  name: kernel.name,
-  fennec_ms: kernel.fennec_ms,
-  target_ms: kernel.reference_ms / (targets.jit / 100),
-  of_target: (kernel.percent / targets.jit) * 100,
-}));
+const kernels = ci.kernels;
+const counted = kernels.filter((kernel) => !kernel.default_hash);
+const met = counted.filter((kernel) => kernel.percent >= targets.jit).length;
+// The bars run past 100%, since release builds aim beyond the target.
+const scale = 125;
+const at = (percent: number) => `${(percent / scale) * 100}%`;
 ---
 
 <Base title="Benchmarks" description="Fennec's real benchmark numbers against its speed targets, measured in CI. In progress.">
@@ -24,31 +24,33 @@ const kernels = ci.kernels.map((kernel) => ({
   <section class="wrap">
     <h2>Speed against target</h2>
     <p class="note">
-      Each target comes from idiomatic code for the same work in the fastest established systems language. Today's only native engine is the JIT, which aims for {targets.jit}% of that code's speed. Release builds, which aim for {targets.release}%, don't exist yet.
+      Each target comes from idiomatic code for the same work in the fastest established systems language. Each engine aims for its own share of the target, marked on every bar: the interpreter's {targets.interpreter[0]}–{targets.interpreter[1]}% as a band, the JIT's {targets.jit}%, going to {targets.jit_later}% later, and {targets.release}% for release builds, which don't exist yet. These numbers are the JIT's.
     </p>
     <div class="table">
       <div class="tr th">
-        <span>Kernel</span><span class="num">JIT target</span><span class="num">Fennec JIT</span><span>Speed, % of target</span>
+        <span>Kernel</span><span class="num">Startup</span><span class="num">Work</span><span>Work's speed, % of target</span>
       </div>
       {
         kernels.map((kernel) => (
           <div class="tr">
-            <span class="name">{kernel.name}</span>
-            <span class="num">{kernel.target_ms.toFixed(1)} ms</span>
-            <span class="num">{kernel.fennec_ms.toFixed(1)} ms</span>
+            <span class="name">{kernel.name}{kernel.default_hash && <small> with a standard default hash</small>}</span>
+            <span class="num">{kernel.startup_ms.toFixed(1)} ms</span>
+            <span class="num">{kernel.work_ms.toFixed(1)} ms</span>
             <span class="bar-cell">
               <span class="track">
-                <span class="fill" style={`width: ${Math.min(kernel.of_target, 100)}%`} />
+                <span class="band" style={`left: ${at(targets.interpreter[0])}; width: ${at(targets.interpreter[1] - targets.interpreter[0])}`} title={`Interpreter target: ${targets.interpreter[0]}–${targets.interpreter[1]}%`} />
+                <span class="fill" style={`width: ${at(Math.min(kernel.percent, scale))}`} />
+                <span class="mark" style={`left: ${at(targets.jit)}`} title={`JIT target: ${targets.jit}%`} />
+                <span class="mark" style={`left: ${at(targets.release)}`} title={`Release target: ${targets.release}%`} />
               </span>
-              <strong>{kernel.of_target.toFixed(0)}%</strong>
+              <strong>{kernel.percent.toFixed(0)}%</strong>
             </span>
           </div>
         ))
       }
     </div>
     <p class="note">
-      No kernel meets its target in this run. Medians of repeated runs, from commit <code>{ci.commit}</code> on {ci.date}, on {ci.machine}.
-      A full bar means the target is met. A shared CI machine is noisy, so these move by several percent between runs.
+      {met} of {counted.length} kernels are at the JIT's target. The second <code>dicts</code> row compares with a target using a slower, attack-resistant default hash, so it isn't counted. From commit <code>{ci.commit}</code> on {ci.date}, on {ci.machine}. Speed is counted in instructions, which barely move when a machine is busy, so it can differ from the times shown. Times are medians of repeated runs, and they move by several percent between runs. Once a kernel reaches the JIT's target, CI fails if it drops below.
     </p>
   </section>
 
@@ -65,7 +67,7 @@ const kernels = ci.kernels.map((kernel) => ({
   <section class="wrap">
     <h2>How it's measured</h2>
     <p>
-      Each kernel and its reference run on the same machine, taking turns, and must print the same result. The reference is built at full optimization for that machine. A failure is fixed in the compiler, never by changing the benchmark. The kernels and the
+      Each target is pinned once per architecture, from reference code built at full optimization for that architecture's baseline CPU, and each kernel must print what its reference prints. Startup is everything before <code>main</code>; only the work counts toward the target. A failure is fixed in the compiler, never by changing the benchmark. The kernels and the
       method are in <a href="https://github.com/fennec-language/fennec/tree/main/bench">the repository</a>, and you can{' '}
       <a href={`${base}speed/`}>read how the two speeds are designed</a>.
     </p>
@@ -164,6 +166,20 @@ const kernels = ci.kernels.map((kernel) => ({
   .bar-cell strong {
     width: 2.75rem;
     text-align: right;
+  }
+
+  .band {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: var(--border);
+  }
+
+  .mark {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 2px;
+    background: var(--text, currentColor);
   }
 
   .track {

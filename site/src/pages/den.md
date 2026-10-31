@@ -18,7 +18,7 @@ The audit scales with what a kit can touch:
 
 - **Pure**, with no capabilities and no C: checked automatically.
 - **Capability**, using `Fs`, `Net` and the like: checked automatically and reviewed by AI, with its capabilities shown on its page. Adding a capability takes the author's own passkey tap.
-- **Native**, with C code: audited by a person, and published by verified authors only.
+- **Native**, with C code: audited by a person, and first-party kits only for now.
 
 ## Publishing
 

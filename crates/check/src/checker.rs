@@ -123,6 +123,9 @@ impl Checker {
             self.unknowns_left();
         }
         if self.diagnostics.is_empty() {
+            let enums = self.enums();
+            // An enum nothing uses isn't checked, so reading its fields can't report anything.
+            self.diagnostics.clear();
             let locals = std::mem::take(&mut self.locals);
             let functions = self
                 .states
@@ -132,7 +135,7 @@ impl Checker {
                     State::Checking => None,
                 })
                 .collect();
-            let signatures = Signatures { functions, structs, locals };
+            let signatures = Signatures { functions, structs, enums, locals };
             let types = Types { functions: self.typed };
             return Ok(Checked { signatures, types, cases: self.cases });
         }
@@ -557,6 +560,35 @@ impl Checker {
                 (name, crate::Struct { fields, rules })
             })
             .collect()
+    }
+
+    /// Every enum's cases, with the types of their fields.
+    fn enums(&mut self) -> BTreeMap<String, crate::Enum> {
+        let enums: Vec<fennec_syntax::TypeDef> = self
+            .program
+            .types
+            .values()
+            .filter(|info| info.kind == TypeKind::Enum)
+            .map(|info| info.def.clone())
+            .collect();
+        let mut found = BTreeMap::new();
+        for def in enums {
+            let mut cases = Vec::new();
+            let mut rules = false;
+            for case in &def.cases {
+                rules |= case.fields.iter().any(|field| field.rule.is_some());
+                let fields = case
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        (field.name.clone(), self.field_type(&def.name, Some(&case.name), &field.name))
+                    })
+                    .collect();
+                cases.push((case.name.clone(), fields));
+            }
+            found.insert(def.name, crate::Enum { cases, rules });
+        }
+        found
     }
 
     pub(crate) fn is_error_type(&self, ty: &Type) -> bool {

@@ -15,6 +15,14 @@ impl fmt::Display for Program {
                 writeln!(f, "  {name}: {ty}")?;
             }
         }
+        for def in &self.enums {
+            writeln!(f, "enum {}", def.name)?;
+            for case in &def.cases {
+                let fields: Vec<String> =
+                    case.fields.iter().map(|(name, ty)| format!("{name}: {ty}")).collect();
+                writeln!(f, "  {}({})", case.name, fields.join(", "))?;
+            }
+        }
         for function in &self.functions {
             writeln!(f, "{function}")?;
         }
@@ -87,6 +95,14 @@ impl fmt::Display for InstKind {
             InstKind::SetField { object, path, value } => {
                 write!(f, "{object}.{} = {value}", path.join("."))
             }
+            InstKind::MakeCase { dest, type_name, case, fields } => {
+                let fields: Vec<String> = fields.iter().map(ToString::to_string).collect();
+                write!(f, "{dest} = make {type_name}.{case}({})", fields.join(", "))
+            }
+            InstKind::IsCase { dest, value, case } => write!(f, "{dest} = {value} is .{case}"),
+            InstKind::GetCaseField { dest, value, case, field } => {
+                write!(f, "{dest} = {value}.{case}.{field}")
+            }
             InstKind::Call { dest, function, args } => {
                 let args: Vec<String> = args.iter().map(ToString::to_string).collect();
                 if let Some(dest) = dest {
@@ -105,6 +121,7 @@ impl fmt::Display for Terminator {
             Terminator::Branch { cond, then, otherwise } => write!(f, "branch {cond} {then} {otherwise}"),
             Terminator::Return(Some(value)) => write!(f, "return {value}"),
             Terminator::Return(None) => write!(f, "return"),
+            Terminator::NoMatch { value, .. } => write!(f, "no match {value}"),
             Terminator::Unreachable => write!(f, "unreachable"),
         }
     }

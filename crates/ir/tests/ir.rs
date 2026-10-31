@@ -345,6 +345,167 @@ fn for_counts_in_a_local_of_its_own() {
     );
 }
 
+const TOKENS: &str = "enum Tok:
+    Int(value: int)
+    Name(text: str)
+    Eof
+
+enum ExprKind:
+    Int(value: int)
+    Name(text: str)
+    Negative(inner: int)
+
+";
+
+#[test]
+fn a_leading_dot_case_takes_its_enum_from_the_typed_tree() {
+    let source = format!(
+        "{TOKENS}def literal(tok: Tok) -> ExprKind:
+    match tok:
+        case .Int(value):
+            .Int(value)
+        case .Name(text):
+            .Name(text)
+        case .Eof:
+            ExprKind.Negative(0)
+"
+    );
+    assert_eq!(
+        printed(&source, "literal").unwrap(),
+        "fn literal(_0) -> ExprKind
+  local _0 tok: Tok
+  local _1: bool
+  local _2: int
+  local _3 value: int
+  local _4: ExprKind
+  local _5: bool
+  local _6: str
+  local _7 text: str
+  local _8: ExprKind
+  local _9: bool
+  local _10: ExprKind
+  bb0:
+    _1 = _0 is .Int
+    branch _1 bb2 bb1
+  bb1:
+    _5 = _0 is .Name
+    branch _5 bb4 bb3
+  bb2:
+    _2 = _0.Int.value
+    _3 = _2
+    _4 = make ExprKind.Int(_3)
+    return _4
+  bb3:
+    _9 = _0 is .Eof
+    branch _9 bb6 bb5
+  bb4:
+    _6 = _0.Name.text
+    _7 = _6
+    _8 = make ExprKind.Name(_7)
+    return _8
+  bb5:
+    no match _0
+  bb6:
+    _10 = make ExprKind.Negative(0)
+    return _10
+"
+    );
+}
+
+#[test]
+fn alternatives_share_their_names_and_a_guard_falls_through() {
+    let source = format!(
+        "{TOKENS}def size(tok: Tok) -> int:
+    match tok:
+        case .Int(n) | .Name(n) if False:
+            0
+        case _:
+            1
+"
+    )
+    .replace("Name(text: str)\n    Eof", "Name(text: int)\n    Eof");
+    assert_eq!(
+        printed(&source, "size").unwrap(),
+        "fn size(_0) -> int
+  local _0 tok: Tok
+  local _1: bool
+  local _2: int
+  local _3 n: int
+  local _4: bool
+  local _5: int
+  bb0:
+    _1 = _0 is .Int
+    branch _1 bb4 bb3
+  bb1:
+    return 1
+  bb2:
+    branch false bb7 bb1
+  bb3:
+    _4 = _0 is .Name
+    branch _4 bb6 bb5
+  bb4:
+    _2 = _0.Int.value
+    _3 = _2
+    jump bb2
+  bb5:
+    jump bb1
+  bb6:
+    _5 = _0.Name.text
+    _3 = _5
+    jump bb2
+  bb7:
+    return 0
+"
+    );
+}
+
+#[test]
+fn a_match_can_be_a_value_and_values_can_be_tested() {
+    let source = "def name(n: int) -> str:
+    text = match n:
+        case 0:
+            \"none\"
+        case _:
+            \"some\"
+    text + \"!\"
+";
+    let printed = printed(source, "name").unwrap();
+    assert!(printed.contains("_2 = _0 == 0"), "{printed}");
+    assert!(printed.contains("_1 = \"none\""), "{printed}");
+    assert!(printed.contains("_1 = \"some\""), "{printed}");
+}
+
+#[test]
+fn enum_methods_and_struct_patterns_lower() {
+    let source = "struct Point:
+    x: int
+    y: int
+
+enum Light:
+    Red
+    Green
+
+    def next(self) -> Light:
+        match self:
+            case .Red:
+                .Green
+            case .Green:
+                .Red
+
+def x_of(point: Point) -> int:
+    match point:
+        case Point(x, _):
+            x
+
+def twice(light: Light) -> Light:
+    light.next().next()
+";
+    let program = lowered(source).unwrap();
+    assert_eq!(program.not_lowered, []);
+    assert!(printed(source, "twice").unwrap().contains("_2 = call Light.next(_1)"));
+    assert!(printed(source, "x_of").unwrap().contains("_1 = _0.x"));
+}
+
 /// A one-block function with the given locals, ending as given.
 fn function(locals: Vec<Type>, end: Terminator) -> Function {
     Function {

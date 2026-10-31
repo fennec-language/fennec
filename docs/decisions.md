@@ -90,7 +90,15 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 ## Speed
 
-**The target is enforced.** Every program in the benchmark suite also exists as idiomatic code in the fastest established systems language. CI fails if a benchmark runs more than 3% slower than that twin, or slower than the previous run. The fix for a failure goes into the compiler, never into tricks in the benchmark.
+**Speed targets are measured against each benchmark's twin, fully optimized.** Every program in the benchmark suite also exists as idiomatic code in the fastest established systems language.
+- Release builds: 110% of the twin's speed.
+- The JIT: 80% to start, then 85%.
+- The interpreter: 10–30%.
+
+Benchmarks do realistic work that neither side's optimizer can delete.
+*Why:* The whole 20-benchmark suite meeting these targets shows the language's fundamentals carry well.
+
+**The targets are enforced.** CI fails if a benchmark misses its target or runs slower than the previous run. The fix for a failure goes into the compiler, never into tricks in the benchmark.
 
 ### Matching the fastest languages
 
@@ -628,8 +636,8 @@ These are default lints, and the Den requires them.
 
 **`fennec build` makes an executable with Cranelift.** It's the fast build, and the path the self-hosted compiler bootstraps through. `fennec build --release` uses the bundled LLVM at full optimization for small, stripped, portable executables.
 
-**The JIT aims for about 80–85% of the speed of the benchmark suite's twins, and no further.** Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
-*Why:* Development builds are for changing code and seeing it run at once. The 3% target applies to release builds.
+**The JIT aims for 80% of the speed of the benchmark suite's twins to start, then 85%, and no further.** Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
+*Why:* Development builds are for changing code and seeing it run at once. The 110% target applies to release builds.
 
 The JIT, release builds and the language server all share one build engine and cache, described under Builds.
 

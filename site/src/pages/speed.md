@@ -67,11 +67,12 @@ Fast builds come from design decisions, not just a fast compiler.
 
 ## The performance target
 
-Release builds should land within a few percent of hand-tuned native code. That's a promise we intend to check, not just make:
+Each benchmark has a target: idiomatic code for the same work in the fastest established systems language, fully optimized. Release builds aim for 110% of its speed, the fast compiler for development for 80% to start and then 85%, and the interpreter for 10–30%. That's a promise we intend to check, not just make:
 
 - A benchmark suite of real programs, including a game update loop, a JSON parser, a hash-map-heavy workload, a numeric kernel and a server.
 - Each written idiomatically in Fennec and compared against expert hand-written native code.
-- A check on every change: overall speed must stay within 3%, and no single benchmark may fall more than 10% behind. Falling short is a bug, not a footnote.
+- Realistic work that neither side's optimizer can delete.
+- A check on every change: a benchmark that misses its target or gets slower fails. Falling short is a bug, not a footnote.
 
 ## What costs nothing
 

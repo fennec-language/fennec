@@ -37,11 +37,11 @@ Each kernel also has to print exactly what its target expects, which the target 
 
 ## The floor and the ratchet
 
-**The JIT's floor is 80% of target**, on every kernel. Past that is nice but not the goal. The 80% is a floor on work, not on startup.
+**The JIT's floor is 80% of target**, on every kernel, rising to 85% later. Past that is nice but not the goal. The 80% is a floor on work, not on startup.
 
 Once a kernel reaches the floor, the run says so. Mark it `yes` in the last column of both targets files, and from then on CI fails if it drops below. A failure is fixed in the compiler, never by changing the benchmark.
 
-Release builds will aim for 97% of target when they exist.
+Release builds will aim for 110% of target when they exist. The interpreter's range is 10–30%.
 
 To compare against another build of `fennec`, like the previous commit's, pass `--previous path/to/fennec`. CI does that on every pull request, merge and push to `main`. A kernel counts as slower when its median time is more than 10% slower than before and it also runs more than 1% more instructions. For now that's a warning, until the counts have proven stable on pull requests that change nothing on the run path.
 

@@ -42,6 +42,22 @@ pub(crate) fn find(dir: &Path, out_dir: &Path, selfhost: &Path) -> Result<Vec<Ke
             twin: Twin::Source(source.with_extension("rs")),
         })
         .collect();
+    // A kernel can have a second twin, `name.std.rs`, for a comparison worth showing but not
+    // holding it to, like a twin with its standard library's defaults.
+    for source in sources.clone() {
+        let alternate = source.with_extension("std.rs");
+        if alternate.is_file() {
+            let stem =
+                source.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+            kernels.push(Kernel {
+                name: format!("{stem}.std"),
+                path: source.to_string_lossy().into_owned(),
+                stdin: None,
+                twin: Twin::Source(alternate),
+            });
+        }
+    }
+    kernels.sort_by(|a, b| a.name.cmp(&b.name));
     if selfhost.join("kit.toml").is_file() {
         kernels.push(front_end(&sources, out_dir, selfhost)?);
     }

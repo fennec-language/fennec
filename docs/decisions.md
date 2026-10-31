@@ -280,6 +280,18 @@ with db.transaction() as mut tx:
 
 ## Standard library
 
+**A module is in `std` if most programs need it, it's security-sensitive, or it has to be consistent everywhere.** Everything else is a kit. Only reachable code gets compiled, so unused `std` costs nothing.
+
+**`std.net` holds TCP, UDP, TLS, an HTTP client and server, and WebSocket, all through the `Net` capability.** The HTTP server is the plain kind, a function that handles requests; routing frameworks stay kits. Its design takes lessons from Go's `net` and `net/http`, in Fennec's own code. QUIC comes later as a first-party kit.
+
+**`std.sql` is one standard database interface,** modeled on the ideas of Python's DB-API. Drivers are first-party kits, with Postgres and MySQL in pure Fennec.
+
+**`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
+
+**`std.crypto` holds hashing, including BLAKE3, so there's no separate `std.hash`.**
+
+**First-party kits, not `std`:** `fennec/ml`, database drivers, windowing and input for games, and image formats.
+
 **Names live in their modules.** A standard library module provides nothing until it's imported: `from std.math import Vec3, sqrt`, or `from std import math` and then `math.Vec3` and `math.sqrt(x)`. That's every module so far: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`. Using a name without its import is reported with the import to add.
 *Why:* A file's imports show everything it uses from the standard library, as in Python.
 
@@ -835,6 +847,7 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 
 - How a type marks that its finishing method must be called.
 - Decorators. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.
+- SQLite: whether and how Fennec includes it. Porting it isn't realistic.
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.
 - The syntax for units of measure.

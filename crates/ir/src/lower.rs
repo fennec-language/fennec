@@ -274,6 +274,8 @@ struct Lowering<'a> {
     lifted: Vec<Function>,
     /// What a generator has yielded so far.
     yielded: Option<LocalId>,
+    /// The `for` loops that count.
+    counts: Vec<crate::Count>,
 }
 
 impl<'a> Lowering<'a> {
@@ -298,6 +300,7 @@ impl<'a> Lowering<'a> {
             leaving: Vec::new(),
             lifted: Vec::new(),
             yielded: None,
+            counts: Vec::new(),
         }
     }
 

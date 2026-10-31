@@ -364,6 +364,39 @@ fn failing_tests_report_the_same_natively_and_in_the_interpreter() {
     .unwrap();
 }
 
+/// A `for` loop from the IR counts right up to the biggest int without overflowing, and
+/// counts down right to the smallest, and what's computed from its count is checked as usual.
+#[test]
+fn for_loops_from_the_ir_count_to_the_ends_of_an_int() {
+    let source = "def up() -> int:
+    mut seen = 0
+    for i in range(9223372036854775805, 9223372036854775807):
+        seen += i % 7
+    seen
+
+def down() -> int:
+    mut seen = 0
+    for i in range(-9223372036854775807, -9223372036854775807 - 1, -1):
+        seen += i % 7
+    seen
+
+def empty() -> int:
+    mut seen = 0
+    for i in range(5, 2):
+        seen += i
+    seen
+
+def main(stdout: Stdout):
+    stdout.print(up(), down(), empty())
+";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    let mut out = Vec::new();
+    let report = fennec_jit::run_with_report(&module, &mut out).unwrap();
+    assert_eq!(String::from_utf8_lossy(&out), run(source, "for_loops.fen").unwrap());
+    assert_eq!(report.from_ir, ["up", "down", "empty"]);
+}
+
 /// Number-only functions come from the typed IR.
 #[test]
 fn number_only_functions_are_lowered_from_the_ir() {

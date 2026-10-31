@@ -254,6 +254,7 @@ impl Lowering<'_> {
         self.emit(InstKind::Copy { dest: count, value: first }, span);
         let stop = self.temporary(Type::Int);
         self.emit(InstKind::Copy { dest: stop, value: limit }, span);
+        self.counts.push(crate::Count { count, stop, down });
         let (head, then, next, exit) =
             (self.new_block(), self.new_block(), self.new_block(), self.new_block());
         self.finish(Terminator::Jump(head));

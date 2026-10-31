@@ -551,14 +551,14 @@ These are default lints, and the Den requires them.
 
 **The Den keeps every kit's source permanently.** Installing never touches the git host. Versions are immutable: a bad one can be yanked, never deleted or replaced. Because everything is keyed by its hash, anyone can mirror the Den, and the hashes in `kit.lock` prove a mirror served the real thing.
 
-**The Den checks for itself.** It re-runs formatting and lints, and runs the kit's tests, in the interpreter compiled to wasm, with fake capabilities and a limit on how much work a run may do. Kits have no build scripts, so nothing else ever runs. Native kits, which only first-party and verified authors can publish, also run in real CI under sanitizers. The kit's page shows a diff of its capabilities and API against the previous version.
+**The Den checks for itself.** It re-runs formatting and lints, and runs the kit's tests, in the interpreter compiled to wasm, with fake capabilities and a limit on how much work a run may do. Kits have no build scripts, so nothing else ever runs. Native kits, which in v1 only the Fennec project can publish, also run in real CI under sanitizers. The kit's page shows a diff of its capabilities and API against the previous version.
 
 **An existing AI model reviews each release's diff,** and its findings are shown. There's no custom fine-tuned model.
 
 **Kits have three tiers, so the audit scales with what a kit can touch.**
 - **Pure** (no capabilities, no `extern`): automatic.
 - **Capability** (`Fs`, `Net` and so on): automatic plus AI review, with capabilities shown on the page. A newly added capability needs the author's own passkey tap at publish. Consumers' approval of an update that asks for more is unchanged.
-- **Native** (`extern`, C code): human audit, verified authors only.
+- **Native** (`extern`, C code): human audit, first-party kits only in v1. Verified third-party authors are the later path, if there's a real need.
 
 *Why:* Most kits can't touch anything, so they need no human, and the people's time goes to the few kits that could do harm.
 
@@ -775,8 +775,12 @@ libraries = ["sqlite3"]
 ```
 The JIT loads them when the program runs, and release builds link them. The C standard library is always available.
 
-**Raw C is allowed only in the standard library's OS layer, first-party `fennec/` kits, verified kits and your own app.** v1 doesn't let community kits bring C; whether they may bring C compiled to wasm is still open. A community kit that needs C can apply to be audited and verified.
-*Why:* No community kit can get around capabilities, which is the guarantee that matters. The native code games depend on, for graphics, audio, windows and physics, is first-party or verified, so it runs at full speed.
+**In v1, raw C is allowed only in the standard library's OS layer, first-party `fennec/` kits and your own app.** An app can use `extern` in its own code, which isn't publishing; a game engine needs that for Metal and Vulkan. No third-party native kits go on the Den in v1, even from verified authors, until there's a real need. Verified authors are the later path.
+*Why:* Native code is the one place Fennec's guarantees stop, since C can ignore capabilities and corrupt memory.
+
+**There's no C compiled to wasm in v1.** It can be reconsidered later if the ecosystem needs it.
+
+**Every first-party native kit has a plan to become pure Fennec,** with differential tests against the original C.
 
 **An app allows each native kit by name:** `sqlite = { version = "1.2", native = true }`. A native kit's API still takes the capabilities it uses, `sqlite.open(fs, path)`, so its signatures stay honest.
 
@@ -822,7 +826,6 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 
 - How a type marks that its finishing method must be called.
 - Decorators. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.
-- Whether community kits may bring C compiled to wasm. It would run sandboxed, still bound by capabilities, about 10 to 30% slower and more for heavy SIMD, with a `Buffer` inside the sandbox to avoid copies. v1 doesn't offer it until this is decided.
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.
 - The syntax for units of measure.

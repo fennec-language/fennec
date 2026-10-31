@@ -510,4 +510,4 @@ pub struct Database:
 - `extern` declarations are checked against the real C headers when building, and `fennec bindgen` writes them from the headers.
 - `pub` functions can't expose pointers, so callers only ever see a safe API.
 - A type with `def del` is cleaned up exactly once, when it's no longer used, and can't be duplicated.
-- A kit that uses C is marked native, and you allow it by name before your project can depend on it. Only verified authors can publish one.
+- A kit that uses C is marked native, and you allow it by name before your project can depend on it. For now, only the Fennec project publishes these; your own app can still use `extern` in its own code.

@@ -170,7 +170,7 @@ impl Lowerer<'_, '_> {
     ) -> Result<Option<Lowered>, Diagnostic> {
         let builtin = matches!(&callee.kind, ExprKind::Name(name) if name == "sorted" && self.local(name).is_none())
             && !self.shared.compiled.contains_key("sorted");
-        let (true, Some(ty @ Ty::List(item)), Some(items)) = (builtin, self.checked_expr(call), args.first())
+        let (true, Some(ty @ Ty::List(_)), Some(items)) = (builtin, self.checked_expr(call), args.first())
         else {
             return Ok(None);
         };

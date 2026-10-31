@@ -4,11 +4,14 @@
 //! one owner and needn't be copied, and then put back. Everything the change works out comes
 //! first, as nothing can look at a value that's been taken out.
 
+use cranelift_codegen::entity::EntityRef;
+use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value, types};
 use fennec_syntax::{Arg, BinOp, Diagnostic, Expr, ExprKind, Span, Stmt};
 
 use super::expr::Lowered;
 use super::{Lowerer, internal};
+use crate::helpers::Helper;
 use crate::types::{Ty, unsupported};
 
 /// A name made up for a value on the way to a change, which no program can write.
@@ -73,12 +76,16 @@ impl Lowerer<'_, '_> {
         }
     }
 
-    /// Whether a `for mut` loop goes over a list inside a native value.
-    pub(super) fn loops_inside(&self, iter: &Expr) -> bool {
-        !matches!(iter.kind, ExprKind::Name(_)) && matches!(self.place_ty(iter), Some(Ty::List(_)))
+    /// Whether a `for mut` loop goes over a list inside a native value that its body leaves
+    /// alone, other than through the loop's name.
+    pub(super) fn loops_inside(&self, iter: &Expr, body: &[Stmt]) -> bool {
+        !matches!(iter.kind, ExprKind::Name(_))
+            && matches!(self.place_ty(iter), Some(Ty::List(_)))
+            && root_name(iter).is_some_and(|root| !Self::body_names(body, root))
     }
 
-    /// `for mut item in place` for a list inside a native value.
+    /// `for mut item in place` for a list inside a native value. A `return` can leave from
+    /// the middle, so the list stays where it is, with what holds it having one owner.
     pub(super) fn for_mut_inside(
         &mut self,
         names: &[String],
@@ -87,7 +94,7 @@ impl Lowerer<'_, '_> {
     ) -> Result<(), Diagnostic> {
         self.open_scope();
         let iter = self.with_indexes_worked_out(iter)?;
-        let looped = self.taken(&iter, &mut |lowerer, held| {
+        let looped = self.reached(&iter, &mut |lowerer, held| {
             if lowerer.for_packed(names, held, body, true)? {
                 Ok((None, Ty::Unit))
             } else {
@@ -138,6 +145,16 @@ impl Lowerer<'_, '_> {
     ) -> Result<Option<Lowered>, Diagnostic> {
         let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return Ok(None) };
         if matches!(object.kind, ExprKind::Name(_)) || args.iter().any(|arg| arg.is_mut) {
+            return Ok(None);
+        }
+        // An arrow runs while the value is taken out, so it can't look at what held it.
+        let Some(root) = root_name(object) else { return Ok(None) };
+        let sees_root = |arg: &Arg| {
+            let mut names = Vec::new();
+            super::fallback::expr_names(&arg.value, &mut names);
+            matches!(arg.value.kind, ExprKind::Lambda { .. }) && names.iter().any(|named| named == root)
+        };
+        if args.iter().any(sees_root) {
             return Ok(None);
         }
         let changes = match self.place_ty(object) {
@@ -251,6 +268,63 @@ impl Lowerer<'_, '_> {
         })
     }
 
+    /// Lowers something with a value inside a native value, and each value on the way to it,
+    /// held under a hidden name, still in place with one owner.
+    fn reached(
+        &mut self,
+        place: &Expr,
+        change: &mut dyn FnMut(&mut Self, &Expr) -> Result<Lowered, Diagnostic>,
+    ) -> Result<Lowered, Diagnostic> {
+        let ty = self.place_ty(place).ok_or_else(|| internal("a lost place", place.span))?;
+        let (ExprKind::Attr { object, .. } | ExprKind::Index { object, .. }) = &place.kind else {
+            return change(self, place);
+        };
+        if matches!(object.kind, ExprKind::Name(_)) {
+            let slot = self.slot(place, object)?;
+            return self.reached_in(slot, ty, place.span, change);
+        }
+        self.reached(object, &mut |lowerer, held| {
+            let inside = swapped(place, object, held);
+            let slot = lowerer.slot(&inside, held)?;
+            lowerer.reached_in(slot, ty, place.span, change)
+        })
+    }
+
+    fn reached_in(
+        &mut self,
+        slot: Value,
+        ty: Ty,
+        span: Span,
+        change: &mut dyn FnMut(&mut Self, &Expr) -> Result<Lowered, Diagnostic>,
+    ) -> Result<Lowered, Diagnostic> {
+        let flags = MemFlagsData::trusted();
+        let value = self.b.ins().load(types::I64, flags, slot, 0);
+        let count = self.b.ins().load(types::I64, flags, value, 0);
+        let shared = self.b.ins().icmp_imm_s(IntCC::NotEqual, count, 1);
+        let [copy, done] = [(); 2].map(|()| self.b.create_block());
+        self.b.set_cold_block(copy);
+        self.b.append_block_param(done, types::I64);
+        self.b.ins().brif(shared, copy, &[], done, &[value.into()]);
+        self.b.switch_to_block(copy);
+        self.b.seal_block(copy);
+        let copied = self.help(Helper::Unshare, &[value])?;
+        self.b.ins().store(flags, copied, slot, 0);
+        self.b.ins().jump(done, &[copied.into()]);
+        self.b.switch_to_block(done);
+        self.b.seal_block(done);
+        let value = self.b.block_params(done).first().copied();
+        let value = value.ok_or_else(|| internal("a lost value", span))?;
+        let name = hidden("reached", span);
+        self.open_scope();
+        self.bind_native(&name, ty, Some(value), true);
+        if let Some(var) = self.local(&name).and_then(|local| local.var) {
+            self.borrowed_names.insert(var.index());
+        }
+        let changed = change(self, &name_expr(&name, span));
+        self.close_scope()?;
+        changed
+    }
+
     /// Where a field or item is, in what a name holds, which has only that name for an owner.
     fn slot(&mut self, place: &Expr, object: &Expr) -> Result<Value, Diagnostic> {
         let name = match &object.kind {
@@ -297,6 +371,15 @@ impl Lowerer<'_, '_> {
         }
         self.close_scope()?;
         changed
+    }
+}
+
+/// The name a place starts from.
+fn root_name(place: &Expr) -> Option<&str> {
+    match &place.kind {
+        ExprKind::Name(name) => Some(name),
+        ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => root_name(object),
+        _ => None,
     }
 }
 

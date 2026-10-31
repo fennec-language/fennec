@@ -380,7 +380,9 @@ fn read<'w>(state: &mut State, element: &Element, words: &mut dyn Iterator<Item 
         Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
         Element::Float => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
-        Element::Boxed(_) | Element::Str | Element::List(_) => read_block(state, word(words)),
+        Element::Boxed(_) | Element::Str => read_block(state, word(words)),
+        // Only the top of a value the interpreter is handed may be a packed list.
+        Element::List(_) => read_block(state, word(words)).unpacked(),
         Element::Struct { name, fields } => {
             let fields =
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, words)));

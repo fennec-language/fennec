@@ -324,6 +324,7 @@ pub extern "C" fn insert(list: i64, at: i64, start: i64, end: i64) -> i64 {
 }
 
 /// Whether an item of a word equals a word, as the interpreter compares them.
+#[expect(clippy::float_cmp, reason = "0.0 equals -0.0 and nothing equals NaN, as in the interpreter")]
 fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
     match element {
         Element::Float => f64::from_bits(item) == f64::from_bits(word),
@@ -369,13 +370,10 @@ pub extern "C" fn pop_empty(start: i64, end: i64) {
 
 /// A new block owned once with a value's items, if it's a list of the kind of item given.
 pub(super) fn write_list(state: &mut State, element: &Rc<Element>, value: &Value) -> Option<i64> {
-    let at = match state.tables.elements.iter().position(|known| known == element) {
-        Some(at) => at,
-        None => {
-            state.tables.elements.push(Rc::clone(element));
-            state.tables.elements.len() - 1
-        }
-    };
+    let at = state.tables.elements.iter().position(|known| known == element).unwrap_or_else(|| {
+        state.tables.elements.push(Rc::clone(element));
+        state.tables.elements.len() - 1
+    });
     let mut words = Vec::new();
     match value {
         Value::Packed(packed) if packed.element == *element => words.extend_from_slice(&packed.words),

@@ -68,9 +68,9 @@ impl Lowerer<'_, '_> {
         self.b.ins().jump(self.bail, &[]);
         self.carry_on(here, ok);
         self.b.seal_block(ok);
-        let last = self.b.ins().iadd_imm_s(length, -1);
+        let shorter = self.b.ins().iadd_imm_s(length, -1);
         let stride = self.stride(item)?;
-        let offset = self.b.ins().imul_imm_s(last, stride);
+        let offset = self.b.ins().imul_imm_s(shorter, stride);
         let address = self.b.ins().iadd(list, offset);
         let address = self.b.ins().iadd_imm_s(address, LIST_ITEMS);
         let popped = self.load_item(address, item)?;
@@ -83,7 +83,7 @@ impl Lowerer<'_, '_> {
             let none = self.int(0);
             self.b.ins().store(flags, none, address, 0);
         }
-        self.b.ins().store(flags, last, list, 16);
+        self.b.ins().store(flags, shorter, list, 16);
         Ok(popped)
     }
 

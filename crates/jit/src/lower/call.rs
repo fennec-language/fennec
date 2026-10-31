@@ -39,9 +39,6 @@ impl Lowerer<'_, '_> {
         if let Some(made) = self.sum_or_known(expr, callee, args)? {
             return Ok(made);
         }
-        if let Some(changed) = self.call_inside(expr, callee, args)? {
-            return Ok(changed);
-        }
         if let Some(name) = self.std_member(callee) {
             if let Some(id) = self.layouts.id(name)
                 && let Some(result) = self.construct(id, args, expr.span)?
@@ -95,7 +92,8 @@ impl Lowerer<'_, '_> {
         self.fallback(expr)
     }
 
-    /// A native `sum` or `sorted`, or a call to an arrow this specialized body was handed.
+    /// A native `sum` or `sorted`, a change to a list or to what's inside a native value, or a
+    /// call to an arrow this specialized body was handed.
     fn sum_or_known(
         &mut self,
         expr: &Expr,
@@ -107,6 +105,9 @@ impl Lowerer<'_, '_> {
         }
         if let Some(ordered) = self.sorted_call(expr, callee, args)? {
             return Ok(Some(ordered));
+        }
+        if let Some(changed) = self.call_inside(expr, callee, args)? {
+            return Ok(Some(changed));
         }
         if let Some(changed) = self.list_method(callee, args, expr.span)? {
             return Ok(Some(changed));

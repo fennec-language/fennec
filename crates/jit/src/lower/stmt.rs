@@ -155,7 +155,7 @@ impl Lowerer<'_, '_> {
                 Ok(())
             }
             StmtKind::Pass => Ok(()),
-            StmtKind::For { names, is_mut: true, iter, body } if self.loops_inside(iter) => {
+            StmtKind::For { names, is_mut: true, iter, body } if self.loops_inside(iter, body) => {
                 self.for_mut_inside(names, iter, body)
             }
             StmtKind::For { names, is_mut: true, iter, body } => {

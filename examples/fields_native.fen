@@ -34,8 +34,29 @@ struct Bag:
         self.items[a].near.append(b)
         self.items[b].near.append(a)
 
+    def first_big(mut self) -> int:
+        for mut point in self.points:
+            if point.x > 3:
+                point.x = 0
+                return point.x + 1
+        -1
+
+    def mean_near(mut self) -> int:
+        for mut point in self.points:
+            point.x += self.numbers.len() + self.points.len()
+        self.numbers.remove_where((n) => n == self.numbers.len())
+        self.items[0].near.remove_where((n) => n > self.items.len())
+        self.points[0].x
+
 def fresh() -> Bag:
-    Bag(items=[], points=[Point(x=1, y=0.5)], counts={}, numbers=[3, 1, 2], spot=Point(x=0, y=0.0), name="bag")
+    Bag(
+        items=[],
+        points=[Point(x=1, y=0.5)],
+        counts={},
+        numbers=[3, 1, 2],
+        spot=Point(x=0, y=0.0),
+        name="bag",
+    )
 
 def total_near(bag: Bag) -> int:
     mut sum_of = 0
@@ -73,7 +94,13 @@ def main(stdout: Stdout):
     bag.counts["c"] = 1
     bag.items[1].id = -1
     stdout.print(copy.items[0].near, bag.items[0].near, copy.numbers, bag.numbers)
-    stdout.print(copy.counts.len(), bag.counts.len(), copy.items[1].id, bag.items[1].id, copy == bag)
+    stdout.print(
+        copy.counts.len(),
+        bag.counts.len(),
+        copy.items[1].id,
+        bag.items[1].id,
+        copy == bag,
+    )
 
     stdout.print(bag.numbers.pop(), bag.numbers, bag.items.pop().id, bag.items.len())
     bag.numbers.insert(0, 42)
@@ -92,3 +119,12 @@ def main(stdout: Stdout):
     bag.numbers.clear()
     stdout.print(bag.numbers, bag)
     stdout.print(fresh().numbers[2], fresh().name.len())
+    mut more = fresh()
+    more.numbers.append(4)
+    more.points.append(Point(x=7, y=1.0))
+    more.add(1, "one")
+    more.items[0].near.append(50)
+    stdout.print(more.first_big(), more.points, more.points.len())
+    stdout.print(more.mean_near(), more.numbers, more.items[0].near, more.points)
+    more.points.pop()
+    stdout.print(more.points, more.first_big())

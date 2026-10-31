@@ -15,3 +15,6 @@ c
 10 13 [4, 22]
 [] Bag(items=[Item(id=51, tags=["five"], near=[1, 100])], points=[Point(x=5, y=2.0), Point(x=10, y=9.0)], counts={"a": 2, "b": 6, "c": 1}, numbers=[], spot=Point(x=6, y=2.5), name="bag!", total=13)
 2 3
+1 [Point(x=1, y=0.5), Point(x=0, y=1.0)] 2
+7 [3, 1, 2] [] [Point(x=7, y=0.5), Point(x=6, y=1.0)]
+[Point(x=7, y=0.5)] 1

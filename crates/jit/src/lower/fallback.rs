@@ -163,7 +163,8 @@ impl Lowerer<'_, '_> {
         match &object.kind {
             ExprKind::Name(name) => self.local(name).is_none_or(|local| {
                 local.ty == Ty::Obj
-                    || (local.is_mut && matches!(local.ty, Ty::Struct(_) | Ty::Dict(..) | Ty::List(_)))
+                    || (local.is_mut
+                        && matches!(local.ty, Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) | Ty::List(_)))
             }),
             ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => {
                 self.keeps_call_receiver(object)

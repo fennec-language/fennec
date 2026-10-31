@@ -15,6 +15,7 @@ fennec-check.workspace = true
 fennec-fmt.workspace = true
 fennec-interp.workspace = true
 fennec-ir.workspace = true
+fennec-jit.workspace = true
 fennec-re.workspace = true
 fennec-syntax.workspace = true
 

@@ -4,6 +4,7 @@
 use fennec_check::Type;
 use fennec_syntax::{CompKind, Expr, ExprKind, Span};
 
+use super::lists::Over;
 use super::{Lowered, Lowering};
 use crate::{InstKind, LocalId, Operand, Terminator};
 
@@ -129,7 +130,8 @@ impl Lowering<'_> {
             },
             span,
         );
-        self.looping(names, iter, span, |lowering| lowering.fill(dest, kind, parts, span))?;
+        let over = Over { names, iter, back: None };
+        self.looping(over, span, |lowering| lowering.fill(dest, kind, parts, span))?;
         Ok(Operand::Local(dest))
     }
 

@@ -7,6 +7,7 @@ use fennec_check::Type;
 use fennec_syntax::{BinOp, Expr, ExprKind, FStrPart, Span, Stmt, UnaryOp};
 
 use super::calls::owner_name;
+use super::places::{Leaving, Place};
 use super::{Loop, Lowered, Lowering, Tail};
 use crate::{FormatPart, InstKind, LocalId, Operand, Terminator};
 
@@ -18,6 +19,15 @@ struct Counting<'a> {
     limit: Operand,
     down: bool,
     items: Option<(LocalId, Type)>,
+    /// Where each item goes back to, for a `for mut` loop.
+    back: Option<Place>,
+}
+
+/// What a loop goes through.
+pub(super) struct Over<'a> {
+    pub(super) names: &'a [String],
+    pub(super) iter: &'a Expr,
+    pub(super) back: Option<Place>,
 }
 
 impl Lowering<'_> {
@@ -52,44 +62,25 @@ impl Lowering<'_> {
             Some(Type::Bytes) if ty == Type::Int => Type::Int,
             Some(Type::Tuple(items)) if items.iter().all(|item| *item == ty) => Type::Int,
             Some(Type::Dict(key, value)) if **value == ty => *key.clone(),
-            Some(Type::Named(name)) if name == "Args" && ty == Type::Str => Type::Int,
-            _ => return Err("it uses indexing on a type of its own".to_owned()),
+            Some(Type::Named(name)) if name == "Args" && ty == Type::Str => {
+                let object = self.expr(object)?;
+                let index = self.expr(index)?;
+                let dest = self.temporary(ty);
+                self.emit(InstKind::GetIndex { dest, object, index }, expr.span);
+                return Ok(Operand::Local(dest));
+            }
+            Some(Type::Named(owner)) => {
+                let signatures = &self.context.checked.signatures;
+                let found = signatures.get(&format!("{owner}.[]"));
+                let param = found.and_then(|found| found.params.get(1));
+                param.ok_or_else(|| format!("it indexes `{owner}`, which has no `[]`"))?.ty.clone()
+            }
+            _ => return Err("it uses indexing on something the IR doesn't index".to_owned()),
         };
         let object = self.expr(object)?;
         let lowered = self.expr(index)?;
         let index = self.coerce(lowered, &key, index.span)?;
-        let dest = self.temporary(ty);
-        self.emit(InstKind::GetIndex { dest, object, index }, expr.span);
-        Ok(Operand::Local(dest))
-    }
-
-    /// `object.path[index] = value`, and `+=` and so on, on a list or dict.
-    pub(super) fn assign_index(
-        &mut self,
-        (object, index): (&Expr, &Expr),
-        op: Option<BinOp>,
-        value: &Expr,
-        span: Span,
-    ) -> Lowered<()> {
-        let (local, path) = self.field_place(object)?;
-        let (key, item) = match self.place_type(local, &path) {
-            Some(Type::List(item)) => (Type::Int, *item),
-            Some(Type::Dict(key, item)) => (*key, *item),
-            _ => return Err("it changes an item of something other than a list or dict".to_owned()),
-        };
-        let lowered = self.expr(index)?;
-        let index = self.coerce(lowered, &key, span)?;
-        let mut value = self.expr(value)?;
-        if let Some(op) = op {
-            let list = self.read_place(local, &path, span)?;
-            let read = self.temporary(item.clone());
-            let get = InstKind::GetIndex { dest: read, object: list, index: index.clone() };
-            self.emit(get, span);
-            value = self.operate(op, (Operand::Local(read), value), &item, span)?;
-        }
-        let value = self.coerce(value, &item, span)?;
-        self.emit(InstKind::SetIndex { object: local, path, index, value }, span);
-        Ok(())
+        self.read_item(held.as_ref().unwrap_or(&ty), object, index, &ty, expr.span)
     }
 
     /// `item in items`, and `not in`, on a collection.
@@ -140,18 +131,21 @@ impl Lowering<'_> {
         body: &[Stmt],
         span: Span,
     ) -> Lowered<()> {
-        if is_mut {
-            return Err("it has a `for mut` loop".to_owned());
-        }
-        self.looping(names, iter, span, |lowering| lowering.stmts(body, Tail::Drop))
+        // Only a list's items are written back, and only one name holds them.
+        let changes_items =
+            is_mut && names.len() == 1 && matches!(self.body.expr(iter.span), Some(Type::List(_)));
+        let back = if changes_items { Some(self.held_place(iter, span)?) } else { None };
+        let over = Over { names, iter, back };
+        self.looping(over, span, |lowering| lowering.stmts(body, Tail::Drop))
     }
 
     /// Runs `body` for each item of what `iter` gives. A `range` going one step at a time is
     /// counted, and anything else but a list is gone through as a list of its items.
-    pub(super) fn looping<F>(&mut self, names: &[String], iter: &Expr, span: Span, body: F) -> Lowered<()>
+    pub(super) fn looping<F>(&mut self, over: Over<'_>, span: Span, body: F) -> Lowered<()>
     where
         F: FnOnce(&mut Self) -> Lowered<()>,
     {
+        let Over { names, iter, back } = over;
         if self.is_range(iter)
             && let Some((args, down)) = range_args(iter)
         {
@@ -160,7 +154,11 @@ impl Lowering<'_> {
                 [first, limit] => (self.expr(first)?, self.expr(limit)?),
                 _ => return Err("it calls `range` with a named argument".to_owned()),
             };
-            return self.counting(Counting { names, first, limit, down, items: None }, span, body);
+            return self.counting(
+                Counting { names, first, limit, down, items: None, back: None },
+                span,
+                body,
+            );
         }
         let ty = self.body.expr(iter.span).cloned().ok_or("what it loops over has no type")?;
         let value = self.expr(iter)?;
@@ -196,6 +194,7 @@ impl Lowering<'_> {
             limit: Operand::Local(limit),
             down: false,
             items: Some((items, item)),
+            back,
         };
         self.counting(counting, span, body)
     }
@@ -207,7 +206,7 @@ impl Lowering<'_> {
     where
         F: FnOnce(&mut Self) -> Lowered<()>,
     {
-        let Counting { names, first, limit, down, items } = loop_of;
+        let Counting { names, first, limit, down, items, back } = loop_of;
         let count = self.temporary(Type::Int);
         self.emit(InstKind::Copy { dest: count, value: first }, span);
         let stop = self.temporary(Type::Int);
@@ -224,17 +223,32 @@ impl Lowering<'_> {
         self.current = then;
         self.scopes.push(HashMap::new());
         let bound = self.bind_item(names, items, count, span);
-        self.loops.push(Loop { next, exit });
+        let item = names.first().and_then(|name| self.lookup(name));
+        let leaving = back.zip(item).map(|(place, item)| Leaving { place, item, count });
+        let broke = if leaving.is_some() { self.new_block() } else { exit };
+        self.leaving.extend(leaving.clone());
+        self.loops.push(Loop { next, exit: broke });
         let lowered = bound.and_then(|()| body(self));
         self.loops.pop();
+        if leaving.is_some() {
+            self.leaving.pop();
+        }
         self.scopes.pop();
         lowered?;
         self.finish(Terminator::Jump(next));
         self.current = next;
+        if let Some(leaving) = &leaving {
+            self.write_item(leaving, span)?;
+        }
         let op = if down { BinOp::Sub } else { BinOp::Add };
         let lhs = Operand::Local(count);
         self.emit(InstKind::Binary { dest: count, op, lhs, rhs: Operand::Int(1) }, span);
         self.finish(Terminator::Jump(head));
+        if let Some(leaving) = &leaving {
+            self.current = broke;
+            self.write_item(leaving, span)?;
+            self.finish(Terminator::Jump(exit));
+        }
         self.current = exit;
         Ok(())
     }
@@ -269,30 +283,6 @@ impl Lowering<'_> {
         let ExprKind::Call { callee, .. } = &iter.kind else { return false };
         matches!(&callee.kind, ExprKind::Name(name) if name == "range" && self.lookup(name).is_none())
             && !self.context.functions.contains("range")
-    }
-
-    /// The type a local's field holds, following a path.
-    pub(super) fn place_type(&self, local: LocalId, path: &[String]) -> Option<Type> {
-        let mut ty = self.locals.get(local.0).map(|held| held.ty.clone());
-        for field in path {
-            let Some(Type::Named(owner)) = &ty else { return None };
-            let found = self.context.checked.signatures.structure(owner)?;
-            ty = found.fields.iter().find(|(name, _)| name == field).map(|(_, ty)| ty.clone());
-        }
-        ty
-    }
-
-    /// Reads a local's field into a temporary, following a path.
-    pub(super) fn read_place(&mut self, local: LocalId, path: &[String], span: Span) -> Lowered<Operand> {
-        let mut read = Operand::Local(local);
-        for (at, field) in path.iter().enumerate() {
-            let ty = self.place_type(local, path.get(..=at).unwrap_or_default());
-            let ty = ty.filter(|ty| self.context.holds(ty)).ok_or_else(|| format!("it reads `.{field}`"))?;
-            let dest = self.temporary(ty);
-            self.emit(InstKind::GetField { dest, object: read, field: field.clone() }, span);
-            read = Operand::Local(dest);
-        }
-        Ok(read)
     }
 }
 

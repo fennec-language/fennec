@@ -168,15 +168,11 @@ struct Checked:
 def checked() -> Checked:
     Checked(1)
 
-def everywhere(mut items: list[Point]) -> int:
-    for mut item in items:
-        item.x = 1
-    1
 ";
     let program = lowered(source).unwrap();
     let why: Vec<String> =
         program.not_lowered.iter().map(|skipped| format!("{}: {}", skipped.function, skipped.why)).collect();
-    assert_eq!(why, ["checked: it gives back Checked", "everywhere: it has a `for mut` loop",]);
+    assert_eq!(why, ["checked: it gives back Checked",]);
 }
 
 #[test]
@@ -1028,6 +1024,170 @@ fn a_range_with_a_step_goes_through_a_list() {
 }
 
 #[test]
+fn for_mut_writes_each_item_back_however_the_loop_is_left() {
+    let source = "def f(mut xs: list[int]) -> int:
+    for mut x in xs:
+        x += 1
+        if x > 3:
+            break
+        if x < 0:
+            return x
+    0
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(mut _0) -> int
+  local _0 xs: list[int]
+  local _1: list[int]
+  local _2: int
+  local _3: int
+  local _4: int
+  local _5: bool
+  local _6 x: int
+  local _7: bool
+  local _8: bool
+  local _9: int
+  bb0:
+    _1 = _0
+    _2 = builtin list.len(_1)
+    _3 = 0
+    _4 = _2
+    jump bb1
+  bb1:
+    _5 = _3 < _4
+    branch _5 bb2 bb4
+  bb2:
+    _6 = _1[_3]
+    _6 = _6 + 1
+    _7 = _6 > 3
+    branch _7 bb7 bb8
+  bb3:
+    _0[_3] = _6
+    _3 = _3 + 1
+    jump bb1
+  bb4:
+    return 0
+  bb5:
+    _0[_3] = _6
+    jump bb4
+  bb6:
+    _8 = _6 < 0
+    branch _8 bb10 bb11
+  bb7:
+    jump bb5
+  bb8:
+    jump bb6
+  bb9:
+    jump bb3
+  bb10:
+    _9 = _6
+    _0[_3] = _6
+    return _9
+  bb11:
+    jump bb9
+"
+    );
+}
+
+#[test]
+fn changing_an_items_insides_reads_it_changes_it_and_writes_it_back() {
+    let source = "struct P:
+    x: int
+
+def f(mut ps: list[P], mut grid: list[list[int]]):
+    ps[0].x += 1
+    grid[1][2] = 3
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(mut _0, mut _1)
+  local _0 ps: list[P]
+  local _1 grid: list[list[int]]
+  local _2: P
+  local _3: int
+  local _4: int
+  local _5: P
+  local _6: list[int]
+  bb0:
+    _2 = _0[0]
+    _3 = _2.x
+    _4 = _3 + 1
+    _5 = _0[0]
+    _5.x = _4
+    _0[0] = _5
+    _6 = _1[1]
+    _6[2] = 3
+    _1[1] = _6
+    return
+"
+    );
+}
+
+#[test]
+fn a_types_own_indexing_is_calls() {
+    let source = "struct Grid:
+    cells: list[int]
+
+    def [](self, at: int) -> int:
+        self.cells[at]
+
+    def []=(mut self, at: int, value: int):
+        self.cells[at] = value
+
+struct Holder:
+    grid: Grid
+
+def f(mut holder: Holder) -> int:
+    holder.grid[1] = 2
+    holder.grid[0]
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(mut _0) -> int
+  local _0 holder: Holder
+  local _1: Grid
+  local _2: Grid
+  local _3: int
+  bb0:
+    _1 = _0.grid
+    call Grid.[]=(_1, 1, 2)
+    _0.grid = _1
+    _2 = _0.grid
+    _3 = call Grid.[](_2, 0)
+    return _3
+"
+    );
+}
+
+#[test]
+fn mut_arguments_can_be_items() {
+    let source = "def bump(mut n: int):
+    n += 1
+
+def f(mut xs: list[int], mut lists: list[list[int]]):
+    bump(mut xs[0])
+    lists[1].append(2)
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(mut _0, mut _1)
+  local _0 xs: list[int]
+  local _1 lists: list[list[int]]
+  local _2: int
+  local _3: list[int]
+  bb0:
+    _2 = _0[0]
+    call bump(_2)
+    _0[0] = _2
+    _3 = _1[1]
+    builtin list.append(mut _3, 2)
+    _1[1] = _3
+    return
+"
+    );
+}
+
+#[test]
 fn every_example_lowers_to_valid_ir_or_says_why() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut lowered_functions = Vec::new();
@@ -1051,7 +1211,7 @@ fn every_example_lowers_to_valid_ir_or_says_why() {
     }
     // How far lowering has got. This only goes up, until every function lowers.
     println!("{} functions lowered", lowered_functions.len());
-    assert!(lowered_functions.len() >= 184, "only {} functions lowered", lowered_functions.len());
+    assert!(lowered_functions.len() >= 196, "only {} functions lowered", lowered_functions.len());
     for expected in
         ["numbers.fen: fib", "numbers.fen: collatz_steps", "numbers.fen: is_prime", "numbers.fen: lerp"]
     {

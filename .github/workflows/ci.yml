@@ -65,18 +65,21 @@ jobs:
         shell: bash
         env:
           FENNEC_HOME: ${{ runner.temp }}/fennec-home
-          # After a merge, every test runs, which catches any bug in what the cache reuses.
-          ALL: ${{ github.event_name == 'push' && '--all' || '' }}
         run: |
+          # After a merge, every test runs, which catches any bug in what the cache reuses.
+          all=()
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            all=(--all)
+          fi
           cargo build --locked --quiet -p fennec
           for program in examples/*.fen; do
             ./target/debug/fennec run "$program" | diff --strip-trailing-cr "${program%.fen}.out" -
-            ./target/debug/fennec test $ALL "$program" > /dev/null
+            ./target/debug/fennec test "${all[@]}" "$program" > /dev/null
           done
           for kit in examples/projects/*/; do
             [ -f "$kit/kit.toml" ] || continue
             ./target/debug/fennec run "$kit" | diff --strip-trailing-cr "${kit%/}.out" -
-            ./target/debug/fennec test $ALL "$kit" > /dev/null
+            ./target/debug/fennec test "${all[@]}" "$kit" > /dev/null
           done
       - name: Save test results
         if: github.event_name != 'merge_group'

@@ -1,11 +1,3 @@
-error: `bump` changes its value, so call it on something held in a mut name
-  --> examples/method_chains.fen:41:52
-   |
-41 |     stdout.print(make().add(make()).add(V(x=5)).x, make().bump(), E.A(n=3).n(), E.B.n())
-   |                                                    ^^^^^^
-
-error: `bump` changes its value, so call it on something held in a mut name
-  --> examples/method_chains.fen:44:28
-   |
-44 |     stdout.print(v.bump(), v.add(v).bump(), v.x, {1: 2}.get(1, 5), {"a": 1}.len())
-   |                            ^^^^^^^^
+7 1 3 0
+7 7
+2 4 2 2 1

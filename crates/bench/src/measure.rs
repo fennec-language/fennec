@@ -202,22 +202,20 @@ fn engine_for(source: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
     Ok(vec!["--extern".to_owned(), format!("fennec_re={}", library.display())])
 }
 
-/// The CPU level twins are built for: fixed, so a target doesn't depend on which machine pinned
-/// it, and on x86-64 a modern one, since the JIT uses what the CPU it runs on has too. On
-/// 64-bit Arm, the baseline already has what the JIT uses.
-fn twin_cpu() -> &'static [&'static str] {
-    if cfg!(target_arch = "x86_64") { &["-C", "target-cpu=x86-64-v3"] } else { &[] }
-}
+/// How twins are optimized: as far as the compiler goes, for the architecture's baseline CPU, so
+/// a target doesn't depend on which machine pinned it.
+const OPTIMIZED: [&str; 8] =
+    ["-C", "opt-level=3", "-C", "codegen-units=1", "-C", "panic=abort", "-C", "debug-assertions=no"];
 
-/// Compiles a Rust twin the way a release build does, for a fixed CPU level.
+/// Compiles a Rust twin, fully optimized, with link-time optimization across everything it uses.
 pub(crate) fn build_twin(source: &Path, out_dir: &Path) -> Result<PathBuf, String> {
     let name = source.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     let binary = out_dir.join(name);
     let engine = engine_for(source, out_dir)?;
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let output = Command::new(rustc)
-        .args(["--edition", "2024", "-C", "opt-level=3"])
-        .args(twin_cpu())
+        .args(["--edition", "2024", "-C", "lto=fat"])
+        .args(OPTIMIZED)
         .args(engine)
         .arg("-o")
         .arg(&binary)

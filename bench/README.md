@@ -44,13 +44,27 @@ Each kernel also has to print exactly what its target expects, which the target 
 
 Once a kernel reaches the floor, the run says so. Mark it `yes` in the last column of the targets file for the architecture CI runs on, `x86_64.txt`, and from then on CI fails if it drops below. A failure is fixed in the compiler, never by changing the benchmark.
 
-Release builds will aim for 97% of target when they exist.
+The target itself is 100%. Each engine aims for its own share of it:
+
+| Engine | Aim |
+|---|---|
+| Release builds | 110% of target, when they exist |
+| The JIT | 80% now, 85% later |
+| The interpreter | 10–30% |
 
 To compare against another build of `fennec`, like the previous commit's, pass `--previous path/to/fennec`. CI does that on every pull request, merge and push to `main`. A kernel counts as slower when its median time is more than 10% slower than before and it also runs more than 1% more instructions. For now that's a warning, until the counts have proven stable on pull requests that change nothing on the run path.
 
+## Keeping it honest
+
+These hold on both sides, the kernel and its twin:
+
+- **Inputs the optimizer can't see through.** Twins read their sizes through `std::hint::black_box`. Nothing is computed at compile time.
+- **Results are printed and checked.** Every result depends on all of the work, and its hash is in the target file.
+- **Realistic work.** No kernel does something an optimizer can delete. A twin whose count looks too low for its work gets looked at, and noted here.
+
 ## Pinning targets
 
-The twins beside the kernels are idiomatic code for the same work, in Rust, built with `-C opt-level=3` for a fixed CPU level: `x86-64-v3` on x86-64, since the JIT uses the features of the CPU it runs on, and the baseline on 64-bit Arm. `regex`'s twin runs on `crates/re`, the engine behind `std.re`. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.
+The twins beside the kernels are idiomatic code for the same work, in Rust, fully optimized: `opt-level=3`, fat link-time optimization, one codegen unit, abort on panic and no debug assertions, for the architecture's baseline CPU, so a target doesn't depend on which machine pinned it. `regex`'s twin runs on `crates/re`, the engine behind `std.re`. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.
 
 Everyday runs don't build or run the twins. They only read the targets.
 

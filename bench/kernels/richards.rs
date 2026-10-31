@@ -241,7 +241,7 @@ impl Scheduler {
 fn simulate() -> (i64, i64) {
     let mut scheduler =
         Scheduler { tasks: Vec::new(), packets: Vec::new(), newest: NONE, current: NONE, queued: 0, holds: 0 };
-    scheduler.add_task(Kind::Idle, 0, NONE, 1, 10000);
+    scheduler.add_task(Kind::Idle, 0, NONE, 1, std::hint::black_box(10000));
     scheduler.tasks[IDLE].suspended = false;
     let work = scheduler.add_packet(NONE, WORKER, WORK_PACKET);
     let work_queue = scheduler.add_packet(work, WORKER, WORK_PACKET);

@@ -141,7 +141,7 @@ impl Lowering<'_> {
                     self.emit(InstKind::GetField { dest, object: read, field: field.clone() }, span);
                     Operand::Local(dest)
                 }
-                Step::Index(index) => self.read_item(&ty, read, index.clone(), &held, span)?,
+                Step::Index(index) => Operand::Local(self.read_item(&ty, read, index.clone(), &held, span)),
             };
             ty = held;
         }
@@ -156,7 +156,7 @@ impl Lowering<'_> {
         index: Operand,
         item: &Type,
         span: Span,
-    ) -> Lowered<Operand> {
+    ) -> LocalId {
         let dest = self.temporary(item.clone());
         if let Type::Named(owner) = ty {
             let args = vec![object, index];
@@ -165,7 +165,7 @@ impl Lowering<'_> {
         } else {
             self.emit(InstKind::GetIndex { dest, object, index }, span);
         }
-        Ok(Operand::Local(dest))
+        dest
     }
 
     /// Changes a place to a value of the type it holds.
@@ -199,9 +199,7 @@ impl Lowering<'_> {
         } else {
             let item = self.item_type(&ty).ok_or("it changes an item of something that has none")?;
             let container = self.read_steps(local, prefix, span)?;
-            let Operand::Local(held) = self.read_item(&ty, container, index.clone(), &item, span)? else {
-                return Err("an item isn't in a local".to_owned());
-            };
+            let held = self.read_item(&ty, container, index.clone(), &item, span);
             self.store(held, rest, value, span)?;
             Operand::Local(held)
         };

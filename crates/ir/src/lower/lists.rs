@@ -80,7 +80,7 @@ impl Lowering<'_> {
         let object = self.expr(object)?;
         let lowered = self.expr(index)?;
         let index = self.coerce(lowered, &key, index.span)?;
-        self.read_item(held.as_ref().unwrap_or(&ty), object, index, &ty, expr.span)
+        Ok(Operand::Local(self.read_item(held.as_ref().unwrap_or(&ty), object, index, &ty, expr.span)))
     }
 
     /// `item in items`, and `not in`, on a collection.

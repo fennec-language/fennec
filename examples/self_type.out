@@ -1,0 +1,3 @@
+Money(cents=10) 4 3.0 abab
+Money(cents=5) 2 1.5
+Money(cents=2) Money(cents=5) Money(cents=5)

@@ -1,0 +1,5 @@
+struct Tag:
+    name: str
+
+def main(stdout: Stdout):
+    stdout.print(min([Tag(name="a"), Tag(name="b")]))

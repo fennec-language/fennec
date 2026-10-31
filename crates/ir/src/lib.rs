@@ -96,6 +96,19 @@ pub struct Function {
     pub locals: Vec<Local>,
     /// The first block is where the function starts.
     pub blocks: Vec<Block>,
+    /// The `for` loops that count one step at a time, which a backend or the optimizer can
+    /// use to leave out checks.
+    pub counts: Vec<Count>,
+}
+
+/// A `for` loop's count. It's set once before the loop, the limit is read once, and it's short
+/// of the limit whenever the body runs, so the one step after the body can't overflow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Count {
+    pub count: LocalId,
+    pub stop: LocalId,
+    /// It steps by -1, and stays above the limit, rather than by 1 and below it.
+    pub down: bool,
 }
 
 /// A place a function holds a value. Temporaries have no name.

@@ -175,6 +175,7 @@ impl Lowering<'_> {
             returns: self.returns,
             locals: self.locals,
             blocks: reachable(self.blocks),
+            counts: self.counts,
         }];
         functions.extend(self.lifted);
         functions

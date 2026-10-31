@@ -813,6 +813,37 @@ fn dev_fallbacks_lists_what_isnt_native_hot_loops_first() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn run_compiles_by_default_and_shows_output_before_it_reads_input() {
+    let dir = scratch("default-run").unwrap();
+    let program = dir.join("prompt.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout, stdin: Stdin):\n    stdout.print(\"name?\")\n    stdout.print(stdin.lines())\n",
+    )
+    .unwrap();
+    for engine in [&["run"][..], &["run", "--interp"]] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_fennec"))
+            .args(engine)
+            .arg(&program)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // The prompt arrives while the program is still waiting for its input.
+        let mut stdout = child.stdout.take().unwrap();
+        let mut prompt = [0; 6];
+        std::io::Read::read_exact(&mut stdout, &mut prompt).unwrap();
+        assert_eq!(&prompt, b"name?\n");
+        child.stdin.take().unwrap().write_all(b"fox\n").unwrap();
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut stdout, &mut rest).unwrap();
+        assert_eq!(rest, "[\"fox\"]\n");
+        assert!(child.wait().unwrap().success());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A program whose memory has to stay small: it's stopped, and fails, past `limit_kb`.
 #[cfg(unix)]
 fn peak_is_under(program: &Path, limit_kb: u64) -> Result<(), String> {
@@ -856,33 +887,5 @@ fn a_loop_changing_a_dict_in_a_struct_stays_small() {
     )
     .unwrap();
     peak_is_under(&program, 200_000).unwrap();
-#[test]
-fn run_compiles_by_default_and_shows_output_before_it_reads_input() {
-    let dir = scratch("default-run").unwrap();
-    let program = dir.join("prompt.fen");
-    std::fs::write(
-        &program,
-        "def main(stdout: Stdout, stdin: Stdin):\n    stdout.print(\"name?\")\n    stdout.print(stdin.lines())\n",
-    )
-    .unwrap();
-    for engine in [&["run"][..], &["run", "--interp"]] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_fennec"))
-            .args(engine)
-            .arg(&program)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        // The prompt arrives while the program is still waiting for its input.
-        let mut stdout = child.stdout.take().unwrap();
-        let mut prompt = [0; 6];
-        std::io::Read::read_exact(&mut stdout, &mut prompt).unwrap();
-        assert_eq!(&prompt, b"name?\n");
-        child.stdin.take().unwrap().write_all(b"fox\n").unwrap();
-        let mut rest = String::new();
-        std::io::Read::read_to_string(&mut stdout, &mut rest).unwrap();
-        assert_eq!(rest, "[\"fox\"]\n");
-        assert!(child.wait().unwrap().success());
-    }
     std::fs::remove_dir_all(dir).unwrap();
 }

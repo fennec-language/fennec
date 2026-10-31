@@ -149,6 +149,92 @@ impl Lowerer<'_, '_> {
         if builtin { self.native_sum(call, args) } else { Ok(None) }
     }
 
+    /// `sorted(items)` when the list holds numbers, or `sorted(items, key=(item) => ...)` when
+    /// the keys are numbers, for any native list. The runtime does the sorting.
+    pub(super) fn sorted_call(
+        &mut self,
+        call: &Expr,
+        callee: &Expr,
+        args: &[Arg],
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let builtin = matches!(&callee.kind, ExprKind::Name(name) if name == "sorted" && self.local(name).is_none())
+            && !self.shared.compiled.contains_key("sorted");
+        let (true, Some(ty @ Ty::List(item)), Some(items)) = (builtin, self.checked_expr(call), args.first())
+        else {
+            return Ok(None);
+        };
+        if items.name.is_some() || items.is_mut || self.checked_expr(&items.value) != Some(ty) {
+            return Ok(None);
+        }
+        match args {
+            [_] if matches!(item, ListItem::Int | ListItem::Float | ListItem::Bool) => {
+                let (value, from) = self.expr(&items.value)?;
+                let list = self.convert(value, from, ty, call.span)?;
+                let float = self.int(i64::from(item == ListItem::Float));
+                let made = self.help(Helper::ListSorted, &[list, float])?;
+                self.consume(Some(list), ty)?;
+                Ok(Some((Some(made), ty)))
+            }
+            [
+                _,
+                Arg {
+                    name: Some(key),
+                    is_mut: false,
+                    value: Expr { kind: ExprKind::Lambda { params, body }, .. },
+                },
+            ] if key == "key" => {
+                let [param] = params.as_slice() else { return Ok(None) };
+                self.sorted_by(&items.value, param, body, ty, call.span)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// A list sorted by keys that an ordinary native loop works out first, in order, as the
+    /// interpreter does.
+    fn sorted_by(
+        &mut self,
+        items: &Expr,
+        param: &str,
+        body: &Expr,
+        ty: Ty,
+        span: Span,
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let Some(key @ (Ty::Int | Ty::Float | Ty::Bool)) = self.checked_expr(body) else {
+            return Ok(None);
+        };
+        let Some(key_item) = ListItem::of(key) else { return Ok(None) };
+        let (value, from) = self.expr(items)?;
+        let list = self.convert(value, from, ty, span)?;
+        let list = self.own(list, ty);
+        let (items_name, keys_name) = (hidden("items", span), hidden("keys", span));
+        let element = self.element(key)?;
+        let none = self.int(0);
+        let keys = self.help(Helper::ListNew, &[element, none])?;
+        self.open_scope();
+        self.bind_native(&items_name, ty, Some(list), false);
+        self.bind_native(&keys_name, Ty::List(key_item), Some(keys), true);
+        let append = Expr {
+            kind: ExprKind::Attr {
+                object: Box::new(name_expr(&keys_name, span)),
+                name: "append".to_owned(),
+                optional: false,
+            },
+            span,
+        };
+        let arg = Arg { name: None, is_mut: false, value: body.clone() };
+        let call = Expr { kind: ExprKind::Call { callee: Box::new(append), args: vec![arg] }, span };
+        let each =
+            comp_loop(&[param.to_owned()], &name_expr(&items_name, span), None, StmtKind::Expr(call), span);
+        self.stmt_inside_expr(&each)?;
+        let keys = self.local(&keys_name).and_then(|local| local.var).map(|var| self.b.use_var(var));
+        let keys = keys.ok_or_else(|| super::internal("a lost list", span))?;
+        let float = self.int(i64::from(key == Ty::Float));
+        let made = self.help(Helper::ListSortedBy, &[list, keys, float])?;
+        self.close_scope()?;
+        Ok(Some((Some(made), ty)))
+    }
+
     /// Lowers a statement in the middle of an expression. Statements drop temporaries, so
     /// this drops only back to here, keeping the ones made earlier in the expression.
     fn stmt_inside_expr(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {

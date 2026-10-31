@@ -98,11 +98,13 @@ pub(crate) enum Helper {
     ListNew,
     ListGrow,
     ListUnshare,
+    ListSorted,
+    ListSortedBy,
     ListFromValue,
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 94] = [
+pub(crate) const ALL: [Helper; 96] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -195,6 +197,8 @@ pub(crate) const ALL: [Helper; 94] = [
     Helper::ListNew,
     Helper::ListGrow,
     Helper::ListUnshare,
+    Helper::ListSorted,
+    Helper::ListSortedBy,
     Helper::ListFromValue,
     Helper::OutOfRange,
 ];
@@ -288,6 +292,8 @@ impl Helper {
             Helper::ListNew => shape("fennec_list_new", &[I64, I64], &[I64]),
             Helper::ListGrow => shape("fennec_list_grow", &[I64], &[I64]),
             Helper::ListUnshare => shape("fennec_list_unshare", &[I64], &[I64]),
+            Helper::ListSorted => shape("fennec_list_sorted", &[I64, I64], &[I64]),
+            Helper::ListSortedBy => shape("fennec_list_sorted_by", &[I64, I64, I64], &[I64]),
             Helper::ListFromValue => shape("fennec_list_from_value", &[I64, I64, I64, I64], &[I64]),
             Helper::OutOfRange => shape("fennec_out_of_range", &[I64, I64, I64, I64], &[]),
             // The helpers for boxed values and strings, in `data_shape`.
@@ -312,6 +318,8 @@ impl Helper {
                 | Helper::ListNew
                 | Helper::ListGrow
                 | Helper::ListUnshare
+                | Helper::ListSorted
+                | Helper::ListSortedBy
                 | Helper::OutOfRange
                 | Helper::DictNew
                 | Helper::DictSet
@@ -345,6 +353,8 @@ impl Helper {
                     | Helper::ListNew
                     | Helper::ListGrow
                     | Helper::ListUnshare
+                    | Helper::ListSorted
+                    | Helper::ListSortedBy
                     | Helper::ListFromValue
                     | Helper::CaseOf
                     | Helper::Alloc
@@ -478,6 +488,8 @@ impl Helper {
             Helper::IntPower => lists::int_power as *const u8,
             Helper::ListNew => lists::new as *const u8,
             Helper::ListGrow => lists::grow as *const u8,
+            Helper::ListSorted => lists::sorted as *const u8,
+            Helper::ListSortedBy => lists::sorted_by as *const u8,
             Helper::ListUnshare => lists::unshare as *const u8,
             Helper::ListFromValue => lists::from_value as *const u8,
             Helper::OutOfRange => lists::out_of_range as *const u8,

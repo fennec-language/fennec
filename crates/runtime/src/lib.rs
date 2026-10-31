@@ -99,6 +99,8 @@ export! {
     fennec_list_new(a0: i64, a1: i64) -> i64 => lists::new(a0, a1);
     fennec_list_grow(a0: i64) -> i64 => lists::grow(a0);
     fennec_list_unshare(a0: i64) -> i64 => lists::unshare(a0);
+    fennec_list_sorted(a0: i64, a1: i64) -> i64 => lists::sorted(a0, a1);
+    fennec_list_sorted_by(a0: i64, a1: i64, a2: i64) -> i64 => lists::sorted_by(a0, a1, a2);
     fennec_list_from_value(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::from_value(a0, a1, a2, a3);
     fennec_out_of_range(a0: i64, a1: i64, a2: i64, a3: i64) => lists::out_of_range(a0, a1, a2, a3);
     fennec_make_variant(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => objects::make_variant(a0, a1, a2, a3, a4);

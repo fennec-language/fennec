@@ -118,6 +118,57 @@ fn grow_in(state: &mut State, list: i64, more: usize) -> Option<i64> {
     i64::try_from(address).ok()
 }
 
+/// A number word as an int that orders the same way: floats in the order `total_cmp` gives
+/// them, which is how the interpreter sorts them, and ints and bools as they are.
+fn sort_word(word: u64, float: bool) -> i64 {
+    let int = word.cast_signed();
+    if float { (word ^ ((int >> 63).cast_unsigned() >> 1)).cast_signed() } else { int }
+}
+
+/// The number of a list block's kind of item, and how many words each item takes.
+fn kind_of(state: &State, block: &[u64]) -> Option<(usize, usize)> {
+    let at = block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
+    Some((usize::try_from(at).ok()?, element_of(state, block)?.words()))
+}
+
+/// A new list owned once of a list of numbers' items in order. Numbers that order the same
+/// are the same, so nothing can tell that this sort isn't stable.
+pub extern "C" fn sorted(list: i64, float: i64) -> i64 {
+    with(|state| sorted_in(state, list, float != 0).unwrap_or(0))
+}
+
+fn sorted_in(state: &mut State, list: i64, float: bool) -> Option<i64> {
+    let block = state.heap.block(u64::try_from(list).ok()?)?;
+    let (at, stride) = kind_of(state, block)?;
+    let mut words = items(block, stride).to_vec();
+    words.sort_unstable_by_key(|word| sort_word(*word, float));
+    let block = build(state, at, stride, &words, 0);
+    Some(state.heap.insert(block))
+}
+
+/// A new list owned once of a list's items in the order of their keys, a list of numbers
+/// as long as it. Items with the same key stay in the order they were in.
+pub extern "C" fn sorted_by(list: i64, keys: i64, float: i64) -> i64 {
+    with(|state| sorted_by_in(state, list, keys, float != 0).unwrap_or(0))
+}
+
+fn sorted_by_in(state: &mut State, list: i64, keys: i64, float: bool) -> Option<i64> {
+    let block = state.heap.block(u64::try_from(list).ok()?)?;
+    let (at, stride) = kind_of(state, block)?;
+    let keys = state.heap.block(u64::try_from(keys).ok()?)?;
+    // Each item's place breaks ties, which keeps the sort stable.
+    let mut order: Vec<(i64, usize)> =
+        items(keys, 1).iter().enumerate().map(|(place, key)| (sort_word(*key, float), place)).collect();
+    order.sort_unstable();
+    let old = items(block, stride);
+    let mut words = Vec::with_capacity(old.len());
+    for (_, place) in order {
+        words.extend_from_slice(old.get(place * stride..(place + 1) * stride)?);
+    }
+    let block = build(state, at, stride, &words, 0);
+    Some(state.heap.insert(block))
+}
+
 /// A list's block as the interpreter holds it: a packed list.
 pub(super) fn read(state: &State, block: &[u64]) -> Value {
     let Some(element) = element_of(state, block) else { return Value::None };

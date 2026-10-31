@@ -1,0 +1,7 @@
+error: `Money` isn't a `Signed`: it has no `abs(self) -> Self`. Its `abs` returns an int
+  --> examples/errors/interface_self_mismatch.fen:14:18
+   |
+14 |     stdout.print(size(Money(cents=1)))
+   |                  ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: give `Money` the method `def abs(self) -> Self`

@@ -1,0 +1,7 @@
+error: `min` compares its items with `<`, but `Tag` can't be ordered
+ --> examples/errors/min_needs_order.fen:5:18
+  |
+5 |     stdout.print(min([Tag(name="a"), Tag(name="b")]))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: define `def <(self, other: ...)` for `Tag`

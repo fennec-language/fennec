@@ -1,0 +1,32 @@
+# `Self` in an interface's method means the type that fits the interface. `min` and `max`
+# compare items with a type's `def <`.
+
+interface Addable:
+    def +(self, other: Self) -> Self
+
+interface Signed:
+    def abs(self) -> Self
+
+struct Money:
+    cents: int
+
+    def +(self, other: Money) -> Money:
+        Money(cents=self.cents + other.cents)
+
+    def <(self, other: Money) -> bool:
+        self.cents < other.cents
+
+    def abs(self) -> Money:
+        Money(cents=self.cents.abs())
+
+def twice[T: Addable](x: T) -> T:
+    x + x
+
+def size[T: Signed](x: T) -> T:
+    x.abs()
+
+def main(stdout: Stdout):
+    stdout.print(twice(Money(cents=5)), twice(2), twice(1.5), twice("ab"))
+    stdout.print(size(Money(cents=-5)), size(-2), size(-1.5))
+    wallet = [Money(cents=5), Money(cents=2)]
+    stdout.print(min(wallet), max(wallet), max(wallet[0], wallet[1]))

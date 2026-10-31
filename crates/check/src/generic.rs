@@ -109,7 +109,8 @@ impl FnCx<'_> {
             let bounds = self.bounds_of(name);
             let implied =
                 bound == "Eq" && bounds.iter().any(|given| given == "Hashable" || given == "Ordered");
-            return if bounds.iter().any(|given| given == bound) || implied || bound == "Format" {
+            let has_order = bound == "Ordered" && self.bound_method(name, "<").is_some();
+            return if bounds.iter().any(|given| given == bound) || implied || has_order || bound == "Format" {
                 Ok(())
             } else {
                 Err((
@@ -142,7 +143,10 @@ impl FnCx<'_> {
             }
             Type::Tuple(items) => items.iter().all(|item| self.is_ordered(item)),
             Type::List(item) => self.is_ordered(item),
-            Type::Param(name) => self.bounds_of(name).iter().any(|bound| bound == "Ordered"),
+            Type::Param(name) => {
+                self.bounds_of(name).iter().any(|bound| bound == "Ordered")
+                    || self.bound_method(name, "<").is_some()
+            }
             other => other.type_name().is_some_and(|name| self.checker.program.method(name, "<").is_some()),
         }
     }
@@ -170,9 +174,17 @@ impl FnCx<'_> {
             let wanted_text = signature_text(&wanted);
             let fix = format!("give {} the method `def {wanted_text}`", show(ty));
             let missing = (format!("it has no `{wanted_text}`"), fix.clone());
-            let Some(name) = ty.type_name() else { return Err(missing) };
-            let Some((key, _)) = self.checker.program.method(name, &wanted.name) else { return Err(missing) };
-            let Some(actual) = self.method_signature(ty, &key) else { continue };
+            let key = ty
+                .method_owner()
+                .and_then(|owner| self.checker.program.method(owner, &wanted.name).map(|(key, _)| key));
+            let actual = if let Some(key) = key {
+                let Some(actual) = self.method_signature(ty, &key) else { continue };
+                actual
+            } else if let Some(actual) = crate::builtins::engine_signature(ty, &wanted.name) {
+                actual
+            } else {
+                return Err(missing);
+            };
             let takes = actual.params.len() == expected.params.len()
                 && actual.params.iter().zip(&expected.params).skip(1).all(|(actual, expected)| {
                     actual.is_mut == expected.is_mut && self.checker.fits(&actual.ty, &expected.ty)
@@ -212,10 +224,14 @@ impl FnCx<'_> {
             .collect()
     }
 
-    /// The signature an interface gives a method, for a value of type `owner`. A method that
-    /// doesn't write its return type gives back nothing.
+    /// The signature an interface gives a method, for a value of type `owner`, which is what
+    /// `Self` means in it. A method that doesn't write its return type gives back nothing.
     pub(crate) fn interface_method(&mut self, method: &FnDef, owner: &Type) -> Signature {
-        let resolve = |cx: &mut Self, ty: &TypeExpr| cx.checker.program.resolve(ty).unwrap_or(Type::Unknown);
+        let own = [("Self".to_owned(), owner.clone())];
+        let resolve = |cx: &mut Self, ty: &TypeExpr| {
+            let written = cx.checker.program.resolve_in(ty, &["Self".to_owned()]);
+            written.unwrap_or(Type::Unknown).substitute(&own)
+        };
         let params = method
             .params
             .iter()

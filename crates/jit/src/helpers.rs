@@ -113,13 +113,15 @@ pub(crate) enum Helper {
     ListSlice,
     SetRemove,
     SetClear,
+    CellNew,
+    CellRead,
     ListSorted,
     ListSortedBy,
     ListFromValue,
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 111] = [
+pub(crate) const ALL: [Helper; 113] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -227,6 +229,8 @@ pub(crate) const ALL: [Helper; 111] = [
     Helper::ListSlice,
     Helper::SetRemove,
     Helper::SetClear,
+    Helper::CellNew,
+    Helper::CellRead,
     Helper::ListSorted,
     Helper::ListSortedBy,
     Helper::ListFromValue,
@@ -397,6 +401,7 @@ impl Helper {
                     | Helper::ListSorted
                     | Helper::ListSortedBy
                     | Helper::ListInsert
+                    | Helper::CellNew
                     | Helper::SetRemove
                     | Helper::SetClear
                     | Helper::IntText
@@ -573,6 +578,8 @@ impl Helper {
             Helper::ListSlice => shape("fennec_list_slice", &[I64, I64, I64], &[I64]),
             Helper::SetRemove => shape("fennec_set_remove", &[I64, I64, I8, I64, I64], &[I64]),
             Helper::SetClear => shape("fennec_set_clear", &[I64], &[I64]),
+            Helper::CellNew => shape("fennec_cell_new", &[I64], &[I64]),
+            Helper::CellRead => shape("fennec_cell_read", &[I64], &[I64]),
             Helper::ListSorted => shape("fennec_list_sorted", &[I64, I64], &[I64]),
             Helper::ListSortedBy => shape("fennec_list_sorted_by", &[I64, I64, I64], &[I64]),
             Helper::Alloc => shape("fennec_alloc", &[I64], &[I64]),
@@ -617,6 +624,8 @@ impl Helper {
             Helper::ListSlice => lists::slice as *const u8,
             Helper::SetRemove => dicts::set_remove as *const u8,
             Helper::SetClear => dicts::set_clear as *const u8,
+            Helper::CellNew => heap::cell_new as *const u8,
+            Helper::CellRead => heap::cell_read as *const u8,
             Helper::ListSorted => lists::sorted as *const u8,
             Helper::ListSortedBy => lists::sorted_by as *const u8,
             Helper::Alloc => heap::alloc as *const u8,

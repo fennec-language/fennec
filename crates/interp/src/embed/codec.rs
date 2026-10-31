@@ -293,6 +293,7 @@ impl Encode for Element {
                 shape.encode(to);
             }
             Element::Str => to.tag(5),
+            Element::Object => to.tag(8),
             Element::List(item) => {
                 to.tag(7);
                 item.encode(to);
@@ -316,6 +317,7 @@ impl Decode for Element {
             3 => Element::Struct { name: Decode::decode(from)?, fields: Decode::decode(from)? },
             4 => Element::Boxed(Decode::decode(from)?),
             5 => Element::Str,
+            8 => Element::Object,
             7 => Element::List(Decode::decode(from)?),
             6 => Element::Enum {
                 name: Decode::decode(from)?,

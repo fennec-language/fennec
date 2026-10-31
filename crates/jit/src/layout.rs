@@ -85,29 +85,14 @@ impl Layouts {
         layouts
     }
 
-    /// Lays out the boxed types: the most structs and enums that hold only numbers, bools,
-    /// plain types and each other. They're the ones that contain themselves, and the ones
-    /// that hold those.
+    /// Lays out the boxed types: every struct and enum that isn't plain and has no `where`
+    /// rules. A field native code can't hold is an interpreter value in a cell of its own.
     fn add_boxed(&mut self, sources: &Sources<'_>, names: &[String]) {
-        let mut candidates: BTreeMap<String, Written> = names
+        let candidates: BTreeMap<String, Written> = names
             .iter()
             .filter(|name| !self.by_name.contains_key(*name))
             .filter_map(|name| Some((name.clone(), written(sources, name)?)))
             .collect();
-        loop {
-            let fits = |ty: &Type| self.fits_boxed(ty, &candidates);
-            let unfit: Vec<String> = candidates
-                .iter()
-                .filter(|(_, written)| !written.types().all(&fits))
-                .map(|(name, _)| name.clone())
-                .collect();
-            if unfit.is_empty() {
-                break;
-            }
-            for name in unfit {
-                candidates.remove(&name);
-            }
-        }
         let first = self.all.len();
         let reserved: HashMap<String, u32> = candidates
             .keys()
@@ -118,11 +103,11 @@ impl Layouts {
         let mut built = Vec::with_capacity(candidates.len());
         for (name, written) in &candidates {
             let place = |layouts: &Layouts, fields: &[(String, Type, Option<Expr>)], start: u32| {
-                let typed: Option<Vec<_>> = fields
+                let typed = fields
                     .iter()
-                    .map(|(field, ty, default)| Some((field.clone(), ty_of(layouts, ty)?, default.clone())))
+                    .map(|(field, ty, default)| (field.clone(), ty_of(layouts, ty), default.clone()))
                     .collect();
-                layouts.place_fields(typed?, start)
+                layouts.place_fields(typed, start)
             };
             let layout = match written {
                 Written::Struct(fields) => place(self, fields, 0).map(|(fields, size)| Layout {
@@ -152,20 +137,6 @@ impl Layouts {
                 self.by_name.insert(layout.name.clone(), *id);
             }
             self.all.push(layout);
-        }
-    }
-
-    /// Whether a boxed type's field can be of a type, given the types that might be boxed.
-    fn fits_boxed(&self, ty: &Type, candidates: &BTreeMap<String, Written>) -> bool {
-        match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Str => true,
-            Type::Named(name) => self.by_name.contains_key(name) || candidates.contains_key(name),
-            Type::List(item) => {
-                !matches!(**item, Type::List(_) | Type::Dict(..)) && self.fits_boxed(item, candidates)
-            }
-            Type::Dict(key, value) => dict_ty(key, value) != Ty::Obj,
-            Type::Set(item) => set_ty(item) != Ty::Obj,
-            _ => false,
         }
     }
 
@@ -217,7 +188,7 @@ impl Layouts {
                 if field.rule.is_some() {
                     return None;
                 }
-                let ty = written_type(field.ty.as_ref()?)?;
+                let ty = written_type(field.ty.as_ref()?);
                 fields.push((
                     field.name.clone(),
                     self.field_ty(sources, &ty, visiting)?,
@@ -317,22 +288,39 @@ impl Layouts {
     }
 }
 
+/// Whether a type mentions a type parameter.
+fn has_param(ty: &Type) -> bool {
+    match ty {
+        Type::Param(_) => true,
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Optional(inner)
+        | Type::Id(inner)
+        | Type::IdMap(inner) => has_param(inner),
+        Type::Dict(a, b) | Type::Result(a, b) => has_param(a) || has_param(b),
+        Type::Tuple(parts) | Type::Generic(_, parts) => parts.iter().any(has_param),
+        Type::Arrow(parts, result) => parts.iter().any(has_param) || has_param(result),
+        _ => false,
+    }
+}
+
 /// How a boxed type's field is held, given the numbers the boxed types will have.
-fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type) -> Option<Ty> {
-    Some(match ty {
+fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type) -> Ty {
+    match ty {
         Type::Int => Ty::Int,
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
         Type::Str => Ty::Str,
-        Type::Named(name) => match reserved.get(name) {
-            Some(id) => Ty::Boxed(*id),
-            None => Ty::Struct(layouts.id(name)?),
+        Type::Named(name) => match (reserved.get(name), layouts.id(name)) {
+            (Some(id), _) => Ty::Boxed(*id),
+            (None, Some(id)) => Ty::Struct(id),
+            (None, None) => Ty::Obj,
         },
-        Type::List(item) => Ty::List(ListItem::of(boxed_field_ty(layouts, reserved, item)?)?),
-        Type::Dict(key, value) => Some(dict_ty(key, value)).filter(|ty| *ty != Ty::Obj)?,
-        Type::Set(item) => Some(set_ty(item)).filter(|ty| *ty != Ty::Obj)?,
-        _ => return None,
-    })
+        Type::List(item) => ListItem::of(boxed_field_ty(layouts, reserved, item)).map_or(Ty::Obj, Ty::List),
+        Type::Dict(key, value) => dict_ty(key, value),
+        Type::Set(item) => set_ty(item),
+        _ => Ty::Obj,
+    }
 }
 
 /// A set natively, as a dict whose values are nothing, when its items are ints or strings.
@@ -361,27 +349,21 @@ fn dict_ty(key: &Type, value: &Type) -> Ty {
 
 /// The type a field's written type names, when it's a plain one: a number, a bool, or a
 /// struct or enum by name.
-fn written_type(written: &TypeExpr) -> Option<Type> {
+fn written_type(written: &TypeExpr) -> Type {
     if written.optional {
-        return None;
+        return Type::Unknown;
     }
     match (written.name.as_str(), written.args.as_slice()) {
-        ("list", [item]) => return Some(Type::List(Box::new(written_type(item)?))),
-        ("set", [item]) => return Some(Type::Set(Box::new(written_type(item)?))),
-        ("dict", [key, value]) => {
-            return Some(Type::Dict(Box::new(written_type(key)?), Box::new(written_type(value)?)));
-        }
-        (_, [_, ..]) => return None,
-        _ => {}
+        ("list", [item]) => Type::List(Box::new(written_type(item))),
+        ("set", [item]) => Type::Set(Box::new(written_type(item))),
+        ("dict", [key, value]) => Type::Dict(Box::new(written_type(key)), Box::new(written_type(value))),
+        (_, [_, ..]) | ("list" | "dict" | "set" | "tuple" | "Id" | "IdMap", _) => Type::Unknown,
+        ("int", _) => Type::Int,
+        ("float", _) => Type::Float,
+        ("bool", _) => Type::Bool,
+        ("str", _) => Type::Str,
+        (name, _) => Type::Named(name.to_owned()),
     }
-    Some(match written.name.as_str() {
-        "int" => Type::Int,
-        "float" => Type::Float,
-        "bool" => Type::Bool,
-        "str" => Type::Str,
-        "list" | "dict" | "set" | "tuple" | "Id" | "IdMap" => return None,
-        name => Type::Named(name.to_owned()),
-    })
 }
 
 /// An enum's layout from its cases: its words are the case's number, then `size` bytes in
@@ -403,24 +385,17 @@ enum Written {
     Enum(Vec<(String, Vec<WrittenField>)>),
 }
 
-impl Written {
-    fn types(&self) -> Box<dyn Iterator<Item = &Type> + '_> {
-        match self {
-            Written::Struct(fields) => Box::new(fields.iter().map(|(_, ty, _)| ty)),
-            Written::Enum(cases) => {
-                Box::new(cases.iter().flat_map(|(_, fields)| fields.iter().map(|(_, ty, _)| ty)))
-            }
-        }
-    }
-}
-
 /// A struct's or enum's fields as written, when none has a `where` rule.
 fn written(sources: &Sources<'_>, name: &str) -> Option<Written> {
     if let Some(structure) = sources.signatures.structure(name) {
+        // Native code doesn't know what a generic type's parameters are.
+        if structure.rules || structure.fields.iter().any(|(_, ty)| has_param(ty)) {
+            return None;
+        }
         let fields = structure.fields.iter().map(|(field, ty)| (field.clone(), ty.clone(), None));
-        return (!structure.rules).then(|| Written::Struct(fields.collect()));
+        return Some(Written::Struct(fields.collect()));
     }
-    let def = sources.enums.get(name)?;
+    let def = sources.enums.get(name).filter(|def| def.generics.is_empty())?;
     let mut cases = Vec::with_capacity(def.cases.len());
     for case in &def.cases {
         let mut fields = Vec::with_capacity(case.fields.len());
@@ -428,7 +403,8 @@ fn written(sources: &Sources<'_>, name: &str) -> Option<Written> {
             if field.rule.is_some() {
                 return None;
             }
-            fields.push((field.name.clone(), written_type(field.ty.as_ref()?)?, field.default.clone()));
+            let ty = field.ty.as_ref().map_or(Type::Unknown, written_type);
+            fields.push((field.name.clone(), ty, field.default.clone()));
         }
         cases.push((case.name.clone(), fields));
     }

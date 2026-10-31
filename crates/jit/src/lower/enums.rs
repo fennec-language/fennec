@@ -83,6 +83,7 @@ impl<'a> Lowerer<'a, '_> {
                     self.push_words(leaf, ty, words)?;
                 }
             }
+            Ty::Obj => words.push(self.help(Helper::CellNew, &[value])?),
             Ty::Float => words.push(self.b.ins().bitcast(types::I64, MemFlagsData::new(), value)),
             Ty::Bool => words.push(self.b.ins().uextend(types::I64, value)),
             _ => words.push(value),
@@ -102,6 +103,7 @@ impl<'a> Lowerer<'a, '_> {
                 }
                 self.struct_of_leaves(leaves)
             }
+            Ty::Obj => self.help(Helper::CellRead, &[first()?])?,
             Ty::Float => self.b.ins().bitcast(types::F64, MemFlagsData::new(), first()?),
             Ty::Bool => self.b.ins().ireduce(types::I8, first()?),
             _ => first()?,

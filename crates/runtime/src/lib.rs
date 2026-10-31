@@ -114,6 +114,8 @@ export! {
     fennec_list_slice(a0: i64, a1: i64, a2: i64) -> i64 => lists::slice(a0, a1, a2);
     fennec_set_remove(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) -> i64 => dicts::set_remove(a0, a1, a2, a3, a4);
     fennec_set_clear(a0: i64) -> i64 => dicts::set_clear(a0);
+    fennec_cell_new(a0: i64) -> i64 => heap::cell_new(a0);
+    fennec_cell_read(a0: i64) -> i64 => heap::cell_read(a0);
     fennec_list_sorted(a0: i64, a1: i64) -> i64 => lists::sorted(a0, a1);
     fennec_list_sorted_by(a0: i64, a1: i64, a2: i64) -> i64 => lists::sorted_by(a0, a1, a2);
     fennec_list_from_value(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::from_value(a0, a1, a2, a3);

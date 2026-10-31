@@ -297,10 +297,14 @@ impl Lowerer<'_, '_> {
         span: Span,
     ) -> Vec<Value> {
         // Fail cleanly, at the call, before the stack runs out.
-        let stack = self.b.ins().get_stack_pointer(self.pointer);
-        let too_deep =
-            self.b.ins().icmp(cranelift_codegen::ir::condcodes::IntCC::UnsignedLessThan, stack, self.limit);
-        self.fail_if(too_deep, runtime::TOO_DEEP, span);
+        if self.stack_unchecked() {
+            let stack = self.b.ins().get_stack_pointer(self.pointer);
+            let limit = self.b.ins().get_pinned_reg(self.pointer);
+            let too_deep =
+                self.b.ins().icmp(cranelift_codegen::ir::condcodes::IntCC::UnsignedLessThan, stack, limit);
+            self.fail_if(too_deep, runtime::TOO_DEEP, span);
+            self.note_stack_checked();
+        }
         let callee = self.module.declare_func_in_func(id, self.b.func);
         let call = self.b.ins().call(callee, values);
         let mut results = self.b.inst_results(call).to_vec();

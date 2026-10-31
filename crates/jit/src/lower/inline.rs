@@ -1,6 +1,7 @@
 //! Inlining: lowering a small function's body right where it's called, so `a + b` on two
 //! `Vec3`s is three additions instead of a call. Only small bodies of numbers, bools and
-//! plain structs are inlined, and never a function into itself.
+//! plain structs are inlined. A function goes into itself only one level deep, which saves
+//! the calls that return straight away in something like `fib`.
 
 use std::rc::Rc;
 
@@ -29,14 +30,69 @@ pub(super) fn inline_body(function: &Function<'_>) -> Option<Rc<FnDef>> {
         Ty::Cap(_) => true,
         Ty::Unit | Ty::Obj | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_) => false,
     });
+    // A struct's body keeps its statements: what it gives back is checked by the last one.
+    let body = if matches!(function.ret, Ty::Struct(_)) {
+        function.def.body.clone()
+    } else {
+        without_returns(&function.def.body)
+    };
     let mut nodes = 0;
-    let simple = function.def.body.iter().all(|stmt| simple_stmt(stmt, &mut nodes));
+    let simple = body.iter().all(|stmt| simple_stmt(stmt, &mut nodes));
     (params_fit
         && !function.fallible
         && !matches!(function.ret, Ty::Obj | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_))
         && simple
         && nodes <= MAX_NODES)
-        .then(|| Rc::new(function.def.clone()))
+        .then(|| Rc::new(FnDef { body, ..function.def.clone() }))
+}
+
+/// A body with `return`s written as the values of its branches, where that says the same:
+/// `if c: return x`, then the rest, is `if c: x else: the rest`. Any `return` it can't
+/// rewrite is left in, and stops the body being inlined.
+fn without_returns(stmts: &[Stmt]) -> Vec<Stmt> {
+    let mut written = Vec::with_capacity(stmts.len());
+    for (at, stmt) in stmts.iter().enumerate() {
+        let rest = stmts.get(at + 1..).unwrap_or_default();
+        match &stmt.kind {
+            StmtKind::Return(value) if rest.is_empty() => written.extend(
+                value.as_ref().map(|value| Stmt { kind: StmtKind::Expr(value.clone()), span: stmt.span }),
+            ),
+            StmtKind::If { branches, otherwise: None } if branches.iter().all(|(_, body)| leaves(body)) => {
+                let kind = StmtKind::If {
+                    branches: branches
+                        .iter()
+                        .map(|(cond, body)| (cond.clone(), without_returns(body)))
+                        .collect(),
+                    otherwise: Some(without_returns(rest)),
+                };
+                written.push(Stmt { kind, span: stmt.span });
+                return written;
+            }
+            StmtKind::If { branches, otherwise: Some(otherwise) } if rest.is_empty() => {
+                let kind = StmtKind::If {
+                    branches: branches
+                        .iter()
+                        .map(|(cond, body)| (cond.clone(), without_returns(body)))
+                        .collect(),
+                    otherwise: Some(without_returns(otherwise)),
+                };
+                written.push(Stmt { kind, span: stmt.span });
+            }
+            _ => written.push(stmt.clone()),
+        }
+    }
+    written
+}
+
+/// Whether a block ends by returning, on every path through it.
+fn leaves(stmts: &[Stmt]) -> bool {
+    match stmts.last().map(|stmt| &stmt.kind) {
+        Some(StmtKind::Return(_)) => true,
+        Some(StmtKind::If { branches, otherwise: Some(otherwise) }) => {
+            branches.iter().all(|(_, body)| leaves(body)) && leaves(otherwise)
+        }
+        _ => false,
+    }
 }
 
 fn simple_stmt(stmt: &Stmt, nodes: &mut usize) -> bool {
@@ -96,7 +152,7 @@ impl Lowerer<'_, '_> {
     /// The body to inline for a call to `key` from here, if any.
     pub(super) fn inlinable(&self, key: &str) -> Option<Rc<FnDef>> {
         if self.inlining.len() >= MAX_DEPTH
-            || self.function.key == key
+            || (self.function.key == key && !self.inlining.is_empty())
             || self.inlining.iter().any(|(open, _)| open == key)
         {
             return None;

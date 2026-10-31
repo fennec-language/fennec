@@ -228,6 +228,7 @@ impl Lowerer<'_, '_> {
     /// Goes on in `next`, a block only `from` leads to other than to a failure, so every
     /// index checked in `from` stays checked there. Others are forgotten.
     pub(super) fn carry_on(&mut self, from: Option<Block>, next: Block) {
+        self.carry_stack(from, next);
         self.checked.retain(|done| Some(done.block) == from);
         for done in &mut self.checked {
             done.block = next;

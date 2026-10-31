@@ -8,9 +8,9 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelift_codegen::entity::EntityRef;
-use cranelift_codegen::ir::{InstBuilder, InstructionData, MemFlagsData, Opcode, Value, types};
+use cranelift_codegen::ir::{Block, InstBuilder, InstructionData, MemFlagsData, Opcode, Value, types};
 use cranelift_frontend::Variable;
-use fennec_syntax::BinOp;
+use fennec_syntax::{BinOp, Expr, ExprKind, UnaryOp};
 
 use super::Lowerer;
 use crate::types::Ty;
@@ -32,6 +32,10 @@ pub(super) struct Facts {
     fixed: HashMap<usize, Value>,
     /// How long the lists are that names which can't change hold, by their variables.
     lengths: HashMap<usize, Value>,
+    /// Ranges narrowed by the branches being lowered, each with the range it replaced.
+    narrowed: Vec<(Value, (i64, i64))>,
+    /// A block where the stack is known to have room for a call.
+    stack_ok: Option<Block>,
 }
 
 impl Lowerer<'_, '_> {
@@ -97,6 +101,84 @@ impl Lowerer<'_, '_> {
         self.range(at).0 >= 0 && self.facts.below.contains(&pair)
     }
 
+    /// Narrows what's known from a condition being true or false, until `widen`.
+    pub(super) fn narrow(&mut self, cond: &Expr, holds: bool) {
+        match &cond.kind {
+            ExprKind::Unary { op: UnaryOp::Not, expr } => self.narrow(expr, !holds),
+            ExprKind::Binary { op: BinOp::And, lhs, rhs } if holds => {
+                self.narrow(lhs, true);
+                self.narrow(rhs, true);
+            }
+            ExprKind::Binary { op: BinOp::Or, lhs, rhs } if !holds => {
+                self.narrow(lhs, false);
+                self.narrow(rhs, false);
+            }
+            ExprKind::Binary { op, lhs, rhs } => {
+                if let (Some(name), Some(limit)) = (self.fixed_int(lhs), literal_int(rhs)) {
+                    self.narrow_to(name, *op, limit, holds);
+                } else if let (Some(limit), Some(name), Some(flipped)) =
+                    (literal_int(lhs), self.fixed_int(rhs), flipped(*op))
+                {
+                    self.narrow_to(name, flipped, limit, holds);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The value of an int name that can't change.
+    fn fixed_int(&self, expr: &Expr) -> Option<Value> {
+        let ExprKind::Name(name) = &expr.kind else { return None };
+        let local = self.local(name).filter(|local| local.ty == Ty::Int && !local.is_mut)?;
+        self.facts.fixed.get(&local.var?.index()).map(|value| self.resolved(*value))
+    }
+
+    fn narrow_to(&mut self, value: Value, op: BinOp, limit: i64, holds: bool) {
+        let op = if holds { Some(op) } else { negated(op) };
+        let old = self.range(value);
+        let new = match op {
+            Some(BinOp::Lt) => (old.0, old.1.min(limit.saturating_sub(1))),
+            Some(BinOp::LtEq) => (old.0, old.1.min(limit)),
+            Some(BinOp::Gt) => (old.0.max(limit.saturating_add(1)), old.1),
+            Some(BinOp::GtEq) => (old.0.max(limit), old.1),
+            Some(BinOp::Eq) => (limit, limit),
+            _ => return,
+        };
+        self.facts.narrowed.push((value, old));
+        self.facts.ranges.insert(value, new);
+    }
+
+    /// A mark to `widen` back to.
+    pub(super) fn narrow_mark(&self) -> usize {
+        self.facts.narrowed.len()
+    }
+
+    /// Undoes what's been narrowed since `mark`, leaving where it was true.
+    pub(super) fn widen(&mut self, mark: usize) {
+        while self.facts.narrowed.len() > mark {
+            if let Some((value, old)) = self.facts.narrowed.pop() {
+                self.facts.ranges.insert(value, old);
+            }
+        }
+    }
+
+    /// Whether a call here needs its stack check: the stack pointer doesn't move within a
+    /// function, so a path that has checked once needn't again.
+    pub(super) fn stack_unchecked(&self) -> bool {
+        self.facts.stack_ok.is_none() || self.facts.stack_ok != self.b.current_block()
+    }
+
+    pub(super) fn note_stack_checked(&mut self) {
+        self.facts.stack_ok = self.b.current_block();
+    }
+
+    /// Going on in `next`, a block only `from` leads to, the stack has room if it had in `from`.
+    pub(super) fn carry_stack(&mut self, from: Option<Block>, next: Block) {
+        if self.facts.stack_ok.is_some() && self.facts.stack_ok == from {
+            self.facts.stack_ok = Some(next);
+        }
+    }
+
     /// An int as a float, remembering when it can't be zero.
     pub(super) fn int_to_float(&mut self, x: Value) -> Value {
         let (low, high) = self.range(x);
@@ -155,6 +237,40 @@ impl Lowerer<'_, '_> {
         self.note_range(length, (0, MOST_ITEMS));
         length
     }
+}
+
+/// An int written in the program.
+fn literal_int(expr: &Expr) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Int(n) => Some(*n),
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => literal_int(expr)?.checked_neg(),
+        _ => None,
+    }
+}
+
+/// The comparison that says the same with its sides swapped.
+fn flipped(op: BinOp) -> Option<BinOp> {
+    Some(match op {
+        BinOp::Lt => BinOp::Gt,
+        BinOp::LtEq => BinOp::GtEq,
+        BinOp::Gt => BinOp::Lt,
+        BinOp::GtEq => BinOp::LtEq,
+        BinOp::Eq => BinOp::Eq,
+        BinOp::NotEq => BinOp::NotEq,
+        _ => return None,
+    })
+}
+
+/// The comparison that's true when this one is false.
+fn negated(op: BinOp) -> Option<BinOp> {
+    Some(match op {
+        BinOp::Lt => BinOp::GtEq,
+        BinOp::LtEq => BinOp::Gt,
+        BinOp::Gt => BinOp::LtEq,
+        BinOp::GtEq => BinOp::Lt,
+        BinOp::NotEq => BinOp::Eq,
+        _ => return None,
+    })
 }
 
 /// A range that can't be wider than an int's, once a check has stopped an overflow.

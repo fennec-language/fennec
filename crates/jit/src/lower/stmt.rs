@@ -16,6 +16,14 @@ impl Lowerer<'_, '_> {
     /// Lowers a block's statements, giving back the value of its last one when that's an
     /// expression, an `if` with an `else`, or a `match`.
     pub(super) fn tail(&mut self, stmts: &[Stmt]) -> Result<(Option<Value>, Ty), Diagnostic> {
+        // What a statement's `if` proves for the statements after it ends with the block.
+        let mark = self.narrow_mark();
+        let result = self.tail_of(stmts);
+        self.widen(mark);
+        result
+    }
+
+    fn tail_of(&mut self, stmts: &[Stmt]) -> Result<(Option<Value>, Ty), Diagnostic> {
         let Some((last, rest)) = stmts.split_last() else { return Ok((None, Ty::Unit)) };
         for stmt in rest {
             self.stmt(stmt)?;
@@ -56,17 +64,23 @@ impl Lowerer<'_, '_> {
         otherwise: &[Stmt],
     ) -> Result<(Option<Value>, Ty), Diagnostic> {
         let mut arms = Vec::new();
+        let mark = self.narrow_mark();
         for (cond, body) in branches {
             let test = self.condition(cond)?;
             let then = self.b.create_block();
             let next = self.b.create_block();
             self.b.ins().brif(test, then, &[], next, &[]);
             self.b.switch_to_block(then);
+            let inner = self.narrow_mark();
+            self.narrow(cond, true);
             let (value, ty) = self.block_tail(body)?;
+            self.widen(inner);
             arms.extend(self.arm_end(value, ty)?);
             self.b.switch_to_block(next);
+            self.narrow(cond, false);
         }
         let (value, ty) = self.block_tail(otherwise)?;
+        self.widen(mark);
         arms.extend(self.arm_end(value, ty)?);
         self.join(arms, otherwise.last().map_or(Span::default(), |stmt| stmt.span))
     }
@@ -355,17 +369,24 @@ impl Lowerer<'_, '_> {
         otherwise: Option<&[Stmt]>,
     ) -> Result<(), Diagnostic> {
         let done = self.b.create_block();
+        let mark = self.narrow_mark();
+        let mut all_leave = true;
         for (cond, body) in branches {
             let test = self.condition(cond)?;
             let then = self.b.create_block();
             let next = self.b.create_block();
             self.b.ins().brif(test, then, &[], next, &[]);
             self.b.switch_to_block(then);
+            let inner = self.narrow_mark();
+            self.narrow(cond, true);
             self.block_tail(body)?;
+            self.widen(inner);
             if !self.is_dead() {
+                all_leave = false;
                 self.b.ins().jump(done, &[]);
             }
             self.b.switch_to_block(next);
+            self.narrow(cond, false);
         }
         if let Some(body) = otherwise {
             self.block_tail(body)?;
@@ -374,6 +395,10 @@ impl Lowerer<'_, '_> {
             self.b.ins().jump(done, &[]);
         }
         self.b.switch_to_block(done);
+        // When every branch left, what got past them is all that reaches the next statement.
+        if !all_leave {
+            self.widen(mark);
+        }
         Ok(())
     }
 

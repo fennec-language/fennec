@@ -62,6 +62,10 @@ pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
 /// `fennec build --llvm`: the same through LLVM, which says what it can't take yet rather than
 /// falling back to anything.
 pub(crate) fn build_llvm(path: &str, output: Option<&str>) -> ExitCode {
+    if cfg!(windows) {
+        eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run`");
+        return ExitCode::FAILURE;
+    }
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
     if !crate::run::check(&mut program) {
         return ExitCode::FAILURE;

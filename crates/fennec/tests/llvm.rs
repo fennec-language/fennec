@@ -8,10 +8,11 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
 }
 
-/// Whether this can run: LLVM's tools are there, and mutation testing isn't under way, which
+/// Whether this can run: this isn't Windows, where `fennec build` doesn't link, LLVM's tools are
+/// there, and mutation testing isn't under way, which
 /// would go past its time limit, as in `executables.rs`.
 fn has_tools() -> bool {
-    std::env::var_os("FENNEC_UNDER_MUTANTS").is_none() && fennec_llvm::Tools::find().is_ok()
+    !cfg!(windows) && std::env::var_os("FENNEC_UNDER_MUTANTS").is_none() && fennec_llvm::Tools::find().is_ok()
 }
 
 /// A folder of its own, emptied when the test is done.

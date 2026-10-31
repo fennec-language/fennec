@@ -690,7 +690,8 @@ impl Emit<'_, '_, '_> {
     }
 }
 
-#[cfg(test)]
+// Windows has no target here yet, as `fennec build` doesn't link there.
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
 

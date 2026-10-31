@@ -2,11 +2,11 @@
 //! machine values; every other value is an object the runtime holds, which native code
 //! refers to by a handle. Return types come from the type checker.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use fennec_check::Signatures;
 pub(crate) use fennec_interp::embed::dicts::Word;
-use fennec_syntax::{Diagnostic, FnDef, Imported, Item, Module, Span, StmtKind};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Imported, Item, Module, Span, StmtKind, UnaryOp};
 
 use crate::layout::Layouts;
 
@@ -169,6 +169,21 @@ pub(crate) struct Program<'m> {
     /// The standard library modules the program imports, by the name it uses them under,
     /// like `math` in `math.sqrt(x)` or `std.math` in `std.math.sqrt(x)`.
     pub(crate) modules: HashSet<String>,
+    /// The constants whose values native code can write out where they're used.
+    pub(crate) constants: HashMap<String, Expr>,
+}
+
+/// Whether a constant's value is a literal, or another constant, so reading it can't fail.
+fn is_literal(value: &Expr) -> bool {
+    match &value.kind {
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) | ExprKind::Name(_) => {
+            true
+        }
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => {
+            matches!(expr.kind, ExprKind::Int(_) | ExprKind::Float(_))
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn unsupported(what: &str, span: Span) -> Diagnostic {
@@ -284,7 +299,18 @@ impl<'m> Program<'m> {
                 Imported::Name { .. } => None,
             })
             .collect();
-        Ok(Program { functions, layouts, excluded, main_span, modules })
+        let constants = prelude
+            .iter()
+            .chain(std::iter::once(module))
+            .flat_map(|module| &module.items)
+            .filter_map(|item| match item {
+                Item::Const { name, ty: None, value, .. } if is_literal(value) => {
+                    Some((name.clone(), value.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        Ok(Program { functions, layouts, excluded, main_span, modules, constants })
     }
 }
 

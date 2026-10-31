@@ -76,7 +76,10 @@ impl Lowerer<'_, '_> {
                     Ok((Some(self.borrow(value)), local.ty))
                 }
                 Some(local) => Ok((local.var.map(|var| self.read_var(var)), local.ty)),
-                None => self.fallback(expr),
+                None => match self.shared.constants.get(name).cloned() {
+                    Some(value) => self.expr(&value),
+                    None => self.fallback(expr),
+                },
             },
             ExprKind::Unary { op, expr: inner } => {
                 let operand = self.expr(inner)?;

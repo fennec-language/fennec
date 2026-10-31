@@ -46,7 +46,7 @@ use cranelift_codegen::ir::{Block, InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{FuncId, Module};
 use fennec_interp::embed::Tables;
-use fennec_syntax::{Diagnostic, Span};
+use fennec_syntax::{Diagnostic, Expr, Span};
 
 use crate::helpers::Helper;
 use crate::layout::Layouts;
@@ -117,6 +117,8 @@ pub(super) struct Shared {
     stack_limit: i64,
     /// The imported standard library modules, like `math`.
     modules: HashSet<String>,
+    /// The constants native code writes out where they're used.
+    constants: HashMap<String, Expr>,
     /// Where compiled code isn't native.
     notes: Vec<notes::Note>,
 }
@@ -194,6 +196,7 @@ impl Shared {
             handed_over: 0,
             stack_limit,
             modules: program.modules.clone(),
+            constants: program.constants.clone(),
             notes: Vec::new(),
             specialized: HashSet::new(),
             called: HashSet::new(),

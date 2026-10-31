@@ -1,0 +1,7 @@
+error: `Self` isn't a type
+ --> examples/errors/self_outside_interface.fen:1:13
+  |
+1 | def same(x: Self) -> int:
+  |             ^^^^
+  |
+  = help: `Self` means the type that fits an interface, so it goes in an interface's methods

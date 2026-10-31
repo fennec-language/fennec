@@ -289,6 +289,11 @@ impl FnCx<'_> {
         {
             return self.call_operator(&left, &key, &right, spans.1);
         }
+        if let Some(method) = op.method_name()
+            && let Some(result) = self.interface_operator(&left, method, &right, spans.1)
+        {
+            return result;
+        }
         match (&left, &right) {
             (Type::Int, Type::Int) if op == BinOp::Div => Type::Float,
             (Type::Int, Type::Int) => Type::Int,

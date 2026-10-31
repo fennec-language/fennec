@@ -1,0 +1,14 @@
+interface Signed:
+    def abs(self) -> Self
+
+struct Money:
+    cents: int
+
+    def abs(self) -> int:
+        self.cents.abs()
+
+def size[T: Signed](x: T) -> T:
+    x.abs()
+
+def main(stdout: Stdout):
+    stdout.print(size(Money(cents=1)))

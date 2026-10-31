@@ -157,7 +157,8 @@ impl Checker {
         for interface in self.program.interfaces.values() {
             for def in &interface.methods {
                 let written = def.params.iter().filter_map(|param| param.ty.as_ref()).chain(def.ret.as_ref());
-                problems.extend(written.filter_map(|ty| self.program.resolve(ty).err()));
+                let own = ["Self".to_owned()];
+                problems.extend(written.filter_map(|ty| self.program.resolve_in(ty, &own).err()));
             }
         }
         for info in self.program.types.values().filter(|info| !info.prelude) {

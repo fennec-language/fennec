@@ -9,6 +9,7 @@ use crate::infer::Hole;
 use crate::messages::{mismatch, needless_mut, no_method, wrong_args};
 use crate::stdlib;
 use crate::types::{Type, a, article};
+use crate::{ParamType, Signature};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
@@ -89,6 +90,25 @@ impl Method {
     fn any_args(self) -> Method {
         Method { arity: (0, usize::MAX), ..self }
     }
+}
+
+/// The signature of a method or operator the engines give a built-in type, for fitting it
+/// to an interface: `abs` on an int, or `+` on text.
+pub(crate) fn engine_signature(ty: &Type, name: &str) -> Option<Signature> {
+    let param = |name: &str, ty: &Type, is_mut| ParamType { name: name.to_owned(), ty: ty.clone(), is_mut };
+    let (others, returns, is_mut) = if let Some(found) = method(ty, name) {
+        (found.params, found.returns, found.changes)
+    } else {
+        let returns = match (ty, name) {
+            (Type::Int | Type::Float, "+" | "-" | "*") | (Type::Str, "+") => ty.clone(),
+            (Type::Int | Type::Float | Type::Str, "<") => Type::Bool,
+            _ => return None,
+        };
+        (vec![ty.clone()], returns, false)
+    };
+    let mut params = vec![param("self", ty, is_mut)];
+    params.extend(others.iter().map(|other| param("other", other, false)));
+    Some(Signature { params, returns, can_fail: false, generator: false })
 }
 
 fn method(ty: &Type, name: &str) -> Option<Method> {
@@ -313,7 +333,23 @@ impl FnCx<'_> {
             self.error(wrong_args(name, span));
             return Type::Unknown;
         }
-        self.builtin_result(name, &plain, span)
+        let result = self.builtin_result(name, &plain, span);
+        let keyed = args.iter().any(|arg| arg.name.as_deref() == Some("key"));
+        if matches!(name, "min" | "max") && !keyed {
+            self.needs_order(name, &result, span);
+        }
+        result
+    }
+
+    /// `min` and `max` compare the items with `<`, so the items need an order.
+    fn needs_order(&mut self, name: &str, item: &Type, span: Span) {
+        let item = self.checker.settled(item);
+        if item.is_known()
+            && let Err((why, fix)) = self.fits_bound(&item, "Ordered")
+        {
+            let message = format!("`{name}` compares its items with `<`, but {why}");
+            self.error(Diagnostic::new(message, span).with_help(fix));
+        }
     }
 
     fn builtin_result(&mut self, name: &str, plain: &[(Type, Span)], span: Span) -> Type {

@@ -20,7 +20,7 @@ fn main() {
     let n = std::hint::black_box(100);
     let mut u = vec![1.0; n];
     let mut v = vec![0.0; n];
-    for _ in 0..10 {
+    for _ in 0..300 {
         v = times_transposed(&u);
         u = times_transposed(&v);
     }

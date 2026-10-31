@@ -24,7 +24,7 @@ def main(stdout: Stdout):
     n = 100
     mut u = [1.0 for _ in range(n)]
     mut v = [0.0 for _ in range(n)]
-    for _ in range(10):
+    for _ in range(300):
         v = times_transposed(u)
         u = times_transposed(v)
     mut vbv = 0.0

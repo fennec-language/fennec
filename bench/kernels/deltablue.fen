@@ -321,6 +321,6 @@ def projection_test(size: int) -> int:
 
 def main(stdout: Stdout):
     mut total = 0
-    for _ in range(5):
+    for _ in range(100):
         total += chain_test(100) + projection_test(100)
     stdout.print(total)

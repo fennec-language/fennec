@@ -6,7 +6,7 @@ struct Cell:
 
 def main(stdout: Stdout):
     mut seen: dict[Cell, int] = {}
-    for i in range(5_000):
+    for i in range(500_000):
         cell = Cell(x=i * 31 % 101, y=i * 17 % 103)
         seen[cell] = seen.get(cell, 0) + 1
     stdout.print(seen.len(), seen[Cell(x=0, y=0)])

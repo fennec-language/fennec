@@ -28,7 +28,7 @@ struct Cell {
 
 fn main() {
     let mut seen: HashMap<Cell, i64, BuildHasherDefault<Mix>> = HashMap::default();
-    for i in 0..std::hint::black_box(5_000_i64) {
+    for i in 0..std::hint::black_box(500_000_i64) {
         *seen.entry(Cell { x: i * 31 % 101, y: i * 17 % 103 }).or_insert(0) += 1;
     }
     println!("{} {}", seen.len(), seen[&Cell { x: 0, y: 0 }]);

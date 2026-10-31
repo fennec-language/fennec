@@ -93,6 +93,15 @@ impl Writer<'_> {
         usize::from(self.byte()) % count.max(1)
     }
 
+    /// One of some words.
+    fn word<'w>(&mut self, from: &[&'w str]) -> &'w str {
+        from.get(self.choice(from.len())).copied().unwrap_or("")
+    }
+
+    fn kind(&mut self) -> Kind {
+        KINDS.get(self.choice(KINDS.len())).copied().unwrap_or(Kind::Int)
+    }
+
     fn name_of(&mut self, kind: Kind, changeable: bool) -> Option<String> {
         let fits: Vec<&String> = self
             .names
@@ -113,16 +122,16 @@ impl Writer<'_> {
             0..=2 => self.small_int(),
             3 => self.name_of(Kind::Int, false).unwrap_or_else(|| "2".to_owned()),
             4 => {
-                let operator = ["+", "-", "*"][self.choice(3)];
+                let operator = self.word(&["+", "-", "*"]);
                 {
                     let (left, right) = (self.int(next), self.int(next));
                     self.bounded(&format!("{left} {operator} {right}"))
                 }
             }
             5 if self.risky => {
-                format!("({} {} {})", self.int(next), ["//", "%"][self.choice(2)], self.int(next))
+                format!("({} {} {})", self.int(next), self.word(&["//", "%"]), self.int(next))
             }
-            5 => format!("({} {} {})", self.int(next), ["//", "%"][self.choice(2)], 1 + self.choice(9)),
+            5 => format!("({} {} {})", self.int(next), self.word(&["//", "%"]), 1 + self.choice(9)),
             6 => format!("{}.len()", self.of(Kind::Ints, next)),
             7 if self.risky => format!("{}[{}]", self.of(Kind::Ints, next), self.int(next)),
             7 => format!("at_or_zero({}, {})", self.of(Kind::Ints, next), self.int(next)),
@@ -151,9 +160,9 @@ impl Writer<'_> {
         const SMALL: [&str; 7] = ["0", "1", "2", "3", "-1", "7", "100"];
         const BIG: [&str; 3] = ["9223372036854775807", "4611686018427387904", "-9223372036854775807"];
         if self.risky && self.choice(4) == 0 {
-            return BIG[self.choice(BIG.len())].to_owned();
+            return self.word(&BIG).to_owned();
         }
-        SMALL[self.choice(SMALL.len())].to_owned()
+        self.word(&SMALL).to_owned()
     }
 
     fn of(&mut self, kind: Kind, depth: usize) -> String {
@@ -163,10 +172,10 @@ impl Writer<'_> {
         let next = depth + 1;
         match kind {
             Kind::Int => self.int(depth),
-            Kind::Float => ["0.5", "1.5", "-2.25", "1e10"][self.choice(4)].to_owned(),
+            Kind::Float => self.word(&["0.5", "1.5", "-2.25", "1e10"]).to_owned(),
             Kind::Bool if depth >= MOST_DEPTH => "True".to_owned(),
             Kind::Bool => {
-                let compare = ["<", "<=", "==", "!=", ">"][self.choice(5)];
+                let compare = self.word(&["<", "<=", "==", "!=", ">"]);
                 format!("({} {compare} {})", self.int(next), self.int(next))
             }
             Kind::Str if depth >= MOST_DEPTH => "\"a\"".to_owned(),
@@ -215,7 +224,7 @@ impl Writer<'_> {
         let deep = indent > MOST_DEPTH;
         match self.choice(11) {
             0 | 1 => {
-                let kind = KINDS[self.choice(KINDS.len())];
+                let kind = self.kind();
                 let value = self.of(kind, 0);
                 let name = self.fresh();
                 let changeable = self.choice(2) == 0;
@@ -273,13 +282,13 @@ impl Writer<'_> {
     fn change_int(&mut self, indent: usize) {
         let Some(name) = self.name_of(Kind::Int, true) else { return self.print(indent) };
         let by = self.int(1);
-        let operator = ["+", "-", "*"][self.choice(3)];
+        let operator = self.word(&["+", "-", "*"]);
         let value = self.bounded(&format!("{name} {operator} {by}"));
         self.line(indent, &format!("{name} = {value}"));
     }
 
     fn print(&mut self, indent: usize) {
-        let kind = KINDS[self.choice(KINDS.len())];
+        let kind = self.kind();
         let value = self.of(kind, 0);
         self.line(indent, &format!("stdout.print({value})"));
     }

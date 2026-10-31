@@ -71,7 +71,7 @@ impl Lowering<'_> {
         let shown = case.map_or_else(|| owner.to_owned(), |case| format!("{owner}.{case}"));
         let default = context.defaults.get(&(base, case, field)).copied();
         let default = default.ok_or_else(|| format!("`{shown}` has no default for `{field}`"))?;
-        let body = context.checked.types.body(&format!("fields of {base}"));
+        let body = context.signatures.types().body(&format!("fields of {base}"));
         let body = body.ok_or_else(|| format!("the fields of `{owner}` have no types"))?;
         let copy_of = instance.as_ref().map(|copy| copy.subst.clone()).unwrap_or_default();
         let outer_subst = std::mem::replace(&mut self.subst, copy_of);

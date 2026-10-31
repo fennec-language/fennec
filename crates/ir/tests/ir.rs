@@ -9,7 +9,7 @@ use fennec_ir::{Block, Function, Local, LocalId, Operand, Program, Terminator, l
 
 fn lowered(source: &str) -> Result<Program, String> {
     let module = fennec_syntax::parse(source).map_err(|problem| problem.message)?;
-    let checked = fennec_check::check_typed(&module).map_err(|problems| format!("{problems:?}"))?;
+    let checked = fennec_check::check(&module).map_err(|problems| format!("{problems:?}"))?;
     let program = lower(&module, &checked);
     validate(&program).map_err(|problems| format!("{problems:?}"))?;
     Ok(program)
@@ -2069,6 +2069,43 @@ def h() -> list[int]:
 }
 
 #[test]
+fn a_generic_that_calls_itself_with_a_bigger_type_stops() {
+    let source = "def grow[T](x: T, n: int) -> int:
+    if n == 0:
+        return 0
+    grow([x], n - 1)
+
+def f() -> int:
+    grow(1, 3)
+";
+    let program = lowered(source).unwrap();
+    assert_ne!(program.not_lowered, []);
+    assert!(program.functions.len() <= 2001, "{}", program.functions.len());
+}
+
+#[test]
+fn lowering_some_starts_only_from_what_it_picks() {
+    let source = "LIST = [1]
+
+def a() -> int:
+    b()
+
+def b() -> int:
+    LIST[0]
+
+def c() -> int:
+    1
+";
+    let module = fennec_syntax::parse(source).unwrap();
+    let checked = fennec_check::check(&module).unwrap();
+    let program = fennec_ir::lower_some(&module, &checked, &|key| key == "a");
+    let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
+    assert_eq!(names, ["a"]);
+    assert_eq!(program.external, ["b"]);
+    assert_eq!(program.constants, []);
+}
+
+#[test]
 fn every_example_kit_lowers_to_valid_ir() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/projects");
     let mut kits = 0;
@@ -2080,7 +2117,7 @@ fn every_example_kit_lowers_to_valid_ir() {
         kits += 1;
         let shown = path.display().to_string();
         let kit = fennec_kit::load(&path, &shown, fennec_kit::Entry::Main).unwrap();
-        let checked = fennec_check::check_typed(&kit.module).unwrap();
+        let checked = fennec_check::check(&kit.module).unwrap();
         let program = lower(&kit.module, &checked);
         validate(&program).unwrap_or_else(|problems| panic!("{shown}: {problems:?}\n{program}"));
         assert_eq!(program.not_lowered, [], "{shown}");
@@ -2101,8 +2138,7 @@ fn every_example_lowers_to_valid_ir() {
         let file = path.file_name().unwrap().to_string_lossy().into_owned();
         let source = fs::read_to_string(&path).unwrap();
         let module = fennec_syntax::parse(&source).unwrap();
-        let checked =
-            fennec_check::check_typed(&module).unwrap_or_else(|problems| panic!("{file}: {problems:?}"));
+        let checked = fennec_check::check(&module).unwrap_or_else(|problems| panic!("{file}: {problems:?}"));
         let program = lower(&module, &checked);
         validate(&program).unwrap_or_else(|problems| panic!("{file}: {problems:?}\n{program}"));
         assert_eq!(program.not_lowered, [], "{file}");

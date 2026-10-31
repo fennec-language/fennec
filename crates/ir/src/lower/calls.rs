@@ -183,7 +183,7 @@ impl Lowering<'_> {
         };
         let key = owner_name(&inner).map(|owner| format!("{owner}.{name}"));
         let written =
-            key.and_then(|key| self.context.checked.signatures.get(&key)).map(|found| found.returns.clone());
+            key.and_then(|key| self.context.signatures.get(&key)).map(|found| found.returns.clone());
         let gives = match (&written, dest.map(|dest| self.local_type(dest))) {
             (Some(returns), Some(_)) => Some(returns.clone()),
             (None, Some(Type::Optional(item))) => Some(*item),
@@ -209,7 +209,7 @@ impl Lowering<'_> {
     /// What the engines provide that a callee names: its name, its object for a method, and
     /// whether it changes that object.
     fn builtin<'e>(&self, callee: &'e Expr) -> Option<(String, Option<&'e Expr>, bool)> {
-        let signatures = &self.context.checked.signatures;
+        let signatures = &self.context.signatures;
         if let Some(member) = self.std_member(callee) {
             return signatures.get(&member).is_none().then_some((member, None, false));
         }
@@ -270,7 +270,7 @@ impl Lowering<'_> {
         };
         let own = self.context.functions.contains(self.context.base_key(&key).as_str());
         let raw = self.context.base_key(&key);
-        let raw = self.context.checked.signatures.get(&raw).ok_or_else(|| format!("it calls `{key}`"))?;
+        let raw = self.context.signatures.get(&raw).ok_or_else(|| format!("it calls `{key}`"))?;
         let first = usize::from(object.is_some());
         let mut types: Vec<Option<Type>> = vec![None; raw.params.len()];
         if let (Some(object), Some(slot)) = (object, types.first_mut()) {

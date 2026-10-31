@@ -4,7 +4,7 @@ use fennec_ir::{Cost, Finding, costs, lower};
 
 fn found(source: &str) -> Result<Vec<Finding>, String> {
     let module = fennec_syntax::parse(source).map_err(|problem| problem.message)?;
-    let checked = fennec_check::check_typed(&module).map_err(|problems| format!("{problems:?}"))?;
+    let checked = fennec_check::check(&module).map_err(|problems| format!("{problems:?}"))?;
     let program = lower(&module, &checked);
     if program.not_lowered.is_empty() {
         Ok(costs(&program))
@@ -127,7 +127,7 @@ fn every_example_can_be_reported_on() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|extension| extension == "fen") {
             let Ok(module) = fennec_syntax::parse(&std::fs::read_to_string(&path).unwrap()) else { continue };
-            let Ok(checked) = fennec_check::check_typed(&module) else { continue };
+            let Ok(checked) = fennec_check::check(&module) else { continue };
             for finding in costs(&lower(&module, &checked)) {
                 assert!(!finding.span.in_prelude(), "{}: {finding:?}", path.display());
             }

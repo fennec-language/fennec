@@ -230,6 +230,11 @@ pub struct Enum {
 }
 
 impl Signatures {
+    /// The typed tree of the check that made these signatures.
+    pub fn types(&self) -> &Types {
+        &self.types
+    }
+
     pub fn get(&self, name: &str) -> Option<&Signature> {
         self.functions.get(name)
     }

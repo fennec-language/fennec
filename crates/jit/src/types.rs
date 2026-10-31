@@ -171,6 +171,8 @@ pub(crate) struct Function<'m> {
 }
 
 pub(crate) struct Program<'m> {
+    /// The typed IR of the functions it has, by name.
+    pub(crate) ir: std::rc::Rc<HashMap<String, fennec_ir::Function>>,
     pub(crate) functions: Vec<Function<'m>>,
     pub(crate) layouts: Layouts,
     /// Functions and methods the JIT doesn't try to compile, like generators.
@@ -231,6 +233,30 @@ fn is_literal(value: &Expr) -> bool {
 pub(crate) fn unsupported(what: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("the JIT can't compile {what} yet"), span)
         .with_help("run the program with `--interp` to use the interpreter")
+}
+
+/// The typed IR of the functions the IR path can take, by name. It only takes functions of
+/// numbers so far, so only those are worth lowering, which is most of the cost on a big program.
+fn typed_ir(
+    module: &Module,
+    signatures: &Signatures,
+    functions: &[Function<'_>],
+) -> HashMap<String, fennec_ir::Function> {
+    let numbers = |ty: Ty| matches!(ty, Ty::Int | Ty::Float | Ty::Bool);
+    let wanted: HashSet<&str> = functions
+        .iter()
+        .filter(|function| {
+            !function.fallible
+                && (numbers(function.ret) || function.ret == Ty::Unit)
+                && function.params.iter().all(|param| numbers(param.ty))
+        })
+        .map(|function| function.key.as_str())
+        .collect();
+    if wanted.is_empty() {
+        return HashMap::new();
+    }
+    let lowered = fennec_ir::lower_some(module, signatures, &|key| wanted.contains(key)).functions;
+    lowered.into_iter().map(|function| (function.name.clone(), function)).collect()
 }
 
 impl<'m> Program<'m> {
@@ -329,7 +355,8 @@ impl<'m> Program<'m> {
             return Err(unsupported("this `main`", main_span));
         }
         let (modules, constants) = (std_modules(module), literal_constants(prelude, module));
-        Ok(Program { functions, layouts, excluded, main_span, modules, constants })
+        let ir = std::rc::Rc::new(typed_ir(module, signatures, &functions));
+        Ok(Program { ir, functions, layouts, excluded, main_span, modules, constants })
     }
 }
 

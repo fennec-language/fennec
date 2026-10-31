@@ -32,12 +32,12 @@ pub(super) fn written(module: &Module) -> HashMap<&str, Written<'_>> {
     found
 }
 
-/// Lowers the module's constants and the standard library's that anything reads.
-pub(super) fn lower_all(context: &Context<'_>, program: &mut Program) {
+/// Lowers the module's constants `wanted` picks, and any constant that anything reads.
+pub(super) fn lower_all(context: &Context<'_>, program: &mut Program, wanted: &dyn Fn(&str) -> bool) {
     let mut waiting: Vec<String> = context
         .constants
         .iter()
-        .filter(|(_, written)| !written.prelude && literal(written.value).is_none())
+        .filter(|(name, written)| !written.prelude && literal(written.value).is_none() && wanted(name))
         .map(|(name, _)| (*name).to_owned())
         .collect();
     waiting.sort();
@@ -92,7 +92,7 @@ impl<'a> Lowering<'a> {
     /// A function giving a constant's value, and those lifted out of it.
     fn constant(name: &str, context: &'a Context<'a>) -> Lowered<Vec<Function>> {
         let written = context.constants.get(name).ok_or("there's no such constant")?;
-        let body = context.checked.types.body(&format!("const {name}")).ok_or("it has no types")?;
+        let body = context.signatures.types().body(&format!("const {name}")).ok_or("it has no types")?;
         let returns = body.name(written.value.span, name).ok_or("it has no type")?.clone();
         if !context.holds(&returns) {
             return Err(format!("it is {returns}"));
@@ -126,7 +126,7 @@ impl<'a> Lowering<'a> {
 }
 
 fn constant_type(lowering: &Lowering<'_>, name: &str, value: &Expr) -> Lowered<Type> {
-    let body = lowering.context.checked.types.body(&format!("const {name}")).ok_or("it has no types")?;
+    let body = lowering.context.signatures.types().body(&format!("const {name}")).ok_or("it has no types")?;
     let ty = body.name(value.span, name).ok_or("a constant has no type")?;
     if lowering.context.holds(ty) { Ok(ty.clone()) } else { Err(format!("`{name}` is {ty}")) }
 }

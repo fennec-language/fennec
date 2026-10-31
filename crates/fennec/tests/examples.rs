@@ -363,3 +363,29 @@ fn failing_tests_report_the_same_natively_and_in_the_interpreter() {
     })
     .unwrap();
 }
+
+/// Number-only functions come from the typed IR.
+#[test]
+fn number_only_functions_are_lowered_from_the_ir() {
+    let source = "def fib(n: int) -> int:
+    if n < 2: return n
+    fib(n - 1) + fib(n - 2)
+
+def steps(n: int) -> int:
+    mut at = n
+    mut count = 0
+    while at != 1:
+        at = at // 2 if at % 2 == 0 else 3 * at + 1
+        count += 1
+    count
+
+def main(stdout: Stdout):
+    stdout.print(fib(10), steps(27))
+";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    let mut out = Vec::new();
+    let report = fennec_jit::run_with_report(&module, &mut out).unwrap();
+    assert_eq!(String::from_utf8_lossy(&out), "55 111\n");
+    assert_eq!(report.from_ir, ["steps"], "fib stays on the syntax tree, which inlines it into itself");
+}

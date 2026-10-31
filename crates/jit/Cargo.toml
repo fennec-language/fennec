@@ -19,6 +19,7 @@ fennec-blake3.workspace = true
 fennec-build.workspace = true
 fennec-check.workspace = true
 fennec-interp.workspace = true
+fennec-ir.workspace = true
 fennec-syntax.workspace = true
 
 [dev-dependencies]

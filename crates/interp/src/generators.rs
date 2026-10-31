@@ -114,12 +114,6 @@ pub(crate) enum Pulled {
 }
 
 impl Interp<'_> {
-    /// A generator for a function's body, with its frame ready and nothing run.
-    pub(crate) fn generator_of(&mut self, def: Rc<FnDef>, frame: Frame) -> Value {
-        let label = def.ret.as_ref().map_or_else(|| "Iterator".to_owned(), type_text);
-        new_generator(Body::Function(def), frame, label)
-    }
-
     /// `(elem for names in iter if cond)`. The first `in` is worked out now, and everything
     /// else later, seeing what was in scope now.
     pub(crate) fn generator_expression(
@@ -150,19 +144,10 @@ impl Interp<'_> {
         Ok(new_generator(Body::Statements(vec![looping]), frame, shown.to_owned()))
     }
 
-    /// Marks a generator as used, failing if it has been already.
-    pub(crate) fn start_generator(&self, generator: &Generator, span: Span) -> Result<(), Diagnostic> {
-        if generator.used.replace(true) {
-            return Err(Diagnostic::new("this generator has already been used", span)
-                .with_help("a generator can be used once: `list(...)` keeps its items to use again"));
-        }
-        Ok(())
-    }
-
     /// Starts taking items from a value.
     pub(crate) fn items_of(&mut self, value: Value, span: Span) -> Result<Items, Diagnostic> {
         if let Value::Generator(generator) = value {
-            self.start_generator(&generator, span)?;
+            start(&generator, span)?;
             return Ok(Items::Generated(generator));
         }
         Ok(Items::Listed(self.entries(value, span)?.into_iter()))
@@ -300,8 +285,24 @@ impl Interp<'_> {
     }
 }
 
+/// A generator for a function's body, with its frame ready and nothing run.
+pub(crate) fn of_function(def: Rc<FnDef>, frame: Frame) -> Value {
+    let label = def.ret.as_ref().map_or_else(|| "Iterator".to_owned(), type_text);
+    new_generator(Body::Function(def), frame, label)
+}
+
+/// Marks a generator as used, failing if it has been already.
+pub(crate) fn start(generator: &Generator, span: Span) -> Result<(), Diagnostic> {
+    if generator.used.replace(true) {
+        return Err(Diagnostic::new("this generator has already been used", span)
+            .with_help("a generator can be used once: `list(...)` keeps its items to use again"));
+    }
+    Ok(())
+}
+
 /// A generator's failure reached a function nothing told to expect one.
 pub(crate) fn nowhere_to_pass(failure: &Value, span: Span) -> Diagnostic {
+    let failure = if let Value::Err(failure) = failure { failure.as_ref() } else { failure };
     Diagnostic::new(format!("this function can't pass up {}", crate::format::repr(failure)), span)
         .with_help("a function using a generator that can fail needs `?` where it gets it")
 }

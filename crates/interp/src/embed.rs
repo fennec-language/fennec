@@ -840,7 +840,7 @@ pub mod io {
             let value = state.temp(value);
             let span = super::span(start, end);
             if let Value::Generator(generator) = &value {
-                state.interp.start_generator(generator, span)?;
+                crate::generators::start(generator, span)?;
                 return Ok(state.push(value));
             }
             let items = state.interp.iterate(value, span)?;

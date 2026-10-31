@@ -425,9 +425,9 @@ def main(stdout: Stdout):
 }
 
 /// Runs a program in both engines, giving each one's output and failure.
-fn run_both(source: &str) -> [(String, Option<String>); 2] {
-    let mut module = fennec_syntax::parse(source).unwrap();
-    fennec_check::check_to_run(&mut module).unwrap();
+fn run_both(source: &str) -> Result<[(String, Option<String>); 2], Vec<fennec_syntax::Diagnostic>> {
+    let mut module = fennec_syntax::parse(source).map_err(|mistake| vec![mistake])?;
+    fennec_check::check_to_run(&mut module)?;
     let mut interpreted = Vec::new();
     let failure = fennec_interp::run(&module, &mut interpreted).err();
     let first = (String::from_utf8_lossy(&interpreted).into_owned(), failure.map(|failed| failed.message));
@@ -437,7 +437,7 @@ fn run_both(source: &str) -> [(String, Option<String>); 2] {
         JitError::Unsupported(diagnostic) | JitError::Failed(diagnostic) => diagnostic.message,
     });
     let second = (String::from_utf8_lossy(&native).into_owned(), failure);
-    [first, second]
+    Ok([first, second])
 }
 
 #[test]
@@ -447,7 +447,7 @@ fn using_a_generator_twice_fails_in_both_engines() {
     stdout.print(list(made))
     stdout.print(list(made))
 ";
-    for (output, failure) in run_both(source) {
+    for (output, failure) in run_both(source).unwrap() {
         assert_eq!(output, "[1, 2]\n");
         assert!(failure.unwrap().contains("this generator has already been used"));
     }
@@ -474,7 +474,7 @@ def run_it() -> int:
 def main(stdout: Stdout):
     stdout.print(run_it())
 ";
-    for (_, failure) in run_both(source) {
+    for (_, failure) in run_both(source).unwrap() {
         assert!(failure.unwrap().contains("can't pass up Bad(at=2)"));
     }
 }

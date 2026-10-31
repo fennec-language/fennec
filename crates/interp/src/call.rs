@@ -205,7 +205,7 @@ impl Interp<'_> {
             // Nothing runs until an item is asked for.
             let frame = std::mem::replace(&mut self.frame, Frame::new());
             self.leave(caller);
-            let generator = self.generator_of(Rc::clone(def), frame);
+            let generator = crate::generators::of_function(Rc::clone(def), frame);
             return Ok(if function.fallible { Value::Ok(Rc::new(generator)) } else { generator });
         }
         let flow = self.exec_stmts(&def.body).map_err(|diagnostic| at_call(diagnostic, span));

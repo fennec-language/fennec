@@ -69,12 +69,13 @@ impl FnCx<'_> {
                     }
                 }
             }
-            ExprKind::Index { object, index } if self.has_set_index(object) => {
+            ExprKind::Index { object, index } if op.is_none() && self.has_set_index(object) => {
                 let held = self.set_index(object, index, value);
                 self.record(target.span, &held);
             }
             _ => {
                 self.mut_place(target, "this can't be assigned to");
+                self.own_indexes_can_write(target);
                 let current = self.place_type(target);
                 self.record(target.span, &current);
                 let mut ty = if op.is_none() { self.expr_as(value, &current) } else { self.expr(value) };
@@ -169,6 +170,24 @@ impl FnCx<'_> {
             return;
         }
         self.set_type(name, ty);
+    }
+
+    /// Changing a place through a type's own `def []` writes the item back with its `def []=`,
+    /// so the type needs one.
+    fn own_indexes_can_write(&mut self, place: &Expr) {
+        let (ExprKind::Attr { object, .. } | ExprKind::Index { object, .. }) = &place.kind else { return };
+        self.own_indexes_can_write(object);
+        if !matches!(place.kind, ExprKind::Index { .. }) {
+            return;
+        }
+        let ty = self.peek_type(object);
+        if let Some(name) = ty.type_name().filter(|name| self.checker.program.method(name, "[]").is_some())
+            && self.checker.program.method(name, "[]=").is_none()
+        {
+            let message = format!("`{name}` has a `def []` but no `def []=`, so its items can't be changed");
+            let help = format!("define `def []=(mut self, index: ..., value: ...)` for `{name}`");
+            self.error(Diagnostic::new(message, place.span).with_help(help));
+        }
     }
 
     /// Whether `object[...] = value` calls the object's own `def []=`.

@@ -23,6 +23,77 @@ fn with_enemy(body: &str) -> Vec<String> {
 }
 
 #[test]
+fn a_types_own_index_needs_a_write_to_change_an_item() {
+    let types = "
+struct Part:
+    x = 0.0
+
+struct Parts:
+    items: list[Part]
+
+    def [](self, at: int) -> Part:
+        self.items[at]
+
+struct Slots:
+    items: list[Part]
+    total = 0
+
+    def [](self, at: int) -> Part:
+        self.items[at]
+
+    def []=(mut self, at: int, value: Part):
+        self.items[at] = value
+";
+    let only_read = "`Parts` has a `def []` but no `def []=`, so its items can't be changed";
+    assert_eq!(
+        crate::in_main_after(types, "mut parts = Parts(items=[])\nparts[0].x = 1.0"),
+        [format!("{only_read} @ parts[0]")]
+    );
+    assert_eq!(
+        crate::in_main_after(types, "mut parts = Parts(items=[])\nparts[0] = Part()"),
+        [format!("{only_read} @ parts[0]")]
+    );
+    assert_eq!(
+        crate::in_main_after(types, "mut slots = Slots(items=[])\nslots[0].x += 1.0\nslots[0] = Part()\nslots.total = 1"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        crate::in_main_after(types, "slots = Slots(items=[])\nslots[0].x = 1.0"),
+        ["`slots` isn't mut @ slots[0].x"]
+    );
+}
+
+#[test]
+fn compound_assignment_through_a_types_own_index_uses_its_operator() {
+    let types = "
+struct Grid:
+    cells: list[int]
+
+    def [](self, at: int) -> int:
+        self.cells[at]
+
+    def []=(mut self, at: int, value: int):
+        self.cells[at] = value
+
+struct Writes:
+    cells: list[int]
+
+    def []=(mut self, at: int, value: int):
+        self.cells[at] = value
+";
+    assert_eq!(crate::in_main_after(types, "mut g = Grid(cells=[1])\ng[0] += 1"), Vec::<String>::new());
+    assert_eq!(
+        crate::in_main_after(types, "mut g = Grid(cells=[1])\ng[0] += 1.5"),
+        ["can't mix int and float in `+` @ g[0]"]
+    );
+    assert_eq!(crate::in_main_after(types, "g = Grid(cells=[1])\ng[0] += 1"), ["`g` isn't mut @ g[0]"]);
+    assert_eq!(
+        crate::in_main_after(types, "mut w = Writes(cells=[1])\nw[0] += 1"),
+        ["`Writes` can't be indexed @ w[0]"]
+    );
+}
+
+#[test]
 fn names_change_only_when_mut() {
     assert_eq!(in_main("name = 'Ash'\nname = 'Vex'"), ["`name` isn't mut @ name"]);
     assert_eq!(in_main("count = 1\ncount += 1"), ["`count` isn't mut @ count"]);

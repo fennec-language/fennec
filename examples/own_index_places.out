@@ -1,0 +1,4 @@
+[Part(name="bolt!", x=3.0)] 4
+[6, 6]
+[Part(name="bolt!", x=9.0)] 5 [Part(name="bolt!", x=3.0)]
+[Part(name="bolt!", x=10.0)] [Part(name="bolt!", x=9.0)]

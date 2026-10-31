@@ -6,6 +6,7 @@
 //! file. Every file is parsed at its own byte offset, so `Program::sources` can say which
 //! file a diagnostic is in.
 
+mod init;
 mod load;
 mod manifest;
 mod scope;
@@ -16,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use fennec_syntax::{Diagnostic, Module, Sources};
 
+pub use init::{GUIDANCE, Guidance, Initialized, init};
 pub use manifest::{Manifest, valid_name};
 pub use starter::create;
 

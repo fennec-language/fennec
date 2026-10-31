@@ -139,6 +139,12 @@ impl Lowerer<'_, '_> {
         if let (Some(dict), Ty::Dict(key, value)) = (value, ty) {
             return self.read_dict(dict, (key, value), index, expr.span);
         }
+        if let (Some(list), Ty::List(item)) = (value, ty) {
+            return self.holding_list((list, ty), expr.span, |lowerer, held| {
+                let name = lowerer.packed(held).map(|(name, _)| name).unwrap_or_default();
+                lowerer.read_packed(&name, item.ty(), index, expr.span)
+            });
+        }
         self.note(expr.span, "the runtime indexes an object");
         let object = self.handle_of(value, ty, expr.span)?;
         let (value, ty) = self.expr(index)?;

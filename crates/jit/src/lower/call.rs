@@ -92,7 +92,7 @@ impl Lowerer<'_, '_> {
         self.fallback(expr)
     }
 
-    /// A native `sum`, or a call to an arrow this specialized body was handed.
+    /// A native `sum` or `sorted`, or a call to an arrow this specialized body was handed.
     fn sum_or_known(
         &mut self,
         expr: &Expr,
@@ -101,6 +101,9 @@ impl Lowerer<'_, '_> {
     ) -> Result<Option<Lowered>, Diagnostic> {
         if let Some(total) = self.sum_call(expr, callee, args)? {
             return Ok(Some(total));
+        }
+        if let Some(ordered) = self.sorted_call(expr, callee, args)? {
+            return Ok(Some(ordered));
         }
         self.call_known(callee, args)
     }

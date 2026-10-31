@@ -5,14 +5,14 @@ binary_trees 0
 closures 0
 comp_helpers 0
 comprehensions 2
-deltablue 305
+deltablue 304
 dict_field 11
 dicts 0
 fannkuch 1
 fib 0
 generics 0
 json 46
-k_nucleotide 9
+k_nucleotide 8
 mandelbrot 0
 method_chain 0
 nbody 0
@@ -20,7 +20,7 @@ particles 0
 regex 20
 richards 264
 sieve 0
-sort 6
+sort 3
 spectral_norm 0
 strings 0
 struct_keys 5

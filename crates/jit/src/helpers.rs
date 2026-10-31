@@ -98,11 +98,13 @@ pub(crate) enum Helper {
     ListNew,
     ListGrow,
     ListUnshare,
+    ListSorted,
+    ListSortedBy,
     ListFromValue,
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 94] = [
+pub(crate) const ALL: [Helper; 96] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -195,6 +197,8 @@ pub(crate) const ALL: [Helper; 94] = [
     Helper::ListNew,
     Helper::ListGrow,
     Helper::ListUnshare,
+    Helper::ListSorted,
+    Helper::ListSortedBy,
     Helper::ListFromValue,
     Helper::OutOfRange,
 ];
@@ -312,6 +316,8 @@ impl Helper {
                 | Helper::ListNew
                 | Helper::ListGrow
                 | Helper::ListUnshare
+                | Helper::ListSorted
+                | Helper::ListSortedBy
                 | Helper::OutOfRange
                 | Helper::DictNew
                 | Helper::DictSet
@@ -345,6 +351,8 @@ impl Helper {
                     | Helper::ListNew
                     | Helper::ListGrow
                     | Helper::ListUnshare
+                    | Helper::ListSorted
+                    | Helper::ListSortedBy
                     | Helper::ListFromValue
                     | Helper::CaseOf
                     | Helper::Alloc
@@ -491,6 +499,8 @@ impl Helper {
         Some(match self {
             Helper::MakeVariant => shape("fennec_make_variant", &[I64, I64, I64, I64, I64], &[I64]),
             Helper::CaseOf => shape("fennec_case_of", &[I64, I64, I64, I64], &[I64]),
+            Helper::ListSorted => shape("fennec_list_sorted", &[I64, I64], &[I64]),
+            Helper::ListSortedBy => shape("fennec_list_sorted_by", &[I64, I64, I64], &[I64]),
             Helper::Alloc => shape("fennec_alloc", &[I64], &[I64]),
             Helper::Free => shape("fennec_free", &[I64], &[]),
             Helper::Unshare => shape("fennec_unshare", &[I64], &[I64]),
@@ -518,6 +528,8 @@ impl Helper {
         Some(match self {
             Helper::MakeVariant => objects::make_variant as *const u8,
             Helper::CaseOf => objects::case_of as *const u8,
+            Helper::ListSorted => lists::sorted as *const u8,
+            Helper::ListSortedBy => lists::sorted_by as *const u8,
             Helper::Alloc => heap::alloc as *const u8,
             Helper::Free => heap::free as *const u8,
             Helper::Unshare => heap::unshare as *const u8,

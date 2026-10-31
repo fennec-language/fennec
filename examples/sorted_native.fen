@@ -1,0 +1,40 @@
+## `sorted` on lists of numbers and by keys, which native code does itself.
+
+struct Point:
+    x: int
+    y: float
+
+def main(stdout: Stdout):
+    ints = [5, -3, 9, 0, -3, 7]
+    stdout.print(sorted(ints), ints)
+    stdout.print(sorted([1.5, -0.0, 0.0, -2.5, 8.0]))
+    stdout.print(sorted([True, False, True]))
+    stdout.print(sorted(ints, key=(n) => -n))
+    stdout.print(sorted(ints, key=(n) => n % 3))
+    stdout.print(sorted(ints, key=(n) => n > 0))
+    stdout.print(sorted(ints, key=(n) => float(n) / 2.0))
+
+    shift = 4
+    stdout.print(sorted(ints, key=(n) => (n + shift) % 5))
+
+    points = [Point(x=2, y=1.5), Point(x=1, y=1.5), Point(x=3, y=-1.0)]
+    for point in sorted(points, key=(p) => p.y):
+        stdout.print(point.x, point.y)
+    stdout.print(sorted(points, key=(p) => p.x)[0].x)
+
+    same_name = [3, 1, 2]
+    stdout.print(sorted(same_name, key=(same_name) => -same_name))
+
+    twice = sorted(sorted(ints), key=(n) => n * n)
+    stdout.print(twice, sorted(twice).len())
+
+    mut grown = sorted([3, 1, 2])
+    grown.append(0)
+    stdout.print(grown, sorted(grown))
+
+    keep = [2, 1]
+    copy = sorted(keep)
+    stdout.print(keep, copy)
+    stdout.print(sorted([n * 2 for n in range(4)], key=(n) => -n))
+    stdout.print(sorted(range(3), key=(n) => -n))
+    stdout.print(sorted("cab"))

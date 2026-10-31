@@ -99,7 +99,7 @@ impl Lowering<'_> {
     }
 
     /// Carries on in a new block when `cond` is true, and goes to `fail` when it isn't.
-    fn branch_or(&mut self, cond: Operand, fail: BlockId) {
+    pub(super) fn branch_or(&mut self, cond: Operand, fail: BlockId) {
         let then = self.new_block();
         self.finish(Terminator::Branch { cond, then, otherwise: fail });
         self.current = then;
@@ -107,7 +107,7 @@ impl Lowering<'_> {
 
     /// Tests a value against a pattern and binds its names, going to `fail` if it doesn't
     /// match and carrying on in the current block if it does.
-    fn pattern(
+    pub(super) fn pattern(
         &mut self,
         pattern: &Pattern,
         value: &Operand,
@@ -115,6 +115,16 @@ impl Lowering<'_> {
         fail: BlockId,
         span: Span,
     ) -> Lowered<()> {
+        match (pattern, ty) {
+            (Pattern::Wildcard | Pattern::Or(_), _) | (Pattern::Bind(_), Type::Optional(_)) => {}
+            (_, Type::Result(ok, error)) => {
+                return self.result_pattern(pattern, value, (ok, error), fail, span);
+            }
+            (_, Type::Optional(inner)) => {
+                return self.optional_pattern(pattern, value, (ty, inner), fail, span);
+            }
+            _ => {}
+        }
         match pattern {
             Pattern::Wildcard => {}
             Pattern::Bind(name) => {
@@ -158,6 +168,18 @@ impl Lowering<'_> {
         fail: BlockId,
         span: Span,
     ) -> Lowered<()> {
+        if let Type::Errors(names) = ty
+            && names.iter().any(|error| error == name)
+        {
+            let dest = self.temporary(Type::Bool);
+            let value_of = value.clone();
+            self.emit(InstKind::IsError { dest, value: value_of, type_name: name.to_owned() }, span);
+            self.branch_or(Operand::Local(dest), fail);
+            let one = Type::Named(name.to_owned());
+            let held = self.temporary(one.clone());
+            self.emit(InstKind::AsError { dest: held, value: value.clone() }, span);
+            return self.variant((name, dotted, args), (&Operand::Local(held), &one), fail, span);
+        }
         let Type::Named(owner) = ty else { return Err(format!("it matches `{name}` on {ty}")) };
         let case = self.case_fields(owner, name);
         let fields = match &case {
@@ -169,7 +191,8 @@ impl Lowering<'_> {
                 fields.clone()
             }
             None if !dotted && name == owner => {
-                let found = self.context.checked.signatures.structure(owner);
+                let signatures = &self.context.checked.signatures;
+                let found = signatures.structure(owner).or_else(|| signatures.error_type(owner));
                 found.map(|found| found.fields.clone()).ok_or_else(|| format!("`{owner}` has no fields"))?
             }
             None => return Err(format!("it matches `{name}` on {ty}")),

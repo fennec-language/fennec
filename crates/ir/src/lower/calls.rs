@@ -141,20 +141,24 @@ impl Lowering<'_> {
         let signature =
             self.context.checked.signatures.get(&key).ok_or_else(|| format!("it calls `{key}`"))?;
         let given = args.len() + usize::from(object.is_some());
-        if signature.can_fail || signature.generator || given != signature.params.len() {
+        if signature.generator || given != signature.params.len() {
             return Err(format!("its call to `{key}` isn't a plain call"));
         }
         if own && !signature.params.iter().all(|param| self.context.holds(&param.ty)) {
             return Err(format!("`{key}` takes something the IR doesn't hold yet"));
         }
-        let changes: Vec<bool> = signature.params.iter().map(|param| param.is_mut).collect();
+        let params: Vec<(bool, Type)> =
+            signature.params.iter().map(|param| (param.is_mut, param.ty.clone())).collect();
         let mut values = Vec::with_capacity(given);
         let written = object.into_iter().chain(args.iter().map(|arg| &arg.value));
         for (at, value) in written.enumerate() {
-            values.push(if changes.get(at) == Some(&true) {
-                self.place(value, write_backs, span)?
-            } else {
-                self.expr(value)?
+            values.push(match params.get(at) {
+                Some((true, _)) => self.place(value, write_backs, span)?,
+                Some((false, ty)) if own => {
+                    let lowered = self.expr(value)?;
+                    self.coerce(lowered, ty, value.span)?
+                }
+                _ => self.expr(value)?,
             });
         }
         if args.iter().any(|arg| arg.name.is_some()) {

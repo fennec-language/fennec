@@ -7,7 +7,7 @@ use fennec_check::Type;
 use fennec_syntax::{BinOp, Expr, ExprKind, FStrPart, Span, Stmt, UnaryOp};
 
 use super::{Loop, Lowered, Lowering, Tail};
-use crate::{FormatPart, InstKind, LocalId, Operand, Terminator, type_in};
+use crate::{FormatPart, InstKind, LocalId, Operand, Terminator};
 
 /// What a `for` loop counts through. Its name holds the count, or the item at the count.
 struct Counting<'a> {
@@ -25,10 +25,7 @@ impl Lowering<'_> {
         let mut values = Vec::with_capacity(items.len());
         for written in items {
             let value = self.expr(written)?;
-            if type_in(&self.locals, &value).as_ref() != Some(item.as_ref()) {
-                return Err(format!("it puts another type in a list of {item}"));
-            }
-            values.push(value);
+            values.push(self.coerce(value, item, written.span)?);
         }
         let dest = self.temporary(ty);
         self.emit(InstKind::MakeList { dest, items: values }, expr.span);
@@ -79,9 +76,7 @@ impl Lowering<'_> {
             self.emit(InstKind::Binary { dest, op, lhs: Operand::Local(read), rhs: value }, span);
             value = Operand::Local(dest);
         }
-        if type_in(&self.locals, &value).as_ref() != Some(item.as_ref()) {
-            return Err(format!("it puts another type in a list of {item}"));
-        }
+        let value = self.coerce(value, &item, span)?;
         self.emit(InstKind::SetIndex { object: local, path, index, value }, span);
         Ok(())
     }

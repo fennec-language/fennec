@@ -215,6 +215,48 @@ fn a_run_checking_only_what_it_reaches_finds_the_same_mistakes() {
     }
 }
 
+/// How many places each benchmark kernel isn't native can only go down: a change that adds
+/// one fails here, and one that removes some lowers the count in `bench/fallbacks.txt`.
+#[test]
+fn benchmark_kernels_only_lose_fallbacks() {
+    let bench = examples_dir().join("../bench");
+    let written = fs::read_to_string(bench.join("fallbacks.txt")).unwrap();
+    let allowed: Vec<(String, usize)> = written
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .map(|line| {
+            let (kernel, count) = line.split_once(' ').unwrap();
+            (kernel.to_owned(), count.parse().unwrap())
+        })
+        .collect();
+    let on_a_big_stack = std::thread::Builder::new().stack_size(1 << 28).spawn(move || {
+        let mut wrong = Vec::new();
+        let paths = programs(&bench.join("kernels")).unwrap();
+        for path in &paths {
+            let kernel = path.file_stem().unwrap().to_string_lossy().into_owned();
+            let module = fennec_syntax::parse(&fs::read_to_string(path).unwrap()).unwrap();
+            let count = fennec_jit::fallbacks(&module).unwrap().len();
+            match allowed.iter().find(|(name, _)| *name == kernel) {
+                Some((_, limit)) if count == *limit => {}
+                Some((_, limit)) => wrong.push(format!("{kernel}: {count} fallbacks, the list says {limit}")),
+                None => wrong.push(format!("{kernel}: {count} fallbacks, and it isn't on the list")),
+            }
+        }
+        for (name, _) in &allowed {
+            if !paths.iter().any(|path| path.file_stem().is_some_and(|stem| stem == name.as_str())) {
+                wrong.push(format!("{name} is on the list, but isn't a kernel"));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "bench/fallbacks.txt is out of date. A count that went up means a kernel lost native code; \
+             see `fennec dev fallbacks`. One that went down should be lowered there:\n{}",
+            wrong.join("\n")
+        );
+    });
+    on_a_big_stack.unwrap().join().unwrap();
+}
+
 #[test]
 fn math_compiles_to_machine_code_however_it_is_imported() {
     let source = "import std.math\nfrom std import math\nfrom std.math import sqrt\n\ndef main(stdout: Stdout):\n    x = 2.25\n    stdout.print(sqrt(x) + math.sqrt(x) + std.math.sqrt(x), math.floor(x))\n";

@@ -1,19 +1,23 @@
 # Written by `fennec-bench pin`. Only the last column is edited by hand: `yes` once a kernel
 # reaches the JIT's floor, so it can't drop below it again.
 # kernel instructions output source enforced
-binary_trees 587363967 085da71cd358d51a - no
-closures 6842578 86672a2132954f6c - no
-comprehensions 88080700 87157abf370b4b8b - no
-dicts 264486329 03f09d5e6aacdd93 - yes
-fannkuch 97406745 baaaef315c659f3c - no
-fib 293220691 c1a7256e0480b2dc - no
-generics 10442844 a481a9a0bfd872a4 - no
-json 32802302 1c9a8c994d1b00d2 - no
-mandelbrot 105678943 c573d05d2a7a670c - yes
-nbody 101120330 4d092d7db6fae7b2 - no
-particles 71018816 9e927a27bf9d8df9 - no
-selfhost 24673990 bc5ffd62d8e8766b - no
-sieve 130410697 84a70b39ecced192 - no
-sort 246498074 bd713ad39cc2e9f8 - no
-spectral_norm 109460398 b4e227d5abb9fd3a - no
-strings 184453375 f1a0bd22994baaf5 - no
+binary_trees 557502302 085da71cd358d51a ead86640e9975b37 no
+closures 6828127 86672a2132954f6c da1a1f61bc0d2370 no
+comprehensions 91813391 87157abf370b4b8b c4a5957e3cddd893 no
+deltablue 5235956 a88d59a251d263b5 cfe4a5d933138def no
+dicts 264429061 03f09d5e6aacdd93 9980b9907248f67f yes
+fannkuch 100829771 baaaef315c659f3c 60bc9da8c4bd86df no
+fib 293208718 c1a7256e0480b2dc 9fd3e96e952c4d92 no
+generics 10430558 a481a9a0bfd872a4 88cd972e1203ff47 no
+json 31330219 1c9a8c994d1b00d2 3fbd507353928017 no
+k_nucleotide 251919651 1542cb4fe1d1d1d7 866e603e6b0a9e7f no
+mandelbrot 105514418 c573d05d2a7a670c 0c29d0217007938c yes
+nbody 100900806 4d092d7db6fae7b2 2a7c803ede255443 no
+particles 71004376 9e927a27bf9d8df9 6892dd618c1632ed no
+regex 791574090 bee675fb854041e9 0303b9aa3220aa0e no
+richards 21838160 c34a6cd35b11d1b8 df6c6408ff721618 no
+selfhost 52725026 4e501a7e8333fdfe - no
+sieve 130396292 84a70b39ecced192 032ffa192568f63f no
+sort 242224753 bd713ad39cc2e9f8 119ad39ea06fd9f6 no
+spectral_norm 99868894 b4e227d5abb9fd3a f9de590075b4f0d7 no
+strings 180440865 f1a0bd22994baaf5 51aa1c281149b6ee no

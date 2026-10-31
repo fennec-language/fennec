@@ -311,6 +311,7 @@ dependencies = [
  "fennec-fmt",
  "fennec-interp",
  "fennec-ir",
+ "fennec-jit",
  "fennec-re",
  "fennec-syntax",
 ]

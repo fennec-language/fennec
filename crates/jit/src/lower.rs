@@ -389,6 +389,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         elements: HashMap::new(),
         lending: false,
         tried: None,
+        last_try: None,
         direct_result: None,
         leaf_vars: HashMap::new(),
         borrowed: HashSet::new(),
@@ -478,6 +479,7 @@ pub(crate) struct Lowerer<'a, 'f> {
     lending: bool,
     /// The call `?` is about to test, and what it holds when it gives back a block directly.
     tried: Option<Span>,
+    last_try: Option<Span>,
     direct_result: Option<Ty>,
     /// The leaves of each struct value kept in registers.
     leaves_of: HashMap<Value, Vec<Value>>,

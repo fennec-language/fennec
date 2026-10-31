@@ -5,9 +5,10 @@
 //! uses the result gets an object, as from any other fallible function.
 
 use cranelift_codegen::ir::{InstBuilder, Value, types};
-use fennec_syntax::{Diagnostic, Span};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, Span, Stmt};
 
 use super::expr::Lowered;
+use super::hoist::each_stmt_expr_shallow;
 use super::{Lowerer, abi, internal};
 use crate::helpers::Helper;
 use crate::types::Ty;
@@ -123,15 +124,33 @@ impl Lowerer<'_, '_> {
     }
 
     /// Lowers the call `?` is on, giving back the word it returned and what it holds when
-    /// it's a call to a function that returns a block directly.
+    /// it's a call to a function that returns a block directly. Only the last `?` in a statement
+    /// gets one: a block held while a later `?` leaves would have nothing to let it go, and a
+    /// temporary does.
     pub(super) fn tried_call(
         &mut self,
-        value: &fennec_syntax::Expr,
+        value: &Expr,
+        whole: Span,
     ) -> Result<(Lowered, Option<Ty>), Diagnostic> {
-        self.tried = Some(value.span);
+        if self.last_try == Some(whole) {
+            self.tried = Some(value.span);
+        }
         let lowered = self.expr(value);
         self.tried = None;
         Ok((lowered?, self.direct_result.take()))
+    }
+
+    /// The `?` evaluated last in a statement's own expressions.
+    pub(super) fn last_try_in(stmt: &Stmt) -> Option<Span> {
+        let mut last: Option<Span> = None;
+        each_stmt_expr_shallow(stmt, &mut |expr| {
+            if matches!(expr.kind, ExprKind::Try { .. })
+                && last.is_none_or(|seen| seen.start <= expr.span.start)
+            {
+                last = Some(expr.span);
+            }
+        });
+        last
     }
 
     /// Whether a word from such a call is a failure.

@@ -142,7 +142,7 @@ impl Lowerer<'_, '_> {
             },
             ExprKind::Cond { then, cond, otherwise } => self.conditional(then, cond, otherwise),
             ExprKind::Else { value, default } => self.else_value(value, default),
-            ExprKind::Try { value, context } => self.try_value(value, context.as_deref()),
+            ExprKind::Try { value, context } => self.try_value(value, context.as_deref(), span),
             ExprKind::Call { callee, args } => self.call(expr, callee, args),
             ExprKind::Match { subject, arms } => self.match_value(subject, arms, span),
             ExprKind::Attr { object, name, optional } => self.read_field(expr, object, name, *optional),

@@ -206,7 +206,7 @@ fn own_exprs(stmt: &Stmt) -> Vec<&Expr> {
 }
 
 /// Calls `visit` on the top expressions written directly in a statement.
-fn each_stmt_expr_shallow(stmt: &Stmt, visit: &mut dyn FnMut(&Expr)) {
+pub(super) fn each_stmt_expr_shallow(stmt: &Stmt, visit: &mut dyn FnMut(&Expr)) {
     for expr in own_exprs(stmt) {
         each_expr(expr, visit);
     }

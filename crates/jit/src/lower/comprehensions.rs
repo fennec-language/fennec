@@ -453,20 +453,26 @@ impl Lowerer<'_, '_> {
         let (ExprKind::List(items), Ty::List(item)) = (&value.kind, ty) else {
             return Ok(None);
         };
-        let mut lowered = Vec::with_capacity(items.len());
-        for each in items {
-            let (value, from) = self.expr(each)?;
-            lowered.push(self.convert(value, from, item.ty(), each.span)?);
-        }
+        // The list owns each item as soon as it's worked out, so a `?` further along can leave
+        // without losing any.
         let element = self.element(item.ty())?;
         let count = self.int(i64::try_from(items.len()).unwrap_or(0));
         let list = self.help(Helper::ListNew, &[element, count])?;
+        let name = hidden("literal", value.span);
+        self.open_scope();
+        self.bind_native(&name, ty, Some(list), false);
         let stride = self.stride(item.ty())?;
-        for (at, value) in lowered.into_iter().enumerate() {
+        for (at, each) in items.iter().enumerate() {
+            let (new, from) = self.expr(each)?;
+            let new = self.convert(new, from, item.ty(), each.span)?;
             let offset = i64::try_from(at).unwrap_or(0) * stride + LIST_ITEMS;
             let address = self.b.ins().iadd_imm_s(list, offset);
-            self.store_item(address, item.ty(), (Some(value), item.ty()), value_span(items, at))?;
+            self.store_item(address, item.ty(), (Some(new), item.ty()), each.span)?;
         }
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.locals.remove(&name);
+        }
+        self.close_scope()?;
         Ok(Some((Some(list), ty)))
     }
 
@@ -564,10 +570,6 @@ impl Lowerer<'_, '_> {
         self.b.switch_to_block(exit);
         Ok(())
     }
-}
-
-fn value_span(items: &[Expr], at: usize) -> Span {
-    items.get(at).map(|item| item.span).unwrap_or_default()
 }
 
 /// Whether an item is a zero the runtime's new list already holds.

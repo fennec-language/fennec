@@ -115,6 +115,7 @@ impl Lowerer<'_, '_> {
     }
 
     pub(super) fn stmt(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
+        self.last_try = Self::last_try_in(stmt);
         match &stmt.kind {
             StmtKind::Expr(expr) => {
                 let (value, ty) = self.expr(expr)?;

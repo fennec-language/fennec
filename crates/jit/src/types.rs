@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use fennec_check::Signatures;
 pub(crate) use fennec_interp::embed::dicts::Word;
-use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Imported, Item, Module, Span, StmtKind, UnaryOp};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Imported, Item, Module, Span, UnaryOp};
 
 use crate::layout::Layouts;
 
@@ -367,7 +367,7 @@ fn function<'m>(
     layouts: &Layouts,
 ) -> Option<Function<'m>> {
     let signature = signatures.get(&key)?;
-    if signature.generator || def.body.iter().any(|stmt| matches!(stmt.kind, StmtKind::Def(_))) {
+    if signature.generator {
         return None;
     }
     let params = def

@@ -1,0 +1,52 @@
+## Functions written inside functions, native: each call is the body, right there.
+
+def scaled(items: list[int], factor: int) -> list[int]:
+    def times(n: int) -> int:
+        n * factor
+    [times(item) for item in items]
+
+def labelled(name: str, n: int) -> str:
+    def part(i: int) -> str:
+        prefix = f"{name}-"
+        return prefix + str(i)
+    def both(a: int, b: int) -> str:
+        part(a) + "/" + part(b)
+    both(n, n + 1)
+
+def by_branch(n: int) -> int:
+    def pick(x: int) -> int:
+        if x > 10: return x - 10
+        x + 1
+    pick(n) + pick(n + 10)
+
+def kept(start: int) -> list[int]:
+    def seen(n: int) -> int:
+        n + start
+    mut found = []
+    for n in range(3):
+        found.append(seen(n))
+    found
+
+def rolling(items: list[int]) -> list[int]:
+    mut found = []
+    for at, item in enumerate(items):
+        found.append(item + items[0] + (items[at - 1] if at > 0 else 0))
+    for first, second in zip(items, items):
+        found.append(first + second + items.len())
+    found
+
+def main(stdout: Stdout):
+    stdout.print(scaled([1, 2, 3], 4), labelled("kit", 2), by_branch(3), by_branch(30), kept(100))
+    def shout(word: str) -> str:
+        word + "!"
+    stdout.print(shout("hi"), shout(shout("again")))
+    total = 5
+    def plus(n: int) -> int:
+        n + total
+    stdout.print(plus(1), [plus(n) for n in range(2)], sum(plus(n) for n in range(3)))
+    stdout.print(rolling([1, 2, 3]))
+    mut changing = [1, 2, 3]
+    for at, item in enumerate(changing):
+        if at == 0:
+            changing.append(item + 9)
+        stdout.print(at, item, changing.len())

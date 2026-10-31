@@ -870,6 +870,8 @@ fn every_example_lowers_to_valid_ir_or_says_why() {
         lowered_functions
             .extend(program.functions.iter().map(|function| format!("{file}: {}", function.name)));
     }
+    // How far lowering has got. This only goes up, until every function lowers.
+    assert!(lowered_functions.len() >= 107, "only {} functions lowered", lowered_functions.len());
     for expected in
         ["numbers.fen: fib", "numbers.fen: collatz_steps", "numbers.fen: is_prime", "numbers.fen: lerp"]
     {

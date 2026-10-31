@@ -812,3 +812,50 @@ fn dev_fallbacks_lists_what_isnt_native_hot_loops_first() {
     assert!(printed.ends_with("places aren't native\n"), "{printed}");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// A program whose memory has to stay small: it's stopped, and fails, past `limit_kb`.
+#[cfg(unix)]
+fn peak_is_under(program: &Path, limit_kb: u64) -> Result<(), String> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fennec"))
+        .arg("run")
+        .arg("--jit")
+        .arg(program)
+        .stdout(Stdio::null())
+        .env("FENNEC_NO_CACHE", "1")
+        .spawn()
+        .map_err(|err| err.to_string())?;
+    let pid = child.id().to_string();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|err| err.to_string())? {
+            return if status.success() { Ok(()) } else { Err(format!("it failed: {status}")) };
+        }
+        let rss =
+            Command::new("ps").args(["-o", "rss=", "-p", &pid]).output().map_err(|err| err.to_string())?;
+        let used: u64 = text(&rss.stdout).trim().parse().unwrap_or(0);
+        if used > limit_kb {
+            child.kill().ok();
+            child.wait().ok();
+            return Err(format!("it reached {used} KB"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// What a loop body's last statement leaves must go each time round. It used to pile up, and
+/// each one kept a copy of the dict below alive: this program reached gigabytes.
+#[cfg(unix)]
+#[test]
+fn a_loop_changing_a_dict_in_a_struct_stays_small() {
+    let dir = scratch("loop-memory").unwrap();
+    let program = dir.join("counter.fen");
+    std::fs::write(
+        &program,
+        "struct Counter:\n    counts: dict[int, int]\n\n    def bump(mut self, key: int):\n        \
+         self.counts[key] = self.counts.get(key, 0) + 1\n\ndef main(stdout: Stdout):\n    mut counter = \
+         Counter(counts={})\n    for i in range(20_000):\n        counter.bump(i * 7919 % 10_007)\n    \
+         stdout.print(counter.counts.len())\n",
+    )
+    .unwrap();
+    peak_is_under(&program, 200_000).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}

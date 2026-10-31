@@ -130,6 +130,14 @@ mod tests {
     }
 
     #[test]
+    fn unchecked_targets_are_kept_apart() {
+        let dir = std::path::Path::new("targets");
+        let unchecked = super::unchecked_path(dir);
+        assert_eq!(unchecked.parent(), Some(dir.join("unchecked").as_path()));
+        assert_eq!(unchecked.file_name(), super::path(dir).file_name());
+    }
+
+    #[test]
     fn a_broken_line_is_named() {
         assert_eq!(parse("fib 5 9 abc s\n"), Err("fib 5 9 abc s".to_owned()));
         assert_eq!(parse("fib five 9 abc s yes\n"), Err("fib five 9 abc s yes".to_owned()));

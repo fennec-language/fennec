@@ -279,6 +279,14 @@ mod tests {
     }
 
     #[test]
+    fn the_unchecked_percentage_is_against_the_unchecked_target() {
+        let result = Result { unchecked: Some(500_000), ..counted(2_000_000, 1_000_000, false) };
+        assert_eq!(result.speed_unchecked(), Some(0.25));
+        assert!(table(&[result]).contains("| 25% |"));
+        assert_eq!(counted(2_000_000, 1_000_000, false).speed_unchecked(), None);
+    }
+
+    #[test]
     fn the_table_tells_startup_and_work_apart_and_never_names_a_language() {
         let mut partly = Result {
             total: Duration::from_millis(30),

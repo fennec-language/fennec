@@ -337,6 +337,7 @@ impl Tree {
                 let op = match op {
                     UnaryOp::Neg => "-",
                     UnaryOp::Not => "not",
+                    UnaryOp::BitNot => "~",
                 };
                 self.node(&format!("unary {op}"), span, |tree| tree.expr(expr));
             }

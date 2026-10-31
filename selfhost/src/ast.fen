@@ -201,6 +201,13 @@ struct Arg:
 enum UnaryOp:
     Neg
     Not
+    BitNot
+
+    def symbol(self) -> str:
+        match self:
+            case .Neg: "-"
+            case .Not: "not"
+            case .BitNot: "~"
 
 enum BinOp:
     Add
@@ -222,6 +229,11 @@ enum BinOp:
     NotIn
     Is
     IsNot
+    BitAnd
+    BitOr
+    BitXor
+    ShiftLeft
+    ShiftRight
 
     def symbol(self) -> str:
         match self:
@@ -244,3 +256,8 @@ enum BinOp:
             case .NotIn: "not in"
             case .Is: "is"
             case .IsNot: "is not"
+            case .BitAnd: "&"
+            case .BitOr: "|"
+            case .BitXor: "^"
+            case .ShiftLeft: "<<"
+            case .ShiftRight: ">>"

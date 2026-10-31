@@ -125,8 +125,8 @@ fn takes(inst: &InstKind, function: &Function, shared: &Shared, open: &mut Vec<S
         }
         InstKind::Call { function: callee, args, .. } => {
             let Some(compiled) = shared.compiled.get(callee) else { return false };
-            let plain_call = compiled.specialized.is_none()
-                && compiled.direct.is_none()
+            // Lowering a call for what it's passed is for arrows and generics, not numbers.
+            let plain_call = compiled.direct.is_none()
                 && compiled.params.len() == args.len()
                 && compiled
                     .params

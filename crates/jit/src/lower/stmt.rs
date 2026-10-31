@@ -485,10 +485,10 @@ impl Lowerer<'_, '_> {
     fn for_paired(&mut self, names: &[String], iter: &Expr, body: &[Stmt]) -> Result<bool, Diagnostic> {
         let ExprKind::Call { callee, args } = &iter.kind else { return Ok(false) };
         let ExprKind::Name(function) = &callee.kind else { return Ok(false) };
-        let paired = match (function.as_str(), names, args.as_slice()) {
-            ("enumerate", [_, _], [_]) | ("zip", [_, _], [_, _]) => true,
-            _ => false,
-        };
+        let paired = matches!(
+            (function.as_str(), names, args.as_slice()),
+            ("enumerate", [_, _], [_]) | ("zip", [_, _], [_, _])
+        );
         if !paired
             || self.local(function).is_some()
             || self.shared.compiled.contains_key(function.as_str())

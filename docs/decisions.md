@@ -288,6 +288,8 @@ with db.transaction() as mut tx:
 
 **Network access is a capability, `Net`, like `Fs`.** Its API, for HTTP, sockets and limiting it to certain hosts, is decided when it's built.
 
+**Environment variables and running other programs are capabilities too, `Env` and `Process`,** handed to `main`. `std.process` goes through `Process`.
+
 **Command-line arguments and standard input are capabilities.** `def main(stdout: Stdout, args: Args, stdin: Stdin):`. `for arg in args:` gives the arguments, not the program's name, which is `args.program`. `stdin.lines()` reads input a line at a time. A program that doesn't name them can't read them, and both are recorded for replay.
 *Why:* A program's input decides what it does, so it comes in the same visible way as files and the clock.
 
@@ -818,6 +820,10 @@ The order:
 Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compiler can run on the Cranelift JIT, since the interpreter is too slow to run a compiler.
 *Why:* Every language change after the compiler is self-hosted has to be made in two compilers.
 
+## Recording decisions
+
+**Architecture decision records (ADRs) come at the language freeze.** They're generated from this document and its pull request history, and labeled as reconstructed. After the freeze, a language change means a new ADR.
+
 ## License
 
 **The compiler and tools are `MIT OR Apache-2.0`, and the runtime library and standard library add a runtime library exception,** modeled on Swift's. A program compiled with Fennec owes no attribution for the runtime and standard library code built into it. The exception is in `RUNTIME-LIBRARY-EXCEPTION`.
@@ -835,6 +841,5 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 - The file extension (currently `.fen`).
 - Whether files of a kit may reuse a top-level name, reached through `import` by their module's name.
 - These security proposals:
-  - `Env` and `Process` as capabilities.
   - Types that make injection impossible: `sql"..."` templates, `Path`, argument lists for commands, escaping HTML templates.
   - `Secret[str]`, which can't be printed or logged.

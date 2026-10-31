@@ -172,7 +172,11 @@ impl<'out> Interp<'out> {
                     self.modules.extend(modules);
                     self.imports.extend(functions);
                 }
-                Item::Test(test) => self.tests.push(test.clone()),
+                Item::Test(test) => {
+                    if !test.bench {
+                        self.tests.push(test.clone());
+                    }
+                }
                 Item::Const { name, value, .. } => {
                     let waiting = crate::constants::Constant::Waiting(Rc::new(value.clone()));
                     self.constants.insert(name.clone(), waiting);

@@ -160,6 +160,9 @@ pub struct TestDef {
     pub name: String,
     pub inputs: Vec<Param>,
     pub body: Vec<Stmt>,
+    /// Whether it's a `bench` block, which is checked like a test and runs only for
+    /// `fennec bench`.
+    pub bench: bool,
     pub span: Span,
 }
 

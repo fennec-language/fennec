@@ -41,7 +41,7 @@ pub fn run_tests(
         Item::Test(test) => Some(test),
         _ => None,
     });
-    let tests: Vec<_> = tests.filter(|test| wanted.contains(&test.name)).collect();
+    let tests: Vec<_> = tests.filter(|test| !test.bench && wanted.contains(&test.name)).collect();
     for test in &tests {
         let unique = tests.iter().filter(|other| other.name == test.name).count() == 1;
         if test.inputs.is_empty() && unique {
@@ -88,6 +88,43 @@ pub fn run_tests(
     result
 }
 
+/// A benchmark's run as native code: how long it took and how it failed if it did, or nothing
+/// if it was only asked to start.
+pub type BenchRun = Option<(std::time::Duration, Option<Diagnostic>)>;
+
+/// Runs one benchmark of a checked `module` as native code, with nothing added to measure it,
+/// or does all but run it when `execute` is false. It's written as a test named `name`. Gives
+/// back None if it can't be compiled yet, which leaves it to the interpreter.
+pub fn run_bench(
+    module: &Module,
+    signatures: &fennec_check::Signatures,
+    name: &str,
+    cache: (&fennec_build::Cache, &str),
+    execute: bool,
+) -> Option<Result<BenchRun, Diagnostic>> {
+    let test = module.items.iter().find_map(|item| match item {
+        Item::Test(test) if test.name == name => Some(test),
+        _ => None,
+    })?;
+    let def = as_function(name, &test.body, test.span);
+    let keyed = [(def.name.clone(), def.clone())];
+    let names = HashMap::from([(def.name.clone(), name.to_owned())]);
+    let prelude: Vec<Module> =
+        fennec_syntax::prelude().filter_map(|source| fennec_syntax::parse_prelude(source).ok()).collect();
+    let run = || {
+        let here = 0_u8;
+        let stack_limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
+        let program = Program::for_tests(module, &prelude, signatures, &keyed).ok()?;
+        let compiled = lower::compile_tests(&program, signatures, stack_limit, Some(cache), &names, false);
+        let (tests, tables) = compiled.ok()?;
+        (!tests.entries.is_empty()).then(|| runtime::run_bench(&tests, module, tables, execute))
+    };
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new().stack_size(STACK_BYTES).spawn_scoped(scope, run);
+        worker.ok()?.join().ok()?
+    })
+}
+
 /// A test as a function with no parameters that gives back nothing or an error, with its key
 /// in the typed tree as its name.
 fn as_function(name: &str, body: &[Stmt], span: Span) -> FnDef {
@@ -127,7 +164,8 @@ fn run_share(
     let Ok(program) = Program::for_tests(module, prelude, signatures, &keyed) else {
         return left_alone(share);
     };
-    let Ok((tests, tables)) = lower::compile_tests(&program, signatures, stack_limit, cache, &names) else {
+    let Ok((tests, tables)) = lower::compile_tests(&program, signatures, stack_limit, cache, &names, true)
+    else {
         return left_alone(share);
     };
     let Ok(results) = runtime::run_tests(&tests, module, tables) else { return left_alone(share) };

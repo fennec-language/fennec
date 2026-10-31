@@ -22,13 +22,15 @@ pub(crate) struct CompiledTests {
 }
 
 /// Compiles the tests in `names`, a map from each function's key to its test's name. A test
-/// that can't be compiled has no entry, and is left to the interpreter.
+/// that can't be compiled has no entry, and is left to the interpreter. `traced` compiles in
+/// the flags that say what each test ran, which a benchmark would be measuring otherwise.
 pub(crate) fn compile_tests(
     program: &Program<'_>,
     signatures: &fennec_check::Signatures,
     stack_limit: usize,
     cache: Option<(&fennec_build::Cache, &str)>,
     names: &HashMap<String, String>,
+    traced: bool,
 ) -> Result<(CompiledTests, Tables), Diagnostic> {
     let stack_limit = i64::try_from(stack_limit).unwrap_or(i64::MAX);
     let span = program.main_span;
@@ -37,7 +39,7 @@ pub(crate) fn compile_tests(
         let mut module = new_module(span).map_err(fatal)?;
         let mut shared = Shared::new(program, stack_limit);
         shared.cache = cached::CacheUse::of(cache, true);
-        shared.ran = Some(HashMap::new());
+        shared.ran = traced.then(HashMap::new);
         compile_bodies(&mut module, &mut shared, program, signatures, skipped)?;
         symbols::define(&mut module, &shared).map_err(fatal)?;
         let mut ctx = module.make_context();

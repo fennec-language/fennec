@@ -250,6 +250,7 @@ dependencies = [
  "fennec-blake3",
  "fennec-build",
  "fennec-check",
+ "fennec-count",
  "fennec-fmt",
  "fennec-interp",
  "fennec-jit",
@@ -263,6 +264,7 @@ name = "fennec-bench"
 version = "0.0.1"
 dependencies = [
  "fennec-blake3",
+ "fennec-count",
  "fennec-lsp",
 ]
 
@@ -285,6 +287,10 @@ dependencies = [
  "fennec-re",
  "fennec-syntax",
 ]
+
+[[package]]
+name = "fennec-count"
+version = "0.0.1"
 
 [[package]]
 name = "fennec-fmt"

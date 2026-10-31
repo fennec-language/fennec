@@ -209,7 +209,7 @@ impl Parser {
         match word {
             "struct" | "enum" | "error" | "interface" | "extend" => matches!(self.peek_at(1), Tok::Name(_)),
             "type" => matches!((self.peek_at(1), self.peek_at(2)), (Tok::Name(_), Tok::P(Punct::Assign))),
-            "test" => matches!(self.peek_at(1), Tok::Str(_)),
+            "test" | "bench" => matches!(self.peek_at(1), Tok::Str(_)),
             _ => false,
         }
     }
@@ -230,7 +230,8 @@ impl Parser {
                 self.end_line()?;
                 Ok(Item::TypeAlias { name, ty, span })
             }
-            _ => self.test(start),
+            "bench" => self.test(start, true),
+            _ => self.test(start, false),
         }
     }
 
@@ -334,10 +335,10 @@ impl Parser {
         Ok(Item::Extend(Extension { name, generics, methods, span }))
     }
 
-    fn test(&mut self, start: Span) -> Result<Item, Diagnostic> {
+    fn test(&mut self, start: Span, bench: bool) -> Result<Item, Diagnostic> {
         let Tok::Str(name) = self.advance().tok else { return Err(self.unexpected("a test name")) };
         let mut inputs = Vec::new();
-        if self.eat_kw(Kw::For) {
+        if !bench && self.eat_kw(Kw::For) {
             loop {
                 inputs.push(self.param()?);
                 if !self.eat_p(Punct::Comma) {
@@ -348,7 +349,7 @@ impl Parser {
         let span = start.to(self.prev_span());
         self.expect_p(Punct::Colon)?;
         let body = self.block()?;
-        Ok(Item::Test(TestDef { name, inputs, body, span }))
+        Ok(Item::Test(TestDef { name, inputs, body, bench, span }))
     }
 
     fn import(&mut self) -> Result<Import, Diagnostic> {

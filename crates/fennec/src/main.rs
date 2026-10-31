@@ -3,6 +3,7 @@
 #![expect(clippy::print_stderr, reason = "the command line reports errors")]
 
 mod aot;
+mod bench;
 mod changes;
 mod daemon;
 mod fallbacks;
@@ -22,6 +23,7 @@ const USAGE: &str = "usage:
   fennec test [path]        run a kit's tests, or a single file's, skipping unchanged ones that passed
   fennec test --all [path]  run every test
   fennec test --verbose [path]  list the tests that pass too, not only failures and the summary
+  fennec bench [path]       run its `bench` blocks: instructions and times, against the last run
   fennec new <name>         start a kit in a new folder
   fennec init               set up this folder: a kit if it's new, and Fennec's guidance in AGENTS.md
   fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
@@ -51,12 +53,18 @@ fn main() -> ExitCode {
         ["build", path] => aot::build(path, None),
         ["build", path, "-o", output] => aot::build(path, Some(output)),
         ["test", rest @ ..] => test(rest),
+        ["bench"] => bench::bench("."),
+        ["bench", path] => bench::bench(path),
         ["new", path] => new(path),
         ["init"] => init(),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
         ["fmt", rest @ ..] => fmt::fmt(rest),
         ["fix"] => fix::fix("."),
         ["fix", path] => fix::fix(path),
+        ["dev", "bench", path, name, rest @ ..] if rest.is_empty() || *rest == ["--start-only"] => {
+            let (path, name, execute) = ((*path).to_owned(), (*name).to_owned(), rest.is_empty());
+            big_stack(move || bench::one(&path, &name, execute))
+        }
         ["dev", "startup", path] => {
             let path = (*path).to_owned();
             big_stack(move || run::startup(&path))

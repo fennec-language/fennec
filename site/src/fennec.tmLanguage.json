@@ -146,7 +146,7 @@
         },
         {
           "name": "keyword.other.fennec",
-          "match": "\\b(test|assert)\\b"
+          "match": "\\b(test|bench|assert)\\b"
         },
         {
           "name": "constant.language.fennec",

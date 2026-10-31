@@ -54,6 +54,7 @@ fennec-bench = { path = "crates/bench" }
 fennec-blake3 = { path = "crates/blake3" }
 fennec-build = { path = "crates/build" }
 fennec-check = { path = "crates/check" }
+fennec-count = { path = "crates/count" }
 fennec-fmt = { path = "crates/fmt" }
 fennec-ir = { path = "crates/ir" }
 fennec-jit = { path = "crates/jit" }

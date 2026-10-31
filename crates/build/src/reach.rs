@@ -132,7 +132,9 @@ impl Graph {
                 let mut uses = Uses::default();
                 test.inputs.iter().filter_map(|input| input.ty.as_ref()).for_each(|ty| uses.type_expr(ty));
                 uses.stmts(&test.body);
-                self.add(format!("test \"{}\"", test.name), tree_hash(test), uses, Some(test.name.clone()));
+                let named = (!test.bench).then(|| test.name.clone());
+                let word = if test.bench { "bench" } else { "test" };
+                self.add(format!("{word} \"{}\"", test.name), tree_hash(test), uses, named);
             }
             Item::Import(import) => self.import(import),
             Item::Stmt(_) => {}

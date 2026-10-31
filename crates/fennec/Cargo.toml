@@ -18,6 +18,7 @@ path = "tests/main.rs"
 fennec-blake3.workspace = true
 fennec-build.workspace = true
 fennec-check.workspace = true
+fennec-count.workspace = true
 fennec-fmt.workspace = true
 fennec-interp.workspace = true
 fennec-jit.workspace = true

@@ -13,8 +13,10 @@ const JUMPS: [&str; 4] = ["return", "fail", "break", "continue"];
 pub(super) fn inline_body(toks: &[Tok<'_>], kind: BlockKind) -> Option<usize> {
     let mut words = toks.iter().skip_while(|tok| matches!(tok.text, "export" | "noalloc"));
     let first = words.next()?;
+    let is_bench = first.text == "bench" && toks.get(1).is_some_and(|tok| tok.text.starts_with('"'));
     let opens_block =
         matches!(first.text, "def" | "if" | "elif" | "else" | "while" | "for" | "with" | "test")
+            || is_bench
             || first.text == "case" && kind == BlockKind::MatchBody;
     if !opens_block || toks.last().is_some_and(|tok| tok.text == ":") {
         return None;

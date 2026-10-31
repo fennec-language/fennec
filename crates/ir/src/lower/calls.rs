@@ -7,7 +7,10 @@ use fennec_syntax::{Arg, Expr, ExprKind, Span};
 
 use super::places::Place;
 use super::{Lowered, Lowering};
-use crate::{InstKind, LocalId, Operand, Program};
+use crate::{InstKind, LocalId, Operand, Program, Terminator, type_in};
+
+/// The local holding what `?.` calls a method on, which no name in a program can be.
+const OPTIONAL_OBJECT: &str = "?.";
 
 /// A place to write back after a call, and what holds its value for the call.
 type WriteBack = (Place, LocalId);
@@ -67,6 +70,9 @@ impl Lowering<'_> {
         if let Some(ty) = self.closure_callee(callee) {
             return self.call_closure(callee, &ty, args, keep, span);
         }
+        if let ExprKind::Attr { object, name, optional: true } = &callee.kind {
+            return self.optional_method((object, name), args, keep, span);
+        }
         // `json.loads[T](text)`: the type it's given is the type of what it gives back.
         let callee = match &callee.kind {
             ExprKind::Index { object, .. } => object,
@@ -83,11 +89,11 @@ impl Lowering<'_> {
                     self.expr(object)?
                 });
             }
-            let mut key = None;
+            // Named arguments go last, and the call's name says which they are.
+            let mut named = Vec::new();
             for arg in args {
-                let is_key = arg.name.as_deref() == Some("key");
-                if arg.is_mut || (arg.name.is_some() && !is_key) {
-                    return Err(format!("its call to `{name}` has a named or `mut` argument"));
+                if arg.is_mut {
+                    return Err(format!("its call to `{name}` has a `mut` argument"));
                 }
                 let value = match &arg.value.kind {
                     ExprKind::Lambda { params, body } if name == "IdMap.modify" => {
@@ -95,11 +101,15 @@ impl Lowering<'_> {
                     }
                     _ => self.expr(&arg.value)?,
                 };
-                if is_key { key = Some(value) } else { values.push(value) }
+                match &arg.name {
+                    Some(argument) => named.push((argument.clone(), value)),
+                    None => values.push(value),
+                }
             }
-            if let Some(key) = key {
-                values.push(key);
-                name.push_str(".key");
+            named.sort_by(|first, second| first.0.cmp(&second.0));
+            for (argument, value) in named {
+                name = format!("{name}.{argument}");
+                values.push(value);
             }
             dest = keep.map(|ty| self.temporary(ty));
             self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);
@@ -109,8 +119,73 @@ impl Lowering<'_> {
             self.emit(InstKind::Call { dest, function, args: values }, span);
         }
         for (place, held) in write_backs {
-            self.store(place.local, &place.steps, Operand::Local(held), span)?;
+            let ty = self.steps_type(&place)?;
+            let value = self.coerce(Operand::Local(held), &ty, span)?;
+            self.store(place.local, &place.steps, value, span)?;
         }
+        Ok(dest)
+    }
+
+    /// The type of what a method is called on.
+    fn object_type(&self, object: &Expr) -> Option<Type> {
+        if let ExprKind::Name(name) = &object.kind
+            && name == OPTIONAL_OBJECT
+        {
+            return self.lookup(name).map(|local| self.local_type(local));
+        }
+        self.body.expr(object.span).cloned()
+    }
+
+    /// `object?.method(args)`: the call if the object isn't `None`, and `None` if it is.
+    fn optional_method(
+        &mut self,
+        (object, name): (&Expr, &str),
+        args: &[Arg],
+        keep: Option<Type>,
+        span: Span,
+    ) -> Lowered<Option<LocalId>> {
+        let value = self.expr(object)?;
+        let Some(Type::Optional(inner)) = type_in(&self.locals, &value) else {
+            return Err(format!("it uses `?.{name}` on something other than an optional"));
+        };
+        let dest = keep.filter(|ty| *ty != Type::Unit).map(|ty| self.temporary(ty));
+        let missing = self.temporary(Type::Bool);
+        self.emit(InstKind::IsNone { dest: missing, value: value.clone() }, span);
+        let (absent, present, join) = (self.new_block(), self.new_block(), self.new_block());
+        let cond = Operand::Local(missing);
+        self.finish(Terminator::Branch { cond, then: absent, otherwise: present });
+        self.current = absent;
+        if let Some(dest) = dest {
+            self.emit(InstKind::Copy { dest, value: Operand::None }, span);
+        }
+        self.finish(Terminator::Jump(join));
+        self.current = present;
+        self.scopes.push(std::collections::HashMap::new());
+        let held = self.declare(OPTIONAL_OBJECT, *inner.clone());
+        self.emit(InstKind::GetSome { dest: held, value }, span);
+        // It covers no source, so the typed tree says nothing about reading it.
+        let at = Expr { kind: ExprKind::Name(OPTIONAL_OBJECT.to_owned()), span: Span::default() };
+        let callee = Expr {
+            kind: ExprKind::Attr { object: Box::new(at), name: name.to_owned(), optional: false },
+            span,
+        };
+        let key = owner_name(&inner).map(|owner| format!("{owner}.{name}"));
+        let written =
+            key.and_then(|key| self.context.checked.signatures.get(&key)).map(|found| found.returns.clone());
+        let gives = match (&written, dest.map(|dest| self.local_type(dest))) {
+            (Some(returns), Some(_)) => Some(returns.clone()),
+            (None, Some(Type::Optional(item))) => Some(*item),
+            (_, other) => other,
+        };
+        let result = self.call(&callee, args, gives, span);
+        self.scopes.pop();
+        if let (Some(dest), Some(read)) = (dest, result?) {
+            let ty = self.local_type(dest);
+            let read = self.coerce(Operand::Local(read), &ty, span)?;
+            self.emit(InstKind::Copy { dest, value: read }, span);
+        }
+        self.finish(Terminator::Jump(join));
+        self.current = join;
         Ok(dest)
     }
 
@@ -144,7 +219,8 @@ impl Lowering<'_> {
                     let key = format!("{owner}.{name}");
                     return signatures.get(&key).is_none().then_some((key, None, false));
                 }
-                let ty = self.body.expr(object.span)?;
+                let held = self.object_type(object)?;
+                let ty = &held;
                 if matches!(ty, Type::Result(..)) && name == "expect" {
                     return Some(("result.expect".to_owned(), Some(object.as_ref()), false));
                 }
@@ -173,11 +249,9 @@ impl Lowering<'_> {
                 // `Point.origin()`: a function on the type, with no object.
                 ExprKind::Name(owner) if self.names_a_type(owner) => (format!("{owner}.{name}"), None),
                 _ => {
-                    let ty = self.body.expr(object.span);
-                    let owner = ty
-                        .filter(|ty| self.context.holds(ty))
-                        .and_then(owner_name)
-                        .ok_or_else(|| format!("it calls `.{name}` on something else"))?;
+                    let ty = self.object_type(object).filter(|ty| self.context.holds(ty));
+                    let owner = ty.as_ref().and_then(owner_name);
+                    let owner = owner.ok_or_else(|| format!("it calls `.{name}` on something else"))?;
                     (format!("{owner}.{name}"), Some(object.as_ref()))
                 }
             },
@@ -225,13 +299,19 @@ impl Lowering<'_> {
     }
 
     /// Something a call changes: a local itself, or a temporary holding a field or item
-    /// that's written back after the call.
+    /// that's written back after the call. So is a name known not to be `None`, which goes
+    /// back as an optional.
     fn place(&mut self, expr: &Expr, write_backs: &mut Vec<WriteBack>, span: Span) -> Lowered<Operand> {
         let place = self.place_of(expr)?;
-        if place.steps.is_empty() {
+        let held = self.steps_type(&place)?;
+        let narrowed =
+            matches!(held, Type::Optional(_)) && self.body.expr(expr.span).is_some_and(|read| *read != held);
+        if place.steps.is_empty() && !narrowed {
             return Ok(Operand::Local(place.local));
         }
-        let Operand::Local(held) = self.read_steps(place.local, &place.steps, span)? else {
+        let read = self.read_steps(place.local, &place.steps, span)?;
+        let read = if narrowed { self.narrowed(read, expr)? } else { read };
+        let Operand::Local(held) = read else {
             return Err("it changes something other than a field or item".to_owned());
         };
         write_backs.push((place, held));

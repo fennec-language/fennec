@@ -23,6 +23,7 @@ const USAGE: &str = "usage:
   fennec test --all [path]  run every test
   fennec test --verbose [path]  list the tests that pass too, not only failures and the summary
   fennec new <name>         start a kit in a new folder
+  fennec init               set up this folder: a kit if it's new, and Fennec's guidance in AGENTS.md
   fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
   fennec fmt --check        list the files that aren't formatted, and fail if any aren't
   fennec fix [path]         make the fixes the type checker suggests, in a kit or a .fen file
@@ -51,6 +52,7 @@ fn main() -> ExitCode {
         ["build", path, "-o", output] => aot::build(path, Some(output)),
         ["test", rest @ ..] => test(rest),
         ["new", path] => new(path),
+        ["init"] => init(),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
         ["fmt", rest @ ..] => fmt::fmt(rest),
         ["fix"] => fix::fix("."),
@@ -150,6 +152,29 @@ fn new(path: &str) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn init() -> ExitCode {
+    let done = match fennec_kit::init(std::path::Path::new(".")) {
+        Ok(done) => done,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Some(name) = &done.kit {
+        println!("🦊 made the kit `{name}` here");
+        println!("   run it with: fennec run");
+    }
+    println!(
+        "{}",
+        match done.guidance {
+            fennec_kit::Guidance::Added => "added Fennec's guidance to AGENTS.md",
+            fennec_kit::Guidance::Refreshed => "refreshed Fennec's guidance in AGENTS.md",
+            fennec_kit::Guidance::AlreadyCurrent => "Fennec's guidance in AGENTS.md is already current",
+        }
+    );
+    ExitCode::SUCCESS
 }
 
 /// Loads a program from a file or a kit's folder, printing the problem if there is one.

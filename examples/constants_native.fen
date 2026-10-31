@@ -1,3 +1,5 @@
+# decision: A module can hold constants.
+
 ## Constants at the top level, written out where they're used.
 
 NONE = -1

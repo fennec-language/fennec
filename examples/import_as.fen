@@ -1,3 +1,6 @@
+# decision: `as` renames an import, in both of Python's forms.
+# decision: Two modules can have functions with the same name.
+
 ## `as` binds an import under another name, so two modules with the same function names,
 ## like `std.json` and `std.toml`, can both be used in one file.
 

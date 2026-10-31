@@ -1,3 +1,5 @@
+# decision: Dicts and sets keep insertion order.
+
 ## Sets of ints and strings, native, keeping the order items were first added.
 
 struct Seen:

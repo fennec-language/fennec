@@ -97,7 +97,9 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 Benchmarks do realistic work that neither side's optimizer can delete.
 
-"Fully optimized" means optimization level 3, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. Twins are built for the architecture's baseline CPU, so their counts are reproducible. The JIT may use the running CPU's features while the twins don't, and that's a known bias in the JIT's favor, which is being checked.
+"Fully optimized" means optimization level 3, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. Twins are built for x86-64-v3 on x86-64 and for the baseline CPU on Arm, so their counts are reproducible and don't hold the twin back against a JIT that uses the running CPU's features.
+
+Where a twin's standard library choice measures something Fennec doesn't do, like a slower default hash in `dicts`, the target uses a twin with the same hash as Fennec, and the standard default is shown as a separately labeled number.
 *Why:* The whole 20-benchmark suite meeting these targets shows the language's fundamentals carry well.
 
 **The targets are enforced.** CI fails if a benchmark misses its target or runs slower than the previous run. The fix for a failure goes into the compiler, never into tricks in the benchmark.

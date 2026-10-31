@@ -47,7 +47,7 @@ To compare against another build of `fennec`, like the previous commit's, pass `
 
 ## Pinning targets
 
-The twins beside the kernels are idiomatic code for the same work, in Rust, built for the architecture's baseline CPU. Pinning uses `-C opt-level=3` today. The decided setting is fully optimized: optimization level 3, fat LTO, `codegen-units=1`, abort on panic and no debug assertions, and pinned targets move to it when the tool does. The JIT may use the running CPU's features while the twins don't, which is a known bias in the JIT's favor. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.
+The twins beside the kernels are idiomatic code for the same work, in Rust, Pinning uses `-C opt-level=3` for the architecture's baseline CPU today. The decided setting is fully optimized: optimization level 3, fat LTO, `codegen-units=1`, abort on panic and no debug assertions, for x86-64-v3 on x86-64 and the baseline CPU on Arm. Pinned targets move to it when the tool does. Where a twin's standard library choice measures something Fennec doesn't do, like SipHash in `dicts`, the target uses a same-hash twin, with the standard default shown as a separately labeled number.
 
 Everyday runs don't build or run the twins. They only read the targets.
 

@@ -76,3 +76,18 @@ def main(stdout: Stdout):
     holders[0].pair = (5, "five")
     holders[1].bump()
     stdout.print(holders[0].pair, holders[1].pair, holders[1].total)
+
+    # A value handed over as an object stays as it was, whatever native code does next.
+    mut original = fresh()
+    original.grid = [[1]]
+    held: Holder? = original
+    kept = (original, 5)
+    original.count = 77
+    original.grid.append([2])
+    original.words.append("later")
+    stdout.print(held?.count, held?.grid, original.count, original.grid, kept)
+    stdout.print(held is None, held is not None, held == original, held?.pair)
+    mut chain: Holder? = None
+    stdout.print(chain is None, chain?.count)
+    chain = fresh()
+    stdout.print(chain is None, chain?.count, chain?.label())

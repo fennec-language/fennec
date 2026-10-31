@@ -221,7 +221,7 @@ pub extern "C" fn sorted_by(list: i64, keys: i64, kind: i64) -> i64 {
 }
 
 /// A list's block as the interpreter holds it: a packed list.
-pub(super) fn read(state: &mut State, block: &[u64]) -> Value {
+pub(super) fn read(state: &State, block: &[u64]) -> Value {
     let Some(element) = element_of(state, block) else { return Value::None };
     let words = items(block, element.words()).to_vec();
     if owns_items(&element) {
@@ -240,8 +240,12 @@ pub extern "C" fn from_value(value: i64, element: i64, start: i64, end: i64) -> 
                 span(start, end),
             )
         };
-        let value =
-            usize::try_from(value).ok().and_then(|at| state.temps.get(at)).cloned().unwrap_or(Value::Unit);
+        let wanted = self::element(state, element).map(|(_, element)| element);
+        let fits = |state: &State, block: &[u64]| element_of(state, block) == wanted;
+        if let Some(address) = super::heap::lent_block(state, value, fits) {
+            return Ok(address);
+        }
+        let value = state.expanded(state.raw(value));
         let (at, element) = self::element(state, element).ok_or_else(|| wrong(&value))?;
         if owns_items(&element) {
             let Value::List(items) = &value else { return Err(wrong(&value)) };

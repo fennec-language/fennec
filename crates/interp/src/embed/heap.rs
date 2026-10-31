@@ -9,6 +9,7 @@
 //! The runtime never follows an address it didn't hand out: it finds every block by its
 //! address in a table.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
@@ -17,7 +18,7 @@ use fennec_syntax::Diagnostic;
 
 use super::{State, Tables, attempt, span, with};
 use crate::packed::Element;
-use crate::value::{Instance, Value};
+use crate::value::{Instance, Lent, Value};
 
 /// Words before a block's fields: its owner count and its shape.
 pub const HEADER_WORDS: usize = 2;
@@ -50,7 +51,7 @@ pub(crate) struct Heap {
     /// How many of the blocks live for the whole run.
     statics: usize,
     /// Strings' text as the interpreter holds it, made once per block.
-    texts: HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>,
+    texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
     /// Blocks waiting to be freed and a freed block's children, kept to save making them anew.
     pending: Vec<u64>,
     found: Vec<u64>,
@@ -296,7 +297,7 @@ fn cell_value(state: &State, block: &[u64]) -> Option<Value> {
 /// A new cell owned once holding a temporary's value.
 pub extern "C" fn cell_new(value: i64) -> i64 {
     with(|state| {
-        let value = state.temp(value);
+        let value = state.raw(value);
         new_cell(state, value)
     })
 }
@@ -400,7 +401,7 @@ fn free_block(state: &mut State, address: u64) {
         };
         if is_text(state, &block) {
             if let Ok(at) = usize::try_from(address) {
-                state.heap.texts.remove(&at);
+                state.heap.texts.get_mut().remove(&at);
             }
         } else if block.get(1) == Some(&CELL_SHAPE) {
             let number = block.get(2).and_then(|number| usize::try_from(*number).ok());
@@ -465,29 +466,94 @@ pub extern "C" fn unshare(address: i64) -> i64 {
     })
 }
 
-/// A temporary with a block's value, as the interpreter holds values. The block keeps its
-/// owners.
+/// A temporary with a block's value, which holds an owner of the block rather than a copy of
+/// what's in it: most temporaries are only passed along. The block keeps its other owners.
 pub extern "C" fn to_value(address: i64) -> i64 {
     with(|state| {
-        let value = read_block(state, u64::try_from(address).unwrap_or(0));
-        state.push(value)
+        let address = u64::try_from(address).unwrap_or(0);
+        if state.heap.block(address).is_none_or(|block| is_text(state, block)) {
+            let value = read_block(state, address);
+            return state.push(value);
+        }
+        retain(state, address);
+        state.push(Value::Lent(Rc::new(Lent { address })))
     })
 }
 
-pub(super) fn read_block(state: &mut State, address: u64) -> Value {
+/// One more owner for a block.
+fn retain(state: &mut State, address: u64) {
+    if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
+        *count += 1;
+    }
+}
+
+/// A block's owner from a temporary lent to it, if that's what it is and `fits` likes the block.
+pub(super) fn lent_block(
+    state: &mut State,
+    value: i64,
+    fits: impl Fn(&State, &[u64]) -> bool,
+) -> Option<i64> {
+    let Value::Lent(lent) = state.raw(value) else { return None };
+    let block = state.heap.block(lent.address)?;
+    if !fits(state, block) {
+        return None;
+    }
+    retain(state, lent.address);
+    i64::try_from(lent.address).ok()
+}
+
+/// A field of a struct a temporary is lent, without looking at the rest of it. `None` for
+/// anything else, which the interpreter then reads.
+pub(super) fn lent_field(state: &mut State, value: &Value, name: i64) -> Option<Value> {
+    let Value::Lent(lent) = value else { return None };
+    let name = State::name_ref(&state.tables, name);
+    let block = state.heap.block(lent.address)?;
+    let shape = Rc::clone(state.tables.shapes.get(usize::try_from(*block.get(1)?).ok()?)?);
+    let Element::Struct { fields, .. } = shape.as_ref() else { return None };
+    let mut at = HEADER_WORDS;
+    let (element, word) = fields.iter().find_map(|(field, element)| {
+        let word = block.get(at).copied();
+        at += element.words();
+        (field.as_ref() == name).then_some((element, word))
+    })?;
+    let word = word?;
+    Some(match element {
+        Element::Int | Element::Float | Element::Bool | Element::Str => read_word(state, element, word),
+        Element::Object => cell_value(state, state.heap.block(word)?)?,
+        Element::Boxed(_) | Element::List(_) => {
+            retain(state, word);
+            Value::Lent(Rc::new(Lent { address: word }))
+        }
+        _ => return None,
+    })
+}
+
+/// The name of the type of a struct or enum a temporary is lent.
+pub(super) fn lent_type(state: &State, value: &Value) -> Option<Rc<str>> {
+    let Value::Lent(lent) = value else { return None };
+    let shape = usize::try_from(*state.heap.block(lent.address)?.get(1)?).ok()?;
+    match state.tables.shapes.get(shape)?.as_ref() {
+        Element::Struct { name, .. } | Element::Enum { name, .. } => Some(Rc::clone(name)),
+        _ => None,
+    }
+}
+
+pub(super) fn read_block(state: &State, address: u64) -> Value {
     let at = usize::try_from(address).unwrap_or(0);
     // A string only changes in place by growing, so a text of the same length is current.
     let length = state.heap.block(address).and_then(|block| block.get(2)).copied();
-    if let Some(text) = state.heap.texts.get(&at).filter(|text| u64::try_from(text.len()).ok() == length) {
+    if let Some(text) =
+        state.heap.texts.borrow().get(&at).filter(|text| u64::try_from(text.len()).ok() == length)
+    {
         return Value::Str(Rc::clone(text));
     }
     let Some(block) = state.heap.block(address).map(<[u64]>::to_vec) else { return Value::None };
     if let Some(value) = cell_value(state, &block) {
-        return value;
+        return state.expanded(value);
     }
     if is_text(state, &block) {
         let text: Rc<str> = Rc::from(block_text(&block));
-        state.heap.texts.insert(at, Rc::clone(&text));
+        state.heap.texts.borrow_mut().insert(at, Rc::clone(&text));
         return Value::Str(text);
     }
     if super::dicts::is_dict(state, &block) {
@@ -502,11 +568,11 @@ pub(super) fn read_block(state: &mut State, address: u64) -> Value {
 }
 
 /// A value of a word, as the interpreter holds it.
-pub(super) fn read_word(state: &mut State, element: &Element, word: u64) -> Value {
+pub(super) fn read_word(state: &State, element: &Element, word: u64) -> Value {
     read(state, element, &mut std::iter::once(&word))
 }
 
-fn read<'w>(state: &mut State, element: &Element, words: &mut dyn Iterator<Item = &'w u64>) -> Value {
+fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'w u64>) -> Value {
     let word = |words: &mut dyn Iterator<Item = &'w u64>| words.next().copied().unwrap_or(0);
     match element {
         Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
@@ -547,6 +613,10 @@ fn instance(name: &Rc<str>, case: Option<Rc<str>>, fields: Vec<(Rc<str>, Value)>
 /// value isn't of the shape's type.
 pub extern "C" fn from_value(value: i64, shape: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
+        let wanted = u64::try_from(shape).unwrap_or(u64::MAX);
+        if let Some(address) = lent_block(state, value, |_, block| block.get(1) == Some(&wanted)) {
+            return Ok(address);
+        }
         let value = state.temp(value);
         let shape = usize::try_from(shape).unwrap_or(0);
         write_block(state, shape, &value).ok_or_else(|| {

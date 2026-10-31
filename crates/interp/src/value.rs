@@ -19,6 +19,9 @@ pub(crate) enum Value {
     List(Rc<Vec<Value>>),
     /// A list native code packed into flat memory. The interpreter unpacks it to use it.
     Packed(Rc<crate::packed::Packed>),
+    /// A native value, not yet looked inside, as native code's temporaries and cells hold it.
+    /// The interpreter never sees one: temporaries are expanded before it's handed them.
+    Lent(Rc<Lent>),
     Tuple(Rc<Vec<Value>>),
     /// A dict keeps insertion order.
     Dict(Rc<crate::pairs::Pairs>),
@@ -35,6 +38,30 @@ pub(crate) enum Value {
     Builtin(&'static str),
     Lambda(Rc<Lambda>),
     Capability(Capability),
+}
+
+/// One owner of a block native code holds, let go when the last copy of this is dropped.
+#[derive(Debug)]
+pub(crate) struct Lent {
+    pub(crate) address: u64,
+}
+
+thread_local! {
+    /// Blocks whose `Lent` was dropped, for the runtime to let go of when it's next ready.
+    static LET_GO: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+impl Drop for Lent {
+    fn drop(&mut self) {
+        // Dropping can happen while the runtime is busy, so this only makes a note of it.
+        let address = self.address;
+        let _ = LET_GO.try_with(|let_go| let_go.borrow_mut().push(address));
+    }
+}
+
+/// The blocks to let go of, leaving none.
+pub(crate) fn blocks_let_go() -> Vec<u64> {
+    LET_GO.try_with(std::cell::RefCell::take).unwrap_or_default()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,6 +206,7 @@ impl Value {
             Value::Str(_) => "str".to_owned(),
             Value::Bytes(_) => "bytes".to_owned(),
             Value::List(_) | Value::Packed(_) => "list".to_owned(),
+            Value::Lent(_) => "value".to_owned(),
             Value::Tuple(_) => "tuple".to_owned(),
             Value::Dict(_) => "dict".to_owned(),
             Value::Set(_) => "set".to_owned(),
@@ -202,6 +230,7 @@ impl PartialEq for Value {
     fn eq(&self, other: &Value) -> bool {
         match (self, other) {
             (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,
+            (Value::Lent(a), Value::Lent(b)) => a.address == b.address,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a.total_cmp(b).is_eq(),

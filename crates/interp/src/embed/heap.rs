@@ -54,7 +54,16 @@ pub(crate) struct Heap {
     /// Blocks waiting to be freed and a freed block's children, kept to save making them anew.
     pending: Vec<u64>,
     found: Vec<u64>,
+    /// The interpreter values cells hold, by the number in each cell, and unused numbers.
+    cells: Vec<Value>,
+    spare_cells: Vec<usize>,
 }
+
+/// The shape of a cell: a block holding an interpreter value for a boxed value's field.
+const CELL_SHAPE: u64 = u64::MAX - 1;
+
+/// Words a cell takes: owner count, shape and the number of its value.
+const CELL_WORDS: usize = 3;
 
 /// The owner count of a block that's never freed: retaining and releasing it never get
 /// near zero.
@@ -236,7 +245,7 @@ pub fn ascii_table(tables: &mut Tables) -> i64 {
 /// Where each boxed field of a value sits among its words, from `at`.
 fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<usize>) {
     match element {
-        Element::Boxed(_) | Element::Str | Element::List(_) => {
+        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object => {
             found.push(*at);
             *at += 1;
         }
@@ -258,10 +267,53 @@ fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec
     }
 }
 
+/// A new cell owned once holding a value.
+fn new_cell(state: &mut State, value: Value) -> i64 {
+    let value = value.unpacked();
+    let number = state.heap.spare_cells.pop().unwrap_or_else(|| {
+        state.heap.cells.push(Value::Unit);
+        state.heap.cells.len() - 1
+    });
+    if let Some(cell) = state.heap.cells.get_mut(number) {
+        *cell = value;
+    }
+    let mut block = state.heap.fresh(CELL_WORDS);
+    if let Some(words) = block.get_mut(..CELL_WORDS) {
+        words.copy_from_slice(&[1, CELL_SHAPE, u64::try_from(number).unwrap_or(0)]);
+    }
+    state.heap.insert(block)
+}
+
+/// The value a cell's block holds.
+fn cell_value(state: &State, block: &[u64]) -> Option<Value> {
+    if block.get(1) != Some(&CELL_SHAPE) {
+        return None;
+    }
+    let number = usize::try_from(*block.get(2)?).ok()?;
+    state.heap.cells.get(number).cloned()
+}
+
+/// A new cell owned once holding a temporary's value.
+pub extern "C" fn cell_new(value: i64) -> i64 {
+    with(|state| {
+        let value = state.temp(value);
+        new_cell(state, value)
+    })
+}
+
+/// A temporary with the value a cell holds. The cell keeps its owners.
+pub extern "C" fn cell_read(address: i64) -> i64 {
+    with(|state| {
+        let block = u64::try_from(address).ok().and_then(|at| state.heap.block(at));
+        let value = block.and_then(|block| cell_value(state, block)).unwrap_or(Value::None);
+        state.push(value)
+    })
+}
+
 /// The addresses a value holds among its words, from `at`, added to `found`.
 fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<u64>) {
     match element {
-        Element::Boxed(_) | Element::Str | Element::List(_) => {
+        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object => {
             found.extend(words.get(*at).copied().filter(|address| *address != 0));
             *at += 1;
         }
@@ -350,6 +402,15 @@ fn free_block(state: &mut State, address: u64) {
             if let Ok(at) = usize::try_from(address) {
                 state.heap.texts.remove(&at);
             }
+        } else if block.get(1) == Some(&CELL_SHAPE) {
+            let number = block.get(2).and_then(|number| usize::try_from(*number).ok());
+            if let Some(number) = number {
+                // Whatever the value held is let go now, not when the number's used again.
+                if let Some(cell) = state.heap.cells.get_mut(number) {
+                    *cell = Value::Unit;
+                }
+                state.heap.spare_cells.push(number);
+            }
         } else {
             children_into(state, &block, &mut found);
         }
@@ -421,6 +482,9 @@ pub(super) fn read_block(state: &mut State, address: u64) -> Value {
         return Value::Str(Rc::clone(text));
     }
     let Some(block) = state.heap.block(address).map(<[u64]>::to_vec) else { return Value::None };
+    if let Some(value) = cell_value(state, &block) {
+        return value;
+    }
     if is_text(state, &block) {
         let text: Rc<str> = Rc::from(block_text(&block));
         state.heap.texts.insert(at, Rc::clone(&text));
@@ -448,7 +512,7 @@ fn read<'w>(state: &mut State, element: &Element, words: &mut dyn Iterator<Item 
         Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
         Element::Float => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
-        Element::Boxed(_) | Element::Str => read_block(state, word(words)),
+        Element::Boxed(_) | Element::Str | Element::Object => read_block(state, word(words)),
         // Only the top of a value the interpreter is handed may be a packed list.
         Element::List(_) => read_block(state, word(words)).unpacked(),
         Element::Struct { name, fields } => {
@@ -518,6 +582,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             words.push(u64::try_from(address).ok()?);
         }
         (Element::Str, Value::Str(text)) => words.push(u64::try_from(text_address(state, text)).ok()?),
+        (Element::Object, value) => words.push(u64::try_from(new_cell(state, value.clone())).ok()?),
         (Element::List(item), value) => {
             words.push(u64::try_from(super::lists::write_list(state, item, value)?).ok()?);
         }
@@ -558,6 +623,9 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
     let (Some(left), Some(right)) = (state.heap.block(a), state.heap.block(b)) else { return false };
     if left.get(1) != right.get(1) {
         return false;
+    }
+    if let (Some(mine), Some(theirs)) = (cell_value(state, left), cell_value(state, right)) {
+        return mine == theirs;
     }
     if is_text(state, left) {
         // Compare the lengths and the bytes in use, not the room to grow.

@@ -1,0 +1,15 @@
+1 None (1, "one") [[1, 2], [3]] ["a", None] none
+2 5 5
+kit None Inner(label="kit", note=None)
+(1, "one") (2, "two") [[1, 2], [3]] [[1, 9], [3], [7]] ["a", None] ["a", None, "b"]
+3 100 False True
+2 two [3] 9 b
+2
+1
+1
+none Holder(count=100, maybe=None, pair=(2, "two"), grid=[[1, 9], [3], [7]], words=["a", None, "b"], total=5)
+dot Shape.Dot
+anon:0 Shape.Named(name=None, parts=[])
+n:1 Shape.Named(name="n", parts=[Shape.Dot])
+1,2 Shape.Pair(at=(1, 2))
+(5, "five") (1, "one") 2

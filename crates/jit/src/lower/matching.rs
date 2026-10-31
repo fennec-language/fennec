@@ -176,6 +176,9 @@ impl Lowerer<'_, '_> {
                 if let (Ty::Struct(id), Some(value)) = (ty, value) {
                     return self.declare_struct(name, value, id, false);
                 }
+                if let (Ty::Obj, Some(value)) = (ty, value) {
+                    return self.declare_object(name, value, false);
+                }
                 if let (true, Some(value), false) = (ty.counted(), value, borrows) {
                     self.retain(value);
                 }

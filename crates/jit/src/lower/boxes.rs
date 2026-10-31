@@ -324,7 +324,7 @@ impl<'a> Lowerer<'a, '_> {
         let fields = self.unshare(var)?;
         let offset = i32::try_from(field.offset).unwrap_or(0);
         let old = match field.ty {
-            ty if ty.counted() => {
+            ty if ty.counted() || ty == Ty::Obj => {
                 Some(self.b.ins().load(types::I64, MemFlagsData::trusted(), fields, offset))
             }
             _ => None,
@@ -400,6 +400,7 @@ pub(crate) fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Bool => Element::Bool,
         Ty::Boxed(id) => Element::Boxed(usize::try_from(id).ok()?),
         Ty::Str => Element::Str,
+        Ty::Obj => Element::Object,
         Ty::List(item) => Element::List(Rc::new(describe(layouts, item.ty())?)),
         Ty::Dict(key, value) => {
             let str_shape = u64::try_from(layouts.len()).ok()?;

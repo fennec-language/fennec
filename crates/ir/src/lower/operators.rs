@@ -76,15 +76,18 @@ impl Lowering<'_> {
         let Some(key) = owner_name(&left).map(|owner| format!("{owner}.{method}")) else {
             return Ok(None);
         };
-        let Some(signature) = self.context.checked.signatures.get(&key) else { return Ok(None) };
-        let own = self.context.functions.contains(key.as_str());
-        let rhs = match signature.params.get(1) {
+        let right = type_in(&self.locals, rhs);
+        let given = if swap { [right, Some(left)] } else { [Some(left), right] };
+        let Some((function, signature)) = self.resolve(&key, &given, None) else { return Ok(None) };
+        let own = self.context.functions.contains(self.context.base_key(&key).as_str());
+        let param = signature.params.get(usize::from(!swap));
+        let rhs = match param {
             Some(param) if own => self.coerce(rhs.clone(), &param.ty, span)?,
             _ => rhs.clone(),
         };
         let args = if swap { vec![rhs, lhs.clone()] } else { vec![lhs.clone(), rhs] };
         let dest = self.temporary(if flip { Type::Bool } else { ty.clone() });
-        self.emit(InstKind::Call { dest: Some(dest), function: key, args }, span);
+        self.emit(InstKind::Call { dest: Some(dest), function, args }, span);
         if !flip {
             return Ok(Some(Operand::Local(dest)));
         }

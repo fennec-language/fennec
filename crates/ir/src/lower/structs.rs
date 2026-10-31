@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use fennec_check::{Checked, Type};
 use fennec_syntax::{Arg, Expr, ExprKind, Item, Module, Span};
 
-use super::{Lowered, Lowering};
+use super::{Context, Lowered, Lowering};
 use crate::{InstKind, LocalId, Operand, StructDef, Terminator, type_in};
 
 /// The module's structs the IR can hold: not generic ones.
@@ -23,27 +23,102 @@ pub(super) fn definitions(modules: &[&Module], checked: &Checked) -> Vec<StructD
         .collect()
 }
 
+/// Adds the copies of generic types a program uses, whose fields can ask for more.
+pub(super) fn add_copies(
+    context: &Context<'_>,
+    structs: &mut Vec<StructDef>,
+    enums: &mut Vec<crate::EnumDef>,
+) {
+    let signatures = &context.checked.signatures;
+    let concrete = |fields: &[(String, Type)], subst: &super::generics::Subst| -> Vec<(String, Type)> {
+        fields.iter().map(|(name, ty)| (name.clone(), context.concrete(ty, subst))).collect()
+    };
+    for def in structs.iter_mut() {
+        def.fields = concrete(&def.fields, &super::generics::Subst::new());
+    }
+    for def in enums.iter_mut() {
+        for case in &mut def.cases {
+            case.fields = concrete(&case.fields, &super::generics::Subst::new());
+        }
+    }
+    let mut done = HashSet::new();
+    loop {
+        let copies: Vec<(String, super::generics::TypeInstance)> = context
+            .instances
+            .types
+            .borrow()
+            .iter()
+            .map(|(name, copy)| (name.clone(), copy.clone()))
+            .collect();
+        let waiting: Vec<_> = copies.into_iter().filter(|(name, _)| done.insert(name.clone())).collect();
+        if waiting.is_empty() {
+            return;
+        }
+        for (name, copy) in waiting {
+            if let Some(found) = signatures.structure(&copy.base) {
+                structs.push(StructDef { name, fields: concrete(&found.fields, &copy.subst) });
+            } else if let Some(found) = signatures.enumeration(&copy.base) {
+                let cases = found
+                    .cases
+                    .iter()
+                    .map(|(case, fields)| crate::CaseDef {
+                        name: case.clone(),
+                        fields: concrete(fields, &copy.subst),
+                    })
+                    .collect();
+                enums.push(crate::EnumDef { name, cases });
+            }
+        }
+    }
+}
+
 impl Lowering<'_> {
-    pub(super) fn struct_fields(&self, type_name: &str) -> Lowered<&[(String, Type)]> {
-        let signatures = &self.context.checked.signatures;
-        let found = signatures.structure(type_name).or_else(|| signatures.error_type(type_name));
-        found.map(|found| found.fields.as_slice()).ok_or_else(|| format!("`{type_name}` has no fields"))
+    /// The fields of a struct or error type, with their types as they are for this copy.
+    pub(super) fn struct_fields(&self, type_name: &str) -> Lowered<Vec<(String, Type)>> {
+        let context = self.context;
+        let instance = context.type_instance(type_name);
+        let base = instance.as_ref().map_or(type_name, |instance| instance.base.as_str());
+        let subst = instance.as_ref().map(|instance| instance.subst.clone()).unwrap_or_default();
+        let signatures = &context.checked.signatures;
+        let found = signatures.structure(base).or_else(|| signatures.error_type(base));
+        let found = found.ok_or_else(|| format!("`{type_name}` has no fields"))?;
+        Ok(found.fields.iter().map(|(name, ty)| (name.clone(), context.concrete(ty, &subst))).collect())
     }
 
-    /// The struct a call builds, when the callee is a struct's name.
-    pub(super) fn constructs<'e>(&self, callee: &'e Expr) -> Option<&'e str> {
-        let ExprKind::Name(name) = &callee.kind else { return None };
-        let named =
-            self.context.structs.contains(name.as_str()) || self.context.errors.contains(name.as_str());
-        (self.lookup(name).is_none() && named).then_some(name.as_str())
+    /// The struct a call builds, when the callee is a struct's name. A generic struct is the
+    /// copy the typed tree says it is.
+    pub(super) fn constructs(&self, callee: &Expr, span: Span) -> Option<String> {
+        let callee = match &callee.kind {
+            ExprKind::Index { object, .. } => object,
+            _ => callee,
+        };
+        let member = self.std_member(callee);
+        let name = match &callee.kind {
+            ExprKind::Name(name) if self.lookup(name).is_none() => name.as_str(),
+            ExprKind::Attr { .. } => member.as_deref()?,
+            _ => return None,
+        };
+        if self.context.structs.contains(name) || self.context.errors.contains(name) {
+            return Some(name.to_owned());
+        }
+        self.context.generic_types.get(name)?;
+        match self.type_at(span)? {
+            Type::Named(copy) => Some(copy),
+            Type::Result(ok, _) => match *ok {
+                Type::Named(copy) => Some(copy),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// `Point(1, y=2)`: arguments run in the order they're written, and each lands in its
     /// field.
     pub(super) fn make(&mut self, type_name: &str, args: &[Arg], span: Span) -> Lowered<Operand> {
-        let fields = self.struct_fields(type_name)?.to_vec();
+        let fields = self.struct_fields(type_name)?;
         let values = self.field_values((type_name, None), &fields, args)?;
-        if let Some(rules) = self.context.rules.get(type_name) {
+        let base = self.context.type_instance(type_name).map_or(type_name.to_owned(), |copy| copy.base);
+        if let Some(rules) = self.context.rules.get(base.as_str()) {
             return self.make_checked(type_name, (&fields, values), rules, span);
         }
         let dest = self.temporary(Type::Named(type_name.to_owned()));
@@ -61,13 +136,17 @@ impl Lowering<'_> {
         rules: &[(&str, &Expr)],
         span: Span,
     ) -> Lowered<Operand> {
-        let result = self.body.expr(span).filter(|ty| matches!(ty, Type::Result(..))).cloned();
-        let body = self.context.checked.types.body(&format!("fields of {type_name}"));
+        let result = self.type_at(span).filter(|ty| matches!(ty, Type::Result(..)));
+        let instance = self.context.type_instance(type_name);
+        let base = instance.as_ref().map_or(type_name, |copy| copy.base.as_str());
+        let body = self.context.checked.types.body(&format!("fields of {base}"));
         let body = body.ok_or_else(|| format!("the fields of `{type_name}` have no types"))?;
         let dest = result.as_ref().map(|ty| self.temporary(ty.clone()));
         let join = self.new_block();
         let outer_body = std::mem::replace(&mut self.body, body);
         let outer_scopes = std::mem::replace(&mut self.scopes, vec![HashMap::new()]);
+        let copy_of = instance.map(|copy| copy.subst).unwrap_or_default();
+        let outer_subst = std::mem::replace(&mut self.subst, copy_of);
         for ((name, ty), value) in fields.iter().zip(&values) {
             let local = self.declare(name, ty.clone());
             self.emit(InstKind::Copy { dest: local, value: value.clone() }, span);
@@ -78,6 +157,7 @@ impl Lowering<'_> {
         }
         self.body = outer_body;
         self.scopes = outer_scopes;
+        self.subst = outer_subst;
         lowered?;
         let made = self.temporary(Type::Named(type_name.to_owned()));
         self.emit(InstKind::Make { dest: made, type_name: type_name.to_owned(), fields: values }, span);
@@ -153,12 +233,13 @@ impl Lowering<'_> {
 
     /// The struct type of an expression, when it's one the IR holds.
     fn struct_of(&self, expr: &Expr) -> Option<String> {
-        match self.body.expr(expr.span)? {
+        match self.type_at(expr.span)? {
             Type::Named(name)
                 if self.context.structs.contains(name.as_str())
-                    || self.context.errors.contains(name.as_str()) =>
+                    || self.context.errors.contains(name.as_str())
+                    || self.context.type_instance(&name).is_some() =>
             {
-                Some(name.clone())
+                Some(name)
             }
             _ => None,
         }
@@ -167,8 +248,8 @@ impl Lowering<'_> {
     /// `object.field`. A field that's been narrowed, like an optional known not to be
     /// `None`, reads as a different type than it's declared with, which isn't lowered yet.
     pub(super) fn get_field(&mut self, expr: &Expr, object: &Expr, field: &str) -> Lowered<Operand> {
-        if let Some(Type::Function(key)) = self.body.expr(expr.span) {
-            return self.function_value(&key.clone(), expr);
+        if let Some(Type::Function(key)) = self.type_at(expr.span) {
+            return self.function_value(&key, expr);
         }
         if let Some(member) = self.std_member(expr) {
             return self.std_value(member, expr);
@@ -184,7 +265,8 @@ impl Lowering<'_> {
             return Ok(Operand::Local(dest));
         }
         let owner = self.struct_of(object).ok_or_else(|| format!("it reads `.{field}` of something else"))?;
-        let declared = self.struct_fields(&owner)?.iter().find(|(name, _)| name == field);
+        let fields = self.struct_fields(&owner)?;
+        let declared = fields.iter().find(|(name, _)| name == field);
         let declared =
             declared.map(|(_, ty)| ty.clone()).ok_or_else(|| format!("`{owner}` has no `{field}`"))?;
         if !self.context.holds(&declared) {
@@ -205,7 +287,8 @@ impl Lowering<'_> {
         let Type::Named(owner) = inner.as_ref() else {
             return Err(format!("it reads `?.{field}` of something else"));
         };
-        let found = self.struct_fields(owner)?.iter().find(|(name, _)| name == field);
+        let fields = self.struct_fields(owner)?;
+        let found = fields.iter().find(|(name, _)| name == field);
         let declared =
             found.map(|(_, ty)| ty.clone()).ok_or_else(|| format!("`{owner}` has no `{field}`"))?;
         let ty = self.ty(expr)?;
@@ -243,7 +326,8 @@ impl Lowering<'_> {
         self.emit(InstKind::Copy { dest, value: copied }, span);
         for change in changes {
             let field = change.name.clone().ok_or("`replace` needs its fields named")?;
-            let found = self.struct_fields(owner)?.iter().find(|(name, _)| *name == field);
+            let fields = self.struct_fields(owner)?;
+            let found = fields.iter().find(|(name, _)| *name == field);
             let wanted =
                 found.map(|(_, ty)| ty.clone()).ok_or_else(|| format!("`{owner}` has no `{field}`"))?;
             let lowered = self.expr(&change.value)?;

@@ -307,6 +307,7 @@ name = "fennec-ir"
 version = "0.0.1"
 dependencies = [
  "fennec-check",
+ "fennec-kit",
  "fennec-syntax",
 ]
 

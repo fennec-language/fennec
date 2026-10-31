@@ -54,7 +54,7 @@ impl Lowering<'_> {
     /// `object[index]`. A tuple's item at a position written as a number is known here.
     pub(super) fn get_index(&mut self, expr: &Expr, object: &Expr, index: &Expr) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
-        let held = self.body.expr(object.span).cloned();
+        let held = self.type_at(object.span);
         if let (Some(Type::Tuple(items)), ExprKind::Int(at)) = (&held, &index.kind)
             && let Some(at) = usize::try_from(*at).ok().filter(|at| items.get(*at) == Some(&ty))
         {
@@ -75,9 +75,8 @@ impl Lowering<'_> {
                 return Ok(Operand::Local(dest));
             }
             Some(Type::Named(owner)) => {
-                let signatures = &self.context.checked.signatures;
-                let found = signatures.get(&format!("{owner}.[]"));
-                let param = found.and_then(|found| found.params.get(1));
+                let found = self.resolve(&format!("{owner}.[]"), std::slice::from_ref(&held), Some(&ty));
+                let param = found.as_ref().and_then(|(_, found)| found.params.get(1));
                 param.ok_or_else(|| format!("it indexes `{owner}`, which has no `[]`"))?.ty.clone()
             }
             _ => return Err("it uses indexing on something the IR doesn't index".to_owned()),
@@ -90,9 +89,9 @@ impl Lowering<'_> {
 
     /// `item in items`, and `not in`, on a collection.
     pub(super) fn contains(&mut self, op: BinOp, item: &Expr, items: &Expr, span: Span) -> Lowered<Operand> {
-        let owner = match self.body.expr(items.span) {
+        let owner = match self.type_at(items.span) {
             Some(
-                ty @ (Type::List(_)
+                ref ty @ (Type::List(_)
                 | Type::Set(_)
                 | Type::Dict(..)
                 | Type::IdMap(_)
@@ -142,9 +141,9 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<()> {
         // Only the items of a list or `IdMap` are written back, and only one name holds them.
-        let by_id = matches!(self.body.expr(iter.span), Some(Type::IdMap(_)));
+        let by_id = matches!(self.type_at(iter.span), Some(Type::IdMap(_)));
         let changes_items =
-            is_mut && names.len() == 1 && (by_id || matches!(self.body.expr(iter.span), Some(Type::List(_))));
+            is_mut && names.len() == 1 && (by_id || matches!(self.type_at(iter.span), Some(Type::List(_))));
         let back =
             if changes_items { Some(Back { place: self.held_place(iter, span)?, by_id }) } else { None };
         let over = Over { names, iter, back };
@@ -172,7 +171,7 @@ impl Lowering<'_> {
                 body,
             );
         }
-        let ty = self.body.expr(iter.span).cloned().ok_or("what it loops over has no type")?;
+        let ty = self.type_at(iter.span).ok_or("what it loops over has no type")?;
         let value = self.expr(iter)?;
         let (held, item, conversion) = match &ty {
             // A loop goes through the list as it was, whatever the body does to the name.
@@ -187,10 +186,11 @@ impl Lowering<'_> {
             Type::IdMap(item) => (Type::List(item.clone()), *item.clone(), Some("IdMap.values")),
             Type::Named(name) if name == "Args" => (Type::List(Box::new(Type::Str)), Type::Str, Some("list")),
             Type::Named(name) => {
-                let function = format!("{name}.iter");
-                let found = self.context.checked.signatures.get(&function);
-                let list = found.map(|found| found.returns.clone());
-                let Some(Type::List(item)) = list else {
+                let found = self.resolve(&format!("{name}.iter"), &[Some(ty.clone())], None);
+                let Some((function, found)) = found else {
+                    return Err(format!("it has a `for` loop over {name}"));
+                };
+                let Type::List(item) = found.returns else {
                     return Err(format!("it has a `for` loop over {name}"));
                 };
                 let items = self.temporary(Type::List(item.clone()));

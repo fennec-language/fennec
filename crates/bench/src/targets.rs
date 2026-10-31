@@ -62,12 +62,14 @@ fn parse(text: &str) -> Result<Targets, String> {
     Ok(targets)
 }
 
-pub(crate) fn write(path: &Path, targets: &Targets) -> Result<(), String> {
+/// Writes a targets file, saying which compiler built the twins.
+pub(crate) fn write(path: &Path, targets: &Targets, compiler: &str) -> Result<(), String> {
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)
             .map_err(|err| format!("couldn't make {}: {err}", folder.display()))?;
     }
-    std::fs::write(path, text(targets)).map_err(|err| format!("couldn't write {}: {err}", path.display()))
+    std::fs::write(path, format!("# Pinned with {compiler}.\n{}", text(targets)))
+        .map_err(|err| format!("couldn't write {}: {err}", path.display()))
 }
 
 fn text(targets: &Targets) -> String {

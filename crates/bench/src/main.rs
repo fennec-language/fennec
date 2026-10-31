@@ -205,7 +205,7 @@ fn pin(options: &Options) -> std::result::Result<(), String> {
         let source = kernel.source_hash()?;
         pinned.insert(kernel.name.clone(), Target { instructions, output, source, enforced });
     }
-    targets::write(&path, &pinned)?;
+    targets::write(&path, &pinned, &measure::rustc_version()?)?;
     println!("pinned {} kernels in {}", pinned.len(), path.display());
     Ok(())
 }

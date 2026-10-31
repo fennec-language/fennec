@@ -300,7 +300,7 @@ impl Interp<'_> {
                 }
                 Ok(())
             }
-            ExprKind::Index { object, index } if self.has_method(object, "[]=")? => {
+            ExprKind::Index { object, index } if op.is_none() && self.has_method(object, "[]=")? => {
                 let args = vec![index.as_ref().clone(), value.clone()];
                 self.call_mut_method(object, "[]=", &args, target.span).map(|_| ())
             }

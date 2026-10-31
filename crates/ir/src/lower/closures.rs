@@ -82,7 +82,7 @@ impl Lowering<'_> {
         let key = format!("{}.{}", self.name, def.name);
         let base = format!("{}.{}", self.base, def.name);
         let context = self.context;
-        let raw = context.checked.signatures.get(&base).ok_or("a nested function has no signature")?;
+        let raw = context.signatures.get(&base).ok_or("a nested function has no signature")?;
         let signature = context.instantiate(raw, &self.subst);
         if signature.params.iter().any(|param| param.is_mut) {
             return Err("it has a nested function with a `mut` parameter".to_owned());

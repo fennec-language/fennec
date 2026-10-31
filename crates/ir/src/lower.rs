@@ -17,7 +17,7 @@ mod structs;
 
 use std::collections::{HashMap, HashSet};
 
-use fennec_check::{Body, Checked, Type};
+use fennec_check::{Body, Signatures, Type};
 use fennec_syntax::{BinOp, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, UnaryOp};
 
 use crate::{
@@ -26,7 +26,7 @@ use crate::{
 };
 
 /// Lowers a module's functions and methods, and the standard library's that they reach.
-pub fn lower(module: &Module, checked: &Checked) -> Program {
+pub fn lower(module: &Module, signatures: &Signatures) -> Program {
     let library = fennec_syntax::prelude_modules().unwrap_or_default();
     let modules: Vec<&Module> = std::iter::once(module).chain(library).collect();
     let functions = definitions(module);
@@ -40,11 +40,11 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
         .flat_map(definitions)
         .filter(|(key, _)| !functions.iter().any(|(own, _)| own == key))
         .collect();
-    let defs = structs::definitions(&modules, checked);
-    let enums = matching::definitions(&modules, checked);
-    let errors = failure::definitions(checked);
+    let defs = structs::definitions(&modules, signatures);
+    let enums = matching::definitions(&modules, signatures);
+    let errors = failure::definitions(signatures);
     let context = Context {
-        checked,
+        signatures,
         errors: errors.iter().map(|def| def.name.as_str()).collect(),
         enums: enums.iter().map(|def| (def.name.as_str(), def)).collect(),
         functions: functions
@@ -65,7 +65,7 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
     let mut program = Program::default();
     for (key, def) in &functions {
         // Something generic is only lowered as the copies a program uses.
-        let generic = checked.signatures.get(key).is_some_and(generics::is_generic);
+        let generic = signatures.get(key).is_some_and(generics::is_generic);
         if !generic && def.generics.is_empty() {
             lower_into(&mut program, &generics::FunctionInstance::plain(key), def, &context);
         }
@@ -179,7 +179,7 @@ const CAPABILITIES: [&str; 5] = ["Stdout", "Fs", "Clock", "Args", "Stdin"];
 
 /// What's known about the whole program.
 struct Context<'a> {
-    checked: &'a Checked,
+    signatures: &'a Signatures,
     /// The program's enums that the IR can hold.
     enums: HashMap<&'a str, &'a EnumDef>,
     /// The error types that the IR can hold.
@@ -209,7 +209,7 @@ struct Context<'a> {
 impl Context<'_> {
     /// The type of a function as a value, when the IR holds it.
     fn arrow_of(&self, key: &str) -> Option<Type> {
-        let signature = self.checked.signatures.get(key)?;
+        let signature = self.signatures.get(key)?;
         let params = signature.params.iter().map(|param| param.ty.clone()).collect();
         let ty = Type::Arrow(params, Box::new(signature.returns.clone()));
         self.holds(&ty).then_some(ty)
@@ -303,9 +303,9 @@ impl<'a> Lowering<'a> {
         (captures, itself): (&[(String, Type)], Option<&Type>),
     ) -> Lowered<Vec<Function>> {
         let key = instance.name.as_str();
-        let raw = context.checked.signatures.get(&instance.base).ok_or("it has no signature")?;
+        let raw = context.signatures.get(&instance.base).ok_or("it has no signature")?;
         let signature = context.instantiate(raw, &instance.subst);
-        let body = context.checked.types.body(&instance.base).ok_or("it has no types")?;
+        let body = context.signatures.types().body(&instance.base).ok_or("it has no types")?;
         if signature.returns != Type::Unit && !context.holds(&signature.returns) {
             return Err(format!("it gives back {}", signature.returns));
         }

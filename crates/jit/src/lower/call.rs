@@ -338,7 +338,7 @@ impl Lowerer<'_, '_> {
     /// Calls a compiled function, after checking the stack has room for it: calls nested
     /// too deeply fail at the call, like the interpreter's, instead of crashing. `prelude`
     /// says it's a standard library function.
-    fn raw_call(
+    pub(super) fn raw_call(
         &mut self,
         id: cranelift_module::FuncId,
         values: &[Value],

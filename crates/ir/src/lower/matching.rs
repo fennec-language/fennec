@@ -1,7 +1,7 @@
 //! Building enum cases, and `match`: each case's pattern is a run of tests that goes to the
 //! next case when one fails, then its guard, then its body.
 
-use fennec_check::{Checked, Type};
+use fennec_check::{Signatures, Type};
 use fennec_syntax::{Arg, BinOp, Expr, ExprKind, Item, MatchArm, Module, Pattern, Span};
 
 use super::{Lowered, Lowering, Tail};
@@ -9,7 +9,7 @@ use crate::{BlockId, CaseDef, EnumDef, InstKind, Operand, Terminator};
 
 /// The module's enums the IR can hold: not generic ones, or ones with `where` rules, which
 /// are checked whenever a value is made.
-pub(super) fn definitions(modules: &[&Module], checked: &Checked) -> Vec<EnumDef> {
+pub(super) fn definitions(modules: &[&Module], signatures: &Signatures) -> Vec<EnumDef> {
     let mut seen = std::collections::HashSet::new();
     let defs = modules.iter().flat_map(|module| &module.items).filter_map(|item| match item {
         Item::Enum(def) if def.generics.is_empty() => Some(def),
@@ -17,7 +17,7 @@ pub(super) fn definitions(modules: &[&Module], checked: &Checked) -> Vec<EnumDef
     });
     defs.filter(|def| seen.insert(def.name.as_str()))
         .filter_map(|def| {
-            let found = checked.signatures.enumeration(&def.name).filter(|found| !found.rules)?;
+            let found = signatures.enumeration(&def.name).filter(|found| !found.rules)?;
             let cases = found
                 .cases
                 .iter()
@@ -33,7 +33,7 @@ impl Lowering<'_> {
     fn case_fields(&self, owner: &str, case: &str) -> Option<Vec<(String, Type)>> {
         let context = self.context;
         if let Some(copy) = context.type_instance(owner) {
-            let found = context.checked.signatures.enumeration(&copy.base)?;
+            let found = context.signatures.enumeration(&copy.base)?;
             let (_, fields) = found.cases.iter().find(|(name, _)| name == case)?;
             return Some(
                 fields.iter().map(|(name, ty)| (name.clone(), context.concrete(ty, &copy.subst))).collect(),

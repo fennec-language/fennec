@@ -47,6 +47,8 @@ pub struct Report {
     pub leftover_boxes: usize,
     /// How many functions' machine code came from the cache rather than being compiled.
     pub cached: usize,
+    /// The functions lowered from the typed IR rather than the syntax tree.
+    pub from_ir: Vec<String>,
 }
 
 /// Compiles `module` to native code and runs its `main`, writing what it prints to `out`.
@@ -193,6 +195,7 @@ fn compile_and_run(
             leftover_frames: result.leftovers.frames,
             leftover_boxes: result.leftovers.boxes,
             cached: compilation.cached,
+            from_ir: compilation.from_ir,
         }),
     };
     Ok((result.output, report))

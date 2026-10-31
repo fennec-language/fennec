@@ -1,7 +1,7 @@
 //! Optionals and results: wrapping a value going where one goes, unwrapping a name known not
 //! to be `None`, and `is None`, `else`, `fail` and `?`.
 
-use fennec_check::{Checked, Type};
+use fennec_check::{Signatures, Type};
 use fennec_syntax::{BinOp, Expr, ExprKind, Pattern, Span, UnaryOp};
 
 use super::{Lowered, Lowering};
@@ -10,8 +10,7 @@ use crate::{BlockId, InstKind, LocalId, Operand, StructDef, Terminator, type_in}
 
 /// Every error type the IR can hold: not ones with `where` rules, which are checked
 /// whenever a value is made.
-pub(super) fn definitions(checked: &Checked) -> Vec<StructDef> {
-    let signatures = &checked.signatures;
+pub(super) fn definitions(signatures: &Signatures) -> Vec<StructDef> {
     signatures
         .error_types()
         .filter_map(|name| {

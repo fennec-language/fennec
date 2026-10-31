@@ -48,7 +48,18 @@ pub(crate) fn compile_object(
     })?;
     let (bytes, (with_frames, handed_over)) = bytes;
     let (interpreted, reasons) = skipped.into_iter().unzip();
-    Ok((bytes, Compilation { interpreted, reasons, with_frames, handed_over, notes: Vec::new(), cached: 0 }))
+    Ok((
+        bytes,
+        Compilation {
+            interpreted,
+            reasons,
+            with_frames,
+            handed_over,
+            notes: Vec::new(),
+            cached: 0,
+            from_ir: Vec::new(),
+        },
+    ))
 }
 
 /// An executable's table of runtime addresses: the failure flag's, the ASCII table's, then

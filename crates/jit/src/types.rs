@@ -171,6 +171,8 @@ pub(crate) struct Function<'m> {
 }
 
 pub(crate) struct Program<'m> {
+    /// The typed IR of the functions it has, by name.
+    pub(crate) ir: std::rc::Rc<HashMap<String, fennec_ir::Function>>,
     pub(crate) functions: Vec<Function<'m>>,
     pub(crate) layouts: Layouts,
     /// Functions and methods the JIT doesn't try to compile, like generators.
@@ -329,7 +331,10 @@ impl<'m> Program<'m> {
             return Err(unsupported("this `main`", main_span));
         }
         let (modules, constants) = (std_modules(module), literal_constants(prelude, module));
-        Ok(Program { functions, layouts, excluded, main_span, modules, constants })
+        let lowered = fennec_ir::lower(module, signatures).functions;
+        let ir =
+            std::rc::Rc::new(lowered.into_iter().map(|function| (function.name.clone(), function)).collect());
+        Ok(Program { ir, functions, layouts, excluded, main_span, modules, constants })
     }
 }
 

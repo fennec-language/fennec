@@ -204,7 +204,7 @@ impl Lowering<'_> {
     ) -> Option<(String, Signature)> {
         let context = self.context;
         let base = context.base_key(key);
-        let raw = context.checked.signatures.get(&base)?;
+        let raw = context.signatures.get(&base)?;
         let mut subst = key
             .rsplit_once('.')
             .and_then(|(owner, _)| context.type_instance(owner))

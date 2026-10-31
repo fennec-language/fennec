@@ -20,6 +20,7 @@ mod enums;
 mod expr;
 mod fallback;
 mod flow;
+mod from_ir;
 mod hoist;
 mod inline;
 mod list_methods;
@@ -94,6 +95,8 @@ pub(crate) struct Compilation {
     pub(crate) notes: Vec<notes::Note>,
     /// How many functions' machine code came from the cache.
     pub(crate) cached: usize,
+    /// The functions lowered from the typed IR rather than the syntax tree.
+    pub(crate) from_ir: Vec<String>,
 }
 
 /// What every function being compiled shares.
@@ -129,6 +132,10 @@ pub(super) struct Shared {
     notes: Vec<notes::Note>,
     /// For tests: the flag each program function sets when it runs, by its key.
     ran: Option<HashMap<String, cranelift_module::DataId>>,
+    /// The functions' typed IR, by name.
+    ir: std::rc::Rc<HashMap<String, fennec_ir::Function>>,
+    /// The functions lowered from the IR.
+    from_ir: Vec<String>,
 }
 
 fn internal(err: impl std::fmt::Debug, span: Span) -> Diagnostic {
@@ -177,6 +184,7 @@ pub(crate) fn compile(
             shared.notes.into_iter().filter(|note| !unused(&note.compiled_in)).collect()
         },
         cached: shared.cached,
+        from_ir: shared.from_ir,
     };
     Ok((entry, shared.tables, compilation))
 }
@@ -207,6 +215,8 @@ impl Shared {
             constants: program.constants.clone(),
             notes: Vec::new(),
             ran: None,
+            ir: std::rc::Rc::clone(&program.ir),
+            from_ir: Vec::new(),
             specialized: HashSet::new(),
             called: HashSet::new(),
         }
@@ -401,6 +411,11 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         lowerer.mark_ran(&function.key)?;
     }
     lowerer.prologue(&params)?;
+    let ir = std::rc::Rc::clone(&lowerer.shared.ir);
+    if let Some(ir) = ir.get(&function.key).filter(|ir| from_ir::taken(ir, function, lowerer.shared)) {
+        lowerer.body_from_ir(ir)?;
+        return lowerer.finish();
+    }
     let (tail, tail_ty) = lowerer.tail(&function.def.body)?;
     if !lowerer.is_dead() {
         lowerer.ret(tail, tail_ty, function.def.span)?;

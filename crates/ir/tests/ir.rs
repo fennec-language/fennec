@@ -9,7 +9,7 @@ use fennec_ir::{Block, Function, Local, LocalId, Operand, Program, Terminator, l
 
 fn lowered(source: &str) -> Result<Program, String> {
     let module = fennec_syntax::parse(source).map_err(|problem| problem.message)?;
-    let checked = fennec_check::check_typed(&module).map_err(|problems| format!("{problems:?}"))?;
+    let checked = fennec_check::check(&module).map_err(|problems| format!("{problems:?}"))?;
     let program = lower(&module, &checked);
     validate(&program).map_err(|problems| format!("{problems:?}"))?;
     Ok(program)
@@ -2080,7 +2080,7 @@ fn every_example_kit_lowers_to_valid_ir() {
         kits += 1;
         let shown = path.display().to_string();
         let kit = fennec_kit::load(&path, &shown, fennec_kit::Entry::Main).unwrap();
-        let checked = fennec_check::check_typed(&kit.module).unwrap();
+        let checked = fennec_check::check(&kit.module).unwrap();
         let program = lower(&kit.module, &checked);
         validate(&program).unwrap_or_else(|problems| panic!("{shown}: {problems:?}\n{program}"));
         assert_eq!(program.not_lowered, [], "{shown}");
@@ -2101,8 +2101,7 @@ fn every_example_lowers_to_valid_ir() {
         let file = path.file_name().unwrap().to_string_lossy().into_owned();
         let source = fs::read_to_string(&path).unwrap();
         let module = fennec_syntax::parse(&source).unwrap();
-        let checked =
-            fennec_check::check_typed(&module).unwrap_or_else(|problems| panic!("{file}: {problems:?}"));
+        let checked = fennec_check::check(&module).unwrap_or_else(|problems| panic!("{file}: {problems:?}"));
         let program = lower(&module, &checked);
         validate(&program).unwrap_or_else(|problems| panic!("{file}: {problems:?}\n{program}"));
         assert_eq!(program.not_lowered, [], "{file}");

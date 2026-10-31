@@ -2,14 +2,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use fennec_check::{Checked, Type};
+use fennec_check::{Signatures, Type};
 use fennec_syntax::{Arg, Expr, ExprKind, Item, Module, Span};
 
 use super::{Context, Lowered, Lowering};
 use crate::{InstKind, LocalId, Operand, StructDef, Terminator, type_in};
 
 /// The module's structs the IR can hold: not generic ones.
-pub(super) fn definitions(modules: &[&Module], checked: &Checked) -> Vec<StructDef> {
+pub(super) fn definitions(modules: &[&Module], signatures: &Signatures) -> Vec<StructDef> {
     let mut seen = HashSet::new();
     let defs = modules.iter().flat_map(|module| &module.items).filter_map(|item| match item {
         Item::Struct(def) if def.generics.is_empty() => Some(def),
@@ -17,7 +17,7 @@ pub(super) fn definitions(modules: &[&Module], checked: &Checked) -> Vec<StructD
     });
     defs.filter(|def| seen.insert(def.name.as_str()))
         .filter_map(|def| {
-            let found = checked.signatures.structure(&def.name)?;
+            let found = signatures.structure(&def.name)?;
             Some(StructDef { name: def.name.clone(), fields: found.fields.clone() })
         })
         .collect()
@@ -29,7 +29,7 @@ pub(super) fn add_copies(
     structs: &mut Vec<StructDef>,
     enums: &mut Vec<crate::EnumDef>,
 ) {
-    let signatures = &context.checked.signatures;
+    let signatures = &context.signatures;
     let concrete = |fields: &[(String, Type)], subst: &super::generics::Subst| -> Vec<(String, Type)> {
         fields.iter().map(|(name, ty)| (name.clone(), context.concrete(ty, subst))).collect()
     };
@@ -79,7 +79,7 @@ impl Lowering<'_> {
         let instance = context.type_instance(type_name);
         let base = instance.as_ref().map_or(type_name, |instance| instance.base.as_str());
         let subst = instance.as_ref().map(|instance| instance.subst.clone()).unwrap_or_default();
-        let signatures = &context.checked.signatures;
+        let signatures = &context.signatures;
         let found = signatures.structure(base).or_else(|| signatures.error_type(base));
         let found = found.ok_or_else(|| format!("`{type_name}` has no fields"))?;
         Ok(found.fields.iter().map(|(name, ty)| (name.clone(), context.concrete(ty, &subst))).collect())
@@ -139,7 +139,7 @@ impl Lowering<'_> {
         let result = self.type_at(span).filter(|ty| matches!(ty, Type::Result(..)));
         let instance = self.context.type_instance(type_name);
         let base = instance.as_ref().map_or(type_name, |copy| copy.base.as_str());
-        let body = self.context.checked.types.body(&format!("fields of {base}"));
+        let body = self.context.signatures.types().body(&format!("fields of {base}"));
         let body = body.ok_or_else(|| format!("the fields of `{type_name}` have no types"))?;
         let dest = result.as_ref().map(|ty| self.temporary(ty.clone()));
         let join = self.new_block();
@@ -256,7 +256,7 @@ impl Lowering<'_> {
         }
         if let ExprKind::Name(owner) = &object.kind
             && self.lookup(owner).is_none()
-            && self.context.checked.signatures.get(&format!("{owner}.{field}")).is_some()
+            && self.context.signatures.get(&format!("{owner}.{field}")).is_some()
         {
             // A function on a type that takes nothing needs no parentheses.
             let dest = self.temporary(self.ty(expr)?);

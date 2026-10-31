@@ -92,7 +92,7 @@ impl<'a> Lowering<'a> {
     /// A function giving a constant's value, and those lifted out of it.
     fn constant(name: &str, context: &'a Context<'a>) -> Lowered<Vec<Function>> {
         let written = context.constants.get(name).ok_or("there's no such constant")?;
-        let body = context.checked.types.body(&format!("const {name}")).ok_or("it has no types")?;
+        let body = context.signatures.types().body(&format!("const {name}")).ok_or("it has no types")?;
         let returns = body.name(written.value.span, name).ok_or("it has no type")?.clone();
         if !context.holds(&returns) {
             return Err(format!("it is {returns}"));
@@ -126,7 +126,7 @@ impl<'a> Lowering<'a> {
 }
 
 fn constant_type(lowering: &Lowering<'_>, name: &str, value: &Expr) -> Lowered<Type> {
-    let body = lowering.context.checked.types.body(&format!("const {name}")).ok_or("it has no types")?;
+    let body = lowering.context.signatures.types().body(&format!("const {name}")).ok_or("it has no types")?;
     let ty = body.name(value.span, name).ok_or("a constant has no type")?;
     if lowering.context.holds(ty) { Ok(ty.clone()) } else { Err(format!("`{name}` is {ty}")) }
 }

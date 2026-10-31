@@ -2084,6 +2084,28 @@ def f() -> int:
 }
 
 #[test]
+fn lowering_some_starts_only_from_what_it_picks() {
+    let source = "LIST = [1]
+
+def a() -> int:
+    b()
+
+def b() -> int:
+    LIST[0]
+
+def c() -> int:
+    1
+";
+    let module = fennec_syntax::parse(source).unwrap();
+    let checked = fennec_check::check(&module).unwrap();
+    let program = fennec_ir::lower_some(&module, &checked, &|key| key == "a");
+    let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
+    assert_eq!(names, ["a"]);
+    assert_eq!(program.external, ["b"]);
+    assert_eq!(program.constants, []);
+}
+
+#[test]
 fn every_example_kit_lowers_to_valid_ir() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/projects");
     let mut kits = 0;

@@ -27,6 +27,13 @@ use crate::{
 
 /// Lowers a module's functions and methods, and the standard library's that they reach.
 pub fn lower(module: &Module, signatures: &Signatures) -> Program {
+    lower_some(module, signatures, &|_| true)
+}
+
+/// Like `lower`, starting only from the functions and constants `wanted` picks. What they call
+/// in the module and `wanted` leaves out is listed in [`Program::external`]. Something that
+/// runs a program every time it changes wants this, since lowering a big one takes a while.
+pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str) -> bool) -> Program {
     let library = fennec_syntax::prelude_modules().unwrap_or_default();
     let modules: Vec<&Module> = std::iter::once(module).chain(library).collect();
     let functions = definitions(module);
@@ -66,11 +73,11 @@ pub fn lower(module: &Module, signatures: &Signatures) -> Program {
     for (key, def) in &functions {
         // Something generic is only lowered as the copies a program uses.
         let generic = signatures.get(key).is_some_and(generics::is_generic);
-        if !generic && def.generics.is_empty() {
+        if !generic && def.generics.is_empty() && wanted(key) {
             lower_into(&mut program, &generics::FunctionInstance::plain(key), def, &context);
         }
     }
-    constants::lower_all(&context, &mut program);
+    constants::lower_all(&context, &mut program, wanted);
     // Copies of generics, and the standard library's functions, come in as they're reached.
     loop {
         let waiting = context.instances.waiting.borrow_mut().pop();
@@ -83,7 +90,7 @@ pub fn lower(module: &Module, signatures: &Signatures) -> Program {
         let Some(next) = next else { break };
         if let Some(def) = every.get(&next.base) {
             lower_into(&mut program, &next, def, &context);
-            constants::lower_all(&context, &mut program);
+            constants::lower_all(&context, &mut program, wanted);
         } else {
             let why = format!("it has no definition: `{}`", next.base);
             program.not_lowered.push(NotLowered { function: next.name, why });

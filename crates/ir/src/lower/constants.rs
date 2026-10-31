@@ -32,12 +32,12 @@ pub(super) fn written(module: &Module) -> HashMap<&str, Written<'_>> {
     found
 }
 
-/// Lowers the module's constants and the standard library's that anything reads.
-pub(super) fn lower_all(context: &Context<'_>, program: &mut Program) {
+/// Lowers the module's constants `wanted` picks, and any constant that anything reads.
+pub(super) fn lower_all(context: &Context<'_>, program: &mut Program, wanted: &dyn Fn(&str) -> bool) {
     let mut waiting: Vec<String> = context
         .constants
         .iter()
-        .filter(|(_, written)| !written.prelude && literal(written.value).is_none())
+        .filter(|(name, written)| !written.prelude && literal(written.value).is_none() && wanted(name))
         .map(|(name, _)| (*name).to_owned())
         .collect();
     waiting.sort();

@@ -331,7 +331,22 @@ impl<'m> Program<'m> {
             return Err(unsupported("this `main`", main_span));
         }
         let (modules, constants) = (std_modules(module), literal_constants(prelude, module));
-        let lowered = fennec_ir::lower(module, signatures).functions;
+        // The IR path only takes functions of numbers so far, so only those are worth lowering.
+        let numbers = |ty: Ty| matches!(ty, Ty::Int | Ty::Float | Ty::Bool);
+        let wanted: HashSet<&str> = functions
+            .iter()
+            .filter(|function: &&Function<'_>| {
+                !function.fallible
+                    && (numbers(function.ret) || function.ret == Ty::Unit)
+                    && function.params.iter().all(|param| numbers(param.ty))
+            })
+            .map(|function| function.key.as_str())
+            .collect();
+        let lowered = if wanted.is_empty() {
+            Vec::new()
+        } else {
+            fennec_ir::lower_some(module, signatures, &|key| wanted.contains(key)).functions
+        };
         let ir =
             std::rc::Rc::new(lowered.into_iter().map(|function| (function.name.clone(), function)).collect());
         Ok(Program { ir, functions, layouts, excluded, main_span, modules, constants })

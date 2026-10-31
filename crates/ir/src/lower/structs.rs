@@ -42,17 +42,18 @@ impl Lowering<'_> {
     /// field.
     pub(super) fn make(&mut self, type_name: &str, args: &[Arg], span: Span) -> Lowered<Operand> {
         let fields = self.struct_fields(type_name)?.to_vec();
-        let fields = self.field_values(type_name, &fields, args)?;
+        let fields = self.field_values((type_name, None), &fields, args)?;
         let dest = self.temporary(Type::Named(type_name.to_owned()));
         self.emit(InstKind::Make { dest, type_name: type_name.to_owned(), fields }, span);
         Ok(Operand::Local(dest))
     }
 
     /// A value for each field: arguments run in the order they're written, and each lands
-    /// in its field. `shown` names what's being built.
+    /// in its field. Then the fields left out get their defaults, in the order they're
+    /// written. `owner` names the type being built, and its case.
     pub(super) fn field_values(
         &mut self,
-        shown: &str,
+        owner: (&str, Option<&str>),
         fields: &[(String, Type)],
         args: &[Arg],
     ) -> Lowered<Vec<Operand>> {
@@ -69,8 +70,14 @@ impl Lowering<'_> {
                 *slot = Some(value);
             }
         }
-        let values: Option<Vec<Operand>> = values.into_iter().collect();
-        values.ok_or_else(|| format!("it leaves a field of `{shown}` to its default"))
+        let mut filled = Vec::with_capacity(fields.len());
+        for (value, (name, ty)) in values.into_iter().zip(fields) {
+            filled.push(match value {
+                Some(value) => value,
+                None => self.field_default(owner, name, ty)?,
+            });
+        }
+        Ok(filled)
     }
 
     /// The struct type of an expression, when it's one the IR holds.
@@ -128,11 +135,8 @@ impl Lowering<'_> {
             read = Operand::Local(dest);
         }
         if let Some(op) = op {
-            self.check_operands(op, &read, &value)?;
             let held = ty.clone().ok_or("it changes a field that doesn't exist")?;
-            let dest = self.temporary(held);
-            self.emit(InstKind::Binary { dest, op, lhs: read, rhs: value }, span);
-            value = Operand::Local(dest);
+            value = self.operate(op, (read, value), &held, span)?;
         }
         let wanted = ty.ok_or("it changes a field that doesn't exist")?;
         let value = self.coerce(value, &wanted, span)?;

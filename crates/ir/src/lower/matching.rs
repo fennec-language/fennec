@@ -66,7 +66,7 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<Operand> {
         let fields = self.case_fields(owner, case).unwrap_or_default();
-        let fields = self.field_values(&format!("{owner}.{case}"), &fields, args)?;
+        let fields = self.field_values((owner, Some(case)), &fields, args)?;
         let dest = self.temporary(Type::Named(owner.to_owned()));
         let kind = InstKind::MakeCase { dest, type_name: owner.to_owned(), case: case.to_owned(), fields };
         self.emit(kind, span);

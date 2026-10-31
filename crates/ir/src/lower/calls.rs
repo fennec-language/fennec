@@ -16,6 +16,7 @@ pub(super) fn external(program: &Program) -> Vec<String> {
     let mut found: Vec<String> = program
         .functions
         .iter()
+        .chain(&program.constants)
         .flat_map(|function| &function.blocks)
         .flat_map(|block| &block.insts)
         .filter_map(|inst| match &inst.kind {
@@ -89,18 +90,26 @@ impl Lowering<'_> {
         Ok(dest)
     }
 
+    /// Whether a name is a type's rather than a value's, as in `Point.origin()`.
+    fn names_a_type(&self, name: &str) -> bool {
+        self.lookup(name).is_none() && !self.context.constants.contains_key(name)
+    }
+
     /// What the engines provide that a callee names: its name, its object for a method, and
     /// whether it changes that object.
     fn builtin<'e>(&self, callee: &'e Expr) -> Option<(String, Option<&'e Expr>, bool)> {
         match &callee.kind {
             ExprKind::Name(name) => {
+                // What the checker accepted and nothing here defines, like an import of
+                // `sqrt`, is the engines'.
+                let written = self.context.checked.signatures.get(name).is_some();
                 let plain = self.lookup(name).is_none()
                     && !self.context.functions.contains(name.as_str())
-                    && fennec_check::provided_everywhere(name);
+                    && (fennec_check::provided_everywhere(name) || !written);
                 plain.then(|| (name.clone(), None, false))
             }
             ExprKind::Attr { object, name, optional: false } => {
-                if matches!(&object.kind, ExprKind::Name(owner) if self.lookup(owner).is_none()) {
+                if matches!(&object.kind, ExprKind::Name(owner) if self.names_a_type(owner)) {
                     return None;
                 }
                 let ty = self.body.expr(object.span)?;
@@ -126,7 +135,7 @@ impl Lowering<'_> {
             ExprKind::Name(name) if self.lookup(name).is_none() => (name.clone(), None),
             ExprKind::Attr { object, name, optional: false } => match &object.kind {
                 // `Point.origin()`: a function on the type, with no object.
-                ExprKind::Name(owner) if self.lookup(owner).is_none() => (format!("{owner}.{name}"), None),
+                ExprKind::Name(owner) if self.names_a_type(owner) => (format!("{owner}.{name}"), None),
                 _ => {
                     let ty = self.body.expr(object.span);
                     let owner = ty
@@ -138,13 +147,7 @@ impl Lowering<'_> {
             },
             _ => return Err("it calls something other than a function by name".to_owned()),
         };
-        if args.iter().any(|arg| arg.name.is_some()) {
-            return Err(format!("its call to `{key}` has a named argument"));
-        }
         let own = self.context.functions.contains(key.as_str());
-        if !own && object.is_none() {
-            return Err(format!("it calls `{key}`, which isn't a function of this program"));
-        }
         let signature =
             self.context.checked.signatures.get(&key).ok_or_else(|| format!("it calls `{key}`"))?;
         let given = args.len() + usize::from(object.is_some());
@@ -154,21 +157,35 @@ impl Lowering<'_> {
         if own && !signature.params.iter().all(|param| self.context.holds(&param.ty)) {
             return Err(format!("`{key}` takes something the IR doesn't hold yet"));
         }
-        let params: Vec<(bool, Type)> =
-            signature.params.iter().map(|param| (param.is_mut, param.ty.clone())).collect();
-        let mut values = Vec::with_capacity(given);
-        let written = object.into_iter().chain(args.iter().map(|arg| &arg.value));
-        for (at, value) in written.enumerate() {
-            values.push(match params.get(at) {
-                Some((true, _)) => self.place(value, write_backs, span)?,
-                Some((false, ty)) if own => {
-                    let lowered = self.expr(value)?;
-                    self.coerce(lowered, ty, value.span)?
-                }
-                _ => self.expr(value)?,
-            });
+        let first = usize::from(object.is_some());
+        let mut values: Vec<Option<Operand>> = vec![None; given];
+        if let Some(object) = object {
+            let changed = signature.params.first().is_some_and(|param| param.is_mut);
+            let value = if changed { self.place(object, write_backs, span)? } else { self.expr(object)? };
+            if let Some(slot) = values.first_mut() {
+                *slot = Some(value);
+            }
         }
-        Ok((key, values))
+        // Arguments run in the order they're written, and each lands in its parameter.
+        for (position, arg) in args.iter().enumerate() {
+            let at = match &arg.name {
+                Some(name) => signature.params.iter().position(|param| param.name == *name),
+                None => Some(position + first),
+            };
+            let param = at.and_then(|at| signature.params.get(at));
+            let param = param.ok_or_else(|| format!("an argument to `{key}` matches no parameter"))?;
+            let value = if param.is_mut {
+                self.place(&arg.value, write_backs, span)?
+            } else {
+                let lowered = self.expr(&arg.value)?;
+                if own { self.coerce(lowered, &param.ty, arg.value.span)? } else { lowered }
+            };
+            if let Some(slot) = at.and_then(|at| values.get_mut(at)) {
+                *slot = Some(value);
+            }
+        }
+        let values: Option<Vec<Operand>> = values.into_iter().collect();
+        Ok((key, values.ok_or("a parameter has no argument")?))
     }
 
     /// Something a call changes: a local itself, or a temporary holding a field that's

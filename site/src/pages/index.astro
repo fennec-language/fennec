@@ -2,240 +2,228 @@
 import { Code } from 'astro:components';
 import Base from '../layouts/Base.astro';
 import fennec from '../fennec.tmLanguage.json';
+import data from '../data/benchmarks.json';
 
 const base = import.meta.env.BASE_URL;
 const themes = { light: 'vitesse-light', dark: 'vitesse-dark' } as const;
+const { ci, builds, targets } = data;
+const percents = ci.kernels.map((kernel) => kernel.percent);
+const low = Math.round(Math.min(...percents));
+const high = Math.round(Math.max(...percents));
 
-const hero = `from std.math import Vec3
-from std.game import Id, IdMap
+const program = `def fib(n: int) -> int:
+    if n < 2: return n
+    fib(n - 1) + fib(n - 2)
 
-type EnemyId = Id[Enemy]          # a safe handle to an enemy stored in an IdMap
+test "fib":
+    assert fib(10) == 55
 
-struct Enemy:
-    position: Vec3
-    velocity = Vec3.zero
-    health = 100
-
-    def take_damage(mut self, amount: int):
-        self.health -= amount
-
-struct World:
-    enemies = IdMap[Enemy]()
-    player = Vec3.zero
-
-error TargetGone:
-    target: EnemyId
-
-error OutOfRange:
-    distance: f32
-
-noalloc def step(mut world: World, dt: f32):
-    for mut enemy in world.enemies:
-        enemy.position += enemy.velocity * dt
-
-export def attack(mut world: World, target: EnemyId):
-    mut enemy = world.enemies.get(target)
-    if enemy is None:
-        fail TargetGone(target)
-    distance = (enemy.position - world.player).length()
-    if distance > 5.0:
-        fail OutOfRange(distance)
-    enemy.take_damage(10)
-    world.enemies[target] = enemy
-
-test "attacking a distant enemy fails":
-    mut world = World()
-    far = world.enemies.insert(Enemy(position=Vec3(x=10.0, y=0.0, z=0.0)))
-    assert attack(mut world, far) == Err(OutOfRange(distance=10.0))`;
+def main(stdout: Stdout):
+    stdout.print(fib(35))`;
 
 const pillars = [
   {
-    title: 'Instant iteration',
-    body: 'Development builds skip the slow parts. Your code runs through an interpreter and a fast compiler, while dependencies are built once and cached for every project.',
+    title: 'Builds instantly',
+    number: `${builds.one_function_s} s`,
+    caption: 'to rebuild 2,800 lines after changing one function',
+    body: `Compiled a function at a time and cached by content, so a change costs only what it touches. The first build of that code takes ${builds.first_s.toFixed(0)} s, which we still want much lower.`,
   },
   {
-    title: 'Full speed when it ships',
-    body: 'Release builds go through a heavy optimizing compiler. The goal is to land within a few percent of hand-tuned native code, and a benchmark suite holds us to it.',
+    title: 'Runs fast',
+    number: `${low}–${high}%`,
+    caption: "of Rust's speed today, in the JIT",
+    body: `Native code with no garbage collector. The JIT's target is ${targets.jit}% and no kernel meets it yet. Release builds, targeting ${targets.release}%, aren't built yet.`,
   },
   {
-    title: 'Safe by default',
-    body: 'No unchecked None, no data races, no unchecked memory access. Unsafe code exists only at the boundary with C, in marked files, with a written reason.',
-  },
-  {
-    title: 'Readable and fast by default',
-    body: 'Everything is a value, so there are no references to manage. Mutation is marked where it happens, and the obvious way to write something is also the fast way.',
-  },
-  {
-    title: 'Written well by AI',
-    body: 'It reads like typed Python, the language models know best, with one way to do each thing, guardrails for the mistakes models make, and errors that say how to fix them.',
-  },
-  {
-    title: 'Made for games',
-    body: 'No garbage collector and no hidden allocation. Mark a function noalloc and the compiler proves it never allocates, so your frame loop stays smooth.',
-  },
-];
-
-const readable = [
-  {
-    code: `apply_damage(mut player, 10)   # player changes
-describe(player)               # guaranteed not to`,
-    title: 'You can see what changes',
-    body: 'Names are immutable unless declared mut. A function that changes its argument says mut in its signature, and so does every call to it.',
-  },
-  {
-    code: `total = sum(hit.damage for hit in hits)        # no allocation
-names = [player.name for player in players]   # a new list: allocates`,
-    title: 'You can see what costs',
-    body: 'Generator expressions compile down to plain loops. Brackets build a new collection, so allocation is visible from the syntax itself.',
-  },
-  {
-    code: `noalloc def update(mut world: World, dt: f32):
-    world.particles.remove_where(p => p.life <= 0.0)`,
-    title: 'You can prove what matters',
-    body: 'noalloc is checked through every call, so a stray allocation in the frame loop is a compile error, not a stutter you find in profiling.',
+    title: 'Built for agents',
+    number: `<${builds.tests_unchanged_s} s`,
+    caption: 'to rerun tests when nothing they use changed',
+    body: 'It reads like typed Python, the language models know best, with one way to do each thing and errors that say how to fix them.',
   },
 ];
 ---
 
-<Base title="Fennec" description="Fennec is a safe, compiled language for games and tools: fast to iterate on, fast when it ships, and designed for people and AI to write readable, fast code by default.">
+<Base title="Fennec" description="Fennec is a safe, compiled language that builds instantly, runs fast and is built for agents. In progress, with real numbers.">
+  <div class="glow" aria-hidden="true"></div>
   <section class="hero wrap">
-    <img class="hero-logo" src={`${base}brand/fennec-logo-480.webp`} alt="Fennec logo: a geometric fennec fox head with large ears" width="168" height="168" />
-    <span class="pill">Early: the interpreter runs most of the tour</span>
-    <h1>Fennec</h1>
-    <p class="tagline">Fast to write. Fast to build. Fast to run.</p>
-    <p class="lede">
-      A safe, compiled language for games and tools. Designed so that the easy way to write something is also the readable way and
-      the fast way, for people and for the AI they work with.
-    </p>
-    <div class="actions">
-      <a class="button primary" href={`${base}tour/`}>Take the tour →</a>
-      <a class="button" href={`${base}why/`}>Why Fennec</a>
-    </div>
-  </section>
-
-  <section class="wrap sample">
-    <div class="window">
-      <div class="window-bar">
-        <span></span><span></span><span></span>
-        <em>combat.fen · proposed syntax</em>
-      </div>
-      <Code code={hero} lang={fennec} themes={themes} />
-    </div>
-  </section>
-
-  <section class="wrap section">
-    <h2>What makes it Fennec</h2>
-    <div class="grid">
-      {
-        pillars.map((pillar) => (
-          <article class="card">
-            <h3>{pillar.title}</h3>
-            <p>{pillar.body}</p>
-          </article>
-        ))
-      }
-    </div>
-  </section>
-
-  <section class="wrap section">
-    <h2>Read it, and you know what it does</h2>
-    <p class="section-lede">Most bugs and most slowdowns hide in code that does more than it looks like it does. Fennec puts it on the page.</p>
-    <div class="rows">
-      {
-        readable.map((row) => (
-          <div class="row">
-            <div class="row-text">
-              <h3>{row.title}</h3>
-              <p>{row.body}</p>
-            </div>
-            <Code code={row.code} lang={fennec} themes={themes} />
-          </div>
-        ))
-      }
-    </div>
-  </section>
-
-  <section class="wrap section">
-    <h2>Two speeds, on purpose</h2>
-    <p class="section-lede">
-      Developing and shipping are different jobs. Fennec doesn't make one build do both.
-    </p>
-    <div class="speeds">
-      <div class="card">
-        <span class="label">While you work</span>
-        <h3>Optimized for your time</h3>
-        <p>Changed code runs in an interpreter right away, hot functions get compiled in the background, and dependencies come prebuilt from a shared cache with a size cap.</p>
-      </div>
-      <div class="card">
-        <span class="label">When you ship</span>
-        <h3>Optimized for runtime</h3>
-        <p>Every generic specialized, everything inlined across modules, and aliasing guarantees from the language passed to the optimizer. Slower to build, as fast as it gets to run.</p>
-      </div>
-    </div>
-    <p><a href={`${base}speed/`}>How the two speeds work →</a></p>
-  </section>
-
-  <section class="wrap section">
-    <div class="status card">
-      <h2>Where things stand</h2>
-      <p>
-        Fennec is in early design. This site describes where the language is going, and the syntax will change as real programs push on
-        it. The interpreter already runs most of it: structs, enums, errors, <code>match</code>, comprehensions, generators, tests and a REPL. The type checker has started moving Fennec&apos;s checks from runtime to compile time.
-      </p>
+    <div class="intro">
+      <span class="pill">In progress · not released yet</span>
+      <h1>The fast language agents write and people can read.</h1>
+      <p class="lede">Compiled and safe, with no garbage collector. It reads like Python, and it's being built in the open, numbers included.</p>
       <div class="actions">
-        <a class="button" href={`${base}roadmap/`}>See the roadmap</a>
-        <a class="button" href="https://github.com/fennec-language/fennec">Follow on GitHub</a>
+        <a class="button primary" href={`${base}playground/`}>Try it →</a>
+        <a class="button" href={`${base}tour/`}>Take the tour</a>
       </div>
+      <div class="install">
+        <span>No release yet. Build from source:</span>
+        <code>git clone https://github.com/fennec-language/fennec &amp;&amp; cd fennec &amp;&amp; cargo build --release -p fennec -p fennec-runtime</code>
+      </div>
+    </div>
+
+    <div class="demo">
+      <div class="window">
+        <div class="window-bar">
+          <span></span><span></span><span></span>
+          <em>fib.fen</em>
+        </div>
+        <Code code={program} lang={fennec} themes={themes} />
+      </div>
+      <div class="meters">
+        <div class="meter">
+          <strong>{builds.fib_first_s} s</strong>
+          <span>to build it</span>
+        </div>
+        <div class="meter">
+          <strong>&lt;{builds.tests_unchanged_s} s</strong>
+          <span>to retest, unchanged</span>
+        </div>
+        <div class="meter wide">
+          <div class="meter-head">
+            <strong>{low}–{high}%</strong>
+            <span>of Rust's speed across our kernels</span>
+          </div>
+          <div class="range" role="img" aria-label={`Today ${low} to ${high} percent of Rust's speed; target ${targets.jit} percent`}>
+            <span class="range-fill" style={`left: ${low}%; width: ${high - low}%`}></span>
+            <span class="range-target" style={`left: ${targets.jit}%`}></span>
+          </div>
+          <span class="range-note">JIT today · line marks the {targets.jit}% target</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap pillars">
+    {
+      pillars.map((pillar) => (
+        <article class="pillar">
+          <h2>{pillar.title}</h2>
+          <strong>{pillar.number}</strong>
+          <em>{pillar.caption}</em>
+          <p>{pillar.body}</p>
+        </article>
+      ))
+    }
+    <p class="more"><a href={`${base}benchmarks/`}>See every benchmark and how it's measured →</a></p>
+  </section>
+
+  <section class="wrap agents">
+    <h2>Built for agents</h2>
+    <div class="agent-grid">
+      <article>
+        <h3>Errors say how to fix them</h3>
+        <pre><code>error: `area` gives back a float, so its
+  return type has to be written
+  = help: `def area(radius: float) -> float:`
+
+$ fennec fix
+fixed area.fen</code></pre>
+        <p><code>fennec fix</code> applies the fixes it can make itself, and every error says what to do. Not every error has an automatic fix yet.</p>
+      </article>
+      <article>
+        <h3>Only affected tests rerun</h3>
+        <pre><code>$ fennec test
+3 passed, 0 failed</code></pre>
+        <p>Tests that passed and whose code hasn't changed are skipped, so an agent's loop stays fast.</p>
+      </article>
+      <article>
+        <h3><code>fennec context</code> <span class="soon">coming</span></h3>
+        <pre><code>$ fennec context some_kit</code></pre>
+        <p>A kit's whole API, sized for a prompt, so a model reads real signatures instead of guessing.</p>
+      </article>
     </div>
   </section>
 </Base>
 
+<script>
+  // Everything is visible without this. The animation starts only once frames are being drawn.
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const demo = document.querySelector('.demo');
+    requestAnimationFrame(() => demo?.classList.add('play'));
+    // Never leave the code hidden if the browser isn't advancing animations.
+    setTimeout(() => demo?.classList.remove('play'), 2500);
+  }
+</script>
+
 <style>
-  .hero {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    padding-top: 3.5rem;
-    padding-bottom: 2.5rem;
+  .glow {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 620px;
+    z-index: -1;
+    background:
+      radial-gradient(60% 70% at 78% 10%, color-mix(in srgb, var(--accent-bright) 22%, transparent), transparent 70%),
+      radial-gradient(45% 55% at 12% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%);
+    pointer-events: none;
   }
 
-  .hero-logo {
-    width: 168px;
-    height: 168px;
-    margin-bottom: 1.25rem;
+  .hero {
+    display: grid;
+    gap: 2.5rem;
+    padding-top: 3.5rem;
+    align-items: center;
+  }
+
+  @media (min-width: 940px) {
+    .hero {
+      grid-template-columns: 1fr 1fr;
+      gap: 3.5rem;
+      padding-top: 5rem;
+    }
+  }
+
+  .intro,
+  .demo {
+    min-width: 0;
+  }
+
+  .pill {
+    display: inline-block;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--accent);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 999px;
+    padding: 0.2rem 0.75rem;
   }
 
   h1 {
-    font-size: clamp(3rem, 9vw, 4.75rem);
-    line-height: 1;
+    font-size: clamp(2.4rem, 5.6vw, 3.7rem);
+    line-height: 1.05;
     letter-spacing: -0.04em;
-    margin: 1rem 0 0.5rem;
-  }
-
-  .tagline {
-    font-size: clamp(1.25rem, 3.4vw, 1.6rem);
-    font-weight: 600;
-    margin: 0 0 1rem;
-    color: var(--accent);
+    margin: 1rem 0;
+    text-wrap: balance;
   }
 
   .lede {
-    max-width: 640px;
     font-size: 1.15rem;
     color: var(--muted);
-    margin: 0 0 1.75rem;
+    margin: 0 0 1.5rem;
+    max-width: 34rem;
   }
 
   .actions {
     display: flex;
     gap: 0.75rem;
     flex-wrap: wrap;
-    justify-content: center;
   }
 
-  .sample {
-    max-width: 900px;
+  .install {
+    margin-top: 1.5rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+
+  .install code {
+    display: block;
+    margin-top: 0.35rem;
+    padding: 0.6rem 0.8rem;
+    overflow-wrap: anywhere;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--code-bg);
+    color: var(--text);
+    font-size: 0.8rem;
   }
 
   .window {
@@ -243,14 +231,14 @@ names = [player.name for player in players]   # a new list: allocates`,
     border-radius: var(--radius);
     background: var(--code-bg);
     overflow: hidden;
-    box-shadow: 0 18px 50px -24px rgb(27 26 46 / 0.35);
+    box-shadow: 0 24px 60px -30px rgb(27 26 46 / 0.45);
   }
 
   .window-bar {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 0.7rem 1rem;
+    padding: 0.65rem 1rem;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
   }
@@ -274,107 +262,218 @@ names = [player.name for player in players]   # a new list: allocates`,
     border: 0;
     border-radius: 0;
     margin: 0;
+    font-size: 0.88rem;
   }
 
-  .section {
-    margin-top: 5rem;
-  }
-
-  .section h2 {
-    font-size: clamp(1.7rem, 4vw, 2.2rem);
-    letter-spacing: -0.025em;
-    line-height: 1.2;
-    margin: 0 0 0.75rem;
-  }
-
-  .section-lede {
-    color: var(--muted);
-    max-width: 640px;
-    margin: 0 0 2rem;
-  }
-
-  .grid {
+  .meters {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 1rem;
-    margin-top: 1.5rem;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
   }
 
-  .card {
+  .meter {
     border: 1px solid var(--border);
     background: var(--surface);
     border-radius: var(--radius);
-    padding: 1.4rem 1.5rem;
+    padding: 0.85rem 1.1rem;
   }
 
-  .card h3 {
-    margin: 0 0 0.4rem;
-    font-size: 1.1rem;
+  .meter.wide {
+    grid-column: 1 / -1;
   }
 
-  .card p {
-    margin: 0;
+  .meter strong {
+    display: block;
+    font-size: 1.6rem;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .meter span {
     color: var(--muted);
+    font-size: 0.88rem;
   }
 
-  .rows {
+  .meter-head {
     display: flex;
-    flex-direction: column;
-    gap: 2rem;
+    align-items: baseline;
+    gap: 0.6rem;
+    flex-wrap: wrap;
   }
 
-  .row {
+  .range {
+    position: relative;
+    height: 10px;
+    margin: 0.6rem 0 0.4rem;
+    border-radius: 999px;
+    background: var(--surface-strong);
+  }
+
+  .range .range-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 999px;
+    background: var(--accent-bright);
+  }
+
+  .range .range-target {
+    position: absolute;
+    top: -4px;
+    bottom: -4px;
+    width: 2px;
+    background: var(--text);
+  }
+
+  .range-note {
+    font-size: 0.78rem;
+  }
+
+  .demo.play :global(.line) {
+    animation: rise 0.4s ease-out backwards;
+  }
+
+  .demo.play :global(.line:nth-child(2)) { animation-delay: 0.08s; }
+  .demo.play :global(.line:nth-child(3)) { animation-delay: 0.16s; }
+  .demo.play :global(.line:nth-child(4)) { animation-delay: 0.24s; }
+  .demo.play :global(.line:nth-child(5)) { animation-delay: 0.32s; }
+  .demo.play :global(.line:nth-child(6)) { animation-delay: 0.4s; }
+  .demo.play :global(.line:nth-child(7)) { animation-delay: 0.48s; }
+  .demo.play :global(.line:nth-child(8)) { animation-delay: 0.56s; }
+  .demo.play :global(.line:nth-child(9)) { animation-delay: 0.64s; }
+
+  .demo.play .meter {
+    animation: rise 0.5s ease-out 0.75s backwards;
+  }
+
+  .demo.play .meter:nth-child(2) { animation-delay: 0.9s; }
+  .demo.play .meter:nth-child(3) { animation-delay: 1.05s; }
+
+  .demo.play .range .range-fill {
+    transform-origin: left;
+    animation: grow 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) 1.15s backwards;
+  }
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  @keyframes grow {
+    from { transform: scaleX(0); }
+    to { transform: scaleX(1); }
+  }
+
+  .pillars {
     display: grid;
-    grid-template-columns: 1fr;
     gap: 1rem;
-    align-items: center;
+    margin-top: 5rem;
   }
 
-  @media (min-width: 860px) {
-    .row {
-      grid-template-columns: 5fr 7fr;
-      gap: 2.5rem;
+  @media (min-width: 800px) {
+    .pillars {
+      grid-template-columns: repeat(3, 1fr);
     }
   }
 
-  .row h3 {
-    margin: 0 0 0.4rem;
-    font-size: 1.2rem;
+  .pillar {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 1.5rem;
   }
 
-  .row p {
+  .pillar h2 {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--accent);
+    letter-spacing: 0;
+  }
+
+  .pillar strong {
+    display: block;
+    margin-top: 0.5rem;
+    font-size: clamp(2.2rem, 4.5vw, 2.9rem);
+    line-height: 1.1;
+    letter-spacing: -0.04em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pillar em {
+    display: block;
+    font-style: normal;
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin: 0.2rem 0 0.75rem;
+  }
+
+  .pillar p {
     margin: 0;
     color: var(--muted);
+    font-size: 0.95rem;
   }
 
-  .row :global(pre.astro-code) {
-    margin: 0;
+  .more {
+    grid-column: 1 / -1;
+    margin: 0.25rem 0 0;
   }
 
-  .speeds {
+  .agents {
+    margin-top: 5rem;
+  }
+
+  .agents > h2 {
+    font-size: clamp(1.7rem, 4vw, 2.2rem);
+    letter-spacing: -0.03em;
+    margin: 0 0 1.25rem;
+  }
+
+  .agent-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 1rem;
-    margin-bottom: 1.25rem;
+    gap: 1.5rem;
   }
 
-  .label {
-    display: inline-block;
+  @media (min-width: 800px) {
+    .agent-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+
+  .agent-grid article {
+    min-width: 0;
+  }
+
+  .agent-grid h3 {
+    margin: 0 0 0.6rem;
+    font-size: 1.05rem;
+  }
+
+  .agent-grid pre {
+    margin: 0 0 0.6rem;
+    padding: 0.7rem 0.85rem;
     font-size: 0.78rem;
+    line-height: 1.5;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--code-bg);
+  }
+
+  .agent-grid p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+
+  .soon {
+    font-size: 0.72rem;
     font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
     color: var(--accent);
-    margin-bottom: 0.4rem;
-  }
-
-  .status {
-    text-align: center;
-    padding: 2.5rem 1.5rem;
-  }
-
-  .status p {
-    max-width: 620px;
-    margin: 0 auto 1.5rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.05rem 0.5rem;
+    vertical-align: middle;
   }
 </style>

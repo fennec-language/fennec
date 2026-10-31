@@ -11,13 +11,16 @@ interface Props {
 const { title, description } = Astro.props;
 const base = import.meta.env.BASE_URL;
 const pageTitle = title === 'Fennec' ? 'Fennec: fast to write, fast to build, fast to run' : `${title} · Fennec`;
-const nav = [
-  { href: 'why/', label: 'Why' },
+const learn = [
   { href: 'tour/', label: 'Tour' },
+  { href: 'library/', label: 'Reference' },
   { href: 'playground/', label: 'Playground' },
+];
+const nav = [
+  { href: 'benchmarks/', label: 'Benchmarks' },
   { href: 'ai/', label: 'For AI' },
-  { href: 'speed/', label: 'Speed' },
-  { href: 'library/', label: 'Library' },
+  { href: 'den/', label: 'Den' },
+  { href: 'why/', label: 'Why' },
   { href: 'roadmap/', label: 'Roadmap' },
 ];
 const current = Astro.url.pathname;
@@ -45,6 +48,18 @@ const current = Astro.url.pathname;
           <span>fennec</span>
         </a>
         <nav aria-label="Main">
+          <details class="learn">
+            <summary>Learn</summary>
+            <div class="learn-menu">
+              {
+                learn.map((item) => (
+                  <a href={`${base}${item.href}`} aria-current={current === `${base}${item.href}` ? 'page' : undefined}>
+                    {item.label}
+                  </a>
+                ))
+              }
+            </div>
+          </details>
           {
             nav.map((item) => (
               <a href={`${base}${item.href}`} aria-current={current === `${base}${item.href}` ? 'page' : undefined}>
@@ -71,6 +86,12 @@ const current = Astro.url.pathname;
         </div>
       </div>
     </footer>
+    <script>
+      const learn = document.querySelector('details.learn');
+      document.addEventListener('click', (event) => {
+        if (learn && !learn.contains(event.target as Node)) learn.removeAttribute('open');
+      });
+    </script>
   </body>
 </html>
 
@@ -106,10 +127,54 @@ const current = Astro.url.pathname;
 
   nav {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 0.25rem;
-    overflow-x: auto;
-    scrollbar-width: none;
     max-width: 100%;
+  }
+
+  .learn {
+    position: relative;
+  }
+
+  .learn summary {
+    list-style: none;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 0.95rem;
+    font-weight: 500;
+    padding: 0.35rem 0.6rem;
+    border-radius: 8px;
+  }
+
+  .learn summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .learn summary::after {
+    content: ' ▾';
+    font-size: 0.75em;
+  }
+
+  .learn summary:hover,
+  .learn[open] summary {
+    color: var(--text);
+    background: var(--surface);
+  }
+
+  .learn-menu {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 0.35rem);
+    left: 0;
+    min-width: 10rem;
+    display: flex;
+    flex-direction: column;
+    padding: 0.35rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 16px 40px -20px rgb(0 0 0 / 0.4);
   }
 
   nav a {

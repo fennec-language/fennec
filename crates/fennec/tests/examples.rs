@@ -17,7 +17,7 @@ const INTERPRETED: &[&str] = &[];
 /// the interpreter.
 const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] = &[
     ("case_guards.fen", &["describe", "first_word", "size"]),
-    ("functions_more.fen", &["countdown", "counter_from"]),
+    ("functions_more.fen", &["countdown"]),
     ("operators.fen", &["Grid.iter"]),
 ];
 

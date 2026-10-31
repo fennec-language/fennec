@@ -18,7 +18,7 @@ use super::fallback::{expr_names, stmt_names};
 use super::hoist::{each_stmt, each_stmt_expr};
 use super::inline::{MAX_DEPTH, without_returns};
 use super::{Lowerer, internal};
-use crate::types::{Function, Ty};
+use crate::types::{Function, Ty, unsupported};
 
 /// How many expressions a body may have and still be lowered again at a call.
 const MOST_EXPRS: usize = 200;
@@ -27,6 +27,8 @@ const MOST_EXPRS: usize = 200;
 #[derive(Clone)]
 pub(super) struct Known {
     arrow: Expr,
+    /// The body of a function written inside this one, in place of an arrow.
+    nested: Option<Rc<FnDef>>,
     /// How much of the lowering was open where the arrow is written: its body sees that.
     scopes: usize,
     inlining: Vec<(String, usize)>,
@@ -167,6 +169,7 @@ impl Lowerer<'_, '_> {
             let at = u32::try_from(self.known.len()).unwrap_or(0);
             self.known.push(Known {
                 arrow: arg.clone(),
+                nested: None,
                 scopes: self.scopes.len(),
                 inlining: self.inlining.clone(),
                 call_site: self.call_site,
@@ -214,6 +217,9 @@ impl Lowerer<'_, '_> {
         let Some(at) = self.known_function(callee) else { return Ok(None) };
         let known = self.known.get(usize::try_from(at).unwrap_or(0)).cloned();
         let known = known.ok_or_else(|| internal("a lost function", callee.span))?;
+        if let Some(def) = known.nested.clone() {
+            return self.call_nested(&known, &def, args, callee.span).map(Some);
+        }
         let ExprKind::Lambda { params, body } = &known.arrow.kind else { return Ok(None) };
         if params.len() != args.len() || args.iter().any(|arg| arg.name.is_some() || arg.is_mut) {
             return Ok(None);
@@ -241,6 +247,79 @@ impl Lowerer<'_, '_> {
         Ok(Some(made))
     }
 
+    /// `def name(...):` inside a function. It needs nothing at run time: each call is its body,
+    /// right there. The interpreter takes the program when this can't be done: when the
+    /// function calls itself, can fail or give back early, or sees a name that can change,
+    /// since it keeps what that held when it was made.
+    pub(super) fn nested_def(&mut self, def: &FnDef) -> Result<(), Diagnostic> {
+        let refuse = || unsupported("this function inside a function", def.span);
+        let body = without_returns(&def.body);
+        let (mut simple, mut names) = (true, Vec::new());
+        for stmt in &body {
+            each_stmt(stmt, &mut |stmt| {
+                simple &= !matches!(
+                    stmt.kind,
+                    StmtKind::Return(_) | StmtKind::Yield(_) | StmtKind::Def(_) | StmtKind::Fail(_)
+                );
+            });
+            each_stmt_expr(stmt, &mut |expr| simple &= !matches!(expr.kind, ExprKind::Try { .. }));
+            stmt_names(stmt, &mut names);
+        }
+        let param_named = |name: &String| def.params.iter().any(|param| param.name == *name);
+        let sees_change = names.iter().any(|name| {
+            !param_named(name) && self.local(name).is_some_and(|local| local.is_mut && local.ty != Ty::Unit)
+        });
+        let plain = def.params.iter().all(|param| !param.is_mut);
+        if !simple || !plain || sees_change || names.contains(&def.name) {
+            return Err(refuse());
+        }
+        let at = u32::try_from(self.known.len()).unwrap_or(0);
+        self.known.push(Known {
+            arrow: Expr { kind: ExprKind::None, span: def.span },
+            nested: Some(Rc::new(FnDef { body, ..def.clone() })),
+            scopes: self.scopes.len(),
+            inlining: self.inlining.clone(),
+            call_site: self.call_site,
+            origin: self.inlined_origin,
+        });
+        self.bind_native(&def.name, Ty::Known(at), None, false);
+        Ok(())
+    }
+
+    /// A call to a function written inside this one: its body, right here.
+    fn call_nested(
+        &mut self,
+        known: &Known,
+        def: &FnDef,
+        args: &[Arg],
+        span: Span,
+    ) -> Result<Lowered, Diagnostic> {
+        if def.params.len() != args.len() || args.iter().any(|arg| arg.name.is_some() || arg.is_mut) {
+            return Err(unsupported("this call to a function inside a function", span));
+        }
+        let mut lowered = Vec::with_capacity(args.len());
+        for arg in args {
+            lowered.push(self.expr(&arg.value)?);
+        }
+        let (result, closed) = self.in_scope_of(known, |lowerer| {
+            lowerer.open_scope();
+            let mut bound = Ok(());
+            for (param, value) in def.params.iter().zip(&lowered) {
+                bound = bound.and_then(|()| lowerer.bind_lent(&param.name, *value));
+            }
+            let result = bound
+                .and_then(|()| lowerer.keeping_temps(|lowerer| lowerer.tail(&def.body)))
+                .map(|(value, ty)| (value.map(|value| lowerer.own(value, ty)), ty));
+            (result, lowerer.close_scope())
+        });
+        let made = result?;
+        closed?;
+        for (value, ty) in lowered {
+            self.consume(value, ty)?;
+        }
+        Ok(made)
+    }
+
     /// Runs `lower` with what's in scope where an arrow is written.
     fn in_scope_of<T>(&mut self, known: &Known, lower: impl FnOnce(&mut Self) -> T) -> T {
         let hidden = self.scopes.split_off(known.scopes.min(self.scopes.len()));
@@ -259,6 +338,9 @@ impl Lowerer<'_, '_> {
     pub(super) fn known_as_object(&mut self, at: u32, span: Span) -> Result<Value, Diagnostic> {
         let known = self.known.get(usize::try_from(at).unwrap_or(0)).cloned();
         let known = known.ok_or_else(|| internal("a lost function", span))?;
+        if known.nested.is_some() {
+            return Err(unsupported("using a function inside a function as a value", span));
+        }
         let (value, ty) = self.in_scope_of(&known, |lowerer| lowerer.fallback(&known.arrow))?;
         self.handle_of(value, ty, span)
     }

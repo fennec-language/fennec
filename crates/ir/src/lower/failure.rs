@@ -217,7 +217,7 @@ impl Lowering<'_> {
         }
         match &self.returns {
             Type::Unit => self.finish(Terminator::Return(None)),
-            Type::Result(ok, _) if **ok == Type::Unit => self.return_nothing(span)?,
+            Type::Result(..) => self.return_nothing(span)?,
             _ => self.finish(Terminator::Unreachable),
         }
         Ok(())

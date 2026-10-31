@@ -1,0 +1,77 @@
+## Fallible functions that give back strings, lists and structs, used every way a result can be.
+
+error TooBig:
+    limit: int
+
+error Wrapped:
+    why: str
+
+struct Node:
+    value: int
+    next: Node?
+    names: list[str]
+
+def word(n: int) -> str:
+    if n > 2: fail TooBig(limit=2)
+    f"w{n}"
+
+def words(n: int) -> list[str]:
+    mut all = []
+    for i in range(n):
+        all.append(word(i)?)
+    all
+
+def node(n: int) -> Node:
+    if n > 3: fail TooBig(limit=3)
+    if n == 0: return Node(value=0, next=None, names=[])
+    inner = node(n - 1)?
+    Node(value=n, next=inner, names=words(n)?)
+
+def wrapped(n: int) -> str:
+    text = word(n)? from Wrapped(why="word failed")
+    text + "!"
+
+struct Maker:
+    made = 0
+
+    def make(mut self, n: int) -> str:
+        self.made += 1
+        if n > 2: fail TooBig(limit=n)
+        word(n)?
+
+    def twice(mut self, n: int) -> list[str]:
+        [self.make(n)?, self.make(n + 1)?]
+
+def main(stdout: Stdout):
+    stdout.print(word(1) else "none", word(9) else "none")
+    stdout.print(words(2) else [], words(9) else ["failed"])
+    stdout.print(
+        (node(2) else Node(value=-1, next=None, names=[])).value,
+        (node(9) else Node(value=-1, next=None, names=[])).value,
+    )
+    stdout.print(wrapped(1) else "failed", wrapped(9) else "failed")
+
+    match word(1):
+        case Ok(found):
+            stdout.print("ok", found)
+        case Err(problem):
+            stdout.print("err", problem)
+    match word(5):
+        case Ok(found):
+            stdout.print("ok", found)
+        case Err(problem):
+            stdout.print("err", problem)
+    match wrapped(5):
+        case Ok(found):
+            stdout.print("ok", found)
+        case Err(problem):
+            stdout.print("err", problem)
+
+    result = words(1)
+    stdout.print(result)
+    stdout.print(words(9))
+
+    mut maker = Maker()
+    stdout.print(maker.twice(1), maker.made)
+    stdout.print(maker.twice(2), maker.made)
+    stdout.print(maker.twice(5), maker.made)

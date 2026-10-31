@@ -121,6 +121,7 @@ pub(super) fn declare_all(
                 id,
                 params,
                 ret: function.ret,
+                direct: function.direct,
                 takes_self,
                 inline,
                 specialized: super::specialize::specializable(function),

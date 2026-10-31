@@ -183,7 +183,7 @@ impl Lowerer<'_, '_> {
         }
         self.shared.called.insert(name.to_owned());
         let Some(compiled) = self.shared.compiled.get(name) else { return Ok(None) };
-        let (id, params, ret) = (compiled.id, compiled.params.clone(), compiled.ret);
+        let (id, params, ret, direct) = (compiled.id, compiled.params.clone(), compiled.ret, compiled.direct);
         let Some(arranged) = Self::arrange(&params, args) else { return Ok(None) };
         if !self.args_fit(&arranged, &params) {
             return Ok(None);
@@ -259,7 +259,7 @@ impl Lowerer<'_, '_> {
         if ret == Ty::Obj {
             self.dirty = true;
         }
-        Ok(Some((value, ret)))
+        self.called_result(value, ret, direct, span).map(Some)
     }
 
     /// Whether arranged arguments suit a native call: `mut` exactly where the parameter is,
@@ -288,7 +288,11 @@ impl Lowerer<'_, '_> {
         if let Some(body) = self.inlinable(key) {
             return self.inline_call(key, &body, values, None, span);
         }
-        self.call_key_changing(key, values, span).map(|(result, _)| result)
+        // Whatever calls this may be one arm of several, so it always wants an object.
+        let tried = self.tried.take();
+        let called = self.call_key_changing(key, values, span).map(|(result, _)| result);
+        self.tried = tried;
+        called
     }
 
     /// Calls a compiled function by its key, natively, giving back its result and the final
@@ -299,8 +303,9 @@ impl Lowerer<'_, '_> {
         values: Vec<Value>,
         span: Span,
     ) -> Result<(Lowered, Vec<Value>), Diagnostic> {
-        let compiled = self.shared.compiled.get(key).map(|compiled| (compiled.id, compiled.ret));
-        let (id, ret) = compiled.ok_or_else(|| super::internal("unknown function", span))?;
+        let compiled =
+            self.shared.compiled.get(key).map(|compiled| (compiled.id, compiled.ret, compiled.direct));
+        let (id, ret, direct) = compiled.ok_or_else(|| super::internal("unknown function", span))?;
         let params =
             self.shared.compiled.get(key).map(|compiled| compiled.params.clone()).unwrap_or_default();
         let dest = self.dest_for(ret)?;
@@ -321,7 +326,8 @@ impl Lowerer<'_, '_> {
         if ret == Ty::Obj {
             self.dirty = true;
         }
-        Ok(((value, ret), results.collect()))
+        let given_back = results.collect();
+        Ok((self.called_result(value, ret, direct, span)?, given_back))
     }
 
     /// Whether a compiled function is from the standard library.

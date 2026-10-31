@@ -1,0 +1,12 @@
+w1 none
+["w0", "w1"] ["failed"]
+2 -1
+w1! failed
+ok w1
+err TooBig(limit=2)
+err Wrapped(why="word failed")
+Ok(["w0"])
+Err(TooBig(limit=2))
+Ok(["w1", "w2"]) 2
+Err(TooBig(limit=3)) 4
+Err(TooBig(limit=5)) 5

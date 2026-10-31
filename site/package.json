@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "node scripts/wasm.mjs",
+    "predev": "node scripts/wasm.mjs && node scripts/reference.mjs",
     "dev": "astro dev",
-    "prebuild": "node scripts/wasm.mjs",
+    "prebuild": "node scripts/wasm.mjs && node scripts/reference.mjs",
     "build": "astro build",
     "preview": "astro preview"
   },

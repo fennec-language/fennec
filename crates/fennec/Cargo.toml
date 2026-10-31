@@ -25,6 +25,7 @@ fennec-ir.workspace = true
 fennec-jit.workspace = true
 fennec-llvm.workspace = true
 fennec-kit.workspace = true
+fennec-reference.workspace = true
 fennec-lsp.workspace = true
 fennec-syntax.workspace = true
 

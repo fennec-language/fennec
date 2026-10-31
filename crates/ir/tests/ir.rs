@@ -171,15 +171,6 @@ def make() -> Point:
 def checked() -> Checked:
     Checked(1)
 
-def pair() -> (int, int):
-    (1, 2)
-
-def squares(n: int) -> list[int]:
-    [i * i for i in range(n)]
-
-def count(words: dict[str, int]) -> int:
-    words.len()
-
 def stride(n: int) -> int:
     for i in range(0, n, 2):
         pass
@@ -198,9 +189,6 @@ def everywhere(mut items: list[Point]) -> int:
         [
             "make: it leaves a field of `Point` to its default",
             "checked: it gives back Checked",
-            "pair: it gives back (int, int)",
-            "squares: it uses a comprehension",
-            "count: `words` is dict[str, int]",
             "stride: it has a `for` loop over a `range` stepping by something other than 1 or -1",
             "everywhere: it has a `for mut` loop",
         ]
@@ -852,6 +840,90 @@ fn the_validator_finds_malformed_ir() {
 }
 
 #[test]
+fn a_comprehension_is_a_loop_that_fills_a_collection() {
+    let source = "def evens(xs: list[int]) -> list[int]:\n    [x * 2 for x in xs if x > 0]\n";
+    assert_eq!(
+        printed(source, "evens").unwrap(),
+        "fn evens(_0) -> list[int]
+  local _0 xs: list[int]
+  local _1: list[int]
+  local _2: list[int]
+  local _3: int
+  local _4: int
+  local _5: int
+  local _6: bool
+  local _7 x: int
+  local _8: bool
+  local _9: int
+  bb0:
+    _1 = []
+    _2 = _0
+    _3 = builtin list.len(_2)
+    _4 = 0
+    _5 = _3
+    jump bb1
+  bb1:
+    _6 = _4 < _5
+    branch _6 bb2 bb4
+  bb2:
+    _7 = _2[_4]
+    _8 = _7 > 0
+    branch _8 bb5 bb3
+  bb3:
+    _4 = _4 + 1
+    jump bb1
+  bb4:
+    return _1
+  bb5:
+    _9 = _7 * 2
+    builtin list.append(mut _1, _9)
+    jump bb3
+"
+    );
+}
+
+#[test]
+fn dict_and_set_comprehensions() {
+    let source = "def f(xs: list[int]) -> dict[int, str]:\n    {x: str(x) for x in {x for x in xs}}\n";
+    let text = printed(source, "f").unwrap();
+    for expected in ["= dict {}", "= set {}", "builtin set.add(mut", "builtin list(", "] = "] {
+        assert!(text.contains(expected), "no `{expected}` in {text}");
+    }
+}
+
+#[test]
+fn tuples_unpack_in_assignments_and_loops() {
+    let source = "def f(pairs: dict[str, int]) -> int:
+    mut total = 0
+    for key, value in pairs.items():
+        total += value + key.len()
+    mut a = total
+    mut b = 1
+    a, b = (b, a)
+    a + (a, b)[1]
+";
+    let text = printed(source, "f").unwrap();
+    for expected in ["builtin dict.items(", "key: str", "= tuple (", ".0", ".1"] {
+        assert!(text.contains(expected), "no `{expected}` in {text}");
+    }
+}
+
+#[test]
+fn dicts_and_slices_read_and_change_items() {
+    let source = "def f(xs: list[int], d: dict[str, int?]) -> list[int]:
+    mut seen = d
+    seen[\"a\"] = 1
+    if \"b\" in seen:
+        return xs[1:]
+    xs[:2]
+";
+    let text = printed(source, "f").unwrap();
+    for expected in ["= some 1", "[\"a\"] = ", "builtin dict.contains(", "= _0[1:]", "= _0[:2]"] {
+        assert!(text.contains(expected), "no `{expected}` in {text}");
+    }
+}
+
+#[test]
 fn every_example_lowers_to_valid_ir_or_says_why() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut lowered_functions = Vec::new();
@@ -867,11 +939,15 @@ fn every_example_lowers_to_valid_ir_or_says_why() {
             fennec_check::check_typed(&module).unwrap_or_else(|problems| panic!("{file}: {problems:?}"));
         let program = lower(&module, &checked);
         validate(&program).unwrap_or_else(|problems| panic!("{file}: {problems:?}\n{program}"));
+        for skipped in &program.not_lowered {
+            println!("{file}: {}: {}", skipped.function, skipped.why);
+        }
         lowered_functions
             .extend(program.functions.iter().map(|function| format!("{file}: {}", function.name)));
     }
     // How far lowering has got. This only goes up, until every function lowers.
-    assert!(lowered_functions.len() >= 107, "only {} functions lowered", lowered_functions.len());
+    println!("{} functions lowered", lowered_functions.len());
+    assert!(lowered_functions.len() >= 158, "only {} functions lowered", lowered_functions.len());
     for expected in
         ["numbers.fen: fib", "numbers.fen: collatz_steps", "numbers.fen: is_prime", "numbers.fen: lerp"]
     {

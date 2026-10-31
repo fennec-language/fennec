@@ -139,7 +139,8 @@ impl Checker {
                     State::Checking => None,
                 })
                 .collect();
-            let signatures = Signatures { functions, structs, enums, errors, locals };
+            let signatures =
+                Signatures { functions, structs, enums, errors, locals, types: Types::default() };
             let types = Types { functions: self.typed };
             return Ok(Checked { signatures, types, cases: self.cases, float_sums: self.float_sums });
         }

@@ -1,0 +1,4 @@
+## An overflow in a sum's items reports the item, and a total's overflow the sum.
+
+def main(stdout: Stdout):
+    stdout.print(sum(i * 4_611_686_018_427_387_904 for i in range(3)))

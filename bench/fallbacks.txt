@@ -1,0 +1,26 @@
+# How many places each benchmark kernel isn't native, by `fennec dev fallbacks`. A test keeps
+# this exact, so a count can only go down: a change that adds a fallback must be undone, and
+# one that removes some lowers its count here. The goal is zero everywhere.
+binary_trees 0
+closures 5
+comp_helpers 0
+comprehensions 2
+deltablue 305
+dict_field 11
+dicts 0
+fannkuch 1
+fib 0
+generics 9
+json 46
+k_nucleotide 9
+mandelbrot 0
+method_chain 0
+nbody 0
+particles 0
+regex 20
+richards 264
+sieve 0
+sort 6
+spectral_norm 0
+strings 0
+struct_keys 5

@@ -4,7 +4,7 @@
 
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, types};
-use fennec_syntax::{CompKind, Diagnostic, Expr, ExprKind};
+use fennec_syntax::{Arg, BinOp, CompKind, Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind};
 
 use super::Lowerer;
 use super::expr::Lowered;
@@ -13,7 +13,156 @@ use super::lists::LIST_ITEMS;
 use crate::helpers::Helper;
 use crate::types::{ListItem, Ty};
 
+/// A name made up for a value a comprehension builds, which no program can write.
+fn hidden(what: &str, span: Span) -> String {
+    format!("\0{what}{}", span.start)
+}
+
+fn name_expr(name: &str, span: Span) -> Expr {
+    Expr { kind: ExprKind::Name(name.to_owned()), span }
+}
+
+/// `for names in iter: [if cond:] inner`, the loop a comprehension stands for.
+fn comp_loop(names: &[String], iter: &Expr, cond: Option<&Expr>, inner: StmtKind, span: Span) -> Stmt {
+    let inner = Stmt { kind: inner, span };
+    let body = match cond {
+        Some(cond) => {
+            let kind = StmtKind::If { branches: vec![(cond.clone(), vec![inner])], otherwise: None };
+            vec![Stmt { kind, span }]
+        }
+        None => vec![inner],
+    };
+    Stmt { kind: StmtKind::For { names: names.to_vec(), is_mut: false, iter: iter.clone(), body }, span }
+}
+
 impl Lowerer<'_, '_> {
+    /// A list or dict comprehension made by an ordinary native loop that fills a hidden name,
+    /// when native code can hold what it makes.
+    pub(super) fn comprehension(&mut self, expr: &Expr) -> Result<Option<Lowered>, Diagnostic> {
+        match &expr.kind {
+            ExprKind::List(_) => return self.list_literal(expr),
+            ExprKind::Dict(_) => return self.dict_literal(expr),
+            _ => {}
+        }
+        let ExprKind::Comprehension { kind, elem, value, names, iter, cond } = &expr.kind else {
+            return Ok(None);
+        };
+        let span = expr.span;
+        let cond = cond.as_deref();
+        let name = hidden("made", span);
+        let target = name_expr(&name, span);
+        let (start, ty, inner) = match (kind, value.as_deref(), self.checked_expr(expr)) {
+            (CompKind::List, None, Some(ty @ Ty::List(item))) => {
+                let element = self.element(item.ty())?;
+                let none = self.int(0);
+                let append = Expr {
+                    kind: ExprKind::Attr {
+                        object: Box::new(target),
+                        name: "append".to_owned(),
+                        optional: false,
+                    },
+                    span,
+                };
+                let arg = Arg { name: None, is_mut: false, value: (**elem).clone() };
+                let call = Expr { kind: ExprKind::Call { callee: Box::new(append), args: vec![arg] }, span };
+                (self.help(Helper::ListNew, &[element, none])?, ty, StmtKind::Expr(call))
+            }
+            (CompKind::Dict, Some(item), Some(ty @ Ty::Dict(key, word))) => {
+                let shape = fennec_interp::embed::dicts::shape(self.shared.tables.str_shape, key, word)
+                    .ok_or_else(|| super::internal("a dict's shape", span))?;
+                let shape = self.handed_number("shape", shape.cast_signed());
+                let room = self.int(0);
+                let slot =
+                    Expr { kind: ExprKind::Index { object: Box::new(target), index: elem.clone() }, span };
+                let assign = StmtKind::Assign {
+                    target: slot,
+                    op: None,
+                    value: item.clone(),
+                    declare_mut: false,
+                    ty: None,
+                };
+                (self.help(Helper::DictNew, &[shape, room])?, ty, assign)
+            }
+            _ => return Ok(None),
+        };
+        self.open_scope();
+        self.bind_native(&name, ty, Some(start), true);
+        self.stmt_inside_expr(&comp_loop(names, iter, cond, inner, span))?;
+        let made = self.local(&name).and_then(|local| local.var).map(|var| self.b.use_var(var));
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.locals.remove(&name);
+        }
+        self.close_scope()?;
+        Ok(Some((made, ty)))
+    }
+
+    /// `sum(items)` with a start or without, made by an ordinary native loop adding to a
+    /// hidden name, when it's a sum of ints or floats.
+    pub(super) fn native_sum(&mut self, call: &Expr, args: &[Arg]) -> Result<Option<Lowered>, Diagnostic> {
+        let (Some(first), true) = (args.first(), args.len() <= 2) else { return Ok(None) };
+        if args.iter().any(|arg| arg.name.is_some() || arg.is_mut) {
+            return Ok(None);
+        }
+        let Some(ty @ (Ty::Int | Ty::Float)) = self.checked_expr(call) else { return Ok(None) };
+        let span = call.span;
+        let start = match args.get(1) {
+            Some(start) => self.expr(&start.value)?,
+            None => self.expr(&Expr { kind: ExprKind::Int(0), span })?,
+        };
+        let start = self.convert(start.0, start.1, ty, span)?;
+        let name = hidden("sum", span);
+        let target = name_expr(&name, span);
+        let add = |value: &Expr| StmtKind::Assign {
+            target: target.clone(),
+            op: Some(BinOp::Add),
+            value: value.clone(),
+            declare_mut: false,
+            ty: None,
+        };
+        let each = match &first.value.kind {
+            ExprKind::Comprehension { kind: CompKind::Generator, elem, value: None, names, iter, cond } => {
+                comp_loop(names, iter, cond.as_deref(), add(elem), span)
+            }
+            ExprKind::Comprehension { .. } => return Ok(None),
+            _ => {
+                let item = hidden("item", span);
+                comp_loop(std::slice::from_ref(&item), &first.value, None, add(&name_expr(&item, span)), span)
+            }
+        };
+        self.open_scope();
+        self.bind_native(&name, ty, Some(start), true);
+        self.stmt_inside_expr(&each)?;
+        let total = self.local(&name).and_then(|local| local.var).map(|var| self.b.use_var(var));
+        self.close_scope()?;
+        Ok(Some((total, ty)))
+    }
+
+    /// `sum(...)`, when the call is to the built-in one.
+    pub(super) fn sum_call(
+        &mut self,
+        call: &Expr,
+        callee: &Expr,
+        args: &[Arg],
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let builtin = matches!(&callee.kind, ExprKind::Name(name) if name == "sum" && self.local(name).is_none())
+            && !self.shared.compiled.contains_key("sum");
+        if builtin { self.native_sum(call, args) } else { Ok(None) }
+    }
+
+    /// Lowers a statement in the middle of an expression. Statements drop temporaries, so
+    /// this drops only back to here, keeping the ones made earlier in the expression.
+    fn stmt_inside_expr(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
+        let held = self.frame && self.dirty;
+        let mark = if held { Some(self.help(Helper::Mark, &[])?) } else { None };
+        self.bases.extend(mark);
+        let lowered = self.stmt(stmt);
+        if held {
+            self.bases.pop();
+            self.dirty = true;
+        }
+        lowered
+    }
+
     /// `[a, b, c]` made natively, when the name it's for holds a native list, or `None`.
     /// Items are worked out in order, as the interpreter does.
     pub(super) fn list_literal_for(
@@ -21,7 +170,22 @@ impl Lowerer<'_, '_> {
         name: &str,
         value: &Expr,
     ) -> Result<Option<Lowered>, Diagnostic> {
-        let (ExprKind::List(items), Some(ty @ Ty::List(item))) = (&value.kind, self.checked_ty(name)) else {
+        match self.checked_ty(name) {
+            Some(ty) => self.list_literal_as(value, ty),
+            None => Ok(None),
+        }
+    }
+
+    /// `[a, b, c]` made natively, when the checker knows it can be.
+    fn list_literal(&mut self, value: &Expr) -> Result<Option<Lowered>, Diagnostic> {
+        match self.checked_expr(value) {
+            Some(ty) => self.list_literal_as(value, ty),
+            None => Ok(None),
+        }
+    }
+
+    fn list_literal_as(&mut self, value: &Expr, ty: Ty) -> Result<Option<Lowered>, Diagnostic> {
+        let (ExprKind::List(items), Ty::List(item)) = (&value.kind, ty) else {
             return Ok(None);
         };
         let mut lowered = Vec::with_capacity(items.len());
@@ -137,7 +301,7 @@ impl Lowerer<'_, '_> {
     }
 }
 
-fn value_span(items: &[Expr], at: usize) -> fennec_syntax::Span {
+fn value_span(items: &[Expr], at: usize) -> Span {
     items.get(at).map(|item| item.span).unwrap_or_default()
 }
 

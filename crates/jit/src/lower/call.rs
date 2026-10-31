@@ -36,6 +36,9 @@ impl Lowerer<'_, '_> {
         {
             return if name == "len" { self.length(expr, object) } else { self.absolute(expr, object) };
         }
+        if let Some(total) = self.sum_call(expr, callee, args)? {
+            return Ok(total);
+        }
         if let Some(name) = self.std_member(callee) {
             if let Some(id) = self.layouts.id(name)
                 && let Some(result) = self.construct(id, args, expr.span)?
@@ -502,7 +505,7 @@ impl Lowerer<'_, '_> {
         if let Some((list, item)) = self.packed(object) {
             return Ok((Some(self.list_length(&list, item)?), Ty::Int));
         }
-        let (value, ty) = self.expr(object)?;
+        let (value, ty) = self.receiver(object)?;
         match (value, ty) {
             (Some(text), Ty::Str) => Ok((Some(self.string_length(text)?), Ty::Int)),
             (Some(dict), Ty::Dict(..)) => {

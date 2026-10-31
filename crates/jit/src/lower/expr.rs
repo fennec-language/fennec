@@ -14,8 +14,42 @@ use crate::types::{Ty, unsupported};
 pub(super) type Lowered = (Option<Value>, Ty);
 
 impl Lowerer<'_, '_> {
+    /// Lowers an expression. An object the checker knows the type of becomes that type
+    /// natively, so what's done with it next needn't go through the runtime.
     pub(super) fn expr(&mut self, expr: &Expr) -> Result<Lowered, Diagnostic> {
+        let (value, ty) = self.expr_as_written(expr)?;
+        if ty == Ty::Obj
+            && let Some(to) = self.checked_expr(expr)
+        {
+            return Ok((Some(self.convert(value, ty, to, expr.span)?), to));
+        }
+        Ok((value, ty))
+    }
+
+    /// What a method, field or index is used on. A list or dict already held as an object
+    /// stays one: making a native copy of it would take as long as it is long, for every read.
+    pub(super) fn receiver(&mut self, object: &Expr) -> Result<Lowered, Diagnostic> {
+        match object.kind {
+            ExprKind::Name(_) | ExprKind::Attr { .. } | ExprKind::Index { .. } => {
+                self.expr_as_written(object)
+            }
+            _ => self.expr(object),
+        }
+    }
+
+    /// How native code can hold what the checker says an expression gives.
+    pub(super) fn checked_expr(&self, expr: &Expr) -> Option<Ty> {
+        let signatures = self.signatures;
+        let ty = signatures.expr_type(self.current_key(), expr.span)?;
+        Some(self.layouts.ty(ty))
+            .filter(|ty| matches!(ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Dict(..) | Ty::List(_)))
+    }
+
+    fn expr_as_written(&mut self, expr: &Expr) -> Result<Lowered, Diagnostic> {
         let span = expr.span;
+        if let Some(made) = self.comprehension(expr)? {
+            return Ok(made);
+        }
         match &expr.kind {
             ExprKind::Int(n) => Ok((Some(self.int(*n)), Ty::Int)),
             ExprKind::Float(x) => Ok((Some(self.b.ins().f64const(*x)), Ty::Float)),
@@ -285,6 +319,10 @@ impl Lowerer<'_, '_> {
     /// Arithmetic on ints: without a check when what's known says it can't overflow, and
     /// remembering what's known about the result.
     fn int_arithmetic(&mut self, op: BinOp, a: Value, b: Value, span: Span) -> Option<(Value, Ty)> {
+        if op == BinOp::Pow {
+            let [start, end] = self.span_args(span);
+            return Some((self.help(Helper::IntPower, &[a, b, start, end]).ok()?, Ty::Int));
+        }
         let exact = self.exact_range(op, a, b);
         if let Some(range) = exact.filter(|range| ranges::fits(*range)) {
             let value = match op {
@@ -377,6 +415,9 @@ impl Lowerer<'_, '_> {
             let zero = self.b.ins().f64const(0.0);
             let is_zero = self.b.ins().fcmp(FloatCC::Equal, b, zero);
             self.fail_if(is_zero, runtime::DIVISION_BY_ZERO, span);
+        }
+        if op == BinOp::Pow {
+            return Some((self.help(Helper::FloatPower, &[a, b]).ok()?, Ty::Float));
         }
         let value = match op {
             BinOp::Add => self.b.ins().fadd(a, b),

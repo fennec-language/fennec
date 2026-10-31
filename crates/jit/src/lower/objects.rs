@@ -91,7 +91,7 @@ impl Lowerer<'_, '_> {
                 loaded => Ok(loaded),
             };
         }
-        let (value, ty) = self.expr(object)?;
+        let (value, ty) = self.receiver(object)?;
         if let (Ty::Struct(id), Some(address)) = (ty, value)
             && let Some(field) = self.struct_field(id, name)?
         {
@@ -130,7 +130,7 @@ impl Lowerer<'_, '_> {
         object: &Expr,
         index: &Expr,
     ) -> Result<Lowered, Diagnostic> {
-        let (value, ty) = self.expr(object)?;
+        let (value, ty) = self.receiver(object)?;
         if let (Some(text), Ty::Str) = (value, ty) {
             let (at, at_ty) = self.expr(index)?;
             let at = self.convert(at, at_ty, Ty::Int, index.span)?;
@@ -304,7 +304,7 @@ impl Lowerer<'_, '_> {
                 _ => (value, ty),
             });
         }
-        let (value, ty) = self.expr(object)?;
+        let (value, ty) = self.receiver(object)?;
         self.note(
             expr.span,
             format!("the runtime calls the method `{method}`, picked by the receiver's type"),

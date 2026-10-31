@@ -21,6 +21,7 @@ const USAGE: &str = "usage:
   fennec build [path] [-o out]  compile it to a standalone executable
   fennec test [path]        run a kit's tests, or a single file's, skipping unchanged ones that passed
   fennec test --all [path]  run every test
+  fennec test --verbose [path]  list the tests that pass too, not only failures and the summary
   fennec new <name>         start a kit in a new folder
   fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
   fennec fmt --check        list the files that aren't formatted, and fail if any aren't
@@ -48,10 +49,7 @@ fn main() -> ExitCode {
         ["build", "-o", output] => aot::build(".", Some(output)),
         ["build", path] => aot::build(path, None),
         ["build", path, "-o", output] => aot::build(path, Some(output)),
-        ["test"] => test(".", false),
-        ["test", "--all"] => test(".", true),
-        ["test", "--all", path] => test(path, true),
-        ["test", path] => test(path, false),
+        ["test", rest @ ..] if test::Options::of(rest).is_some() => test(rest),
         ["new", path] => new(path),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
         ["fmt", rest @ ..] => fmt::fmt(rest),
@@ -86,10 +84,10 @@ fn on_big_stack(command: fn(&str) -> ExitCode, path: &str) -> ExitCode {
     big_stack(move || command(&path))
 }
 
-/// `fennec test [--all] [path]`, on a big stack for the interpreter.
-fn test(path: &str, all: bool) -> ExitCode {
-    let path = path.to_owned();
-    big_stack(move || test::test(&path, all))
+/// `fennec test [--all] [--verbose] [path]`, on a big stack for the interpreter.
+fn test(args: &[&str]) -> ExitCode {
+    let Some((path, options)) = test::Options::of(args) else { return ExitCode::from(2) };
+    big_stack(move || test::test(&path, options))
 }
 
 /// `fennec run [--interp] [path] [args]`: runs a program, handing it the arguments after its path.

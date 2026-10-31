@@ -246,7 +246,7 @@ impl Kit {
             let edited = original.replace(EDITED_LINE, &format!("    y = x + 300 + {run}\n"));
             std::fs::write(&path, edited).map_err(|err| err.to_string())?;
             let (took, printed) = self.timed(&["test"])?;
-            if !printed.contains(": 1 run,") {
+            if !printed.contains("(1 run,") {
                 return Err(format!("an edit to one function should run one test, but:\n{printed}"));
             }
             times.push(took);

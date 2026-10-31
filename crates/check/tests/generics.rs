@@ -315,6 +315,29 @@ fn self_in_an_interface_is_the_type_that_fits_it() {
 }
 
 #[test]
+fn a_programs_type_replaces_a_standard_library_type_of_the_same_name() {
+    let program = "
+        struct Tree:
+            size: int
+
+        struct TreeNode:
+            name: str
+
+        def main(stdout: Stdout):
+            stdout.print(Tree(size=1).size, TreeNode(name='a').name)
+    ";
+    assert_eq!(problems(&program.replace('\'', "\"")), Vec::<String>::new());
+    let wrong = "
+        struct Tree:
+            size: int
+
+        def main(stdout: Stdout):
+            stdout.print(Tree(size=1).len())
+    ";
+    assert_eq!(problems(wrong), ["`Tree` has no method `len` @ Tree(size=1).len()"]);
+}
+
+#[test]
 fn hashable_and_ordered_imply_eq_but_other_bounds_dont() {
     let program = "
         interface Named:

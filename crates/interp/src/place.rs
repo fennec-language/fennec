@@ -99,11 +99,7 @@ fn put_in(value: &mut Value, steps: &[Step], new: Value, span: Span) -> Result<(
         }
         Some((Step::Index(key), [])) if matches!(value, Value::Dict(_)) => {
             if let Value::Dict(pairs) = value {
-                let pairs = Rc::make_mut(pairs);
-                match pairs.iter_mut().find(|(existing, _)| existing == key) {
-                    Some((_, slot)) => *slot = new,
-                    None => pairs.push((key.clone(), new)),
-                }
+                Rc::make_mut(pairs).set(key.clone(), new);
             }
             Ok(())
         }
@@ -125,13 +121,9 @@ fn slot<'v>(value: &'v mut Value, step: &Step, span: Span) -> Result<&'v mut Val
             let at = ops::position(*at, items.len(), span)?;
             items.get_mut(at).ok_or_else(|| Diagnostic::new("index out of range", span))
         }
-        (Value::Dict(pairs), Step::Index(key)) => Rc::make_mut(pairs)
-            .iter_mut()
-            .find(|(existing, _)| existing == key)
-            .map(|(_, value)| value)
-            .ok_or_else(|| {
-                Diagnostic::new(format!("the dict has no key {}", crate::format::repr(key)), span)
-            }),
+        (Value::Dict(pairs), Step::Index(key)) => Rc::make_mut(pairs).get_mut(key).ok_or_else(|| {
+            Diagnostic::new(format!("the dict has no key {}", crate::format::repr(key)), span)
+        }),
         (Value::IdMap(map), Step::Index(Value::Id(id))) => Rc::make_mut(map)
             .get_mut(*id)
             .ok_or_else(|| Diagnostic::new("this Id refers to something that's been removed", span)),

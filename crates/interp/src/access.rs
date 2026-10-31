@@ -61,14 +61,10 @@ impl Interp<'_> {
                 Diagnostic::new("this Id refers to something that's been removed", span)
                     .with_help("use `.get(id)`, which gives None instead")
             }),
-            (Value::Dict(pairs), key) => {
-                pairs.iter().find(|(existing, _)| existing == key).map(|(_, value)| value.clone()).ok_or_else(
-                    || {
-                        Diagnostic::new(format!("the dict has no key {}", crate::format::repr(key)), span)
-                            .with_help("use `.get(key)`, which gives None instead")
-                    },
-                )
-            }
+            (Value::Dict(pairs), key) => pairs.get(key).cloned().ok_or_else(|| {
+                Diagnostic::new(format!("the dict has no key {}", crate::format::repr(key)), span)
+                    .with_help("use `.get(key)`, which gives None instead")
+            }),
             (Value::Instance(instance), _) => {
                 let method = self
                     .type_info(&instance.type_name)

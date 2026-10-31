@@ -18,6 +18,7 @@ mod matching;
 mod methods;
 mod ops;
 pub mod packed;
+mod pairs;
 mod place;
 mod prelude;
 mod scan;

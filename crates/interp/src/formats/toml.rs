@@ -67,7 +67,7 @@ impl Table {
     }
 
     pub(super) fn into_value(self) -> Value {
-        let pairs = self
+        let pairs: Vec<_> = self
             .entries
             .into_iter()
             .map(|(key, item)| {
@@ -79,7 +79,7 @@ impl Table {
                 (Value::str(&key), value)
             })
             .collect();
-        Value::Dict(Rc::new(pairs))
+        Value::Dict(Rc::new(pairs.into()))
     }
 }
 

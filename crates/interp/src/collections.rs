@@ -186,10 +186,9 @@ impl Interp<'_> {
                 match (method, args.as_slice()) {
                     ("clear", []) => pairs.clear(),
                     ("pop", [key]) => {
-                        let at = pairs.iter().position(|(existing, _)| existing == key).ok_or_else(|| {
+                        return pairs.remove(key).ok_or_else(|| {
                             Diagnostic::new(format!("the dict has no key {}", format::repr(key)), span)
-                        })?;
-                        return Ok(pairs.remove(at).1);
+                        });
                     }
                     _ => return Err(wrong_args(method, span)),
                 }
@@ -355,8 +354,8 @@ fn clock_start() -> std::time::Instant {
     *START.get_or_init(std::time::Instant::now)
 }
 
-fn lookup(pairs: &[(Value, Value)], key: &Value) -> Option<Value> {
-    pairs.iter().find(|(existing, _)| existing == key).map(|(_, value)| value.clone())
+fn lookup(pairs: &crate::pairs::Pairs, key: &Value) -> Option<Value> {
+    pairs.get(key).cloned()
 }
 
 fn str_method(text: &str, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {

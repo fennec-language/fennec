@@ -26,11 +26,11 @@ impl Interp<'_> {
             ExprKind::Tuple(items) => Ok(Value::tuple(self.eval_all(items)?)),
             ExprKind::Set(items) => Ok(Value::Set(Rc::new(dedupe(self.eval_all(items)?)))),
             ExprKind::Dict(pairs) => {
-                let mut built = Vec::with_capacity(pairs.len());
+                let mut built = crate::pairs::Pairs::default();
                 for (key, value) in pairs {
                     let key = self.eval(key)?;
                     let value = self.eval(value)?;
-                    insert_pair(&mut built, key, value);
+                    built.set(key, value);
                 }
                 Ok(Value::Dict(Rc::new(built)))
             }
@@ -191,13 +191,13 @@ impl Interp<'_> {
     ) -> Result<Value, Diagnostic> {
         let source = self.eval(iter)?;
         let mut items = Vec::new();
-        let mut pairs = Vec::new();
+        let mut pairs = crate::pairs::Pairs::default();
         for item in self.iterate(source, iter.span)? {
             self.frame.push();
             let result = self.comprehension_step(names, item, iter.span, parts);
             self.frame.pop();
             match result? {
-                Some((key, Some(value))) => insert_pair(&mut pairs, key, value),
+                Some((key, Some(value))) => pairs.set(key, value),
                 Some((item, None)) => items.push(item),
                 None => {}
             }
@@ -336,13 +336,6 @@ fn dedupe(items: Vec<Value>) -> Vec<Value> {
         }
     }
     unique
-}
-
-fn insert_pair(pairs: &mut Vec<(Value, Value)>, key: Value, value: Value) {
-    match pairs.iter_mut().find(|(existing, _)| *existing == key) {
-        Some((_, slot)) => *slot = value,
-        None => pairs.push((key, value)),
-    }
 }
 
 /// An unknown name, with a pointer to the Fennec spelling when it's a habit from elsewhere.

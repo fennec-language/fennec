@@ -1,0 +1,42 @@
+## Dicts of many keys that native code holds as objects, found through a hash table.
+
+struct Cell:
+    x: int
+    y: int
+
+def main(stdout: Stdout):
+    mut seen: dict[Cell, int] = {}
+    for i in range(500):
+        cell = Cell(x=i % 31, y=i % 17)
+        seen[cell] = seen.get(cell, 0) + 1
+    stdout.print(
+        seen.len(),
+        seen[Cell(x=0, y=0)],
+        Cell(x=99, y=0) in seen,
+        seen.get(Cell(x=99, y=0), -1),
+    )
+
+    mut by_pair: dict[(int, str), list[int]] = {}
+    for i in range(200):
+        key = (i % 20, f"k{i % 3}")
+        if key not in by_pair:
+            by_pair[key] = []
+        by_pair[key].append(i)
+    stdout.print(by_pair.len(), by_pair[(1, "k1")], (19, "k9") in by_pair)
+    popped = by_pair.pop((1, "k1"))
+    stdout.print(popped.len(), (1, "k1") in by_pair, by_pair.len())
+    by_pair[(1, "k1")] = [7]
+    stdout.print(by_pair[(1, "k1")], by_pair.keys()[by_pair.len() - 1])
+
+    copy = by_pair
+    by_pair[(2, "new")] = [1]
+    stdout.print(copy.len(), by_pair.len(), copy == by_pair, copy == copy, (2, "new") in copy)
+
+    mut floats: dict[float, int] = {}
+    for i in range(40):
+        floats[float(i) / 2.0] = i
+    stdout.print(floats[1.5], floats.len(), floats.get(99.0, 0), floats.get(-0.0, 5))
+    built = {i % 25: i for i in range(100)}
+    stdout.print(built.len(), built[3], list(built.keys())[:3])
+    by_pair.clear()
+    stdout.print(by_pair.len(), (1, "k1") in by_pair)

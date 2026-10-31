@@ -58,7 +58,7 @@ fn object(cursor: &mut Cursor<'_>, depth: usize) -> Parsed<Value> {
     let mut pairs: Vec<(Value, Value)> = Vec::new();
     skip_space(cursor);
     if cursor.eat('}') {
-        return Ok(Value::Dict(Rc::new(pairs)));
+        return Ok(Value::Dict(Rc::new(pairs.into())));
     }
     loop {
         skip_space(cursor);
@@ -78,7 +78,7 @@ fn object(cursor: &mut Cursor<'_>, depth: usize) -> Parsed<Value> {
         }
         skip_space(cursor);
         if cursor.eat('}') {
-            return Ok(Value::Dict(Rc::new(pairs)));
+            return Ok(Value::Dict(Rc::new(pairs.into())));
         }
         if !cursor.eat(',') {
             return cursor

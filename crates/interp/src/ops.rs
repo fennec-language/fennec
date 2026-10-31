@@ -151,7 +151,7 @@ pub(crate) fn compare(lhs: &Value, rhs: &Value, span: Span) -> Result<Ordering, 
 fn contains(container: &Value, item: &Value, span: Span) -> Result<bool, Diagnostic> {
     match (container, item) {
         (Value::List(items) | Value::Tuple(items) | Value::Set(items), item) => Ok(items.contains(item)),
-        (Value::Dict(pairs), key) => Ok(pairs.iter().any(|(existing, _)| existing == key)),
+        (Value::Dict(pairs), key) => Ok(pairs.find(key).is_some()),
         (Value::Str(text), Value::Str(part)) => Ok(text.contains(part.as_ref())),
         (Value::Bytes(data), Value::Int(byte)) => {
             Ok(u8::try_from(*byte).is_ok_and(|byte| data.contains(&byte)))

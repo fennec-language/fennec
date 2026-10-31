@@ -3,6 +3,7 @@
 //! ```text
 //! fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--found DIR] [target...]
 //! fennec-fuzz one <target> <file>
+//! fennec-fuzz show <file>
 //! fennec-fuzz worker <target> <seed> <first input> <input to stop at> <progress file>
 //! ```
 //!
@@ -14,6 +15,8 @@
 #![expect(clippy::print_stdout, reason = "the fuzzer reports what it finds")]
 #![expect(clippy::print_stderr, reason = "the fuzzer reports how it was misused")]
 
+mod engines;
+mod generate;
 mod minimize;
 mod mutate;
 mod supervise;
@@ -33,6 +36,7 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let code = match args.as_slice() {
         ["one", name, file] => one(name, Path::new(file)),
+        ["show", file] => show(Path::new(file)),
         ["worker", name, seed, first, end, progress] => worker(name, seed, (first, end), Path::new(progress)),
         ["run", rest @ ..] => run(rest),
         _ => Err("usage: fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--found DIR] [target...]"
@@ -74,6 +78,13 @@ fn one(name: &str, file: &Path) -> Result<ExitCode, String> {
     let target = target_named(name)?;
     let input = std::fs::read(file).map_err(|err| format!("{}: {err}", file.display()))?;
     Ok(on_big_stack(move || (target.run)(&input)))
+}
+
+/// Prints the program an input to the `jit` target writes, since that input is only choices.
+fn show(file: &Path) -> Result<ExitCode, String> {
+    let input = std::fs::read(file).map_err(|err| format!("{}: {err}", file.display()))?;
+    print!("{}", generate::program(&input));
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Runs the inputs from `first` up to `end`, noting each one's number first.

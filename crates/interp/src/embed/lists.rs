@@ -335,9 +335,12 @@ pub extern "C" fn insert(list: i64, at: i64, start: i64, end: i64) -> i64 {
         if let Some(block) = state.heap.block_mut(address) {
             let from = LIST_HEADER_WORDS + place * stride;
             let to = LIST_HEADER_WORDS + (usize::try_from(length).unwrap_or(0) + 1) * stride;
-            let moved = block.get_mut(from..to).unwrap_or_default();
-            moved.copy_within(..moved.len().saturating_sub(stride), stride);
-            moved.get_mut(..stride).unwrap_or_default().fill(0);
+            // What native code passes always has this much room; anything else is left alone.
+            let moved = block.get_mut(from..to).filter(|moved| moved.len() >= stride).unwrap_or_default();
+            if !moved.is_empty() {
+                moved.copy_within(..moved.len() - stride, stride);
+                moved.get_mut(..stride).unwrap_or_default().fill(0);
+            }
         }
         Ok(grown)
     })

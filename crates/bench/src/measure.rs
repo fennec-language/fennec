@@ -220,12 +220,16 @@ pub(crate) fn build_twin(source: &Path, out_dir: &Path) -> Result<PathBuf, Strin
     let name = source.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     let binary = out_dir.join(name);
     let engine = engine_for(source, out_dir)?;
+    let crate_name =
+        binary.file_name().map_or_else(String::new, |name| name.to_string_lossy().replace('.', "_"));
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let output = Command::new(rustc)
         .args(["--edition", "2024", "-C", "lto=fat"])
         .args(OPTIMIZED)
         .args(twin_cpu())
         .args(engine)
+        // A name like `dicts.std` isn't a crate's name, whatever its file is called.
+        .args(["--crate-name", &crate_name])
         .arg("-o")
         .arg(&binary)
         .arg(source)

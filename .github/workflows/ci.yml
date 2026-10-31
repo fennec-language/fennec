@@ -153,22 +153,23 @@ jobs:
             git worktree add --detach ../previous "$BASE"
             cargo build --release --locked -p fennec --manifest-path ../previous/Cargo.toml --target-dir target/previous
           fi
-      # Instruction counts back up timings: a kernel fails only when both say it got slower.
-      # The runner's virtual CPU usually hides the counters perf reads, so Valgrind is there
-      # to count by simulating instead, just for kernels that look slower.
+      # Each kernel's work is counted in instructions and compared with its pinned target. The
+      # runner's virtual CPU usually hides the counters perf reads, so Valgrind counts by
+      # simulating instead.
       - name: Install tools that count instructions
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq valgrind linux-tools-common "linux-tools-$(uname -r)" || echo "some aren't available"
           sudo sysctl -w kernel.perf_event_paranoid=1 || true
-      - name: Time each kernel against Rust and the previous commit
+      - name: Measure each kernel against its target and the previous commit
         run: |
           previous=()
           if [ -x target/previous/release/fennec ]; then
             previous=(--previous target/previous/release/fennec)
           fi
-          # Report only: slowdowns show as warnings, not failures, until the instruction count
-          # proves stable on no-op pull requests. Wrong output still fails the job.
+          # Report only: slowdowns against the previous commit show as warnings, not failures,
+          # until the instruction count proves stable on no-op pull requests. Wrong output, or a
+          # kernel below an enforced floor, still fails the job.
           ./target/release/fennec-bench --report-only "${previous[@]}"
 
   # Limits on how long editing, checking, testing and formatting take. A budget that's enforced
@@ -188,7 +189,7 @@ jobs:
   ok:
     name: CI passed
     if: always()
-    needs: [lint, test, coverage, deny, site, workflows, budgets]
+    needs: [lint, test, coverage, deny, site, workflows, budgets, bench]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

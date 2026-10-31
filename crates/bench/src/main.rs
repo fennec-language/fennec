@@ -17,8 +17,6 @@
 //! ```
 //!
 //! `budgets` measures something else: see the `budgets` module.
-//!
-//! `budgets` measures something else: see the `budgets` module.
 #![expect(clippy::print_stdout, reason = "the suite prints its table")]
 #![expect(clippy::print_stderr, reason = "the suite reports failures")]
 

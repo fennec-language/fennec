@@ -5,8 +5,6 @@ name: Pin benchmark targets
 
 on:
   workflow_dispatch:
-  push:
-    branches: [claude/benchmark-suite]
 
 permissions:
   contents: read

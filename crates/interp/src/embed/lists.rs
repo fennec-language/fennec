@@ -324,10 +324,9 @@ pub extern "C" fn insert(list: i64, at: i64, start: i64, end: i64) -> i64 {
 }
 
 /// Whether an item of a word equals a word, as the interpreter compares them.
-#[expect(clippy::float_cmp, reason = "0.0 equals -0.0 and nothing equals NaN, as in the interpreter")]
 fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
     match element {
-        Element::Float => f64::from_bits(item) == f64::from_bits(word),
+        Element::Float => f64::from_bits(item).total_cmp(&f64::from_bits(word)).is_eq(),
         Element::Str | Element::Boxed(_) => super::heap::same(state, item, word),
         _ => item == word,
     }

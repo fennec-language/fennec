@@ -16,4 +16,3 @@ n:1 Shape.Named(name="n", parts=[Shape.Dot])
 1 [[1]] 77 [[1], [2]] (Holder(count=1, maybe=None, pair=(1, "one"), grid=[[1]], words=["a", None], total=0), 5)
 False True False (1, "one")
 True None
-False 1 none

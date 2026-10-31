@@ -168,7 +168,7 @@ struct Parser:
             return is_name(self.peek_at(1))
         if word == "type":
             return is_name(self.peek_at(1)) and self.peek_at(2) == .Punct("=")
-        if word == "test":
+        if word == "test" or word == "bench":
             return is_str(self.peek_at(1))
         False
 
@@ -187,7 +187,7 @@ struct Parser:
                 span = start.to(self.prev_span())
                 self.end_line()?
                 .TypeAlias(name, ty, span)
-            case _: self.test(start)?
+            case _: self.test(start, word == "bench")?
 
     def type_def(mut self, start: Span, is_enum: bool) -> TypeDef:
         name = self.name("a type name")?
@@ -280,20 +280,20 @@ struct Parser:
                 )
         .Extend(Extension(name=name, generics=generics, methods=methods, span=span))
 
-    def test(mut self, start: Span) -> Item:
+    def test(mut self, start: Span, bench: bool) -> Item:
         mut name = ""
         match self.advance().tok:
             case .Str(text): name = text
             case _: fail self.unexpected("a test name")
         mut inputs = []
-        if self.eat_keyword("for"):
+        if not bench and self.eat_keyword("for"):
             inputs.append(self.param()?)
             while self.eat_punct(","):
                 inputs.append(self.param()?)
         span = start.to(self.prev_span())
         self.expect_punct(":")?
         body = self.block()?
-        .Test(TestDef(name=name, inputs=inputs, body=body, span=span))
+        .Test(TestDef(name=name, inputs=inputs, body=body, bench=bench, span=span))
 
     ## `import a.b`, or `from a.b import x, y`, each maybe renamed with `as`.
     def import_names(mut self) -> Import:

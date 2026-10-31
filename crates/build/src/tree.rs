@@ -82,7 +82,10 @@ pub fn definitions(module: &Module) -> Vec<(String, Hash)> {
                 };
                 found.push((key, tree_hash(import)));
             }
-            Item::Test(test) => found.push((format!("test \"{}\"", test.name), tree_hash(test))),
+            Item::Test(test) => {
+                let word = if test.bench { "bench" } else { "test" };
+                found.push((format!("{word} \"{}\"", test.name), tree_hash(test)));
+            }
             Item::Stmt(_) => {}
         }
     }

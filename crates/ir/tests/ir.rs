@@ -368,16 +368,9 @@ def moved(body: Body, by: float) -> Body:
     next.mass *= 2.0
     next
 ";
-    let program = lowered(source).unwrap();
     assert_eq!(
-        program.to_string(),
-        "struct Vec2
-  x: float
-  y: float
-struct Body
-  pos: Vec2
-  mass: float
-fn moved(_0, _1) -> Body
+        printed(source, "moved").unwrap(),
+        "fn moved(_0, _1) -> Body
   local _0 body: Body
   local _1 by: float
   local _2 next: Body
@@ -396,7 +389,6 @@ fn moved(_0, _1) -> Body
     _7 = _6 * 2.0
     _2.mass = _7
     return _2
-
 "
     );
 }
@@ -646,6 +638,173 @@ def twice(light: Light) -> Light:
     assert!(printed(source, "x_of").unwrap().contains("_1 = _0.x"));
 }
 
+const FILES: &str = "error Missing:
+    path: str
+
+error Denied:
+    who: str
+
+def load(path: str) -> str:
+    if path == \"\":
+        fail Missing(path)
+    if path == \"root\":
+        fail Denied(path)
+    path
+
+";
+
+#[test]
+fn fail_and_success_are_written_out() {
+    let source = format!("{FILES}def main(stdout: Stdout):\n    stdout.print(1)\n");
+    assert_eq!(
+        printed(&source, "load").unwrap(),
+        "fn load(_0) -> result of str
+  local _0 path: str
+  local _1: bool
+  local _2: Missing
+  local _3: result of str
+  local _4: bool
+  local _5: Denied
+  local _6: result of str
+  local _7: result of str
+  bb0:
+    _1 = _0 == \"\"
+    branch _1 bb2 bb3
+  bb1:
+    _4 = _0 == \"root\"
+    branch _4 bb5 bb6
+  bb2:
+    _2 = make Missing(_0)
+    _3 = err _2
+    return _3
+  bb3:
+    jump bb1
+  bb4:
+    _7 = ok _0
+    return _7
+  bb5:
+    _5 = make Denied(_0)
+    _6 = err _5
+    return _6
+  bb6:
+    jump bb4
+"
+    );
+}
+
+#[test]
+fn question_mark_leaves_with_the_error() {
+    let source = format!("{FILES}def twice(path: str) -> str:\n    text = load(path)?\n    text + text\n");
+    assert_eq!(
+        printed(&source, "twice").unwrap(),
+        "fn twice(_0) -> result of str
+  local _0 path: str
+  local _1: result of str
+  local _2: bool
+  local _3: Denied | Missing
+  local _4: result of str
+  local _5: str
+  local _6 text: str
+  local _7: str
+  local _8: result of str
+  bb0:
+    _1 = call load(_0)
+    _2 = _1 is err
+    branch _2 bb1 bb2
+  bb1:
+    _3 = _1 as err
+    _4 = err _3
+    return _4
+  bb2:
+    _5 = _1 as ok
+    _6 = _5
+    _7 = _6 + _6
+    _8 = ok _7
+    return _8
+"
+    );
+}
+
+#[test]
+fn matching_a_result_sees_each_error_and_looks_through_ok() {
+    let source = format!(
+        "{FILES}def show(path: str) -> str:
+    match load(path):
+        case Missing(name):
+            name
+        case Err(_):
+            \"denied\"
+        case text:
+            text
+"
+    );
+    let printed = printed(&source, "show").unwrap();
+    for line in ["is Missing", "as error", ".path", "as err", "as ok"] {
+        assert!(printed.contains(line), "no {line} in {printed}");
+    }
+}
+
+#[test]
+fn a_name_known_not_to_be_none_is_unwrapped_where_its_read() {
+    let source = "def next(count: int?) -> int:
+    if count is None:
+        return 0
+    count + 1
+";
+    assert_eq!(
+        printed(source, "next").unwrap(),
+        "fn next(_0) -> int
+  local _0 count: int?
+  local _1: bool
+  local _2: int
+  local _3: int
+  bb0:
+    _1 = _0 is none
+    branch _1 bb2 bb3
+  bb1:
+    _2 = _0 as some
+    _3 = _2 + 1
+    return _3
+  bb2:
+    return 0
+  bb3:
+    jump bb1
+"
+    );
+}
+
+#[test]
+fn values_are_wrapped_going_where_an_optional_goes_and_else_runs_only_when_needed() {
+    let source = "struct Slot:
+    held: int?
+
+def fill(mut slot: Slot, value: int?) -> int:
+    slot.held = 1
+    slot.held = None
+    mut kept: int? = 2
+    kept = None
+    value else 3
+";
+    let printed = printed(source, "fill").unwrap();
+    for line in ["= some 1", "_0.held = none", "= some 2", "_3 = none", "is none", "as some"] {
+        assert!(printed.contains(line), "no {line} in {printed}");
+    }
+}
+
+#[test]
+fn matching_an_optional_tests_for_none_first() {
+    let source = "def name(code: int?) -> str:
+    match code:
+        case None:
+            \"none\"
+        case 1 | 2:
+            \"low\"
+        case n:
+            \"other\"
+";
+    assert_eq!(lowered(source).unwrap().not_lowered, []);
+}
+
 /// A one-block function with the given locals, ending as given.
 fn function(locals: Vec<Type>, end: Terminator) -> Function {
     Function {
@@ -711,6 +870,8 @@ fn every_example_lowers_to_valid_ir_or_says_why() {
         lowered_functions
             .extend(program.functions.iter().map(|function| format!("{file}: {}", function.name)));
     }
+    // How far lowering has got. This only goes up, until every function lowers.
+    assert!(lowered_functions.len() >= 107, "only {} functions lowered", lowered_functions.len());
     for expected in
         ["numbers.fen: fib", "numbers.fen: collatz_steps", "numbers.fen: is_prime", "numbers.fen: lerp"]
     {

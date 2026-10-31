@@ -25,14 +25,17 @@ pub(super) fn definitions(module: &Module, checked: &Checked) -> Vec<StructDef> 
 
 impl Lowering<'_> {
     fn struct_fields(&self, type_name: &str) -> Lowered<&[(String, Type)]> {
-        let found = self.context.checked.signatures.structure(type_name);
+        let signatures = &self.context.checked.signatures;
+        let found = signatures.structure(type_name).or_else(|| signatures.error_type(type_name));
         found.map(|found| found.fields.as_slice()).ok_or_else(|| format!("`{type_name}` has no fields"))
     }
 
     /// The struct a call builds, when the callee is a struct's name.
     pub(super) fn constructs<'e>(&self, callee: &'e Expr) -> Option<&'e str> {
         let ExprKind::Name(name) = &callee.kind else { return None };
-        (self.lookup(name).is_none() && self.context.structs.contains(name.as_str())).then_some(name.as_str())
+        let named =
+            self.context.structs.contains(name.as_str()) || self.context.errors.contains(name.as_str());
+        (self.lookup(name).is_none() && named).then_some(name.as_str())
     }
 
     /// `Point(1, y=2)`: arguments run in the order they're written, and each lands in its
@@ -61,9 +64,7 @@ impl Lowering<'_> {
             };
             let value = self.expr(&arg.value)?;
             let field = at.and_then(|at| fields.get(at)).ok_or("an argument matches no field")?;
-            if type_in(&self.locals, &value).as_ref() != Some(&field.1) {
-                return Err(format!("`{shown}.{}` holds {}", field.0, field.1));
-            }
+            let value = self.coerce(value, &field.1, arg.value.span)?;
             if let Some(slot) = at.and_then(|at| values.get_mut(at)) {
                 *slot = Some(value);
             }
@@ -75,7 +76,12 @@ impl Lowering<'_> {
     /// The struct type of an expression, when it's one the IR holds.
     fn struct_of(&self, expr: &Expr) -> Option<String> {
         match self.body.expr(expr.span)? {
-            Type::Named(name) if self.context.structs.contains(name.as_str()) => Some(name.clone()),
+            Type::Named(name)
+                if self.context.structs.contains(name.as_str())
+                    || self.context.errors.contains(name.as_str()) =>
+            {
+                Some(name.clone())
+            }
             _ => None,
         }
     }
@@ -83,16 +89,17 @@ impl Lowering<'_> {
     /// `object.field`. A field that's been narrowed, like an optional known not to be
     /// `None`, reads as a different type than it's declared with, which isn't lowered yet.
     pub(super) fn get_field(&mut self, expr: &Expr, object: &Expr, field: &str) -> Lowered<Operand> {
-        let ty = self.ty(expr)?;
         let owner = self.struct_of(object).ok_or_else(|| format!("it reads `.{field}` of something else"))?;
         let declared = self.struct_fields(&owner)?.iter().find(|(name, _)| name == field);
-        if declared.map(|(_, declared)| declared) != Some(&ty) {
-            return Err(format!("it reads `{owner}.{field}` as {ty}"));
+        let declared =
+            declared.map(|(_, ty)| ty.clone()).ok_or_else(|| format!("`{owner}` has no `{field}`"))?;
+        if !self.context.holds(&declared) {
+            return Err(format!("it reads `{owner}.{field}`, which is {declared}"));
         }
         let object = self.expr(object)?;
-        let dest = self.temporary(ty);
+        let dest = self.temporary(declared);
         self.emit(InstKind::GetField { dest, object, field: field.to_owned() }, expr.span);
-        Ok(Operand::Local(dest))
+        self.narrowed(Operand::Local(dest), expr)
     }
 
     /// `object.path.to.field = value`, and `+=` and so on, on a struct held in a local.
@@ -127,9 +134,8 @@ impl Lowering<'_> {
             self.emit(InstKind::Binary { dest, op, lhs: read, rhs: value }, span);
             value = Operand::Local(dest);
         }
-        if type_in(&self.locals, &value) != ty {
-            return Err("it gives a field a value of another type".to_owned());
-        }
+        let wanted = ty.ok_or("it changes a field that doesn't exist")?;
+        let value = self.coerce(value, &wanted, span)?;
         self.emit(InstKind::SetField { object, path, value }, span);
         Ok(())
     }

@@ -196,6 +196,7 @@ pub struct Signatures {
     functions: BTreeMap<String, Signature>,
     structs: BTreeMap<String, Struct>,
     enums: BTreeMap<String, Enum>,
+    errors: BTreeMap<String, Struct>,
     locals: BTreeMap<String, Type>,
 }
 
@@ -228,6 +229,16 @@ impl Signatures {
     /// An enum's cases, the standard library's included.
     pub fn enumeration(&self, name: &str) -> Option<&Enum> {
         self.enums.get(name)
+    }
+
+    /// An error type's fields, the standard library's included.
+    pub fn error_type(&self, name: &str) -> Option<&Struct> {
+        self.errors.get(name)
+    }
+
+    /// The name of every error type, the standard library's included.
+    pub fn error_types(&self) -> impl Iterator<Item = &str> {
+        self.errors.keys().map(String::as_str)
     }
 
     /// The name of every struct, the standard library's included.

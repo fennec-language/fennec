@@ -152,10 +152,20 @@ impl Lowerer<'_, '_> {
     /// Lowers a statement in the middle of an expression. Statements drop temporaries, so
     /// this drops only back to here, keeping the ones made earlier in the expression.
     fn stmt_inside_expr(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
+        self.keeping_temps(|lowerer| lowerer.stmt(stmt))
+    }
+
+    /// Lowers statements in the middle of an expression, like a body inlined there.
+    /// Statements drop temporaries, so these drop only back to here, keeping the ones made
+    /// earlier in the expression.
+    pub(super) fn keeping_temps<T>(
+        &mut self,
+        lower: impl FnOnce(&mut Self) -> Result<T, Diagnostic>,
+    ) -> Result<T, Diagnostic> {
         let held = self.frame && self.dirty;
         let mark = if held { Some(self.help(Helper::Mark, &[])?) } else { None };
         self.bases.extend(mark);
-        let lowered = self.stmt(stmt);
+        let lowered = lower(self);
         if held {
             self.bases.pop();
             self.dirty = true;

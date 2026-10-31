@@ -242,6 +242,7 @@ pub fn fallbacks(module: &Module) -> Result<Vec<Note>, Diagnostic> {
         span: definition(module, function).unwrap_or_default(),
         what,
         loops: 0,
+        compiled_in: function.to_owned(),
     };
     let mut notes: Vec<Note> = compilation
         .interpreted

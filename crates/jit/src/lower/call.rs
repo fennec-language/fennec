@@ -39,6 +39,9 @@ impl Lowerer<'_, '_> {
         if let Some(total) = self.sum_call(expr, callee, args)? {
             return Ok(total);
         }
+        if let Some(made) = self.call_known(callee, args)? {
+            return Ok(made);
+        }
         if let Some(name) = self.std_member(callee) {
             if let Some(id) = self.layouts.id(name)
                 && let Some(result) = self.construct(id, args, expr.span)?
@@ -142,6 +145,11 @@ impl Lowerer<'_, '_> {
     /// A call to a compiled function, natively. `None` when the arguments don't suit a
     /// native call.
     fn call_compiled(&mut self, name: &str, args: &[Arg], span: Span) -> Result<Option<Lowered>, Diagnostic> {
+        if let Some(made) = self.specialized_call(name, args, span)? {
+            self.shared.specialized.insert(name.to_owned());
+            return Ok(Some(made));
+        }
+        self.shared.called.insert(name.to_owned());
         let Some(compiled) = self.shared.compiled.get(name) else { return Ok(None) };
         let (id, params, ret) = (compiled.id, compiled.params.clone(), compiled.ret);
         let Some(arranged) = Self::arrange(&params, args) else { return Ok(None) };
@@ -643,7 +651,7 @@ impl Lowerer<'_, '_> {
         let (value, ty) = self.expr(expr)?;
         match ty {
             Ty::Str if many => Ok((value.map(|text| self.own(text, ty)), ty)),
-            Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) | Ty::List(_) => {
+            Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) | Ty::List(_) | Ty::Known(_) => {
                 Ok((Some(self.handle_of(value, ty, expr.span)?), Ty::Obj))
             }
             Ty::Cap(_) => {

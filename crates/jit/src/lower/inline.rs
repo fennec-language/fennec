@@ -17,7 +17,7 @@ use crate::types::{Function, Ty};
 const MAX_NODES: usize = 48;
 
 /// How deeply inlined calls may nest inside each other.
-const MAX_DEPTH: usize = 4;
+pub(super) const MAX_DEPTH: usize = 4;
 
 /// The body to inline at calls to a function, if it's small and simple enough.
 pub(super) fn inline_body(function: &Function<'_>) -> Option<Rc<FnDef>> {
@@ -28,7 +28,7 @@ pub(super) fn inline_body(function: &Function<'_>) -> Option<Rc<FnDef>> {
         }
         Ty::Int | Ty::Float | Ty::Bool => !param.is_mut,
         Ty::Cap(_) => true,
-        Ty::Unit | Ty::Obj | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_) => false,
+        Ty::Unit | Ty::Obj | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_) | Ty::Known(_) => false,
     });
     // A struct's body keeps its statements: what it gives back is checked by the last one.
     let body = if matches!(function.ret, Ty::Struct(_)) {
@@ -49,7 +49,7 @@ pub(super) fn inline_body(function: &Function<'_>) -> Option<Rc<FnDef>> {
 /// A body with `return`s written as the values of its branches, where that says the same:
 /// `if c: return x`, then the rest, is `if c: x else: the rest`. Any `return` it can't
 /// rewrite is left in, and stops the body being inlined.
-fn without_returns(stmts: &[Stmt]) -> Vec<Stmt> {
+pub(super) fn without_returns(stmts: &[Stmt]) -> Vec<Stmt> {
     let mut written = Vec::with_capacity(stmts.len());
     for (at, stmt) in stmts.iter().enumerate() {
         let rest = stmts.get(at + 1..).unwrap_or_default();
@@ -206,7 +206,7 @@ impl Lowerer<'_, '_> {
                 }
             });
         }
-        let lowered = bound.and_then(|()| self.tail(&def.body));
+        let lowered = bound.and_then(|()| self.keeping_temps(|lowerer| lowerer.tail(&def.body)));
         let closed = self.close_scope();
         self.inlining.pop();
         self.call_site = outer_site;

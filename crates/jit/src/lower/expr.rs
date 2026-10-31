@@ -144,7 +144,7 @@ impl Lowerer<'_, '_> {
             }
             Ty::Dict(key, value) => return self.handle_to_dict(handle, key, value, span),
             Ty::List(item) => return self.handle_to_list(handle, item, span),
-            Ty::Unit | Ty::Cap(_) => {
+            Ty::Unit | Ty::Cap(_) | Ty::Known(_) => {
                 return Err(unsupported(&format!("using a value as {}", to.name()), span));
             }
         };
@@ -181,6 +181,7 @@ impl Lowerer<'_, '_> {
                 let kind = self.int(cap.kind());
                 return self.help(Helper::Capability, &[kind]);
             }
+            Ty::Known(at) => return self.known_as_object(at, span),
         };
         let value = value.ok_or_else(|| unsupported("this value", span))?;
         self.help(boxing, &[value])

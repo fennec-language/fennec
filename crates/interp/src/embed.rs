@@ -34,6 +34,7 @@ use crate::place::Place;
 use crate::scope::Frame;
 use crate::value::{Capability, Value};
 
+pub use heap::Counts;
 pub use tests::{next_test, ran_in_interpreter};
 
 /// What the compiler registers before a program runs: the names, text and syntax its
@@ -194,6 +195,8 @@ pub struct Leftovers {
     pub frames: usize,
     /// Boxed values' blocks no one released.
     pub boxes: usize,
+    /// What the run allocated and copied.
+    pub counts: Counts,
 }
 
 /// Ends the run: what it printed, why it failed if it did, and what it left behind.
@@ -204,8 +207,12 @@ pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
         Some(mut state) => {
             state.temps.clear();
             state.let_go();
-            let leftovers =
-                Leftovers { temps: state.temps.len(), frames: state.callers.len(), boxes: state.heap.live() };
+            let leftovers = Leftovers {
+                temps: state.temps.len(),
+                frames: state.callers.len(),
+                boxes: state.heap.live(),
+                counts: state.heap.counts,
+            };
             (state.output.0.take(), state.failure, leftovers)
         }
         None => (Vec::new(), None, Leftovers::default()),

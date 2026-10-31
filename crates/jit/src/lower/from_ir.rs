@@ -4,16 +4,79 @@
 //!
 //! So far it takes functions that only hold ints, floats and bools. It leaves a function on
 //! the syntax tree when that would make it slower: one calling something small enough to
-//! inline, since the IR has no inlining until the optimizer does it, and one with a `for` loop.
+//! inline, since the IR has no inlining until the optimizer does it.
+//!
+//! What's known about an int comes from locals written once, whose value is the same each time
+//! as far as anything reading it can tell, and from the IR's list of `for` loop counts.
+
+use std::collections::HashMap;
 
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use cranelift_frontend::Variable;
 use fennec_check::Type;
-use fennec_ir::{BlockId, Function, Inst, InstKind, LocalId, Operand, Terminator};
+use fennec_ir::{BlockId, Count, Function, Inst, InstKind, LocalId, Operand, Terminator};
 use fennec_syntax::{BinOp, Diagnostic, Span};
 
 use super::{Lowerer, Shared, internal};
 use crate::types::Ty;
+
+/// What the IR path knows about a function's locals as it lowers it.
+struct Locals {
+    vars: Vec<(Variable, Ty)>,
+    /// How many instructions write each local, and how many are parameters, which hold
+    /// something before anything writes them.
+    writes: Vec<usize>,
+    params: usize,
+    /// What's known about the value of each local written once, or a count's first value.
+    ranges: HashMap<usize, (i64, i64)>,
+    /// The loop each count is the count of.
+    counts: HashMap<usize, Count>,
+}
+
+impl Locals {
+    fn var(&self, local: LocalId, span: Span) -> Result<(Variable, Ty), Diagnostic> {
+        self.vars.get(local.0).copied().ok_or_else(|| internal("no such local", span))
+    }
+
+    /// What's known about a local where it's read.
+    fn range(&self, local: LocalId) -> Option<(i64, i64)> {
+        let Some(count) = self.counts.get(&local.0) else {
+            return self.ranges.get(&local.0).copied();
+        };
+        let first = *self.ranges.get(&local.0)?;
+        let stop = *self.ranges.get(&count.stop.0)?;
+        Some(if count.down {
+            (stop.0.saturating_add(1).min(first.0), first.1)
+        } else {
+            (first.0, stop.1.saturating_sub(1).max(first.1))
+        })
+    }
+
+    /// Whether what's written to a local says what it holds: it's the only write, or a count's
+    /// first value.
+    fn keeps_range(&self, local: LocalId) -> bool {
+        let once = local.0 >= self.params && self.writes.get(local.0).is_some_and(|writes| *writes == 1);
+        once || (self.counts.contains_key(&local.0) && !self.ranges.contains_key(&local.0))
+    }
+}
+
+/// How many instructions write each local.
+fn writes(ir: &Function) -> Vec<usize> {
+    let mut writes = vec![0; ir.locals.len()];
+    for inst in ir.blocks.iter().flat_map(|block| &block.insts) {
+        let dest = match &inst.kind {
+            InstKind::Copy { dest, .. } | InstKind::Unary { dest, .. } | InstKind::Binary { dest, .. } => {
+                Some(dest)
+            }
+            InstKind::Call { dest, .. } => dest.as_ref(),
+            _ => None,
+        };
+        if let Some(count) = dest.and_then(|dest| writes.get_mut(dest.0)) {
+            *count += 1;
+        }
+    }
+    writes
+}
 
 /// How native code holds a number or bool of this type.
 fn plain(ty: &Type) -> Option<Ty> {
@@ -55,17 +118,6 @@ fn takes(inst: &InstKind, function: &Function, shared: &Shared) -> bool {
     }
 }
 
-/// Whether a `for` loop counts in this function: a local with no name steps itself. The syntax
-/// tree knows a loop's count can't overflow or go below its start, which saves checks on
-/// everything computed from it, and the IR doesn't say so yet.
-fn counts_in_a_loop(function: &Function) -> bool {
-    let unnamed = |local: &LocalId| function.locals.get(local.0).is_some_and(|held| held.name.is_none());
-    function.blocks.iter().flat_map(|block| &block.insts).any(|inst| match &inst.kind {
-        InstKind::Binary { dest, lhs: Operand::Local(lhs), .. } => dest == lhs && unnamed(dest),
-        _ => false,
-    })
-}
-
 /// Whether the IR path can lower a function.
 pub(super) fn taken(function: &Function, written: &crate::types::Function<'_>, shared: &Shared) -> bool {
     let locals = function.locals.iter().all(|local| plain(&local.ty).is_some());
@@ -77,12 +129,7 @@ pub(super) fn taken(function: &Function, written: &crate::types::Function<'_>, s
         )
     });
     let mut insts = function.blocks.iter().flat_map(|block| &block.insts);
-    !written.fallible
-        && locals
-        && returns
-        && ends
-        && !counts_in_a_loop(function)
-        && insts.all(|inst| takes(&inst.kind, function, shared))
+    !written.fallible && locals && returns && ends && insts.all(|inst| takes(&inst.kind, function, shared))
 }
 
 impl Lowerer<'_, '_> {
@@ -113,6 +160,13 @@ impl Lowerer<'_, '_> {
             };
             vars.push((var.ok_or_else(|| internal("a parameter has no variable", span))?, ty));
         }
+        let mut vars = Locals {
+            vars,
+            writes: writes(ir),
+            params: ir.params,
+            ranges: HashMap::new(),
+            counts: ir.counts.iter().map(|count| (count.count.0, *count)).collect(),
+        };
         let blocks: Vec<_> = ir.blocks.iter().map(|_| self.b.create_block()).collect();
         let block_of = |id: BlockId| blocks.get(id.0).copied();
         let first = block_of(BlockId(0)).ok_or_else(|| internal("a function has no blocks", span))?;
@@ -120,7 +174,7 @@ impl Lowerer<'_, '_> {
         for (block, written) in blocks.iter().zip(&ir.blocks) {
             self.b.switch_to_block(*block);
             for inst in &written.insts {
-                self.inst_from_ir(inst, &vars)?;
+                self.inst_from_ir(inst, &mut vars)?;
             }
             match &written.end {
                 Terminator::Jump(target) => {
@@ -149,7 +203,7 @@ impl Lowerer<'_, '_> {
         Ok(())
     }
 
-    fn inst_from_ir(&mut self, inst: &Inst, vars: &[(Variable, Ty)]) -> Result<(), Diagnostic> {
+    fn inst_from_ir(&mut self, inst: &Inst, vars: &mut Locals) -> Result<(), Diagnostic> {
         let span = inst.span;
         match &inst.kind {
             InstKind::Copy { dest, value } => {
@@ -196,24 +250,26 @@ impl Lowerer<'_, '_> {
         &mut self,
         dest: LocalId,
         value: Value,
-        vars: &[(Variable, Ty)],
+        vars: &mut Locals,
         span: Span,
     ) -> Result<(), Diagnostic> {
-        let (var, _) = vars.get(dest.0).ok_or_else(|| internal("no such local", span))?;
-        self.b.def_var(*var, value);
+        let (var, ty) = vars.var(dest, span)?;
+        if ty == Ty::Int && vars.keeps_range(dest) {
+            vars.ranges.insert(dest.0, self.range(value));
+        }
+        self.b.def_var(var, value);
         Ok(())
     }
 
-    fn operand_from_ir(
-        &mut self,
-        operand: &Operand,
-        vars: &[(Variable, Ty)],
-        span: Span,
-    ) -> Result<Value, Diagnostic> {
+    fn operand_from_ir(&mut self, operand: &Operand, vars: &Locals, span: Span) -> Result<Value, Diagnostic> {
         match operand {
             Operand::Local(local) => {
-                let (var, _) = vars.get(local.0).ok_or_else(|| internal("no such local", span))?;
-                Ok(self.b.use_var(*var))
+                let (var, _) = vars.var(*local, span)?;
+                let value = self.b.use_var(var);
+                if let Some(range) = vars.range(*local) {
+                    self.note_range(value, range);
+                }
+                Ok(value)
             }
             Operand::Int(value) => Ok(self.int(*value)),
             Operand::Float(value) => Ok(self.b.ins().f64const(*value)),
@@ -223,11 +279,9 @@ impl Lowerer<'_, '_> {
     }
 }
 
-fn operand_type(operand: &Operand, vars: &[(Variable, Ty)], span: Span) -> Result<Ty, Diagnostic> {
+fn operand_type(operand: &Operand, vars: &Locals, span: Span) -> Result<Ty, Diagnostic> {
     match operand {
-        Operand::Local(local) => {
-            vars.get(local.0).map(|(_, ty)| *ty).ok_or_else(|| internal("no such local", span))
-        }
+        Operand::Local(local) => vars.var(*local, span).map(|(_, ty)| ty),
         Operand::Int(_) => Ok(Ty::Int),
         Operand::Float(_) => Ok(Ty::Float),
         Operand::Bool(_) => Ok(Ty::Bool),

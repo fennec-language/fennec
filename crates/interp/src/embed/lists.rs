@@ -122,6 +122,7 @@ fn grow_in(state: &mut State, list: i64, more: usize) -> Option<i64> {
     let address = if shared || count + more > room {
         let kept = items(block, stride).to_vec();
         if shared {
+            state.heap.counts.copied(kept.len());
             retain_items(state, &element, &kept);
         }
         let grown =

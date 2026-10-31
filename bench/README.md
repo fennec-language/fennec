@@ -14,11 +14,14 @@ cargo build --release -p fennec -p fennec-bench
 | Float math | `nbody`, `spectral_norm`, `mandelbrot` |
 | Allocation and recursive data | `binary_trees` |
 | Hash tables | `dicts` |
-| Strings and text | `strings`, `json` |
+| Strings and text | `strings`, `json`, `k_nucleotide`, `regex` |
 | Structs in a game loop | `particles` |
 | Sorting and generics | `sort`, `generics` |
 | Closures and iterators | `comprehensions`, `closures` |
+| Object-heavy code with dispatch | `richards`, `deltablue` |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
+
+These are what languages have historically been judged on: most of the Computer Language Benchmarks Game, and `richards` and `deltablue` from Are We Fast Yet. **The suite is locked.** Each target records a hash of its kernel and twin, and a run fails if they've changed, or if a kernel has come or gone. Changing one means pinning it again, and the pull request has to say why. The fix for a slow kernel goes in the compiler.
 
 ## What it reports
 
@@ -39,15 +42,31 @@ Each kernel also has to print exactly what its target expects, which the target 
 
 **The JIT's floor is 80% of target**, on every kernel, rising to 85% later. Past that is nice but not the goal. The 80% is a floor on work, not on startup.
 
-Once a kernel reaches the floor, the run says so. Mark it `yes` in the last column of both targets files, and from then on CI fails if it drops below. A failure is fixed in the compiler, never by changing the benchmark.
+Once a kernel reaches the floor, the run says so. Mark it `yes` in the last column of `x86_64.txt`, the only architecture CI measures, and from then on CI fails if it drops below. Reaching the floor on x86-64 says nothing about 64-bit Arm, so that file's marks wait until Arm is measured the same way. A `.std` row is never marked. A failure is fixed in the compiler, never by changing the benchmark.
 
-Release builds will aim for 110% of target when they exist. The interpreter's range is 10–30%.
+The target itself is 100%. Each engine aims for its own share of it:
+
+| Engine | Aim |
+|---|---|
+| Release builds | 110% of target, when they exist |
+| The JIT | 80% now, 85% later |
+| The interpreter | 10–30% |
 
 To compare against another build of `fennec`, like the previous commit's, pass `--previous path/to/fennec`. CI does that on every pull request, merge and push to `main`. A kernel counts as slower when its median time is more than 10% slower than before and it also runs more than 1% more instructions. For now that's a warning, until the counts have proven stable on pull requests that change nothing on the run path.
 
+## Keeping it honest
+
+A twin has to do the same job as its kernel, not just print the same answer. `dicts` uses the same hash as Fennec's dicts, because Rust's default, SipHash, resists attacks Fennec's hash doesn't, and that would make the comparison about the hash. `dicts.std` keeps the default twin as a separate row, for what someone gets from Rust's standard library without choosing.
+
+These hold on both sides, the kernel and its twin:
+
+- **Inputs the optimizer can't see through.** Twins read their sizes through `std::hint::black_box`. Nothing is computed at compile time.
+- **Results are printed and checked.** Every result depends on all of the work, and its hash is in the target file.
+- **Realistic work.** No kernel does something an optimizer can delete. A twin whose count looks too low for its work gets looked at, and noted here.
+
 ## Pinning targets
 
-The twins beside the kernels are idiomatic code for the same work, in Rust, Pinning uses `-C opt-level=3` for the architecture's baseline CPU today. The decided setting is fully optimized: optimization level 3, fat LTO, `codegen-units=1`, abort on panic and no debug assertions, for x86-64-v3 on x86-64 and the baseline CPU on Arm. Pinned targets move to it when the tool does. Where a twin's standard library choice measures something Fennec doesn't do, like SipHash in `dicts`, the target uses a same-hash twin, with the standard default shown as a separately labeled number.
+The twins beside the kernels are idiomatic code for the same work, in Rust, fully optimized: `opt-level=3`, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. The CPU level is fixed, so a target doesn't depend on which machine pinned it, and matches what the JIT uses: `x86-64-v3` on x86-64 and the baseline on 64-bit Arm. Each targets file says which compiler pinned it. `regex`'s twin runs on `crates/re`, the engine behind `std.re`. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.
 
 Everyday runs don't build or run the twins. They only read the targets.
 
@@ -55,7 +74,7 @@ Re-pin only when a kernel's work or a twin changes, by running the **Pin benchma
 
 ## Adding a kernel
 
-Add `name.fen` and `name.rs` to `kernels/`, then re-pin.
+The suite is locked, so a new kernel needs a stated reason. Add `name.fen` and `name.rs` to `kernels/`, then re-pin.
 
 - Size the work so that Rust takes between about 10 and 100 ms. Valgrind counts every kernel on every CI run, and a kernel the JIT is still slow on takes far longer than its twin.
 - Print a result that depends on all of the work, so neither side can skip it.

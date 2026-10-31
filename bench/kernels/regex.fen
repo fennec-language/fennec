@@ -1,0 +1,35 @@
+## Regex-redux from the Benchmarks Game: matching and replacing patterns in a long string, through
+## the standard library's regular expressions.
+
+from std.re import Regex
+
+def sequence(length: int) -> str:
+    mut seed = 42
+    mut letters = []
+    for _ in range(length):
+        seed = (seed * 3877 + 29573) % 139968
+        letters.append("acgt"[seed * 4 // 139968])
+    "".join(letters)
+
+def main(stdout: Stdout):
+    dna = sequence(50_000)
+    patterns = [
+        "agggtaaa|tttaccct",
+        "[cgt]gggtaaa|tttaccc[acg]",
+        "a[act]ggtaaa|tttacc[agt]t",
+        "agg[act]taaa|ttta[agt]cct",
+        "aggg[acg]aaa|ttt[cgt]ccct",
+    ]
+    for pattern in patterns:
+        found = Regex(pattern).expect("the pattern is valid").find_all(dna)
+        stdout.print(pattern, found.len())
+    mut text = dna
+    for pattern, with_text in [
+        ("tHa[Nt]", "<4>"),
+        ("aND|caN|Ha[DS]|WaS", "<3>"),
+        ("a[NSt]|BY", "<2>"),
+        ("<[^>]*>", "|"),
+    ]:
+        text = Regex(pattern).expect("the pattern is valid").replace(text, with_text)
+    stdout.print(text.len())
+    stdout.print(Regex("ta+c").replace(dna, "x").len())

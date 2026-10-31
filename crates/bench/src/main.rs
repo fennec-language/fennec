@@ -202,9 +202,10 @@ fn pin(options: &Options) -> std::result::Result<(), String> {
         let instructions = counter.count(&twin).ok_or_else(|| format!("couldn't count {}", kernel.name))?;
         let enforced = before.get(&kernel.name).is_some_and(|target| target.enforced);
         let output = kernel.output_hash(&ours.output);
-        pinned.insert(kernel.name.clone(), Target { instructions, output, enforced });
+        let source = kernel.source_hash()?;
+        pinned.insert(kernel.name.clone(), Target { instructions, output, source, enforced });
     }
-    targets::write(&path, &pinned)?;
+    targets::write(&path, &pinned, &measure::rustc_version()?)?;
     println!("pinned {} kernels in {}", pinned.len(), path.display());
     Ok(())
 }
@@ -226,7 +227,8 @@ fn suite(options: &Options) -> std::result::Result<Found, String> {
             None => "nothing can count instructions here, so nothing can be compared with its target",
         }
     );
-    let mut found = Found { results: Vec::new(), slowdowns: Vec::new(), errors: Vec::new() };
+    let mut found =
+        Found { results: Vec::new(), slowdowns: Vec::new(), errors: lock_problems(&kernels, &targets)? };
     for kernel in &kernels {
         eprintln!("running {}", kernel.name);
         let target = targets.get(&kernel.name);
@@ -240,6 +242,29 @@ fn suite(options: &Options) -> std::result::Result<Found, String> {
         }
     }
     Ok(found)
+}
+
+/// What breaks the lock on the suite: a kernel that isn't what was pinned, or one that's come or
+/// gone. With no targets for this architecture, there's nothing to hold them to.
+fn lock_problems(kernels: &[Kernel], targets: &Targets) -> std::result::Result<Vec<String>, String> {
+    let mut problems = Vec::new();
+    if targets.is_empty() {
+        return Ok(problems);
+    }
+    let advice = "the suite is locked: pin it again, and say why in the pull request";
+    for kernel in kernels {
+        match targets.get(&kernel.name) {
+            None => problems.push(format!("{} has no target; {advice}", kernel.name)),
+            Some(target) if target.source != kernel.source_hash()? => {
+                problems.push(format!("{} isn't what was pinned; {advice}", kernel.name));
+            }
+            Some(_) => {}
+        }
+    }
+    for name in targets.keys().filter(|name| !kernels.iter().any(|kernel| kernel.name == **name)) {
+        problems.push(format!("{name} has a target but no kernel; {advice}"));
+    }
+    Ok(problems)
 }
 
 /// Times and counts one kernel, against the previous `fennec` if there's one that can still

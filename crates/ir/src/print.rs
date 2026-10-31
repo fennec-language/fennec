@@ -161,6 +161,7 @@ impl fmt::Display for InstKind {
             InstKind::GetErr { dest, value } => write!(f, "{dest} = {value} as err"),
             InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
             InstKind::AsError { dest, value } => write!(f, "{dest} = {value} as error"),
+            InstKind::MakeClosure { .. } | InstKind::CallClosure { .. } => closure(self, f),
             InstKind::Constant { dest, name } => write!(f, "{dest} = constant {name}"),
             InstKind::Call { dest, function, args } => {
                 let args: Vec<String> = args.iter().map(ToString::to_string).collect();
@@ -192,6 +193,24 @@ fn collection(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         InstKind::Slice { dest, object, start, end } => {
             let bound = |bound: &Option<Operand>| bound.as_ref().map_or(String::new(), ToString::to_string);
             write!(f, "{dest} = {object}[{}:{}]", bound(start), bound(end))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The instructions for closures.
+fn closure(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match inst {
+        InstKind::MakeClosure { dest, function, captures } => {
+            let captures: Vec<String> = captures.iter().map(ToString::to_string).collect();
+            write!(f, "{dest} = closure {function}[{}]", captures.join(", "))
+        }
+        InstKind::CallClosure { dest, closure, args } => {
+            let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+            if let Some(dest) = dest {
+                write!(f, "{dest} = ")?;
+            }
+            write!(f, "call closure {closure}({})", args.join(", "))
         }
         _ => Ok(()),
     }

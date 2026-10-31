@@ -110,6 +110,10 @@ impl<'p> Check<'p> {
             InstKind::Format { .. } | InstKind::Builtin { .. } => self.engine_inst(inst),
             InstKind::Call { dest, function, args } => self.call(*dest, function, args),
             InstKind::Constant { dest, name } => self.constant(*dest, name),
+            InstKind::MakeClosure { dest, function, captures } => {
+                self.make_closure(*dest, function, captures);
+            }
+            InstKind::CallClosure { dest, closure, args } => self.call_closure(*dest, closure, args),
             _ => self.failure_inst(inst),
         }
     }
@@ -353,6 +357,53 @@ impl<'p> Check<'p> {
         };
         if wanted.is_none() || wanted != result {
             self.problems.push(format!("`{inst}` on the wrong types"));
+        }
+    }
+
+    fn make_closure(&mut self, dest: LocalId, callee: &str, captures: &[Operand]) {
+        let Some(Type::Arrow(params, returns)) = self.local(dest) else {
+            self.problems.push(format!("keeps a closure of `{callee}` in another type"));
+            return;
+        };
+        let Some(target) = self.program.functions.iter().find(|function| function.name == callee) else {
+            let elsewhere = self.program.external.iter().any(|name| name == callee)
+                || self.program.not_lowered.iter().any(|skipped| skipped.function == callee);
+            if !elsewhere {
+                self.problems.push(format!("makes a closure of `{callee}`, which doesn't exist"));
+            }
+            return;
+        };
+        if target.params != captures.len() + params.len() || target.returns != *returns {
+            self.problems.push(format!("makes a closure of `{callee}` of the wrong shape"));
+        }
+        let wanted = captures.iter().map(Some).chain(params.iter().map(|_| None));
+        for (captured, param) in wanted.zip(&target.locals) {
+            if let Some(captured) = captured {
+                self.operand(captured, Some(&param.ty), "capture");
+            }
+        }
+        for (param, local) in params.iter().zip(target.locals.iter().skip(captures.len())) {
+            if *param != local.ty {
+                self.problems.push(format!("makes a closure of `{callee}` taking the wrong types"));
+            }
+        }
+    }
+
+    fn call_closure(&mut self, dest: Option<LocalId>, closure: &Operand, args: &[Operand]) {
+        let Some(Type::Arrow(params, returns)) = self.function.type_of(closure) else {
+            self.problems.push(format!("calls `{closure}`, which isn't a closure"));
+            return;
+        };
+        if args.len() != params.len() {
+            self.problems.push(format!("calls `{closure}` with {} arguments", args.len()));
+        }
+        for (arg, param) in args.iter().zip(&params) {
+            self.operand(arg, Some(param), "argument");
+        }
+        if let Some(dest) = dest
+            && self.local(dest).as_ref() != Some(&*returns)
+        {
+            self.problems.push(format!("keeps what `{closure}` gives back in the wrong type"));
         }
     }
 

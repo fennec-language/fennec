@@ -21,7 +21,9 @@ pub(super) fn external(program: &Program) -> Vec<String> {
         .flat_map(|function| &function.blocks)
         .flat_map(|block| &block.insts)
         .filter_map(|inst| match &inst.kind {
-            InstKind::Call { function, .. } => Some(function.clone()),
+            InstKind::Call { function, .. } | InstKind::MakeClosure { function, .. } => {
+                Some(function.clone())
+            }
             _ => None,
         })
         .filter(|name| {
@@ -61,9 +63,12 @@ impl Lowering<'_> {
         keep: Option<Type>,
         span: Span,
     ) -> Lowered<Option<LocalId>> {
+        if let Some(ty) = self.closure_callee(callee) {
+            return self.call_closure(callee, &ty, args, keep, span);
+        }
         let mut write_backs = Vec::new();
         let dest;
-        if let Some((name, object, changes)) = self.builtin(callee) {
+        if let Some((mut name, object, changes)) = self.builtin(callee) {
             let mut values = Vec::with_capacity(args.len() + 1);
             if let Some(object) = object {
                 values.push(if changes {
@@ -72,11 +77,18 @@ impl Lowering<'_> {
                     self.expr(object)?
                 });
             }
+            let mut key = None;
             for arg in args {
-                if arg.name.is_some() || arg.is_mut {
+                let is_key = arg.name.as_deref() == Some("key");
+                if arg.is_mut || (arg.name.is_some() && !is_key) {
                     return Err(format!("its call to `{name}` has a named or `mut` argument"));
                 }
-                values.push(self.expr(&arg.value)?);
+                let value = self.expr(&arg.value)?;
+                if is_key { key = Some(value) } else { values.push(value) }
+            }
+            if let Some(key) = key {
+                values.push(key);
+                name.push_str(".key");
             }
             dest = keep.map(|ty| self.temporary(ty));
             self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);

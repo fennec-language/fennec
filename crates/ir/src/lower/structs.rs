@@ -1,13 +1,14 @@
 //! Building structs, reading and changing their fields, and calling functions and methods.
 
+use std::collections::HashMap;
+
 use fennec_check::{Checked, Type};
 use fennec_syntax::{Arg, Expr, ExprKind, Item, Module, Span};
 
 use super::{Lowered, Lowering};
-use crate::{InstKind, Operand, StructDef, Terminator, type_in};
+use crate::{InstKind, LocalId, Operand, StructDef, Terminator, type_in};
 
-/// The module's structs the IR can hold: not generic ones, or ones with `where` rules, which
-/// are checked whenever a value is made.
+/// The module's structs the IR can hold: not generic ones.
 pub(super) fn definitions(module: &Module, checked: &Checked) -> Vec<StructDef> {
     module
         .items
@@ -16,7 +17,7 @@ pub(super) fn definitions(module: &Module, checked: &Checked) -> Vec<StructDef> 
             Item::Struct(def) if def.generics.is_empty() => {
                 let found = checked.signatures.structure(&def.name)?;
                 let fields = found.fields.clone();
-                (!found.rules).then(|| StructDef { name: def.name.clone(), fields })
+                Some(StructDef { name: def.name.clone(), fields })
             }
             _ => None,
         })
@@ -42,10 +43,81 @@ impl Lowering<'_> {
     /// field.
     pub(super) fn make(&mut self, type_name: &str, args: &[Arg], span: Span) -> Lowered<Operand> {
         let fields = self.struct_fields(type_name)?.to_vec();
-        let fields = self.field_values((type_name, None), &fields, args)?;
+        let values = self.field_values((type_name, None), &fields, args)?;
+        if let Some(rules) = self.context.rules.get(type_name) {
+            return self.make_checked(type_name, (&fields, values), rules, span);
+        }
         let dest = self.temporary(Type::Named(type_name.to_owned()));
-        self.emit(InstKind::Make { dest, type_name: type_name.to_owned(), fields }, span);
+        self.emit(InstKind::Make { dest, type_name: type_name.to_owned(), fields: values }, span);
         Ok(Operand::Local(dest))
+    }
+
+    /// A struct with `where` rules. Built from values written out, it's the struct, and
+    /// breaking a rule ends the program. Otherwise it's a result, and breaking a rule gives
+    /// an `InvalidValue`. Rules run in the order the fields are written, and see the fields.
+    fn make_checked(
+        &mut self,
+        type_name: &str,
+        (fields, values): (&[(String, Type)], Vec<Operand>),
+        rules: &[(&str, &Expr)],
+        span: Span,
+    ) -> Lowered<Operand> {
+        let result = self.body.expr(span).filter(|ty| matches!(ty, Type::Result(..))).cloned();
+        let body = self.context.checked.types.body(&format!("fields of {type_name}"));
+        let body = body.ok_or_else(|| format!("the fields of `{type_name}` have no types"))?;
+        let dest = result.as_ref().map(|ty| self.temporary(ty.clone()));
+        let join = self.new_block();
+        let outer_body = std::mem::replace(&mut self.body, body);
+        let outer_scopes = std::mem::replace(&mut self.scopes, vec![HashMap::new()]);
+        for ((name, ty), value) in fields.iter().zip(&values) {
+            let local = self.declare(name, ty.clone());
+            self.emit(InstKind::Copy { dest: local, value: value.clone() }, span);
+        }
+        let mut lowered = Ok(());
+        for (field, rule) in rules {
+            lowered = lowered.and_then(|()| self.rule(rule, (type_name, field), (dest, join), span));
+        }
+        self.body = outer_body;
+        self.scopes = outer_scopes;
+        lowered?;
+        let made = self.temporary(Type::Named(type_name.to_owned()));
+        self.emit(InstKind::Make { dest: made, type_name: type_name.to_owned(), fields: values }, span);
+        let Some(dest) = dest else {
+            self.finish(Terminator::Jump(join));
+            self.current = join;
+            return Ok(Operand::Local(made));
+        };
+        self.emit(InstKind::MakeOk { dest, value: Some(Operand::Local(made)) }, span);
+        self.finish(Terminator::Jump(join));
+        self.current = join;
+        Ok(Operand::Local(dest))
+    }
+
+    /// Tests one `where` rule, carrying on in a new block if it holds.
+    fn rule(
+        &mut self,
+        rule: &Expr,
+        (type_name, field): (&str, &str),
+        (dest, join): (Option<LocalId>, crate::BlockId),
+        span: Span,
+    ) -> Lowered<()> {
+        let cond = self.expr(rule)?;
+        let (then, broken) = (self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond, then, otherwise: broken });
+        self.current = broken;
+        if let Some(dest) = dest {
+            let message = format!("{type_name}.{field} breaks its `where` rule");
+            let error = self.temporary(Type::Named("InvalidValue".to_owned()));
+            let fields = vec![Operand::Str(message)];
+            self.emit(InstKind::Make { dest: error, type_name: "InvalidValue".to_owned(), fields }, span);
+            self.emit(InstKind::MakeErr { dest, error: Operand::Local(error) }, span);
+            self.finish(Terminator::Jump(join));
+        } else {
+            let message = format!("this breaks the `where` rule on `{type_name}.{field}`");
+            self.finish(Terminator::Stop { message, span });
+        }
+        self.current = then;
+        Ok(())
     }
 
     /// A value for each field: arguments run in the order they're written, and each lands
@@ -96,6 +168,12 @@ impl Lowering<'_> {
     /// `object.field`. A field that's been narrowed, like an optional known not to be
     /// `None`, reads as a different type than it's declared with, which isn't lowered yet.
     pub(super) fn get_field(&mut self, expr: &Expr, object: &Expr, field: &str) -> Lowered<Operand> {
+        if let Some(Type::Function(key)) = self.body.expr(expr.span) {
+            return self.function_value(&key.clone(), expr);
+        }
+        if let Some(member) = self.std_member(expr) {
+            return self.std_value(member, expr);
+        }
         let owner = self.struct_of(object).ok_or_else(|| format!("it reads `.{field}` of something else"))?;
         let declared = self.struct_fields(&owner)?.iter().find(|(name, _)| name == field);
         let declared =

@@ -24,6 +24,25 @@ pub(super) fn written(module: &Module) -> HashMap<FieldKey<'_>, &Expr> {
     found
 }
 
+/// The `where` rules of each struct in the module and the standard library.
+pub(super) fn rules(module: &Module) -> HashMap<&str, Vec<(&str, &Expr)>> {
+    let library = fennec_syntax::prelude_modules().unwrap_or_default();
+    let mut found = HashMap::new();
+    for item in library.iter().chain([module]).flat_map(|module| &module.items) {
+        if let Item::Struct(def) = item {
+            let rules: Vec<(&str, &Expr)> = def
+                .fields
+                .iter()
+                .filter_map(|field| field.rule.as_ref().map(|rule| (field.name.as_str(), rule)))
+                .collect();
+            if !rules.is_empty() {
+                found.insert(def.name.as_str(), rules);
+            }
+        }
+    }
+    found
+}
+
 fn add<'a>(found: &mut HashMap<FieldKey<'a>, &'a Expr>, def: &'a TypeDef) {
     let mut note = |case: Option<&'a str>, fields: &'a [Field]| {
         for field in fields {

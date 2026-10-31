@@ -110,15 +110,7 @@ impl<'a> Lowering<'a> {
             return self.function_value(&key.clone(), expr);
         }
         let Some(written) = self.context.constants.get(name) else {
-            let dest = self.temporary(self.ty(expr)?);
-            let kind = InstKind::Builtin {
-                dest: Some(dest),
-                name: name.to_owned(),
-                args: Vec::new(),
-                changes: false,
-            };
-            self.emit(kind, expr.span);
-            return Ok(Operand::Local(dest));
+            return self.std_value(self.std_member(expr).unwrap_or_else(|| name.to_owned()), expr);
         };
         let ty = self.ty(expr)?;
         if let Some(value) = literal(written.value)

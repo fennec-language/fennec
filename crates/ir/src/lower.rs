@@ -1,12 +1,13 @@
 //! Lowering a checked module to the IR, one function at a time. The types come from the
 //! checker's typed tree, never from working them out again.
 
-mod calls;
+pub(crate) mod calls;
 mod closures;
 mod collections;
 mod constants;
 mod defaults;
 mod failure;
+mod imports;
 mod lists;
 mod matching;
 mod operators;
@@ -37,6 +38,8 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
         structs: defs.iter().map(|def| def.name.as_str()).collect(),
         constants: constants::written(module),
         defaults: defaults::written(module),
+        rules: defaults::rules(module),
+        imports: imports::written(module),
     };
     let mut program = Program::default();
     for (key, def) in &functions {
@@ -100,6 +103,8 @@ enum Tail {
 struct Loop {
     next: BlockId,
     exit: BlockId,
+    /// How many things to undo on leaving the function there were outside the loop.
+    depth: usize,
 }
 
 /// The capabilities, whose methods the engines provide.
@@ -120,6 +125,10 @@ struct Context<'a> {
     constants: HashMap<&'a str, constants::Written<'a>>,
     /// The fields with defaults, the standard library's included.
     defaults: HashMap<defaults::FieldKey<'a>, &'a Expr>,
+    /// The `where` rules of each struct, the standard library's included, in field order.
+    rules: HashMap<&'a str, Vec<(&'a str, &'a Expr)>>,
+    /// What the module imports from the standard library.
+    imports: imports::Imports,
 }
 
 impl Context<'_> {
@@ -135,7 +144,11 @@ impl Context<'_> {
     fn holds(&self, ty: &Type) -> bool {
         match ty {
             Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::None => true,
-            Type::List(item) | Type::Set(item) | Type::Optional(item) => self.holds(item),
+            Type::List(item)
+            | Type::Set(item)
+            | Type::Optional(item)
+            | Type::IdMap(item)
+            | Type::Id(item) => self.holds(item),
             Type::Dict(key, value) => self.holds(key) && self.holds(value),
             Type::Tuple(items) => items.iter().all(|item| self.holds(item)),
             Type::Arrow(params, returns) => {
@@ -332,7 +345,9 @@ impl<'a> Lowering<'a> {
             StmtKind::Return(None) => self.return_nothing(stmt.span)?,
             StmtKind::Break | StmtKind::Continue => {
                 let target = self.loops.last().ok_or("`break` outside a loop")?;
+                let depth = target.depth;
                 let target = if matches!(stmt.kind, StmtKind::Break) { target.exit } else { target.next };
+                self.undo_since(depth, stmt.span)?;
                 self.finish(Terminator::Jump(target));
             }
             StmtKind::Pass => {}
@@ -341,8 +356,10 @@ impl<'a> Lowering<'a> {
             }
             StmtKind::Fail(error) => self.fail(error, stmt.span)?,
             StmtKind::Yield(value) => self.yield_value(value, stmt.span)?,
-            StmtKind::Assert(_) => return Err("it has `assert`".to_owned()),
-            StmtKind::With { .. } => return Err("it has `with`".to_owned()),
+            StmtKind::Assert(cond) => self.assert(cond, stmt.span)?,
+            StmtKind::With { value, name, is_mut: _, body } => {
+                self.with_block(value, name.as_deref(), body, tail, stmt.span)?;
+            }
             StmtKind::Def(def) => self.nested(def, stmt.span)?,
         }
         Ok(())
@@ -440,7 +457,7 @@ impl<'a> Lowering<'a> {
             self.finish(Terminator::Branch { cond, then, otherwise: exit });
         }
         self.current = then;
-        self.loops.push(Loop { next: head, exit });
+        self.loops.push(Loop { next: head, exit, depth: self.leaving.len() });
         let lowered = self.block(body, Tail::Drop);
         self.loops.pop();
         lowered?;
@@ -521,7 +538,7 @@ impl<'a> Lowering<'a> {
                 let parts = collections::Parts { elem, value: value.as_deref(), cond: cond.as_deref() };
                 self.comprehension(expr, *kind, &parts, (names, iter))
             }
-            ExprKind::Lambda { params, body } => self.arrow(expr, params, body),
+            ExprKind::Lambda { params, body } => self.arrow(expr, params, body, false),
             ExprKind::Index { object, index } => self.get_index(expr, object, index),
             ExprKind::Slice { object, start, end } => {
                 self.slice(expr, object, (start.as_deref(), end.as_deref()))

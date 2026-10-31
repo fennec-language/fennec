@@ -20,14 +20,21 @@ struct Counting<'a> {
     down: bool,
     items: Option<(LocalId, Type)>,
     /// Where each item goes back to, for a `for mut` loop.
-    back: Option<Place>,
+    back: Option<Back>,
+}
+
+/// Where a `for mut` loop's items go back to.
+pub(super) struct Back {
+    place: Place,
+    /// It goes through `IdMap` items by their `Id`s, not by position.
+    by_id: bool,
 }
 
 /// What a loop goes through.
 pub(super) struct Over<'a> {
     pub(super) names: &'a [String],
     pub(super) iter: &'a Expr,
-    pub(super) back: Option<Place>,
+    pub(super) back: Option<Back>,
 }
 
 impl Lowering<'_> {
@@ -59,6 +66,7 @@ impl Lowering<'_> {
         let key = match &held {
             Some(Type::List(_) | Type::Str | Type::Bytes | Type::Tuple(_)) => Type::Int,
             Some(Type::Dict(key, _)) => *key.clone(),
+            Some(Type::IdMap(item)) => Type::Id(item.clone()),
             Some(Type::Named(name)) if name == "Args" => {
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
@@ -83,9 +91,14 @@ impl Lowering<'_> {
     /// `item in items`, and `not in`, on a collection.
     pub(super) fn contains(&mut self, op: BinOp, item: &Expr, items: &Expr, span: Span) -> Lowered<Operand> {
         let owner = match self.body.expr(items.span) {
-            Some(ty @ (Type::List(_) | Type::Set(_) | Type::Dict(..) | Type::Str | Type::Bytes)) => {
-                owner_name(ty).unwrap_or_default().to_owned()
-            }
+            Some(
+                ty @ (Type::List(_)
+                | Type::Set(_)
+                | Type::Dict(..)
+                | Type::IdMap(_)
+                | Type::Str
+                | Type::Bytes),
+            ) => owner_name(ty).unwrap_or_default().to_owned(),
             _ => return Err(format!("it uses `{}` on a type of its own", op.symbol())),
         };
         let item = self.expr(item)?;
@@ -128,10 +141,12 @@ impl Lowering<'_> {
         body: &[Stmt],
         span: Span,
     ) -> Lowered<()> {
-        // Only a list's items are written back, and only one name holds them.
+        // Only the items of a list or `IdMap` are written back, and only one name holds them.
+        let by_id = matches!(self.body.expr(iter.span), Some(Type::IdMap(_)));
         let changes_items =
-            is_mut && names.len() == 1 && matches!(self.body.expr(iter.span), Some(Type::List(_)));
-        let back = if changes_items { Some(self.held_place(iter, span)?) } else { None };
+            is_mut && names.len() == 1 && (by_id || matches!(self.body.expr(iter.span), Some(Type::List(_))));
+        let back =
+            if changes_items { Some(Back { place: self.held_place(iter, span)?, by_id }) } else { None };
         let over = Over { names, iter, back };
         self.looping(over, span, |lowering| lowering.stmts(body, Tail::Drop))
     }
@@ -165,6 +180,11 @@ impl Lowering<'_> {
             Type::Str => (Type::List(Box::new(Type::Str)), Type::Str, Some("str.chars")),
             Type::Set(item) | Type::Dict(item, _) => (Type::List(item.clone()), *item.clone(), Some("list")),
             Type::Bytes => (Type::List(Box::new(Type::Int)), Type::Int, Some("list")),
+            Type::IdMap(item) if back.is_some() => {
+                let pair = Type::Tuple(vec![Type::Id(item.clone()), *item.clone()]);
+                (Type::List(Box::new(pair.clone())), pair, Some("IdMap.items"))
+            }
+            Type::IdMap(item) => (Type::List(item.clone()), *item.clone(), Some("IdMap.values")),
             Type::Named(name) if name == "Args" => (Type::List(Box::new(Type::Str)), Type::Str, Some("list")),
             Type::Named(name) => {
                 let function = format!("{name}.iter");
@@ -200,7 +220,7 @@ impl Lowering<'_> {
         &mut self,
         names: &[String],
         (items, item): (LocalId, Type),
-        back: Option<Place>,
+        back: Option<Back>,
         span: Span,
         body: F,
     ) -> Lowered<()>
@@ -245,13 +265,19 @@ impl Lowering<'_> {
         self.finish(Terminator::Branch { cond: Operand::Local(going), then, otherwise: exit });
         self.current = then;
         self.scopes.push(HashMap::new());
-        let bound = self.bind_item(names, items, count, span);
+        let by_id = back.as_ref().is_some_and(|back| back.by_id);
+        let bound = self.bind_item(names, items, count, by_id, span);
         let item = names.first().and_then(|name| self.lookup(name));
-        let leaving = back.zip(item).map(|(place, item)| Leaving { place, item, count });
+        let leaving = match (back, item, &bound) {
+            (Some(back), Some(item), Ok(index)) => {
+                Some(Leaving::Item { place: back.place, item, index: index.clone() })
+            }
+            _ => None,
+        };
         let broke = if leaving.is_some() { self.new_block() } else { exit };
         self.leaving.extend(leaving.clone());
-        self.loops.push(Loop { next, exit: broke });
-        let lowered = bound.and_then(|()| body(self));
+        self.loops.push(Loop { next, exit: broke, depth: self.leaving.len() });
+        let lowered = bound.and_then(|_| body(self));
         self.loops.pop();
         if leaving.is_some() {
             self.leaving.pop();
@@ -261,7 +287,7 @@ impl Lowering<'_> {
         self.finish(Terminator::Jump(next));
         self.current = next;
         if let Some(leaving) = &leaving {
-            self.write_item(leaving, span)?;
+            self.undo(leaving, span)?;
         }
         let op = if down { BinOp::Sub } else { BinOp::Add };
         let lhs = Operand::Local(count);
@@ -269,36 +295,49 @@ impl Lowering<'_> {
         self.finish(Terminator::Jump(head));
         if let Some(leaving) = &leaving {
             self.current = broke;
-            self.write_item(leaving, span)?;
+            self.undo(leaving, span)?;
             self.finish(Terminator::Jump(exit));
         }
         self.current = exit;
         Ok(())
     }
 
-    /// Gives a loop's names their values for this time around.
+    /// Gives a loop's names their values for this time around. Gives back what its item
+    /// is indexed by.
     fn bind_item(
         &mut self,
         names: &[String],
         items: Option<(LocalId, Type)>,
         count: LocalId,
+        by_id: bool,
         span: Span,
-    ) -> Lowered<()> {
+    ) -> Lowered<Operand> {
+        let at = Operand::Local(count);
         let Some((items, ty)) = items else {
             let [name] = names else { return Err("it unpacks a number".to_owned()) };
             let dest = self.declare(name, Type::Int);
-            self.emit(InstKind::Copy { dest, value: Operand::Local(count) }, span);
-            return Ok(());
+            self.emit(InstKind::Copy { dest, value: at.clone() }, span);
+            return Ok(at);
         };
-        let (object, index) = (Operand::Local(items), Operand::Local(count));
-        if let [name] = names {
+        let (object, index) = (Operand::Local(items), at.clone());
+        if let ([name], false) = (names, by_id) {
             let dest = self.declare(name, ty);
             self.emit(InstKind::GetIndex { dest, object, index }, span);
-            return Ok(());
+            return Ok(at);
         }
-        let item = self.temporary(ty);
+        let item = self.temporary(ty.clone());
         self.emit(InstKind::GetIndex { dest: item, object, index }, span);
-        self.unpack(names, &Operand::Local(item), span)
+        let value = Operand::Local(item);
+        if let (true, [name], Type::Tuple(parts)) = (by_id, names, &ty) {
+            let [id, held] = parts.as_slice() else { return Err("an item has no id".to_owned()) };
+            let id_local = self.temporary(id.clone());
+            self.emit(InstKind::GetTupleItem { dest: id_local, value: value.clone(), at: 0 }, span);
+            let dest = self.declare(name, held.clone());
+            self.emit(InstKind::GetTupleItem { dest, value, at: 1 }, span);
+            return Ok(Operand::Local(id_local));
+        }
+        self.unpack(names, &value, span)?;
+        Ok(at)
     }
 
     /// Whether an expression is a call to the built-in `range`.

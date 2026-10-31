@@ -21,13 +21,13 @@ pub(super) struct Place {
     pub(super) steps: Vec<Step>,
 }
 
-/// A `for mut` loop being lowered: leaving it, however that happens, writes its item back
-/// to the list.
+/// What has to happen on leaving part of a function, however that happens.
 #[derive(Clone)]
-pub(super) struct Leaving {
-    pub(super) place: Place,
-    pub(super) item: LocalId,
-    pub(super) count: LocalId,
+pub(super) enum Leaving {
+    /// A `for mut` loop writes its item back to where it came from.
+    Item { place: Place, item: LocalId, index: Operand },
+    /// A `with` block calls the `del` of what it holds.
+    With { resource: LocalId, cleanup: String },
 }
 
 impl Lowering<'_> {
@@ -76,6 +76,7 @@ impl Lowering<'_> {
         match ty {
             Type::List(_) => Some(Type::Int),
             Type::Dict(key, _) => Some(*key.clone()),
+            Type::IdMap(item) => Some(Type::Id(item.clone())),
             Type::Named(owner) => {
                 let signatures = &self.context.checked.signatures;
                 let found = signatures
@@ -90,7 +91,7 @@ impl Lowering<'_> {
     /// What indexing a value of this type gives.
     fn item_type(&self, ty: &Type) -> Option<Type> {
         match ty {
-            Type::List(item) | Type::Dict(_, item) => Some(*item.clone()),
+            Type::List(item) | Type::Dict(_, item) | Type::IdMap(item) => Some(*item.clone()),
             Type::Named(owner) => {
                 let signatures = &self.context.checked.signatures;
                 if let Some(read) = signatures.get(&format!("{owner}.[]")) {
@@ -239,11 +240,75 @@ impl Lowering<'_> {
         self.store(place.local, &place.steps, value, span)
     }
 
-    /// Writes a `for mut` loop's item back to its list.
-    pub(super) fn write_item(&mut self, leaving: &Leaving, span: Span) -> Lowered<()> {
-        let mut steps = leaving.place.steps.clone();
-        steps.push(Step::Index(Operand::Local(leaving.count)));
-        self.store(leaving.place.local, &steps, Operand::Local(leaving.item), span)
+    /// Does what leaving a `for mut` loop or `with` block has to.
+    pub(super) fn undo(&mut self, leaving: &Leaving, span: Span) -> Lowered<()> {
+        match leaving {
+            Leaving::Item { place, item, index } => {
+                let mut steps = place.steps.clone();
+                steps.push(Step::Index(index.clone()));
+                self.store(place.local, &steps, Operand::Local(*item), span)
+            }
+            Leaving::With { resource, cleanup } => {
+                let args = vec![Operand::Local(*resource)];
+                self.emit(InstKind::Call { dest: None, function: cleanup.clone(), args }, span);
+                Ok(())
+            }
+        }
+    }
+
+    /// Does what leaving has to for everything entered since there were `depth` of them.
+    pub(super) fn undo_since(&mut self, depth: usize, span: Span) -> Lowered<()> {
+        let leaving = self.leaving.get(depth..).unwrap_or_default().to_vec();
+        for entered in leaving.iter().rev() {
+            self.undo(entered, span)?;
+        }
+        Ok(())
+    }
+
+    /// `with value as name:`. What it holds is cleaned up when the block is left.
+    pub(super) fn with_block(
+        &mut self,
+        value: &Expr,
+        name: Option<&str>,
+        body: &[fennec_syntax::Stmt],
+        tail: super::Tail,
+        span: Span,
+    ) -> Lowered<()> {
+        let held = self.expr(value)?;
+        let ty = crate::type_in(&self.locals, &held).ok_or("a value has no type")?;
+        self.scopes.push(std::collections::HashMap::new());
+        let resource = match name {
+            Some(name) => self.declare(name, ty.clone()),
+            None => self.temporary(ty.clone()),
+        };
+        self.emit(InstKind::Copy { dest: resource, value: held }, span);
+        let cleanup = crate::lower::calls::owner_name(&ty).map(|owner| format!("{owner}.del"));
+        let cleanup = cleanup.filter(|key| self.context.checked.signatures.get(key).is_some());
+        let entry = cleanup.map(|cleanup| Leaving::With { resource, cleanup });
+        self.leaving.extend(entry.clone());
+        let lowered = self.stmts(body, tail);
+        if entry.is_some() {
+            self.leaving.pop();
+        }
+        self.scopes.pop();
+        lowered?;
+        if let Some(entry) = &entry
+            && self.is_open()
+        {
+            self.undo(entry, span)?;
+        }
+        Ok(())
+    }
+
+    /// `assert cond`.
+    pub(super) fn assert(&mut self, cond: &Expr, span: Span) -> Lowered<()> {
+        let cond = self.expr(cond)?;
+        let (then, failed) = (self.new_block(), self.new_block());
+        self.finish(Terminator::Branch { cond, then, otherwise: failed });
+        self.current = failed;
+        self.finish(Terminator::Stop { message: "assertion failed".to_owned(), span });
+        self.current = then;
+        Ok(())
     }
 
     /// Returns from the function. Every `for mut` loop being left writes its item back
@@ -259,9 +324,7 @@ impl Lowering<'_> {
             self.emit(InstKind::Copy { dest, value: held.clone() }, span);
             value = Some(Operand::Local(dest));
         }
-        for loop_of in leaving.iter().rev() {
-            self.write_item(loop_of, span)?;
-        }
+        self.undo_since(0, span)?;
         self.finish(Terminator::Return(value));
         Ok(())
     }

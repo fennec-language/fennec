@@ -12,6 +12,7 @@ mod eval;
 mod exec;
 mod format;
 mod formats;
+mod generators;
 mod inputs;
 mod interp;
 mod matching;

@@ -1,0 +1,9 @@
+def countdown(start: int) -> Iterator[int]:
+    mut n = start
+    while n > 0:
+        yield n
+        n -= 1
+
+def main(stdout: Stdout):
+    stdout.print(countdown(3)[0])
+    stdout.print(list(countdown(3)))

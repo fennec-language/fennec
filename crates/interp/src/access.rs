@@ -99,6 +99,14 @@ impl Interp<'_> {
             Value::Capability(Capability::Args) => keyless(&self.arguments()),
             Value::Dict(pairs) => pairs.iter().map(|(key, _)| (None, key.clone())).collect(),
             Value::Packed(packed) => return self.entries(packed.unpack(), span),
+            generator @ Value::Generator(_) => {
+                let mut items = self.items_of(generator, span)?;
+                let mut all = Vec::new();
+                while let Some(item) = self.next_item(&mut items, span)? {
+                    all.push(item);
+                }
+                all
+            }
             Value::Str(text) => {
                 text.chars().map(|c| (None, Value::str(c.encode_utf8(&mut [0; 4])))).collect()
             }

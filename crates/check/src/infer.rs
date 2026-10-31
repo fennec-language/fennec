@@ -90,6 +90,7 @@ impl Checker {
             (Type::Errors(names), Type::Errors(others)) => others.iter().all(|name| names.contains(name)),
             (Type::List(a), Type::List(b))
             | (Type::Set(a), Type::Set(b))
+            | (Type::Iterator(a), Type::Iterator(b))
             | (Type::Id(a), Type::Id(b))
             | (Type::IdMap(a), Type::IdMap(b)) => self.fits(a, b),
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) | (Type::Result(k1, v1), Type::Result(k2, v2)) => {
@@ -129,6 +130,7 @@ impl Checker {
             }
             (Type::List(a), Type::List(b)) => Type::list(self.join(a, b)?),
             (Type::Set(a), Type::Set(b)) => Type::Set(Box::new(self.join(a, b)?)),
+            (Type::Iterator(a), Type::Iterator(b)) => Type::Iterator(Box::new(self.join(a, b)?)),
             (Type::Id(a), Type::Id(b)) => Type::Id(Box::new(self.join(a, b)?)),
             (Type::IdMap(a), Type::IdMap(b)) => Type::IdMap(Box::new(self.join(a, b)?)),
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) => {

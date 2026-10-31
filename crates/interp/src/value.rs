@@ -19,6 +19,8 @@ pub(crate) enum Value {
     List(Rc<Vec<Value>>),
     /// A list native code packed into flat memory. The interpreter unpacks it to use it.
     Packed(Rc<crate::packed::Packed>),
+    /// A generator: items one at a time, as they're asked for, once.
+    Generator(Rc<crate::generators::Generator>),
     /// A native value, not yet looked inside, as native code's temporaries and cells hold it.
     /// The interpreter never sees one: temporaries are expanded before it's handed them.
     Lent(Rc<Lent>),
@@ -207,6 +209,7 @@ impl Value {
             Value::Bytes(_) => "bytes".to_owned(),
             Value::List(_) | Value::Packed(_) => "list".to_owned(),
             Value::Lent(_) => "value".to_owned(),
+            Value::Generator(_) => "generator".to_owned(),
             Value::Tuple(_) => "tuple".to_owned(),
             Value::Dict(_) => "dict".to_owned(),
             Value::Set(_) => "set".to_owned(),
@@ -231,6 +234,7 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,
             (Value::Lent(a), Value::Lent(b)) => a.address == b.address,
+            (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a.total_cmp(b).is_eq(),

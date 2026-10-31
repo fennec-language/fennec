@@ -150,7 +150,7 @@ impl Lowerer<'_, '_> {
             ty: None,
         };
         let each = match &first.value.kind {
-            ExprKind::Comprehension { kind: CompKind::Generator, elem, value: None, names, iter, cond } => {
+            ExprKind::Comprehension { kind: CompKind::Generator, elem, names, iter, cond, .. } => {
                 comp_loop(names, iter, cond.as_deref(), add(elem), span)
             }
             ExprKind::Comprehension { .. } => return Ok(None),
@@ -198,14 +198,7 @@ impl Lowerer<'_, '_> {
                 value:
                     Expr {
                         kind:
-                            ExprKind::Comprehension {
-                                kind: CompKind::Generator,
-                                elem,
-                                value: None,
-                                names,
-                                iter,
-                                cond,
-                            },
+                            ExprKind::Comprehension { kind: CompKind::Generator, elem, names, iter, cond, .. },
                         span,
                     },
             },

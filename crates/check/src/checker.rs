@@ -38,6 +38,8 @@ pub(crate) struct Checker {
     pub(crate) cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     pub(crate) float_sums: BTreeSet<(u32, u32)>,
+    /// The type of each generator expression, which printing one shows.
+    pub(crate) generator_types: BTreeMap<(u32, u32), String>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
@@ -77,6 +79,7 @@ impl Checker {
             typed: BTreeMap::new(),
             cases: BTreeMap::new(),
             float_sums: BTreeSet::new(),
+            generator_types: BTreeMap::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
@@ -142,7 +145,13 @@ impl Checker {
             let signatures =
                 Signatures { functions, structs, enums, errors, locals, types: Types::default() };
             let types = Types { functions: self.typed };
-            return Ok(Checked { signatures, types, cases: self.cases, float_sums: self.float_sums });
+            return Ok(Checked {
+                signatures,
+                types,
+                cases: self.cases,
+                float_sums: self.float_sums,
+                generator_types: self.generator_types,
+            });
         }
         let mut diagnostics = self.diagnostics;
         diagnostics.sort_by(|a, b| (a.span.start, &a.message).cmp(&(b.span.start, &b.message)));
@@ -638,9 +647,6 @@ fn field_needs_type(name: &str, ty: &Type, span: Span) -> Diagnostic {
 
 /// What a call gives back, from what the body gives back.
 fn wrap(value: Type, error: Type, effects: Effects) -> Type {
-    if effects.yields {
-        return value;
-    }
     match value {
         // A function that can fail passes a result it gives back through unchanged.
         Type::Result(..) => value,
@@ -671,7 +677,7 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
         .collect();
     let signature = format!("def {}({})", def.name, params.join(", "));
     let (what, written) = match value {
-        Type::List(item) if generator => {
+        Type::Iterator(item) if generator => {
             (format!("yields {}", a(item)), item.source().map(|item| format!("Iterator[{item}]")))
         }
         value => (format!("gives back {}", a(value)), value.source()),

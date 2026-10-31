@@ -34,7 +34,7 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print(load_scores(["3", "x", "15"]))
     stdout.print(Score(value=5))
     stdout.print(counter_from(10))
-    stdout.print(countdown(3), sum(countdown(4)))
+    stdout.print(list(countdown(3)), sum(countdown(4)))
 
     match read_settings(fs, "/no/such/fennec/settings.toml"):
         case Ok(text):

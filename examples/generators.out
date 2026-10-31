@@ -1,0 +1,33 @@
+counting
+got 2
+got 1
+liftoff
+["one", "uno", "after 1", "even 2", "after 2", "odd 3", "after 3"]
+0
+1
+<Iterator[int]>
+counting
+liftoff
+1
+<Iterator[int]>
+[3, 9]
+3
+[4, 8, 12]
+True False
+True
+2 2
+p 0
+q 1
+[(0, 0), (1, 2)]
+6 3
+got 1
+closing inner
+closing outer
+left the loop
+got 1
+got 2
+closing inner
+past the inner door
+closing outer
+10
+failed TooBig(at=2)

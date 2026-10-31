@@ -654,13 +654,12 @@ impl Lowerer<'_, '_> {
         let hidden = format!("\0for{}", iter.span.start);
         self.declare_object(&hidden, items, false)?;
         let hidden_id = self.name_id(&hidden);
-        let list = self.help(Helper::Get, &[hidden_id])?;
-        let count = self.help(Helper::Count, &[list])?;
         self.drop_temps()?;
         let counter = self.b.declare_var(types::I64);
         let zero = self.int(0);
         self.b.def_var(counter, zero);
         let header = self.b.create_block();
+        let check = self.b.create_block();
         let inside = self.b.create_block();
         let advance = self.b.create_block();
         let exit = self.b.create_block();
@@ -668,18 +667,30 @@ impl Lowerer<'_, '_> {
         self.b.ins().jump(header, &[]);
         self.b.switch_to_block(header);
         let at = self.b.use_var(counter);
-        let test = self.b.ins().icmp(IntCC::SignedLessThan, at, count);
-        self.b.ins().brif(test, inside, &[], exit, &[]);
+        let list = self.help(Helper::Get, &[hidden_id])?;
+        let can_pass = self.int(i64::from(self.function.fallible));
+        let next = self.help(Helper::Next, &[list, at, can_pass, start, end])?;
+        let done = self.b.ins().icmp_imm_s(IntCC::Equal, next, -1);
+        self.b.ins().brif(done, exit, &[], check, &[]);
+        self.b.switch_to_block(check);
+        let handle = self.b.ins().sshr_imm_s(next, 1);
+        if self.function.fallible {
+            let failure = self.b.ins().band_imm_s(next, 1);
+            let failed = self.b.create_block();
+            self.b.ins().brif(failure, failed, &[], inside, &[]);
+            self.b.switch_to_block(failed);
+            self.pass_up(handle)?;
+        } else {
+            self.b.ins().jump(inside, &[]);
+        }
         self.b.switch_to_block(inside);
         let depth = self.scopes.len();
         self.open_scope();
-        let list = self.help(Helper::Get, &[hidden_id])?;
-        let item = self.help(Helper::Item, &[list, at])?;
         if let [name] = names {
-            self.declare(name, Some(item), Ty::Obj, false, iter)?;
+            self.declare(name, Some(handle), Ty::Obj, false, iter)?;
         } else {
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            self.unpack_into(&names, item, true, iter.span)?;
+            self.unpack_into(&names, handle, true, iter.span)?;
         }
         self.drop_temps()?;
         self.loops.push(Loop { next: advance, done: exit, depth, put_back: None });
@@ -697,6 +708,7 @@ impl Lowerer<'_, '_> {
         self.b.def_var(counter, next);
         self.b.ins().jump(header, &[]);
         self.b.switch_to_block(exit);
+        self.dirty = true;
         self.close_scope()
     }
 }

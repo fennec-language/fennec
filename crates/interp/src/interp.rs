@@ -58,8 +58,9 @@ pub struct Interp<'out> {
     pub(crate) out: Box<dyn Write + 'out>,
     /// The value a `?` or `fail` is carrying up to the enclosing function.
     pub(crate) passing_up: Option<Flow>,
-    /// Values collected by `yield`, one list per running generator.
-    pub(crate) yields: Vec<Vec<Value>>,
+    /// Where a generator being resumed stopped, and where one leaving has stopped.
+    pub(crate) resuming: Vec<crate::generators::Position>,
+    pub(crate) suspending: Vec<crate::generators::Position>,
     /// Each regex pattern used so far, compiled.
     pub(crate) regexes: HashMap<String, Rc<fennec_re::Regex>>,
     /// How many more steps the program may take, if it's limited.
@@ -99,7 +100,8 @@ impl<'out> Interp<'out> {
             max_depth: MAX_DEPTH,
             out,
             passing_up: None,
-            yields: Vec::new(),
+            resuming: Vec::new(),
+            suspending: Vec::new(),
             regexes: HashMap::new(),
             steps_left: None,
             step_limit: None,

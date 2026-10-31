@@ -255,7 +255,12 @@ extend Parser:
         mut items = []
         mut trailing_comma = False
         while not self.at_punct(")"):
-            items.append(self.expr()?)
+            item = self.expr()?
+            # `(x for x in xs)`: a generator, to keep and use later.
+            if items.len() == 0 and self.at_keyword("for"):
+                made = self.comprehension(.Generator, item, None)?
+                return Expr(kind=made.kind, span=start.to(self.expect_punct(")")?))
+            items.append(item)
             trailing_comma = self.eat_punct(",")
             if not trailing_comma:
                 break

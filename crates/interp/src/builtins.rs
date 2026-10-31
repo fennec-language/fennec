@@ -207,6 +207,10 @@ impl Interp<'_> {
                 }
                 Ok(Value::Set(Rc::new(unique)))
             }
+            ("enumerate", Some(items @ Value::Generator(_)), None, None) => self.enumerated(items, span),
+            ("zip", Some(a), Some(b), None) if is_generated(&a) || is_generated(&b) => {
+                self.zipped(a, b, span)
+            }
             ("enumerate", Some(items), None, None) => Ok(Value::list(
                 self.iterate(items, span)?
                     .into_iter()
@@ -219,8 +223,13 @@ impl Interp<'_> {
                 Ok(Value::list(a.into_iter().zip(b).map(|(a, b)| Value::tuple(vec![a, b])).collect()))
             }
             ("any" | "all", Some(items), None, None) => {
-                let items = self.iterate(items, span)?;
-                all_or_any(name, &items, span)
+                let mut items = self.items_of(items, span)?;
+                while let Some((_, item)) = self.next_item(&mut items, span)? {
+                    if let Some(decided) = crate::eval::deciding(name, &item, span)? {
+                        return Ok(decided);
+                    }
+                }
+                Ok(Value::Bool(name == "all"))
             }
             _ => Err(Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span)),
         }
@@ -306,19 +315,6 @@ fn to_float(value: &Value, span: Span) -> Result<Value, Diagnostic> {
     }
 }
 
-fn all_or_any(name: &str, items: &[Value], span: Span) -> Result<Value, Diagnostic> {
-    let mut bools = Vec::with_capacity(items.len());
-    for item in items {
-        match item {
-            Value::Bool(b) => bools.push(*b),
-            other => {
-                return Err(Diagnostic::new(
-                    format!("`{name}` needs bools, but got a {}", other.type_name()),
-                    span,
-                )
-                .with_help("Fennec has no truthiness: compare explicitly, like `any(x > 0 for x in xs)`"));
-            }
-        }
-    }
-    Ok(Value::Bool(if name == "all" { bools.iter().all(|&b| b) } else { bools.iter().any(|&b| b) }))
+fn is_generated(value: &Value) -> bool {
+    matches!(value, Value::Generator(_))
 }

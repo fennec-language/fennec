@@ -274,8 +274,8 @@ impl Layouts {
             Type::Bool => Ty::Bool,
             Type::Unit => Ty::Unit,
             Type::Str => Ty::Str,
-            Type::Dict(key, value) => dict_ty(key, value),
-            Type::Set(item) => set_ty(item),
+            Type::Dict(key, value) => dict_ty(self, key, value),
+            Type::Set(item) => set_ty(self, item),
             Type::List(item) => ListItem::of(self.ty(item)).map_or(Ty::Obj, Ty::List),
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
                 (Some(cap), _) => Ty::Cap(cap),
@@ -317,32 +317,42 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
             (None, None) => Ty::Obj,
         },
         Type::List(item) => ListItem::of(boxed_field_ty(layouts, reserved, item)).map_or(Ty::Obj, Ty::List),
-        Type::Dict(key, value) => dict_ty(key, value),
-        Type::Set(item) => set_ty(item),
+        Type::Dict(key, value) => dict_ty(layouts, key, value),
+        Type::Set(item) => set_ty(layouts, item),
         _ => Ty::Obj,
     }
 }
 
-/// A set natively, as a dict whose values are nothing, when its items are ints or strings.
-fn set_ty(item: &Type) -> Ty {
-    match item {
-        Type::Int => Ty::Dict(Word::Int, Word::Nothing),
-        Type::Str => Ty::Dict(Word::Str, Word::Nothing),
-        _ => Ty::Obj,
+/// A set natively, as a dict whose values are nothing, when dict keys can be its items.
+fn set_ty(layouts: &Layouts, item: &Type) -> Ty {
+    key_word(layouts, item).map_or(Ty::Obj, |key| Ty::Dict(key, Word::Nothing))
+}
+
+/// How a dict holds keys of a type: ints, strings, and plain structs and enums.
+fn key_word(layouts: &Layouts, key: &Type) -> Option<Word> {
+    match key {
+        Type::Int => Some(Word::Int),
+        Type::Str => Some(Word::Str),
+        Type::Named(name) => {
+            let id = layouts.id(name)?;
+            layouts.get(id).filter(|layout| !layout.boxed)?;
+            Some(Word::Plain(id))
+        }
+        _ => None,
     }
 }
 
-/// A dict natively, when its keys are ints or strings and its values plain words.
-fn dict_ty(key: &Type, value: &Type) -> Ty {
-    let word = |ty: &Type| match ty {
+/// A dict natively, when dict keys can be its keys and its values are plain words.
+fn dict_ty(layouts: &Layouts, key: &Type, value: &Type) -> Ty {
+    let word = match value {
         Type::Int => Some(Word::Int),
         Type::Float => Some(Word::Float),
         Type::Bool => Some(Word::Bool),
         Type::Str => Some(Word::Str),
         _ => None,
     };
-    match (word(key), word(value)) {
-        (Some(key @ (Word::Int | Word::Str)), Some(value)) => Ty::Dict(key, value),
+    match (key_word(layouts, key), word) {
+        (Some(key), Some(value)) => Ty::Dict(key, value),
         _ => Ty::Obj,
     }
 }

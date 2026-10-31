@@ -1,0 +1,14 @@
+35 29 True False True
+-1 28
+{Cell(x=1, y=2): "c", Cell(x=3, y=4): "b"} c 2
+1 Cell(x=1, y=2) c
+3 Cell(x=3, y=4) b
+16 ["c", "b"]
+35 36 29 0 False True
+1 False {Tagged(at=Cell(x=1, y=1), weight=0.5, live=True): 1}
+False
+n far3 False False 3
+{Cell(x=1, y=1)} 1 True False
+3 [0, 1, 2]
+Grid(seen={Cell(x=1, y=0): 2, Cell(x=5, y=5): 50}, marks={Cell(x=1, y=0)}) 2
+5000 4999 False

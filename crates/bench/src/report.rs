@@ -295,9 +295,9 @@ mod tests {
         assert_eq!(
             rows,
             [
-                "| k | 10.0 ms | 0.0 M | 20.0 ms (partly interpreted) | 0.0 ms | - | 2.0 M | 1.0 M | 50% | not yet | - | 40.0 ms (-25%) | +0.0% |",
-                "| k | 0.0 ms | 0.0 M | 0.0 ms | 0.0 ms | - | 1.0 M | 0.9 M | 90% | met, enforced | - | - | - |",
-                "| k | 0.0 ms | - | 5.0 ms | - | - | - | - | - | - | - | - | - |",
+                "| k | 10.0 ms | 0.0 M | 20.0 ms (partly interpreted) | 0.0 ms | - | 2.0 M | 1.0 M | 50% | not yet | - | 40.0 ms (-25%) | +0.0% | - |",
+                "| k | 0.0 ms | 0.0 M | 0.0 ms | 0.0 ms | - | 1.0 M | 0.9 M | 90% | met, enforced | - | - | - | - |",
+                "| k | 0.0 ms | - | 5.0 ms | - | - | - | - | - | - | - | - | - | - |",
             ]
         );
     }

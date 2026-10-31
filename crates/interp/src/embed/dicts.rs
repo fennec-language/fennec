@@ -338,11 +338,11 @@ pub(super) fn read(state: &mut State, block: &[u64]) -> Value {
     if value_word == Word::Nothing {
         return read_set(state, key_word, block);
     }
-    let pairs = entries(block)
+    let pairs: Vec<_> = entries(block)
         .into_iter()
         .map(|[_, key, value]| (word_value(state, key_word, key), word_value(state, value_word, value)))
         .collect();
-    Value::Dict(std::rc::Rc::new(pairs))
+    Value::Dict(std::rc::Rc::new(pairs.into()))
 }
 
 /// A set's block as the interpreter holds a set.
@@ -368,7 +368,7 @@ pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64>
     let (key_word, value_word) = (*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?);
     let set: Vec<(Value, Value)>;
     let pairs = match value {
-        Value::Dict(pairs) if value_word != Word::Nothing => pairs.as_slice(),
+        Value::Dict(pairs) if value_word != Word::Nothing => &pairs[..],
         Value::Set(items) if value_word == Word::Nothing => {
             set = items.iter().map(|item| (item.clone(), Value::Unit)).collect();
             &set

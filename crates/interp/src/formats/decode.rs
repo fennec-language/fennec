@@ -67,7 +67,7 @@ impl Interp<'_> {
                     let place = inside(at, &format!("[{}]", crate::format::repr(key)));
                     read.push((key.clone(), self.decode(value.clone(), &item, &place, span)?));
                 }
-                Ok(Value::Dict(Rc::new(read)))
+                Ok(Value::Dict(Rc::new(read.into())))
             }
             ("tuple", Value::List(items)) if items.len() == ty.args.len() => {
                 let mut read = Vec::new();
@@ -158,7 +158,7 @@ impl Interp<'_> {
                         },
                     ));
                 }
-                Ok(Value::Dict(Rc::new(read)))
+                Ok(Value::Dict(Rc::new(read.into())))
             }
             (Value::Tuple(defaults), Value::List(items)) if defaults.len() == items.len() => {
                 let mut read = Vec::new();

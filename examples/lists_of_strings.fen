@@ -33,6 +33,7 @@ def main(stdout: Stdout):
     stdout.print(copy, words, copy == words, copy == copy)
 
     stdout.print(sorted(words), sorted(words, key=(w) => w.len()), sorted(words, key=(w) => w[-1]))
+    stdout.print(sorted(["b", "a", "ab", "", "aa", "abcdefghi", "abcdefgh", "abcdefgz", "é", "z"]))
     for word in sorted(words):
         stdout.print(word, word.len())
     stdout.print(sorted(words)[0], named(3)[2], named(2))

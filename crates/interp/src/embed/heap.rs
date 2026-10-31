@@ -51,6 +51,9 @@ pub(crate) struct Heap {
     statics: usize,
     /// Strings' text as the interpreter holds it, made once per block.
     texts: HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>,
+    /// Blocks waiting to be freed and a freed block's children, kept to save making them anew.
+    pending: Vec<u64>,
+    found: Vec<u64>,
 }
 
 /// The owner count of a block that's never freed: retaining and releasing it never get
@@ -154,7 +157,8 @@ pub fn text_block(shape: u64, text: &str, count: u64) -> Box<[u64]> {
     let bytes = text.as_bytes();
     let length = |n: usize| u64::try_from(n).unwrap_or(0);
     let words = bytes.len().div_ceil(8).max(1);
-    let mut block = vec![count, shape, length(bytes.len()), length(text.chars().count()), length(words * 8)];
+    let mut block = Vec::with_capacity(TEXT_HEADER_WORDS + words);
+    block.extend([count, shape, length(bytes.len()), length(text.chars().count()), length(words * 8)]);
     // Native code reads the first word of text without checking the length.
     if bytes.is_empty() {
         block.push(0);
@@ -167,6 +171,28 @@ pub fn text_block(shape: u64, text: &str, count: u64) -> Box<[u64]> {
         block.push(u64::from_le_bytes(word));
     }
     block.into_boxed_slice()
+}
+
+/// A new string owned once from bytes already known to be `chars` characters of UTF-8.
+pub(super) fn text_from_bytes(state: &mut State, bytes: &[u8], chars: usize) -> i64 {
+    if let [byte] = bytes
+        && let Some(address) = state.tables.ascii.get(usize::from(*byte))
+    {
+        return i64::try_from(*address).unwrap_or(0);
+    }
+    let words = bytes.len().div_ceil(8).max(1);
+    let mut block = state.heap.fresh(TEXT_HEADER_WORDS + words);
+    let number = |n: usize| u64::try_from(n).unwrap_or(0);
+    let header = [1, state.tables.str_shape, number(bytes.len()), number(chars), number(words * 8)];
+    if let Some(start) = block.get_mut(..TEXT_HEADER_WORDS) {
+        start.copy_from_slice(&header);
+    }
+    for (word, chunk) in block.iter_mut().skip(TEXT_HEADER_WORDS).zip(bytes.chunks(8)) {
+        let mut packed = [0; 8];
+        packed.get_mut(..chunk.len()).unwrap_or_default().copy_from_slice(chunk);
+        *word = u64::from_le_bytes(packed);
+    }
+    state.heap.insert(block)
 }
 
 /// A string's text, from its block.
@@ -232,26 +258,60 @@ fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec
     }
 }
 
+/// The addresses a value holds among its words, from `at`, added to `found`.
+fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<u64>) {
+    match element {
+        Element::Boxed(_) | Element::Str | Element::List(_) => {
+            found.extend(words.get(*at).copied().filter(|address| *address != 0));
+            *at += 1;
+        }
+        Element::Struct { fields, .. } => {
+            for (_, field) in fields {
+                boxed_addresses(field, words, at, found);
+            }
+        }
+        Element::Enum { cases, words: size, .. } => {
+            let start = *at;
+            let case = words.get(start).and_then(|tag| usize::try_from(*tag).ok());
+            *at += 1;
+            for (_, field) in case.and_then(|case| cases.get(case)).map_or(&[][..], |(_, fields)| fields) {
+                boxed_addresses(field, words, at, found);
+            }
+            *at = start + size;
+        }
+        Element::Int | Element::Float | Element::Bool => *at += 1,
+    }
+}
+
+/// Adds the addresses of a block's boxed fields to `found`.
+fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
+    let Some(shape) = block.get(1).copied() else { return };
+    if shape >= state.tables.str_shape {
+        if is_text(state, block) {
+            return;
+        }
+        if super::dicts::is_dict(state, block) {
+            found.extend(super::dicts::children(state, block));
+            return;
+        }
+        if let Some(element) = super::lists::element_of(state, block)
+            && super::lists::owns_items(&element)
+        {
+            found.extend(super::lists::items(block, 1).iter().copied().filter(|address| *address != 0));
+        }
+        return;
+    }
+    let shape = usize::try_from(shape).ok().and_then(|shape| state.tables.shapes.get(shape));
+    if let Some(shape) = shape {
+        boxed_addresses(shape, block.get(HEADER_WORDS..).unwrap_or_default(), &mut 0, found);
+    }
+}
+
 /// The addresses of a block's boxed fields.
 fn children(state: &State, block: &[u64]) -> Vec<u64> {
-    if is_text(state, block) {
-        return Vec::new();
-    }
-    if super::dicts::is_dict(state, block) {
-        return super::dicts::children(state, block);
-    }
-    if let Some(element) = super::lists::element_of(state, block) {
-        if !super::lists::owns_items(&element) {
-            return Vec::new();
-        }
-        return super::lists::items(block, 1).iter().copied().filter(|address| *address != 0).collect();
-    }
-    let Some(shape) = shape_of(state, block) else { return Vec::new() };
-    let fields = block.get(HEADER_WORDS..).unwrap_or_default();
-    let mut at = 0;
     let mut found = Vec::new();
-    boxed_words(&shape, fields, &mut at, &mut found);
-    found.into_iter().filter_map(|at| fields.get(at).copied()).filter(|address| *address != 0).collect()
+    children_into(state, block, &mut found);
+    found
 }
 
 /// A new block of a shape, owned once, its fields zero.
@@ -279,15 +339,21 @@ pub extern "C" fn free(address: i64) {
 /// Frees a block and releases its boxed fields, freeing those with no other owner, all the
 /// way down.
 fn free_block(state: &mut State, address: u64) {
-    let mut pending = vec![address];
+    let mut pending = std::mem::take(&mut state.heap.pending);
+    let mut found = std::mem::take(&mut state.heap.found);
+    pending.push(address);
     while let Some(address) = pending.pop() {
         let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove(&at)) else {
             continue;
         };
-        if let Ok(at) = usize::try_from(address) {
-            state.heap.texts.remove(&at);
+        if is_text(state, &block) {
+            if let Ok(at) = usize::try_from(address) {
+                state.heap.texts.remove(&at);
+            }
+        } else {
+            children_into(state, &block, &mut found);
         }
-        for child in children(state, &block) {
+        for child in found.drain(..) {
             if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
                 *count = count.saturating_sub(1);
                 if *count == 0 {
@@ -297,6 +363,8 @@ fn free_block(state: &mut State, address: u64) {
         }
         state.heap.recycle(block);
     }
+    state.heap.pending = pending;
+    state.heap.found = found;
 }
 
 /// Gives up one owner of a block, freeing it when that was the last.

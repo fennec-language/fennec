@@ -21,7 +21,7 @@ pub(crate) enum Value {
     Packed(Rc<crate::packed::Packed>),
     Tuple(Rc<Vec<Value>>),
     /// A dict keeps insertion order.
-    Dict(Rc<Vec<(Value, Value)>>),
+    Dict(Rc<crate::pairs::Pairs>),
     Set(Rc<Vec<Value>>),
     /// A struct, an error, or an enum case.
     Instance(Rc<Instance>),
@@ -209,7 +209,9 @@ impl PartialEq for Value {
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::List(a), Value::List(b)) | (Value::Tuple(a), Value::Tuple(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a.len() == b.len() && a.iter().all(|item| b.contains(item)),
-            (Value::Dict(a), Value::Dict(b)) => a.len() == b.len() && a.iter().all(|pair| b.contains(pair)),
+            (Value::Dict(a), Value::Dict(b)) => {
+                a.len() == b.len() && a.iter().all(|(key, value)| b.get(key) == Some(value))
+            }
             (Value::Instance(a), Value::Instance(b)) => {
                 a.type_name == b.type_name && a.case == b.case && a.fields == b.fields
             }

@@ -2,6 +2,7 @@
 ["plum", "fig", "apple", "kiwi"] plumfigapplekiwi
 ["plum", "fig", "apple", "kiwi"] ["plum", "date", "apple", "kiwi", "lime"] False True
 ["apple", "date", "kiwi", "lime", "plum"] ["plum", "date", "kiwi", "lime", "apple"] ["date", "apple", "lime", "kiwi", "plum"]
+["", "a", "aa", "ab", "abcdefgh", "abcdefghi", "abcdefgz", "b", "z", "é"]
 apple 5
 date 4
 kiwi 4

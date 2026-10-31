@@ -1217,6 +1217,18 @@ def f(names: Names) -> str:
 }
 
 #[test]
+fn a_tuple_of_one_type_and_the_arguments_index_by_a_value() {
+    let source = "def f(pair: (int, int), at: int) -> int:
+    pair[at]
+
+def g(args: Args, at: int) -> str:
+    args[at]
+";
+    assert!(printed(source, "f").unwrap().contains("= _0[_1]"));
+    assert!(printed(source, "g").unwrap().contains("= _0[_1]"));
+}
+
+#[test]
 fn every_example_lowers_to_valid_ir_or_says_why() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut lowered_functions = Vec::new();

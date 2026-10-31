@@ -123,7 +123,7 @@ def document(records: int) -> str:
 def main(stdout: Stdout):
     text = document(300)
     mut total = 0
-    for _ in range(8):
+    for _ in range(40):
         mut reader = Reader(text=text)
         value = reader.value()
         mut out = []

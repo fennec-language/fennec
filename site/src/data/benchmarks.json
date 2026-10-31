@@ -22,5 +22,5 @@
     "fib_first_s": 0.14,
     "tests_unchanged_s": 0.01
   },
-  "targets": { "jit": 80, "release": 97 }
+  "targets": { "jit": 80, "release": 110 }
 }

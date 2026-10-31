@@ -45,8 +45,7 @@ def running(numbers: Iterator[int], size: int) -> Iterator[int]:
 
 def first_over(limit: int, over: int) -> int:
     for n in odd_squares(count_up(limit)):
-        if n > over:
-            return n
+        if n > over: return n
     0
 
 def main(stdout: Stdout):

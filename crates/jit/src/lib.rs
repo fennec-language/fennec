@@ -47,6 +47,8 @@ pub struct Report {
     pub leftover_boxes: usize,
     /// How many functions' machine code came from the cache rather than being compiled.
     pub cached: usize,
+    /// What the run allocated and copied.
+    pub counts: fennec_interp::embed::Counts,
     /// The functions lowered from the typed IR rather than the syntax tree.
     pub from_ir: Vec<String>,
 }
@@ -194,6 +196,7 @@ fn compile_and_run(
             leftover_temps: result.leftovers.temps,
             leftover_frames: result.leftovers.frames,
             leftover_boxes: result.leftovers.boxes,
+            counts: result.leftovers.counts,
             cached: compilation.cached,
             from_ir: compilation.from_ir,
         }),

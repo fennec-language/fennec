@@ -619,6 +619,51 @@ fn dev_copies_lists_what_may_cost_hot_code_first() {
     assert!(printed.ends_with("of them in loops\n"), "{printed}");
 }
 
+/// The last lines of `fennec dev copies --run` on a program that does nothing else.
+fn counted_in_a_run(name: &str, body: &str) -> String {
+    let dir = scratch(name).unwrap_or_default();
+    let program = dir.join("game.fen");
+    let source = format!("def main(stdout: Stdout):\n{body}");
+    let path = program.to_string_lossy();
+    let written = std::fs::write(&program, source);
+    let output = fennec(&["dev", "copies", "--run", &path], "");
+    let _ = std::fs::remove_dir_all(&dir);
+    match (written, output) {
+        (Ok(()), Ok(output)) => text(&output.stdout),
+        (written, output) => format!("{written:?} {output:?}"),
+    }
+}
+
+#[test]
+fn a_run_counts_a_copy_only_when_a_shared_value_changes() {
+    let shared = "    mut xs = [1, 2, 3]\n    snapshot = xs\n    xs.append(4)\n    \
+                  stdout.print(snapshot.len() + xs.len())\n";
+    let counted = counted_in_a_run("copies_shared", shared);
+    assert!(counted.contains("in a run: 1 copy of 24 B"), "{counted}");
+
+    let alone = "    mut xs = [1, 2, 3]\n    xs.append(4)\n    stdout.print(xs.len())\n";
+    let counted = counted_in_a_run("copies_alone", alone);
+    assert!(counted.contains("in a run: no copies, "), "{counted}");
+}
+
+#[test]
+fn a_run_of_plain_numbers_allocates_nothing() {
+    let numbers = "    mut total = 0\n    mut at = 0\n    while at < 1000:\n        total += at\n        \
+                   at += 1\n    stdout.print(total)\n";
+    let counted = counted_in_a_run("copies_numbers", numbers);
+    assert!(counted.contains("in a run: no copies, 0 allocations of 0 B"), "{counted}");
+}
+
+#[test]
+fn a_run_counts_what_a_hot_loop_allocates() {
+    let looped = "    mut total = 0\n    for at in range(100):\n        xs = [at, at]\n        \
+                  total += xs.len()\n    stdout.print(total)\n";
+    let counted = counted_in_a_run("copies_loop", looped);
+    let allocations = counted.split("no copies, ").nth(1).and_then(|rest| rest.split(' ').next());
+    let allocations: u64 = allocations.and_then(|count| count.parse().ok()).unwrap_or(0);
+    assert!(allocations >= 100, "{counted}");
+}
+
 #[test]
 fn dev_copies_reports_a_mistake_instead_of_a_list() {
     let dir = scratch("copies_bad").unwrap();

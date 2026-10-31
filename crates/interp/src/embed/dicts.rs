@@ -214,6 +214,7 @@ fn set_in(state: &mut State, dict: i64, key: i64, value: i64) -> Option<i64> {
     if shared || used >= capacity(slots) {
         let (shape, live) = (*block.get(1)?, entries(block));
         if shared {
+            state.heap.counts.copied(live.len() * ENTRY_WORDS);
             for entry in &live {
                 retain_entry(state, key_word, value_word, entry);
             }
@@ -269,6 +270,7 @@ fn unshared(state: &mut State, at: u64) -> Option<u64> {
     }
     let (key_word, value_word) = kind(state, block)?;
     let (shape, live) = (*block.get(1)?, entries(block));
+    state.heap.counts.copied(live.len() * ENTRY_WORDS);
     for entry in &live {
         retain_entry(state, key_word, value_word, entry);
     }

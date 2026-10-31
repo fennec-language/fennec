@@ -1,0 +1,5 @@
+error: `sum` of `Money` needs a starting value: sum(wallet, Money(cents=0))
+ --> examples/errors/sum_needs_start.fen:9:18
+  |
+9 |     stdout.print(sum(wallet))
+  |                  ^^^^^^^^^^^

@@ -74,6 +74,8 @@ pub(crate) struct FnCx<'c> {
     /// Types filled in for type parameters that weren't worked out when they were used,
     /// with the bounds they have to fit and where.
     pub(crate) pending_bounds: Vec<(Type, Vec<String>, Span)>,
+    /// Calls to `sum` whose items weren't worked out when they were checked.
+    pub(crate) pending_sums: Vec<crate::sum::SumCall>,
     /// Every expression's type and every declared name's, as they're found.
     exprs: Vec<(Span, Type)>,
     names: Vec<(Span, String, Type)>,
@@ -104,6 +106,7 @@ impl<'c> FnCx<'c> {
             yields: Vec::new(),
             generics: Vec::new(),
             pending_bounds: Vec::new(),
+            pending_sums: Vec::new(),
             reported: 0,
             exprs: Vec::new(),
             names: Vec::new(),
@@ -118,6 +121,7 @@ impl<'c> FnCx<'c> {
     /// like the function's return type.
     pub(crate) fn finish(mut self, extra: &[Type]) {
         self.check_pending_bounds();
+        self.check_pending_sums();
         // An expression looked at twice, like an argument peeked at first, keeps the type
         // it got last.
         let exprs: std::collections::BTreeMap<(u32, u32), Type> =

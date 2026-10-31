@@ -5,7 +5,7 @@
 use fennec_check::Type;
 use fennec_syntax::{BinOp, UnaryOp};
 
-use crate::{Function, InstKind, LocalId, Operand, Program, Terminator};
+use crate::{FormatPart, Function, InstKind, LocalId, Operand, Program, Terminator};
 
 /// Every way a program's IR is malformed, each naming its function. Empty when it's sound.
 pub fn validate(program: &Program) -> Result<(), Vec<String>> {
@@ -97,7 +97,74 @@ impl Check<'_> {
                     self.problems.push(format!("`{inst}` reads the wrong field or type"));
                 }
             }
+            InstKind::MakeList { .. }
+            | InstKind::GetIndex { .. }
+            | InstKind::SetIndex { .. }
+            | InstKind::Format { .. }
+            | InstKind::Builtin { .. } => self.list_inst(inst),
             InstKind::Call { dest, function, args } => self.call(*dest, function, args),
+        }
+    }
+
+    /// Lists, f-strings and what the engines provide.
+    fn list_inst(&mut self, inst: &InstKind) {
+        match inst {
+            InstKind::MakeList { dest, items } => {
+                let wanted = self.local(*dest);
+                let Some(Type::List(item)) = wanted else {
+                    self.problems.push(format!("`{inst}` makes a list in another type"));
+                    return;
+                };
+                for value in items {
+                    self.operand(value, Some(&item), "item");
+                }
+            }
+            InstKind::GetIndex { dest, object, index } => {
+                let wanted = self.local(*dest);
+                self.operand(index, Some(&Type::Int), "index");
+                let found = match self.function.type_of(object) {
+                    Some(Type::List(item)) => Some(*item),
+                    Some(Type::Str) => Some(Type::Str),
+                    _ => None,
+                };
+                if found.is_none() || found != wanted {
+                    self.problems.push(format!("`{inst}` reads the wrong thing"));
+                }
+            }
+            InstKind::SetIndex { object, path, index, value } => {
+                let mut ty = self.local(*object);
+                for field in path {
+                    ty = ty.and_then(|ty| self.field(&ty, field));
+                }
+                self.operand(index, Some(&Type::Int), "index");
+                let Some(Type::List(item)) = ty else {
+                    self.problems.push(format!("`{inst}` changes an item of something else"));
+                    return;
+                };
+                self.operand(value, Some(&item), "item");
+            }
+            InstKind::Format { dest, parts } => {
+                if self.local(*dest) != Some(Type::Str) {
+                    self.problems.push(format!("`{inst}` keeps text in another type"));
+                }
+                for part in parts {
+                    if let FormatPart::Value { value, .. } = part {
+                        self.operand(value, None, "value");
+                    }
+                }
+            }
+            InstKind::Builtin { dest, args, changes, .. } => {
+                if let Some(dest) = dest {
+                    self.local(*dest);
+                }
+                for arg in args {
+                    self.operand(arg, None, "argument");
+                }
+                if *changes && !matches!(args.first(), Some(Operand::Local(_))) {
+                    self.problems.push(format!("`{inst}` changes something other than a local"));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -182,7 +249,9 @@ impl Check<'_> {
             self.operand(arg, None, "argument");
         }
         let Some(target) = self.program.functions.iter().find(|function| function.name == callee) else {
-            if !self.program.not_lowered.iter().any(|skipped| skipped.function == callee) {
+            let elsewhere = self.program.external.iter().any(|name| name == callee)
+                || self.program.not_lowered.iter().any(|skipped| skipped.function == callee);
+            if !elsewhere {
                 self.problems.push(format!("calls `{callee}`, which doesn't exist"));
             }
             return;
@@ -192,6 +261,11 @@ impl Check<'_> {
         }
         for (arg, param) in args.iter().zip(&target.locals) {
             self.operand(arg, Some(&param.ty), "argument");
+        }
+        for at in &target.mut_params {
+            if !matches!(args.get(*at), Some(Operand::Local(_))) {
+                self.problems.push(format!("passes something other than a local to `{callee}`'s `mut`"));
+            }
         }
         if let Some(dest) = dest
             && self.local(dest).is_some_and(|ty| ty != target.returns)

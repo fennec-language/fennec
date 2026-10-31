@@ -431,3 +431,170 @@ fn types_and_builtins_are_not_values() {
         ]
     );
 }
+
+const MONEY: &str = "
+struct Money:
+    cents: int
+
+    def +(self, other: Money) -> Money:
+        Money(cents=self.cents + other.cents)
+
+struct Flag:
+    on: bool
+
+struct Worth:
+    cents: int
+
+    def +(self, other: Worth) -> float:
+        1.5
+
+struct Tip:
+    cents: int
+
+    def +(self, other: int) -> Tip:
+        self
+";
+
+fn sum_problems(call: &str) -> Vec<String> {
+    problems(&format!(
+        "{MONEY}\ndef main(stdout: Stdout):\n    wallet = [Money(cents=1)]\n    stdout.print({call})\n"
+    ))
+}
+
+#[test]
+fn sum_needs_nothing_for_numbers_and_a_start_for_the_rest() {
+    for fine in [
+        "sum([1, 2])",
+        "sum([1.5])",
+        "sum([1], 10)",
+        "sum([1.5], 0.5)",
+        "sum(wallet, Money(cents=0))",
+        "sum(m for m in wallet, Money(cents=0))",
+        "sum([], 0.0)",
+        "sum(['a'], '')",
+        "sum([[1]], [])",
+        "sum([], Money(cents=0))",
+    ] {
+        assert_eq!(sum_problems(fine), Vec::<String>::new(), "{fine}");
+    }
+    assert_eq!(
+        sum_problems("sum(wallet)"),
+        ["`sum` of `Money` needs a starting value: sum(wallet, Money(cents=0)) @ sum(wallet)"]
+    );
+    assert_eq!(
+        sum_problems("sum(m for m in wallet)"),
+        ["`sum` of `Money` needs a starting value: sum(..., Money(cents=0)) @ sum(m for m in wallet)"]
+    );
+    assert_eq!(
+        sum_problems("sum([[1]])"),
+        ["`sum` of `list[int]` needs a starting value: sum(..., []) @ sum([[1]])"]
+    );
+}
+
+#[test]
+fn sum_finds_out_late_that_its_items_need_a_start() {
+    let program = format!(
+        "{MONEY}
+def main(stdout: Stdout):
+    mut wallet = []
+    stdout.print(sum(wallet))
+    wallet.append(Money(cents=1))
+"
+    );
+    assert_eq!(
+        problems(&program),
+        ["`sum` of `Money` needs a starting value: sum(wallet, Money(cents=0)) @ sum(wallet)"]
+    );
+}
+
+#[test]
+fn sum_needs_a_plus_that_adds_two_items() {
+    assert_eq!(
+        sum_problems("sum([Flag(on=True)], Flag(on=False))"),
+        ["`sum` adds with `+`, but `Flag` has no `def +` @ sum([Flag(on=True)], Flag(on=False))"]
+    );
+    assert_eq!(
+        sum_problems("sum([Flag(on=True)])"),
+        ["`sum` adds with `+`, but `Flag` has no `def +` @ sum([Flag(on=True)])"]
+    );
+    assert_eq!(sum_problems("sum([True])"), ["`sum` adds with `+`, but `bool` has no `+` @ sum([True])"]);
+    assert_eq!(
+        sum_problems("sum([Worth(cents=1)], Worth(cents=0))"),
+        [
+            "`sum` needs `+` to give back `Worth`, but `Worth`'s gives a float @ sum([Worth(cents=1)], Worth(cents=0))"
+        ]
+    );
+    assert_eq!(
+        sum_problems("sum([Tip(cents=1)], Tip(cents=0))"),
+        ["`other` should be an int, but this is a Tip @ sum([Tip(cents=1)], Tip(cents=0))"]
+    );
+}
+
+#[test]
+fn sums_start_has_to_be_an_item() {
+    assert_eq!(sum_problems("sum(wallet, 0)"), ["`sum`'s start should be a Money, but this is an int @ 0"]);
+    assert_eq!(sum_problems("sum([1.5], 0)"), ["`sum`'s start should be a float, but this is an int @ 0"]);
+    assert_eq!(
+        sum_problems("sum([1], 2, 3)"),
+        ["`sum` was called with the wrong arguments @ sum([1], 2, 3)"]
+    );
+}
+
+#[test]
+fn sum_of_a_type_parameter_needs_a_start_and_a_bound_with_plus() {
+    let program = "
+        interface Addable:
+            def +(self, other: Self) -> Self
+
+        interface Named:
+            def name(self) -> str
+
+        def total[T: Addable](items: list[T], start: T) -> T:
+            sum(items, start)
+
+        def bare[T: Addable](items: list[T]) -> T:
+            sum(items)
+
+        def named[T: Named](items: list[T], start: T) -> T:
+            sum(items, start)
+    ";
+    assert_eq!(
+        problems(program),
+        [
+            "`sum` of `T` needs a starting value: sum(items, ...) @ sum(items)",
+            "`sum` adds with `+`, but `T` has no `def +` @ sum(items, start)",
+        ]
+    );
+}
+
+#[test]
+fn sum_hints_a_start_from_the_required_fields() {
+    let program = "
+        struct Bag:
+            name: str
+            weight: float
+            flag: bool
+            label: str = \"bag\"
+
+            def +(self, other: Bag) -> Bag:
+                self
+
+        def main(stdout: Stdout):
+            stdout.print(sum([Bag(name='a', weight=1.0, flag=True)]))
+    ";
+    let [problem] = problems(&program.replace('\'', "\"")).try_into().unwrap();
+    assert!(
+        problem.starts_with(
+            "`sum` of `Bag` needs a starting value: sum(..., Bag(name=\"\", weight=0.0, flag=...)) @"
+        ),
+        "{problem}"
+    );
+}
+
+#[test]
+fn sums_error_says_what_to_add() {
+    let program = format!(
+        "{MONEY}\ndef main(stdout: Stdout):\n    stdout.print(sum([Flag(on=True)], Flag(on=False)))\n"
+    );
+    assert_eq!(helps(&program), ["add `def +(self, other: Flag) -> Flag` to `Flag`"]);
+}

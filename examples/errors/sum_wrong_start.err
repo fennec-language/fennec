@@ -1,0 +1,5 @@
+error: `sum`'s start should be a Money, but this is an int
+ --> examples/errors/sum_wrong_start.fen:9:30
+  |
+9 |     stdout.print(sum(wallet, 0))
+  |                              ^

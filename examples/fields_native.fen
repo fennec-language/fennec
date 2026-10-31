@@ -140,6 +140,8 @@ def main(stdout: Stdout):
     for mut point in bag.points:
         point.x += 1
     stdout.print(bag.points[1].x, sum(bag.numbers), [n * 2 for n in bag.numbers])
+    floats = [0.0, 1.5]
+    stdout.print(0.0 in floats, -0.0 in floats, 1.5 in floats, 2.5 not in floats)
     bag.numbers.clear()
     stdout.print(bag.numbers, bag)
     stdout.print(fresh().numbers[2], fresh().name.len())

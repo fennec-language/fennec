@@ -93,6 +93,8 @@ pub(crate) enum Helper {
     StrPrint,
     Sin,
     Cos,
+    IntPower,
+    FloatPower,
     ListNew,
     ListGrow,
     ListUnshare,
@@ -100,7 +102,7 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 92] = [
+pub(crate) const ALL: [Helper; 94] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -188,6 +190,8 @@ pub(crate) const ALL: [Helper; 92] = [
     Helper::StrPrint,
     Helper::Sin,
     Helper::Cos,
+    Helper::IntPower,
+    Helper::FloatPower,
     Helper::ListNew,
     Helper::ListGrow,
     Helper::ListUnshare,
@@ -279,6 +283,8 @@ impl Helper {
             Helper::MakeInstance => shape("fennec_make_instance", &[I64, I64, I64, I64], &[I64]),
             Helper::Sin => shape("fennec_sin", &[F64], &[F64]),
             Helper::Cos => shape("fennec_cos", &[F64], &[F64]),
+            Helper::FloatPower => shape("fennec_float_power", &[F64, F64], &[F64]),
+            Helper::IntPower => shape("fennec_int_power", &[I64, I64, I64, I64], &[I64]),
             Helper::ListNew => shape("fennec_list_new", &[I64, I64], &[I64]),
             Helper::ListGrow => shape("fennec_list_grow", &[I64], &[I64]),
             Helper::ListUnshare => shape("fennec_list_unshare", &[I64], &[I64]),
@@ -301,6 +307,8 @@ impl Helper {
                 | Helper::StrConcat
                 | Helper::StrAppend
                 | Helper::StrCharAt
+                | Helper::FloatPower
+                | Helper::IntPower
                 | Helper::ListNew
                 | Helper::ListGrow
                 | Helper::ListUnshare
@@ -333,6 +341,7 @@ impl Helper {
                     | Helper::Count
                     | Helper::TypeOf
                     | Helper::ToInt
+                    | Helper::IntPower
                     | Helper::ListNew
                     | Helper::ListGrow
                     | Helper::ListUnshare
@@ -375,6 +384,7 @@ impl Helper {
                 | Helper::StrSlice
                 | Helper::StrPrint
                 | Helper::DictMissing
+                | Helper::IntPower
                 | Helper::ListFromValue
                 | Helper::OutOfRange
                 | Helper::MainResult
@@ -464,6 +474,8 @@ impl Helper {
             Helper::MakeInstance => objects::make_instance as *const u8,
             Helper::Sin => checks::sin as *const u8,
             Helper::Cos => checks::cos as *const u8,
+            Helper::FloatPower => lists::float_power as *const u8,
+            Helper::IntPower => lists::int_power as *const u8,
             Helper::ListNew => lists::new as *const u8,
             Helper::ListGrow => lists::grow as *const u8,
             Helper::ListUnshare => lists::unshare as *const u8,

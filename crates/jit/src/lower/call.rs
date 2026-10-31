@@ -36,6 +36,9 @@ impl Lowerer<'_, '_> {
         {
             return if name == "len" { self.length(expr, object) } else { self.absolute(expr, object) };
         }
+        if let Some(total) = self.sum_call(expr, callee, args)? {
+            return Ok(total);
+        }
         if let Some(name) = self.std_member(callee) {
             if let Some(id) = self.layouts.id(name)
                 && let Some(result) = self.construct(id, args, expr.span)?

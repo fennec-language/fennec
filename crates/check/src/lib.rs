@@ -44,7 +44,7 @@ pub use types::Type;
 /// Checks a parsed module. Returns the signature of every function and method, or every
 /// problem found, in source order.
 pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
-    check_typed(module).map(|checked| checked.signatures)
+    check_typed(module).map(Checked::into_signatures)
 }
 
 /// Checks a parsed module. Returns the signatures and the type of every expression and
@@ -98,7 +98,14 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             }
         });
     }
-    checked.signatures
+    checked.into_signatures()
+}
+
+impl Checked {
+    /// The signatures, holding the type of every expression too, for compilers to use.
+    fn into_signatures(self) -> Signatures {
+        Signatures { types: self.types, ..self.signatures }
+    }
 }
 
 /// Everything a check works out about a program that has no mistakes.
@@ -197,6 +204,7 @@ pub struct Signatures {
     structs: BTreeMap<String, Struct>,
     enums: BTreeMap<String, Enum>,
     locals: BTreeMap<String, Type>,
+    types: Types,
 }
 
 /// A struct's fields, with their types, in the order they're written.
@@ -233,6 +241,11 @@ impl Signatures {
     /// The name of every struct, the standard library's included.
     pub fn structures(&self) -> impl Iterator<Item = &str> {
         self.structs.keys().map(String::as_str)
+    }
+
+    /// The type of the expression at `span` in a function.
+    pub fn expr_type(&self, function: &str, span: Span) -> Option<&Type> {
+        self.types.body(function)?.expr(span).filter(|ty| ty.is_known())
     }
 
     /// The type a name holds in a function (`name`, `Type.name` or `outer.inner`), when it's

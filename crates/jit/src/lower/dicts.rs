@@ -246,9 +246,22 @@ impl Lowerer<'_, '_> {
     /// A dict literal made natively, when the name it's for holds a native dict, or `None`.
     /// Each key is worked out, then its value, in order, as the interpreter does.
     pub(super) fn literal_for(&mut self, name: &str, value: &Expr) -> Result<Option<Lowered>, Diagnostic> {
-        let (ExprKind::Dict(pairs), Some(ty @ Ty::Dict(key_word, value_word))) =
-            (&value.kind, self.checked_ty(name))
-        else {
+        match self.checked_ty(name) {
+            Some(ty) => self.dict_literal_as(value, ty),
+            None => Ok(None),
+        }
+    }
+
+    /// A dict literal made natively, when the checker knows it can be.
+    pub(super) fn dict_literal(&mut self, value: &Expr) -> Result<Option<Lowered>, Diagnostic> {
+        match self.checked_expr(value) {
+            Some(ty) => self.dict_literal_as(value, ty),
+            None => Ok(None),
+        }
+    }
+
+    fn dict_literal_as(&mut self, value: &Expr, ty: Ty) -> Result<Option<Lowered>, Diagnostic> {
+        let (ExprKind::Dict(pairs), Ty::Dict(key_word, value_word)) = (&value.kind, ty) else {
             return Ok(None);
         };
         let shape = shape(self.shared.tables.str_shape, key_word, value_word)

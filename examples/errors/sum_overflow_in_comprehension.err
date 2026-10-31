@@ -1,0 +1,7 @@
+error: this calculation overflows an int
+ --> examples/errors/sum_overflow_in_comprehension.fen:4:22
+  |
+4 |     stdout.print(sum(i * 4_611_686_018_427_387_904 for i in range(3)))
+  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: ints are 64-bit; check the values involved, or use floats for very large numbers

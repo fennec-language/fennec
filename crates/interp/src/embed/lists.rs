@@ -148,6 +148,21 @@ pub extern "C" fn from_value(value: i64, element: i64, start: i64, end: i64) -> 
     })
 }
 
+/// `a ** b` on ints, failing like the interpreter.
+pub extern "C" fn int_power(a: i64, b: i64, start: i64, end: i64) -> i64 {
+    attempt(|_: &mut State| {
+        match crate::ops::binary(fennec_syntax::BinOp::Pow, Value::Int(a), Value::Int(b), span(start, end))? {
+            Value::Int(power) => Ok(power),
+            _ => Ok(0),
+        }
+    })
+}
+
+/// `a ** b` on floats.
+pub extern "C" fn float_power(a: f64, b: f64) -> f64 {
+    a.powf(b)
+}
+
 /// Fails with the interpreter's message for an index past either end of a list.
 pub extern "C" fn out_of_range(at: i64, len: i64, start: i64, end: i64) {
     attempt(|_: &mut State| -> Result<(), Diagnostic> {

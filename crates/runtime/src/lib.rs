@@ -94,6 +94,8 @@ export! {
     fennec_make_instance(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => objects::make_instance(a0, a1, a2, a3);
     fennec_sin(a0: f64) -> f64 => checks::sin(a0);
     fennec_cos(a0: f64) -> f64 => checks::cos(a0);
+    fennec_float_power(a0: f64, a1: f64) -> f64 => lists::float_power(a0, a1);
+    fennec_int_power(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::int_power(a0, a1, a2, a3);
     fennec_list_new(a0: i64, a1: i64) -> i64 => lists::new(a0, a1);
     fennec_list_grow(a0: i64) -> i64 => lists::grow(a0);
     fennec_list_unshare(a0: i64) -> i64 => lists::unshare(a0);

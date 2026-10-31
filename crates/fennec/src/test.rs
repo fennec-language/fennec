@@ -4,8 +4,9 @@
 //!
 //! A test that passed is run again only when something it depends on changed: the test
 //! itself, the functions it ran and what those rely on (see `fennec_build::TestGraph`). What
-//! each test that passed depends on is kept in the cache in `~/.fennec`. `--all` runs every
-//! test, as do runs with `CI` or `FENNEC_NO_CACHE` set. A test that failed always runs again.
+//! each test that passed depends on is kept in the cache in `~/.fennec`, and CI reuses it like
+//! anywhere else. `--all` runs every test, as do runs with `FENNEC_NO_CACHE` set. A test that
+//! failed always runs again, and so does every test after Fennec itself changes.
 //!
 //! Tests run as native code on every core, reusing machine code from the cache. Property
 //! tests, and any test the JIT can't compile yet, run in the interpreter.
@@ -55,7 +56,7 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
     };
     let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
     let results = Results::open(path, options.all);
-    let graph = TestGraph::of(&program.module);
+    let graph = TestGraph::of(&program.module, env!("FENNEC_BUILD"));
     let unchanged: Vec<&TestRecord> = graph
         .tests()
         .filter_map(|name| results.passed.get(name))
@@ -141,9 +142,8 @@ impl Results {
         let cache = fennec_build::fennec_home()
             .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
             .map(|home| (Cache::new(&home), program));
-        let reuse = !all && std::env::var_os("CI").is_none();
         let passed = match &cache {
-            Some((cache, program)) if reuse => cache.test_records(program),
+            Some((cache, program)) if !all => cache.test_records(program),
             _ => HashMap::new(),
         };
         Results { cache, passed }

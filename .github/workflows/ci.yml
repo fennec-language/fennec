@@ -50,19 +50,43 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test --locked
+      # Which tests passed. A pull request reads its own results, then the shared ones, and
+      # keeps its own apart: GitHub never shows one pull request's cache to another run, so
+      # none can plant a false pass. Only a full run on main writes the shared results.
+      - name: Restore test results
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fennec-home
+          key: fennec-tests-${{ github.event.pull_request.number || 'shared' }}-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: |
+            fennec-tests-${{ github.event.pull_request.number || 'shared' }}-${{ runner.os }}-${{ runner.arch }}-
+            fennec-tests-shared-${{ runner.os }}-${{ runner.arch }}-
       - name: Run every example and kit through the fennec command
         shell: bash
+        env:
+          FENNEC_HOME: ${{ runner.temp }}/fennec-home
         run: |
+          # After a merge, every test runs, which catches any bug in what the cache reuses.
+          all=()
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            all=(--all)
+          fi
           cargo build --locked --quiet -p fennec
           for program in examples/*.fen; do
             ./target/debug/fennec run "$program" | diff --strip-trailing-cr "${program%.fen}.out" -
-            ./target/debug/fennec test "$program" > /dev/null
+            ./target/debug/fennec test "${all[@]}" "$program" > /dev/null
           done
           for kit in examples/projects/*/; do
             [ -f "$kit/kit.toml" ] || continue
             ./target/debug/fennec run "$kit" | diff --strip-trailing-cr "${kit%/}.out" -
-            ./target/debug/fennec test "$kit" > /dev/null
+            ./target/debug/fennec test "${all[@]}" "$kit" > /dev/null
           done
+      - name: Save test results
+        if: github.event_name != 'merge_group'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fennec-home
+          key: fennec-tests-${{ github.event.pull_request.number || 'shared' }}-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
 
   coverage:
     name: Coverage

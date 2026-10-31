@@ -253,6 +253,7 @@ dependencies = [
  "fennec-count",
  "fennec-fmt",
  "fennec-interp",
+ "fennec-ir",
  "fennec-jit",
  "fennec-kit",
  "fennec-lsp",

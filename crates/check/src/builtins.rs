@@ -34,7 +34,7 @@ const BUILTINS: [(&str, usize, usize); 22] = [
     ("set", 0, 1),
     ("sorted", 1, 1),
     ("str", 1, 1),
-    ("sum", 1, 1),
+    ("sum", 1, 2),
     ("zip", 2, 2),
 ];
 
@@ -333,6 +333,9 @@ impl FnCx<'_> {
             self.error(wrong_args(name, span));
             return Type::Unknown;
         }
+        if name == "sum" {
+            return self.sum(args, &plain, span);
+        }
         let result = self.builtin_result(name, &plain, span);
         let keyed = args.iter().any(|arg| arg.name.as_deref() == Some("key"));
         if matches!(name, "min" | "max") && !keyed {
@@ -434,17 +437,6 @@ impl FnCx<'_> {
                 self.join_or_report(&types, span, &format!("`{name}` is given"))
             }
             "min" | "max" => items(self),
-            "sum" => {
-                let item = items(self);
-                if !matches!(
-                    self.checker.settled(&item),
-                    Type::Int | Type::Float | Type::Unknown | Type::Var(_)
-                ) {
-                    let message = format!("`sum` adds numbers, but these are {}s", item.kind());
-                    self.error(Diagnostic::new(message, span));
-                }
-                item
-            }
             "any" | "all" => {
                 let item = items(self);
                 if !self.checker.fits(&Type::Bool, &item) {

@@ -1,0 +1,38 @@
+# `sum` adds with `+`. Numbers need nothing, and an empty list of floats gives `0.0`. Any
+# other type passes a start, since only the program knows what its zero is.
+
+interface Addable:
+    def +(self, other: Self) -> Self
+
+struct Money:
+    cents: int
+
+    def +(self, other: Money) -> Money:
+        Money(cents=self.cents + other.cents)
+
+struct Item:
+    price: Money
+
+def total[T: Addable](items: list[T], start: T) -> T:
+    sum(items, start)
+
+def main(stdout: Stdout):
+    no_floats: list[float] = []
+    no_ints: list[int] = []
+    stdout.print(sum([1, 2, 3]), sum([1.5, 2.5]), sum(no_ints), sum(no_floats))
+    stdout.print(sum([1, 2], 10), sum(no_floats, 0.5))
+
+    # The items' type can be worked out after the call.
+    mut later = []
+    stdout.print(sum(later))
+    later.append(1.5)
+
+    wallet = [Money(cents=150), Money(cents=250)]
+    stdout.print(sum(wallet, Money(cents=0)))
+    stdout.print(sum(wallet, Money(cents=1000)))
+
+    cart = [Item(price=Money(cents=5)), Item(price=Money(cents=7))]
+    stdout.print(sum(item.price for item in cart, Money(cents=0)))
+
+    stdout.print(sum(["a", "b"], ""), sum([[1], [2, 3]], []))
+    stdout.print(total(wallet, Money(cents=0)), total([1.5], 0.0))

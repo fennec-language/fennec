@@ -36,6 +36,8 @@ pub(crate) struct Checker {
     /// The enum chosen for each leading-dot case that more than one enum has, by the span
     /// of the case, as the type expected where it's written decided.
     pub(crate) cases: BTreeMap<(u32, u32), String>,
+    /// The calls to `sum` of floats with no start, which start at `0.0`.
+    pub(crate) float_sums: BTreeSet<(u32, u32)>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
@@ -74,6 +76,7 @@ impl Checker {
             vars: Vec::new(),
             typed: BTreeMap::new(),
             cases: BTreeMap::new(),
+            float_sums: BTreeSet::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
@@ -137,7 +140,7 @@ impl Checker {
                 .collect();
             let signatures = Signatures { functions, structs, enums, locals };
             let types = Types { functions: self.typed };
-            return Ok(Checked { signatures, types, cases: self.cases });
+            return Ok(Checked { signatures, types, cases: self.cases, float_sums: self.float_sums });
         }
         let mut diagnostics = self.diagnostics;
         diagnostics.sort_by(|a, b| (a.span.start, &a.message).cmp(&(b.span.start, &b.message)));

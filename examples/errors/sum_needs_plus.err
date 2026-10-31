@@ -1,0 +1,7 @@
+error: `sum` adds with `+`, but `Tag` has no `def +`
+ --> examples/errors/sum_needs_plus.fen:5:18
+  |
+5 |     stdout.print(sum([Tag(name="a")], Tag(name="")))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: add `def +(self, other: Tag) -> Tag` to `Tag`

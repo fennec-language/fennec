@@ -1,0 +1,7 @@
+error: this calculation overflows an int
+ --> examples/errors/overflow_in_recursion.fen:5:5
+  |
+5 |     over(n - 1) + over(n - 2)
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: ints are 64-bit; check the values involved, or use floats for very large numbers

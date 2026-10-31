@@ -1,0 +1,38 @@
+## Small functions that return early, called directly and recursively.
+
+def down(n: int) -> int:
+    if n <= 0: return 0
+    return down(n - 1) + 1
+
+def fib(n: int) -> int:
+    if n < 2: return n
+    fib(n - 1) + fib(n - 2)
+
+def sign(n: int) -> int:
+    if n > 0:
+        return 1
+    elif n < 0:
+        return -1
+    return 0
+
+def clamp(x: float) -> float:
+    if x > 1.0: return 1.0
+    if x < 0.0: return 0.0
+    x
+
+def tell(n: int, stdout: Stdout):
+    if n > 2:
+        stdout.print("big")
+        return
+    stdout.print("small")
+
+def narrowed(n: int) -> int:
+    if not (n > 5 and n < 10): return n - 9_223_372_036_854_775_807
+    n + 9_223_372_036_854_775_797
+
+def main(stdout: Stdout):
+    stdout.print(down(500), fib(15), sign(-4), sign(4), sign(0))
+    stdout.print(clamp(2.5), clamp(-1.0), clamp(0.25))
+    tell(3, stdout)
+    tell(1, stdout)
+    stdout.print(narrowed(7), narrowed(9), narrowed(-1), narrowed(10))

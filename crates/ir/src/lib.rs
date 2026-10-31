@@ -8,11 +8,13 @@
 //! need nothing looked up later. Overflow, dividing by zero and so on are the operator's
 //! meaning: each backend has to end the program the same way, at the instruction's span.
 //!
-//! Lowering grows in slices. So far it handles functions over ints, floats, bools, strs and
-//! the program's own structs and enums, lists, capabilities, optionals and results:
-//! operators, names, `if`, `while`, `for` over a `range`, list or str, `match`, `return`,
-//! `fail`, `?`, `else`, direct calls, what the engines provide, building values, and reading
-//! and changing fields and items. All of them are values, so copying one copies it. A `match`
+//! Lowering grows in slices. So far it handles functions over ints, floats, bools, strs,
+//! bytes, the program's own structs and enums, lists, sets, dicts, tuples, capabilities,
+//! optionals and results: operators, names, `if`, `while`, `for` over anything but a value
+//! with its own iterator, comprehensions, `match`, `return`, `fail`, `?`, `else`, direct calls,
+//! what the engines provide, building values, and reading and changing fields and items. All
+//! of them are values, so copying one copies it. A comprehension is a loop that fills a
+//! collection, and a loop over anything but a list goes through a list of its items. A `match`
 //! is a run of tests, one case after another, which a backend can turn into a jump table. A
 //! `mut` parameter is copied back: when the call returns, the local passed for it holds what
 //! the parameter held. Nothing is implicit: a value going where an optional or a result goes
@@ -176,13 +178,42 @@ pub enum InstKind {
         dest: LocalId,
         items: Vec<Operand>,
     },
-    /// An item of a list or str. An index out of range ends the program.
+    MakeSet {
+        dest: LocalId,
+        items: Vec<Operand>,
+    },
+    /// A new dict. A key written twice keeps its first place and its last value.
+    MakeDict {
+        dest: LocalId,
+        pairs: Vec<(Operand, Operand)>,
+    },
+    MakeTuple {
+        dest: LocalId,
+        items: Vec<Operand>,
+    },
+    /// One item of a tuple, by a position known here.
+    GetTupleItem {
+        dest: LocalId,
+        value: Operand,
+        at: usize,
+    },
+    /// An item of a list, str, bytes or tuple by position, or of a dict by key. An index out
+    /// of range or a key that isn't there ends the program.
     GetIndex {
         dest: LocalId,
         object: Operand,
         index: Operand,
     },
-    /// Changes an item of a list held in a local, following `path` to reach it.
+    /// `object[start:end]` on a list, str or bytes. A bound that's left out is the end it
+    /// would be, and either can count from the back.
+    Slice {
+        dest: LocalId,
+        object: Operand,
+        start: Option<Operand>,
+        end: Option<Operand>,
+    },
+    /// Changes an item of a list or a dict's value for a key, in a local, following `path`
+    /// to reach it.
     SetIndex {
         object: LocalId,
         path: Vec<String>,

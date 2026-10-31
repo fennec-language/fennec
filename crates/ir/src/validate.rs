@@ -98,10 +98,14 @@ impl<'p> Check<'p> {
                 }
             }
             InstKind::MakeList { .. }
+            | InstKind::MakeSet { .. }
+            | InstKind::MakeDict { .. }
+            | InstKind::MakeTuple { .. }
+            | InstKind::GetTupleItem { .. }
             | InstKind::GetIndex { .. }
-            | InstKind::SetIndex { .. }
-            | InstKind::Format { .. }
-            | InstKind::Builtin { .. } => self.list_inst(inst),
+            | InstKind::Slice { .. }
+            | InstKind::SetIndex { .. } => self.collection_inst(inst),
+            InstKind::Format { .. } | InstKind::Builtin { .. } => self.engine_inst(inst),
             InstKind::Call { dest, function, args } => self.call(*dest, function, args),
             _ => self.failure_inst(inst),
         }
@@ -158,29 +162,65 @@ impl<'p> Check<'p> {
         }
     }
 
-    /// Lists, f-strings and what the engines provide.
-    fn list_inst(&mut self, inst: &InstKind) {
+    /// Building collections, and reading and changing their items.
+    fn collection_inst(&mut self, inst: &InstKind) {
         match inst {
-            InstKind::MakeList { dest, items } => {
-                let wanted = self.local(*dest);
-                let Some(Type::List(item)) = wanted else {
-                    self.problems.push(format!("`{inst}` makes a list in another type"));
+            InstKind::MakeList { dest, items } => match self.local(*dest) {
+                Some(Type::List(item)) => self.operands(items, &item),
+                _ => self.problems.push(format!("`{inst}` makes a list in another type")),
+            },
+            InstKind::MakeSet { dest, items } => match self.local(*dest) {
+                Some(Type::Set(item)) => self.operands(items, &item),
+                _ => self.problems.push(format!("`{inst}` makes a set in another type")),
+            },
+            InstKind::MakeDict { dest, pairs } => {
+                let Some(Type::Dict(key, value)) = self.local(*dest) else {
+                    self.problems.push(format!("`{inst}` makes a dict in another type"));
                     return;
                 };
-                for value in items {
-                    self.operand(value, Some(&item), "item");
+                for (written, item) in pairs {
+                    self.operand(written, Some(&key), "key");
+                    self.operand(item, Some(&value), "value");
+                }
+            }
+            InstKind::MakeTuple { dest, items } => {
+                let Some(Type::Tuple(wanted)) = self.local(*dest) else {
+                    self.problems.push(format!("`{inst}` makes a tuple in another type"));
+                    return;
+                };
+                if wanted.len() != items.len() {
+                    self.problems.push(format!("`{inst}` makes a tuple of another size"));
+                }
+                for (item, ty) in items.iter().zip(&wanted) {
+                    self.operand(item, Some(ty), "item");
+                }
+            }
+            InstKind::GetTupleItem { dest, value, at } => {
+                let found = match self.function.type_of(value) {
+                    Some(Type::Tuple(items)) => items.get(*at).cloned(),
+                    _ => None,
+                };
+                if found.is_none() || found != self.local(*dest) {
+                    self.problems.push(format!("`{inst}` reads the wrong thing"));
                 }
             }
             InstKind::GetIndex { dest, object, index } => {
                 let wanted = self.local(*dest);
-                self.operand(index, Some(&Type::Int), "index");
-                let found = match self.function.type_of(object) {
-                    Some(Type::List(item)) => Some(*item),
-                    Some(Type::Str) => Some(Type::Str),
-                    _ => None,
-                };
-                if found.is_none() || found != wanted {
+                let found = self.function.type_of(object).as_ref().and_then(indexed);
+                if let Some((key, _)) = found.filter(|(_, item)| Some(item) == wanted.as_ref()) {
+                    self.operand(index, Some(&key), "index");
+                } else {
                     self.problems.push(format!("`{inst}` reads the wrong thing"));
+                }
+            }
+            InstKind::Slice { dest, object, start, end } => {
+                let held = self.function.type_of(object);
+                let sliced = matches!(held, Some(Type::List(_) | Type::Str | Type::Bytes));
+                if !sliced || held != self.local(*dest) {
+                    self.problems.push(format!("`{inst}` slices the wrong thing"));
+                }
+                for bound in start.iter().chain(end) {
+                    self.operand(bound, Some(&Type::Int), "bound");
                 }
             }
             InstKind::SetIndex { object, path, index, value } => {
@@ -188,13 +228,30 @@ impl<'p> Check<'p> {
                 for field in path {
                     ty = ty.and_then(|ty| self.field(&ty, field));
                 }
-                self.operand(index, Some(&Type::Int), "index");
-                let Some(Type::List(item)) = ty else {
-                    self.problems.push(format!("`{inst}` changes an item of something else"));
-                    return;
+                let (key, item) = match ty {
+                    Some(Type::List(item)) => (Type::Int, *item),
+                    Some(Type::Dict(key, item)) => (*key, *item),
+                    _ => {
+                        self.problems.push(format!("`{inst}` changes an item of something else"));
+                        return;
+                    }
                 };
+                self.operand(index, Some(&key), "index");
                 self.operand(value, Some(&item), "item");
             }
+            _ => {}
+        }
+    }
+
+    fn operands(&mut self, items: &[Operand], wanted: &Type) {
+        for value in items {
+            self.operand(value, Some(wanted), "item");
+        }
+    }
+
+    /// F-strings and what the engines provide.
+    fn engine_inst(&mut self, inst: &InstKind) {
+        match inst {
             InstKind::Format { dest, parts } => {
                 if self.local(*dest) != Some(Type::Str) {
                     self.problems.push(format!("`{inst}` keeps text in another type"));
@@ -370,6 +427,22 @@ impl<'p> Check<'p> {
             }
             Some(_) => {}
         }
+    }
+}
+
+/// What a value of this type is indexed by, and what that gives.
+fn indexed(ty: &Type) -> Option<(Type, Type)> {
+    match ty {
+        Type::List(item) => Some((Type::Int, *item.clone())),
+        Type::Str => Some((Type::Int, Type::Str)),
+        Type::Bytes => Some((Type::Int, Type::Int)),
+        Type::Dict(key, value) => Some((*key.clone(), *value.clone())),
+        Type::Named(name) if name == "Args" => Some((Type::Int, Type::Str)),
+        Type::Tuple(items) => {
+            let first = items.first()?;
+            items.iter().all(|item| item == first).then(|| (Type::Int, first.clone()))
+        }
+        _ => None,
     }
 }
 

@@ -2,6 +2,7 @@
 //! checker's typed tree, never from working them out again.
 
 mod calls;
+mod collections;
 mod failure;
 mod lists;
 mod matching;
@@ -113,8 +114,10 @@ impl Context<'_> {
     /// Whether the IR holds values of this type yet.
     fn holds(&self, ty: &Type) -> bool {
         match ty {
-            Type::Int | Type::Float | Type::Bool | Type::Str | Type::None => true,
-            Type::List(item) | Type::Optional(item) => self.holds(item),
+            Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::None => true,
+            Type::List(item) | Type::Set(item) | Type::Optional(item) => self.holds(item),
+            Type::Dict(key, value) => self.holds(key) && self.holds(value),
+            Type::Tuple(items) => items.iter().all(|item| self.holds(item)),
             Type::Result(ok, error) => (**ok == Type::Unit || self.holds(ok)) && self.holds(error),
             Type::Errors(names) => names.iter().all(|name| self.errors.contains(name.as_str())),
             Type::Named(name) => {
@@ -311,19 +314,14 @@ impl<'a> Lowering<'a> {
         if let ExprKind::Index { object, index } = &target.kind {
             return self.assign_index((object, index), op, value, span);
         }
+        if let ExprKind::Tuple(targets) = &target.kind {
+            return self.assign_unpacking(targets, value, span);
+        }
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_field(target, op, value, span);
         };
         let value = self.expr(value)?;
-        let dest = if let Some(dest) = self.lookup(name) {
-            dest
-        } else {
-            let ty = self.body.name(target.span, name).ok_or_else(|| format!("`{name}` has no type"))?;
-            if !self.context.holds(ty) {
-                return Err(format!("`{name}` is {ty}"));
-            }
-            self.declare(name, ty.clone())
-        };
+        let dest = self.named_target(target, name)?;
         if let Some(op) = op {
             self.check_operands(op, &Operand::Local(dest), &value)?;
             let kind = InstKind::Binary { dest, op, lhs: Operand::Local(dest), rhs: value };
@@ -334,6 +332,18 @@ impl<'a> Lowering<'a> {
             self.emit(InstKind::Copy { dest, value }, span);
         }
         Ok(())
+    }
+
+    /// The local a name being assigned to holds its value in, declared if it's new.
+    fn named_target(&mut self, target: &Expr, name: &str) -> Lowered<LocalId> {
+        if let Some(dest) = self.lookup(name) {
+            return Ok(dest);
+        }
+        let ty = self.body.name(target.span, name).ok_or_else(|| format!("`{name}` has no type"))?;
+        if !self.context.holds(ty) {
+            return Err(format!("`{name}` is {ty}"));
+        }
+        Ok(self.declare(name, ty.clone()))
     }
 
     fn if_stmt(
@@ -450,7 +460,17 @@ impl<'a> Lowering<'a> {
                 dest.map(Operand::Local).ok_or_else(|| "a call kept nothing".to_owned())
             }
             ExprKind::List(items) => self.list(expr, items),
+            ExprKind::Set(items) => self.set(expr, items),
+            ExprKind::Dict(pairs) => self.dict(expr, pairs),
+            ExprKind::Tuple(items) => self.tuple(expr, items),
+            ExprKind::Comprehension { kind, elem, value, names, iter, cond } => {
+                let parts = collections::Parts { elem, value: value.as_deref(), cond: cond.as_deref() };
+                self.comprehension(expr, *kind, &parts, (names, iter))
+            }
             ExprKind::Index { object, index } => self.get_index(expr, object, index),
+            ExprKind::Slice { object, start, end } => {
+                self.slice(expr, object, (start.as_deref(), end.as_deref()))
+            }
             ExprKind::FStr(parts) => self.format(parts, span),
             other => Err(format!("it uses {}", describe(other))),
         }
@@ -532,12 +552,9 @@ fn describe(kind: &ExprKind) -> &'static str {
         ExprKind::FStr(_) => "an f-string",
         ExprKind::None => "`None`",
         ExprKind::Variant(_) => "an enum case",
-        ExprKind::List(_) | ExprKind::Tuple(_) | ExprKind::Dict(_) | ExprKind::Set(_) => "a collection",
-        ExprKind::Comprehension { .. } => "a comprehension",
         ExprKind::Else { .. } => "`else`",
         ExprKind::Try { .. } => "`?`",
         ExprKind::Attr { .. } => "a field or method",
-        ExprKind::Index { .. } | ExprKind::Slice { .. } => "indexing",
         ExprKind::Lambda { .. } => "an arrow function",
         _ => "something that isn't lowered yet",
     }

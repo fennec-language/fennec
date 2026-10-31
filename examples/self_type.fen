@@ -1,3 +1,5 @@
+# decision: `Self` in an interface's method means the type that fits it.
+
 # `Self` in an interface's method means the type that fits the interface. `min` and `max`
 # compare items with a type's `def <`.
 

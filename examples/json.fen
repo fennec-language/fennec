@@ -1,3 +1,6 @@
+# decision: JSON and TOML read into plain values.
+# decision: Bad text fails with `ParseError`.
+
 from std import json
 
 struct Settings:

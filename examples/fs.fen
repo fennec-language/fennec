@@ -1,3 +1,5 @@
+# decision: Files and folders go through `fs`.
+
 # Files and folders go through the `Fs` capability that `main` receives, so code can only
 # touch the disk when it's handed `fs`. A method that can fail gives an `IoError`.
 from std.fs import Metadata

@@ -1,3 +1,5 @@
+# decision: Command-line arguments and standard input are capabilities.
+
 # `main` names `args` to read its command-line arguments and `stdin` to read its input. A
 # program that doesn't name them can't see them. Try
 # `printf "one\ntwo\n" | fennec run examples/args_and_stdin.fen fire ice`.

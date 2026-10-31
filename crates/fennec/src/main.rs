@@ -11,6 +11,7 @@ mod fallbacks;
 mod fix;
 mod fmt;
 mod lsp;
+mod reference;
 mod repl;
 mod run;
 mod test;
@@ -81,6 +82,8 @@ fn main() -> ExitCode {
         ["dev", "copies", "--run"] => on_big_stack(copies::copies_in_a_run, "."),
         ["dev", "copies", "--run", path] => on_big_stack(copies::copies_in_a_run, path),
         ["dev", "copies", path] => on_big_stack(copies::copies, path),
+        ["dev", "reference"] => reference::reference(false),
+        ["dev", "reference", "--check"] => reference::reference(true),
         ["dev", "changes"] => changes::changes("."),
         ["dev", "changes", path] => changes::changes(path),
         ["--version" | "-V"] => {

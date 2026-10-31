@@ -72,6 +72,7 @@ Each benchmark has a target: idiomatic code for the same work in the fastest est
 - A benchmark suite of real programs, including a game update loop, a JSON parser, a hash-map-heavy workload, a numeric kernel and a server.
 - Each written idiomatically in Fennec and compared against expert hand-written native code.
 - Realistic work that neither side's optimizer can delete.
+- Targets are built for a baseline CPU so they're reproducible, while the development compiler may use your CPU's features. That's a known bias in its favor.
 - A check on every change: a benchmark that misses its target or gets slower fails. Falling short is a bug, not a footnote.
 
 ## What costs nothing

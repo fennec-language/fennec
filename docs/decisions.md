@@ -96,6 +96,8 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 - The interpreter: 10–30%.
 
 Benchmarks do realistic work that neither side's optimizer can delete.
+
+"Fully optimized" means optimization level 3, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. Twins are built for the architecture's baseline CPU, so their counts are reproducible. The JIT may use the running CPU's features while the twins don't, and that's a known bias in the JIT's favor, which is being checked.
 *Why:* The whole 20-benchmark suite meeting these targets shows the language's fundamentals carry well.
 
 **The targets are enforced.** CI fails if a benchmark misses its target or runs slower than the previous run. The fix for a failure goes into the compiler, never into tricks in the benchmark.

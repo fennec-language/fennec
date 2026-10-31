@@ -179,6 +179,19 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 ## Functions and types
 
+**Parameters can have defaults, and a parameter with a default is passed by name only.**
+```fennec
+def scan(rows: list[Row], limit: int = 8) -> list[Row]:
+    ...
+
+scan(rows)
+scan(rows, limit=100)
+```
+- A default is a plain value computed at compile time, under the same rule as a module constant. Calling without it costs the same as passing the value.
+- Required parameters may be positional. How far to restrict that is still open.
+
+*Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap.
+
 **A function that can fail says so with `fails Name`, and every exit is visible.**
 ```fennec
 error LoadError:
@@ -1042,6 +1055,7 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 
 ## Still open
 
+- How far to restrict positional arguments beyond parameters with defaults, with a lint the likely tool. This includes `d.get(key, 0)` and `sum(xs, start)`, which pass an optional second argument by position today.
 - How a type marks that its finishing method must be called.
 - How replay records the order tasks reach a `shared` value or a channel.
 - Decorators, beyond the compiler's own `@hot` and `@fast_math`. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.

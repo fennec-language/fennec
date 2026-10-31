@@ -38,22 +38,22 @@ fn stdout(output: &Output) -> String {
 fn only_the_tests_a_change_affects_run_again() {
     let dir = scratch("affected").unwrap();
     let first = run_tests(&dir, &[]).unwrap();
-    assert_eq!(stdout(&first), "  ✓ doubling\n  ✓ tripling\n2 passed, 0 failed\n");
+    assert_eq!(stdout(&first), "2 passed, 0 failed\n");
 
     let again = run_tests(&dir, &[]).unwrap();
-    assert_eq!(stdout(&again), "2 tests: 0 run, 2 unchanged\n2 passed, 0 failed\n");
+    assert_eq!(stdout(&again), "2 passed, 0 failed (0 run, 2 unchanged)\n");
 
     let reformatted = format!("# A comment.\n\n{SOURCE}");
     std::fs::write(dir.join("game.fen"), reformatted).unwrap();
     let comment = run_tests(&dir, &[]).unwrap();
-    assert_eq!(stdout(&comment), "2 tests: 0 run, 2 unchanged\n2 passed, 0 failed\n");
+    assert_eq!(stdout(&comment), "2 passed, 0 failed (0 run, 2 unchanged)\n");
 
     std::fs::write(dir.join("game.fen"), SOURCE.replace("x * 2", "x + x")).unwrap();
     let edited = run_tests(&dir, &[]).unwrap();
-    assert_eq!(stdout(&edited), "  ✓ doubling\n2 tests: 1 run, 1 unchanged\n2 passed, 0 failed\n");
+    assert_eq!(stdout(&edited), "2 passed, 0 failed (1 run, 1 unchanged)\n");
 
     let all = run_tests(&dir, &["--all"]).unwrap();
-    assert_eq!(stdout(&all), "  ✓ doubling\n  ✓ tripling\n2 passed, 0 failed\n");
+    assert_eq!(stdout(&all), "2 passed, 0 failed\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -65,16 +65,16 @@ fn a_failing_test_runs_every_time_and_a_break_is_never_hidden() {
     std::fs::write(dir.join("game.fen"), SOURCE.replace("x * 2", "x * 5")).unwrap();
     let broken = run_tests(&dir, &[]).unwrap();
     assert_eq!(broken.status.code(), Some(1));
-    assert_eq!(stdout(&broken), "  ✗ doubling\n2 tests: 1 run, 1 unchanged\n1 passed, 1 failed\n");
+    assert_eq!(stdout(&broken), "  ✗ doubling\n1 passed, 1 failed (1 run, 1 unchanged)\n");
 
     let still = run_tests(&dir, &[]).unwrap();
     assert_eq!(still.status.code(), Some(1));
-    assert_eq!(stdout(&still), "  ✗ doubling\n2 tests: 1 run, 1 unchanged\n1 passed, 1 failed\n");
+    assert_eq!(stdout(&still), "  ✗ doubling\n1 passed, 1 failed (1 run, 1 unchanged)\n");
 
     // Going back to code that passed still has to run, since the failure replaced its result.
     std::fs::write(dir.join("game.fen"), SOURCE).unwrap();
     let fixed = run_tests(&dir, &[]).unwrap();
-    assert_eq!(stdout(&fixed), "  ✓ doubling\n2 tests: 1 run, 1 unchanged\n2 passed, 0 failed\n");
+    assert_eq!(stdout(&fixed), "2 passed, 0 failed (1 run, 1 unchanged)\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -90,7 +90,7 @@ fn ci_runs_every_test() {
         .env_remove("FENNEC_NO_CACHE")
         .output()
         .unwrap();
-    assert_eq!(stdout(&output), "  ✓ doubling\n  ✓ tripling\n2 passed, 0 failed\n");
+    assert_eq!(stdout(&output), "2 passed, 0 failed\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -120,6 +120,6 @@ fn a_change_in_another_file_of_a_kit_reaches_tests_through_aliases() {
     assert!(stdout(&run()).ends_with("3 passed, 0 failed\n"));
     std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x + x\n").unwrap();
     let edited = stdout(&run());
-    assert_eq!(edited, "  ✓ by alias\n  ✓ by module\n3 tests: 2 run, 1 unchanged\n3 passed, 0 failed\n");
+    assert_eq!(edited, "3 passed, 0 failed (2 run, 1 unchanged)\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -14,6 +14,8 @@ pub fn validate(program: &Program) -> Result<(), Vec<String>> {
         if program.functions.iter().take(at).any(|earlier| earlier.name == function.name) {
             problems.push(format!("{}: defined twice", function.name));
         }
+    }
+    for function in program.functions.iter().chain(&program.constants) {
         let mut check = Check { program, function, problems: Vec::new() };
         check.function();
         problems.extend(check.problems.into_iter().map(|problem| format!("{}: {problem}", function.name)));
@@ -107,6 +109,7 @@ impl<'p> Check<'p> {
             | InstKind::SetIndex { .. } => self.collection_inst(inst),
             InstKind::Format { .. } | InstKind::Builtin { .. } => self.engine_inst(inst),
             InstKind::Call { dest, function, args } => self.call(*dest, function, args),
+            InstKind::Constant { dest, name } => self.constant(*dest, name),
             _ => self.failure_inst(inst),
         }
     }
@@ -337,13 +340,10 @@ impl<'p> Check<'p> {
         self.operand(rhs, left.as_ref(), "right side");
         let Some(left) = left else { return };
         let wanted = match op {
-            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq
-                if matches!(left, Type::Int | Type::Float | Type::Bool | Type::Str) =>
-            {
-                Some(Type::Bool)
-            }
+            BinOp::Eq | BinOp::NotEq => Some(Type::Bool),
+            BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq if plainly_ordered(&left) => Some(Type::Bool),
             BinOp::Div if left == Type::Int => Some(Type::Float),
-            BinOp::Add if left == Type::Str => Some(Type::Str),
+            BinOp::Add if matches!(left, Type::Str | Type::Bytes | Type::List(_)) => Some(left.clone()),
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow
                 if matches!(left, Type::Int | Type::Float) =>
             {
@@ -353,6 +353,20 @@ impl<'p> Check<'p> {
         };
         if wanted.is_none() || wanted != result {
             self.problems.push(format!("`{inst}` on the wrong types"));
+        }
+    }
+
+    fn constant(&mut self, dest: LocalId, name: &str) {
+        let wanted = self.local(dest);
+        let found = self.program.constants.iter().find(|constant| constant.name == name);
+        match found {
+            Some(constant) if wanted.as_ref() != Some(&constant.returns) => {
+                self.problems.push(format!("keeps constant `{name}` in the wrong type"));
+            }
+            None if !self.program.not_lowered.iter().any(|skipped| skipped.function == name) => {
+                self.problems.push(format!("reads constant `{name}`, which doesn't exist"));
+            }
+            _ => {}
         }
     }
 
@@ -427,6 +441,16 @@ impl<'p> Check<'p> {
             }
             Some(_) => {}
         }
+    }
+}
+
+/// Whether `<` and so on on a type are the engines' own, not a method.
+pub(crate) fn plainly_ordered(ty: &Type) -> bool {
+    match ty {
+        Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes => true,
+        Type::List(item) => plainly_ordered(item),
+        Type::Tuple(items) => items.iter().all(plainly_ordered),
+        _ => false,
     }
 }
 

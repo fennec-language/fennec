@@ -85,10 +85,7 @@ impl Lowering<'_> {
             let read = self.temporary(item.clone());
             let get = InstKind::GetIndex { dest: read, object: list, index: index.clone() };
             self.emit(get, span);
-            self.check_operands(op, &Operand::Local(read), &value)?;
-            let dest = self.temporary(item.clone());
-            self.emit(InstKind::Binary { dest, op, lhs: Operand::Local(read), rhs: value }, span);
-            value = Operand::Local(dest);
+            value = self.operate(op, (Operand::Local(read), value), &item, span)?;
         }
         let value = self.coerce(value, &item, span)?;
         self.emit(InstKind::SetIndex { object: local, path, index, value }, span);
@@ -149,19 +146,19 @@ impl Lowering<'_> {
         self.looping(names, iter, span, |lowering| lowering.stmts(body, Tail::Drop))
     }
 
-    /// Runs `body` for each item of what `iter` gives. A `range` is counted, and anything
-    /// else but a list is gone through as a list of its items.
+    /// Runs `body` for each item of what `iter` gives. A `range` going one step at a time is
+    /// counted, and anything else but a list is gone through as a list of its items.
     pub(super) fn looping<F>(&mut self, names: &[String], iter: &Expr, span: Span, body: F) -> Lowered<()>
     where
         F: FnOnce(&mut Self) -> Lowered<()>,
     {
-        if self.is_range(iter) {
-            let step = "it has a `for` loop over a `range` stepping by something other than 1 or -1";
-            let (args, down) = range_args(iter).ok_or(step)?;
+        if self.is_range(iter)
+            && let Some((args, down)) = range_args(iter)
+        {
             let (first, limit) = match args.as_slice() {
                 [limit] => (Operand::Int(0), self.expr(limit)?),
                 [first, limit] => (self.expr(first)?, self.expr(limit)?),
-                _ => return Err(step.to_owned()),
+                _ => return Err("it calls `range` with a named argument".to_owned()),
             };
             return self.counting(Counting { names, first, limit, down, items: None }, span, body);
         }

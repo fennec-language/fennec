@@ -59,6 +59,7 @@ impl FnCx<'_> {
             None => actual,
         };
         let ty = cx.checker.settled(&ty);
+        cx.names.push((value.span, name.to_owned(), ty.clone()));
         cx.finish(std::slice::from_ref(&ty));
         forget_vars(&ty)
     }

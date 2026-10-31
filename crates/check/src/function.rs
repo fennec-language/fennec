@@ -78,7 +78,7 @@ pub(crate) struct FnCx<'c> {
     pub(crate) pending_sums: Vec<crate::sum::SumCall>,
     /// Every expression's type and every declared name's, as they're found.
     exprs: Vec<(Span, Type)>,
-    names: Vec<(Span, String, Type)>,
+    pub(crate) names: Vec<(Span, String, Type)>,
     /// The first type variable this check made.
     first_var: usize,
     /// The type expected where the next expression checked is written, which decides the

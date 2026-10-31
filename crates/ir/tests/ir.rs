@@ -165,16 +165,8 @@ fn what_isnt_lowered_yet_says_why() {
 struct Checked:
     x: int where x > 0
 
-def make() -> Point:
-    Point()
-
 def checked() -> Checked:
     Checked(1)
-
-def stride(n: int) -> int:
-    for i in range(0, n, 2):
-        pass
-    1
 
 def everywhere(mut items: list[Point]) -> int:
     for mut item in items:
@@ -184,15 +176,7 @@ def everywhere(mut items: list[Point]) -> int:
     let program = lowered(source).unwrap();
     let why: Vec<String> =
         program.not_lowered.iter().map(|skipped| format!("{}: {}", skipped.function, skipped.why)).collect();
-    assert_eq!(
-        why,
-        [
-            "make: it leaves a field of `Point` to its default",
-            "checked: it gives back Checked",
-            "stride: it has a `for` loop over a `range` stepping by something other than 1 or -1",
-            "everywhere: it has a `for mut` loop",
-        ]
-    );
+    assert_eq!(why, ["checked: it gives back Checked", "everywhere: it has a `for mut` loop",]);
 }
 
 #[test]
@@ -924,6 +908,126 @@ fn dicts_and_slices_read_and_change_items() {
 }
 
 #[test]
+fn a_types_own_operators_are_calls() {
+    let source = "struct Money:
+    cents: int
+
+    def +(self, other: Money) -> Money:
+        Money(self.cents + other.cents)
+
+    def <(self, other: Money) -> bool:
+        self.cents < other.cents
+
+def f(mut a: Money, b: Money) -> bool:
+    a += b
+    a >= b
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(mut _0, _1) -> bool
+  local _0 a: Money
+  local _1 b: Money
+  local _2: Money
+  local _3: bool
+  local _4: bool
+  bb0:
+    _2 = call Money.+(_0, _1)
+    _0 = _2
+    _3 = call Money.<(_0, _1)
+    _4 = not _3
+    return _4
+"
+    );
+}
+
+#[test]
+fn equality_works_on_every_value() {
+    let source = "struct P:
+    x: int
+
+def f(a: P, b: P, c: list[int], d: int?) -> bool:
+    a == b and c != [1] and d == 3 and c < c
+";
+    let text = printed(source, "f").unwrap();
+    for expected in ["= _0 == _1", "!= ", "= some 3", " < _2"] {
+        assert!(text.contains(expected), "no `{expected}` in {text}");
+    }
+}
+
+#[test]
+fn named_arguments_land_in_their_parameters_and_run_in_order() {
+    let source = "def g(a: int, b: str) -> int:
+    a + b.len()
+
+def h() -> int:
+    1
+
+def f() -> int:
+    g(b=str(h()), a=h())
+";
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("_2 = call h()"), "{text}");
+    assert!(text.contains("call g(_2, _1)"), "{text}");
+}
+
+#[test]
+fn fields_left_out_get_their_defaults() {
+    let source = "struct P:
+    x: int
+    y = 2.5
+    z: int? = 3
+
+def f() -> P:
+    P(1)
+";
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("= some 3"), "{text}");
+    assert!(text.contains("= make P(1, 2.5, _0)"), "{text}");
+}
+
+#[test]
+fn literal_constants_are_written_out_and_others_are_functions() {
+    let source = "LIMIT = -2
+WORDS = [\"a\", \"b\"]
+DOUBLE = LIMIT * 2
+
+def f() -> int:
+    WORDS.len() + LIMIT + DOUBLE
+";
+    let program = lowered(source).unwrap();
+    let names: Vec<&str> = program.constants.iter().map(|constant| constant.name.as_str()).collect();
+    assert_eq!(names, ["DOUBLE", "WORDS"]);
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("= constant WORDS"), "{text}");
+    assert!(text.contains("+ -2"), "{text}");
+    assert!(text.contains("= constant DOUBLE"), "{text}");
+}
+
+#[test]
+fn what_std_provides_goes_to_the_engines() {
+    let source = "from std.math import PI, sqrt
+
+def f(x: float) -> float:
+    sqrt(x) * PI
+";
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("builtin sqrt(_0)"), "{text}");
+    assert!(text.contains("builtin PI()"), "{text}");
+}
+
+#[test]
+fn a_range_with_a_step_goes_through_a_list() {
+    let source = "def f(n: int) -> int:
+    mut total = 0
+    for i in range(0, n, 2):
+        total += i
+    total
+";
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("builtin range(0, _0, 2)"), "{text}");
+}
+
+#[test]
 fn every_example_lowers_to_valid_ir_or_says_why() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut lowered_functions = Vec::new();
@@ -947,7 +1051,7 @@ fn every_example_lowers_to_valid_ir_or_says_why() {
     }
     // How far lowering has got. This only goes up, until every function lowers.
     println!("{} functions lowered", lowered_functions.len());
-    assert!(lowered_functions.len() >= 158, "only {} functions lowered", lowered_functions.len());
+    assert!(lowered_functions.len() >= 184, "only {} functions lowered", lowered_functions.len());
     for expected in
         ["numbers.fen: fib", "numbers.fen: collatz_steps", "numbers.fen: is_prime", "numbers.fen: lerp"]
     {

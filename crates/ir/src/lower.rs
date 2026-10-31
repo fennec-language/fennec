@@ -3,9 +3,12 @@
 
 mod calls;
 mod collections;
+mod constants;
+mod defaults;
 mod failure;
 mod lists;
 mod matching;
+mod operators;
 mod structs;
 
 use std::collections::{HashMap, HashSet};
@@ -15,7 +18,7 @@ use fennec_syntax::{BinOp, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, Stmt
 
 use crate::{
     Block, BlockId, EnumDef, Function, Inst, InstKind, Local, LocalId, NotLowered, Operand, Program,
-    Terminator, type_in,
+    Terminator,
 };
 
 /// Lowers a module's functions and methods. The standard library's aren't included.
@@ -30,6 +33,8 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
         enums: enums.iter().map(|def| (def.name.as_str(), def)).collect(),
         functions: functions.iter().map(|(key, _)| key.as_str()).collect(),
         structs: defs.iter().map(|def| def.name.as_str()).collect(),
+        constants: constants::written(module),
+        defaults: defaults::written(module),
     };
     let mut program = Program::default();
     for (key, def) in &functions {
@@ -38,6 +43,7 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
             Err(why) => program.not_lowered.push(NotLowered { function: key.clone(), why }),
         }
     }
+    constants::lower_all(&context, &mut program);
     program.external = calls::external(&program);
     program.structs = defs;
     program.enums = enums;
@@ -108,6 +114,10 @@ struct Context<'a> {
     functions: HashSet<&'a str>,
     /// The names of the program's structs that the IR can hold.
     structs: HashSet<&'a str>,
+    /// The values of the constants the program can read, the standard library's included.
+    constants: HashMap<&'a str, constants::Written<'a>>,
+    /// The fields with defaults, the standard library's included.
+    defaults: HashMap<defaults::FieldKey<'a>, &'a Expr>,
 }
 
 impl Context<'_> {
@@ -144,6 +154,19 @@ struct Lowering<'a> {
 }
 
 impl<'a> Lowering<'a> {
+    fn new(context: &'a Context<'a>, body: &'a Body, returns: Type) -> Self {
+        Lowering {
+            context,
+            body,
+            returns,
+            locals: Vec::new(),
+            blocks: vec![Open::default()],
+            current: BlockId(0),
+            scopes: vec![HashMap::new()],
+            loops: Vec::new(),
+        }
+    }
+
     fn function(key: &str, def: &FnDef, context: &'a Context<'a>) -> Lowered<Function> {
         let signature = context.checked.signatures.get(key).ok_or("it has no signature")?;
         let body = context.checked.types.body(key).ok_or("it has no types")?;
@@ -156,16 +179,7 @@ impl<'a> Lowering<'a> {
         if signature.returns != Type::Unit && !context.holds(&signature.returns) {
             return Err(format!("it gives back {}", signature.returns));
         }
-        let mut lowering = Lowering {
-            context,
-            body,
-            returns: signature.returns.clone(),
-            locals: Vec::new(),
-            blocks: vec![Open::default()],
-            current: BlockId(0),
-            scopes: vec![HashMap::new()],
-            loops: Vec::new(),
-        };
+        let mut lowering = Lowering::new(context, body, signature.returns.clone());
         for param in &signature.params {
             if !context.holds(&param.ty) {
                 return Err(format!("`{}` is {}", param.name, param.ty));
@@ -323,9 +337,14 @@ impl<'a> Lowering<'a> {
         let value = self.expr(value)?;
         let dest = self.named_target(target, name)?;
         if let Some(op) = op {
-            self.check_operands(op, &Operand::Local(dest), &value)?;
-            let kind = InstKind::Binary { dest, op, lhs: Operand::Local(dest), rhs: value };
-            self.emit(kind, span);
+            let ty = self.local_type(dest);
+            if self.check_operands(op, &Operand::Local(dest), &value).is_ok() {
+                let kind = InstKind::Binary { dest, op, lhs: Operand::Local(dest), rhs: value };
+                self.emit(kind, span);
+            } else {
+                let value = self.operate(op, (Operand::Local(dest), value), &ty, span)?;
+                self.emit(InstKind::Copy { dest, value }, span);
+            }
         } else {
             let ty = self.local_type(dest);
             let value = self.coerce(value, &ty, span)?;
@@ -418,8 +437,7 @@ impl<'a> Lowering<'a> {
             ExprKind::Str(value) => Ok(Operand::Str(value.clone())),
             ExprKind::None => Ok(Operand::None),
             ExprKind::Name(name) => {
-                let local =
-                    self.lookup(name).ok_or_else(|| format!("it reads `{name}`, which isn't a local"))?;
+                let Some(local) = self.lookup(name) else { return self.read_constant(name, expr) };
                 self.narrowed(Operand::Local(local), expr)
             }
             ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs } => {
@@ -440,10 +458,7 @@ impl<'a> Lowering<'a> {
                 let ty = self.ty(expr)?;
                 let lhs = self.expr(lhs)?;
                 let rhs = self.expr(rhs)?;
-                self.check_operands(*op, &lhs, &rhs)?;
-                let dest = self.temporary(ty);
-                self.emit(InstKind::Binary { dest, op: *op, lhs, rhs }, span);
-                Ok(Operand::Local(dest))
+                self.operate(*op, (lhs, rhs), &ty, span)
             }
             ExprKind::Cond { then, cond, otherwise } => self.conditional(expr, (then, cond, otherwise)),
             ExprKind::Attr { object, name, optional: false } => self.get_field(expr, object, name),
@@ -525,24 +540,6 @@ impl<'a> Lowering<'a> {
         }
         self.current = join;
         Ok(Operand::Local(dest))
-    }
-
-    /// Only operators on plain values of one type are lowered: anything else, like `in` or
-    /// a type's own operator, isn't yet.
-    fn check_operands(&self, op: BinOp, lhs: &Operand, rhs: &Operand) -> Lowered<()> {
-        let (left, right) = (type_in(&self.locals, lhs), type_in(&self.locals, rhs));
-        let fits = left == right
-            && match op {
-                BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
-                    matches!(left, Some(Type::Int | Type::Float | Type::Bool | Type::Str))
-                }
-                BinOp::Add => matches!(left, Some(Type::Int | Type::Float | Type::Str)),
-                BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow => {
-                    matches!(left, Some(Type::Int | Type::Float))
-                }
-                BinOp::And | BinOp::Or | BinOp::In | BinOp::NotIn | BinOp::Is | BinOp::IsNot => false,
-            };
-        if fits { Ok(()) } else { Err(format!("it uses `{}` in a way that isn't lowered yet", op.symbol())) }
     }
 }
 

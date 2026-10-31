@@ -161,6 +161,7 @@ impl fmt::Display for InstKind {
             InstKind::GetErr { dest, value } => write!(f, "{dest} = {value} as err"),
             InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
             InstKind::AsError { dest, value } => write!(f, "{dest} = {value} as error"),
+            InstKind::Constant { dest, name } => write!(f, "{dest} = constant {name}"),
             InstKind::Call { dest, function, args } => {
                 let args: Vec<String> = args.iter().map(ToString::to_string).collect();
                 if let Some(dest) = dest {

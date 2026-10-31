@@ -19,7 +19,8 @@
 //! `mut` parameter is copied back: when the call returns, the local passed for it holds what
 //! the parameter held. Nothing is implicit: a value going where an optional or a result goes
 //! is wrapped by an instruction, and a name known not to be `None` is unwrapped where it's
-//! read. An error of one type can go where a set of error types is expected as it is. A
+//! read. A constant whose value is a literal is written out where it's read. An error of
+//! one type can go where a set of error types is expected as it is. A
 //! function using anything else is listed in [`Program::not_lowered`], with why.
 
 mod lower;
@@ -39,6 +40,9 @@ pub struct Program {
     pub enums: Vec<EnumDef>,
     /// Every error type, the standard library's included, which programs get values of.
     pub errors: Vec<StructDef>,
+    /// The value of each constant that isn't a literal, as a function of no arguments. An
+    /// engine works each out once, before anything needs it.
+    pub constants: Vec<Function>,
     pub functions: Vec<Function>,
     pub not_lowered: Vec<NotLowered>,
     /// The standard library's functions the program calls, written in Fennec. They aren't
@@ -281,6 +285,11 @@ pub enum InstKind {
     AsError {
         dest: LocalId,
         value: Operand,
+    },
+    /// The value of a constant in [`Program::constants`].
+    Constant {
+        dest: LocalId,
+        name: String,
     },
     /// A direct call, by the callee's key. `dest` is `None` when nothing keeps the result.
     Call {

@@ -120,8 +120,10 @@ fn test_lists_each_test_when_asked() {
 
 #[test]
 fn test_says_how_to_use_it_when_its_arguments_are_wrong() {
-    for args in [["test", "--verbos", "a.fen"], ["test", "a.fen", "b.fen"]] {
-        assert_eq!(fennec(&args, "").unwrap().status.code(), Some(2), "{args:?}");
+    for args in [&["test", "--verbos"][..], &["test", "--verbos", "a.fen"], &["test", "a.fen", "b.fen"]] {
+        let output = fennec(args, "").unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(text(&output.stderr).starts_with("usage:"), "{args:?}");
     }
 }
 

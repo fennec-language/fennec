@@ -246,7 +246,7 @@ impl Kit {
             let edited = original.replace(EDITED_LINE, &format!("    y = x + 300 + {run}\n"));
             std::fs::write(&path, edited).map_err(|err| err.to_string())?;
             let (took, printed) = self.timed(&["test"])?;
-            if !printed.contains("(1 run,") {
+            if !ran_one_test(&printed) {
                 return Err(format!("an edit to one function should run one test, but:\n{printed}"));
             }
             times.push(took);
@@ -254,6 +254,11 @@ impl Kit {
         std::fs::write(&path, original).map_err(|err| err.to_string())?;
         Ok(Measured { budget: VERDICT, warm: median(times), cold: Some(cold) })
     }
+}
+
+/// Whether `fennec test` says it ran exactly one test and left the rest unchanged.
+fn ran_one_test(printed: &str) -> bool {
+    printed.contains("(1 run,")
 }
 
 /// A language server session, which is how an edit gets checked.
@@ -355,6 +360,13 @@ mod tests {
             line.contains("9.6 times") && line.contains("50.0 ms") && line.contains("1.5 times"),
             "{line}"
         );
+    }
+
+    #[test]
+    fn one_edit_should_run_one_test() {
+        assert!(super::ran_one_test("10 passed, 0 failed (1 run, 9 unchanged)\n"));
+        assert!(!super::ran_one_test("10 passed, 0 failed (2 run, 8 unchanged)\n"));
+        assert!(!super::ran_one_test("10 passed, 0 failed\n"));
     }
 
     #[test]

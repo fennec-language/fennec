@@ -49,7 +49,7 @@ fn main() -> ExitCode {
         ["build", "-o", output] => aot::build(".", Some(output)),
         ["build", path] => aot::build(path, None),
         ["build", path, "-o", output] => aot::build(path, Some(output)),
-        ["test", rest @ ..] if test::Options::of(rest).is_some() => test(rest),
+        ["test", rest @ ..] => test(rest),
         ["new", path] => new(path),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
         ["fmt", rest @ ..] => fmt::fmt(rest),
@@ -86,7 +86,10 @@ fn on_big_stack(command: fn(&str) -> ExitCode, path: &str) -> ExitCode {
 
 /// `fennec test [--all] [--verbose] [path]`, on a big stack for the interpreter.
 fn test(args: &[&str]) -> ExitCode {
-    let Some((path, options)) = test::Options::of(args) else { return ExitCode::from(2) };
+    let Some((path, options)) = test::Options::of(args) else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
     big_stack(move || test::test(&path, options))
 }
 

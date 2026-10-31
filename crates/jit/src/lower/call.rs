@@ -523,7 +523,7 @@ impl Lowerer<'_, '_> {
         if let Some((list, item)) = self.packed(object) {
             return Ok((Some(self.list_length(&list, item)?), Ty::Int));
         }
-        let (value, ty) = self.expr(object)?;
+        let (value, ty) = self.receiver(object)?;
         match (value, ty) {
             (Some(text), Ty::Str) => Ok((Some(self.string_length(text)?), Ty::Int)),
             (Some(dict), Ty::Dict(..)) => {

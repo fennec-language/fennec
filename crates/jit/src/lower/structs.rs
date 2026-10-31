@@ -470,6 +470,8 @@ impl<'a> Lowerer<'a, '_> {
                 Ty::Struct(id) => self.struct_field(id, name).ok()?.map(|field| field.ty),
                 _ => None,
             },
+            // An item of a list of dicts stays an object: reading it mustn't copy the dict.
+            ExprKind::Index { .. } if matches!(self.checked_expr(expr), Some(Ty::Dict(..))) => None,
             // Anything else, like the result of a call: what the checker says it gives.
             _ => {
                 let signatures = self.signatures;

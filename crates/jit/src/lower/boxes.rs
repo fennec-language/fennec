@@ -247,7 +247,7 @@ impl<'a> Lowerer<'a, '_> {
         let mut values = if let Some(var) = changes {
             vec![self.b.use_var(var)]
         } else {
-            let (receiver, ty) = self.expr(object)?;
+            let (receiver, ty) = self.receiver(object)?;
             vec![self.convert(receiver, ty, Ty::Boxed(id), object.span)?]
         };
         for (arg, (_, to, _)) in args.iter().zip(params.iter().skip(1)) {

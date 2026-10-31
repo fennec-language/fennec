@@ -1188,6 +1188,35 @@ def f(mut xs: list[int], mut lists: list[list[int]]):
 }
 
 #[test]
+fn falling_off_the_end_of_a_function_that_can_fail_succeeds() {
+    let source = "error Bad:
+    code: int
+
+def f(x: int):
+    if x < 0:
+        fail Bad(x)
+";
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("= ok\n    return _"), "{text}");
+    assert!(!text.contains("unreachable"), "{text}");
+}
+
+#[test]
+fn a_types_own_index_can_give_a_str() {
+    let source = "struct Names:
+    all: list[str]
+
+    def [](self, at: int) -> str:
+        self.all[at]
+
+def f(names: Names) -> str:
+    names[0]
+";
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("call Names.[](_0, 0)"), "{text}");
+}
+
+#[test]
 fn every_example_lowers_to_valid_ir_or_says_why() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut lowered_functions = Vec::new();

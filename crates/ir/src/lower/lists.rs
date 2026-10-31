@@ -61,8 +61,8 @@ impl Lowering<'_> {
             Some(Type::Str) if ty == Type::Str => Type::Int,
             Some(Type::Bytes) if ty == Type::Int => Type::Int,
             Some(Type::Tuple(items)) if items.iter().all(|item| *item == ty) => Type::Int,
-            Some(Type::Dict(key, value)) if **value == ty => *key.clone(),
-            Some(Type::Named(name)) if name == "Args" && ty == Type::Str => {
+            Some(Type::Dict(key, _)) => *key.clone(),
+            Some(Type::Named(name)) if name == "Args" => {
                 let object = self.expr(object)?;
                 let index = self.expr(index)?;
                 let dest = self.temporary(ty);

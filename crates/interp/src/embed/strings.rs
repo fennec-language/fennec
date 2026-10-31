@@ -6,7 +6,7 @@
 
 use fennec_syntax::Diagnostic;
 
-use super::heap::{TEXT_HEADER_WORDS, block_text, release, text_address};
+use super::heap::{TEXT_HEADER_WORDS, block_text, release, text_address, text_from_bytes};
 use super::{State, attempt, span, with};
 use crate::value::Value;
 
@@ -284,21 +284,35 @@ pub extern "C" fn code(address: i64, start: i64, end: i64) -> i64 {
     })
 }
 
+/// Adds a string block's bytes to `bytes`, giving back how many characters it has.
+fn add_text(block: &[u64], bytes: &mut Vec<u8>) -> usize {
+    let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+    let words = block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + length.div_ceil(8)).unwrap_or_default();
+    let wanted = bytes.len() + length;
+    for word in words {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.truncate(wanted);
+    block.get(3).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0)
+}
+
 /// `separator.join(list)`, for a list of strings.
 pub extern "C" fn join(separator: i64, list: i64) -> i64 {
     with(|state| {
-        let between = text(state, separator).unwrap_or_default();
-        let block = u64::try_from(list).ok().and_then(|list| state.heap.block(list));
-        let words = block.map(|block| super::lists::items(block, 1).to_vec()).unwrap_or_default();
-        let mut joined = String::new();
+        let between = u64::try_from(separator).ok().and_then(|at| state.heap.block(at)).unwrap_or_default();
+        let block = u64::try_from(list).ok().and_then(|list| state.heap.block(list)).unwrap_or_default();
+        let room = |block: &[u64]| block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+        let words = super::lists::items(block, 1);
+        let total = words.iter().filter_map(|word| state.heap.block(*word)).map(room).sum::<usize>()
+            + room(between) * words.len();
+        let mut bytes = Vec::with_capacity(total + 8);
+        let mut chars = 0;
         for (at, word) in words.iter().enumerate() {
             if at > 0 {
-                joined.push_str(&between);
+                chars += add_text(between, &mut bytes);
             }
-            if let Some(part) = state.heap.block(*word) {
-                joined.push_str(&block_text(part));
-            }
+            chars += state.heap.block(*word).map_or(0, |part| add_text(part, &mut bytes));
         }
-        text_address(state, &joined)
+        text_from_bytes(state, &bytes, chars)
     })
 }

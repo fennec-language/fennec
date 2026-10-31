@@ -157,7 +157,8 @@ pub fn text_block(shape: u64, text: &str, count: u64) -> Box<[u64]> {
     let bytes = text.as_bytes();
     let length = |n: usize| u64::try_from(n).unwrap_or(0);
     let words = bytes.len().div_ceil(8).max(1);
-    let mut block = vec![count, shape, length(bytes.len()), length(text.chars().count()), length(words * 8)];
+    let mut block = Vec::with_capacity(TEXT_HEADER_WORDS + words);
+    block.extend([count, shape, length(bytes.len()), length(text.chars().count()), length(words * 8)]);
     // Native code reads the first word of text without checking the length.
     if bytes.is_empty() {
         block.push(0);
@@ -170,6 +171,28 @@ pub fn text_block(shape: u64, text: &str, count: u64) -> Box<[u64]> {
         block.push(u64::from_le_bytes(word));
     }
     block.into_boxed_slice()
+}
+
+/// A new string owned once from bytes already known to be `chars` characters of UTF-8.
+pub(super) fn text_from_bytes(state: &mut State, bytes: &[u8], chars: usize) -> i64 {
+    if let [byte] = bytes
+        && let Some(address) = state.tables.ascii.get(usize::from(*byte))
+    {
+        return i64::try_from(*address).unwrap_or(0);
+    }
+    let words = bytes.len().div_ceil(8).max(1);
+    let mut block = state.heap.fresh(TEXT_HEADER_WORDS + words);
+    let number = |n: usize| u64::try_from(n).unwrap_or(0);
+    let header = [1, state.tables.str_shape, number(bytes.len()), number(chars), number(words * 8)];
+    if let Some(start) = block.get_mut(..TEXT_HEADER_WORDS) {
+        start.copy_from_slice(&header);
+    }
+    for (word, chunk) in block.iter_mut().skip(TEXT_HEADER_WORDS).zip(bytes.chunks(8)) {
+        let mut packed = [0; 8];
+        packed.get_mut(..chunk.len()).unwrap_or_default().copy_from_slice(chunk);
+        *word = u64::from_le_bytes(packed);
+    }
+    state.heap.insert(block)
 }
 
 /// A string's text, from its block.

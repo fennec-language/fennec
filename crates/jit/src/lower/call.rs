@@ -519,7 +519,22 @@ impl Lowerer<'_, '_> {
         for arg in args {
             values.push(self.expr(&arg.value)?);
         }
-        let result = match (name, values.as_slice()) {
+        if let Some(result) = self.number_builtin(name, &values, span)? {
+            return Ok(Some((Some(result.0), result.1)));
+        }
+        let call =
+            Expr { kind: ExprKind::Call { callee: Box::new(callee.clone()), args: args.to_vec() }, span };
+        self.interpret_call(&call, &values).map(Some)
+    }
+
+    /// What the engines provide on numbers, given values of the right kinds.
+    pub(super) fn number_builtin(
+        &mut self,
+        name: &str,
+        values: &[Lowered],
+        span: Span,
+    ) -> Result<Option<(Value, Ty)>, Diagnostic> {
+        Ok(Some(match (name, values) {
             ("min" | "max", [(Some(a), Ty::Int), (Some(b), Ty::Int)]) => {
                 (if name == "min" { self.b.ins().smin(*a, *b) } else { self.b.ins().smax(*a, *b) }, Ty::Int)
             }
@@ -534,15 +549,8 @@ impl Lowerer<'_, '_> {
                 let x = if *ty == Ty::Int { self.b.ins().fcvt_from_sint(types::F64, *x) } else { *x };
                 self.math(name, x, span)?
             }
-            _ => {
-                let call = Expr {
-                    kind: ExprKind::Call { callee: Box::new(callee.clone()), args: args.to_vec() },
-                    span,
-                };
-                return self.interpret_call(&call, &values).map(Some);
-            }
-        };
-        Ok(Some((Some(result.0), result.1)))
+            _ => return Ok(None),
+        }))
     }
 
     /// `x.len()`: natively for a list, text and a dict, and in the interpreter for
@@ -574,20 +582,26 @@ impl Lowerer<'_, '_> {
     /// `x.abs()`: natively for an int or a float, and in the interpreter for anything else.
     fn absolute(&mut self, expr: &Expr, object: &Expr) -> Result<Lowered, Diagnostic> {
         let (value, ty) = self.expr(object)?;
+        if let Some(absolute) = self.absolute_number((value, ty), expr.span) {
+            return Ok((Some(absolute.0), absolute.1));
+        }
+        let receiver = self.handle_of(value, ty, object.span)?;
+        self.interpret_method(expr, object, receiver, "abs", &[])
+    }
+
+    /// How far a number is from zero. The lowest int has no opposite, so it fails.
+    pub(super) fn absolute_number(&mut self, (value, ty): Lowered, span: Span) -> Option<(Value, Ty)> {
         match (value, ty) {
             (Some(x), Ty::Int) => {
                 let zero = self.int(0);
                 let (negated, overflow) = self.b.ins().ssub_overflow(zero, x);
-                self.fail_if(overflow, runtime::OVERFLOW, expr.span);
+                self.fail_if(overflow, runtime::OVERFLOW, span);
                 let negative =
                     self.b.ins().icmp_imm_s(cranelift_codegen::ir::condcodes::IntCC::SignedLessThan, x, 0);
-                Ok((Some(self.b.ins().select(negative, negated, x)), Ty::Int))
+                Some((self.b.ins().select(negative, negated, x), Ty::Int))
             }
-            (Some(x), Ty::Float) => Ok((Some(self.b.ins().fabs(x)), Ty::Float)),
-            _ => {
-                let receiver = self.handle_of(value, ty, object.span)?;
-                self.interpret_method(expr, object, receiver, "abs", &[])
-            }
+            (Some(x), Ty::Float) => Some((self.b.ins().fabs(x), Ty::Float)),
+            _ => None,
         }
     }
 

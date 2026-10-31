@@ -397,6 +397,43 @@ def main(stdout: Stdout):
     assert_eq!(report.from_ir, ["up", "down", "empty"]);
 }
 
+/// The builtins on numbers come from the IR too, and behave like the interpreter's, failing
+/// where it does.
+#[test]
+fn builtins_on_numbers_are_lowered_from_the_ir() {
+    let source = "from std.math import sqrt, floor, ceil, sin, cos
+import std.math as m
+
+def mixed(n: int, x: float) -> float:
+    a = float(n) + float(x)
+    b = float(int(x) + int(n))
+    c = float(min(n, 3) + max(n, 3)) + min(x, 0.5) + max(x, 0.5)
+    d = sqrt(x) + float(floor(x)) + float(ceil(x)) + m.sqrt(float(n.abs()))
+    e = sin(x) + cos(x)
+    f = float(n.abs()) + x.abs() + float((-n).abs()) + (-x).abs()
+    a + b + c + d + e + f
+
+def too_big(x: float) -> int:
+    int(x)
+
+def main(stdout: Stdout):
+    stdout.print(mixed(7, 2.5), mixed(-1, 0.25))
+    stdout.print(too_big(1.0e300))
+";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    let mut out = Vec::new();
+    let result = fennec_jit::run_with_report(&module, &mut out);
+    let Err(JitError::Failed(failure)) = result else { panic!("too_big should fail") };
+    let text = String::from_utf8_lossy(&out).into_owned();
+    assert_eq!(Err(failure.render("builtins.fen", source)), run(source, "builtins.fen").map(|_| text));
+    let mut module =
+        fennec_syntax::parse(&source.replace("    stdout.print(too_big(1.0e300))\n", "")).unwrap();
+    fennec_check::check_and_resolve(&mut module).unwrap();
+    let report = fennec_jit::run_with_report(&module, &mut Vec::new()).unwrap();
+    assert_eq!(report.from_ir, ["mixed"]);
+}
+
 /// Number-only functions come from the typed IR.
 #[test]
 fn number_only_functions_are_lowered_from_the_ir() {

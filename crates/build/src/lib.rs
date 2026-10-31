@@ -12,6 +12,7 @@ mod reach;
 mod reached;
 mod snapshot;
 mod store;
+mod traced;
 mod tree;
 
 pub use cache::{Cache, Cleanup, DEFAULT_CAP, VERSION};
@@ -21,4 +22,5 @@ pub use reach::test_keys;
 pub use reached::keep_what_main_reaches;
 pub use snapshot::{FileRecord, Run, Snapshot};
 pub use store::{fennec_home, load, save};
+pub use traced::{TestGraph, TestRecord};
 pub use tree::{definitions, tree_hash};

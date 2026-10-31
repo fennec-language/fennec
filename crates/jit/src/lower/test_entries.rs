@@ -15,6 +15,8 @@ use crate::types::Program;
 /// Tests in machine code, by name.
 pub(crate) struct CompiledTests {
     pub(crate) entries: Vec<(String, *const u8)>,
+    /// The flag each program function sets when it runs, by its key.
+    pub(crate) flags: Vec<(String, *mut u8)>,
     // Keeps the machine code alive while it runs.
     pub(crate) _module: cranelift_jit::JITModule,
 }
@@ -35,6 +37,7 @@ pub(crate) fn compile_tests(
         let mut module = new_module(span).map_err(fatal)?;
         let mut shared = Shared::new(program, stack_limit);
         shared.cache = cached::CacheUse::of(cache, true);
+        shared.ran = Some(HashMap::new());
         compile_bodies(&mut module, &mut shared, program, signatures, skipped)?;
         symbols::define(&mut module, &shared).map_err(fatal)?;
         let mut ctx = module.make_context();
@@ -54,7 +57,14 @@ pub(crate) fn compile_tests(
         }
         module.finalize_definitions().map_err(|err| fatal(internal(err, span)))?;
         let entries = ids.into_iter().map(|(name, id)| (name, module.get_finalized_function(id))).collect();
-        Ok((CompiledTests { entries, _module: module }, shared))
+        let flags = shared
+            .ran
+            .iter()
+            .flatten()
+            .filter(|(key, _)| !names.contains_key(*key))
+            .map(|(key, id)| (key.clone(), module.get_finalized_data(*id).0.cast_mut()))
+            .collect();
+        Ok((CompiledTests { entries, flags, _module: module }, shared))
     })?;
     Ok((tests, shared.tables))
 }

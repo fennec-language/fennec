@@ -28,12 +28,37 @@ pub(crate) fn start_only(module: &Module, tables: Tables) -> Result<(), Diagnost
     Ok(())
 }
 
-/// Runs compiled tests one after another on this thread, each with how it failed, if it did.
+/// A compiled test's name, how it failed if it did, and the program functions it ran, unless
+/// some of them ran in the interpreter, which doesn't keep count.
+pub(crate) type TestRun = (String, Option<Diagnostic>, Option<Vec<String>>);
+
+/// The functions whose flags are set, clearing them for the next test.
+fn take_flags(flags: &[(String, *mut u8)]) -> Vec<String> {
+    let mut ran = Vec::new();
+    for (key, flag) in flags {
+        #[expect(
+            unsafe_code,
+            reason = "each flag is a byte of writable data that the running module owns, and compiled \
+                      code that writes it runs only on this thread, between these reads"
+        )]
+        let set = unsafe {
+            let set = flag.read_volatile() != 0;
+            flag.write_volatile(0);
+            set
+        };
+        if set {
+            ran.push(key.clone());
+        }
+    }
+    ran
+}
+
+/// Runs compiled tests one after another on this thread.
 pub(crate) fn run_tests(
     tests: &crate::lower::CompiledTests,
     module: &Module,
     tables: Tables,
-) -> Result<Vec<(String, Option<Diagnostic>)>, Diagnostic> {
+) -> Result<Vec<TestRun>, Diagnostic> {
     embed::start(module, tables, fennec_interp::Inputs::default())?;
     let mut results = Vec::with_capacity(tests.entries.len());
     for (name, code) in &tests.entries {
@@ -43,7 +68,9 @@ pub(crate) fn run_tests(
         )]
         let test = unsafe { std::mem::transmute::<*const u8, extern "C" fn()>(*code) };
         test();
-        results.push((name.clone(), embed::next_test()));
+        let ran = take_flags(&tests.flags);
+        let traced = (!embed::ran_in_interpreter()).then_some(ran);
+        results.push((name.clone(), embed::next_test(), traced));
     }
     embed::finish();
     Ok(results)

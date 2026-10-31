@@ -3,18 +3,17 @@
 //! that pass only for `--verbose`, so that passing tests cost an agent nothing to read.
 //!
 //! A test that passed is run again only when something it depends on changed: the test
-//! itself, or anything it can reach (see `fennec_build::test_keys`). The keys of the tests
-//! that passed are kept in the cache in `~/.fennec`. `--all` runs every test, as do runs with
-//! `CI` or `FENNEC_NO_CACHE` set. A test that failed always runs again.
+//! itself, the functions it ran and what those rely on (see `fennec_build::TestGraph`). What
+//! each test that passed depends on is kept in the cache in `~/.fennec`. `--all` runs every
+//! test, as do runs with `CI` or `FENNEC_NO_CACHE` set. A test that failed always runs again.
 //!
 //! Tests run as native code on every core, reusing machine code from the cache. Property
 //! tests, and any test the JIT can't compile yet, run in the interpreter.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::process::ExitCode;
 
-use fennec_blake3::Hash;
-use fennec_build::Cache;
+use fennec_build::{Cache, TestGraph, TestRecord};
 
 /// How `fennec test` was asked to run.
 #[derive(Clone, Copy, Default)]
@@ -55,21 +54,19 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
         }
     };
     let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
-    let keyed = fennec_build::test_keys(&program.module);
-    let keys: HashMap<String, Hash> = keyed.iter().cloned().collect();
     let results = Results::open(path, options.all);
-    let unchanged: HashSet<&str> =
-        keys.iter().filter(|(_, key)| results.passed.contains(*key)).map(|(name, _)| name.as_str()).collect();
-    let wanted: Vec<String> = keyed
-        .iter()
-        .map(|(name, _)| name)
-        .filter(|name| !unchanged.contains(name.as_str()))
-        .cloned()
+    let graph = TestGraph::of(&program.module);
+    let unchanged: Vec<&TestRecord> = graph
+        .tests()
+        .filter_map(|name| results.passed.get(name))
+        .filter(|record| graph.key(&record.test, record.ran.as_deref()) == Some(record.key))
         .collect();
+    let is_unchanged = |name: &str| unchanged.iter().any(|record| record.test == name);
+    let wanted: Vec<String> = graph.tests().filter(|name| !is_unchanged(name)).map(str::to_owned).collect();
     let cache = results.machine_code();
     let cache = cache.as_ref().map(|(cache, program)| (cache, program.as_str()));
-    let native = fennec_jit::run_tests(&program.module, &signatures, &wanted, cache);
-    let mut outcomes = native.outcomes;
+    let mut native = fennec_jit::run_tests(&program.module, &signatures, &wanted, cache);
+    let mut outcomes = std::mem::take(&mut native.outcomes);
     if !native.left.is_empty() {
         match interpreted(&program.module, &native.left) {
             Ok(more) => outcomes.extend(more),
@@ -80,14 +77,14 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
         }
     }
     // Workers finish in any order, and a report reads in the order the tests are written.
-    let place = |name: &str| keyed.iter().position(|(test, _)| test == name);
+    let place = |name: &str| graph.tests().position(|test| test == name);
     outcomes.sort_by_key(|outcome| place(&outcome.name));
     if outcomes.is_empty() && unchanged.is_empty() {
         println!("no tests in {path}");
         return ExitCode::SUCCESS;
     }
     let mut failed = 0;
-    let mut passing: Vec<Hash> = unchanged.iter().filter_map(|name| keys.get(*name).copied()).collect();
+    let mut passing: Vec<TestRecord> = unchanged.iter().map(|record| (*record).clone()).collect();
     for outcome in &outcomes {
         let cases = if outcome.cases > 1 { format!(" ({} inputs)", outcome.cases) } else { String::new() };
         match &outcome.failure {
@@ -95,7 +92,12 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
                 if options.verbose {
                     println!("  ✓ {}{cases}", outcome.name);
                 }
-                passing.extend(keys.get(&outcome.name).copied());
+                let ran = native.ran.remove(&outcome.name);
+                passing.extend(graph.key(&outcome.name, ran.as_deref()).map(|key| TestRecord {
+                    test: outcome.name.clone(),
+                    key,
+                    ran,
+                }));
             }
             Some(diagnostic) => {
                 failed += 1;
@@ -129,7 +131,7 @@ fn interpreted(
 struct Results {
     cache: Option<(Cache, String)>,
     /// Empty when every test runs.
-    passed: HashSet<Hash>,
+    passed: HashMap<String, TestRecord>,
 }
 
 impl Results {
@@ -141,8 +143,8 @@ impl Results {
             .map(|home| (Cache::new(&home), program));
         let reuse = !all && std::env::var_os("CI").is_none();
         let passed = match &cache {
-            Some((cache, program)) if reuse => cache.passed_tests(program),
-            _ => HashSet::new(),
+            Some((cache, program)) if reuse => cache.test_records(program),
+            _ => HashMap::new(),
         };
         Results { cache, passed }
     }
@@ -153,10 +155,10 @@ impl Results {
         self.cache.as_ref().map(|(cache, program)| (cache.clone(), format!("{program}#tests")))
     }
 
-    fn store(&self, passing: &[Hash]) {
+    fn store(&self, passing: &[TestRecord]) {
         if let Some((cache, program)) = &self.cache {
             // A cache that can't be written only means running these tests again next time.
-            let _ = cache.store_passed_tests(program, passing);
+            let _ = cache.store_test_records(program, passing);
         }
     }
 }

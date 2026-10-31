@@ -107,20 +107,20 @@ pub(crate) fn page(text: &str, examples: &[Example]) -> Result<String, Vec<Strin
     if !stale.is_empty() {
         return Err(stale);
     }
-    let shows = |decision: &Decision| -> Vec<&Example> {
+    let examples_of = |decision: &Decision| -> Vec<&Example> {
         examples.iter().filter(|example| example.decisions().any(|named| named == decision.text)).collect()
     };
     let mut page = HEADER.to_owned();
-    let mut sections: Vec<&str> = Vec::new();
+    let mut headings: Vec<&str> = Vec::new();
     for decision in &decisions {
-        if !sections.contains(&decision.section.as_str()) {
-            sections.push(&decision.section);
+        if !headings.contains(&decision.section.as_str()) {
+            headings.push(&decision.section);
         }
     }
-    for section in &sections {
+    for section in &headings {
         let shown: Vec<&Decision> = decisions
             .iter()
-            .filter(|decision| decision.section == *section && !shows(decision).is_empty())
+            .filter(|decision| decision.section == *section && !examples_of(decision).is_empty())
             .collect();
         if shown.is_empty() {
             continue;
@@ -128,7 +128,7 @@ pub(crate) fn page(text: &str, examples: &[Example]) -> Result<String, Vec<Strin
         let _ = writeln!(page, "\n## {section}");
         for decision in shown {
             let _ = writeln!(page, "\n**{}**", decision.text);
-            for example in shows(decision) {
+            for example in examples_of(decision) {
                 example.write_to(&mut page, "###");
             }
         }
@@ -149,7 +149,7 @@ pub(crate) fn page(text: &str, examples: &[Example]) -> Result<String, Vec<Strin
     for section in LANGUAGE {
         let planned: Vec<&Decision> = decisions
             .iter()
-            .filter(|decision| decision.section == section && shows(decision).is_empty())
+            .filter(|decision| decision.section == section && examples_of(decision).is_empty())
             .collect();
         if planned.is_empty() {
             continue;

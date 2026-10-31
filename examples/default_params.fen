@@ -1,0 +1,33 @@
+# A parameter can have a default: a plain value, passed by name if at all.
+
+def repeat(text: str, times: int = 2, between: str = "") -> str:
+    mut out = ""
+    for at in range(times):
+        if at > 0:
+            out += between
+        out += text
+    out
+
+def offset(by: int = -1, scale: float = -0.5, label: str? = None) -> str:
+    shown = label else "none"
+    f"{by} {scale} {shown}"
+
+struct Counter:
+    count: int
+
+    def bump(mut self, by: int = 1, again: bool = False):
+        self.count += by
+        if again:
+            self.count += by
+
+def main(stdout: Stdout):
+    stdout.print(repeat("ab"))
+    stdout.print(repeat("ab", times=3))
+    stdout.print(repeat("ab", between="-", times=3))
+    stdout.print(repeat(text="cd", between="+"))
+    stdout.print(offset(), offset(label="x"), offset(scale=2.0, by=4))
+    mut counter = Counter(count=0)
+    counter.bump()
+    counter.bump(by=5)
+    counter.bump(again=True, by=10)
+    stdout.print(counter.count)

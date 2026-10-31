@@ -1,0 +1,8 @@
+def size() -> int:
+    4
+
+def grid(width: int = size()) -> int:
+    width
+
+def main(stdout: Stdout):
+    stdout.print(grid())

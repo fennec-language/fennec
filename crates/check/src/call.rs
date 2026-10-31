@@ -2,7 +2,7 @@
 //! errors and enum cases. Arguments are matched to parameters or fields, positionally and by
 //! name, and `mut` has to be written exactly where a parameter changes.
 
-use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Span, TypeExpr};
+use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Span, TypeExpr, UnaryOp};
 
 use crate::ParamType;
 use crate::builtins;
@@ -98,11 +98,8 @@ impl FnCx<'_> {
                 self.call_function(&key, &name, args, span)
             }
             Type::Arrow(params, returns) => {
-                let params: Vec<ParamType> = params
-                    .into_iter()
-                    .enumerate()
-                    .map(|(at, ty)| ParamType { name: format!("argument {}", at + 1), ty, is_mut: false })
-                    .collect();
+                let params: Vec<ParamType> =
+                    params.into_iter().enumerate().map(|(at, ty)| argument_param(at, ty)).collect();
                 self.bind_args("this function", &params, args, span);
                 *returns
             }
@@ -193,6 +190,14 @@ impl FnCx<'_> {
                 Some(next - 1)
             };
             let found = at.and_then(|at| params.get(at).map(|param| (at, param)));
+            if let (None, Some((_, param))) = (&arg.name, found)
+                && param.default.is_some()
+            {
+                let message = format!("`{}` has a default, so it's passed by name", param.name);
+                self.error(
+                    Diagnostic::new(message, arg.value.span).with_help(format!("write `{}=...`", param.name)),
+                );
+            }
             // An arrow function passed for a function parameter receives its parameters' types.
             let receives = match found.map(|(_, param)| self.checker.settled(&param.ty)) {
                 Some(Type::Arrow(receives, _)) => receives,
@@ -215,11 +220,17 @@ impl FnCx<'_> {
             self.check_arg(param, &ty, arg.value.span);
         }
         // An argument with a misspelled name is most likely the missing one.
+        let mut left_out = Vec::new();
         for (param, given) in params.iter().zip(given) {
-            if !given && !unmatched_args {
+            if let (false, Some(default)) = (given, &param.default) {
+                left_out.push((param.name.clone(), plain_default(default)));
+            } else if !given && !unmatched_args {
                 let message = format!("`{function}` is missing its `{}` argument", param.name);
                 self.error(Diagnostic::new(message, span));
             }
+        }
+        if !left_out.is_empty() {
+            self.checker.defaults.insert((span.start, span.end), left_out);
         }
     }
 
@@ -689,4 +700,22 @@ fn unmatched(owner: &str, nouns: (&str, &str), names: &[&str], arg: &Arg) -> Dia
         None => format!("`{owner}` takes {} {passed}(s)", names.len()),
     };
     Diagnostic::new(message, arg.value.span).with_help(help)
+}
+
+/// A default as a literal, so a negative number needs no types to read.
+fn plain_default(default: &Expr) -> Expr {
+    let kind = match &default.kind {
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => match expr.kind {
+            ExprKind::Int(value) => ExprKind::Int(value.wrapping_neg()),
+            ExprKind::Float(value) => ExprKind::Float(-value),
+            _ => default.kind.clone(),
+        },
+        other => other.clone(),
+    };
+    Expr { kind, span: default.span }
+}
+
+/// A parameter of something called by value, whose type doesn't name its parameters.
+fn argument_param(at: usize, ty: Type) -> ParamType {
+    ParamType { name: format!("argument {}", at + 1), ty, is_mut: false, default: None }
 }

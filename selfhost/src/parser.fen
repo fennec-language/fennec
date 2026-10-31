@@ -6,7 +6,7 @@
 from span import Span, Diagnostic
 from token import FPart, Tok, Token, is_reserved
 from lexer import byte_length, lex
-from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Extension, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Extension, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp, is_plain_value
 
 ## Parses a whole `.fen` file, where only declarations may sit at the top level.
 def parse(source: str) -> Module:
@@ -375,7 +375,13 @@ struct Parser:
         self.expect_punct("(")?
         mut params = []
         while not self.at_punct(")"):
-            params.append(self.param()?)
+            param = self.param()?
+            if param.default is None and any(earlier.default is not None for earlier in params):
+                fail Diagnostic(
+                    message=f"`{param.name}` has no default, so it has to come before the ones that do",
+                    span=param.span,
+                )
+            params.append(param)
             if not self.eat_punct(","):
                 break
         self.expect_punct(")")?
@@ -399,7 +405,7 @@ struct Parser:
         is_mut = self.eat_keyword("mut")
         name = self.name("a parameter name")?
         if name == "self":
-            return Param(name=name, ty=None, is_mut=is_mut, is_self=True, span=start.to(self.prev_span()))
+            return Param(name=name, ty=None, is_mut=is_mut, is_self=True, default=None, span=start.to(self.prev_span()))
         if not self.eat_punct(":"):
             fail Diagnostic(
                 message=f"parameter `{name}` needs a type",
@@ -407,7 +413,27 @@ struct Parser:
                 help=f"write it with its type, like `{name}: int`",
             )
         ty = self.type_expr()?
-        Param(name=name, ty=ty, is_mut=is_mut, is_self=False, span=start.to(self.prev_span()))
+        mut default = None
+        if self.eat_punct("="):
+            default = self.param_default(name, is_mut)?
+        Param(name=name, ty=ty, is_mut=is_mut, is_self=False, default=default, span=start.to(self.prev_span()))
+
+    ## A parameter's default: a plain value, known without running anything.
+    def param_default(mut self, name: str, is_mut: bool) -> Expr:
+        value = self.expr()?
+        if is_mut:
+            fail Diagnostic(
+                message=f"`mut` parameter `{name}` can't have a default",
+                span=value.span,
+                help="a `mut` parameter changes what the caller passes, so a call has to pass something",
+            )
+        if not is_plain_value(value):
+            fail Diagnostic(
+                message="a parameter's default has to be a plain value",
+                span=value.span,
+                help="write a number, string, `True`, `False` or `None`, and work anything else out in the function",
+            )
+        value
 
     def type_expr(mut self) -> TypeExpr:
         start = self.span()

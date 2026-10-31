@@ -454,7 +454,13 @@ impl Parser {
         self.expect_p(Punct::LParen)?;
         let mut params = Vec::new();
         while !self.at_p(Punct::RParen) {
-            params.push(self.param()?);
+            let param = self.param()?;
+            if param.default.is_none() && params.iter().any(|earlier: &Param| earlier.default.is_some()) {
+                let message =
+                    format!("`{}` has no default, so it has to come before the ones that do", param.name);
+                return Err(Diagnostic::new(message, param.span));
+            }
+            params.push(param);
             if !self.eat_p(Punct::Comma) {
                 break;
             }
@@ -470,14 +476,38 @@ impl Parser {
         let is_mut = self.eat_kw(Kw::Mut);
         let name = self.name("a parameter name")?;
         if name == "self" {
-            return Ok(Param { name, ty: None, is_mut, is_self: true, span: start.to(self.prev_span()) });
+            return Ok(Param {
+                name,
+                ty: None,
+                is_mut,
+                is_self: true,
+                default: None,
+                span: start.to(self.prev_span()),
+            });
         }
         if !self.eat_p(Punct::Colon) {
             return Err(Diagnostic::new(format!("parameter `{name}` needs a type"), self.prev_span())
                 .with_help(format!("write it with its type, like `{name}: int`")));
         }
         let ty = self.type_expr()?;
-        Ok(Param { name, ty: Some(ty), is_mut, is_self: false, span: start.to(self.prev_span()) })
+        let default = if self.eat_p(Punct::Assign) { Some(self.param_default(&name, is_mut)?) } else { None };
+        Ok(Param { name, ty: Some(ty), is_mut, is_self: false, default, span: start.to(self.prev_span()) })
+    }
+
+    /// A parameter's default: a plain value, known without running anything.
+    fn param_default(&mut self, name: &str, is_mut: bool) -> Result<crate::ast::Expr, Diagnostic> {
+        let value = self.expr()?;
+        if is_mut {
+            let message = format!("`mut` parameter `{name}` can't have a default");
+            return Err(Diagnostic::new(message, value.span).with_help(
+                "a `mut` parameter changes what the caller passes, so a call has to pass something",
+            ));
+        }
+        if !value.is_plain_value() {
+            return Err(Diagnostic::new("a parameter's default has to be a plain value", value.span)
+                .with_help("write a number, string, `True`, `False` or `None`, and work anything else out in the function"));
+        }
+        Ok(value)
     }
 
     pub(crate) fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {

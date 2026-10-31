@@ -33,9 +33,13 @@ pub(super) fn external(program: &Program) -> Vec<String> {
 }
 
 /// The name methods of a built-in type are keyed under.
-fn owner_name(ty: &Type) -> Option<&str> {
+pub(super) fn owner_name(ty: &Type) -> Option<&str> {
     match ty {
         Type::List(_) => Some("list"),
+        Type::Set(_) => Some("set"),
+        Type::Dict(..) => Some("dict"),
+        Type::Tuple(_) => Some("tuple"),
+        Type::Bytes => Some("bytes"),
         Type::Str => Some("str"),
         Type::Int => Some("int"),
         Type::Float => Some("float"),
@@ -134,6 +138,9 @@ impl Lowering<'_> {
             },
             _ => return Err("it calls something other than a function by name".to_owned()),
         };
+        if args.iter().any(|arg| arg.name.is_some()) {
+            return Err(format!("its call to `{key}` has a named argument"));
+        }
         let own = self.context.functions.contains(key.as_str());
         if !own && object.is_none() {
             return Err(format!("it calls `{key}`, which isn't a function of this program"));
@@ -160,9 +167,6 @@ impl Lowering<'_> {
                 }
                 _ => self.expr(value)?,
             });
-        }
-        if args.iter().any(|arg| arg.name.is_some()) {
-            return Err(format!("its call to `{key}` has a named argument"));
         }
         Ok((key, values))
     }

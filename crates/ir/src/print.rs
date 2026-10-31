@@ -145,6 +145,11 @@ impl fmt::Display for InstKind {
                 }
                 write!(f, "builtin {name}({})", shown.join(", "))
             }
+            InstKind::MakeSet { .. }
+            | InstKind::MakeDict { .. }
+            | InstKind::MakeTuple { .. }
+            | InstKind::GetTupleItem { .. }
+            | InstKind::Slice { .. } => collection(self, f),
             InstKind::MakeSome { dest, value } => write!(f, "{dest} = some {value}"),
             InstKind::IsNone { dest, value } => write!(f, "{dest} = {value} is none"),
             InstKind::GetSome { dest, value } => write!(f, "{dest} = {value} as some"),
@@ -164,6 +169,30 @@ impl fmt::Display for InstKind {
                 write!(f, "call {function}({})", args.join(", "))
             }
         }
+    }
+}
+
+/// The instructions for sets, dicts, tuples and slices.
+fn collection(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match inst {
+        InstKind::MakeSet { dest, items } => {
+            let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+            write!(f, "{dest} = set {{{}}}", items.join(", "))
+        }
+        InstKind::MakeDict { dest, pairs } => {
+            let pairs: Vec<String> = pairs.iter().map(|(key, value)| format!("{key}: {value}")).collect();
+            write!(f, "{dest} = dict {{{}}}", pairs.join(", "))
+        }
+        InstKind::MakeTuple { dest, items } => {
+            let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+            write!(f, "{dest} = tuple ({})", items.join(", "))
+        }
+        InstKind::GetTupleItem { dest, value, at } => write!(f, "{dest} = {value}.{at}"),
+        InstKind::Slice { dest, object, start, end } => {
+            let bound = |bound: &Option<Operand>| bound.as_ref().map_or(String::new(), ToString::to_string);
+            write!(f, "{dest} = {object}[{}:{}]", bound(start), bound(end))
+        }
+        _ => Ok(()),
     }
 }
 

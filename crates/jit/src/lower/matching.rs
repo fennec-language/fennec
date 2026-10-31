@@ -323,7 +323,9 @@ fn bound_names(pattern: &Pattern, names: &mut Vec<String>) {
     match pattern {
         Pattern::Bind(name) => names.push(name.clone()),
         Pattern::Variant { args: parts, .. } | Pattern::Tuple(parts) | Pattern::Or(parts) => {
-            parts.iter().for_each(|part| bound_names(part, names));
+            for part in parts {
+                bound_names(part, names);
+            }
         }
         Pattern::Wildcard | Pattern::Literal(_) => {}
     }

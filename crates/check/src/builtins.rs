@@ -57,7 +57,7 @@ pub(crate) fn modules_with(name: &str) -> Vec<&'static str> {
 /// A method of a built-in value: whether it changes the value, what it takes and gives
 /// back, and how many arguments it takes.
 pub(crate) struct Method {
-    changes: bool,
+    pub(crate) changes: bool,
     /// The types of its arguments, in order. Arguments past these can be anything.
     params: Vec<Type>,
     returns: Type,
@@ -111,7 +111,7 @@ pub(crate) fn engine_signature(ty: &Type, name: &str) -> Option<Signature> {
     Some(Signature { params, returns, can_fail: false, generator: false })
 }
 
-fn method(ty: &Type, name: &str) -> Option<Method> {
+pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
     // Every collection knows its length, and so does a tuple.
     let sized = matches!(
         ty,

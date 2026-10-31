@@ -61,6 +61,12 @@ pub fn provided_everywhere(name: &str) -> bool {
         || program::BUILT_IN_INTERFACES.contains(&name)
 }
 
+/// Whether a method the engines provide on a type changes its value, like `list.append`.
+/// `None` when the type has no such method.
+pub fn builtin_method_changes(ty: &Type, name: &str) -> Option<bool> {
+    builtins::method(ty, name).map(|method| method.changes)
+}
+
 /// Checks a parsed module, then writes into it the enum of each leading-dot case whose name
 /// more than one enum has, as the type expected where it's written decided: `.Int(value)`
 /// given back as an `ExprKind` becomes `ExprKind.Int(value)`. Running a module needs this,

@@ -165,51 +165,191 @@ fn what_isnt_lowered_yet_says_why() {
 struct Checked:
     x: int where x > 0
 
-def main(stdout: Stdout):
-    stdout.print(1)
-
-def first(items: list[int]) -> int:
-    items[0]
-
 def make() -> Point:
     Point()
 
 def checked() -> Checked:
     Checked(1)
 
-def letters() -> int:
-    for c in \"abc\":
-        pass
-    1
+def pair() -> (int, int):
+    (1, 2)
+
+def squares(n: int) -> list[int]:
+    [i * i for i in range(n)]
+
+def count(words: dict[str, int]) -> int:
+    words.len()
 
 def stride(n: int) -> int:
     for i in range(0, n, 2):
         pass
     1
 
-def grow(mut point: Point):
-    point.x = 1
-
-def calls_first() -> int:
-    first([1])
+def everywhere(mut items: list[Point]) -> int:
+    for mut item in items:
+        item.x = 1
+    1
 ";
     let program = lowered(source).unwrap();
     let why: Vec<String> =
         program.not_lowered.iter().map(|skipped| format!("{}: {}", skipped.function, skipped.why)).collect();
-    let over = "it has a `for` loop over something other than a `range` stepping by 1 or -1";
     assert_eq!(
         why,
         [
-            "main: `stdout` is Stdout".to_owned(),
-            "first: `items` is list[int]".to_owned(),
-            "make: it leaves a field of `Point` to its default".to_owned(),
-            "checked: it gives back Checked".to_owned(),
-            format!("letters: {over}"),
-            format!("stride: {over}"),
-            "grow: `point` is a `mut` parameter".to_owned(),
-            "calls_first: `first` takes something other than plain values".to_owned(),
+            "make: it leaves a field of `Point` to its default",
+            "checked: it gives back Checked",
+            "pair: it gives back (int, int)",
+            "squares: it uses a comprehension",
+            "count: `words` is dict[str, int]",
+            "stride: it has a `for` loop over a `range` stepping by something other than 1 or -1",
+            "everywhere: it has a `for mut` loop",
         ]
     );
+}
+
+#[test]
+fn main_prints_through_its_capability() {
+    let source = "def main(stdout: Stdout):
+    name = \"fox\"
+    stdout.print(f\"hello {name}\", name.upper())
+";
+    assert_eq!(
+        printed(source, "main").unwrap(),
+        "fn main(_0)
+  local _0 stdout: Stdout
+  local _1 name: str
+  local _2: str
+  local _3: str
+  bb0:
+    _1 = \"fox\"
+    _2 = format \"hello \" {_1}
+    _3 = builtin str.upper(_1)
+    builtin Stdout.print(_0, _2, _3)
+    return
+"
+    );
+}
+
+#[test]
+fn lists_are_written_out_read_changed_and_looped_over() {
+    let source = "def total(limit: int) -> int:
+    mut items = [1, limit]
+    items.append(3)
+    items[0] += 1
+    mut sum = 0
+    for item in items:
+        sum += item
+    sum + items[1]
+";
+    assert_eq!(
+        printed(source, "total").unwrap(),
+        "fn total(_0) -> int
+  local _0 limit: int
+  local _1: list[int]
+  local _2 items: list[int]
+  local _3: int
+  local _4: int
+  local _5 sum: int
+  local _6: list[int]
+  local _7: int
+  local _8: int
+  local _9: int
+  local _10: bool
+  local _11 item: int
+  local _12: int
+  local _13: int
+  bb0:
+    _1 = [1, _0]
+    _2 = _1
+    builtin list.append(mut _2, 3)
+    _3 = _2[0]
+    _4 = _3 + 1
+    _2[0] = _4
+    _5 = 0
+    _6 = _2
+    _7 = builtin list.len(_6)
+    _8 = 0
+    _9 = _7
+    jump bb1
+  bb1:
+    _10 = _8 < _9
+    branch _10 bb2 bb4
+  bb2:
+    _11 = _6[_8]
+    _5 = _5 + _11
+    jump bb3
+  bb3:
+    _8 = _8 + 1
+    jump bb1
+  bb4:
+    _12 = _2[1]
+    _13 = _5 + _12
+    return _13
+"
+    );
+}
+
+#[test]
+fn a_mut_field_is_copied_in_and_back_out() {
+    let source = "struct Bag:
+    items: list[int]
+
+    def add(mut self, item: int):
+        self.items.append(item)
+
+def grow(mut items: list[int]):
+    items.append(1)
+
+def fill(mut bag: Bag):
+    grow(mut bag.items)
+    bag.add(2)
+";
+    assert_eq!(
+        printed(source, "Bag.add").unwrap(),
+        "fn Bag.add(mut _0, _1)
+  local _0 self: Bag
+  local _1 item: int
+  local _2: list[int]
+  bb0:
+    _2 = _0.items
+    builtin list.append(mut _2, _1)
+    _0.items = _2
+    return
+"
+    );
+    assert_eq!(
+        printed(source, "fill").unwrap(),
+        "fn fill(mut _0)
+  local _0 bag: Bag
+  local _1: list[int]
+  bb0:
+    _1 = _0.items
+    call grow(_1)
+    _0.items = _1
+    call Bag.add(_0, 2)
+    return
+"
+    );
+}
+
+#[test]
+fn the_standard_librarys_fennec_functions_are_listed() {
+    let source = "def starts(text: str) -> bool:
+    text.startswith(\"a\")
+";
+    let program = lowered(source).unwrap();
+    assert_eq!(program.external, ["str.startswith"]);
+    assert_eq!(program.not_lowered, []);
+}
+
+#[test]
+fn in_and_not_in_ask_the_engines() {
+    let source = "def has(items: list[int], text: str) -> bool:
+    1 in items and \"a\" not in text
+";
+    let printed = printed(source, "has").unwrap();
+    assert!(printed.contains("builtin list.contains(_0, 1)"), "{printed}");
+    assert!(printed.contains("builtin str.contains(_1, \"a\")"), "{printed}");
 }
 
 #[test]
@@ -511,6 +651,7 @@ fn function(locals: Vec<Type>, end: Terminator) -> Function {
     Function {
         name: "f".to_owned(),
         params: 0,
+        mut_params: Vec::new(),
         returns: Type::Int,
         locals: locals.into_iter().map(|ty| Local { name: None, ty }).collect(),
         blocks: vec![Block { insts: Vec::new(), end }],

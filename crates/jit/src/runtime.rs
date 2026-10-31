@@ -21,6 +21,13 @@ pub(crate) struct Outcome {
     pub(crate) leftovers: embed::Leftovers,
 }
 
+/// Sets up the runtime as a run does, and takes it down again without running anything.
+pub(crate) fn start_only(module: &Module, tables: Tables) -> Result<(), Diagnostic> {
+    embed::start(module, tables, fennec_interp::Inputs::default())?;
+    embed::finish();
+    Ok(())
+}
+
 /// Runs compiled tests one after another on this thread, each with how it failed, if it did.
 pub(crate) fn run_tests(
     tests: &crate::lower::CompiledTests,

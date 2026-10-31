@@ -1,0 +1,13 @@
+## Comprehensions and generator expressions: building and folding lists, sets and dicts.
+
+def main(stdout: Stdout):
+    mut total = 0
+    for round in range(10):
+        numbers = [i * 2 + round for i in range(100_000)]
+        evens = [n for n in numbers if n % 4 == 0]
+        squares = [n * n % 1000 for n in evens]
+        total += sum(n for n in squares if n > 500)
+        total += {n % 100 for n in squares}.len()
+        total += {n % 50: n for n in evens}.len()
+        total += sum(a * b % 7 for a, b in zip(numbers, squares))
+    stdout.print(total)

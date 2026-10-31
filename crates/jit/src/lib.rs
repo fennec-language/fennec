@@ -75,6 +75,37 @@ pub fn run_cached(
     report_with_inputs(module, signatures, out, inputs, Some((cache, program)))
 }
 
+/// Does everything `run_cached` does before `main` is called, and stops there, to measure how
+/// long a program takes to start.
+pub fn start_only(
+    module: &Module,
+    signatures: &Signatures,
+    cache: &fennec_build::Cache,
+    program: &str,
+) -> Result<(), JitError> {
+    let compile = || {
+        let here = 0_u8;
+        let stack_limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
+        let prelude = fennec_syntax::prelude_modules().unwrap_or_default();
+        let compiled = types::Program::from_module(module, prelude, signatures)
+            .and_then(|program_| lower::compile(&program_, signatures, stack_limit, Some((cache, program))))
+            .map_err(JitError::Unsupported)?;
+        let (_entry, tables, _) = compiled;
+        runtime::start_only(module, tables).map_err(JitError::Failed)
+    };
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new().stack_size(STACK_BYTES).spawn_scoped(scope, compile);
+        match worker.map(std::thread::ScopedJoinHandle::join) {
+            Ok(Ok(started)) => started,
+            Ok(Err(panic)) => std::panic::resume_unwind(panic),
+            Err(err) => Err(JitError::Unsupported(Diagnostic::new(
+                format!("couldn't start the JIT's thread: {err}"),
+                Span::default(),
+            ))),
+        }
+    })
+}
+
 /// The stack the program runs on. It's only reserved, not used, until calls nest deeply.
 const STACK_BYTES: usize = 1 << 30;
 

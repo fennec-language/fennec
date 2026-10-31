@@ -1,0 +1,19 @@
+# Written by `fennec-bench pin`. Only the last column is edited by hand: `yes` once a kernel
+# reaches the JIT's floor, so it can't drop below it again.
+# kernel instructions output enforced
+binary_trees 587363967 085da71cd358d51a no
+closures 6842578 86672a2132954f6c no
+comprehensions 88080700 87157abf370b4b8b no
+dicts 264486329 03f09d5e6aacdd93 no
+fannkuch 97406745 baaaef315c659f3c no
+fib 293220691 c1a7256e0480b2dc no
+generics 10442844 a481a9a0bfd872a4 no
+json 32802302 1c9a8c994d1b00d2 no
+mandelbrot 105678943 c573d05d2a7a670c no
+nbody 101120330 4d092d7db6fae7b2 no
+particles 71018816 9e927a27bf9d8df9 no
+selfhost 24673990 bc5ffd62d8e8766b no
+sieve 130410697 84a70b39ecced192 no
+sort 246498074 bd713ad39cc2e9f8 no
+spectral_norm 109460398 b4e227d5abb9fd3a no
+strings 184453375 f1a0bd22994baaf5 no

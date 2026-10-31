@@ -1,0 +1,46 @@
+## Generic code over an interface: one function, called for different types that fit.
+
+interface Shape:
+    def area(self) -> float
+    def scaled(self, by: float) -> float
+
+struct Circle:
+    radius: float
+
+    def area(self) -> float:
+        3.14159 * self.radius * self.radius
+
+    def scaled(self, by: float) -> float:
+        self.area() * by * by
+
+struct Square:
+    side: float
+
+    def area(self) -> float:
+        self.side * self.side
+
+    def scaled(self, by: float) -> float:
+        self.area() * by * by
+
+def total[T: Shape](shapes: list[T], by: float) -> float:
+    mut sum_of = 0.0
+    for shape in shapes:
+        sum_of += shape.area() + shape.scaled(by)
+    sum_of
+
+def largest[T](items: list[T], better: (T, T) -> bool) -> T:
+    mut best = items[0]
+    for item in items:
+        if better(item, best):
+            best = item
+    best
+
+def main(stdout: Stdout):
+    circles = [Circle(radius=float(i % 10)) for i in range(5000)]
+    squares = [Square(side=float(i % 13)) for i in range(5000)]
+    mut sum_of = 0.0
+    for round in range(100):
+        by = float(round % 3) + 1.0
+        sum_of += total(circles, by) + total(squares, by)
+    biggest = largest(circles, (a, b) => a.radius > b.radius)
+    stdout.print(f"{sum_of:.3f}", biggest.radius)

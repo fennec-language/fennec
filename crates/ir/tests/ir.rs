@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use fennec_check::Type;
+use fennec_ir::facts::Facts;
 use fennec_ir::{Block, Function, Local, LocalId, Operand, Program, Terminator, lower, validate};
 
 fn lowered(source: &str) -> Result<Program, String> {
@@ -2104,6 +2105,52 @@ def c() -> int:
     assert_eq!(names, ["a"]);
     assert_eq!(program.external, ["b"]);
     assert_eq!(program.constants, []);
+}
+
+#[test]
+fn facts_narrow_a_local_holding_one_value_along_branches() {
+    let source = "def f(n: int) -> int:
+    if n < 2:
+        return n
+    n - 1
+";
+    let program = lowered(source).unwrap();
+    let function = program.functions.first().unwrap();
+    let facts = Facts::of(function, &|_| Vec::new());
+    let n = LocalId(0);
+    assert_eq!(facts.range_in(n, 0), Some((i64::MIN, i64::MAX)));
+    let known: Vec<_> = (0..function.blocks.len()).filter_map(|at| facts.range_in(n, at)).collect();
+    assert!(known.contains(&(i64::MIN, 1)), "{known:?}");
+    assert!(known.contains(&(2, i64::MAX)), "{known:?}");
+}
+
+#[test]
+fn facts_keep_a_count_inside_its_loop_and_say_nothing_of_a_changed_local() {
+    let source = "def bump(mut x: int):
+    x += 1
+
+def f(n: int) -> int:
+    mut total = 0
+    bump(mut total)
+    once = 5
+    for i in range(3, 9):
+        total += i + once
+    total
+";
+    let program = lowered(source).unwrap();
+    let function = program.functions.iter().find(|function| function.name == "f").unwrap();
+    let mut facts = Facts::of(function, &|callee| if callee == "bump" { vec![0] } else { Vec::new() });
+    let count = function.counts.first().unwrap();
+    facts.note_write(count.stop, (9, 9));
+    facts.note_write(count.count, (3, 3));
+    facts.note_write(count.count, (4, 4));
+    assert_eq!(facts.range_in(count.count, 0), Some((3, 8)));
+    let total = function.locals.iter().position(|local| local.name.as_deref() == Some("total")).unwrap();
+    facts.note_write(LocalId(total), (0, 0));
+    assert_eq!(facts.range_in(LocalId(total), 0), None);
+    let once = function.locals.iter().position(|local| local.name.as_deref() == Some("once")).unwrap();
+    facts.note_write(LocalId(once), (5, 5));
+    assert_eq!(facts.range_in(LocalId(once), 0), Some((5, 5)));
 }
 
 #[test]

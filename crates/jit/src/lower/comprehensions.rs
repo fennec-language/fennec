@@ -6,12 +6,23 @@ use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use fennec_syntax::{Arg, BinOp, CompKind, Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind};
 
+use fennec_interp::embed::lists::{SORT_FLOATS, SORT_INTS, SORT_STRINGS};
+
 use super::Lowerer;
 use super::expr::Lowered;
 use super::fallback::expr_names;
 use super::lists::LIST_ITEMS;
 use crate::helpers::Helper;
 use crate::types::{ListItem, Ty};
+
+/// How the runtime orders words of a kind: as ints, floats or strings.
+fn sort_kind(ty: Ty) -> i64 {
+    match ty {
+        Ty::Float => SORT_FLOATS,
+        Ty::Str => SORT_STRINGS,
+        _ => SORT_INTS,
+    }
+}
 
 /// A name made up for a value a comprehension builds, which no program can write.
 fn hidden(what: &str, span: Span) -> String {
@@ -149,8 +160,8 @@ impl Lowerer<'_, '_> {
         if builtin { self.native_sum(call, args) } else { Ok(None) }
     }
 
-    /// `sorted(items)` when the list holds numbers, or `sorted(items, key=(item) => ...)` when
-    /// the keys are numbers, for any native list. The runtime does the sorting.
+    /// `sorted(items)` when the list holds numbers or strings, or `sorted(items, key=(item) =>
+    /// ...)` when the keys are, for any native list. The runtime does the sorting.
     pub(super) fn sorted_call(
         &mut self,
         call: &Expr,
@@ -167,11 +178,11 @@ impl Lowerer<'_, '_> {
             return Ok(None);
         }
         match args {
-            [_] if matches!(item, ListItem::Int | ListItem::Float | ListItem::Bool) => {
+            [_] if !matches!(item, ListItem::Struct(_) | ListItem::Boxed(_)) => {
                 let (value, from) = self.expr(&items.value)?;
                 let list = self.convert(value, from, ty, call.span)?;
-                let float = self.int(i64::from(item == ListItem::Float));
-                let made = self.help(Helper::ListSorted, &[list, float])?;
+                let kind = self.int(sort_kind(item.ty()));
+                let made = self.help(Helper::ListSorted, &[list, kind])?;
                 self.consume(Some(list), ty)?;
                 Ok(Some((Some(made), ty)))
             }
@@ -200,7 +211,7 @@ impl Lowerer<'_, '_> {
         ty: Ty,
         span: Span,
     ) -> Result<Option<Lowered>, Diagnostic> {
-        let Some(key @ (Ty::Int | Ty::Float | Ty::Bool)) = self.checked_expr(body) else {
+        let Some(key @ (Ty::Int | Ty::Float | Ty::Bool | Ty::Str)) = self.checked_expr(body) else {
             return Ok(None);
         };
         let Some(key_item) = ListItem::of(key) else { return Ok(None) };
@@ -229,8 +240,8 @@ impl Lowerer<'_, '_> {
         self.stmt_inside_expr(&each)?;
         let keys = self.local(&keys_name).and_then(|local| local.var).map(|var| self.b.use_var(var));
         let keys = keys.ok_or_else(|| super::internal("a lost list", span))?;
-        let float = self.int(i64::from(key == Ty::Float));
-        let made = self.help(Helper::ListSortedBy, &[list, keys, float])?;
+        let kind = self.int(sort_kind(key));
+        let made = self.help(Helper::ListSortedBy, &[list, keys, kind])?;
         self.close_scope()?;
         Ok(Some((Some(made), ty)))
     }

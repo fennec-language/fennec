@@ -1,0 +1,64 @@
+## Lists of strings and of boxed values, native, each owning what it holds.
+
+enum Tree:
+    Leaf
+    Node(left: Tree, value: int, right: Tree)
+
+def depth(tree: Tree) -> int:
+    match tree:
+        case .Leaf:
+            0
+        case .Node(left, _, right):
+            1 + max(depth(left), depth(right))
+
+def join(parts: list[str]) -> str:
+    mut all = ""
+    for part in parts:
+        all = all + part
+    return all
+
+def named(n: int) -> list[str]:
+    return [f"n{i}" for i in range(n)]
+
+def main(stdout: Stdout):
+    mut words = ["pear", "fig", "apple"]
+    stdout.print(words, words.len(), words[0], words[-1], words[1].len())
+    words.append("kiwi")
+    words[0] = "plum"
+    stdout.print(words, join(words))
+
+    copy = words
+    words[1] = "date"
+    words.append("lime")
+    stdout.print(copy, words, copy == words, copy == copy)
+
+    stdout.print(sorted(words), sorted(words, key=(w) => w.len()), sorted(words, key=(w) => w[-1]))
+    for word in sorted(words):
+        stdout.print(word, word.len())
+    stdout.print(sorted(words)[0], named(3)[2], named(2))
+    stdout.print([w + "!" for w in words if w.len() > 3])
+    stdout.print("kiwi" in words, words.len())
+    stdout.print(["a", "b"] == ["a", "b"], ["a"] == ["b"])
+
+    parts = "a,b,c".split(",")
+    stdout.print(parts, parts[1], sorted(parts, key=(p) => p == "b"))
+
+    trees = [Tree.Leaf, Tree.Node(left=Tree.Leaf, value=1, right=Tree.Leaf)]
+    stdout.print(depth(trees[0]), depth(trees[1]), trees.len())
+    mut grown = trees
+    grown.append(Tree.Node(left=trees[1], value=2, right=trees[1]))
+    grown[0] = grown[2]
+    total = sum(depth(tree) for tree in grown)
+    stdout.print(total, depth(trees[0]))
+    for tree in sorted(grown, key=(t) => -depth(t)):
+        stdout.print(depth(tree))
+
+    mut many = [""]
+    for i in range(1000):
+        many.append(f"item {i}")
+        many[0] = many[i]
+    stdout.print(many.len(), many[0], many[1000])
+    for word, count in zip(["x", "y"], [1, 2]):
+        stdout.print(word, count)
+    for at, word in enumerate(["p", "q"]):
+        stdout.print(at, word)

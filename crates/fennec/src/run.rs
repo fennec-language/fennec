@@ -18,10 +18,10 @@ pub(crate) enum Engine {
 
 /// Runs the program at `path`, handing `main` the `arguments` and this process's input.
 pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode {
-    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    let signatures = match fennec_check::check_to_run(&mut program.module) {
-        Ok(signatures) => signatures,
-        Err(diagnostics) => return reject(&program, &diagnostics),
+    let prepared = if engine == Engine::Interpreter { whole(path) } else { reached(path) };
+    let (program, signatures) = match prepared {
+        Ok(prepared) => prepared,
+        Err(code) => return code,
     };
     let module = &program.module;
     // Not locked: native code writes to standard output itself as the program runs.
@@ -53,25 +53,88 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
 /// `fennec dev startup <path>`: everything `fennec run --jit` does before `main`, for the
 /// benchmark suite to tell how long a program takes to start from how long its work takes.
 pub(crate) fn startup(path: &str) -> ExitCode {
-    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    let signatures = match fennec_check::check_to_run(&mut program.module) {
-        Ok(signatures) => signatures,
-        Err(diagnostics) => return reject(&program, &diagnostics),
+    let (program, signatures) = match reached(path) {
+        Ok(prepared) => prepared,
+        Err(code) => return code,
     };
     let Some(home) = fennec_build::fennec_home() else {
         eprintln!("error: couldn't find a home folder; set FENNEC_HOME");
         return ExitCode::FAILURE;
     };
     let cache = fennec_build::Cache::new(&home);
-    let name =
-        std::fs::canonicalize(path).map_or_else(|_| path.to_owned(), |path| path.display().to_string());
-    match fennec_jit::start_only(&program.module, &signatures, &cache, &name) {
+    match fennec_jit::start_only(&program.module, &signatures, &cache, &absolute(path)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(fennec_jit::JitError::Failed(diagnostic) | fennec_jit::JitError::Unsupported(diagnostic)) => {
             eprint!("{}", program.sources.render(&diagnostic));
             ExitCode::FAILURE
         }
     }
+}
+
+/// Loads and checks all of a program.
+fn whole(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), ExitCode> {
+    let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
+    match fennec_check::check_to_run(&mut program.module) {
+        Ok(signatures) => Ok((program, signatures)),
+        Err(diagnostics) => Err(reject(&program, &diagnostics)),
+    }
+}
+
+/// A program checked and cut down to what `main` reaches, so that starting it doesn't grow
+/// with everything else in its kit. All of it is checked the first time, and again whenever
+/// its text changes; the cache remembers the text that passed. The cut-down program is what
+/// always runs, so its machine code is reused from the very first run.
+fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), ExitCode> {
+    let Some(cache) = cache() else { return whole(path) };
+    let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
+    let name = passed_name(path);
+    let text = fingerprint(&program.sources);
+    if cache.read("checked", &name).is_none_or(|passed| passed != text.as_bytes()) {
+        if let Err(diagnostics) = fennec_check::check_to_run(&mut program.module.clone()) {
+            return Err(reject(&program, &diagnostics));
+        }
+        // A cache that can't be written only means checking all of it again next time.
+        let _ = cache.write("checked", &name, text.as_bytes());
+    }
+    fennec_build::keep_what_main_reaches(&mut program.module);
+    match fennec_check::check_to_run(&mut program.module) {
+        Ok(signatures) => Ok((program, signatures)),
+        // Cutting it down missed something the whole program has.
+        Err(_) => whole(path),
+    }
+}
+
+/// The cache, unless `FENNEC_NO_CACHE` is set.
+fn cache() -> Option<fennec_build::Cache> {
+    fennec_build::fennec_home()
+        .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
+        .map(|home| fennec_build::Cache::new(&home))
+}
+
+/// A program's name in the cache: a hash of its absolute path.
+fn passed_name(path: &str) -> String {
+    format!("{}.bin", fennec_blake3::hash(absolute(path).as_bytes()).to_hex())
+}
+
+/// A program's absolute path, which is what names it in the cache.
+fn absolute(path: &str) -> String {
+    std::fs::canonicalize(path).map_or_else(|_| path.to_owned(), |path| path.display().to_string())
+}
+
+/// A hash of every file of a program, by name and text, and of which build of Fennec read
+/// them, since another build's checker may find what this one doesn't.
+fn fingerprint(sources: &fennec_syntax::Sources) -> fennec_blake3::Hash {
+    let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec build cache 2026-10-31 passed check");
+    let build = std::env::current_exe().and_then(std::fs::metadata);
+    let modified = build.as_ref().ok().and_then(|build| build.modified().ok());
+    hasher.update(format!("{:?} {modified:?}\n", build.as_ref().map(std::fs::Metadata::len).ok()).as_bytes());
+    for (path, text) in sources.files() {
+        for part in [path, text] {
+            hasher.update(&part.len().to_le_bytes());
+            hasher.update(part.as_bytes());
+        }
+    }
+    hasher.finalize()
 }
 
 /// Runs a program as native code, or with the interpreter if it uses something the JIT
@@ -84,15 +147,11 @@ fn native(
     inputs: impl Fn() -> Inputs,
 ) -> Result<(), fennec_syntax::Diagnostic> {
     // Machine code is reused from the cache in `~/.fennec`, unless `FENNEC_NO_CACHE` is set.
-    let cache = fennec_build::fennec_home()
-        .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
-        .map(|home| fennec_build::Cache::new(&home));
-    let ran = match &cache {
+    let ran = match &cache() {
+        // A program's machine code is kept together, under its absolute path.
         Some(cache) => {
-            // A program's machine code is kept together, under its absolute path.
-            let program = std::fs::canonicalize(path)
-                .map_or_else(|_| path.to_owned(), |path| path.display().to_string());
-            fennec_jit::run_cached(module, Some(signatures), out, inputs(), cache, &program).map(|_| ())
+            fennec_jit::run_cached(module, Some(signatures), out, inputs(), cache, &absolute(path))
+                .map(|_| ())
         }
         None => fennec_jit::run_with_inputs(module, out, inputs()),
     };

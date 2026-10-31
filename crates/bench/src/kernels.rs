@@ -107,6 +107,13 @@ impl Kernel {
         }
     }
 
+    /// How many places in its compiled code aren't native, as `fennec dev fallbacks` reports.
+    pub(crate) fn not_native(&self, fennec: &Path) -> Option<usize> {
+        let output =
+            std::process::Command::new(fennec).args(["dev", "fallbacks", &self.path]).output().ok()?;
+        output.status.success().then(|| places(&String::from_utf8_lossy(&output.stdout)))
+    }
+
     /// Its twin, built if it needs to be.
     pub(crate) fn twin(&self, fennec: &Path, out_dir: &Path) -> Result<Program, String> {
         match &self.twin {
@@ -142,8 +149,27 @@ impl Kernel {
     }
 }
 
+/// The count in the last line of `fennec dev fallbacks`: `3 places aren't native`, or nothing
+/// when everything is.
+fn places(report: &str) -> usize {
+    let last = report.lines().last().unwrap_or("");
+    last.strip_suffix(" places aren't native").and_then(|count| count.parse().ok()).unwrap_or(0)
+}
+
 /// A short hash of what a program printed.
 pub(crate) fn hash(output: &str) -> String {
     let hex = fennec_blake3::hash(output.as_bytes()).to_hex();
     hex.get(..16).unwrap_or(&hex).to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::places;
+
+    #[test]
+    fn the_fallback_report_gives_its_count() {
+        assert_eq!(places("a.fen:1:1 in `f`: why\n    code\n3 places aren't native\n"), 3);
+        assert_eq!(places("everything compiles to native code\n"), 0);
+        assert_eq!(places(""), 0);
+    }
 }

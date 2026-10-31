@@ -7,7 +7,9 @@ HALF = 0.5
 NEGATIVE = -2.5
 READY = True
 NAME = "fennec"
+
 TYPED: float = 1.5
+
 WORDS = ["a", "b"]
 DOUBLE = LIMIT * 2
 

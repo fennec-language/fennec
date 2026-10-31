@@ -51,7 +51,13 @@ impl Lowerer<'_, '_> {
     /// statement gives is let go.
     pub(super) fn statements(&mut self, stmts: &[Stmt]) -> Result<(), Diagnostic> {
         let (value, ty) = self.tail(stmts)?;
-        if self.is_dead() { Ok(()) } else { self.consume(value, ty) }
+        if self.is_dead() {
+            return Ok(());
+        }
+        self.consume(value, ty)?;
+        // A loop comes back here with nothing to end a statement for it, so what the last
+        // statement left would pile up, and keep anything it holds from changing in place.
+        self.drop_temps()
     }
 
     /// A nested block, with its own scope, when nothing wants a value from it.

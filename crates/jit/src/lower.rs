@@ -116,7 +116,7 @@ pub(super) struct Shared {
 
 fn internal(err: impl std::fmt::Debug, span: Span) -> Diagnostic {
     Diagnostic::new(format!("the JIT hit an internal error: {err:?}"), span)
-        .with_help("this is a bug in Fennec; run without `--jit` and please report it")
+        .with_help("this is a bug in Fennec; run with `--interp` and please report it")
 }
 
 /// What went wrong compiling a function: its name, and why.

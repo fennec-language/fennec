@@ -55,6 +55,7 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     };
     let mut arguments = std::env::args();
     let inputs = crate::Inputs {
+        live: true,
         program: arguments.next().unwrap_or_default(),
         arguments: arguments.collect(),
         stdin: Box::new(std::io::BufReader::new(std::io::stdin())),

@@ -1,0 +1,15 @@
+{3, 1, 2} 3 True False True
+{1, 9} 2
+1
+9
+{1, 9, 3} 13
+{1, 9, 3} {9, 3, 100} False True True
+{"a", "c"} True False ["a", "c"] ["a!", "c!"]
+{"z"} set() 0
+{0, 1, 2} {"k0", "k1"} 2
+5
+True
+Seen(numbers={1, 2}, words={"y"}) True False 2
+y
+{1.5, 2.5} True
+417 True

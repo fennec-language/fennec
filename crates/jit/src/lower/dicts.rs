@@ -11,7 +11,7 @@ use fennec_interp::embed::dicts::{DICT_HEADER_WORDS, ENTRY_WORDS, shape};
 use fennec_syntax::{Arg, BinOp, Diagnostic, Expr, ExprKind, Span, Stmt};
 
 use super::expr::Lowered;
-use super::{Lowerer, internal};
+use super::{Local, Lowerer, internal};
 use crate::helpers::Helper;
 use crate::types::{Ty, Word};
 
@@ -34,6 +34,7 @@ pub(super) fn word_ty(word: Word) -> Ty {
         Word::Float => Ty::Float,
         Word::Bool => Ty::Bool,
         Word::Str => Ty::Str,
+        Word::Nothing => Ty::Unit,
     }
 }
 
@@ -91,6 +92,77 @@ impl Lowerer<'_, '_> {
         let key = self.own(key, word_ty(key_word));
         let new = self.own(new, word_ty(value_word));
         self.dict_set(var, (key_word, value_word), key, new)
+    }
+
+    /// A method that changes a set a name holds, natively, or `None` for anything else.
+    pub(super) fn set_method(
+        &mut self,
+        callee: &Expr,
+        args: &[Arg],
+        span: Span,
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return Ok(None) };
+        let ExprKind::Name(set) = &object.kind else { return Ok(None) };
+        let Some(Local { ty: Ty::Dict(key_word, Word::Nothing), var: Some(var), is_mut: true }) =
+            self.local(set)
+        else {
+            return Ok(None);
+        };
+        if args.iter().any(|arg| arg.is_mut || arg.name.is_some()) {
+            return Ok(None);
+        }
+        match (name.as_str(), args) {
+            ("add", [item]) => {
+                let key = self.set_key(&item.value, key_word)?;
+                let key = self.own(key, word_ty(key_word));
+                let none = self.int(0);
+                self.dict_set(var, (key_word, Word::Nothing), key, none)?;
+            }
+            ("discard" | "remove", [item]) => {
+                let key = self.set_key(&item.value, key_word)?;
+                let must = self.b.ins().iconst(types::I8, i64::from(name == "remove"));
+                let [start, end] = self.span_args(span);
+                let held = self.b.use_var(var);
+                let changed = self.help(Helper::SetRemove, &[held, key, must, start, end])?;
+                self.b.def_var(var, changed);
+                self.consume(Some(key), word_ty(key_word))?;
+            }
+            ("clear", []) => {
+                let held = self.b.use_var(var);
+                let changed = self.help(Helper::SetClear, &[held])?;
+                self.b.def_var(var, changed);
+            }
+            _ => return Ok(None),
+        }
+        Ok(Some((None, Ty::Unit)))
+    }
+
+    fn set_key(&mut self, item: &Expr, key_word: Word) -> Result<Value, Diagnostic> {
+        let (key, from) = self.expr(item)?;
+        self.convert(key, from, word_ty(key_word), item.span)
+    }
+
+    /// `{a, b, c}` made natively, when the checker knows it can be.
+    pub(super) fn set_literal(&mut self, value: &Expr) -> Result<Option<Lowered>, Diagnostic> {
+        let (ExprKind::Set(items), Some(ty @ Ty::Dict(key_word, Word::Nothing))) =
+            (&value.kind, self.checked_expr(value))
+        else {
+            return Ok(None);
+        };
+        let shape = shape(self.shared.tables.str_shape, key_word, Word::Nothing)
+            .ok_or_else(|| internal("a set's shape", value.span))?;
+        let shape = self.handed_number("shape", shape.cast_signed());
+        let room = self.int(i64::try_from(items.len()).unwrap_or(0));
+        let made = self.help(Helper::DictNew, &[shape, room])?;
+        let var = self.b.declare_var(types::I64);
+        self.b.def_var(var, made);
+        for item in items {
+            let key = self.set_key(item, key_word)?;
+            let key = self.own(key, word_ty(key_word));
+            let none = self.int(0);
+            self.dict_set(var, (key_word, Word::Nothing), key, none)?;
+        }
+        Ok(Some((Some(self.b.use_var(var)), ty)))
     }
 
     /// `dict[key]`, natively.
@@ -579,7 +651,7 @@ impl Lowerer<'_, '_> {
         match word {
             Word::Float => self.b.ins().bitcast(types::I64, MemFlagsData::new(), value),
             Word::Bool => self.b.ins().uextend(types::I64, value),
-            Word::Int | Word::Str => value,
+            Word::Int | Word::Str | Word::Nothing => value,
         }
     }
 
@@ -588,7 +660,7 @@ impl Lowerer<'_, '_> {
         match word {
             Word::Float => self.b.ins().bitcast(types::F64, MemFlagsData::new(), bits),
             Word::Bool => self.b.ins().ireduce(types::I8, bits),
-            Word::Int | Word::Str => bits,
+            Word::Int | Word::Str | Word::Nothing => bits,
         }
     }
 }

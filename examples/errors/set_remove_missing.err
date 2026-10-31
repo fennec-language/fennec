@@ -1,0 +1,5 @@
+error: 3 isn't in the set
+ --> examples/errors/set_remove_missing.fen:5:5
+  |
+5 |     items.remove(3)
+  |     ^^^^^^^^^^^^^^^

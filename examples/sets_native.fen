@@ -1,0 +1,62 @@
+## Sets of ints and strings, native, keeping the order items were first added.
+
+struct Seen:
+    numbers: set[int]
+    words: set[str]
+
+def distinct(items: list[int]) -> int:
+    {item % 10 for item in items}.len()
+
+def main(stdout: Stdout):
+    mut numbers = {3, 1, 2, 3}
+    stdout.print(numbers, numbers.len(), 2 in numbers, 9 in numbers, 9 not in numbers)
+    numbers.add(9)
+    numbers.add(1)
+    numbers.discard(3)
+    numbers.discard(77)
+    numbers.remove(2)
+    stdout.print(numbers, numbers.len())
+    for n in numbers:
+        stdout.print(n)
+    numbers.add(3)
+    stdout.print(numbers, sum(n for n in numbers))
+
+    copy = numbers
+    numbers.add(100)
+    numbers.remove(1)
+    stdout.print(copy, numbers, copy == numbers, copy == {1, 9, 3}, {1, 2} == {2, 1})
+
+    mut words = {"a", "b"}
+    words.add("c")
+    words.add("a")
+    words.remove("b")
+    stdout.print(words, "a" in words, "b" in words, sorted(words), [w + "!" for w in words])
+    words.clear()
+    words.add("z")
+    numbers.clear()
+    stdout.print(words, numbers, numbers.len())
+
+    stdout.print(
+        {n % 3 for n in range(10)},
+        {f"k{n % 2}" for n in range(5)},
+        distinct([1, 11, 21, 2]),
+    )
+    stdout.print({n for n in range(10) if n % 2 == 0}.len())
+    stdout.print({x * 2 for x in [1, 2]} == {2, 4})
+
+    mut seen = Seen(numbers={1}, words={"x"})
+    seen.numbers.add(2)
+    seen.words.add("y")
+    seen.words.discard("x")
+    stdout.print(seen, 2 in seen.numbers, "x" in seen.words, seen.numbers.len())
+    for word in seen.words:
+        stdout.print(word)
+    floats = {1.5, 2.5}
+    stdout.print(floats, 1.5 in floats)
+
+    mut large = {0}
+    for i in range(2000):
+        large.add(i * 7 % 500)
+        if i % 3 == 0:
+            large.discard(i % 500)
+    stdout.print(large.len(), 7 in large)

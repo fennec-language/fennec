@@ -164,6 +164,7 @@ impl Layouts {
                 !matches!(**item, Type::List(_) | Type::Dict(..)) && self.fits_boxed(item, candidates)
             }
             Type::Dict(key, value) => dict_ty(key, value) != Ty::Obj,
+            Type::Set(item) => set_ty(item) != Ty::Obj,
             _ => false,
         }
     }
@@ -303,6 +304,7 @@ impl Layouts {
             Type::Unit => Ty::Unit,
             Type::Str => Ty::Str,
             Type::Dict(key, value) => dict_ty(key, value),
+            Type::Set(item) => set_ty(item),
             Type::List(item) => ListItem::of(self.ty(item)).map_or(Ty::Obj, Ty::List),
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
                 (Some(cap), _) => Ty::Cap(cap),
@@ -328,8 +330,18 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
         },
         Type::List(item) => Ty::List(ListItem::of(boxed_field_ty(layouts, reserved, item)?)?),
         Type::Dict(key, value) => Some(dict_ty(key, value)).filter(|ty| *ty != Ty::Obj)?,
+        Type::Set(item) => Some(set_ty(item)).filter(|ty| *ty != Ty::Obj)?,
         _ => return None,
     })
+}
+
+/// A set natively, as a dict whose values are nothing, when its items are ints or strings.
+fn set_ty(item: &Type) -> Ty {
+    match item {
+        Type::Int => Ty::Dict(Word::Int, Word::Nothing),
+        Type::Str => Ty::Dict(Word::Str, Word::Nothing),
+        _ => Ty::Obj,
+    }
 }
 
 /// A dict natively, when its keys are ints or strings and its values plain words.
@@ -355,6 +367,7 @@ fn written_type(written: &TypeExpr) -> Option<Type> {
     }
     match (written.name.as_str(), written.args.as_slice()) {
         ("list", [item]) => return Some(Type::List(Box::new(written_type(item)?))),
+        ("set", [item]) => return Some(Type::Set(Box::new(written_type(item)?))),
         ("dict", [key, value]) => {
             return Some(Type::Dict(Box::new(written_type(key)?), Box::new(written_type(value)?)));
         }

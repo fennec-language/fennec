@@ -13,7 +13,7 @@ use super::expr::Lowered;
 use super::fallback::expr_names;
 use super::lists::LIST_ITEMS;
 use crate::helpers::Helper;
-use crate::types::{ListItem, Ty};
+use crate::types::{ListItem, Ty, Word};
 
 /// How the runtime orders words of a kind: as ints, floats or strings.
 fn sort_kind(ty: Ty) -> i64 {
@@ -53,6 +53,7 @@ impl Lowerer<'_, '_> {
         match &expr.kind {
             ExprKind::List(_) => return self.list_literal(expr),
             ExprKind::Dict(_) => return self.dict_literal(expr),
+            ExprKind::Set(_) => return self.set_literal(expr),
             _ => {}
         }
         let ExprKind::Comprehension { kind, elem, value, names, iter, cond } = &expr.kind else {
@@ -93,6 +94,24 @@ impl Lowerer<'_, '_> {
                     ty: None,
                 };
                 (self.help(Helper::DictNew, &[shape, room])?, ty, assign)
+            }
+            (CompKind::Set, None, Some(ty @ Ty::Dict(key, Word::Nothing))) => {
+                let shape =
+                    fennec_interp::embed::dicts::shape(self.shared.tables.str_shape, key, Word::Nothing)
+                        .ok_or_else(|| super::internal("a set's shape", span))?;
+                let shape = self.handed_number("shape", shape.cast_signed());
+                let room = self.int(0);
+                let add = Expr {
+                    kind: ExprKind::Attr {
+                        object: Box::new(target),
+                        name: "add".to_owned(),
+                        optional: false,
+                    },
+                    span,
+                };
+                let arg = Arg { name: None, is_mut: false, value: (**elem).clone() };
+                let call = Expr { kind: ExprKind::Call { callee: Box::new(add), args: vec![arg] }, span };
+                (self.help(Helper::DictNew, &[shape, room])?, ty, StmtKind::Expr(call))
             }
             _ => return Ok(None),
         };

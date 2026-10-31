@@ -118,6 +118,9 @@ impl Lowerer<'_, '_> {
         if let Some(changed) = self.list_method(callee, args, expr.span)? {
             return Ok(Some(changed));
         }
+        if let Some(changed) = self.set_method(callee, args, expr.span)? {
+            return Ok(Some(changed));
+        }
         if let Some(found) = self.string_method(callee, args, expr.span)? {
             return Ok(Some(found));
         }

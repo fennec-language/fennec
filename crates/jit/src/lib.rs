@@ -17,6 +17,7 @@ pub use tests_native::{NativeTests, run_tests};
 
 use std::io::Write;
 
+use fennec_check::Signatures;
 use fennec_interp::Inputs;
 use fennec_syntax::{Diagnostic, Module, Span};
 
@@ -55,20 +56,23 @@ pub fn run(module: &Module, out: &mut dyn Write) -> Result<(), JitError> {
 
 /// Like `run`, handing `main` the command-line arguments and standard input in `inputs`.
 pub fn run_with_inputs(module: &Module, out: &mut dyn Write, inputs: Inputs) -> Result<(), JitError> {
-    report_with_inputs(module, out, inputs, None).map(|_| ())
+    report_with_inputs(module, None, out, inputs, None).map(|_| ())
 }
 
 /// Like `run_with_inputs`, reusing machine code from `cache` and storing what it compiles
 /// there, so the next run skips code generation for every function that's unchanged.
 /// `program` names the program, like its absolute path: each program's code is kept together.
+/// `signatures` is what checking `module` gave, so a caller that checked it first saves
+/// doing that again.
 pub fn run_cached(
     module: &Module,
+    signatures: Option<&Signatures>,
     out: &mut dyn Write,
     inputs: Inputs,
     cache: &fennec_build::Cache,
     program: &str,
 ) -> Result<Report, JitError> {
-    report_with_inputs(module, out, inputs, Some((cache, program)))
+    report_with_inputs(module, signatures, out, inputs, Some((cache, program)))
 }
 
 /// The stack the program runs on. It's only reserved, not used, until calls nest deeply.
@@ -84,11 +88,12 @@ const NATIVE_STACK_BYTES: usize = 1 << 28;
 /// its calls may nest: it compares the stack pointer against a limit, which costs almost
 /// nothing per call.
 pub fn run_with_report(module: &Module, out: &mut dyn Write) -> Result<Report, JitError> {
-    report_with_inputs(module, out, Inputs::default(), None)
+    report_with_inputs(module, None, out, Inputs::default(), None)
 }
 
 fn report_with_inputs(
     module: &Module,
+    signatures: Option<&Signatures>,
     out: &mut dyn Write,
     inputs: Inputs,
     cache: Option<(&fennec_build::Cache, &str)>,
@@ -96,7 +101,7 @@ fn report_with_inputs(
     let ran = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_BYTES)
-            .spawn_scoped(scope, || compile_and_run(module, inputs, cache))
+            .spawn_scoped(scope, || compile_and_run(module, signatures, inputs, cache))
             .map(std::thread::ScopedJoinHandle::join)
     });
     let (output, report) = match ran {
@@ -119,23 +124,28 @@ fn report_with_inputs(
 /// it went.
 fn compile_and_run(
     module: &Module,
+    signatures: Option<&Signatures>,
     inputs: Inputs,
     cache: Option<(&fennec_build::Cache, &str)>,
 ) -> Result<(Vec<u8>, Result<Report, JitError>), JitError> {
     let here = 0_u8;
     let stack_limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
-    let signatures = fennec_check::check(module).map_err(|diagnostics| {
-        JitError::Unsupported(
-            diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default())),
-        )
-    })?;
-    let prelude: Vec<Module> =
-        fennec_syntax::prelude().filter_map(|source| fennec_syntax::parse_prelude(source).ok()).collect();
-    let program =
-        types::Program::from_module(module, &prelude, &signatures).map_err(JitError::Unsupported)?;
+    let checked;
+    let signatures = if let Some(signatures) = signatures {
+        signatures
+    } else {
+        checked = fennec_check::check(module).map_err(|diagnostics| {
+            JitError::Unsupported(
+                diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default())),
+            )
+        })?;
+        &checked
+    };
+    let prelude = fennec_syntax::prelude_modules().unwrap_or_default();
+    let program = types::Program::from_module(module, prelude, signatures).map_err(JitError::Unsupported)?;
 
     let (entry, tables, compilation) =
-        lower::compile(&program, &signatures, stack_limit, cache).map_err(JitError::Unsupported)?;
+        lower::compile(&program, signatures, stack_limit, cache).map_err(JitError::Unsupported)?;
     let result = runtime::execute(&entry, module, tables, inputs).map_err(JitError::Failed)?;
     let report = match result.failure {
         Some(failure) => Err(JitError::Failed(failure)),
@@ -176,9 +186,8 @@ pub fn build(module: &Module, sources: &fennec_syntax::Sources) -> Result<Built,
     let signatures = fennec_check::check(module).map_err(|diagnostics| {
         diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default()))
     })?;
-    let prelude: Vec<Module> =
-        fennec_syntax::prelude().filter_map(|source| fennec_syntax::parse_prelude(source).ok()).collect();
-    let program = types::Program::from_module(module, &prelude, &signatures)?;
+    let prelude = fennec_syntax::prelude_modules().unwrap_or_default();
+    let program = types::Program::from_module(module, prelude, &signatures)?;
     let image = lower::object::Written { module, sources };
     let (object, compilation) = lower::object::compile_object(&program, &signatures, &image)?;
     let mut interpreted = compilation.interpreted;
@@ -194,9 +203,8 @@ pub fn fallbacks(module: &Module) -> Result<Vec<Note>, Diagnostic> {
     let signatures = fennec_check::check(module).map_err(|diagnostics| {
         diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default()))
     })?;
-    let prelude: Vec<Module> =
-        fennec_syntax::prelude().filter_map(|source| fennec_syntax::parse_prelude(source).ok()).collect();
-    let program = types::Program::from_module(module, &prelude, &signatures)?;
+    let prelude = fennec_syntax::prelude_modules().unwrap_or_default();
+    let program = types::Program::from_module(module, prelude, &signatures)?;
     let (_, _, compilation) = lower::compile(&program, &signatures, 0, None)?;
     let whole = |function: &str, what: String| Note {
         function: function.to_owned(),

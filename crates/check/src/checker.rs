@@ -59,10 +59,8 @@ const REVISITS: usize = 16;
 impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
         let mut program = Program::default();
-        for source in fennec_syntax::prelude() {
-            if let Ok(prelude) = fennec_syntax::parse_prelude(source) {
-                program.add(&prelude, true);
-            }
+        for prelude in fennec_syntax::prelude_modules().unwrap_or_default() {
+            program.add(prelude, true);
         }
         program.prelude_imports = std::mem::take(&mut program.imports);
         program.add(module, false);
@@ -85,9 +83,17 @@ impl Checker {
         }
     }
 
-    pub(crate) fn run(mut self) -> Result<Checked, Vec<Diagnostic>> {
+    /// Checks everything, or for `reached_only`, the program's own code and just the
+    /// standard library functions it reaches: the library's other code can't affect a run.
+    pub(crate) fn run(mut self, reached_only: bool) -> Result<Checked, Vec<Diagnostic>> {
         self.check_declarations();
-        let keys: Vec<String> = self.program.functions.keys().cloned().collect();
+        let keys: Vec<String> = self
+            .program
+            .functions
+            .iter()
+            .filter(|(_, entry)| !(reached_only && entry.prelude))
+            .map(|(key, _)| key.clone())
+            .collect();
         for key in &keys {
             if !self.states.contains_key(key) {
                 self.check_function(key);

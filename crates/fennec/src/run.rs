@@ -9,9 +9,10 @@ use fennec_interp::Inputs;
 /// Runs the program at `path`, handing `main` the `arguments` and this process's input.
 pub(crate) fn run(path: &str, jit: bool, arguments: &[String]) -> ExitCode {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
-    if !check(&mut program) {
-        return ExitCode::FAILURE;
-    }
+    let signatures = match fennec_check::check_to_run(&mut program.module) {
+        Ok(signatures) => signatures,
+        Err(diagnostics) => return reject(&program, &diagnostics),
+    };
     let module = &program.module;
     let mut out = BufWriter::new(std::io::stdout().lock());
     let inputs = || Inputs {
@@ -19,8 +20,11 @@ pub(crate) fn run(path: &str, jit: bool, arguments: &[String]) -> ExitCode {
         arguments: arguments.to_vec(),
         stdin: Box::new(BufReader::new(std::io::stdin())),
     };
-    let result =
-        if jit { native(module, path, &mut out, inputs) } else { interpret(module, &mut out, inputs()) };
+    let result = if jit {
+        native(module, &signatures, path, &mut out, inputs)
+    } else {
+        interpret(module, &mut out, inputs())
+    };
     let flushed = out.flush();
     match (result, flushed) {
         (Ok(()), Ok(())) => ExitCode::SUCCESS,
@@ -39,6 +43,7 @@ pub(crate) fn run(path: &str, jit: bool, arguments: &[String]) -> ExitCode {
 /// can't compile yet. Nothing runs before the JIT decides, so nothing runs twice.
 fn native(
     module: &fennec_syntax::Module,
+    signatures: &fennec_check::Signatures,
     path: &str,
     out: &mut dyn Write,
     inputs: impl Fn() -> Inputs,
@@ -52,7 +57,7 @@ fn native(
             // A program's machine code is kept together, under its absolute path.
             let program = std::fs::canonicalize(path)
                 .map_or_else(|_| path.to_owned(), |path| path.display().to_string());
-            fennec_jit::run_cached(module, out, inputs(), cache, &program).map(|_| ())
+            fennec_jit::run_cached(module, Some(signatures), out, inputs(), cache, &program).map(|_| ())
         }
         None => fennec_jit::run_with_inputs(module, out, inputs()),
     };
@@ -82,8 +87,14 @@ pub(crate) fn check(program: &mut fennec_kit::Program) -> bool {
     match fennec_check::check_and_resolve(&mut program.module) {
         Ok(_) => true,
         Err(diagnostics) => {
-            eprint!("{}", program.sources.render_all(&diagnostics));
+            reject(program, &diagnostics);
             false
         }
     }
+}
+
+/// Prints the problems a check found.
+fn reject(program: &fennec_kit::Program, diagnostics: &[fennec_syntax::Diagnostic]) -> ExitCode {
+    eprint!("{}", program.sources.render_all(diagnostics));
+    ExitCode::FAILURE
 }

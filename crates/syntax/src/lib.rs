@@ -26,5 +26,5 @@ pub use modules::{
 pub use parser::{parse, parse_at, parse_prelude, parse_repl};
 pub use sources::Sources;
 pub use span::Span;
-pub use stdlib::{given, prelude};
+pub use stdlib::{given, prelude, prelude_modules};
 pub use trivia::{Lexed, SourceToken, TokenKind, lex_source};

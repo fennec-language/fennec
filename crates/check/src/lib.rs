@@ -49,7 +49,7 @@ pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
 /// Checks a parsed module. Returns the signatures and the type of every expression and
 /// name, or every problem found, in source order.
 pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
-    checker::Checker::new(module).run()
+    checker::Checker::new(module).run(false)
 }
 
 /// Whether the language provides `name` everywhere, with no import: a builtin like `len`,
@@ -67,6 +67,18 @@ pub fn provided_everywhere(name: &str) -> bool {
 /// since what runs it doesn't know types.
 pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
     let checked = check_typed(module)?;
+    Ok(resolved(module, checked))
+}
+
+/// Like `check_and_resolve`, for a module about to run: the standard library's functions are
+/// checked only when the module reaches them, so its signatures hold just those. The
+/// library's own tests check all of it.
+pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
+    let checked = checker::Checker::new(module).run(true)?;
+    Ok(resolved(module, checked))
+}
+
+fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     if !checked.cases.is_empty() {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
             if let Some(owner) = checked.cases.get(&(expr.span.start, expr.span.end)) {
@@ -74,7 +86,7 @@ pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnost
             }
         });
     }
-    Ok(checked.signatures)
+    checked.signatures
 }
 
 /// Everything a check works out about a program that has no mistakes.

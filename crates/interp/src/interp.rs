@@ -104,9 +104,8 @@ impl<'out> Interp<'out> {
             given: crate::inputs::Inputs::default().into(),
             built_in_methods: HashMap::new(),
         };
-        for source in fennec_syntax::prelude() {
-            let module = fennec_syntax::parse_prelude(source)?;
-            interp.load(&module)?;
+        for module in fennec_syntax::prelude_modules()? {
+            interp.load(module)?;
         }
         interp.prelude_imports = std::mem::take(&mut interp.imports);
         Ok(interp)

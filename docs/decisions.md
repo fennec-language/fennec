@@ -4,6 +4,44 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 ## Values and memory
 
+**Everything is a value unless the code says otherwise.** Structs nest freely and are stored in place. Nothing is shared unless the code says `mut`, `Id` or `shared`.
+*Why:* A reader can see every place two names reach the same thing, and the compiler keeps flat memory and every optimization everywhere else.
+
+**`x = mut place` edits a place, however deeply it's nested.**
+```fennec
+unit = mut world.units[id]
+unit.health -= damage
+```
+`unit` is another name for that exact place, and each edit through it is one write to memory. `mut x = place` is still a copy.
+- An alias can't be stored, returned or captured by an escaping closure, so there are no lifetimes to write.
+- The path it came from stays locked until the alias's last use. Aliases to separate fields of one struct are fine.
+- `mut a, b = xs.pair(i, j)` gives two elements of one list, checked at run time.
+
+*Why:* Editing nested structs is the one thing values make awkward. This makes it direct, with no copy to write back, and it needs no new type.
+
+**A helper lends a place with `yield mut`, not a pointer.** Its return type says `-> mut T`.
+```fennec
+def line(mut order: Order, i: int) -> mut Line:
+    yield mut order.lines[i]
+
+discount(mut line(order, 2))
+```
+*Why:* The compiler chooses the layout, so an element may have no address of its own, as when a list of structs is stored as one array per field. A lent place works whatever the layout is.
+
+**A copy that can go stale is a compile error.** Copying a struct into a longer-lived place, when the copy can diverge from a source still in use, needs `copy(x)`:
+```fennec
+world.selected = world.units[i]          # error: edits to one won't reach the other
+world.selected = copy(world.units[i])    # a separate copy, on purpose
+```
+Immutable local snapshots stay allowed, and so does sharing that never changes.
+*Why:* This is the mistake people and AI trained on references will make. It compiles and looks right, then one side silently stops updating. The error asks which was meant.
+
+**Not decided, each with a named way back.** There's no `class`, no `Frozen[T]` and no `with pool()` for now.
+- `class` with `link` fields is the fallback if the AI evaluation shows `Id` code doing badly on combat and UI tasks.
+- A limited `View[T]` is the fallback if having no stored views costs more than about 10–15% on parser, zero-copy server and B-tree benchmarks.
+
+*Why:* Both are additions that break nothing later, and these two experiments are what would change the decision. `Frozen[T]` adds nothing while a plain value can already cross tasks for one count bump.
+
 **Python's sharing is called out.** When code changes `b` after `b = a` and then reads `a`, a lint notes that `a` didn't change, because values are copies.
 *Why:* Fennec looks like Python, and Python shares here. People and AI trained on Python will expect `a` to change too.
 
@@ -22,8 +60,13 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **Copies are visible.** A lint lists every place the compiler had to copy a value, and why: "copied `enemies` because it's used again on line 42".
 *Why:* A hidden copy in a game loop is a frame-time spike nobody can find.
 
-**Handles are `Id[T]`.** An `Id[Enemy]` is an index plus a generation, made by an `IdMap[Enemy]`. It can't index a map of another type. When its enemy is removed, looking it up fails with `TargetGone` rather than finding whatever reuses the slot. `type EnemyId = Id[Enemy]` is an optional alias, not something the compiler makes for each struct.
-*Why:* With no references, handles are how one value points at another. Game engines, compilers, graph libraries and servers use the same generational-handle pattern. Handles are two ints, so they're cheap to copy and can be saved or sent anywhere.
+**`IdMap` and `Id[T]` are the way to point at things.** An `Id[Enemy]` is an index, a generation and a tag for its map, made by an `IdMap[Enemy]`. It can't index a map of another type, and the tag means an ID from another map can't find the wrong item.
+- `map[id]` stops the program on a dead ID, like an index out of range. `map.get(id)` returns an optional, for when the item may be gone.
+- A map reports how many items are live, which makes a forgotten item visible.
+- Its storage is in chunks, so one write after a snapshot copies a chunk rather than the whole map.
+- `type EnemyId = Id[Enemy]` is an optional alias, not something the compiler makes for each struct.
+
+*Why:* Game engines, compilers, graph libraries and servers use the same generational-handle pattern. IDs are small plain values, so they're cheap to copy and can be saved or sent anywhere. A cycle of them is just numbers, with nothing counted, so it can't leak. A stale ID that silently became `None` would hide bugs, so the short form is the loud one.
 
 ## Collections
 
@@ -55,14 +98,15 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 
 ## Allocation
 
-**The runtime owns allocation.** The default allocator is mimalloc, vendored (it's MIT-licensed) and later ported to Fennec. It keeps per-thread lists of free blocks for each size, so allocating and freeing take a few instructions.
+**The compiler and runtime choose allocation, and code never names an allocator.** mimalloc is the invisible last step, for what the compiler can't place itself. It's vendored (it's MIT-licensed) and later ported to Fennec. It keeps per-thread lists of free blocks for each size, so allocating and freeing take a few instructions.
 
 **The compiler places short-lived values itself.** A temporary that never leaves its function or loop body goes on the stack or in a bump region, with no call to the allocator. This is limited to values that provably don't escape. Full automatic region inference is known to leak memory.
 
-**Arenas are a scope.** Everything allocated inside `with arena():` is freed at once when the block ends. There are no allocator parameters.
-*Why:* Freeing in bulk is what makes the JVM's allocator fast, and this gets it without a GC. Passing allocators to every function, as Zig does, is a lot of AI pain for little gain.
+**`@arena` on a function frees in bulk.** Everything allocated during the call is freed at once when it returns, and only the return value survives. There are no allocator parameters. This replaces `with arena():`.
+*Why:* Freeing in bulk is what makes the JVM's allocator fast, and this gets it without a GC. Passing allocators to every function, as Zig does, is a lot of AI pain for little gain. A function already has a clear boundary, so there's no block to explain.
 
-**`with noalloc():` is checked at compile time.** Allocating anywhere inside the block, including in functions it calls, is a compile error. A lint suggests it where profiling shows heavy allocation.
+**`@noalloc` on a function is checked at compile time.** Allocating anywhere in the function, including in functions it calls, is a compile error. A lint suggests it where profiling shows heavy allocation. This replaces `with noalloc():` and the `noalloc def` prefix.
+*Why:* It's a claim about a function, and nothing opens or closes, so it doesn't belong in `with`.
 
 **Debug builds report allocation.** They show allocations and bytes per frame, find leaks, and can enforce a budget ("this frame allocates under 1 MB").
 
@@ -85,7 +129,7 @@ Decisions made while designing Fennec, with the reason for each. The [roadmap](.
 **`Random` is a seeded value.** `Random(seed=42)` draws the same numbers in the same order on every machine. It's SplitMix64, done in integer math, and `random_int(seed, n, low, high)`, imported from `std.random`, gives the `n`th number of a seed's sequence without keeping a generator. Seeding from the OS will be a capability `main` receives; it isn't built yet.
 *Why:* A seed is all a replay or a lockstep peer needs to see the same numbers. Drawing by position also suits procedural generation, where each chunk of a world takes numbers from its own index.
 
-**Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit, in the debugger, with `fennec replay`.
+**Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit, in the debugger, with `fennec replay`. The order tasks take a `shared struct`'s lock is the one source outside this, and how replay records it is still open.
 *Why:* A player's crash report becomes a replay file you can step through. The determinism rules above make it almost free.
 
 ## Speed
@@ -117,7 +161,7 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 **Layout is free to change.** As described under Layout, the compiler can reorder fields, pack enums and split lists of structs into one array per field, because no reference can depend on where a value lives. Languages with references can't change layouts behind the programmer's back.
 
-**Functions without capabilities have no side effects.** A function that isn't passed a capability can't do I/O, so the compiler can merge repeated calls, move them out of loops and vectorize loops more aggressively.
+**Functions without capabilities have no side effects, apart from `shared` cells the compiler can see them reach.** A function that isn't passed a capability can't do I/O, and the compiler tracks which functions reach each `shared` cell, so it can merge repeated calls, move them out of loops and vectorize loops more aggressively.
 *Why:* In most languages the compiler has to assume any call might do anything.
 
 **There's no unwinding.** Errors are values, and a runtime failure such as overflow ends the program. With no unwinding machinery, code is smaller and inlines better.
@@ -131,6 +175,18 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 *Why:* A program that compiles should do what it says. The check costs about 1–2%, and the benchmark suite measures it.
 
 ## Functions and types
+
+**Checking a result narrows it, and `?` is optional.**
+```fennec
+mut user = db.find_user(id)
+if user is Err(NotFound):
+    return Response(status=404)
+if user is Err:
+    return Response(status=500)
+user.visits += 1
+```
+`if x is None:` and `if x is Err(NotFound):` narrow `x` without `?`. `?` stays as the shorthand for passing an error up.
+*Why:* Deciding what an error means is an ordinary `if` that anyone can read, and the checker still sees every case. Passing one up is common enough to keep a single character.
 
 **Every `def` writes its return type. Arrow functions never do. No `->` means the function returns nothing.**
 ```fennec
@@ -164,6 +220,7 @@ This replaces the earlier rules that return types are inferred, and that recursi
 - The globals are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`. They use only iteration and a type's operators (`def +`, `def <`), so a user type joins them by defining its operators. There are no hooks and no dunders.
 - Everything type-specific is a method, including `xs.len()` and `x.abs()`. `len(xs)` and `abs(x)` are ordinary "no such function" errors, and the message points to the method.
 - `int(...)`, `str(...)` and `float(...)` are the types' constructors, not global functions.
+- `copy(x)` is the language's mark for a copy made on purpose. It works on any value and can't be defined by a type.
 ```fennec
 interface Signed:
     def abs(self) -> Self
@@ -251,8 +308,8 @@ Type arguments are inferred at calls; `largest[int](xs)` is allowed when they ca
 
 **`=>` is one expression; anything longer is a nested `def`.** There are no multi-line anonymous functions, as in Python. Function types are written `(int, str) -> bool`.
 
-**Functions used as values never change anything around them.** An arrow function, or a nested `def` that's passed, stored or returned, captures the names it reads by value and can't change any of them. Capturing a `mut` name is an error, with a fix: bind it to a new name first.
-*Why:* Every closure that escapes is then a pure function of its inputs, safe to run in parallel, cache or replay. It needs no analysis of which closures escape and no marker on parameters that store one, and capturing costs a reference-count bump at most. Handlers return commands instead of changing state, and builtins and comprehensions build up values.
+**Functions used as values never change anything around them.** An arrow function, or a nested `def` that's passed, stored or returned, captures the names it reads by value and can't change any of them. Capturing a `mut` name or a `mut` alias is an error, with a fix: bind it to a new name first. A captured `shared struct` handle is still the same cell, so what it reaches can change through `with`, and the compiler tracks that.
+*Why:* Every closure that escapes and reaches no `shared` cell is then a pure function of its inputs, safe to run in parallel, cache or replay. It needs no analysis of which closures escape and no marker on parameters that store one, and capturing costs a reference-count bump at most. Handlers return commands instead of changing state, and builtins and comprehensions build up values.
 
 **A nested `def` that's only called directly can change the enclosing function's `mut` names.**
 ```fennec
@@ -271,6 +328,9 @@ def collect_leaves(tree: Tree) -> list[Tree]:
 This replaces the earlier rule that closures which don't escape may change captured `mut` names.
 
 ## Cleanup
+
+**`with` is only for real lifecycles:** things that begin and have to end, like files, transactions, locks and tasks. A `with` block's last line is its value.
+*Why:* Every `with` then means the same thing, so a reader knows something gets closed at the end of the block. Claims about a function, like `@noalloc`, go on the function.
 
 **`with` runs cleanup on every way out of its block:** the end, `return`, `break` and `?`. Nested `with` blocks clean up innermost first. There's no unwinding.
 
@@ -297,6 +357,9 @@ with db.transaction() as mut tx:
 **`std.net` holds TCP, UDP, TLS, an HTTP client and server, and WebSocket, all through the `Net` capability.** The HTTP server is the plain kind, a function that handles requests; routing frameworks stay kits. Its design takes lessons from Go's `net` and `net/http`, in Fennec's own code. QUIC comes later as a first-party kit.
 
 **`std.sql` is one standard database interface,** modeled on the ideas of Python's DB-API. Drivers are first-party kits, with Postgres and MySQL in pure Fennec.
+
+**`Tree` is in `std`, and `Graph` follows.** `Tree` is built on `IdMap` and keeps parents and children in sync.
+*Why:* Hierarchies and graphs are where `Id` bookkeeping is most tedious and easiest to get wrong, so it's written once.
 
 **`std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv` are in `std` too.**
 
@@ -390,8 +453,34 @@ A big app that wants walls between its own parts splits into local kits in one w
 
 ## Concurrency
 
+**`shared struct` is the only reference type.** It's a counted handle holding plain values, reachable only through `with`.
+```fennec
+shared struct Cache:
+    pages: dict[str, Page]
+
+hit = with cache as c: c.pages.get(path)
+
+with cache as mut c:
+    c.pages[path] = page
+```
+- `a = cache` gives a second name for the same cell. `cache.pages` outside a `with` is an error, and a place can't leave its block.
+- It holds plain values, never another `shared`, so handles can't form a cycle. There's no `weak` and no cycle collector.
+- A module-level `shared` is allowed. The compiler tracks which functions reach each cell, and each test gets a fresh one.
+
+*Why:* Some things really are shared, like a cache or a server's stats. Holding the lock for every access rules out data races, and inside the block the cell behaves like a plain value. Plain structs pay nothing for it, and a search for `shared` finds every shared resource in a program.
+
+**Lock bodies are short and can't deadlock.**
+- They do no I/O, including in functions they call, and can't use `?` or `fail`.
+- Several locks are taken together, in a fixed order, with `with a, b as mut x, mut y:`. Locks never nest out of order.
+- `try_with` exists but isn't the default.
+
+*Why:* I/O under a lock is the usual cause of stalls, and leaving a lock early is how state gets left half changed. A "busy" error from a try-lock passes single-threaded tests and then fails under load, so waiting is what the short form does.
+
+**Reference counts are biased for values that cross tasks.** The thread that owns a block counts cheaply, and other threads count atomically. Programs with no tasks compile the check away.
+*Why:* This resolves a conflict between two earlier rules: tasks read parent values without touching counts, and a function returning a slice bumps a count. A task calling that function would have raced on a non-atomic count. Plain reads still touch no counts, and a bump from a task is now safe.
+
 **Tasks are scoped.** Every task ends before the `with` block or `parallel(...)` call that started it. There are no detached threads.
-*Why:* Because the parent outlives its tasks, a task can read the parent's values through views without touching reference counts, so reference counts stay non-atomic and fast. There's no `Send` or `Sync` to write.
+*Why:* Because the parent outlives its tasks, a task can read the parent's values through views without touching reference counts. There's no `Send` or `Sync` to write.
 
 **The first slice is parallel loops over collections.** `parallel(xs)` wraps anything iterable, with no new keyword:
 ```fennec
@@ -410,12 +499,12 @@ Scoped tasks with `with`, channels, locks and overlapping I/O come in later slic
 
 **Tasks change only separate pieces.** `for mut e in parallel(enemies):` gives each iteration `mut` access to its own element, checked by the same rule that makes `mut` exclusive. Results combine through reductions, like `sum(... for e in parallel(xs))`.
 
-**Only values with a single owner cross a channel.** They're moved, never shared.
-*Why:* That's what lets reference counts stay non-atomic even with long-lived worker tasks.
+**A value crosses a channel like it goes anywhere else.** It's moved at its last use, and otherwise costs one count bump. Any write copies first, so neither side sees the other's changes. `shared struct` handles can cross too. This replaces the earlier rule that only values with a single owner cross a channel.
+*Why:* Biased counts make it safe, so the restriction no longer buys anything.
 
 ## Syntax
 
-**A module can hold constants.** `KEYWORDS = {"def", "if", "else"}` at the top level is an immutable name, computed when compiling from literals, collections and calls to functions that take no capabilities. There's still no `mut` at the top level, so there's no global state. UPPER_CASE is a convention the lint suggests, not a rule.
+**A module can hold constants.** `KEYWORDS = {"def", "if", "else"}` at the top level is an immutable name, computed when compiling from literals, collections and calls to functions that take no capabilities. There's still no `mut` at the top level, so the only global state is a module-level `shared`, which the compiler tracks. UPPER_CASE is a convention the lint suggests, not a rule.
 *Why:* A table rebuilt inside a function on every call is what people write only when the language leaves them no choice. A constant is computed once, before the program runs.
 
 **String escapes are Python's:** `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\xhh`, `\uhhhh` and `\Uhhhhhhhh`.
@@ -607,7 +696,7 @@ These are default lints, and the Den requires them.
 ## Security goal
 
 **The goal is near-zero CVEs, and it's public policy.** True zero isn't possible: the compiler, the runtime and the C that can't be ported can all have bugs. What Fennec can do is remove the usual causes:
-- **Memory bugs are impossible in safe code.** `unsafe` exists only in extern modules.
+- **Memory bugs are impossible in safe code.** `unsafe` exists only for C, in extern modules, and that will never change. The standard library's internals are private to the compiler, not a second kind of `unsafe`.
 - **C is ported rather than linked,** so less C runs at all.
 - **A batteries-included standard library** keeps dependency trees shallow.
 - **Capabilities limit the blast radius** of any bug: code can reach only what it was handed.
@@ -858,7 +947,10 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 ## Still open
 
 - How a type marks that its finishing method must be called.
-- Decorators. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.
+- How replay records the order tasks take a `shared struct`'s lock.
+- Whether a `parallel` body may write to a `shared struct`, since its results are meant to be deterministic.
+- What replaces `with fast_math():`, now that `with` is only for real lifecycles.
+- Decorators, beyond the compiler's own `@noalloc` and `@arena`. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.
 - SQLite: whether and how Fennec includes it. Porting it isn't realistic.
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.

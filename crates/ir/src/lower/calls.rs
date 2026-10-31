@@ -114,7 +114,7 @@ impl Lowering<'_> {
             dest = keep.map(|ty| self.temporary(ty));
             self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);
         } else {
-            let (function, values) = self.direct(callee, args, &mut write_backs, span)?;
+            let (function, values) = self.direct((callee, args), keep.as_ref(), &mut write_backs, span)?;
             dest = keep.map(|ty| self.temporary(ty));
             self.emit(InstKind::Call { dest, function, args: values }, span);
         }
@@ -126,6 +126,18 @@ impl Lowering<'_> {
         Ok(dest)
     }
 
+    /// The name of the type an expression names, as in `Point.origin()` or `Deque[int].of(xs)`.
+    fn type_named<'e>(&self, object: &'e Expr) -> Option<&'e str> {
+        let named = match &object.kind {
+            ExprKind::Index { object, .. } => object,
+            _ => object,
+        };
+        match &named.kind {
+            ExprKind::Name(owner) if self.names_a_type(owner) => Some(owner),
+            _ => None,
+        }
+    }
+
     /// The type of what a method is called on.
     fn object_type(&self, object: &Expr) -> Option<Type> {
         if let ExprKind::Name(name) = &object.kind
@@ -133,7 +145,7 @@ impl Lowering<'_> {
         {
             return self.lookup(name).map(|local| self.local_type(local));
         }
-        self.body.expr(object.span).cloned()
+        self.type_at(object.span)
     }
 
     /// `object?.method(args)`: the call if the object isn't `None`, and `None` if it is.
@@ -212,9 +224,7 @@ impl Lowering<'_> {
                 plain.then(|| (name.clone(), None, false))
             }
             ExprKind::Attr { object, name, optional: false } => {
-                if let ExprKind::Name(owner) = &object.kind
-                    && self.names_a_type(owner)
-                {
+                if let Some(owner) = self.type_named(object) {
                     // A function on a built-in type, like `str.from_code`.
                     let key = format!("{owner}.{name}");
                     return signatures.get(&key).is_none().then_some((key, None, false));
@@ -237,29 +247,47 @@ impl Lowering<'_> {
     /// method's object comes first.
     fn direct(
         &mut self,
-        callee: &Expr,
-        args: &[Arg],
+        (callee, args): (&Expr, &[Arg]),
+        keep: Option<&Type>,
         write_backs: &mut Vec<WriteBack>,
         span: Span,
     ) -> Lowered<(String, Vec<Operand>)> {
         let (key, object) = match &callee.kind {
             _ if self.std_member(callee).is_some() => (self.std_member(callee).unwrap_or_default(), None),
             ExprKind::Name(name) if self.lookup(name).is_none() => (name.clone(), None),
-            ExprKind::Attr { object, name, optional: false } => match &object.kind {
-                // `Point.origin()`: a function on the type, with no object.
-                ExprKind::Name(owner) if self.names_a_type(owner) => (format!("{owner}.{name}"), None),
-                _ => {
+            ExprKind::Attr { object, name, optional: false } => {
+                if let Some(owner) = self.type_named(object) {
+                    // `Point.origin()`: a function on the type, with no object.
+                    (format!("{owner}.{name}"), None)
+                } else {
                     let ty = self.object_type(object).filter(|ty| self.context.holds(ty));
                     let owner = ty.as_ref().and_then(owner_name);
                     let owner = owner.ok_or_else(|| format!("it calls `.{name}` on something else"))?;
                     (format!("{owner}.{name}"), Some(object.as_ref()))
                 }
-            },
+            }
             _ => return Err("it calls something other than a function by name".to_owned()),
         };
-        let own = self.context.functions.contains(key.as_str());
-        let signature =
-            self.context.checked.signatures.get(&key).ok_or_else(|| format!("it calls `{key}`"))?;
+        let own = self.context.functions.contains(self.context.base_key(&key).as_str());
+        let raw = self.context.base_key(&key);
+        let raw = self.context.checked.signatures.get(&raw).ok_or_else(|| format!("it calls `{key}`"))?;
+        let first = usize::from(object.is_some());
+        let mut types: Vec<Option<Type>> = vec![None; raw.params.len()];
+        if let (Some(object), Some(slot)) = (object, types.first_mut()) {
+            *slot = self.object_type(object);
+        }
+        for (position, arg) in args.iter().enumerate() {
+            let at = match &arg.name {
+                Some(name) => raw.params.iter().position(|param| param.name == *name),
+                None => Some(position + first),
+            };
+            if let Some(slot) = at.and_then(|at| types.get_mut(at)) {
+                *slot = self.type_at(arg.value.span);
+            }
+        }
+        let (function, signature) = self
+            .resolve(&key, &types, keep)
+            .ok_or_else(|| format!("its call to `{key}` doesn't say what its types stand for"))?;
         let given = args.len() + usize::from(object.is_some());
         if given != signature.params.len() {
             return Err(format!("its call to `{key}` isn't a plain call"));
@@ -267,7 +295,6 @@ impl Lowering<'_> {
         if own && !signature.params.iter().all(|param| self.context.holds(&param.ty)) {
             return Err(format!("`{key}` takes something the IR doesn't hold yet"));
         }
-        let first = usize::from(object.is_some());
         let mut values: Vec<Option<Operand>> = vec![None; given];
         if let Some(object) = object {
             let changed = signature.params.first().is_some_and(|param| param.is_mut);
@@ -295,7 +322,7 @@ impl Lowering<'_> {
             }
         }
         let values: Option<Vec<Operand>> = values.into_iter().collect();
-        Ok((key, values.ok_or("a parameter has no argument")?))
+        Ok((function, values.ok_or("a parameter has no argument")?))
     }
 
     /// Something a call changes: a local itself, or a temporary holding a field or item
@@ -305,7 +332,7 @@ impl Lowering<'_> {
         let place = self.place_of(expr)?;
         let held = self.steps_type(&place)?;
         let narrowed =
-            matches!(held, Type::Optional(_)) && self.body.expr(expr.span).is_some_and(|read| *read != held);
+            matches!(held, Type::Optional(_)) && self.type_at(expr.span).is_some_and(|read| read != held);
         if place.steps.is_empty() && !narrowed {
             return Ok(Operand::Local(place.local));
         }

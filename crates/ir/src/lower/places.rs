@@ -78,11 +78,11 @@ impl Lowering<'_> {
             Type::Dict(key, _) => Some(*key.clone()),
             Type::IdMap(item) => Some(Type::Id(item.clone())),
             Type::Named(owner) => {
-                let signatures = &self.context.checked.signatures;
-                let found = signatures
-                    .get(&format!("{owner}.[]="))
-                    .or_else(|| signatures.get(&format!("{owner}.[]")));
-                found?.params.get(1).map(|param| param.ty.clone())
+                let given = [Some(ty.clone())];
+                let found = self
+                    .resolve(&format!("{owner}.[]="), &given, None)
+                    .or_else(|| self.resolve(&format!("{owner}.[]"), &given, None));
+                found?.1.params.get(1).map(|param| param.ty.clone())
             }
             _ => None,
         }
@@ -93,11 +93,12 @@ impl Lowering<'_> {
         match ty {
             Type::List(item) | Type::Dict(_, item) | Type::IdMap(item) => Some(*item.clone()),
             Type::Named(owner) => {
-                let signatures = &self.context.checked.signatures;
-                if let Some(read) = signatures.get(&format!("{owner}.[]")) {
-                    return Some(read.returns.clone());
+                let given = [Some(ty.clone())];
+                if let Some((_, read)) = self.resolve(&format!("{owner}.[]"), &given, None) {
+                    return Some(read.returns);
                 }
-                signatures.get(&format!("{owner}.[]="))?.params.get(2).map(|param| param.ty.clone())
+                let written = self.resolve(&format!("{owner}.[]="), &given, None)?.1;
+                written.params.get(2).map(|param| param.ty.clone())
             }
             _ => None,
         }
@@ -109,7 +110,8 @@ impl Lowering<'_> {
                 let Type::Named(owner) = ty else {
                     return Err(format!("it changes `.{field}` of something else"));
                 };
-                let found = self.struct_fields(owner)?.iter().find(|(name, _)| name == field);
+                let fields = self.struct_fields(owner)?;
+                let found = fields.iter().find(|(name, _)| name == field);
                 found.map(|(_, ty)| ty.clone()).ok_or_else(|| format!("`{owner}` has no `{field}`"))
             }
             Step::Index(_) => {
@@ -160,8 +162,9 @@ impl Lowering<'_> {
     ) -> LocalId {
         let dest = self.temporary(item.clone());
         if let Type::Named(owner) = ty {
+            let found = self.resolve(&format!("{owner}.[]"), &[Some(ty.clone())], Some(item));
+            let function = found.map_or_else(|| format!("{owner}.[]"), |(name, _)| name);
             let args = vec![object, index];
-            let function = format!("{owner}.[]");
             self.emit(InstKind::Call { dest: Some(dest), function, args }, span);
         } else {
             self.emit(InstKind::GetIndex { dest, object, index }, span);
@@ -208,8 +211,9 @@ impl Lowering<'_> {
             let Operand::Local(holder) = self.read_steps(local, prefix, span)? else {
                 return Err("a value isn't in a local".to_owned());
             };
+            let found = self.resolve(&format!("{owner}.[]="), &[Some(ty.clone())], None);
+            let function = found.map_or_else(|| format!("{owner}.[]="), |(name, _)| name);
             let args = vec![Operand::Local(holder), index.clone(), value];
-            let function = format!("{owner}.[]=");
             self.emit(InstKind::Call { dest: None, function, args }, span);
             if !prefix.is_empty() {
                 self.store(local, prefix, Operand::Local(holder), span)?;
@@ -283,7 +287,8 @@ impl Lowering<'_> {
         };
         self.emit(InstKind::Copy { dest: resource, value: held }, span);
         let cleanup = crate::lower::calls::owner_name(&ty).map(|owner| format!("{owner}.del"));
-        let cleanup = cleanup.filter(|key| self.context.checked.signatures.get(key).is_some());
+        let cleanup =
+            cleanup.and_then(|key| self.resolve(&key, &[Some(ty.clone())], None)).map(|(name, _)| name);
         let entry = cleanup.map(|cleanup| Leaving::With { resource, cleanup });
         self.leaving.extend(entry.clone());
         let lowered = self.stmts(body, tail);

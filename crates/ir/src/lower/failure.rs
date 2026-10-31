@@ -50,15 +50,15 @@ impl Lowering<'_> {
     /// declared with once a check has shown it isn't `None`.
     pub(super) fn narrowed(&mut self, value: Operand, expr: &Expr) -> Lowered<Operand> {
         let from = type_in(&self.locals, &value).ok_or("a value has no type")?;
-        let Some(read) = self.body.expr(expr.span).filter(|read| **read != from) else {
+        let Some(read) = self.type_at(expr.span).filter(|read| *read != from) else {
             return Ok(value);
         };
         match (&from, read) {
             // A local given a function by name holds it as a closure.
             (Type::Arrow(..), Type::Function(_)) => Ok(value),
             (Type::Optional(_), Type::None) => Ok(Operand::None),
-            (Type::Optional(inner), read) if **inner == *read => {
-                let dest = self.temporary(read.clone());
+            (Type::Optional(inner), read) if **inner == read => {
+                let dest = self.temporary(read);
                 self.emit(InstKind::GetSome { dest, value }, expr.span);
                 Ok(Operand::Local(dest))
             }
@@ -218,7 +218,7 @@ impl Lowering<'_> {
     /// `return value`, or a function's last value. A last line that gives nothing runs, and
     /// the function gives back nothing.
     pub(super) fn return_value(&mut self, expr: &Expr) -> Lowered<()> {
-        if self.yielded.is_some() || matches!(self.body.expr(expr.span), Some(Type::Unit)) {
+        if self.yielded.is_some() || matches!(self.type_at(expr.span), Some(Type::Unit)) {
             self.effect(expr)?;
             return self.return_nothing(expr.span);
         }

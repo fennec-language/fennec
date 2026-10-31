@@ -5,6 +5,7 @@
 use fennec_check::Type;
 use fennec_syntax::{Arg, Expr, ExprKind, FnDef, Span, visit};
 
+use super::generics::FunctionInstance;
 use super::{Lowered, Lowering, Tail, reachable};
 use crate::{Function, InstKind, LocalId, Operand};
 
@@ -58,7 +59,9 @@ impl Lowering<'_> {
         let own: Vec<&str> = params.iter().map(String::as_str).collect();
         let captures = self.captures(names, &own);
         let key = format!("{}.arrow@{}", self.name, expr.span.start);
-        let mut lifted = Lowering::new(&key, self.context, self.body, *returns.clone());
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let mut lifted = Lowering::new(&instance, self.context, self.body, *returns.clone());
         for (name, local) in &captures {
             lifted.declare(name, self.local_type(*local));
         }
@@ -77,12 +80,18 @@ impl Lowering<'_> {
     /// `def inner(...)` inside a function: its name holds a closure from here on.
     pub(super) fn nested(&mut self, def: &FnDef, span: Span) -> Lowered<()> {
         let key = format!("{}.{}", self.name, def.name);
+        let base = format!("{}.{}", self.base, def.name);
         let context = self.context;
-        let signature = context.checked.signatures.get(&key).ok_or("a nested function has no signature")?;
+        let raw = context.checked.signatures.get(&base).ok_or("a nested function has no signature")?;
+        let signature = context.instantiate(raw, &self.subst);
         if signature.params.iter().any(|param| param.is_mut) {
             return Err("it has a nested function with a `mut` parameter".to_owned());
         }
-        let ty = context.arrow_of(&key).ok_or("a nested function takes what the IR doesn't hold")?;
+        let params = signature.params.iter().map(|param| param.ty.clone()).collect();
+        let ty = Type::Arrow(params, Box::new(signature.returns.clone()));
+        if !context.holds(&ty) {
+            return Err("a nested function takes what the IR doesn't hold".to_owned());
+        }
         let mut names = Vec::new();
         let mut written = def.clone();
         visit::in_function(&mut written, &mut |seen| {
@@ -97,7 +106,8 @@ impl Lowering<'_> {
         let held: Vec<(String, Type)> =
             captures.iter().map(|(name, local)| (name.clone(), self.local_type(*local))).collect();
         let itself = mentions_itself.then_some(&ty);
-        self.lifted.extend(Lowering::function(&key, def, context, (&held, itself))?);
+        let instance = FunctionInstance { base, name: key.clone(), subst: self.subst.clone() };
+        self.lifted.extend(Lowering::function(&instance, def, context, (&held, itself))?);
         let closure = self.make_closure(key, &captures, ty.clone(), span);
         let local = self.declare(&def.name, ty);
         self.emit(InstKind::Copy { dest: local, value: Operand::Local(closure) }, span);
@@ -124,7 +134,7 @@ impl Lowering<'_> {
     pub(super) fn closure_callee(&self, callee: &Expr) -> Option<Type> {
         let ty = match &callee.kind {
             ExprKind::Name(name) => self.local_type(self.lookup(name)?),
-            _ => self.body.expr(callee.span)?.clone(),
+            _ => self.type_at(callee.span)?,
         };
         matches!(ty, Type::Arrow(..)).then_some(ty)
     }

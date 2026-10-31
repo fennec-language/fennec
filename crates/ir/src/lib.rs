@@ -8,20 +8,23 @@
 //! need nothing looked up later. Overflow, dividing by zero and so on are the operator's
 //! meaning: each backend has to end the program the same way, at the instruction's span.
 //!
-//! Lowering grows in slices. So far it handles functions over ints, floats, bools, strs,
-//! bytes, the program's own structs and enums, lists, sets, dicts, tuples, capabilities,
-//! optionals and results: operators, names, `if`, `while`, `for` over anything but a value
-//! with its own iterator, comprehensions, `match`, `return`, `fail`, `?`, `else`, direct calls,
-//! what the engines provide, building values, and reading and changing fields and items. All
-//! of them are values, so copying one copies it. A comprehension is a loop that fills a
-//! collection, and a loop over anything but a list goes through a list of its items. A `match`
-//! is a run of tests, one case after another, which a backend can turn into a jump table. A
-//! `mut` parameter is copied back: when the call returns, the local passed for it holds what
-//! the parameter held. Nothing is implicit: a value going where an optional or a result goes
-//! is wrapped by an instruction, and a name known not to be `None` is unwrapped where it's
-//! read. A constant whose value is a literal is written out where it's read. An error of
-//! one type can go where a set of error types is expected as it is. A
-//! function using anything else is listed in [`Program::not_lowered`], with why.
+//! Every value is a copy, so changing an item's insides reads it, changes it and writes it
+//! back, and a closure captures copies of what it reads. A `match` is a run of tests, one case
+//! after another, which a backend can turn into a jump table. A comprehension is a loop that
+//! fills a collection, a generator fills a list as it runs, and a loop over anything but a
+//! list goes through a list of its items. A `mut` parameter is copied back: when the call
+//! returns, the local passed for it holds what the parameter held. Nothing is implicit: a
+//! value going where an optional or a result goes is wrapped by an instruction, and a name
+//! known not to be `None` is unwrapped where it's read. An error of one type can go where a
+//! set of error types is expected as it is. A constant whose value is a literal is written
+//! out where it's read.
+//!
+//! Generics are gone by now: a generic function or type is copied for each set of types a
+//! program uses it with, so `Deque[T]` for ints is the struct `Deque[int]`, and its `append`
+//! is the function `Deque.append[int]`. The standard library's functions come in as they're
+//! reached. Functions that nothing calls and that are generic aren't lowered. A function that
+//! can't be lowered is listed in [`Program::not_lowered`], with why, and no example has one.
+//! Tests aren't lowered yet.
 
 mod lower;
 mod print;
@@ -45,8 +48,8 @@ pub struct Program {
     pub constants: Vec<Function>,
     pub functions: Vec<Function>,
     pub not_lowered: Vec<NotLowered>,
-    /// The standard library's functions the program calls, written in Fennec. They aren't
-    /// lowered yet.
+    /// What the program calls that isn't here or in `not_lowered`. Lowering a whole program
+    /// leaves this empty.
     pub external: Vec<String>,
 }
 
@@ -208,7 +211,7 @@ pub enum InstKind {
         object: Operand,
         index: Operand,
     },
-    /// `object[start:end]` on a list, str or bytes. A bound that's left out is the end it
+    /// `object[start:end]` on a list, str, bytes or tuple. A bound that's left out is the end it
     /// would be, and either can count from the back.
     Slice {
         dest: LocalId,

@@ -158,14 +158,14 @@ fn names_in_sibling_blocks_are_different_locals() {
 }
 
 #[test]
-fn what_isnt_lowered_yet_says_why() {
+fn something_generic_nothing_uses_isnt_lowered() {
     let source = "def first[T](items: list[T]) -> T:
     items[0]
 ";
     let program = lowered(source).unwrap();
     let why: Vec<String> =
         program.not_lowered.iter().map(|skipped| format!("{}: {}", skipped.function, skipped.why)).collect();
-    assert_eq!(why, ["first: it's generic"]);
+    assert_eq!(why, Vec::<String>::new());
 }
 
 #[test]
@@ -1934,7 +1934,163 @@ def f() -> float:
 }
 
 #[test]
-fn every_example_lowers_to_valid_ir_or_says_why() {
+fn a_generic_function_is_copied_for_each_type_its_used_with() {
+    let source = "def first[T](items: list[T]) -> T:
+    items[0]
+
+def f() -> str:
+    a = first([1])
+    b = first([\"x\"])
+    c = first([2])
+    f\"{a} {b} {c}\"
+";
+    let program = lowered(source).unwrap();
+    let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
+    assert_eq!(names, ["f", "first[str]", "first[int]"]);
+    let text = printed(source, "first[str]").unwrap();
+    assert_eq!(
+        text,
+        "fn first[str](_0) -> str
+  local _0 items: list[str]
+  local _1: str
+  bb0:
+    _1 = _0[0]
+    return _1
+"
+    );
+}
+
+#[test]
+fn an_interface_calls_the_method_of_the_type_it_stands_for() {
+    let source = "interface Shape:
+    def area(self) -> float
+
+struct Square:
+    side: float
+
+    def area(self) -> float:
+        self.side * self.side
+
+def twice[T: Shape](shape: T) -> float:
+    shape.area() * 2.0
+
+def f() -> float:
+    twice(Square(1.0))
+";
+    assert_eq!(
+        printed(source, "twice[Square]").unwrap(),
+        "fn twice[Square](_0) -> float
+  local _0 shape: Square
+  local _1: float
+  local _2: float
+  bb0:
+    _1 = call Square.area(_0)
+    _2 = _1 * 2.0
+    return _2
+"
+    );
+}
+
+#[test]
+fn a_generic_struct_is_a_struct_for_each_type_it_holds() {
+    let source = "struct Box[T]:
+    held: T
+    count = 0
+
+    def get(self) -> T:
+        self.held
+
+def f() -> int:
+    a = Box(1)
+    b = Box(\"x\")
+    a.get() + b.get().len()
+";
+    let program = lowered(source).unwrap();
+    let shown: Vec<String> = program
+        .structs
+        .iter()
+        .filter(|def| def.name.starts_with("Box"))
+        .map(|def| format!("{def:?}"))
+        .collect();
+    assert_eq!(
+        shown.join(", "),
+        "StructDef { name: \"Box[int]\", fields: [(\"held\", Int), (\"count\", Int)] }, \
+         StructDef { name: \"Box[str]\", fields: [(\"held\", Str), (\"count\", Int)] }"
+    );
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f() -> int
+  local _0: Box[int]
+  local _1 a: Box[int]
+  local _2: Box[str]
+  local _3 b: Box[str]
+  local _4: int
+  local _5: str
+  local _6: int
+  local _7: int
+  bb0:
+    _0 = make Box[int](1, 0)
+    _1 = _0
+    _2 = make Box[str](\"x\", 0)
+    _3 = _2
+    _4 = call Box.get[int](_1)
+    _5 = call Box.get[str](_3)
+    _6 = builtin str.len(_5)
+    _7 = _4 + _6
+    return _7
+"
+    );
+}
+
+#[test]
+fn a_method_of_a_list_is_copied_for_what_it_holds() {
+    let source = "def f(mut xs: list[int]) -> int:
+    xs.reverse()
+    xs.count(1)
+";
+    let program = lowered(source).unwrap();
+    let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
+    assert_eq!(names, ["f", "list.count[int]", "list.reverse[int]"]);
+}
+
+#[test]
+fn a_nested_function_in_a_generic_uses_what_its_types_stand_for() {
+    let source = "def f[T](x: T) -> list[T]:
+    def again() -> list[T]:
+        [x, x]
+    again()
+
+def h() -> list[int]:
+    f(1)
+";
+    let program = lowered(source).unwrap();
+    let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
+    assert!(names.contains(&"f[int].again"), "{names:?}");
+}
+
+#[test]
+fn every_example_kit_lowers_to_valid_ir() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/projects");
+    let mut kits = 0;
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if !path.join("kit.toml").exists() {
+            continue;
+        }
+        kits += 1;
+        let shown = path.display().to_string();
+        let kit = fennec_kit::load(&path, &shown, fennec_kit::Entry::Main).unwrap();
+        let checked = fennec_check::check_typed(&kit.module).unwrap();
+        let program = lower(&kit.module, &checked);
+        validate(&program).unwrap_or_else(|problems| panic!("{shown}: {problems:?}\n{program}"));
+        assert_eq!(program.not_lowered, [], "{shown}");
+        assert_eq!(program.external, Vec::<String>::new(), "{shown}");
+    }
+    assert!(kits >= 6, "only {kits} kits");
+}
+
+#[test]
+fn every_example_lowers_to_valid_ir() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut lowered_functions = Vec::new();
     for entry in fs::read_dir(dir).unwrap() {
@@ -1949,15 +2105,11 @@ fn every_example_lowers_to_valid_ir_or_says_why() {
             fennec_check::check_typed(&module).unwrap_or_else(|problems| panic!("{file}: {problems:?}"));
         let program = lower(&module, &checked);
         validate(&program).unwrap_or_else(|problems| panic!("{file}: {problems:?}\n{program}"));
-        for skipped in &program.not_lowered {
-            println!("{file}: {}: {}", skipped.function, skipped.why);
-        }
+        assert_eq!(program.not_lowered, [], "{file}");
+        assert_eq!(program.external, Vec::<String>::new(), "{file}");
         lowered_functions
             .extend(program.functions.iter().map(|function| format!("{file}: {}", function.name)));
     }
-    // How far lowering has got. This only goes up, until every function lowers.
-    println!("{} functions lowered", lowered_functions.len());
-    assert!(lowered_functions.len() >= 330, "only {} functions lowered", lowered_functions.len());
     for expected in
         ["numbers.fen: fib", "numbers.fen: collatz_steps", "numbers.fen: is_prime", "numbers.fen: lerp"]
     {

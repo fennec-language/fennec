@@ -31,8 +31,18 @@ pub(super) fn definitions(modules: &[&Module], checked: &Checked) -> Vec<EnumDef
 impl Lowering<'_> {
     /// The fields of a case of an enum the IR holds.
     fn case_fields(&self, owner: &str, case: &str) -> Option<Vec<(String, Type)>> {
-        let def = self.context.enums.get(owner)?;
-        def.cases.iter().find(|written| written.name == case).map(|found| found.fields.clone())
+        let context = self.context;
+        if let Some(copy) = context.type_instance(owner) {
+            let found = context.checked.signatures.enumeration(&copy.base)?;
+            let (_, fields) = found.cases.iter().find(|(name, _)| name == case)?;
+            return Some(
+                fields.iter().map(|(name, ty)| (name.clone(), context.concrete(ty, &copy.subst))).collect(),
+            );
+        }
+        let def = context.enums.get(owner)?;
+        let found = def.cases.iter().find(|written| written.name == case)?;
+        let plain = super::generics::Subst::new();
+        Some(found.fields.iter().map(|(name, ty)| (name.clone(), context.concrete(ty, &plain))).collect())
     }
 
     /// The enum, case and arguments when an expression builds an enum case: `.Red`,
@@ -44,12 +54,22 @@ impl Lowering<'_> {
             _ => (expr, &[][..]),
         };
         let (owner, case) = match &callee.kind {
-            ExprKind::Variant(case) => match self.body.expr(expr.span)? {
-                Type::Named(owner) => (owner.clone(), case),
+            ExprKind::Variant(case) => match self.type_at(expr.span)? {
+                Type::Named(owner) => (owner, case),
                 _ => return None,
             },
             ExprKind::Attr { object, name, optional: false } => match &object.kind {
-                ExprKind::Name(owner) if self.lookup(owner).is_none() => (owner.clone(), name),
+                ExprKind::Name(owner) if self.lookup(owner).is_none() => {
+                    // A generic enum's case is of the copy the typed tree says it is.
+                    match self.type_at(expr.span) {
+                        Some(Type::Named(copy))
+                            if self.context.generic_types.contains_key(owner.as_str()) =>
+                        {
+                            (copy, name)
+                        }
+                        _ => (owner.clone(), name),
+                    }
+                }
                 _ => return None,
             },
             _ => return None,
@@ -200,11 +220,7 @@ impl Lowering<'_> {
                 self.branch_or(Operand::Local(dest), fail);
                 fields.clone()
             }
-            None if !dotted && name == owner => {
-                let signatures = &self.context.checked.signatures;
-                let found = signatures.structure(owner).or_else(|| signatures.error_type(owner));
-                found.map(|found| found.fields.clone()).ok_or_else(|| format!("`{owner}` has no fields"))?
-            }
+            None if !dotted && name == owner => self.struct_fields(owner)?,
             None => return Err(format!("it matches `{name}` on {ty}")),
         };
         for (arg, (field, field_ty)) in args.iter().zip(&fields) {

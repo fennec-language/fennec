@@ -222,8 +222,11 @@ impl<'p> Check<'p> {
             }
             InstKind::Slice { dest, object, start, end } => {
                 let held = self.function.type_of(object);
+                let wanted = self.local(*dest);
+                // A slice of a tuple is a tuple of fewer items.
+                let tuples = matches!((&held, &wanted), (Some(Type::Tuple(_)), Some(Type::Tuple(_))));
                 let sliced = matches!(held, Some(Type::List(_) | Type::Str | Type::Bytes));
-                if !sliced || held != self.local(*dest) {
+                if !tuples && (!sliced || held != wanted) {
                     self.problems.push(format!("`{inst}` slices the wrong thing"));
                 }
                 for bound in start.iter().chain(end) {

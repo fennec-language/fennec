@@ -13,6 +13,18 @@ use super::{Lowerer, abi, internal};
 use crate::helpers::Helper;
 use crate::types::Ty;
 
+/// What's true of the expression being lowered.
+#[derive(Default)]
+pub(super) struct Now {
+    /// Whether what's being read is used at once, with nothing changing meanwhile.
+    pub(super) lending: bool,
+    /// The call `?` is about to test, and the last `?` in the statement.
+    pub(super) tried: Option<Span>,
+    pub(super) last_try: Option<Span>,
+    /// What the call `?` is testing holds, when it gives back a block directly.
+    pub(super) direct_result: Option<Ty>,
+}
+
 impl Lowerer<'_, '_> {
     /// Leaves the function from here with a value.
     pub(super) fn ret(&mut self, value: Option<Value>, ty: Ty, span: Span) -> Result<(), Diagnostic> {
@@ -99,9 +111,9 @@ impl Lowerer<'_, '_> {
         span: Span,
     ) -> Result<Lowered, Diagnostic> {
         let (Some(direct), Some(word)) = (direct, value) else { return Ok((value, ret)) };
-        if self.tried == Some(span) {
-            self.tried = None;
-            self.direct_result = Some(direct);
+        if self.now.tried == Some(span) {
+            self.now.tried = None;
+            self.now.direct_result = Some(direct);
             return Ok((Some(word), ret));
         }
         let [failed, fine, done] = [(); 3].map(|()| self.b.create_block());
@@ -132,12 +144,12 @@ impl Lowerer<'_, '_> {
         value: &Expr,
         whole: Span,
     ) -> Result<(Lowered, Option<Ty>), Diagnostic> {
-        if self.last_try == Some(whole) {
-            self.tried = Some(value.span);
+        if self.now.last_try == Some(whole) {
+            self.now.tried = Some(value.span);
         }
         let lowered = self.expr(value);
-        self.tried = None;
-        Ok((lowered?, self.direct_result.take()))
+        self.now.tried = None;
+        Ok((lowered?, self.now.direct_result.take()))
     }
 
     /// The `?` evaluated last in a statement's own expressions.

@@ -289,9 +289,9 @@ impl Lowerer<'_, '_> {
             return self.inline_call(key, &body, values, None, span);
         }
         // Whatever calls this may be one arm of several, so it always wants an object.
-        let tried = self.tried.take();
+        let tried = self.now.tried.take();
         let called = self.call_key_changing(key, values, span).map(|(result, _)| result);
-        self.tried = tried;
+        self.now.tried = tried;
         called
     }
 

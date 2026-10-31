@@ -293,7 +293,7 @@ impl Lowerer<'_, '_> {
         let value = self.b.ins().load(abi_ty, MemFlagsData::trusted(), address, 0);
         // The list could let go of a counted item while this is still using it.
         if item.counted() {
-            if self.lending {
+            if self.now.lending {
                 self.borrow(value);
             } else {
                 self.retain(value);

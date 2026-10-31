@@ -47,6 +47,26 @@ impl Lowerer<'_, '_> {
         }
     }
 
+    /// Lowers a block's statements when nothing wants a value from them: one its last
+    /// statement gives is let go.
+    pub(super) fn statements(&mut self, stmts: &[Stmt]) -> Result<(), Diagnostic> {
+        let (value, ty) = self.tail(stmts)?;
+        if self.is_dead() {
+            return Ok(());
+        }
+        self.consume(value, ty)?;
+        // A loop comes back here with nothing to end a statement for it, so what the last
+        // statement left would pile up, and keep anything it holds from changing in place.
+        self.drop_temps()
+    }
+
+    /// A nested block, with its own scope, when nothing wants a value from it.
+    pub(super) fn block_statements(&mut self, stmts: &[Stmt]) -> Result<(), Diagnostic> {
+        self.open_scope();
+        self.statements(stmts)?;
+        self.close_scope()
+    }
+
     /// A nested block, with its own scope.
     pub(super) fn block_tail(&mut self, stmts: &[Stmt]) -> Result<(Option<Value>, Ty), Diagnostic> {
         self.open_scope();
@@ -381,8 +401,8 @@ impl Lowerer<'_, '_> {
             && let Some(known) = self.known_test(cond)
         {
             return match (known, rest, otherwise) {
-                (true, _, _) => self.block_tail(body).map(|_| ()),
-                (false, [], Some(otherwise)) => self.block_tail(otherwise).map(|_| ()),
+                (true, _, _) => self.block_statements(body),
+                (false, [], Some(otherwise)) => self.block_statements(otherwise),
                 (false, [], None) => Ok(()),
                 (false, rest, otherwise) => self.if_stmt(rest, otherwise),
             };
@@ -398,7 +418,7 @@ impl Lowerer<'_, '_> {
             self.b.switch_to_block(then);
             let inner = self.narrow_mark();
             self.narrow(cond, true);
-            self.block_tail(body)?;
+            self.block_statements(body)?;
             self.widen(inner);
             if !self.is_dead() {
                 all_leave = false;
@@ -408,7 +428,7 @@ impl Lowerer<'_, '_> {
             self.narrow(cond, false);
         }
         if let Some(body) = otherwise {
-            self.block_tail(body)?;
+            self.block_statements(body)?;
         }
         if !self.is_dead() {
             self.b.ins().jump(done, &[]);
@@ -432,7 +452,7 @@ impl Lowerer<'_, '_> {
         self.b.ins().brif(test, inside, &[], exit, &[]);
         self.b.switch_to_block(inside);
         self.loops.push(Loop { next: bottom, done: exit, depth: self.scopes.len(), put_back: None });
-        let lowered = self.block_tail(body);
+        let lowered = self.block_statements(body);
         self.loops.pop();
         self.unhoist(hoisted);
         lowered?;
@@ -503,7 +523,7 @@ impl Lowerer<'_, '_> {
         if counts_up {
             self.push_below(at, end);
         }
-        let lowered = self.tail(body);
+        let lowered = self.statements(body);
         if counts_up {
             self.pop_below();
         }
@@ -585,7 +605,7 @@ impl Lowerer<'_, '_> {
         }
         self.drop_temps()?;
         self.loops.push(Loop { next: advance, done: exit, depth, put_back: None });
-        let lowered = self.tail(body);
+        let lowered = self.statements(body);
         self.loops.pop();
         self.unhoist(hoisted);
         lowered?;

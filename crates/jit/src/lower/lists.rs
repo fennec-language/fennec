@@ -416,7 +416,7 @@ impl Lowerer<'_, '_> {
             }
         }
         self.loops.push(super::Loop { next: advance, done: exit, depth, put_back: None });
-        let lowered = self.tail(body);
+        let lowered = self.statements(body);
         self.loops.pop();
         self.unhoist(hoisted);
         lowered?;

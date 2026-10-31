@@ -119,7 +119,7 @@ impl Lowering<'_> {
     }
 
     /// The type of what a place holds, as it's declared.
-    fn steps_type(&self, place: &Place) -> Lowered<Type> {
+    pub(super) fn steps_type(&self, place: &Place) -> Lowered<Type> {
         let mut ty = self.local_type(place.local);
         for step in &place.steps {
             ty = self.step_type(&ty, step)?;

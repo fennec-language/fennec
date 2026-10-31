@@ -299,6 +299,9 @@ impl Lowering<'_> {
         self.branch_unless(failed, fail);
         let Some(inner) = inner else { return Ok(()) };
         if *ok == Type::Unit {
+            if matches!(inner, Pattern::Wildcard) {
+                return Ok(());
+            }
             return Err("it matches what a result of nothing holds".to_owned());
         }
         let dest = self.temporary(ok.clone());

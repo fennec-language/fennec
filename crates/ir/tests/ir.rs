@@ -294,13 +294,14 @@ def fill(mut bag: Bag):
 }
 
 #[test]
-fn the_standard_librarys_fennec_functions_are_listed() {
+fn the_standard_librarys_fennec_functions_come_in_as_theyre_reached() {
     let source = "def starts(text: str) -> bool:
     text.startswith(\"a\")
 ";
     let program = lowered(source).unwrap();
-    assert_eq!(program.external, ["str.startswith"]);
+    assert_eq!(program.external, Vec::<String>::new());
     assert_eq!(program.not_lowered, []);
+    assert!(program.functions.iter().any(|function| function.name == "str.startswith"));
 }
 
 #[test]
@@ -1790,6 +1791,149 @@ fn an_assert_stops_the_program() {
 }
 
 #[test]
+fn a_question_dot_call_runs_only_on_a_value() {
+    let source = "struct P:
+    level: int
+
+    def up(self) -> int:
+        self.level + 1
+
+def f(p: P?) -> int?:
+    p?.up()
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> int?
+  local _0 p: P?
+  local _1: int?
+  local _2: bool
+  local _3 ?.: P
+  local _4: int
+  local _5: int?
+  bb0:
+    _2 = _0 is none
+    branch _2 bb1 bb2
+  bb1:
+    _1 = none
+    jump bb3
+  bb2:
+    _3 = _0 as some
+    _4 = call P.up(_3)
+    _5 = some _4
+    _1 = _5
+    jump bb3
+  bb3:
+    return _1
+"
+    );
+}
+
+#[test]
+fn replace_copies_and_changes_fields() {
+    let source = "struct P:
+    x: int
+    y: int? = None
+
+def f(p: P) -> P:
+    replace(p, y=1)
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> P
+  local _0 p: P
+  local _1: P
+  local _2: int?
+  bb0:
+    _1 = _0
+    _2 = some 1
+    _1.y = _2
+    return _1
+"
+    );
+}
+
+#[test]
+fn a_method_changing_a_name_known_not_to_be_none_writes_back_an_optional() {
+    let source = "struct P:
+    x: int
+
+    def up(mut self):
+        self.x += 1
+
+def f(p: P?) -> P?:
+    mut q = p
+    if q is None:
+        return None
+    q.up()
+    q
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> P?
+  local _0 p: P?
+  local _1 q: P?
+  local _2: bool
+  local _3: P
+  local _4: P?
+  local _5: P
+  local _6: P?
+  bb0:
+    _1 = _0
+    _2 = _1 is none
+    branch _2 bb2 bb3
+  bb1:
+    _3 = _1 as some
+    call P.up(_3)
+    _4 = some _3
+    _1 = _4
+    _5 = _1 as some
+    _6 = some _5
+    return _6
+  bb2:
+    return none
+  bb3:
+    jump bb1
+"
+    );
+}
+
+#[test]
+fn named_arguments_to_builtins_name_the_call() {
+    let source = "from std import json
+
+def f(xs: list[int]) -> str:
+    json.dumps(xs, indent=2)
+";
+    assert_eq!(
+        printed(source, "f").unwrap(),
+        "fn f(_0) -> str
+  local _0 xs: list[int]
+  local _1: str
+  bb0:
+    _1 = builtin json.dumps.indent(_0, 2)
+    return _1
+"
+    );
+}
+
+#[test]
+fn what_std_writes_in_fennec_is_lowered_with_its_types() {
+    let source = "from std.math import Vec3
+
+struct Body:
+    position = Vec3.zero
+
+def f() -> float:
+    (Body().position + Vec3(x=3.0)).length()
+";
+    let program = lowered(source).unwrap();
+    assert_eq!(program.external, Vec::<String>::new());
+    for needed in ["Vec3.zero", "Vec3.+", "Vec3.length", "Vec3.dot"] {
+        assert!(program.functions.iter().any(|function| function.name == needed), "{needed}");
+    }
+}
+
+#[test]
 fn every_example_lowers_to_valid_ir_or_says_why() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut lowered_functions = Vec::new();
@@ -1813,7 +1957,7 @@ fn every_example_lowers_to_valid_ir_or_says_why() {
     }
     // How far lowering has got. This only goes up, until every function lowers.
     println!("{} functions lowered", lowered_functions.len());
-    assert!(lowered_functions.len() >= 257, "only {} functions lowered", lowered_functions.len());
+    assert!(lowered_functions.len() >= 330, "only {} functions lowered", lowered_functions.len());
     for expected in
         ["numbers.fen: fib", "numbers.fen: collatz_steps", "numbers.fen: is_prime", "numbers.fen: lerp"]
     {

@@ -9,21 +9,21 @@ use crate::{BlockId, CaseDef, EnumDef, InstKind, Operand, Terminator};
 
 /// The module's enums the IR can hold: not generic ones, or ones with `where` rules, which
 /// are checked whenever a value is made.
-pub(super) fn definitions(module: &Module, checked: &Checked) -> Vec<EnumDef> {
-    module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Enum(def) if def.generics.is_empty() => {
-                let found = checked.signatures.enumeration(&def.name).filter(|found| !found.rules)?;
-                let cases = found
-                    .cases
-                    .iter()
-                    .map(|(name, fields)| CaseDef { name: name.clone(), fields: fields.clone() })
-                    .collect();
-                Some(EnumDef { name: def.name.clone(), cases })
-            }
-            _ => None,
+pub(super) fn definitions(modules: &[&Module], checked: &Checked) -> Vec<EnumDef> {
+    let mut seen = std::collections::HashSet::new();
+    let defs = modules.iter().flat_map(|module| &module.items).filter_map(|item| match item {
+        Item::Enum(def) if def.generics.is_empty() => Some(def),
+        _ => None,
+    });
+    defs.filter(|def| seen.insert(def.name.as_str()))
+        .filter_map(|def| {
+            let found = checked.signatures.enumeration(&def.name).filter(|found| !found.rules)?;
+            let cases = found
+                .cases
+                .iter()
+                .map(|(name, fields)| CaseDef { name: name.clone(), fields: fields.clone() })
+                .collect();
+            Some(EnumDef { name: def.name.clone(), cases })
         })
         .collect()
 }

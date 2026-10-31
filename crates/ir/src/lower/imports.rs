@@ -17,8 +17,13 @@ pub(super) struct Imports {
 }
 
 pub(super) fn written(module: &Module) -> Imports {
+    of_library(std::slice::from_ref(module))
+}
+
+/// What a group of modules import, all together.
+pub(super) fn of_library(modules: &[Module]) -> Imports {
     let mut imports = Imports::default();
-    for item in &module.items {
+    for item in modules.iter().flat_map(|module| &module.items) {
         let Item::Import(import) = item else { continue };
         if import.module.first().map(String::as_str) != Some("std") {
             continue;
@@ -44,7 +49,18 @@ impl Lowering<'_> {
     /// What the standard library calls a name imported from it: its full name when the
     /// engines provide it, like `math.sqrt`, and its own name when it's written in Fennec.
     pub(super) fn std_member(&self, expr: &Expr) -> Option<String> {
-        let imports = &self.context.imports;
+        let in_library = self.name.split('.').scan(String::new(), |path, part| {
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(part);
+            Some(path.clone())
+        });
+        let imports = if in_library.into_iter().any(|path| self.context.library.contains(path.as_str())) {
+            &self.context.library_imports
+        } else {
+            &self.context.imports
+        };
         let (module, name) = match &expr.kind {
             ExprKind::Name(bound) if self.lookup(bound).is_none() => imports.names.get(bound)?.clone(),
             ExprKind::Attr { object, name, optional: false } => {

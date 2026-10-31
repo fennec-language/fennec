@@ -1,3 +1,5 @@
+# decision: A nested `def` that's only called directly can change the enclosing function's `mut` names.
+
 ## Functions written inside functions, native: each call is the body, right there.
 
 def scaled(items: list[int], factor: int) -> list[int]:

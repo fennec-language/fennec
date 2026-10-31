@@ -11,6 +11,7 @@ mod fallbacks;
 mod fix;
 mod fmt;
 mod lsp;
+mod reference;
 mod repl;
 mod run;
 mod test;
@@ -21,6 +22,7 @@ const USAGE: &str = "usage:
   fennec run [path] [args]  run a kit's main, or a single .fen file's, passing it args
   fennec run --interp [path]  run it with the interpreter instead of compiling it
   fennec build [path] [-o out]  compile it to a standalone executable
+  fennec build --llvm [path] [-o out]  the same through LLVM, for what that backend takes so far
   fennec test [path]        run a kit's tests, or a single file's, skipping unchanged ones that passed
   fennec test --all [path]  run every test
   fennec test --verbose [path]  list the tests that pass too, not only failures and the summary
@@ -49,6 +51,10 @@ fn main() -> ExitCode {
         ["run", "--jit"] => run(run::Engine::NativeNoted, ".", &[]),
         ["run", "--jit", path, arguments @ ..] => run(run::Engine::NativeNoted, path, arguments),
         ["run", path, arguments @ ..] => run(run::Engine::Native, path, arguments),
+        ["build", "--llvm"] => aot::build_llvm(".", None),
+        ["build", "--llvm", "-o", output] => aot::build_llvm(".", Some(output)),
+        ["build", "--llvm", path] => aot::build_llvm(path, None),
+        ["build", "--llvm", path, "-o", output] => aot::build_llvm(path, Some(output)),
         ["build"] => aot::build(".", None),
         ["build", "-o", output] => aot::build(".", Some(output)),
         ["build", path] => aot::build(path, None),
@@ -81,6 +87,8 @@ fn main() -> ExitCode {
         ["dev", "copies", "--run"] => on_big_stack(copies::copies_in_a_run, "."),
         ["dev", "copies", "--run", path] => on_big_stack(copies::copies_in_a_run, path),
         ["dev", "copies", path] => on_big_stack(copies::copies, path),
+        ["dev", "reference"] => reference::reference(false),
+        ["dev", "reference", "--check"] => reference::reference(true),
         ["dev", "changes"] => changes::changes("."),
         ["dev", "changes", path] => changes::changes(path),
         ["--version" | "-V"] => {

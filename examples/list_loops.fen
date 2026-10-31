@@ -1,3 +1,5 @@
+# decision: Indexing gives a place, not a copy.
+
 # Loops over lists that only index them read and change items in place, and copies made
 # before the loop never change.
 

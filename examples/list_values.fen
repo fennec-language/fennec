@@ -1,3 +1,5 @@
+# decision: Collections are values.
+
 ## Lists are values: a copy keeps its items when the original changes, and a `mut`
 ## parameter changes the caller's list.
 

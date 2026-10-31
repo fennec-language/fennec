@@ -22,6 +22,9 @@ const TESTS_PER_WORKER: usize = 16;
 pub struct NativeTests {
     pub outcomes: Vec<TestOutcome>,
     pub left: Vec<String>,
+    /// The program functions each test ran, by their keys, for the tests known to have run
+    /// nothing in the interpreter.
+    pub ran: HashMap<String, Vec<String>>,
 }
 
 /// Runs the tests of a checked `module` named in `wanted`. `program` names the program in
@@ -80,6 +83,7 @@ pub fn run_tests(
     for share in done {
         result.outcomes.extend(share.outcomes);
         result.left.extend(share.left);
+        result.ran.extend(share.ran);
     }
     result
 }
@@ -103,7 +107,7 @@ fn as_function(name: &str, body: &[Stmt], span: Span) -> FnDef {
 }
 
 fn left_alone(share: &[(String, FnDef)]) -> NativeTests {
-    NativeTests { outcomes: Vec::new(), left: share.iter().map(|(name, _)| name.clone()).collect() }
+    NativeTests { left: share.iter().map(|(name, _)| name.clone()).collect(), ..NativeTests::default() }
 }
 
 /// Compiles and runs one worker's tests on this thread. What goes wrong while compiling
@@ -132,14 +136,15 @@ fn run_share(
         share
             .iter()
             .map(|(name, _)| name)
-            .filter(|name| !results.iter().any(|(ran, _)| ran == *name))
+            .filter(|name| !results.iter().any(|(ran, ..)| ran == *name))
             .cloned(),
     );
-    done.outcomes.extend(results.into_iter().map(|(name, failure)| TestOutcome {
-        name,
-        failure: failure.map(test_failure),
-        cases: 1,
-    }));
+    for (name, failure, ran) in results {
+        if let Some(ran) = ran {
+            done.ran.insert(name.clone(), ran);
+        }
+        done.outcomes.push(TestOutcome { name, failure: failure.map(test_failure), cases: 1 });
+    }
     done
 }
 

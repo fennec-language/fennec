@@ -103,6 +103,9 @@ impl Lowerer<'_, '_> {
         }
         self.inlining.push((key.to_owned(), self.scopes.len()));
         let outer_site = self.call_site;
+        if !def.span.in_prelude() {
+            self.mark_ran(key)?;
+        }
         let outer_origin = self.enter_origin(key, &def);
         if self.call_site.is_none() && !span.in_prelude() {
             self.call_site = Some(span);

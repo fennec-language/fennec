@@ -11,9 +11,21 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use fennec_syntax::{Diagnostic, Span};
 
-use super::{Compiled, Failure, Shared, abi, inline, internal};
+use super::{Compiled, Failure, Shared, inline, internal};
 use crate::helpers::{self, Helper};
 use crate::types::{Function, Program, Ty};
+
+/// The machine type a value of `ty` is passed as, if it's passed at all.
+pub(super) fn abi(ty: Ty) -> Option<types::Type> {
+    match ty {
+        Ty::Int | Ty::Obj | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_) => {
+            Some(types::I64)
+        }
+        Ty::Float => Some(types::F64),
+        Ty::Bool => Some(types::I8),
+        Ty::Unit | Ty::Cap(_) | Ty::Known(_) => None,
+    }
+}
 
 pub(super) fn new_module(span: Span) -> Result<JITModule, Diagnostic> {
     let mut flags = settings::builder();

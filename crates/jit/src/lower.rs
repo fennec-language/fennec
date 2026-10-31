@@ -55,7 +55,7 @@ use crate::helpers::Helper;
 use crate::layout::Layouts;
 use crate::runtime::Entry;
 use crate::types::{Function, Program, Ty, unsupported};
-use module::{declare_all, define_entry, new_module, retrying, returns_changes, signature};
+use module::{abi, declare_all, define_entry, new_module, retrying, returns_changes, signature};
 
 /// The message of the internal diagnostic that asks for a function to be lowered again,
 /// this time with a frame.
@@ -124,6 +124,8 @@ pub(super) struct Shared {
     constants: HashMap<String, Expr>,
     /// Where compiled code isn't native.
     notes: Vec<notes::Note>,
+    /// For tests: the flag each program function sets when it runs, by its key.
+    ran: Option<HashMap<String, cranelift_module::DataId>>,
 }
 
 fn internal(err: impl std::fmt::Debug, span: Span) -> Diagnostic {
@@ -201,6 +203,7 @@ impl Shared {
             modules: program.modules.clone(),
             constants: program.constants.clone(),
             notes: Vec::new(),
+            ran: None,
             specialized: HashSet::new(),
             called: HashSet::new(),
         }
@@ -262,17 +265,6 @@ fn compile_bodies(
     }
     shared.cached = cached::generate(module, lowered, shared.cache.as_ref())?;
     Ok(())
-}
-
-fn abi(ty: Ty) -> Option<types::Type> {
-    match ty {
-        Ty::Int | Ty::Obj | Ty::Struct(_) | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_) => {
-            Some(types::I64)
-        }
-        Ty::Float => Some(types::F64),
-        Ty::Bool => Some(types::I8),
-        Ty::Unit | Ty::Cap(_) | Ty::Known(_) => None,
-    }
 }
 
 struct Cx<'a> {
@@ -402,6 +394,9 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         digest,
         globals: HashMap::new(),
     };
+    if !function.prelude {
+        lowerer.mark_ran(&function.key)?;
+    }
     lowerer.prologue(&params)?;
     let (tail, tail_ty) = lowerer.tail(&function.def.body)?;
     if !lowerer.is_dead() {

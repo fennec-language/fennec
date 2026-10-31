@@ -34,6 +34,8 @@ pub(crate) struct Result {
     pub(crate) startup_instructions: Option<u64>,
     pub(crate) previous_instructions: Option<u64>,
     pub(crate) target: Option<Target>,
+    /// The target's instructions from a twin with no overflow checks, for reference only.
+    pub(crate) unchecked: Option<u64>,
     /// How many places in its compiled code aren't native.
     pub(crate) not_native: Option<usize>,
     /// Whether the JIT handed any of it to the interpreter.
@@ -41,6 +43,11 @@ pub(crate) struct Result {
 }
 
 impl Result {
+    /// Its speed against a twin with no overflow checks, which isn't the same work.
+    fn speed_unchecked(&self) -> Option<f64> {
+        Some(as_f64(self.unchecked?) / as_f64(self.work_instructions()?).max(1.0))
+    }
+
     /// The instructions the kernel's work takes, without reaching `main`.
     pub(crate) fn work_instructions(&self) -> Option<u64> {
         Some(self.instructions?.saturating_sub(self.startup_instructions?))
@@ -137,9 +144,9 @@ fn or_dash(value: Option<String>) -> String {
 /// The results as a Markdown table.
 pub(crate) fn table(results: &[Result]) -> String {
     let mut lines = vec![
-        "| Kernel | Startup | Startup instructions | Work | Target time | % by time | Work instructions | Target instructions | % of target | Floor (80%) | Not native | Previous commit | Instructions vs previous |"
+        "| Kernel | Startup | Startup instructions | Work | Target time | % by time | Work instructions | Target instructions | % of target | Floor (80%) | Not native | Previous commit | Instructions vs previous | % without overflow checks, for reference only |"
             .to_owned(),
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|".to_owned(),
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|".to_owned(),
     ];
     for result in results {
         let floor = match (result.speed(), result.target.as_ref().is_some_and(|target| target.enforced)) {
@@ -156,7 +163,7 @@ pub(crate) fn table(results: &[Result]) -> String {
         let extra = result.extra_instructions().map(|extra| format!("{:+.1}%", extra * 100.0));
         let fell_back = if result.fell_back { " (partly interpreted)" } else { "" };
         lines.push(format!(
-            "| {} | {} | {} | {}{fell_back} | {} | {} | {} | {} | {} | {floor} | {} | {previous} | {} |",
+            "| {} | {} | {} | {}{fell_back} | {} | {} | {} | {} | {} | {floor} | {} | {previous} | {} | {} |",
             result.kernel,
             millis(result.startup),
             or_dash(result.startup_instructions.map(millions)),
@@ -168,6 +175,7 @@ pub(crate) fn table(results: &[Result]) -> String {
             or_dash(result.speed().map(percent)),
             or_dash(result.not_native.map(|count| count.to_string())),
             or_dash(extra),
+            or_dash(result.speed_unchecked().map(percent)),
         ));
     }
     lines.join("\n") + "\n"

@@ -533,6 +533,80 @@ fn run_outside_a_kit_says_how_to_start_one() {
     assert!(stderr.contains("fennec new"), "{stderr}");
 }
 
+/// Every command the guidance tells an agent to run has to exist.
+#[test]
+fn the_guidance_names_only_commands_there_are() {
+    let usage = text(&fennec(&["no such command"], "").unwrap().stderr);
+    let mut named = 0;
+    for part in fennec_kit::GUIDANCE.split("`fennec ").skip(1) {
+        let command = part.split([' ', '`']).next().unwrap();
+        assert!(usage.contains(&format!("fennec {command}")), "`fennec {command}` isn't a command");
+        named += 1;
+    }
+    assert!(named >= 4, "{named}");
+}
+
+/// The guidance's example is what `fennec fmt` writes, and it runs, tests and all.
+#[test]
+fn the_guidance_shows_a_formatted_program_that_works() {
+    let source = fennec_kit::GUIDANCE.split("```fennec\n").nth(1).unwrap().split("```").next().unwrap();
+    let dir = scratch("guidance").unwrap();
+    let program = dir.join("guidance.fen");
+    std::fs::write(&program, source).unwrap();
+    let path = program.to_string_lossy();
+    for args in [&["fmt", "--check", &path][..], &["run", &path], &["test", &path]] {
+        let output = fennec(args, "").unwrap();
+        assert!(output.status.success(), "{args:?}: {}", text(&output.stderr));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn init_in_a_new_folder_makes_a_kit_with_guidance() {
+    let dir = scratch("init_new").unwrap();
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    let made = fennec_in(&dir, &["init"], "").unwrap();
+    assert!(made.status.success(), "{}", text(&made.stderr));
+    assert!(text(&made.stdout).contains("added Fennec's guidance"), "{}", text(&made.stdout));
+    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), fennec_kit::GUIDANCE);
+    let run = fennec_in(&dir, &["run"], "").unwrap();
+    let test = fennec_in(&dir, &["test"], "").unwrap();
+    assert!(run.status.success(), "{}", text(&run.stderr));
+    assert!(test.status.success(), "{}", text(&test.stderr));
+
+    // Now it's an existing project: nothing but the guidance is looked at again.
+    let again = fennec_in(&dir, &["init"], "").unwrap();
+    assert_eq!(text(&again.stdout), "Fennec's guidance in AGENTS.md is already current\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn init_in_an_existing_project_only_touches_the_block() {
+    let dir = scratch("init_existing").unwrap();
+    std::fs::write(dir.join("README.md"), "mine\n").unwrap();
+    std::fs::write(dir.join("AGENTS.md"), "# Mine\n").unwrap();
+    let added = fennec_in(&dir, &["init"], "").unwrap();
+    assert!(added.status.success(), "{}", text(&added.stderr));
+    assert_eq!(text(&added.stdout), "added Fennec's guidance to AGENTS.md\n");
+    assert!(!dir.join("kit.toml").exists());
+    let written = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert_eq!(written, format!("# Mine\n\n{}", fennec_kit::GUIDANCE));
+
+    let stale = written.replace("## Fennec", "## Old");
+    std::fs::write(dir.join("AGENTS.md"), stale).unwrap();
+    let refreshed = fennec_in(&dir, &["init"], "").unwrap();
+    assert_eq!(text(&refreshed.stdout), "refreshed Fennec's guidance in AGENTS.md\n");
+    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), written);
+
+    std::fs::write(dir.join("AGENTS.md"), "<!-- fennec:start -->\nno end\n").unwrap();
+    let broken = fennec_in(&dir, &["init"], "").unwrap();
+    assert_eq!(broken.status.code(), Some(1));
+    assert!(text(&broken.stderr).contains("left alone"), "{}", text(&broken.stderr));
+    let kept = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert_eq!(kept, "<!-- fennec:start -->\nno end\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn new_makes_a_kit_that_runs_and_passes_its_tests() {
     let dir = scratch("new").unwrap();

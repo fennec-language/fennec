@@ -1,4 +1,4 @@
-//! `fennec new`: a starter kit to build on.
+//! `fennec new` and `fennec init`: a starter kit to build on.
 
 use std::path::Path;
 
@@ -15,9 +15,17 @@ pub fn create(dir: &Path) -> Result<String, String> {
     if dir.exists() {
         return Err(format!("{} already exists", dir.display()));
     }
+    write(dir, &name)?;
+    std::fs::write(dir.join("AGENTS.md"), crate::GUIDANCE)
+        .map_err(|err| format!("couldn't write {}: {err}", dir.join("AGENTS.md").display()))?;
+    Ok(name)
+}
+
+/// Writes a kit called `name` into `dir`, which needn't exist yet.
+pub(crate) fn write(dir: &Path, name: &str) -> Result<(), String> {
     let files = [
-        ("kit.toml", manifest(&name)),
-        ("src/main.fen", MAIN.replace("NAME", &name)),
+        ("kit.toml", manifest(name)),
+        ("src/main.fen", MAIN.replace("NAME", name)),
         ("src/greeting.fen", GREETING.to_owned()),
     ];
     for (path, text) in files {
@@ -28,7 +36,7 @@ pub fn create(dir: &Path) -> Result<String, String> {
         };
         written.map_err(|err| format!("couldn't write {}: {err}", path.display()))?;
     }
-    Ok(name)
+    Ok(())
 }
 
 fn manifest(name: &str) -> String {

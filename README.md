@@ -57,7 +57,7 @@ cargo run -q -p fennec -- test examples/testing.fen
 cargo run -q -p fennec -- repl
 ```
 
-A program can span several files as a kit: a folder with a `kit.toml` and its code under `src`. `fennec new my_game` starts one, and `fennec run` and `fennec test` with no file run the kit around the current folder.
+A program can span several files as a kit: a folder with a `kit.toml` and its code under `src`. `fennec new my_game` starts one, `fennec init` sets up the current folder and adds Fennec's guidance for coding agents to its `AGENTS.md`, and `fennec run` and `fennec test` with no file run the kit around the current folder.
 
 ```bash
 cargo run -q -p fennec -- run examples/projects/arena

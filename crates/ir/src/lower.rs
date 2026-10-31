@@ -1,6 +1,7 @@
 //! Lowering a checked module to the IR, one function at a time. The types come from the
 //! checker's typed tree, never from working them out again.
 
+mod matching;
 mod structs;
 
 use std::collections::{HashMap, HashSet};
@@ -9,16 +10,18 @@ use fennec_check::{Body, Checked, Type};
 use fennec_syntax::{BinOp, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, UnaryOp};
 
 use crate::{
-    Block, BlockId, Function, Inst, InstKind, Local, LocalId, NotLowered, Operand, Program, Terminator,
-    type_in,
+    Block, BlockId, EnumDef, Function, Inst, InstKind, Local, LocalId, NotLowered, Operand, Program,
+    Terminator, type_in,
 };
 
 /// Lowers a module's functions and methods. The standard library's aren't included.
 pub fn lower(module: &Module, checked: &Checked) -> Program {
     let functions = definitions(module);
     let defs = structs::definitions(module, checked);
+    let enums = matching::definitions(module, checked);
     let context = Context {
         checked,
+        enums: enums.iter().map(|def| (def.name.as_str(), def)).collect(),
         functions: functions.iter().map(|(key, _)| key.as_str()).collect(),
         structs: defs.iter().map(|def| def.name.as_str()).collect(),
     };
@@ -30,6 +33,7 @@ pub fn lower(module: &Module, checked: &Checked) -> Program {
         }
     }
     program.structs = defs;
+    program.enums = enums;
     program
 }
 
@@ -65,6 +69,17 @@ struct Open {
     end: Option<Terminator>,
 }
 
+/// What becomes of the value of the last statement of a block.
+#[derive(Clone, Copy)]
+enum Tail {
+    /// Nothing keeps it.
+    Drop,
+    /// The function gives it back.
+    Return,
+    /// It's the value of a `match`, kept in this local.
+    Into(LocalId),
+}
+
 /// Where `break` and `continue` go.
 struct Loop {
     next: BlockId,
@@ -74,6 +89,8 @@ struct Loop {
 /// What's known about the whole program.
 struct Context<'a> {
     checked: &'a Checked,
+    /// The program's enums that the IR can hold.
+    enums: HashMap<&'a str, &'a EnumDef>,
     /// The keys of the program's functions and methods.
     functions: HashSet<&'a str>,
     /// The names of the program's structs that the IR can hold.
@@ -85,7 +102,9 @@ impl Context<'_> {
     fn holds(&self, ty: &Type) -> bool {
         match ty {
             Type::Int | Type::Float | Type::Bool | Type::Str => true,
-            Type::Named(name) => self.structs.contains(name.as_str()),
+            Type::Named(name) => {
+                self.structs.contains(name.as_str()) || self.enums.contains_key(name.as_str())
+            }
             _ => false,
         }
     }
@@ -138,7 +157,8 @@ impl<'a> Lowering<'a> {
             }
             lowering.declare(&param.name, param.ty.clone());
         }
-        lowering.stmts(&def.body, true)?;
+        let tail = if lowering.returns == Type::Unit { Tail::Drop } else { Tail::Return };
+        lowering.stmts(&def.body, tail)?;
         // A function with a return type has already returned, or the checker would object.
         let end =
             if lowering.returns == Type::Unit { Terminator::Return(None) } else { Terminator::Unreachable };
@@ -202,31 +222,27 @@ impl<'a> Lowering<'a> {
     }
 
     /// Lowers statements in order. Code after leaving early never runs, so it's skipped.
-    /// `tail` says the value of the last one is what the function gives back.
-    fn stmts(&mut self, stmts: &[Stmt], tail: bool) -> Lowered<()> {
+    /// `tail` says what becomes of the value of the last one.
+    fn stmts(&mut self, stmts: &[Stmt], tail: Tail) -> Lowered<()> {
         for (at, stmt) in stmts.iter().enumerate() {
             if !self.is_open() {
                 break;
             }
-            self.stmt(stmt, tail && at + 1 == stmts.len())?;
+            self.stmt(stmt, if at + 1 == stmts.len() { tail } else { Tail::Drop })?;
         }
         Ok(())
     }
 
-    fn block(&mut self, stmts: &[Stmt], tail: bool) -> Lowered<()> {
+    fn block(&mut self, stmts: &[Stmt], tail: Tail) -> Lowered<()> {
         self.scopes.push(HashMap::new());
         let lowered = self.stmts(stmts, tail);
         self.scopes.pop();
         lowered
     }
 
-    fn stmt(&mut self, stmt: &Stmt, tail: bool) -> Lowered<()> {
+    fn stmt(&mut self, stmt: &Stmt, tail: Tail) -> Lowered<()> {
         match &stmt.kind {
-            StmtKind::Expr(expr) if tail && self.returns != Type::Unit => {
-                let value = self.expr(expr)?;
-                self.finish(Terminator::Return(Some(value)));
-            }
-            StmtKind::Expr(expr) => self.effect(expr)?,
+            StmtKind::Expr(expr) => self.tail_expr(expr, tail)?,
             StmtKind::Assign { target, op, value, ty: _, declare_mut: _ } => {
                 self.assign(target, *op, value, stmt.span)?;
             }
@@ -248,6 +264,26 @@ impl<'a> Lowering<'a> {
             StmtKind::Assert(_) => return Err("it has `assert`".to_owned()),
             StmtKind::With { .. } => return Err("it has `with`".to_owned()),
             StmtKind::Def(_) => return Err("it has a nested function".to_owned()),
+        }
+        Ok(())
+    }
+
+    /// An expression statement, with what becomes of its value. Each case of a `match`
+    /// passes its own value on the same way.
+    fn tail_expr(&mut self, expr: &Expr, tail: Tail) -> Lowered<()> {
+        if let ExprKind::Match { subject, arms } = &expr.kind {
+            return self.match_expr(subject, arms, tail);
+        }
+        match tail {
+            Tail::Drop => self.effect(expr)?,
+            Tail::Return => {
+                let value = self.expr(expr)?;
+                self.finish(Terminator::Return(Some(value)));
+            }
+            Tail::Into(dest) => {
+                let value = self.expr(expr)?;
+                self.emit(InstKind::Copy { dest, value }, expr.span);
+            }
         }
         Ok(())
     }
@@ -281,7 +317,7 @@ impl<'a> Lowering<'a> {
         &mut self,
         branches: &[(Expr, Vec<Stmt>)],
         otherwise: Option<&[Stmt]>,
-        tail: bool,
+        tail: Tail,
     ) -> Lowered<()> {
         let join = self.new_block();
         for (cond, body) in branches {
@@ -315,7 +351,7 @@ impl<'a> Lowering<'a> {
         }
         self.current = then;
         self.loops.push(Loop { next: head, exit });
-        let lowered = self.block(body, false);
+        let lowered = self.block(body, Tail::Drop);
         self.loops.pop();
         lowered?;
         self.finish(Terminator::Jump(head));
@@ -354,7 +390,7 @@ impl<'a> Lowering<'a> {
         let item = self.declare(name, Type::Int);
         self.emit(InstKind::Copy { dest: item, value: Operand::Local(count) }, span);
         self.loops.push(Loop { next, exit });
-        let lowered = self.stmts(body, false);
+        let lowered = self.stmts(body, Tail::Drop);
         self.loops.pop();
         self.scopes.pop();
         lowered?;
@@ -402,6 +438,7 @@ impl<'a> Lowering<'a> {
     fn effect(&mut self, expr: &Expr) -> Lowered<()> {
         if let ExprKind::Call { callee, args } = &expr.kind
             && self.constructs(callee).is_none()
+            && self.built_case(expr).is_none()
         {
             let (function, args) = self.call_parts(callee, args)?;
             self.emit(InstKind::Call { dest: None, function, args }, expr.span);
@@ -412,6 +449,9 @@ impl<'a> Lowering<'a> {
 
     fn expr(&mut self, expr: &Expr) -> Lowered<Operand> {
         let span = expr.span;
+        if let Some((owner, case, args)) = self.built_case(expr) {
+            return self.make_case(&owner, case, args, span);
+        }
         match &expr.kind {
             ExprKind::Int(value) => Ok(Operand::Int(*value)),
             ExprKind::Float(value) => Ok(Operand::Float(*value)),
@@ -436,6 +476,11 @@ impl<'a> Lowering<'a> {
             }
             ExprKind::Cond { then, cond, otherwise } => self.conditional(expr, (then, cond, otherwise)),
             ExprKind::Attr { object, name, optional: false } => self.get_field(expr, object, name),
+            ExprKind::Match { subject, arms } => {
+                let dest = self.temporary(self.ty(expr)?);
+                self.match_expr(subject, arms, Tail::Into(dest))?;
+                Ok(Operand::Local(dest))
+            }
             ExprKind::Call { callee, args } => {
                 if let Some(type_name) = self.constructs(callee) {
                     return self.make(type_name, args, span);
@@ -531,7 +576,6 @@ fn describe(kind: &ExprKind) -> &'static str {
         ExprKind::Attr { .. } => "a field or method",
         ExprKind::Index { .. } | ExprKind::Slice { .. } => "indexing",
         ExprKind::Lambda { .. } => "an arrow function",
-        ExprKind::Match { .. } => "`match`",
         _ => "something that isn't lowered yet",
     }
 }

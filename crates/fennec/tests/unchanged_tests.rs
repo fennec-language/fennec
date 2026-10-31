@@ -79,7 +79,7 @@ fn a_failing_test_runs_every_time_and_a_break_is_never_hidden() {
 }
 
 #[test]
-fn ci_runs_every_test() {
+fn ci_reuses_what_passed_like_anywhere_else() {
     let dir = scratch("ci").unwrap();
     run_tests(&dir, &[]).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_fennec"))
@@ -90,7 +90,7 @@ fn ci_runs_every_test() {
         .env_remove("FENNEC_NO_CACHE")
         .output()
         .unwrap();
-    assert_eq!(stdout(&output), "2 passed, 0 failed\n");
+    assert_eq!(stdout(&output), "2 passed, 0 failed (0 run, 2 unchanged)\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

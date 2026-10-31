@@ -172,6 +172,8 @@ struct Lowering<'a> {
     leaving: Vec<places::Leaving>,
     /// The closures' functions lifted out of this one.
     lifted: Vec<Function>,
+    /// What a generator has yielded so far.
+    yielded: Option<LocalId>,
 }
 
 impl<'a> Lowering<'a> {
@@ -188,6 +190,7 @@ impl<'a> Lowering<'a> {
             loops: Vec::new(),
             leaving: Vec::new(),
             lifted: Vec::new(),
+            yielded: None,
         }
     }
 
@@ -203,9 +206,6 @@ impl<'a> Lowering<'a> {
         let body = context.checked.types.body(key).ok_or("it has no types")?;
         if !def.generics.is_empty() {
             return Err("it's generic".to_owned());
-        }
-        if signature.generator {
-            return Err("it's a generator".to_owned());
         }
         if signature.returns != Type::Unit && !context.holds(&signature.returns) {
             return Err(format!("it gives back {}", signature.returns));
@@ -223,8 +223,12 @@ impl<'a> Lowering<'a> {
         if let Some(ty) = itself {
             lowering.bind_itself(key, &def.name, ty, captures.len(), def.span);
         }
-        let tail = if lowering.returns == Type::Unit { Tail::Drop } else { Tail::Return };
-        lowering.stmts(&def.body, tail)?;
+        if signature.generator {
+            let items = lowering.generator_items()?;
+            lowering.yielded = Some(items);
+        }
+        let plain = lowering.returns == Type::Unit || signature.generator;
+        lowering.stmts(&def.body, if plain { Tail::Drop } else { Tail::Return })?;
         lowering.end_function(def.span)?;
         let mut_params = signature
             .params
@@ -336,7 +340,7 @@ impl<'a> Lowering<'a> {
                 self.for_stmt((names, *is_mut), iter, body, stmt.span)?;
             }
             StmtKind::Fail(error) => self.fail(error, stmt.span)?,
-            StmtKind::Yield(_) => return Err("it has `yield`".to_owned()),
+            StmtKind::Yield(value) => self.yield_value(value, stmt.span)?,
             StmtKind::Assert(_) => return Err("it has `assert`".to_owned()),
             StmtKind::With { .. } => return Err("it has `with`".to_owned()),
             StmtKind::Def(def) => self.nested(def, stmt.span)?,
@@ -496,6 +500,7 @@ impl<'a> Lowering<'a> {
             }
             ExprKind::Cond { then, cond, otherwise } => self.conditional(expr, (then, cond, otherwise)),
             ExprKind::Attr { object, name, optional: false } => self.get_field(expr, object, name),
+            ExprKind::Attr { object, name, optional: true } => self.optional_field(expr, object, name),
             ExprKind::Match { subject, arms } => {
                 let dest = self.temporary(self.ty(expr)?);
                 self.match_expr(subject, arms, Tail::Into(dest))?;

@@ -154,7 +154,17 @@ impl Lowering<'_> {
             Pattern::Variant { name, dotted, args } => {
                 return self.variant((name, *dotted, args), (value, ty), fail, span);
             }
-            Pattern::Tuple(_) => return Err("it matches a tuple".to_owned()),
+            Pattern::Tuple(parts) => {
+                let Type::Tuple(types) = ty else { return Err(format!("it matches a tuple on {ty}")) };
+                for (at, (part, part_ty)) in parts.iter().zip(types).enumerate() {
+                    if matches!(part, Pattern::Wildcard) {
+                        continue;
+                    }
+                    let dest = self.temporary(part_ty.clone());
+                    self.emit(InstKind::GetTupleItem { dest, value: value.clone(), at }, span);
+                    self.pattern(part, &Operand::Local(dest), part_ty, fail, span)?;
+                }
+            }
         }
         Ok(())
     }

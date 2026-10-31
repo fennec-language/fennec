@@ -166,6 +166,17 @@ impl Lowering<'_> {
             Type::Set(item) | Type::Dict(item, _) => (Type::List(item.clone()), *item.clone(), Some("list")),
             Type::Bytes => (Type::List(Box::new(Type::Int)), Type::Int, Some("list")),
             Type::Named(name) if name == "Args" => (Type::List(Box::new(Type::Str)), Type::Str, Some("list")),
+            Type::Named(name) => {
+                let function = format!("{name}.iter");
+                let found = self.context.checked.signatures.get(&function);
+                let list = found.map(|found| found.returns.clone());
+                let Some(Type::List(item)) = list else {
+                    return Err(format!("it has a `for` loop over {name}"));
+                };
+                let items = self.temporary(Type::List(item.clone()));
+                self.emit(InstKind::Call { dest: Some(items), function, args: vec![value] }, span);
+                return self.count_through(names, (items, *item), back, span, body);
+            }
             other => return Err(format!("it has a `for` loop over {other}")),
         };
         let items = self.temporary(held);
@@ -181,6 +192,21 @@ impl Lowering<'_> {
             },
             span,
         );
+        self.count_through(names, (items, item), back, span, body)
+    }
+
+    /// Goes through a list held in a local of its own.
+    fn count_through<F>(
+        &mut self,
+        names: &[String],
+        (items, item): (LocalId, Type),
+        back: Option<Place>,
+        span: Span,
+        body: F,
+    ) -> Lowered<()>
+    where
+        F: FnOnce(&mut Self) -> Lowered<()>,
+    {
         let limit = self.temporary(Type::Int);
         let args = vec![Operand::Local(items)];
         let kind = InstKind::Builtin { dest: Some(limit), name: "list.len".to_owned(), args, changes: false };

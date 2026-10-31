@@ -1,3 +1,5 @@
+# decision: `int(text)` and `float(text)` fail with `InvalidValue`
+
 from std.math import PI, ceil, cos, floor, sin, sqrt
 
 def square(n: int) -> int:

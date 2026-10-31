@@ -1,3 +1,5 @@
+# decision: A generator is a lazy stream, used once.
+
 # A generator gives its items one at a time, as they're asked for. It can be used once.
 
 error TooBig:

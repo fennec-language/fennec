@@ -1,3 +1,5 @@
+# decision: Imports bind names exactly as in Python.
+
 ## The three ways to import, as in Python.
 
 # `import std.collections` binds `std`: write `std.collections.Deque`.

@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use kernels::Kernel;
-use measure::{Counter, time_together};
+use measure::{Counter, Overflow, time_together};
 use report::Result;
 use targets::{Target, Targets};
 
@@ -199,9 +199,10 @@ fn pin(options: &Options) -> std::result::Result<(), String> {
     let path = targets::path(&options.targets);
     let before = targets::read(&path)?;
     let mut pinned = Targets::new();
+    let mut unchecked = Targets::new();
     for kernel in &kernels {
         eprintln!("pinning {}", kernel.name);
-        let twin = kernel.twin(&options.fennec, &out_dir)?;
+        let twin = kernel.twin(&options.fennec, &out_dir, Overflow::Checked)?;
         let printed = time_together(&[twin, kernel.run(&options.fennec)], 1)?;
         let [twin_timing, ours] = printed.as_slice() else { return Err("nothing was run".to_owned()) };
         if kernel.output_hash(&ours.output) != kernels::hash(&twin_timing.output) {
@@ -210,7 +211,7 @@ fn pin(options: &Options) -> std::result::Result<(), String> {
                 kernel.name, ours.output, twin_timing.output
             ));
         }
-        let twin = kernel.twin(&options.fennec, &out_dir)?;
+        let twin = kernel.twin(&options.fennec, &out_dir, Overflow::Checked)?;
         let instructions = counter.count(&twin).ok_or_else(|| format!("couldn't count {}", kernel.name))?;
         let timed = time_together(&[twin], PIN_RUNS)?;
         let micros =
@@ -218,9 +219,21 @@ fn pin(options: &Options) -> std::result::Result<(), String> {
         let enforced = before.get(&kernel.name).is_some_and(|target| target.enforced);
         let output = kernel.output_hash(&ours.output);
         let source = kernel.source_hash()?;
+        let plain = kernel.twin(&options.fennec, &out_dir, Overflow::Unchecked)?;
+        let plain = counter.count(&plain).ok_or_else(|| format!("couldn't count {}", kernel.name))?;
+        let reference = Target {
+            instructions: plain,
+            micros: 0,
+            output: output.clone(),
+            source: source.clone(),
+            enforced: false,
+        };
+        unchecked.insert(kernel.name.clone(), reference);
         pinned.insert(kernel.name.clone(), Target { instructions, micros, output, source, enforced });
     }
-    targets::write(&path, &pinned, &measure::rustc_version()?)?;
+    let compiler = measure::rustc_version()?;
+    targets::write(&path, &pinned, &compiler)?;
+    targets::write(&targets::unchecked_path(&options.targets), &unchecked, &compiler)?;
     println!("pinned {} kernels in {}", pinned.len(), path.display());
     Ok(())
 }
@@ -229,6 +242,7 @@ fn pin(options: &Options) -> std::result::Result<(), String> {
 fn suite(options: &Options) -> std::result::Result<Found, String> {
     let (out_dir, kernels) = prepared(options)?;
     let targets = targets::read(&targets::path(&options.targets))?;
+    let unchecked = targets::read(&targets::unchecked_path(&options.targets))?;
     if targets.is_empty() {
         eprintln!("no targets for {} yet: `fennec-bench pin` measures them", std::env::consts::ARCH);
     }
@@ -247,7 +261,8 @@ fn suite(options: &Options) -> std::result::Result<Found, String> {
     for kernel in &kernels {
         eprintln!("running {}", kernel.name);
         let target = targets.get(&kernel.name);
-        match run_kernel(kernel, options, options.runs, counter.as_ref(), target) {
+        let plain = unchecked.get(&kernel.name).map(|target| target.instructions);
+        match run_kernel(kernel, options, options.runs, counter.as_ref(), (target, plain)) {
             Ok(result) => {
                 found.slowdowns.extend(result.failure());
                 found.errors.extend(result.below_floor());
@@ -290,7 +305,7 @@ fn run_kernel(
     options: &Options,
     runs: usize,
     counter: Option<&Counter>,
-    target: Option<&Target>,
+    (target, unchecked): (Option<&Target>, Option<u64>),
 ) -> std::result::Result<Result, String> {
     let mut programs = vec![kernel.run(&options.fennec), kernel.startup(&options.fennec)];
     let previous = options.previous.as_deref().filter(|previous| {
@@ -318,6 +333,7 @@ fn run_kernel(
         previous_instructions: None,
         not_native: kernel.not_native(&options.fennec),
         target: target.cloned(),
+        unchecked,
         fell_back: ours.notes.contains("using the interpreter"),
     };
     if result.failure().is_some() {
@@ -328,7 +344,7 @@ fn run_kernel(
             }
             _ if runs == options.runs => {
                 eprintln!("measuring {} again", kernel.name);
-                return run_kernel(kernel, options, runs * 3, counter, target);
+                return run_kernel(kernel, options, runs * 3, counter, (target, unchecked));
             }
             _ => {}
         }

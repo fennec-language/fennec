@@ -23,6 +23,7 @@ fennec-fmt.workspace = true
 fennec-interp.workspace = true
 fennec-ir.workspace = true
 fennec-jit.workspace = true
+fennec-llvm.workspace = true
 fennec-kit.workspace = true
 fennec-lsp.workspace = true
 fennec-syntax.workspace = true

@@ -144,7 +144,7 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 Benchmarks do realistic work that neither side's optimizer can delete.
 
-"Fully optimized" means optimization level 3, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. Twins are built for x86-64-v3 on x86-64 and for the baseline CPU on Arm, so their counts are reproducible and don't hold the twin back against a JIT that uses the running CPU's features.
+"Fully optimized" means optimization level 3, fat link-time optimization, one codegen unit, abort on panic and no debug assertions, with overflow checks on. Fennec always checks for overflow, so the target does the same work. Numbers against twins without those checks are kept in the benchmark reports for reference, labeled as such. Twins are built for x86-64-v3 on x86-64 and for the baseline CPU on Arm, so their counts are reproducible and don't hold the twin back against a JIT that uses the running CPU's features.
 
 Where a twin's standard library choice measures something Fennec doesn't do, like a slower default hash in `dicts`, the target uses a twin with the same hash as Fennec, and the standard default is shown as a separately labeled number.
 *Why:* The whole 20-benchmark suite meeting these targets shows the language's fundamentals carry well.

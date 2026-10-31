@@ -415,6 +415,7 @@ pub enum BinOp {
     ShiftLeft,
     /// `a >> n`: the sign is kept, so it rounds down.
     ShiftRight,
+<<<<<<< HEAD
 }
 
 impl Expr {
@@ -430,6 +431,8 @@ impl Expr {
             _ => false,
         }
     }
+=======
+>>>>>>> origin/main
 }
 
 impl BinOp {

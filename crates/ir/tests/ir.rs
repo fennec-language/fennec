@@ -1346,6 +1346,15 @@ fn a_key_goes_last_and_names_the_call() {
     return _2
 "
     );
+fn a_tuple_of_one_type_and_the_arguments_index_by_a_value() {
+    let source = "def f(pair: (int, int), at: int) -> int:
+    pair[at]
+
+def g(args: Args, at: int) -> str:
+    args[at]
+";
+    assert!(printed(source, "f").unwrap().contains("= _0[_1]"));
+    assert!(printed(source, "g").unwrap().contains("= _0[_1]"));
 }
 
 #[test]

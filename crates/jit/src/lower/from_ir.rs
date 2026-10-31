@@ -68,7 +68,7 @@ fn writes(ir: &Function) -> Vec<usize> {
             InstKind::Copy { dest, .. } | InstKind::Unary { dest, .. } | InstKind::Binary { dest, .. } => {
                 Some(dest)
             }
-            InstKind::Call { dest, .. } => dest.as_ref(),
+            InstKind::Call { dest, .. } | InstKind::Builtin { dest, .. } => dest.as_ref(),
             _ => None,
         };
         if let Some(count) = dest.and_then(|dest| writes.get_mut(dest.0)) {
@@ -88,6 +88,14 @@ fn plain(ty: &Type) -> Option<Ty> {
     }
 }
 
+/// The name the JIT knows a builtin on numbers by.
+fn number_builtin_name(name: &str) -> &str {
+    match name {
+        "int.abs" | "float.abs" => "abs",
+        _ => name.strip_prefix("math.").unwrap_or(name),
+    }
+}
+
 /// Whether the IR path can lower this instruction. A call has to be to a function that's
 /// called the plain way, with a value for each parameter.
 fn takes(inst: &InstKind, function: &Function, shared: &Shared) -> bool {
@@ -101,6 +109,17 @@ fn takes(inst: &InstKind, function: &Function, shared: &Shared) -> bool {
             Some(Type::Bool) => matches!(op, BinOp::Eq | BinOp::NotEq),
             _ => false,
         },
+        InstKind::Builtin { dest: Some(_), name, args, changes: false } => {
+            let types: Vec<_> = args.iter().map(|arg| function.type_of(arg)).collect();
+            matches!(
+                (number_builtin_name(name), types.as_slice()),
+                ("min" | "max", [Some(Type::Int), Some(Type::Int)] | [Some(Type::Float), Some(Type::Float)])
+                    | (
+                        "float" | "int" | "sqrt" | "floor" | "ceil" | "sin" | "cos" | "abs",
+                        [Some(Type::Int | Type::Float)]
+                    )
+            )
+        }
         InstKind::Call { function: callee, args, .. } => {
             shared.compiled.get(callee).is_some_and(|compiled| {
                 compiled.inline.is_none()
@@ -225,6 +244,21 @@ impl Lowerer<'_, '_> {
                 let result = self.binary(*op, (Some(lhs), ty), (Some(rhs), ty), span);
                 let value = result.and_then(|(value, _)| value);
                 let value = value.ok_or_else(|| internal("an operator gave nothing", span))?;
+                self.set_from_ir(*dest, value, vars, span)
+            }
+            InstKind::Builtin { dest: Some(dest), name, args, .. } => {
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    let ty = operand_type(arg, vars, span)?;
+                    values.push((Some(self.operand_from_ir(arg, vars, span)?), ty));
+                }
+                let name = number_builtin_name(name);
+                let result = match (name, values.first()) {
+                    ("abs", Some(only)) => self.absolute_number(*only, span),
+                    _ => self.number_builtin(name, &values, span)?,
+                };
+                let (value, _) =
+                    result.ok_or_else(|| internal("a builtin the IR path doesn't take", span))?;
                 self.set_from_ir(*dest, value, vars, span)
             }
             InstKind::Call { dest, function, args } => {

@@ -7,7 +7,7 @@ import data from '../data/benchmarks.json';
 const base = import.meta.env.BASE_URL;
 const themes = { light: 'vitesse-light', dark: 'vitesse-dark' } as const;
 const { ci, builds, targets } = data;
-const percents = ci.kernels.filter((kernel) => !kernel.default_hash).map((kernel) => kernel.percent);
+const percents = ci.kernels.map((kernel) => kernel.percent);
 const low = Math.round(Math.min(...percents));
 const high = Math.round(Math.max(...percents));
 

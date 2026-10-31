@@ -5,8 +5,7 @@ import data from '../data/benchmarks.json';
 const base = import.meta.env.BASE_URL;
 const { ci, builds, targets } = data;
 const kernels = ci.kernels;
-const counted = kernels.filter((kernel) => !kernel.default_hash);
-const met = counted.filter((kernel) => kernel.percent >= targets.jit).length;
+const met = kernels.filter((kernel) => kernel.percent >= targets.jit).length;
 // The bars run past 100%, since release builds aim beyond the target.
 const scale = 125;
 const at = (percent: number) => `${(percent / scale) * 100}%`;
@@ -33,7 +32,7 @@ const at = (percent: number) => `${(percent / scale) * 100}%`;
       {
         kernels.map((kernel) => (
           <div class="tr">
-            <span class="name">{kernel.name}{kernel.default_hash && <small> with a standard default hash</small>}</span>
+            <span class="name">{kernel.name}</span>
             <span class="num">{kernel.startup_ms.toFixed(1)} ms</span>
             <span class="num">{kernel.work_ms.toFixed(1)} ms</span>
             <span class="bar-cell">
@@ -50,7 +49,7 @@ const at = (percent: number) => `${(percent / scale) * 100}%`;
       }
     </div>
     <p class="note">
-      {met} of {counted.length} kernels are at the JIT's target. The second <code>dicts</code> row compares with a target using a slower, attack-resistant default hash, so it isn't counted. From commit <code>{ci.commit}</code> on {ci.date}, on {ci.machine}. Speed is counted in instructions, which barely move when a machine is busy, so it can differ from the times shown. Times are medians of repeated runs, and they move by several percent between runs. Once a kernel reaches the JIT's target, CI fails if it drops below.
+      {met} of {kernels.length} kernels are at the JIT's target. Against a target using a slower, attack-resistant default hash instead, <code>dicts</code> reaches {ci.dicts_default_hash_percent.toFixed(0)}%, which isn't counted here. From commit <code>{ci.commit}</code> on {ci.date}, on {ci.machine}. Speed is counted in instructions, which barely move when a machine is busy, so it can differ from the times shown. Times are medians of repeated runs, and they move by several percent between runs. Once a kernel reaches the JIT's target, CI fails if it drops below.
     </p>
   </section>
 

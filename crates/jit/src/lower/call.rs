@@ -36,8 +36,8 @@ impl Lowerer<'_, '_> {
         {
             return if name == "len" { self.length(expr, object) } else { self.absolute(expr, object) };
         }
-        if let Some(total) = self.sum_call(expr, callee, args)? {
-            return Ok(total);
+        if let Some(made) = self.sum_or_known(expr, callee, args)? {
+            return Ok(made);
         }
         if let Some(name) = self.std_member(callee) {
             if let Some(id) = self.layouts.id(name)
@@ -92,6 +92,19 @@ impl Lowerer<'_, '_> {
         self.fallback(expr)
     }
 
+    /// A native `sum`, or a call to an arrow this specialized body was handed.
+    fn sum_or_known(
+        &mut self,
+        expr: &Expr,
+        callee: &Expr,
+        args: &[Arg],
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        if let Some(total) = self.sum_call(expr, callee, args)? {
+            return Ok(Some(total));
+        }
+        self.call_known(callee, args)
+    }
+
     /// For `math.sqrt` where `math` is an imported module, or `std.math.sqrt` after
     /// `import std.math`, the name after the last dot.
     fn std_member<'e>(&self, callee: &'e Expr) -> Option<&'e str> {
@@ -142,6 +155,11 @@ impl Lowerer<'_, '_> {
     /// A call to a compiled function, natively. `None` when the arguments don't suit a
     /// native call.
     fn call_compiled(&mut self, name: &str, args: &[Arg], span: Span) -> Result<Option<Lowered>, Diagnostic> {
+        if let Some(made) = self.specialized_call(name, args, span)? {
+            self.shared.specialized.insert(name.to_owned());
+            return Ok(Some(made));
+        }
+        self.shared.called.insert(name.to_owned());
         let Some(compiled) = self.shared.compiled.get(name) else { return Ok(None) };
         let (id, params, ret) = (compiled.id, compiled.params.clone(), compiled.ret);
         let Some(arranged) = Self::arrange(&params, args) else { return Ok(None) };
@@ -643,7 +661,7 @@ impl Lowerer<'_, '_> {
         let (value, ty) = self.expr(expr)?;
         match ty {
             Ty::Str if many => Ok((value.map(|text| self.own(text, ty)), ty)),
-            Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) | Ty::List(_) => {
+            Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..) | Ty::List(_) | Ty::Known(_) => {
                 Ok((Some(self.handle_of(value, ty, expr.span)?), Ty::Obj))
             }
             Ty::Cap(_) => {

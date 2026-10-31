@@ -2,7 +2,7 @@
 # this exact, so a count can only go down: a change that adds a fallback must be undone, and
 # one that removes some lowers its count here. The goal is zero everywhere.
 binary_trees 0
-closures 5
+closures 0
 comp_helpers 0
 comprehensions 2
 deltablue 305
@@ -10,7 +10,7 @@ dict_field 11
 dicts 0
 fannkuch 1
 fib 0
-generics 9
+generics 0
 json 46
 k_nucleotide 9
 mandelbrot 0

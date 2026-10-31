@@ -13,7 +13,9 @@ use super::Lowerer;
 /// A packed list looked up once for a loop.
 #[derive(Clone)]
 pub(super) struct Hoisted {
-    name: String,
+    /// The variable of the name holding it: another name can be the same text, in code
+    /// inlined here.
+    var: cranelift_frontend::Variable,
     /// Where its items start.
     pub(super) items: Value,
     pub(super) length: Value,
@@ -53,7 +55,9 @@ impl Lowerer<'_, '_> {
             let Some(writes) = indexed_only(cond, body, &name) else { continue };
             let length = self.list_length(&name, item)?;
             let items = self.items_at(&name, item, writes)?;
-            self.hoisted.push(Hoisted { name, items, length, writable: writes });
+            let var = self.local(&name).and_then(|local| local.var);
+            let var = var.ok_or_else(|| super::internal("a list without a variable", Span::default()))?;
+            self.hoisted.push(Hoisted { var, items, length, writable: writes });
             count += 1;
         }
         Ok(count)
@@ -67,7 +71,8 @@ impl Lowerer<'_, '_> {
 
     /// A list the loops being lowered looked up, if one did.
     pub(super) fn hoisted(&self, name: &str) -> Option<&Hoisted> {
-        self.hoisted.iter().rev().find(|hoisted| hoisted.name == name)
+        let var = self.local(name)?.var?;
+        self.hoisted.iter().rev().find(|hoisted| hoisted.var == var)
     }
 }
 

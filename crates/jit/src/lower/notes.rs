@@ -16,6 +16,8 @@ pub struct Note {
     pub what: String,
     /// How many loops it's inside, in its function.
     pub loops: usize,
+    /// The function whose machine code it's in, which is another one's when it's inlined.
+    pub(crate) compiled_in: String,
 }
 
 impl Lowerer<'_, '_> {
@@ -26,6 +28,7 @@ impl Lowerer<'_, '_> {
             span,
             what: what.into(),
             loops: self.loops.len(),
+            compiled_in: self.function.key.clone(),
         };
         self.shared.notes.push(note);
     }

@@ -36,6 +36,9 @@ pub(crate) enum Ty {
     /// A list of numbers, bools or plain structs, packed one after another: the address of
     /// a block the runtime owns, shared by every copy until one changes it.
     List(ListItem),
+    /// A function known while compiling, by its number there, which needs nothing at run
+    /// time: calls to it are lowered right where they are.
+    Known(u32),
 }
 
 /// What a native list's items are.
@@ -90,6 +93,7 @@ impl Ty {
             Ty::Str => "str",
             Ty::Dict(..) => "dict",
             Ty::List(_) => "list",
+            Ty::Known(_) => "function",
         }
     }
 }

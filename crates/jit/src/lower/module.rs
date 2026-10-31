@@ -117,7 +117,15 @@ pub(super) fn declare_all(
         }
         shared.compiled.insert(
             function.key.clone(),
-            Compiled { id, params, ret: function.ret, takes_self, inline, prelude: function.prelude },
+            Compiled {
+                id,
+                params,
+                ret: function.ret,
+                takes_self,
+                inline,
+                specialized: super::specialize::specializable(function),
+                prelude: function.prelude,
+            },
         );
     }
     Ok(())

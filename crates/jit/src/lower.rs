@@ -29,6 +29,7 @@ pub(crate) mod notes;
 pub(crate) mod object;
 mod objects;
 mod ranges;
+mod specialize;
 mod stmt;
 mod strings;
 mod structs;
@@ -66,6 +67,8 @@ struct Compiled {
     takes_self: bool,
     /// Its body, when it's small enough to lower right where it's called.
     inline: Option<std::rc::Rc<fennec_syntax::FnDef>>,
+    /// Its body, to lower at a call for what it's passed.
+    specialized: Option<std::rc::Rc<fennec_syntax::FnDef>>,
     /// Whether it's from the standard library, whose failures are reported at the call.
     prelude: bool,
 }
@@ -89,6 +92,10 @@ pub(crate) struct Compilation {
 
 /// What every function being compiled shares.
 pub(super) struct Shared {
+    /// Functions lowered at a call for what it's passed.
+    specialized: HashSet<String>,
+    /// Functions something calls directly.
+    called: HashSet<String>,
     compiled: HashMap<String, Compiled>,
     helpers: HashMap<Helper, FuncId>,
     tables: Tables,
@@ -154,7 +161,11 @@ pub(crate) fn compile(
         reasons,
         with_frames: shared.with_frames,
         handed_over: shared.handed_over,
-        notes: shared.notes,
+        // A function every call lowered for itself never runs on its own.
+        notes: {
+            let unused = |key: &String| shared.specialized.contains(key) && !shared.called.contains(key);
+            shared.notes.into_iter().filter(|note| !unused(&note.compiled_in)).collect()
+        },
         cached: shared.cached,
     };
     Ok((entry, shared.tables, compilation))
@@ -184,6 +195,8 @@ impl Shared {
             stack_limit,
             modules: program.modules.clone(),
             notes: Vec::new(),
+            specialized: HashSet::new(),
+            called: HashSet::new(),
         }
     }
 }
@@ -252,7 +265,7 @@ fn abi(ty: Ty) -> Option<types::Type> {
         }
         Ty::Float => Some(types::F64),
         Ty::Bool => Some(types::I8),
-        Ty::Unit | Ty::Cap(_) => None,
+        Ty::Unit | Ty::Cap(_) | Ty::Known(_) => None,
     }
 }
 
@@ -374,6 +387,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         checked: Vec::new(),
         addresses: Vec::new(),
         facts: ranges::Facts::default(),
+        known: Vec::new(),
         flags: unswitch::Flags::new(),
         handed: 0,
         origin,
@@ -467,6 +481,8 @@ pub(crate) struct Lowerer<'a, 'f> {
     addresses: Vec<lists::KnownItem>,
     /// What's known about values, to leave out checks that can't fail.
     facts: ranges::Facts,
+    /// The functions names are known to hold, by the number in `Ty::Known`.
+    known: Vec<specialize::Known>,
     /// Bools a loop's copy being lowered knows the value of.
     flags: unswitch::Flags,
     /// Where the table of runtime addresses is, in an executable.

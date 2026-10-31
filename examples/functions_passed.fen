@@ -1,0 +1,97 @@
+## Functions taking arrows and generic values, lowered for what they're given.
+
+struct Circle:
+    radius: float
+
+    def area(self) -> float:
+        3.0 * self.radius * self.radius
+
+struct Square:
+    side: float
+
+    def area(self) -> float:
+        self.side * self.side
+
+interface Shape:
+    def area(self) -> float
+
+def total[T: Shape](shapes: list[T]) -> float:
+    mut sum_of = 0.0
+    for shape in shapes:
+        sum_of += shape.area()
+    sum_of
+
+def largest[T](items: list[T], better: (T, T) -> bool) -> T:
+    mut best = items[0]
+    for item in items:
+        if better(item, best):
+            best = item
+    best
+
+def apply(value: int, change: (int) -> int) -> int:
+    change(value)
+
+def twice(value: int, change: (int) -> int) -> int:
+    change(change(value))
+
+def pass_on(value: int, change: (int) -> int) -> int:
+    twice(value, change)
+
+def keep(change: (int) -> int) -> (int) -> int:
+    change
+
+def map_all(values: list[int], change: (int) -> int) -> list[int]:
+    [change(value) for value in values]
+
+def first_big(values: list[int], limit: int, big: (int, int) -> bool) -> int:
+    mut found = -1
+    for value in values:
+        if found < 0 and big(value, limit):
+            found = value
+    found
+
+def identity[T](value: T) -> T:
+    value
+
+def shadow(value: int, change: (int) -> int) -> int:
+    offset = 100
+    change(value) + offset
+
+def countdown(n: int, change: (int) -> int) -> int:
+    if n <= 0: return 0
+    change(n) + countdown(n - 1, change)
+
+def main(stdout: Stdout):
+    offset = 7
+    stdout.print(
+        apply(1, (n) => n + offset),
+        twice(1, (n) => n * 2 + offset),
+        pass_on(2, (n) => n + 1),
+    )
+    stdout.print(total([Circle(radius=1.0), Circle(radius=2.0)]), total([Square(side=3.0)]))
+    circles = [Circle(radius=float(i % 4)) for i in range(9)]
+    stdout.print(
+        largest(circles, (a, b) => a.radius > b.radius),
+        largest([3, 9, 2], (a, b) => a > b),
+    )
+    stdout.print(
+        largest(["fox", "den"], (a, b) => a < b),
+        identity(4),
+        identity("s"),
+        identity(2.5),
+        identity(circles[1]),
+    )
+    stdout.print(map_all([1, 2, 3], (n) => n * n), first_big([1, 5, 9], 4, (v, l) => v > l))
+    stdout.print(
+        keep((n) => n + offset)(1),
+        shadow(1, (n) => n + offset),
+        countdown(3, (n) => n * offset),
+    )
+    stdout.print(twice(1, (n) => twice(n, (m) => m * 3 + offset)))
+    words = ["a", "bb"]
+    stdout.print(
+        apply(words[1].len(), (n) => n + words.len()),
+        [apply(i, (n) => n + i) for i in range(3)],
+    )
+    for i in range(2):
+        stdout.print(apply(i, (n) => n * 10 + i))

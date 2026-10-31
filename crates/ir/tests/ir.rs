@@ -1223,9 +1223,13 @@ fn a_tuple_of_one_type_and_the_arguments_index_by_a_value() {
 
 def g(args: Args, at: int) -> str:
     args[at]
+
+def h(data: bytes, at: int) -> int:
+    data[at]
 ";
     assert!(printed(source, "f").unwrap().contains("= _0[_1]"));
     assert!(printed(source, "g").unwrap().contains("= _0[_1]"));
+    assert!(printed(source, "h").unwrap().contains("= _0[_1]"));
 }
 
 #[test]

@@ -57,10 +57,7 @@ impl Lowering<'_> {
             return Ok(Operand::Local(dest));
         }
         let key = match &held {
-            Some(Type::List(item)) if **item == ty => Type::Int,
-            Some(Type::Str) if ty == Type::Str => Type::Int,
-            Some(Type::Bytes) if ty == Type::Int => Type::Int,
-            Some(Type::Tuple(_)) => Type::Int,
+            Some(Type::List(_) | Type::Str | Type::Bytes | Type::Tuple(_)) => Type::Int,
             Some(Type::Dict(key, _)) => *key.clone(),
             Some(Type::Named(name)) if name == "Args" => {
                 let object = self.expr(object)?;

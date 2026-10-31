@@ -4515,6 +4515,98 @@ Money(cents=425) True Money(cents=9)
 writing save.dat
 ```
 
+### `own_index_places`
+
+```fennec
+# A type's own `def []` and `def []=` act as places: changing part of an item reads it,
+# changes it, and writes it back, however deep it's nested.
+
+from std.game import IdMap
+
+struct Part:
+    name: str
+    x = 0.0
+
+    def shift(mut self, by: float):
+        self.x += by
+
+struct Shelf:
+    parts: list[Part]
+    writes = 0
+
+    def [](self, at: int) -> Part:
+        self.parts[at]
+
+    def []=(mut self, at: int, part: Part):
+        self.parts[at] = part
+        self.writes += 1
+
+struct Numbers:
+    values: list[int]
+
+    def [](self, at: int) -> int:
+        self.values[at]
+
+    def []=(mut self, at: int, value: int):
+        self.values[at] = value
+
+struct Room:
+    shelf: Shelf
+
+    def [](self, name: str) -> Shelf:
+        self.shelf
+
+    def []=(mut self, name: str, shelf: Shelf):
+        self.shelf = shelf
+
+struct Store:
+    rooms: list[Room]
+
+def main(stdout: Stdout):
+    mut shelf = Shelf(parts=[Part(name="bolt")])
+    shelf[0].x = 1.5
+    shelf[0].x += 1.0
+    shelf[0].name += "!"
+    shelf[0].shift(0.5)
+    stdout.print(shelf.parts, shelf.writes)
+
+    # Compound assignment reads with `def []`, then writes with `def []=`.
+    mut numbers = Numbers(values=[1, 2])
+    numbers[0] += 5
+    numbers[1] *= 3
+    stdout.print(numbers.values)
+
+    # One inside another, and inside other places.
+    mut room = Room(shelf=shelf)
+    room["back"][0].x = 9.0
+    stdout.print(room.shelf.parts, room.shelf.writes, shelf.parts)
+
+    mut store = Store(rooms=[room])
+    store.rooms[0]["back"][0].shift(1.0)
+    stdout.print(store.rooms[0].shelf.parts, room.shelf.parts)
+
+    # Reached through a dict or an IdMap.
+    mut by_name = {"main": shelf}
+    by_name["main"][0].x = 20.0
+    stdout.print(by_name["main"].parts, shelf.parts)
+
+    mut shelves = IdMap[Shelf]()
+    id = shelves.insert(shelf)
+    shelves[id][0].x = 30.0
+    stdout.print(shelves[id].parts, shelf.parts)
+```
+
+It prints:
+
+```text
+[Part(name="bolt!", x=3.0)] 4
+[6, 6]
+[Part(name="bolt!", x=9.0)] 5 [Part(name="bolt!", x=3.0)]
+[Part(name="bolt!", x=10.0)] [Part(name="bolt!", x=9.0)]
+[Part(name="bolt!", x=20.0)] [Part(name="bolt!", x=3.0)]
+[Part(name="bolt!", x=30.0)] [Part(name="bolt!", x=3.0)]
+```
+
 ### `packed_lists`
 
 ```fennec
@@ -4909,6 +5001,118 @@ Match(text="colour", start=5, end=11, groups=[])
 [0-9]+ finds ["1", "22"]
 [0-9+ -> this pattern isn't valid: this `[` is never closed (at character 0)
 None
+```
+
+### `std_tree`
+
+```fennec
+# `Tree` keeps parents and children in sync, on top of `IdMap`, with no references. A scene:
+# what's attached to what, read and changed through IDs.
+from std.collections import Tree, TreeCycle, TreeNode
+from std.game import Id
+
+struct Part:
+    name: str
+    x = 0.0
+
+    def shift(mut self, by: float):
+        self.x += by
+
+# Writing the type of an ID is only needed where one is stored.
+type PartId = Id[TreeNode[Part]]
+
+struct Camera:
+    follows: PartId
+
+# Where a part really is: its own position plus everything it's attached to.
+def world_x(scene: Tree[Part], id: PartId) -> float:
+    mut x = scene[id].x
+    for above in scene.ancestors(id):
+        x += scene[above].x
+    x
+
+def names(scene: Tree[Part], ids: list[PartId]) -> list[str]:
+    [scene[id].name for id in ids]
+
+def main(stdout: Stdout):
+    mut scene = Tree[Part]()
+    car = scene.add(Part(name="car", x=10.0))
+    trailer = scene.add(Part(name="trailer", x=-5.0))
+    wheel = scene.add_child(car, Part(name="wheel", x=2.0))
+    hub = scene.add_child(wheel, Part(name="hub", x=0.5))
+    door = scene.add_child(car, Part(name="door", x=1.0))
+    camera = Camera(follows=hub)
+    stdout.print(scene.len(), names(scene, scene.roots()))
+
+    # Values are changed through an ID.
+    scene[car].x += 5.0
+    scene[door].shift(0.5)
+    scene[door].name += " (left)"
+    stdout.print(scene[car], scene[door], world_x(scene, camera.follows))
+
+    # Walking up and down.
+    stdout.print(
+        scene.parent(wheel) == car,
+        scene.parent(car),
+        scene.up(hub, 2) == car,
+        scene.up(hub, 3),
+    )
+    stdout.print(names(scene, scene.children(car)), names(scene, scene.ancestors(hub)))
+    stdout.print(names(scene, scene.descendants(car)))
+
+    # A copy is independent, so undo is a saved value.
+    saved = scene
+
+    # Moving a subtree takes what's below it along.
+    scene.move(wheel, trailer)?
+    stdout.print(names(scene, scene.children(car)), names(scene, scene.descendants(trailer)))
+    stdout.print(world_x(scene, hub), world_x(saved, hub))
+
+    # A node can't end up below itself.
+    match scene.move(trailer, hub):
+        case Ok():
+            stdout.print("moved")
+        case Err(TreeCycle(message)):
+            stdout.print(message)
+    match scene.move(hub, hub):
+        case Ok():
+            stdout.print("moved")
+        case Err(TreeCycle(message)):
+            stdout.print(message)
+
+    scene.make_root(wheel)
+    stdout.print(names(scene, scene.roots()), scene.parent(wheel))
+
+    # Removing a node removes what's below it, and old IDs say so.
+    scene.remove(wheel)
+    stdout.print(
+        scene.len(),
+        names(scene, scene.roots()),
+        scene.get(hub),
+        scene.get(car) == scene[car],
+    )
+    scene.remove(trailer)
+    stdout.print(names(scene, scene.roots()), saved.len(), saved[hub].name)
+    scene.remove(door)
+    stdout.print(scene.children(car))
+```
+
+It prints:
+
+```text
+5 ["car", "trailer"]
+Part(name="car", x=15.0) Part(name="door (left)", x=1.5) 17.5
+True None True None
+["wheel", "door (left)"] ["wheel", "car"]
+["wheel", "hub", "door (left)"]
+["door (left)"] ["wheel", "hub"]
+-2.5 17.5
+a node can't move under itself or its descendants
+a node can't move under itself or its descendants
+["car", "trailer", "wheel"] None
+3 ["car", "trailer"] None True
+["car"] 5 hub
+[]
 ```
 
 ### `string_building`

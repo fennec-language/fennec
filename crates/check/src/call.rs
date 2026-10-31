@@ -2,7 +2,7 @@
 //! errors and enum cases. Arguments are matched to parameters or fields, positionally and by
 //! name, and `mut` has to be written exactly where a parameter changes.
 
-use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Span, TypeExpr, UnaryOp};
+use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Span, UnaryOp};
 
 use crate::ParamType;
 use crate::builtins;
@@ -571,11 +571,9 @@ impl FnCx<'_> {
     /// `IdMap[Enemy]()` and `SoaList[Particle]()`.
     fn construct_builtin(&mut self, type_name: &str, item: Option<&Expr>, args: &[Arg], span: Span) -> Type {
         let has_item = item.is_some();
-        let item = match item.map(|item| (&item.kind, item.span)) {
-            Some((ExprKind::Name(name), at)) => {
-                self.resolve(&TypeExpr { name: name.clone(), args: Vec::new(), optional: false, span: at })
-            }
-            Some((_, at)) => {
+        let item = match item.map(|item| (item.as_type(), item.span)) {
+            Some((Some(written), _)) => self.resolve(&written),
+            Some((None, at)) => {
                 let message =
                     format!("write the type `{type_name}` holds as a name, like `{type_name}[Enemy]`");
                 self.error(Diagnostic::new(message, at));

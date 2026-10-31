@@ -25,7 +25,8 @@ use crate::{
     Terminator,
 };
 
-/// Lowers a module's functions and methods, and the standard library's that they reach.
+/// Lowers a module's functions and methods, and the standard library's that they reach. The
+/// module is one `check_and_resolve` has been over, which writes in what calls leave out.
 pub fn lower(module: &Module, signatures: &Signatures) -> Program {
     lower_some(module, signatures, &|_| true)
 }

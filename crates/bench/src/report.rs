@@ -34,6 +34,8 @@ pub(crate) struct Result {
     pub(crate) startup_instructions: Option<u64>,
     pub(crate) previous_instructions: Option<u64>,
     pub(crate) target: Option<Target>,
+    /// How many places in its compiled code aren't native.
+    pub(crate) not_native: Option<usize>,
     /// Whether the JIT handed any of it to the interpreter.
     pub(crate) fell_back: bool,
 }
@@ -48,6 +50,15 @@ impl Result {
     pub(crate) fn speed(&self) -> Option<f64> {
         let target = self.target.as_ref()?;
         Some(as_f64(target.instructions) / as_f64(self.work_instructions()?).max(1.0))
+    }
+
+    /// The speed of its work against the target's by time, which is only as good as how alike
+    /// this machine is to the one that pinned the target. Instructions and time can disagree a
+    /// lot, in either direction, so the table shows both.
+    pub(crate) fn speed_by_time(&self) -> Option<f64> {
+        let target = self.target.as_ref().filter(|target| target.micros > 0)?;
+        let work = self.total.saturating_sub(self.startup).as_secs_f64();
+        (work > 0.0).then(|| as_f64(target.micros) / 1_000_000.0 / work)
     }
 
     pub(crate) fn meets_floor(&self) -> bool {
@@ -126,9 +137,9 @@ fn or_dash(value: Option<String>) -> String {
 /// The results as a Markdown table.
 pub(crate) fn table(results: &[Result]) -> String {
     let mut lines = vec![
-        "| Kernel | Startup | Startup instructions | Work | Work instructions | Target instructions | % of target | Floor (80%) | Previous commit | Instructions vs previous |"
+        "| Kernel | Startup | Startup instructions | Work | Target time | % by time | Work instructions | Target instructions | % of target | Floor (80%) | Not native | Previous commit | Instructions vs previous |"
             .to_owned(),
-        "|---|---:|---:|---:|---:|---:|---:|---|---:|---:|".to_owned(),
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|".to_owned(),
     ];
     for result in results {
         let floor = match (result.speed(), result.target.as_ref().is_some_and(|target| target.enforced)) {
@@ -145,14 +156,17 @@ pub(crate) fn table(results: &[Result]) -> String {
         let extra = result.extra_instructions().map(|extra| format!("{:+.1}%", extra * 100.0));
         let fell_back = if result.fell_back { " (partly interpreted)" } else { "" };
         lines.push(format!(
-            "| {} | {} | {} | {}{fell_back} | {} | {} | {} | {floor} | {previous} | {} |",
+            "| {} | {} | {} | {}{fell_back} | {} | {} | {} | {} | {} | {floor} | {} | {previous} | {} |",
             result.kernel,
             millis(result.startup),
             or_dash(result.startup_instructions.map(millions)),
             millis(result.total.saturating_sub(result.startup)),
+            or_dash(result.target.as_ref().map(|target| millis(Duration::from_micros(target.micros)))),
+            or_dash(result.speed_by_time().map(percent)),
             or_dash(result.work_instructions().map(millions)),
             or_dash(result.target.as_ref().map(|target| millions(target.instructions))),
             or_dash(result.speed().map(percent)),
+            or_dash(result.not_native.map(|count| count.to_string())),
             or_dash(extra),
         ));
     }
@@ -183,6 +197,7 @@ mod tests {
             startup_instructions: Some(100),
             target: Some(Target {
                 instructions: target,
+                micros: 0,
                 output: String::new(),
                 source: String::new(),
                 enforced,
@@ -197,6 +212,22 @@ mod tests {
         assert!(counted(1000, 810, false).meets_floor());
         assert!(!counted(1000, 790, false).meets_floor());
         assert_eq!(timed(100, None).speed(), None, "nothing was counted");
+    }
+
+    #[test]
+    fn speed_by_time_is_the_work_against_the_targets_time() {
+        let mut result = timed(30, None);
+        result.startup = Duration::from_millis(10);
+        let target = Target {
+            instructions: 1,
+            micros: 10_000,
+            output: String::new(),
+            source: String::new(),
+            enforced: false,
+        };
+        result.target = Some(target);
+        assert!((result.speed_by_time().unwrap() - 0.5).abs() < 1e-9);
+        assert_eq!(timed(30, None).speed_by_time(), None);
     }
 
     #[test]
@@ -256,9 +287,9 @@ mod tests {
         assert_eq!(
             rows,
             [
-                "| k | 10.0 ms | 0.0 M | 20.0 ms (partly interpreted) | 2.0 M | 1.0 M | 50% | not yet | 40.0 ms (-25%) | +0.0% |",
-                "| k | 0.0 ms | 0.0 M | 0.0 ms | 1.0 M | 0.9 M | 90% | met, enforced | - | - |",
-                "| k | 0.0 ms | - | 5.0 ms | - | - | - | - | - | - |",
+                "| k | 10.0 ms | 0.0 M | 20.0 ms (partly interpreted) | 0.0 ms | - | 2.0 M | 1.0 M | 50% | not yet | - | 40.0 ms (-25%) | +0.0% |",
+                "| k | 0.0 ms | 0.0 M | 0.0 ms | 0.0 ms | - | 1.0 M | 0.9 M | 90% | met, enforced | - | - | - |",
+                "| k | 0.0 ms | - | 5.0 ms | - | - | - | - | - | - | - | - | - |",
             ]
         );
     }

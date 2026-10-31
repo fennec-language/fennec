@@ -19,6 +19,7 @@ cargo build --release -p fennec -p fennec-bench
 | Sorting and generics | `sort`, `generics` |
 | Closures and iterators | `comprehensions`, `closures` |
 | Object-heavy code with dispatch | `richards`, `deltablue` |
+| What falls off the fast path | `dict_field`, `struct_keys`, `method_chain`, `comp_helpers` |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
 
 These are what languages have historically been judged on: most of the Computer Language Benchmarks Game, and `richards` and `deltablue` from Are We Fast Yet. **The suite is locked.** Each target records a hash of its kernel and twin, and a run fails if they've changed, or if a kernel has come or gone. Changing one means pinning it again, and the pull request has to say why. The fix for a slow kernel goes in the compiler.
@@ -35,6 +36,10 @@ A kernel's speed is its target's instructions divided by the instructions its wo
 - Where the CPU's counters can be read, `perf stat` counts.
 - Where they can't, as on CI's virtual machines, Valgrind's cachegrind counts by simulating. It's about 50 times slower.
 - On a Mac, `time -l` counts. The targets are pinned on Linux, and starting any program on a Mac takes millions more instructions, so a Mac's percentages are only a guide, above all on the smallest kernels.
+
+Instructions aren't time, though. They can disagree by a lot, in either direction: on an Apple M3 under load, `sieve` was 57% by instructions and 93% by time. So the table shows both. The percentage by time compares with how long the twin took when it was pinned, so it's only as good as how alike the two machines are. The floor and the ratchet go by instructions, because they're stable.
+
+The table also counts the places in each kernel's compiled code that aren't native, from `fennec dev fallbacks`, and the run warns about them, since code that falls off the fast path prints nothing when it runs.
 
 Each kernel also has to print exactly what its target expects, which the target file holds as a hash.
 

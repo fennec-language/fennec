@@ -512,7 +512,7 @@ pub extern "C" fn to_value(address: i64) -> i64 {
 }
 
 /// One more owner for a block.
-fn retain(state: &mut State, address: u64) {
+pub(super) fn retain(state: &mut State, address: u64) {
     if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
         *count += 1;
     }

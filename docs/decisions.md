@@ -452,6 +452,8 @@ total = sum(row.amount for row in rows)
 - A failure comes out when the item that fails is asked for, and acts like a failure from a call: the loop exits, `with` blocks close, and it passes up. A generator that wants to go on past bad items yields errors as values. Getting one that can fail takes `?`, as in `for x in checked()?:`.
 - Printing one shows `<Iterator[int]>` and doesn't use it.
 
+A stage used once becomes part of what uses it. A stage kept in a name that doesn't change moves to where it's used, leaving behind what it works out when it's made, and a `for` over a stage becomes a plain loop, with a yield function's body copied in. The order things happen in stays the same, so this is purely about speed. Anything that can't fuse, like a stage that's passed around, still works, by asking for each item.
+
 *Why:* Streaming lets a chain of stages read like the steps it is, handles input too big to hold, and can compile to a single loop with nothing allocated per item. Being used once is what keeps that honest: a second loop quietly finding nothing is Python's trap.
 
 **Raw strings are `r"..."`.** Backslashes stay as written, so a pattern reads `r"\d+"`. A raw string can't contain `"`.

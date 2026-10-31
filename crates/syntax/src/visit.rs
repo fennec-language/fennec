@@ -29,6 +29,11 @@ pub fn in_function(def: &mut FnDef, change: &mut dyn FnMut(&mut Expr)) {
     function(def, change);
 }
 
+/// Calls `change` on every expression in some statements.
+pub fn in_stmts(body: &mut [Stmt], change: &mut dyn FnMut(&mut Expr)) {
+    stmts(body, change);
+}
+
 /// Makes a leading-dot case name its enum: `.Int(value)` becomes `ExprKind.Int(value)`.
 /// Anything but a leading-dot case is left as it is.
 pub fn name_enum(case: &mut Expr, owner: &str) {

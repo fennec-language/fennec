@@ -4,6 +4,7 @@ mod ast;
 mod diagnostic;
 #[doc(hidden)]
 pub mod dump;
+pub mod fuse;
 mod lexer;
 mod modules;
 mod parser;

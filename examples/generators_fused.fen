@@ -1,0 +1,142 @@
+# Stages that fuse into one loop, which every engine has to run in the same order as asking
+# for each item in turn.
+
+struct Row:
+    amount: int
+
+def parse(out: Stdout, line: str) -> Row:
+    out.print("parse", line)
+    Row(amount=line.len())
+
+def upto(out: Stdout, limit: int) -> Iterator[int]:
+    out.print("opening")
+    mut n = 0
+    while n < limit:
+        yield n
+        n += 1
+    out.print("closing")
+
+def odd(numbers: Iterator[int]) -> Iterator[int]:
+    for n in numbers:
+        if n % 2 == 1:
+            yield n
+
+def running(numbers: Iterator[int]) -> Iterator[int]:
+    mut total = 0
+    for at, n in enumerate(numbers):
+        total += at * n
+        yield total
+
+def three() -> Iterator[int]:
+    yield 1
+    yield 2
+    yield 3
+
+def noisy(out: Stdout, value: int) -> int:
+    out.print("worked out", value)
+    value
+
+error TooBig:
+    at: int
+
+def checked(limit: int) -> Iterator[int]:
+    mut n = 0
+    while True:
+        if n >= limit: fail TooBig(at=n)
+        yield n
+        n += 1
+
+def up_to_failure(limit: int) -> int:
+    mut total = 0
+    for n in checked(limit)?:
+        total += n
+        if total > 100: break
+    total
+
+def pipeline(out: Stdout, src: list[str]) -> int:
+    lines = (l.strip() for l in src)
+    rows = (parse(out, l) for l in lines if l != "")
+    total = sum(r.amount for r in rows)
+    total
+
+def shadowed(stdout: Stdout):
+    # The stage's name for its items isn't the name a loop body means.
+    x = 100
+    for y in (x * 2 for x in [1, 2]):
+        stdout.print(x, y)
+    for x in (x + 1 for x in [1, 2]):
+        stdout.print(x)
+    stdout.print(x)
+
+def changes_later(stdout: Stdout):
+    # A name that changes keeps the value it had when the stage was made.
+    mut k = 2
+    scaled = (n * k for n in [1, 2])
+    k = 10
+    stdout.print(sum(scaled), k)
+
+def worked_out_first(stdout: Stdout):
+    # What a stage works out when it's made happens there, not where it's moved to.
+    stage = upto(stdout, noisy(stdout, 2))
+    stdout.print("made")
+    for n in stage:
+        stdout.print(n)
+
+def main(stdout: Stdout):
+    stdout.print(pipeline(stdout, ["  ab ", "   ", "c"]))
+    stdout.print(sum(n * 2 for n in odd(upto(stdout, 5))))
+    stdout.print(list(running(odd(upto(stdout, 6)))))
+
+    # Leaving a loop early from inside a copy of a yield function.
+    for n in three():
+        if n == 1: continue
+        stdout.print("got", n)
+        if n == 2: break
+    stdout.print("after")
+    for n in odd(upto(stdout, 100)):
+        if n == 3: break
+        stdout.print(n)
+    for at, n in enumerate(x * x for x in three()):
+        if at == 1: continue
+        stdout.print(at, n)
+    stdout.print(any(n == 2 for n in three()), all(n == 1 for n in three()))
+
+    # A `return` from a loop over a copy leaves the function.
+    stdout.print(first_big())
+
+    # Each loop over the same function is its own copy.
+    for a in three():
+        for b in three():
+            if a == b:
+                stdout.print(a, b)
+
+    # Stripping, shared or not.
+    stdout.print([
+        "  x".strip(),
+        "y  ".lstrip(),
+        " z ".rstrip(),
+        " \t ".strip(),
+        "ok".strip(),
+        " é ".strip(),
+        "é".lstrip(),
+    ])
+
+    shadowed(stdout)
+    changes_later(stdout)
+    worked_out_first(stdout)
+
+    match up_to_failure(4):
+        case Ok(total):
+            stdout.print(total)
+        case Err(failure):
+            stdout.print("failed", failure)
+    match up_to_failure(1000):
+        case Ok(total):
+            stdout.print(total)
+        case Err(failure):
+            stdout.print("failed", failure)
+
+def first_big() -> int:
+    for n in three():
+        if n > 1: return n * 10
+    0

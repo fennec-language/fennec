@@ -111,6 +111,7 @@ pub(crate) enum Helper {
     SpecText,
     StrCode,
     StrJoin,
+    StrStrip,
     ListSlice,
     SetRemove,
     SetClear,
@@ -122,7 +123,7 @@ pub(crate) enum Helper {
     OutOfRange,
 }
 
-pub(crate) const ALL: [Helper; 114] = [
+pub(crate) const ALL: [Helper; 115] = [
     Helper::Fail,
     Helper::AtCall,
     Helper::Enter,
@@ -228,6 +229,7 @@ pub(crate) const ALL: [Helper; 114] = [
     Helper::SpecText,
     Helper::StrCode,
     Helper::StrJoin,
+    Helper::StrStrip,
     Helper::ListSlice,
     Helper::SetRemove,
     Helper::SetClear,
@@ -358,6 +360,7 @@ impl Helper {
                 | Helper::FloatText
                 | Helper::StrCode
                 | Helper::StrJoin
+                | Helper::StrStrip
                 | Helper::ListSlice
                 | Helper::SetRemove
                 | Helper::SetClear
@@ -578,6 +581,7 @@ impl Helper {
             Helper::ValueText => shape("fennec_value_text", &[I64], &[I64]),
             Helper::SpecText => shape("fennec_spec_text", &[I64, I64, I64, I64], &[I64]),
             Helper::StrCode => shape("fennec_str_code", &[I64, I64, I64], &[I64]),
+            Helper::StrStrip => shape("fennec_str_strip", &[I64, I64], &[I64]),
             Helper::StrJoin => shape("fennec_str_join", &[I64, I64], &[I64]),
             Helper::ListSlice => shape("fennec_list_slice", &[I64, I64, I64], &[I64]),
             Helper::SetRemove => shape("fennec_set_remove", &[I64, I64, I8, I64, I64], &[I64]),
@@ -626,6 +630,7 @@ impl Helper {
             Helper::SpecText => strings::spec_text as *const u8,
             Helper::StrCode => strings::code as *const u8,
             Helper::StrJoin => strings::join as *const u8,
+            Helper::StrStrip => strings::strip as *const u8,
             Helper::ListSlice => lists::slice as *const u8,
             Helper::SetRemove => dicts::set_remove as *const u8,
             Helper::SetClear => dicts::set_clear as *const u8,

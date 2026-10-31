@@ -17,6 +17,7 @@ cargo build --release -p fennec -p fennec-bench
 | Strings and text | `strings`, `json`, `k_nucleotide`, `regex` |
 | Structs in a game loop | `particles` |
 | Sorting and generics | `sort`, `generics` |
+| Streaming | `generators`, stages chained through names and functions |
 | Closures and iterators | `comprehensions`, `closures` |
 | Object-heavy code with dispatch | `richards`, `deltablue` |
 | What falls off the fast path | `dict_field`, `struct_keys`, `method_chain`, `comp_helpers` |

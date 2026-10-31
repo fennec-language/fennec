@@ -301,6 +301,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fennec-fuzz"
+version = "0.0.1"
+dependencies = [
+ "fennec-blake3",
+ "fennec-build",
+ "fennec-check",
+ "fennec-fmt",
+ "fennec-interp",
+ "fennec-ir",
+ "fennec-re",
+ "fennec-syntax",
+]
+
+[[package]]
 name = "fennec-interp"
 version = "0.0.1"
 dependencies = [

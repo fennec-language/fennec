@@ -162,14 +162,12 @@ fn unicode(cursor: &mut Cursor<'_>) -> Parsed<char> {
         return cursor.fail("this `\\u` escape is half of a pair, so another `\\u` must follow it");
     }
     let low = hex_units(cursor)?;
-    let code = 0x10000 + ((high - 0xD800) << 10) + low.wrapping_sub(0xDC00);
-    match char::from_u32(code) {
-        Some(c) if (0xDC00..0xE000).contains(&low) => Ok(c),
-        _ => {
-            cursor.at = start;
-            cursor.fail("these `\\u` escapes aren't a valid pair")
-        }
+    let code = (0xDC00..0xE000).contains(&low).then(|| 0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00));
+    if let Some(c) = code.and_then(char::from_u32) {
+        return Ok(c);
     }
+    cursor.at = start;
+    cursor.fail("these `\\u` escapes aren't a valid pair")
 }
 
 fn hex_units(cursor: &mut Cursor<'_>) -> Parsed<u32> {

@@ -185,6 +185,8 @@ impl<'c> FnCx<'c> {
         {
             let declared = declared.clone();
             cx.check_return(&declared, &flow.ty, last.span);
+        } else if let Some(declared) = cx.declared.clone() {
+            cx.check_gives_back(&declared, &flow, def);
         }
         let mut values = cx.returns.clone();
         // A function that leaves with a bare `return` gives back nothing, so the value its
@@ -216,6 +218,24 @@ impl<'c> FnCx<'c> {
         let (value, error) = (cx.checker.settled(&value), cx.checker.settled(&error));
         cx.finish(&[value.clone(), error.clone()]);
         BodyType { value, error }
+    }
+
+    /// Checks that a function whose last line isn't a value doesn't run off its end, when its
+    /// return type says it gives something back.
+    fn check_gives_back(&mut self, declared: &Type, flow: &crate::stmt::Flow, def: &FnDef) {
+        let nothing = matches!(self.checker.settled(&flow.ty), Type::Unit);
+        if flow.exits || self.generator || !nothing || matches!(declared, Type::Unit | Type::Unknown) {
+            return;
+        }
+        let at = def.body.last().map_or(def.span, |last| last.span);
+        let declared = crate::types::a(declared);
+        self.error(
+            Diagnostic::new(
+                format!("`{}` returns {declared}, but its last line gives back nothing", self.name),
+                at,
+            )
+            .with_help(format!("end it with {declared}, or change the return type")),
+        );
     }
 
     /// Joins what a function gives back from several places, reporting values that don't

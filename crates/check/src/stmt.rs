@@ -83,6 +83,16 @@ impl FnCx<'_> {
                 if let (Some(declared), Some(value)) = (self.declared.clone(), value) {
                     self.check_return(&declared, &ty, value.span);
                 }
+                if let (Some(declared), None) = (declared.filter(|ty| *ty != Type::Unit), value) {
+                    let declared = crate::types::a(&declared);
+                    self.error(
+                        Diagnostic::new(
+                            format!("`{}` returns {declared}, but this gives back nothing", self.name),
+                            stmt.span,
+                        )
+                        .with_help(format!("return {declared}, or change the return type")),
+                    );
+                }
                 self.returns.push(ty);
                 Flow::exit()
             }

@@ -19,10 +19,10 @@ use crate::Cache;
 use crate::cache::VERSION;
 use crate::reach::{Definition, Graph};
 
-/// Adds what every test's result depends on outside the program: the version of Fennec, and
-/// the platform, since results can differ between platforms.
-pub(crate) fn platform(hasher: &mut Hasher) {
-    for part in [VERSION, std::env::consts::OS, std::env::consts::ARCH] {
+/// Adds what every test's result depends on outside the program: which build of Fennec ran it,
+/// and the platform, since results can differ between platforms.
+pub(crate) fn platform(hasher: &mut Hasher, build: &str) {
+    for part in [VERSION, build, std::env::consts::OS, std::env::consts::ARCH] {
         hasher.update(part.as_bytes());
         hasher.update(&[0]);
     }
@@ -35,8 +35,9 @@ pub struct TestGraph {
 }
 
 impl TestGraph {
-    pub fn of(module: &Module) -> Self {
-        let graph = Graph::of(module);
+    /// `build` says which build of Fennec the keys are for.
+    pub fn of(module: &Module, build: &str) -> Self {
+        let graph = Graph::of(module, build);
         let by_key = graph
             .definitions
             .iter()
@@ -92,7 +93,7 @@ impl TestGraph {
             named.extend(implicit.filter_map(|at| Some(self.graph.definitions.get(*at)?.key.as_str())));
         }
         let mut hasher = Hasher::new_derive_key("fennec build cache 2026-10-31 traced test key");
-        platform(&mut hasher);
+        platform(&mut hasher, &self.graph.build);
         for definition in reached.iter().filter_map(|at| self.graph.definitions.get(*at)) {
             hasher.update(definition.key.as_bytes());
             hasher.update(&[0]);
@@ -192,7 +193,19 @@ mod tests {
     fn key(source: &str, ran: &[&str]) -> fennec_blake3::Hash {
         let module = fennec_syntax::parse(source).unwrap();
         let ran: Vec<String> = ran.iter().map(|name| (*name).to_owned()).collect();
-        TestGraph::of(&module).key("t", Some(&ran)).unwrap()
+        TestGraph::of(&module, "a build").key("t", Some(&ran)).unwrap()
+    }
+
+    #[test]
+    fn another_build_of_fennec_changes_every_key() {
+        let module = fennec_syntax::parse(SOURCE).unwrap();
+        let keys = |build| {
+            let graph = TestGraph::of(&module, build);
+            [graph.key("t", Some(&[])), graph.key("t", None)]
+        };
+        let (one, other) = (keys("one"), keys("other"));
+        assert_ne!(one[0], other[0]);
+        assert_ne!(one[1], other[1]);
     }
 
     const SOURCE: &str = "LIMIT: int = 1\n\nstruct Point:\n    x: int\n\n\

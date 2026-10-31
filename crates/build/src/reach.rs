@@ -23,7 +23,7 @@ const IMPLICIT: [&str; 3] = ["[]", "iter", "del"];
 
 /// Each test's name and the key of everything its result depends on.
 pub fn test_keys(module: &Module) -> Vec<(String, Hash)> {
-    let graph = Graph::of(module);
+    let graph = Graph::of(module, "");
     graph
         .definitions
         .iter()
@@ -58,16 +58,20 @@ pub(crate) struct Graph {
     /// Methods the language calls by itself, with the name of the type they're on, until
     /// every type is known.
     unowned: Vec<(String, usize)>,
+    /// Which build of Fennec the keys are for, since another one's compiler may behave
+    /// differently.
+    pub(crate) build: String,
 }
 
 impl Graph {
-    pub(crate) fn of(module: &Module) -> Self {
+    pub(crate) fn of(module: &Module, build: &str) -> Self {
         let mut graph = Graph {
             definitions: Vec::new(),
             names: HashMap::new(),
             members: HashMap::new(),
             implicit: HashMap::new(),
             unowned: Vec::new(),
+            build: build.to_owned(),
         };
         for item in &module.items {
             graph.item(item);
@@ -202,7 +206,7 @@ impl Graph {
             .collect();
         parts.sort();
         let mut hasher = Hasher::new_derive_key("fennec build cache 2026-10-30 test key");
-        crate::traced::platform(&mut hasher);
+        crate::traced::platform(&mut hasher, &self.build);
         for (key, hash) in parts {
             hasher.update(key.as_bytes());
             hasher.update(&[0]);

@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use fennec_syntax::Diagnostic;
 
-use super::heap::{block_text, read_block, release, write};
+use super::heap::{TEXT_HEADER_WORDS, read_block, release, write};
 use super::{State, attempt, span, with};
 use crate::packed::{Element, Packed};
 use crate::value::Value;
@@ -155,13 +155,28 @@ fn sort_word(word: u64, kind: i64) -> i64 {
 /// stable.
 fn sorted_places(state: &State, keys: &[u64], kind: i64) -> Vec<usize> {
     if kind == SORT_STRINGS {
-        let mut order: Vec<(String, usize)> = keys
+        // Words read big end first order the same as the bytes in them, and the shorter of
+        // two that match so far has zeros left, so its length settles it.
+        let text = |key: &u64| {
+            let block = state.heap.block(*key).unwrap_or_default();
+            let length = block.get(2).copied().unwrap_or(0);
+            let words = usize::try_from(length).unwrap_or(0).div_ceil(8);
+            (block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + words).unwrap_or_default(), length)
+        };
+        let mut order: Vec<(&[u64], u64, usize)> = keys
             .iter()
             .enumerate()
-            .map(|(place, key)| (state.heap.block(*key).map(block_text).unwrap_or_default(), place))
+            .map(|(place, key)| {
+                let (words, length) = text(key);
+                (words, length, place)
+            })
             .collect();
-        order.sort_unstable();
-        return order.into_iter().map(|(_, place)| place).collect();
+        order.sort_unstable_by(|a, b| {
+            let bytes =
+                a.0.iter().map(|word| word.swap_bytes()).cmp(b.0.iter().map(|word| word.swap_bytes()));
+            bytes.then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2))
+        });
+        return order.into_iter().map(|(_, _, place)| place).collect();
     }
     let mut order: Vec<(i64, usize)> =
         keys.iter().enumerate().map(|(place, key)| (sort_word(*key, kind), place)).collect();

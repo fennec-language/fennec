@@ -146,7 +146,8 @@ impl Interp<'_> {
             self.frame.push();
             self.frame.declare(ITEM, item, true);
             let inner = Place { root: ITEM.to_owned(), steps: own.after.to_vec(), span: place.span };
-            let changed = self.put(&inner, value).and_then(|()| self.take(&Place { steps: Vec::new(), ..inner }));
+            let changed =
+                self.put(&inner, value).and_then(|()| self.take(&Place { steps: Vec::new(), ..inner }));
             self.frame.pop();
             changed?
         };

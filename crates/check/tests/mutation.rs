@@ -54,7 +54,10 @@ struct Slots:
         [format!("{only_read} @ parts[0]")]
     );
     assert_eq!(
-        crate::in_main_after(types, "mut slots = Slots(items=[])\nslots[0].x += 1.0\nslots[0] = Part()\nslots.total = 1"),
+        crate::in_main_after(
+            types,
+            "mut slots = Slots(items=[])\nslots[0].x += 1.0\nslots[0] = Part()\nslots.total = 1"
+        ),
         Vec::<String>::new()
     );
     assert_eq!(

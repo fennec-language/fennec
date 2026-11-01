@@ -1,0 +1,13 @@
+# `for mut x in parallel(xs)` changes each item where it is, each in its own iteration. A body
+# can read anything around it, but changes only its own item.
+struct Particle:
+    position: float
+    velocity: float
+
+def main(stdout: Stdout):
+    mut particles = [Particle(position=0.0, velocity=1.5), Particle(position=10.0, velocity=-2.0)]
+    dt = 2.0
+    for mut particle in parallel(particles):
+        particle.position += particle.velocity * dt
+    stdout.print(particles)
+    stdout.print(sum(p.position for p in parallel(particles)))

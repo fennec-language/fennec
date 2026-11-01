@@ -44,6 +44,9 @@ pub(crate) struct Checker {
     pub(crate) generator_types: BTreeMap<(u32, u32), String>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     pub(crate) not_equals: BTreeSet<(u32, u32)>,
+    /// The `parallel(xs)` that a `for mut` loops over, which becomes `xs`: running in order
+    /// is a correct way to run it, and it changes the items where they are.
+    pub(crate) parallel_changes: BTreeSet<(u32, u32)>,
     /// The fields and method calls on a value that might be missing, in a chain an `else`
     /// ends, which are written in as optional.
     pub(crate) optional_steps: BTreeSet<(u32, u32)>,
@@ -93,6 +96,7 @@ impl Checker {
             defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
             not_equals: BTreeSet::new(),
+            parallel_changes: BTreeSet::new(),
             optional_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
             const_types: BTreeMap::new(),
@@ -170,6 +174,7 @@ impl Checker {
                 defaults: self.defaults,
                 generator_types: self.generator_types,
                 not_equals: self.not_equals,
+                parallel_changes: self.parallel_changes,
                 optional_steps: self.optional_steps,
                 std_names: self.std_names,
             });

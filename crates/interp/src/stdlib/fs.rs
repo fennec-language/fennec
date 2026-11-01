@@ -15,6 +15,9 @@ pub(crate) const MODULE: Module = Module { functions: &[], call: no_functions, c
 impl Interp<'_> {
     pub(crate) fn fs_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
         let paths: Vec<Value> = args.iter().map(path_text).collect();
+        if let Some(faked) = self.fake_fs(method, &paths, span) {
+            return faked;
+        }
         let done = match (method, paths.as_slice()) {
             ("exists", [Value::Str(path)]) => return Ok(Value::Bool(std::path::Path::new(path.as_ref()).exists())),
             ("read_text", [Value::Str(path)]) => std::fs::read_to_string(path.as_ref()).map(|text| Value::str(&text)),
@@ -65,6 +68,11 @@ impl Interp<'_> {
             }
         }
         names.sort();
+        self.paths_in(folder, names, span)
+    }
+
+    /// The paths of the things called `names` in a folder.
+    pub(crate) fn paths_in(&mut self, folder: &str, names: Vec<String>, span: Span) -> Result<Value, Diagnostic> {
         let mut paths = Vec::with_capacity(names.len());
         for name in names {
             let text = if folder.is_empty() || folder.ends_with('/') {
@@ -77,7 +85,7 @@ impl Interp<'_> {
         Ok(Value::Ok(Rc::new(Value::list(paths))))
     }
 
-    fn io_error(&mut self, err: &std::io::Error, span: Span) -> Result<Value, Diagnostic> {
+    pub(crate) fn io_error(&mut self, err: &std::io::Error, span: Span) -> Result<Value, Diagnostic> {
         let error = self.make_value("IoError", vec![("reason", Value::str(&err.to_string()))], span)?;
         Ok(Value::Err(Rc::new(error)))
     }

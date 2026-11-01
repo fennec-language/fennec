@@ -52,7 +52,26 @@ impl Lowering<'_> {
             return Ok(None);
         }
         let Some(Arg { name: None, is_mut: false, value }) = args.first() else { return Ok(None) };
-        let Some(parts) = written(value) else { return Ok(None) };
+        match (name.as_str(), args) {
+            ("enumerate", [_]) if self.gives_items(value) => {
+                return self.enumerated_generator(expr, value).map(Some);
+            }
+            ("zip", [_, second]) if self.gives_items(value) || self.gives_items(&second.value) => {
+                return self.zipped_generator(expr, value, &second.value).map(Some);
+            }
+            _ => {}
+        }
+        // A generator kept somewhere is gone through like one written here.
+        let item = format!("\0item{}", value.span.start);
+        let names = [item.clone()];
+        let read = name_at(&item, Span { start: value.span.start, end: value.span.start });
+        let parts = match written(value) {
+            Some(parts) => parts,
+            None if self.gives_items(value) => {
+                Written { elem: &read, names: &names, iter: value, cond: None }
+            }
+            None => return Ok(None),
+        };
         match (name.as_str(), args) {
             ("sum", [_] | [_, Arg { name: None, is_mut: false, .. }]) => {
                 self.summing(expr, &parts, args.get(1))
@@ -60,6 +79,60 @@ impl Lowering<'_> {
             ("any" | "all", [_]) => self.deciding(name == "any", &parts, expr.span).map(Some),
             _ => Ok(None),
         }
+    }
+
+    /// Whether what's written gives a generator.
+    fn gives_items(&self, value: &Expr) -> bool {
+        matches!(self.type_at(value.span), Some(Type::Iterator(_)))
+    }
+
+    /// The arguments for what uses every item of a generator and works on a list: the
+    /// generator's items, collected right here.
+    pub(super) fn collected_args(&self, callee: &Expr, args: &[Arg]) -> Option<Vec<Arg>> {
+        let takes_all = match &callee.kind {
+            ExprKind::Name(name) => {
+                self.lookup(name).is_none()
+                    && !self.context.functions.contains(name.as_str())
+                    && matches!(
+                        name.as_str(),
+                        "min" | "max" | "sorted" | "list" | "set" | "dict" | "reversed"
+                    )
+            }
+            ExprKind::Attr { name, .. } => name == "join",
+            _ => false,
+        };
+        let first =
+            args.first().filter(|first| takes_all && !first.is_mut && self.gives_items(&first.value))?;
+        let span = first.value.span;
+        let collected =
+            if let ExprKind::Comprehension { kind: CompKind::Generator, elem, names, iter, cond, .. } =
+                &first.value.kind
+            {
+                ExprKind::Comprehension {
+                    kind: CompKind::List,
+                    elem: elem.clone(),
+                    value: None,
+                    names: names.clone(),
+                    iter: iter.clone(),
+                    cond: cond.clone(),
+                }
+            } else {
+                let item = format!("\0item{}", span.start);
+                let read = name_at(&item, Span { start: span.start, end: span.start });
+                ExprKind::Comprehension {
+                    kind: CompKind::List,
+                    elem: Box::new(read),
+                    value: None,
+                    names: vec![item],
+                    iter: Box::new(first.value.clone()),
+                    cond: None,
+                }
+            };
+        let mut rewritten = args.to_vec();
+        if let Some(slot) = rewritten.first_mut() {
+            slot.value = Expr { kind: collected, span };
+        }
+        Some(rewritten)
     }
 
     fn summing(&mut self, expr: &Expr, parts: &Written<'_>, start: Option<&Arg>) -> Lowered<Option<Operand>> {

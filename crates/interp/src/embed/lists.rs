@@ -96,6 +96,17 @@ pub extern "C" fn new(element: i64, count: i64) -> i64 {
     })
 }
 
+/// A new empty list owned once, with room for `room` items, for a loop that knows about how
+/// many it will add. A long list's memory isn't touched until it's used.
+pub extern "C" fn with_room(element: i64, room: i64) -> i64 {
+    with(|state| {
+        let Some((at, element)) = self::element(state, element) else { return 0 };
+        let room = usize::try_from(room).unwrap_or(0);
+        let block = build(state, at, element.words(), &[], room);
+        state.heap.insert(block)
+    })
+}
+
 /// Takes over a list's owner and gives back one with a zeroed item more on the end, for
 /// native code to fill: the same block when it had one owner and room, or else a copy
 /// with room to double.

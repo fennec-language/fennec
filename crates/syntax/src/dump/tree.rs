@@ -97,7 +97,7 @@ impl Tree {
             Item::Test(test) => {
                 let word = if test.bench { "bench" } else { "test" };
                 self.node(&format!("{word} {}", quoted(&test.name)), Some(test.span), |tree| {
-                    for input in &test.inputs {
+                    for input in test.capabilities.iter().chain(&test.inputs) {
                         tree.param(input);
                     }
                     tree.stmts(&test.body);

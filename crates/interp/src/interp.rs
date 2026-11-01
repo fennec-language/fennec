@@ -68,6 +68,10 @@ pub struct Interp<'out> {
     step_limit: Option<u64>,
     files: bool,
     clock: bool,
+    /// What the capabilities of the test that's running reach, with no test running.
+    pub(crate) world: Option<crate::fakes::TestWorld>,
+    /// What tests get when they name a capability.
+    pub(crate) test_capabilities: crate::fakes::TestCapabilities,
     /// The command-line arguments and standard input `main` can receive.
     pub(crate) given: crate::inputs::Given,
     /// The methods the standard library gives built-in types, like `str`'s `def *`, by type.
@@ -107,6 +111,8 @@ impl<'out> Interp<'out> {
             step_limit: None,
             files: true,
             clock: true,
+            world: None,
+            test_capabilities: crate::fakes::TestCapabilities::Fakes,
             given: crate::inputs::Inputs::default().into(),
             built_in_methods: HashMap::new(),
         };
@@ -127,6 +133,11 @@ impl<'out> Interp<'out> {
     /// default limit of 1000 needs.
     pub fn limit_depth(&mut self, depth: usize) {
         self.max_depth = depth;
+    }
+
+    /// Gives tests the real capabilities rather than fakes, for `fennec test --real`.
+    pub fn use_real_capabilities(&mut self) {
+        self.test_capabilities = crate::fakes::TestCapabilities::Real;
     }
 
     /// Refuses `main` the `Fs` capability, for hosts that have no files, like a browser.

@@ -221,6 +221,7 @@ fn bytes_method(name: &str) -> Option<Method> {
 fn named_method(type_name: &str, name: &str) -> Option<Method> {
     Some(match (type_name, name) {
         ("Stdout", "print" | "write") => reads(&[], Type::Unit).any_args(),
+        ("Stdout", "captured") => reads(&[], Type::Str),
         ("Clock", "now") => reads(&[], Type::named("Instant")),
         ("Args", "len") => reads(&[], Type::Int),
         ("Stdin", "lines") => reads(&[], Type::list(Type::Str)),
@@ -241,6 +242,10 @@ impl FnCx<'_> {
         let Some(method) = method(ty, name) else {
             return self.unusable(no_method(ty, name, span), args);
         };
+        if name == "captured" && *ty == Type::named("Stdout") && !self.in_a_test() {
+            let help = "only a test's own body can read what it printed, from the `Stdout` it received";
+            return self.unusable(no_method(ty, name, span).with_help(help), args);
+        }
         if method.changes {
             let what = format!(
                 "`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"

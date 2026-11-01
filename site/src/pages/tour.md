@@ -78,6 +78,8 @@ def main(stdout: Stdout):
     stdout.print(scan([1, 2, 3]), scan([1, 2, 3], limit=1))
 ```
 
+**Planned:** a literal default giving the type, so that's written `limit=8`, and writing `limit: int = 8` is an error whose fix drops the `: int`. The type stays when the default is `None`, an empty collection or any other expression.
+
 **Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, three or more positional arguments, and neighboring parameters of the same type. The first argument and `self` are exempt.
 
 ## Built-in types
@@ -180,7 +182,7 @@ def main(stdout: Stdout):
     stdout.print(units[0].stats.health)
 ```
 
-**Planned: `mut x = place`.** This is the biggest change still to come. Today `mut x = place` makes a copy. In the locked design, it names the real place, so writing through it edits the original, as you'd expect from Python:
+`mut x = place` names the real place, so writing through it edits the original, as you'd expect from Python:
 
 ```fennec planned
 mut unit = world.units[id]
@@ -188,10 +190,11 @@ unit.stats.health -= 10          # edits the unit in the table
 
 best = unit                      # replacing a name makes a new value
 mut backup = copy(unit)          # a separate value, on purpose
-mut a, b = xs.pair(i, j)         # two elements of one list, checked as it runs
 ```
 
-Writing through a name and replacing it on the same name is a compile error, and so is a copy that can quietly go stale:
+Writing through a name and replacing it on the same name is a compile error. So is reading what the name came from while the name is still in use. The name can't be stored, returned or captured, so there are no lifetimes to write.
+
+Planned: `mut a, b = xs.pair(i, j)` for two elements of one list, and a compile error for a copy that can quietly go stale:
 
 ```fennec planned
 world.selected = world.units[i]          # error: edits to one won't reach the other
@@ -267,10 +270,16 @@ def main(stdout: Stdout):
     if target is None:
         return
     stdout.print(target.health)              # the compiler knows it's an Enemy here
-
-    other = find_target([])
-    stdout.print(other?.health else 1)       # use 1 if there's no target
 ```
+
+**Planned:** reading through something that might be missing, in a chain that ends in `else`. Today the chain is written with `?.`, which is going away, so `?` only ever means a failure passes up.
+
+```fennec planned
+health = find_target(enemies).health else 1     # 1 if there's no target
+score = scores.get(team).get(player) else 0
+```
+
+Without the `else`, it'll be a compile error whose fix adds one or an `is None` check.
 
 ## Errors
 
@@ -359,7 +368,7 @@ def main(stdout: Stdout):
     stdout.print(seen.get(Tile(x=1, y=2)) else 0, seen.get(Tile(x=0, y=0)) else 0)
 ```
 
-**Planned:** a compile error for a key struct with a float field or its own `def ==`, suggesting you key by a field instead; `SortedMap` and `SortedSet` on B-trees; `Grid` and `Packed`; and `sum(wallet, start=Money(cents=0))`, which replaces today's positional start.
+**Planned:** a compile error for a key struct with its own `def ==`, suggesting you key by a field instead; `SortedMap` and `SortedSet` on B-trees; `Grid` and `Packed`; and `sum(wallet, start=Money(cents=0))`, which replaces today's positional start.
 
 ## Strings
 
@@ -482,10 +491,18 @@ shared Cache:
 
     def set(mut self, key: str, page: Page):
         self._pages[key] = page
+```
 
-with a, b as mut x, mut y:               # several at once
-    x.total -= amount
-    y.total += amount
+Calling `cache.set(key, page)` takes the lock for that call. To change several handles together, `with` locks them all, always in the same order, so two transfers can't deadlock:
+
+```fennec planned
+shared Account:
+    total = 0
+
+def transfer(a: Account, b: Account, amount: int):
+    with a, b as mut x, mut y:               # both locked for the block
+        x.total -= amount
+        y.total += amount
 ```
 
 It holds plain values and `Id`s, never another `shared`, so handles can't form a cycle. Lock bodies can't do I/O, and there's no module-level `shared`: a handle in a signature acts like a capability, so a function's parameters show what it can reach. And a search for `shared` finds every shared thing in your program.
@@ -640,7 +657,7 @@ def update(mut particles: list[Particle], dt: f32):
         particle.position += particle.velocity * dt
 ```
 
-`@fast_math` opts one function out of Fennec's deterministic floats. Without it, floats follow IEEE operators, with no fused operations, and `sorted`, `min` and `max` use one order with NaN last, so results stay the same on every machine.
+`@fast_math` opts one function out of Fennec's deterministic floats. Without it, there are no fused operations, so results stay the same on every machine. Floats will also have one equality, order and hash: NaN equals itself and sorts last, `0.0` equals `-0.0`, and `a.approx(b, within=...)` compares computed values with a tolerance.
 
 ## C and unsafe code
 

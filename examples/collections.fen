@@ -7,7 +7,7 @@ def main(stdout: Stdout):
     stdout.print(quotient, remainder)
 
     hp = {"ash": 70, "kit": 40}
-    mut roster = hp
+    mut roster = copy(hp)
     roster["vex"] = 90
     roster["kit"] += 5
     stdout.print(hp)

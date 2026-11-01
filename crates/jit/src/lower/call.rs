@@ -36,7 +36,8 @@ impl Lowerer<'_, '_> {
         {
             return if name == "len" { self.length(expr, object) } else { self.absolute(expr, object) };
         }
-        if let Some(made) = self.sum_or_known(expr, callee, args)? {
+        let made = self.sum_or_known(expr, callee, args)?;
+        if let Some(made) = made.map_or_else(|| self.copy_call(callee, args), |made| Ok(Some(made)))? {
             return Ok(made);
         }
         if let Some(name) = self.std_member(callee) {
@@ -525,6 +526,24 @@ impl Lowerer<'_, '_> {
         let call =
             Expr { kind: ExprKind::Call { callee: Box::new(callee.clone()), args: args.to_vec() }, span };
         self.interpret_call(&call, &values).map(Some)
+    }
+
+    /// `copy(value)`: a value of its own. One the runtime counts is shared until it changes.
+    fn copy_call(&mut self, callee: &Expr, args: &[Arg]) -> Result<Option<Lowered>, Diagnostic> {
+        let ExprKind::Name(name) = &callee.kind else { return Ok(None) };
+        let ([arg], "copy", None, false) =
+            (args, name.as_str(), self.local(name), self.shared.compiled.contains_key(name))
+        else {
+            return Ok(None);
+        };
+        let (value, ty) = self.expr(&arg.value)?;
+        let Some(held) = value else { return Ok(Some((value, ty))) };
+        let held = match ty {
+            Ty::Struct(id) => self.clone_struct(held, id)?,
+            ty if ty.counted() => self.own(held, ty),
+            _ => held,
+        };
+        Ok(Some((Some(held), ty)))
     }
 
     /// What the engines provide on numbers, given values of the right kinds.

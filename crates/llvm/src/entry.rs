@@ -104,10 +104,28 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
             "  %l{number} = call i64 @fennec_aot_literal(i64 {number})\n  %a{number} = inttoptr i64 %l{number} to ptr\n  store ptr %a{number}, ptr @\"{symbol}\""
         );
     }
+    // What closes a generator let go partway, by its shape, for those that are ever made.
+    let mut thunks = String::new();
+    for def in &program.generators {
+        let Some(abandon) = &def.abandon else { continue };
+        let shape = format!("h_{}", def.name);
+        let Some((_, number)) = image.elements.iter().find(|(symbol, _)| *symbol == shape) else { continue };
+        let thunk = format!("@\"t_{}\"", def.name);
+        let _ = writeln!(out, "  call void @fennec_set_abandon(i64 {number}, ptr {thunk})");
+        let _ = writeln!(
+            thunks,
+            "declare swiftcc void {code}(ptr, ptr swifterror)\ndefine internal void {thunk}(i64 %g) {{\n  %at = inttoptr i64 %g to ptr\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  call swiftcc void {code}(ptr %at, ptr swifterror %failed)\n  ret void\n}}\n",
+            code = crate::emit::symbol(abandon)
+        );
+    }
+    if !thunks.is_empty() {
+        thunks += "declare void @fennec_set_abandon(i64, ptr)\n";
+    }
     if flagged {
         out += "  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n";
     }
     let _ = writeln!(out, "  call swiftcc void @\"f_main\"({})\n  ret void\n}}\n", args.join(", "));
+    out += &thunks;
     let _ = writeln!(
         out,
         "define i32 @main(i32 %argc, ptr %argv) {{\nstart:\n  br label %head\nhead:\n  %at = phi i64 [ 0, %start ], [ %next, %word ]\n  %more = icmp ult i64 %at, {count}\n  br i1 %more, label %word, label %done\nword:\n  %place = getelementptr [{count} x i64], ptr @fennec_image, i64 0, i64 %at\n  %value = load i64, ptr %place\n  call void @fennec_aot_image(i64 %value)\n  %next = add i64 %at, 1\n  br label %head\ndone:\n  %code = call i32 @fennec_aot_run(ptr @fennec_entry, i64 {})\n  ret i32 %code\n}}",

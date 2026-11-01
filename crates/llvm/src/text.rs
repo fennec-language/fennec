@@ -1,6 +1,6 @@
 //! Printing and f-strings.
 
-use fennec_interp::embed::layout::TEXT_CHARS;
+use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
 use fennec_ir::{FormatPart, LocalId, Operand};
 use fennec_syntax::{BinOp, Span};
 
@@ -108,6 +108,17 @@ impl Emit<'_, '_, '_> {
                     self.retain(&value);
                     return Ok(value);
                 }
+                Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
+                    self.declare("declare i64 @fennec_mark() nounwind");
+                    self.declare("declare void @fennec_truncate(i64) nounwind");
+                    self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
+                    self.declare("declare ptr @fennec_value_text(i64) nounwind");
+                    let (mark, handle) = (self.temp(), self.temp());
+                    self.line(&format!("{mark} = call i64 @fennec_mark()"));
+                    self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
+                    self.line(&format!("{temp} = call ptr @fennec_value_text(i64 {handle})"));
+                    self.line(&format!("call void @fennec_truncate(i64 {mark})"));
+                }
                 other => return Err(format!("it formats a {other:?}, which this backend doesn't take yet")),
             }
             return Ok(temp);
@@ -178,7 +189,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{joined} = call ptr @fennec_str_concat(ptr {a}, ptr {b})"));
                 Ok(joined)
             }
-            BinOp::Eq | BinOp::NotEq => Ok(self.same_blocks(op, (a, b))),
+            BinOp::Eq | BinOp::NotEq => Ok(self.same_text(op, (a, b))),
             BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
                 self.declare("declare i64 @fennec_str_compare(ptr, ptr) nounwind");
                 let cc = match op {
@@ -206,6 +217,25 @@ impl Emit<'_, '_, '_> {
             }
             other => Err(format!("it uses {other:?} on strings, which this backend doesn't take yet")),
         }
+    }
+
+    /// `==` on two strings: the same block, different lengths and short ones decide it here.
+    fn same_text(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+        self.declare("declare i8 @fennec_box_equal(ptr, ptr) nounwind");
+        self.module.add_helper(
+            "fen_same_text",
+            format!(
+                "define internal i1 @fen_same_text(ptr %a, ptr %b) #0 {{\nentry:\n  %same = icmp eq ptr %a, %b\n  br i1 %same, label %yes, label %lengths\nlengths:\n  %a_at = getelementptr inbounds i8, ptr %a, i64 {TEXT_BYTES}\n  %b_at = getelementptr inbounds i8, ptr %b, i64 {TEXT_BYTES}\n  %a_bytes = load i64, ptr %a_at\n  %b_bytes = load i64, ptr %b_at\n  %alike = icmp eq i64 %a_bytes, %b_bytes\n  br i1 %alike, label %size, label %no\nsize:\n  %short = icmp ule i64 %a_bytes, 8\n  br i1 %short, label %word, label %slow\nword:\n  %a_text = getelementptr inbounds i8, ptr %a, i64 {TEXT}\n  %b_text = getelementptr inbounds i8, ptr %b, i64 {TEXT}\n  %a_word = load i64, ptr %a_text\n  %b_word = load i64, ptr %b_text\n  %equal_word = icmp eq i64 %a_word, %b_word\n  ret i1 %equal_word\nslow:\n  %equal = call i8 @fennec_box_equal(ptr %a, ptr %b)\n  %is = icmp ne i8 %equal, 0\n  ret i1 %is\nyes:\n  ret i1 true\nno:\n  ret i1 false\n}}\n\n"
+            ),
+        );
+        let bit = self.temp();
+        self.line(&format!("{bit} = call i1 @fen_same_text(ptr {a}, ptr {b})"));
+        if op == BinOp::Eq {
+            return bit;
+        }
+        let flipped = self.temp();
+        self.line(&format!("{flipped} = xor i1 {bit}, true"));
+        flipped
     }
 
     /// `==` on two blocks, as the runtime compares them.

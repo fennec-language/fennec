@@ -73,8 +73,8 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 ## Collections
 
-**A struct works as a dict key with nothing to write.** It hashes all its fields automatically. A struct with a float field, or one that defines its own `def ==`, can't be a key, and the compile error suggests keying by a field. There's no `def key`.
-*Why:* A hash can't then disagree with `==`, which is the classic bug in hand-written keys. A float makes a poor key inside a struct, since NaN never equals itself and `0.0` equals `-0.0`.
+**A struct works as a dict key with nothing to write.** It hashes all its fields automatically. A struct that defines its own `def ==` can't be a key, and the compile error suggests keying by a field. There's no `def key`. `==` and `!=` call a type's own `def ==` when it has one; today they don't yet, which is a bug.
+*Why:* A hash can't then disagree with `==`, which is the classic bug in hand-written keys. Float fields are fine, because float equality and hashing agree.
 
 **Dicts use a fast keyed hash with a random seed per process,** fixed in tests and replays. A dict whose probes get suspiciously long rehashes itself with SipHash.
 *Why:* Normal programs get the fast hash. An attacker can't work out colliding keys without the seed, and if collisions turn up anyway, that one dict pays for the stronger hash. Iteration follows insertion order, so the seed can't change what a program does.
@@ -131,7 +131,18 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 **Evaluation is always left to right.**
 
-**Floats give the same results on every platform.** Operators follow IEEE, and `sorted`, `min` and `max` use one total order with NaN last, so a NaN's sign can't change a result. There are no fused operations and no fast-math outside an opt-in, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `@fast_math` on a function opts out. This replaces `with fast_math():`.
+**Floats have one equality, order and hash everywhere.**
+- `==` treats NaN as equal to NaN, and `0.0` as equal to `-0.0`.
+- `<`, `<=`, `>` and `>=` use the total order `sorted`, `min` and `max` use, with NaN last, so a NaN's sign can't change a result.
+- Hashing follows that equality, so floats and structs with float fields work as dict keys and in sets.
+- Arithmetic stays IEEE.
+- `a.approx(b, within=...)` compares computed values with a tolerance. It isn't used for keys, because "close to" isn't transitive.
+- `x != x` no longer finds NaN. Write `x.is_nan()`.
+
+This replaces IEEE comparison operators, and the rule that a struct with a float field can't be a dict key.
+*Why:* Floats compare, sort, hash and key consistently. Measured with LLVM, every benchmark kernel stayed within ±0.4% of IEEE's instruction count once comparisons against a constant compile to one comparison, and vectorizing was unchanged.
+
+**Floats give the same results on every platform.** There are no fused operations and no fast-math outside an opt-in, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `@fast_math` on a function opts out. This replaces `with fast_math():`.
 *Why:* It makes lockstep multiplayer and replays possible. It costs a little, and only in math-heavy code, which can opt out.
 
 **Parallel reductions combine in a fixed order.** How `sum(... for e in parallel(xs))` splits and combines its work depends on the data's size, never the thread count.
@@ -192,17 +203,21 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 **Parameters can have defaults, and a parameter with a default is passed by name only.**
 ```fennec
-def scan(rows: list[Row], limit: int = 8) -> list[Row]:
+def scan(rows: list[Row], limit=8) -> list[Row]:
     ...
 
 scan(rows)
 scan(rows, limit=100)
 ```
+- A literal default gives the parameter its type, for `int`, `float`, `str` and `bool` literals and for enum cases: `mode=Mode.fast`.
+- The type is written when the default is `None`, an empty `[]` or `{}`, a constant's name or any other expression, or when the type isn't the literal's own: `limit: i32 = 8`, `ratio: f32 = 0.5`.
+- Writing the type the literal already gives is a compile error: `name: str = "Chris"` and `limit: int = 8`. The fix removes the type, and `fennec fix` applies it.
 - A default is a plain value computed at compile time, under the same rule as a module constant. Calling without it costs the same as passing the value.
 - There are no exceptions in `std` either. `d.get(key)` returns an optional, so a fallback is written `d.get(key) else 0`, and `sum` takes `start=`.
 - Required parameters may be positional, within the limits below.
 
-*Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap.
+This replaces `limit: int = 8` as the written form.
+*Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap. The literal already states the type, so the signature stays complete, and the declaration reads like the call. Making the repeated type an error keeps one way to write it.
 
 **Some positional arguments are a hard error.** These are bare `True` or `False`, three or more positional arguments, and positional arguments to neighboring parameters of the same type. The first argument and `self` are exempt. The fix names them:
 ```fennec
@@ -236,6 +251,23 @@ if result is Err(NotFound):
 
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
+
+**`?` only ever passes a failure up, and there's no `?.`.** `rows = load(path)?.rows` passes the failure up, then reads `.rows`.
+This replaces optional chaining with `?.`.
+*Why:* Every `?` marks a place the function can leave, and a reader can see that without knowing any types.
+
+**A value that might be missing is handled where it's read:** with an `is None` check, `match`, or `else` at the end of a chain.
+```fennec
+name = units.get(id).name else "?"
+score = scores.get(team).get(player) else 0
+hp = (units.get(id).hp else 0) + 1
+```
+- Fields, calls and `[]` on an optional are allowed only in a chain that ends in `else`. The chain stops at the first missing or failing step and gives the default.
+- `else` covers only the chain right before it. A larger expression needs brackets.
+- `else` gives a value, so it doesn't cover actions. Calling a method for its effect on something that might be missing needs `if x is not None:`.
+- Without `else`, it's a compile error whose fix adds one or a check.
+
+*Why:* Each spelling says what the writer meant. `?` means this line can leave the function. `else` means missing or failed is fine here, so use this instead. `[]` means it must be there, so a missing value is a bug that stops with an error naming the step and the key.
 
 **`where` rules run on every write to a guarded field,** and on defaults at compile time: `health = 100 where health >= 0`. A rule looks only at its own field. An invariant across several fields goes in a named constructor or a method. Writes after construction aren't checked today, which is a bug.
 *Why:* A rule that only holds at construction promises something it doesn't deliver. Checking one field keeps each write's cost obvious.
@@ -373,7 +405,18 @@ def write[T, W: Writer](x: T, mut out: W):
 
 **`Self` in an interface's method means the type that fits it.** `interface Signed: def abs(self) -> Self` says `abs` returns the same type it's called on: a `Money` for a `Money`.
 
-**`Eq`, `Hash`, `Ordered` and `Format` are built-in interfaces,** satisfied automatically wherever the automatic `==`, hashing, ordering and printing apply.
+**`Eq`, `Hash`, `Ordered` and `Format` are built-in interfaces,** satisfied automatically wherever the automatic `==`, hashing, ordering and printing apply. A type with its own `def str` still satisfies `Format`.
+
+**`in` is an operator a type defines,** like `def +`, `def <` and `def []`.
+```fennec
+struct Inventory:
+    _items: SortedMap[str, int]
+
+    def in(self, name: str) -> bool:
+        name in self._items
+```
+`key in m` calls the right-hand value's `def in`, and `not in` follows from it. `list`, `dict`, `set` and `str` define it in `std` the same way, so there's no hook.
+*Why:* User collections like `SortedMap` then read like built-in ones, with no `map.has(key)`.
 
 **`=>` is one expression; anything longer is a nested `def`.** There are no multi-line anonymous functions, as in Python. Function types are written `(int, str) -> bool`.
 
@@ -451,6 +494,13 @@ struct Color:
 - A `shared` handle or a function value is a compile error naming the field.
 
 *Why:* Types don't know about formats and formats don't know about types, so a new format is written once and works with every struct, and a new struct works with every format.
+
+**Printing is one more format.** `print`, `str(x)` and f-strings all go through it.
+- By default a value prints from its fields, through the same generic breakdown as other formats.
+- A type that needs something else writes `def str(self, mut out: StrWriter)`, the same shape as `def json(self, mut out: JsonWriter)`.
+- `std` collections like `SortedMap` and `Deque` print their items, not their internals.
+
+*Why:* One mechanism covers printing and every data format, and it's how `std` types keep their internals hidden. The method is `str`, not `text`, because `text` would clash with common fields like `message.text`, while `str(x)` already means "make text of this", and the name follows `json` and `pack`.
 
 **`std.pack` is the default binary format,** written in plain Fennec.
 - There are no field names on the wire, and a schema hash says which shape the data has.
@@ -568,10 +618,16 @@ shared Cache:
 
     def set(mut self, key: str, page: Page):
         self._pages[key] = page
+```
+Calling `cache.set(key, page)` takes the lock for the call. To change several handles together, `with` locks them all, always in the same order:
+```fennec
+shared Account:
+    total = 0
 
-with a, b as mut x, mut y:
-    x.total -= amount
-    y.total += amount
+def transfer(a: Account, b: Account, amount: int):
+    with a, b as mut x, mut y:            # both locked for the block
+        x.total -= amount
+        y.total += amount
 ```
 - `a = cache` gives a second name for the same cell. Fields are private with `_name`.
 - It holds plain values and `Id`s, never another `shared`, so handles can't form a cycle. There's no `weak` and no cycle collector.

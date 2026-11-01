@@ -19,9 +19,9 @@ def main(stdout: Stdout):
     stdout.print(ash)
     stdout.print(ash.position.length())
 
-    mut copy = ash
-    copy.take_damage(30)
-    stdout.print(ash.health, copy.health)
+    mut twin = copy(ash)
+    twin.take_damage(30)
+    stdout.print(ash.health, twin.health)
 
     ash.take_damage(120)
     stdout.print(ash.is_alive(), ash.health)
@@ -34,4 +34,4 @@ def main(stdout: Stdout):
 
     velocity = Vec3(x=1.0, y=2.0, z=0.0)
     stdout.print(ash.position + velocity * 2.0)
-    stdout.print(ash == copy, copy == replace(copy))
+    stdout.print(ash == twin, twin == replace(twin))

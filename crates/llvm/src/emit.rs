@@ -5,12 +5,12 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 
 use fennec_interp::embed::layout::COUNT;
-use fennec_ir::{Function, InstKind, LocalId, Operand, Program, Terminator};
+use fennec_ir::{Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
 use fennec_layout::Layouts;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
 use crate::Shared;
-use crate::analysis::{Analysis, Whole, callees, whole};
+use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
 
 const ATTRIBUTES: &str = "attributes #0 = { nounwind \"frame-pointer\"=\"non-leaf\" }\n\
@@ -185,6 +185,11 @@ impl<'p> Module<'_, 'p> {
             self.declare(&format!("declare swiftcc {ret} {}({params}) #0", symbol(&callee.name)));
         }
         Ok(())
+    }
+
+    /// A generator, by its name or the name of one of its functions.
+    pub(crate) fn generator(&self, name: &str) -> Option<&'p GeneratorDef> {
+        self.whole.generators.get(name).copied()
     }
 
     pub(crate) fn flagged(&self, name: &str) -> bool {
@@ -447,6 +452,7 @@ impl Emit<'_, '_, '_> {
             self.start_block(&format!("bb{at}"));
             for inst in &block.insts {
                 self.inst(&inst.kind, inst.span, at)?;
+                self.let_go_after(&inst.kind);
             }
             if let Some((list, limit)) = self.known.reservations.get(&at).cloned() {
                 self.reserve(LocalId(list), &limit)?;
@@ -1009,6 +1015,7 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest.ok_or("no result")?, &length)
             }
             "list.append" => self.append(args),
+            "result.expect" => self.expect(dest, args, span),
             "str.len" | "str" | "str.code" | "str.join" | "str.contains" => {
                 self.text_builtin(dest, name, args, span)
             }
@@ -1164,6 +1171,11 @@ impl Emit<'_, '_, '_> {
             }
 
             InstKind::IsNone { dest, value } => self.is_case(*dest, value, "None"),
+            InstKind::MakeOk { dest, value } => self.make_case(*dest, "Ok", value.as_slice()),
+            InstKind::MakeErr { dest, error } => self.make_case(*dest, "Err", std::slice::from_ref(error)),
+            InstKind::IsErr { dest, value } => self.is_case(*dest, value, "Err"),
+            InstKind::GetOk { dest, value } => self.get_case_field(*dest, value, "Ok", "value"),
+            InstKind::GetErr { dest, value } => self.get_case_field(*dest, value, "Err", "error"),
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make(*dest, items),
@@ -1179,7 +1191,46 @@ impl Emit<'_, '_, '_> {
             InstKind::Format { dest, parts } => self.format(*dest, parts, span),
             InstKind::Builtin { dest, name, args, .. } => self.builtin(*dest, name, args, span),
             InstKind::Call { dest, function, args } => self.call(*dest, function, args, span),
+            InstKind::MakeGenerator { dest, generator, args } => self.make_generator(*dest, generator, args),
+            InstKind::GetSlot { dest, generator, slot } => self.get_slot(*dest, generator, *slot),
+            InstKind::SetSlot { generator, slot, value } => self.set_slot(generator, *slot, value),
+            InstKind::Resume { dest, generator, known } => {
+                self.resume(*dest, generator, known.as_deref(), span)
+            }
             other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
+        }
+    }
+
+    /// A local read once lets go of its value right after that, rather than when the function
+    /// returns, so it doesn't still count as an owner when the next line changes what it read.
+    fn let_go_after(&mut self, inst: &InstKind) {
+        let (mut reads, mut writes) = (Vec::new(), Vec::new());
+        visit(inst, |operand| reads.push(operand.clone()), |local| writes.push(local));
+        // What's made from it may only be borrowing, or may stand for it.
+        let leans = writes.iter().any(|dest| {
+            self.known.is_borrowed(*dest) || self.known.is_taken(*dest) || self.known.alias(*dest).is_some()
+        });
+        if leans {
+            return;
+        }
+        let mut done_with: Vec<LocalId> = Vec::new();
+        for operand in reads {
+            let Operand::Local(mut local) = operand else { continue };
+            done_with.push(local);
+            // With a borrow finished, what it borrowed from is finished too.
+            while let Some(lender) = self.known.lender(local) {
+                done_with.push(lender);
+                local = lender;
+            }
+        }
+        for local in done_with {
+            if self.owns(local) && self.known.moves(local) && !writes.contains(&local) {
+                let kind = self.kinds.get(local.0).cloned().unwrap_or(Kind::Unit);
+                let (held, slot) = (self.temp(), self.slot(local));
+                self.line(&format!("{held} = load ptr, ptr {slot}"));
+                self.line(&format!("store ptr null, ptr {slot}"));
+                self.release_kind(&held, &kind);
+            }
         }
     }
 
@@ -1239,9 +1290,7 @@ impl Emit<'_, '_, '_> {
             Terminator::Return(value) => self.give_back(value.as_ref())?,
             Terminator::Unreachable => self.line("unreachable"),
             Terminator::NoMatch { value, span } => self.no_match(value, *span)?,
-            Terminator::Stop { .. } => {
-                return Err(format!("it ends with `{end}`, which this backend doesn't take yet"));
-            }
+            Terminator::Stop { message, span } => self.stop(message, *span),
         }
         Ok(())
     }

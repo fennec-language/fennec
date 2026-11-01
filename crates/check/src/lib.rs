@@ -13,6 +13,7 @@
 //! besides the signatures, a check gives the type of every expression and every name: the
 //! typed tree a compiler builds on. See [`Types`].
 
+mod alias;
 mod builtins;
 mod call;
 mod checker;
@@ -102,6 +103,11 @@ pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> 
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
+    if !checked.places.is_empty() {
+        fennec_syntax::visit::functions_mut(module, &mut |def| {
+            alias::write_in(&mut def.body, &checked.places);
+        });
+    }
     if !checked.cases.is_empty()
         || !checked.float_sums.is_empty()
         || !checked.generator_types.is_empty()
@@ -147,6 +153,8 @@ pub struct Checked {
     cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     float_sums: BTreeSet<(u32, u32)>,
+    /// The statements that name a place, by `mut x = place`.
+    places: BTreeSet<(u32, u32)>,
     /// The defaults each call leaves out, to write into it.
     defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.

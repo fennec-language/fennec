@@ -76,8 +76,26 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     let here = 0_u8;
     let limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
     entry(i64::try_from(limit).unwrap_or(0));
-    let (output, failure, _) = super::finish();
+    let (output, failure, leftovers) = super::finish();
+    report_counts(&leftovers.counts);
     (output, failure.map(|failure| sources.render(&failure)).unwrap_or_default())
+}
+
+/// With `FENNEC_COUNTS` set, says on stderr what the run allocated and copied, so a test can
+/// check that a program doesn't copy.
+fn report_counts(counts: &heap::Counts) {
+    if std::env::var_os("FENNEC_COUNTS").is_none() {
+        return;
+    }
+    let _ = writeln!(std::io::stderr(), "{}", counts_line(counts));
+}
+
+/// The line `report_counts` writes.
+pub(super) fn counts_line(counts: &heap::Counts) -> String {
+    format!(
+        "copies {} copied_bytes {} largest_copy {} allocations {} allocated_bytes {}",
+        counts.copies, counts.copied_bytes, counts.largest_copy, counts.allocations, counts.allocated_bytes
+    )
 }
 
 /// Ends the program for a failure where nothing can pass it on, printing what it printed and
@@ -85,7 +103,8 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
 /// stays for whoever finishes the run.
 pub(super) fn stop_for_failure() {
     let Some(sources) = SOURCES.take() else { return };
-    let (output, failure, _) = super::finish();
+    let (output, failure, leftovers) = super::finish();
+    report_counts(&leftovers.counts);
     let failure = failure.map(|failure| sources.render(&failure)).unwrap_or_default();
     let code = report(&output, &failure);
     if let Some(stop) = STOP.get() {

@@ -13,7 +13,7 @@ use crate::value::Value;
 use crate::{format, ops, stdlib};
 
 /// The builtins. Standard library functions, like `json.loads`, are in `stdlib`.
-const NAMES: [&str; 21] = [
+const NAMES: [&str; 22] = [
     "Err",
     "Ok",
     "all",
@@ -29,6 +29,7 @@ const NAMES: [&str; 21] = [
     "parallel",
     "range",
     "replace",
+    "copy",
     "reversed",
     "round",
     "set",
@@ -105,6 +106,7 @@ impl Interp<'_> {
         }
         match (name, values.as_slice()) {
             ("Ok", [value]) => Ok(Value::Ok(Rc::new(value.clone()))),
+            ("copy", [value]) => Ok(value.clone()),
             ("bytes", []) => Ok(Value::Bytes(Rc::from([]))),
             ("bytes", [items]) => self.bytes(items.clone(), span),
             ("Ok", []) => Ok(Value::Ok(Rc::new(Value::Unit))),

@@ -1,0 +1,12 @@
+struct Stats:
+    hp = 0
+
+struct Unit:
+    stats: Stats
+
+def main(stdout: Stdout):
+    mut unit = Unit(stats=Stats())
+    mut stats = unit.stats
+    stats.hp = 1
+    stats = Stats()
+    stdout.print(unit, stats)

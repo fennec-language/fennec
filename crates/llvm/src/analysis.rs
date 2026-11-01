@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use fennec_check::Type;
 use fennec_ir::facts::{Facts, Range};
-use fennec_ir::{Function, InstKind, LocalId, Operand, Program, Terminator};
+use fennec_ir::{Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
 use fennec_syntax::{BinOp, UnaryOp};
 
 const FULL: Range = (i64::MIN, i64::MAX);
@@ -30,9 +30,14 @@ pub(crate) struct Analysis {
     shared: HashSet<usize>,
     /// Lists changed here, by an index or an append.
     changed: HashSet<usize>,
+    /// Locals whose one read can run again without their one write running first: in a loop
+    /// that the write is outside of.
+    read_again: HashSet<usize>,
     /// Locals read once, right away, from something that holds on to the value meanwhile, so
     /// they needn't own it.
     borrowed: HashSet<usize>,
+    /// What each borrowing local borrows from, to let go once the borrow's done with.
+    borrowed_from: HashMap<usize, LocalId>,
     /// Locals taking a field's value out to change it and put it back: it never has two owners.
     taken: HashSet<usize>,
     /// Locals taking an item out of a list to change it and put it back: the local or field
@@ -51,6 +56,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) functions: HashMap<&'p str, &'p Function>,
     pub(crate) analyses: HashMap<&'p str, Analysis>,
     pub(crate) can_fail: HashSet<&'p str>,
+    /// Each generator, by its name and by the names of its functions.
+    pub(crate) generators: HashMap<&'p str, &'p GeneratorDef>,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments.
@@ -89,7 +96,7 @@ fn exact(op: BinOp, a: Range, b: Range) -> Option<(i128, i128)> {
 }
 
 /// What an instruction reads and writes, by local, to count them.
-fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(LocalId)) {
+pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(LocalId)) {
     let mut local = |id: LocalId| read(&Operand::Local(id));
     match inst {
         InstKind::SetField { object, value, .. } => {
@@ -115,8 +122,16 @@ fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(
         | InstKind::GetSome { dest, value }
         | InstKind::IsNone { dest, value }
         | InstKind::IsCase { dest, value, .. }
-        | InstKind::GetCaseField { dest, value, .. } => {
+        | InstKind::GetCaseField { dest, value, .. }
+        | InstKind::MakeErr { dest, error: value }
+        | InstKind::IsErr { dest, value }
+        | InstKind::GetOk { dest, value }
+        | InstKind::GetErr { dest, value } => {
             read(value);
+            write(*dest);
+        }
+        InstKind::MakeOk { dest, value } => {
+            value.iter().for_each(&mut read);
             write(*dest);
         }
         InstKind::Binary { dest, lhs, rhs, .. } => {
@@ -161,6 +176,20 @@ fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(
             }
         }
         InstKind::Constant { dest, .. } => write(*dest),
+        InstKind::MakeGenerator { dest, args, .. } => {
+            for (_, value) in args {
+                read(value);
+            }
+            write(*dest);
+        }
+        InstKind::GetSlot { dest, generator, .. } | InstKind::Resume { dest, generator, .. } => {
+            read(generator);
+            write(*dest);
+        }
+        InstKind::SetSlot { generator, value, .. } => {
+            read(generator);
+            read(value);
+        }
         InstKind::Builtin { dest, args, .. } | InstKind::Call { dest, args, .. } => {
             args.iter().for_each(&mut read);
             if let Some(dest) = dest {
@@ -317,13 +346,16 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
         writes: vec![0; count],
         shared: HashSet::new(),
         changed: HashSet::new(),
+        read_again: HashSet::new(),
         borrowed: HashSet::new(),
+        borrowed_from: HashMap::new(),
         taken: HashSet::new(),
         items_taken: HashMap::new(),
         aliases: HashMap::new(),
         reservations: HashMap::new(),
     };
     let grown = count_uses(function, changes, &mut known);
+    find_reads_again(function, &mut known);
     // A copy shares its source, unless the source is never read again, and a block put inside
     // something else is shared by that.
     for inst in function.blocks.iter().flat_map(|block| &block.insts) {
@@ -377,6 +409,60 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
     known
 }
 
+/// Whether a block can get back to itself without going through another.
+fn comes_back(function: &Function, block: usize, without: usize) -> bool {
+    let mut seen = HashSet::new();
+    let mut waiting: Vec<usize> = function
+        .blocks
+        .get(block)
+        .map(|held| held.end.targets().iter().map(|target| target.0).collect())
+        .unwrap_or_default();
+    while let Some(at) = waiting.pop() {
+        if at == block {
+            return true;
+        }
+        if at != without
+            && seen.insert(at)
+            && let Some(held) = function.blocks.get(at)
+        {
+            waiting.extend(held.end.targets().iter().map(|target| target.0));
+        }
+    }
+    false
+}
+
+/// Finds the locals written and read once, whose read can happen more times than their write.
+fn find_reads_again(function: &Function, known: &mut Analysis) {
+    let mut written_in: HashMap<usize, usize> = HashMap::new();
+    let mut read_in: HashMap<usize, usize> = HashMap::new();
+    for (at, block) in function.blocks.iter().enumerate() {
+        for inst in &block.insts {
+            visit(
+                &inst.kind,
+                |operand| {
+                    if let Operand::Local(local) = operand {
+                        read_in.insert(local.0, at);
+                    }
+                },
+                |local| {
+                    written_in.insert(local.0, at);
+                },
+            );
+        }
+        if let Terminator::Return(Some(Operand::Local(local)))
+        | Terminator::Branch { cond: Operand::Local(local), .. } = &block.end
+        {
+            read_in.insert(local.0, at);
+        }
+    }
+    for (local, read) in read_in {
+        let written = written_in.get(&local).copied().unwrap_or(usize::MAX);
+        if read != written && comes_back(function, read, written) {
+            known.read_again.insert(local);
+        }
+    }
+}
+
 /// Whether nothing an instruction does can change or let go of a value something else holds.
 fn is_quiet(inst: &InstKind) -> bool {
     matches!(
@@ -401,7 +487,20 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
         InstKind::IsNone { value, .. }
         | InstKind::IsCase { value, .. }
         | InstKind::GetCaseField { value, .. } => *value == held,
-        InstKind::Builtin { name, args, .. } => name == "list.len" && args.first() == Some(&held),
+        InstKind::Builtin { name, args, .. } => {
+            args.first() == Some(&held)
+                && !args.iter().skip(1).any(|arg| *arg == held)
+                && matches!(
+                    name.as_str(),
+                    "list.len"
+                        | "dict.get"
+                        | "dict.len"
+                        | "dict.contains"
+                        | "set.len"
+                        | "set.contains"
+                        | "str.len"
+                )
+        }
         _ => false,
     }
 }
@@ -428,6 +527,7 @@ fn find_borrows(function: &Function, known: &mut Analysis) {
                 for next in later {
                     if only_looks(&next.kind, dest) {
                         known.borrowed.insert(dest.0);
+                        known.borrowed_from.insert(dest.0, source);
                         break;
                     }
                     if !is_quiet(&next.kind) {
@@ -640,13 +740,20 @@ impl Analysis {
     /// Whether reading `from` is the only thing that ever reads what it holds, so a copy can
     /// take over its owner rather than sharing.
     pub(crate) fn moves(&self, from: LocalId) -> bool {
-        self.reads.get(from.0) == Some(&1) && self.writes.get(from.0) == Some(&1)
+        self.reads.get(from.0) == Some(&1)
+            && self.writes.get(from.0) == Some(&1)
+            && !self.read_again.contains(&from.0)
     }
 
     /// Whether this function changes a list in a local nothing else here comes to hold, so
     /// it's enough to see that it has one owner when the local gets it.
     pub(crate) fn alone_once_checked(&self, local: LocalId) -> bool {
         self.changed.contains(&local.0) && !self.shared.contains(&local.0)
+    }
+
+    /// What a local borrows from, if it's borrowing.
+    pub(crate) fn lender(&self, local: LocalId) -> Option<LocalId> {
+        self.borrowed_from.get(&local.0).copied()
     }
 
     /// Whether a local looks at a value without owning it.
@@ -699,6 +806,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "list.pop"
                     | "sorted.key"
                     | "list.remove_where"
+                    | "result.expect"
             )
         }
         InstKind::GetIndex { object: Operand::Local(list), index, .. } => !known.inside(*list, index),
@@ -708,6 +816,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         | InstKind::Format { .. }
         | InstKind::Slice { .. }
         | InstKind::CallClosure { .. }
+        | InstKind::Resume { .. }
         | InstKind::Constant { .. } => true,
         _ => false,
     };
@@ -724,11 +833,24 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
     let changes = |callee: &str| functions.get(callee).map_or_else(Vec::new, |f| f.mut_params.clone());
     let analyses: HashMap<&str, Analysis> =
         every().map(|function| (function.name.as_str(), analyze(function, &changes))).collect();
-    let can_fail = every()
+    let mut generators = HashMap::new();
+    for def in &program.generators {
+        generators.insert(def.name.as_str(), def);
+        generators.insert(def.resume.as_str(), def);
+        if let Some(abandon) = &def.abandon {
+            generators.insert(abandon.as_str(), def);
+        }
+    }
+    // A generator's functions are called through its block, so all the same way: with the flag.
+    let mut can_fail: HashSet<&str> = every()
         .filter(|function| {
             analyses.get(function.name.as_str()).is_none_or(|known| fails_itself(function, known))
         })
         .map(|function| function.name.as_str())
         .collect();
-    Whole { functions, analyses, can_fail }
+    for def in &program.generators {
+        can_fail.insert(def.resume.as_str());
+        can_fail.extend(def.abandon.as_deref());
+    }
+    Whole { functions, analyses, can_fail, generators }
 }

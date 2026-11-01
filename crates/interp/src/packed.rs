@@ -35,6 +35,9 @@ pub enum Element {
     /// A list inside a boxed value, by the address of its block, with the kind of its items.
     /// Packed lists never hold these either.
     List(Rc<Element>),
+    /// An optional of something held by the address of a block: the address, or 0 for
+    /// `None`. There's no block for `Some`. Packed lists never hold these.
+    Maybe(Rc<Element>),
     /// An enum, with each case's fields in the order they're written, taking `words`
     /// words.
     Enum {
@@ -124,7 +127,7 @@ fn unpack_item<'w>(element: &Element, words: &mut dyn Iterator<Item = &'w u64>) 
         Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
         Element::Float => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
-        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object => {
+        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
             word(words);
             Value::None
         }

@@ -1,6 +1,7 @@
 //! Places: a name, or a path into one, like `world.player.health` or `scores[2]`. Changing a
 //! place takes its value out, changes it, and puts it back, so a value nothing else shares is
-//! changed without being copied.
+//! changed without being copied. A step into a type's own `def []` reads the item with it,
+//! and putting a value back writes the item with its `def []=`.
 
 use std::rc::Rc;
 
@@ -64,6 +65,22 @@ impl Interp<'_> {
             .get_mut(&place.root)
             .ok_or_else(|| Diagnostic::new(format!("`{}` doesn't exist", place.root), place.span))?;
         unpack_in_place(&mut binding.value);
+        let root = binding.value.clone();
+        if let Some(own) = self.own_index(&root, place) {
+            drop(root);
+            let item = self.read_item(place, &own)?;
+            self.frame.push();
+            self.frame.declare(ITEM, item, true);
+            let inner = Place { root: ITEM.to_owned(), steps: own.after.to_vec(), span: place.span };
+            let taken = self.take(&inner);
+            self.frame.pop();
+            return taken;
+        }
+        drop(root);
+        let binding = self
+            .frame
+            .get_mut(&place.root)
+            .ok_or_else(|| Diagnostic::new(format!("`{}` doesn't exist", place.root), place.span))?;
         take_in(&mut binding.value, &place.steps, place.span)
     }
 
@@ -73,6 +90,16 @@ impl Interp<'_> {
             .get_mut(&place.root)
             .ok_or_else(|| Diagnostic::new(format!("`{}` doesn't exist", place.root), place.span))?;
         unpack_in_place(&mut binding.value);
+        let root = binding.value.clone();
+        if let Some(own) = self.own_index(&root, place) {
+            drop(root);
+            return self.put_through(place, &own, value);
+        }
+        drop(root);
+        let binding = self
+            .frame
+            .get_mut(&place.root)
+            .ok_or_else(|| Diagnostic::new(format!("`{}` doesn't exist", place.root), place.span))?;
         put_in(&mut binding.value, &place.steps, value, place.span)?;
         if place.steps.is_empty() {
             return Ok(());
@@ -127,6 +154,94 @@ impl Interp<'_> {
             None => &def.fields,
         };
         fields.iter().find(|written| written.name == field)?.rule.clone()
+    }
+
+    /// The first step of a place into a type with its own `def []=`.
+    fn own_index<'p>(&self, root: &Value, place: &'p Place) -> Option<OwnIndex<'p>> {
+        let mut value = root;
+        for (at, step) in place.steps.iter().enumerate() {
+            if let (Value::Instance(instance), Step::Index(key)) = (value, step)
+                && self.type_info(&instance.type_name).is_some_and(|info| info.methods.contains_key("[]="))
+            {
+                return Some(OwnIndex {
+                    before: place.steps.get(..at)?,
+                    key,
+                    after: place.steps.get(at + 1..)?,
+                });
+            }
+            value = step_into(value, step)?;
+        }
+        None
+    }
+
+    /// What a type's own `def []` gives for a step of a place.
+    fn read_item(&mut self, place: &Place, own: &OwnIndex<'_>) -> Result<Value, Diagnostic> {
+        let binding = self
+            .frame
+            .get(&place.root)
+            .ok_or_else(|| Diagnostic::new(format!("`{}` doesn't exist", place.root), place.span))?;
+        let mut holder = &binding.value;
+        for step in own.before {
+            holder = step_into(holder, step)
+                .ok_or_else(|| Diagnostic::new("this can't be changed", place.span))?;
+        }
+        let holder = holder.clone();
+        self.index(holder, own.key.clone(), place.span)
+    }
+
+    /// Puts a value in a place that goes through a type's own `def []`: changes the item, then
+    /// writes it with the type's `def []=`.
+    fn put_through(&mut self, place: &Place, own: &OwnIndex<'_>, value: Value) -> Result<(), Diagnostic> {
+        let item = if own.after.is_empty() {
+            value
+        } else {
+            let item = self.read_item(place, own)?;
+            self.frame.push();
+            self.frame.declare(ITEM, item, true);
+            let inner = Place { root: ITEM.to_owned(), steps: own.after.to_vec(), span: place.span };
+            let changed =
+                self.put(&inner, value).and_then(|()| self.take(&Place { steps: Vec::new(), ..inner }));
+            self.frame.pop();
+            changed?
+        };
+        let holder_place = Place { steps: own.before.to_vec(), ..place.clone() };
+        let holder = self.take(&holder_place)?;
+        self.frame.push();
+        self.frame.declare(HOLDER, holder, true);
+        self.frame.declare(KEY, own.key.clone(), false);
+        self.frame.declare(ITEM, item, false);
+        let name = |name: &str| Expr { kind: ExprKind::Name(name.to_owned()), span: place.span };
+        let object = name(HOLDER);
+        let written = self
+            .call_mut_method(&object, "[]=", &[name(KEY), name(ITEM)], place.span)
+            .and_then(|_| self.take(&Place { root: HOLDER.to_owned(), steps: Vec::new(), span: place.span }));
+        self.frame.pop();
+        self.put(&holder_place, written?)
+    }
+}
+
+/// The names that hold the parts of a place while a type's own `def []=` runs.
+const ITEM: &str = "$item";
+const HOLDER: &str = "$holder";
+const KEY: &str = "$key";
+
+/// A step of a place into a type's own `def []`, and the steps around it.
+struct OwnIndex<'p> {
+    before: &'p [Step],
+    key: &'p Value,
+    after: &'p [Step],
+}
+
+/// One step into a value, to read it.
+fn step_into<'v>(value: &'v Value, step: &Step) -> Option<&'v Value> {
+    match (value, step) {
+        (Value::Instance(instance), Step::Field(name)) => instance.field(name),
+        (Value::List(items), Step::Index(Value::Int(at))) => {
+            items.get(ops::position(*at, items.len(), Span::default()).ok()?)
+        }
+        (Value::Dict(pairs), Step::Index(key)) => pairs.get(key),
+        (Value::IdMap(map), Step::Index(Value::Id(id))) => map.get(*id),
+        _ => None,
     }
 }
 

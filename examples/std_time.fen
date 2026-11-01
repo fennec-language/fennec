@@ -1,3 +1,5 @@
+# decision: `Clock` is a capability,
+
 from std.time import Clock, Duration, Instant
 
 struct Ball:

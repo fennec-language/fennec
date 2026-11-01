@@ -675,6 +675,38 @@ fn dev_copies_reports_a_mistake_instead_of_a_list() {
     assert!(text(&output.stderr).starts_with("error: "), "{}", text(&output.stderr));
 }
 
+/// The language reference is written from the examples, when the website is built. Every
+/// decision they name has to exist.
+#[test]
+fn the_language_reference_can_be_written() {
+    let output = fennec(&["dev", "reference", "--check"], "").unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+}
+
+#[test]
+fn the_reference_is_written_and_a_stale_decision_fails() {
+    let dir = scratch("reference").unwrap();
+    for folder in ["docs", "examples", "site/src/pages"] {
+        std::fs::create_dir_all(dir.join(folder)).unwrap();
+    }
+    std::fs::write(dir.join("docs/decisions.md"), "## Syntax\n\n**A rule.** Why.\n").unwrap();
+    std::fs::write(dir.join("examples/one.fen"), "# decision: A rule.\nx = 1\n").unwrap();
+    let page = dir.join("site/src/pages/reference.md");
+
+    assert!(fennec_in(&dir, &["dev", "reference", "--check"], "").unwrap().status.success());
+    assert!(!page.exists(), "checking writes nothing");
+    assert!(fennec_in(&dir, &["dev", "reference"], "").unwrap().status.success());
+    assert!(std::fs::read_to_string(&page).unwrap().contains("**A rule.**"));
+
+    std::fs::write(dir.join("examples/one.fen"), "# decision: Another rule.\nx = 1\n").unwrap();
+    for args in [&["dev", "reference"][..], &["dev", "reference", "--check"]] {
+        let stale = fennec_in(&dir, args, "").unwrap();
+        assert_eq!(stale.status.code(), Some(1));
+        assert!(text(&stale.stderr).contains("names a decision"), "{}", text(&stale.stderr));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Every command the guidance tells an agent to run has to exist.
 #[test]
 fn the_guidance_names_only_commands_there_are() {

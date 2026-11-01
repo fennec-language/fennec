@@ -213,3 +213,121 @@ struct Counter[T: Hashable]:
 
     def iter(self) -> list[T]:
         self.counts.keys()
+
+## Moving a node under itself or one of its descendants.
+error TreeCycle:
+    message: str
+
+## A node of a `Tree`: its value and its links. `tree[id]` gives the value, so programs only
+## name this type to write the type of an ID: `type NodeId = Id[TreeNode[Node]]`.
+struct TreeNode[T]:
+    value: T
+    parent: Id[TreeNode[T]]? = None
+    children: list[Id[TreeNode[T]]] = []
+
+## Values with parents and children, kept in sync. Nodes are reached by the IDs `add` and
+## `add_child` give back, so a tree holds no references, and copying one gives an independent
+## tree. An ID of a removed node stops the program, like an index out of range.
+struct Tree[T]:
+    _nodes: IdMap[TreeNode[T]] = IdMap[TreeNode[T]]()
+    _roots: list[Id[TreeNode[T]]] = []
+
+    ## How many nodes the tree has.
+    def len(self) -> int:
+        self._nodes.len()
+
+    ## Adds a node with no parent.
+    def add(mut self, value: T) -> Id[TreeNode[T]]:
+        id = self._nodes.insert(TreeNode(value=value))
+        self._roots.append(id)
+        id
+
+    ## Adds a node as the last child of `parent`.
+    def add_child(mut self, parent: Id[TreeNode[T]], value: T) -> Id[TreeNode[T]]:
+        id = self._nodes.insert(TreeNode(value=value, parent=parent))
+        self._nodes[parent].children.append(id)
+        id
+
+    def [](self, id: Id[TreeNode[T]]) -> T:
+        self._nodes[id].value
+
+    def []=(mut self, id: Id[TreeNode[T]], value: T):
+        self._nodes[id].value = value
+
+    ## The value of a node, or None when it's been removed.
+    def get(self, id: Id[TreeNode[T]]) -> T?:
+        node = self._nodes.get(id)
+        if node is None: return None
+        node.value
+
+    ## The node's parent, or None for a root.
+    def parent(self, id: Id[TreeNode[T]]) -> Id[TreeNode[T]]?:
+        self._nodes[id].parent
+
+    ## The node `levels` above this one, or None when the tree isn't that deep here.
+    def up(self, id: Id[TreeNode[T]], levels: int) -> Id[TreeNode[T]]?:
+        mut at = id
+        for _ in range(levels):
+            above = self._nodes[at].parent
+            if above is None: return None
+            at = above
+        at
+
+    ## The node's children, in the order they were added.
+    def children(self, id: Id[TreeNode[T]]) -> list[Id[TreeNode[T]]]:
+        self._nodes[id].children
+
+    ## The nodes with no parent, in the order they became roots.
+    def roots(self) -> list[Id[TreeNode[T]]]:
+        self._roots
+
+    ## The nodes above this one, nearest first.
+    def ancestors(self, id: Id[TreeNode[T]]) -> list[Id[TreeNode[T]]]:
+        mut found = []
+        mut above = self._nodes[id].parent
+        while above is not None:
+            found.append(above)
+            above = self._nodes[above].parent
+        found
+
+    ## The nodes below this one, depth first: each node before its children, and children in
+    ## order.
+    def descendants(self, id: Id[TreeNode[T]]) -> list[Id[TreeNode[T]]]:
+        mut found = []
+        mut waiting = reversed(self._nodes[id].children)
+        while waiting.len() > 0:
+            at = waiting.pop()
+            found.append(at)
+            for child in reversed(self._nodes[at].children):
+                waiting.append(child)
+        found
+
+    ## Moves a node, with everything below it, to be the last child of `parent`.
+    def move(mut self, id: Id[TreeNode[T]], parent: Id[TreeNode[T]]):
+        if id == parent or id in self.ancestors(parent):
+            fail TreeCycle(message="a node can't move under itself or its descendants")
+        self._unlink(id)
+        self._nodes[id].parent = parent
+        self._nodes[parent].children.append(id)
+
+    ## Makes a node a root, with everything below it staying below it.
+    def make_root(mut self, id: Id[TreeNode[T]]):
+        self._unlink(id)
+        self._nodes[id].parent = None
+        self._roots.append(id)
+
+    ## Removes a node and everything below it.
+    def remove(mut self, id: Id[TreeNode[T]]):
+        doomed = self.descendants(id)
+        self._unlink(id)
+        self._nodes.remove(id)
+        for at in doomed:
+            self._nodes.remove(at)
+
+    ## Takes a node out of its parent's children, or out of the roots.
+    def _unlink(mut self, id: Id[TreeNode[T]]):
+        parent = self._nodes[id].parent
+        if parent is None:
+            self._roots.remove(id)
+        else:
+            self._nodes[parent].children.remove(id)

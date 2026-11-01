@@ -61,6 +61,29 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
     loader.finish(Some(manifest))
 }
 
+/// The text of every file of a kit, without parsing any of it, by path. None if `dir` isn't in a
+/// kit, or a file can't be read: loading it will say why.
+pub(crate) fn kit_texts(dir: &Path) -> Option<Vec<(String, String)>> {
+    let (root, _) = find_root(dir, ".")?;
+    let src = root.join("src");
+    let mut modules = Vec::new();
+    find_modules(&src, &mut Vec::new(), &mut modules);
+    modules.sort();
+    let mut texts = Vec::with_capacity(modules.len() + 1);
+    let manifest = root.join("kit.toml");
+    let paths = modules.iter().map(|module| {
+        let mut path = src.clone();
+        path.extend(module);
+        path.set_extension("fen");
+        path
+    });
+    for path in paths.chain(std::iter::once(manifest)) {
+        let text = std::fs::read_to_string(&path).ok()?;
+        texts.push((path.to_string_lossy().into_owned(), text));
+    }
+    Some(texts)
+}
+
 /// The nearest folder at or above `dir` with a `kit.toml`, and how messages show it: by
 /// trimming `shown_as` when it names that folder, and as an absolute path when it doesn't.
 fn find_root(dir: &Path, shown_as: &str) -> Option<(PathBuf, String)> {

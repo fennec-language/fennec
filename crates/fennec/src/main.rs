@@ -18,9 +18,11 @@ mod test;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
-  fennec run [path] [args]  run a kit's main, or a single .fen file's, passing it args
+  fennec run [path] [args]  run the tests a change affects, then a kit's main or a single .fen file's
+  fennec run --no-test [path] [args]  run it without running the tests first
   fennec run --interp [path]  run it with the interpreter instead of compiling it
   fennec build [path] [-o out]  compile it to a standalone executable
+  fennec build --llvm [path] [-o out]  the same through LLVM, for what that backend takes so far
   fennec test [path]        run a kit's tests, or a single file's, skipping unchanged ones that passed
   fennec test --all [path]  run every test
   fennec test --verbose [path]  list the tests that pass too, not only failures and the summary
@@ -44,11 +46,17 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["run"] => run(run::Engine::Native, ".", &[]),
+        ["run", "--no-test"] => run(run::Engine::Untested, ".", &[]),
+        ["run", "--no-test", path, arguments @ ..] => run(run::Engine::Untested, path, arguments),
         ["run", "--interp"] => run(run::Engine::Interpreter, ".", &[]),
         ["run", "--interp", path, arguments @ ..] => run(run::Engine::Interpreter, path, arguments),
         ["run", "--jit"] => run(run::Engine::NativeNoted, ".", &[]),
         ["run", "--jit", path, arguments @ ..] => run(run::Engine::NativeNoted, path, arguments),
         ["run", path, arguments @ ..] => run(run::Engine::Native, path, arguments),
+        ["build", "--llvm"] => aot::build_llvm(".", None),
+        ["build", "--llvm", "-o", output] => aot::build_llvm(".", Some(output)),
+        ["build", "--llvm", path] => aot::build_llvm(path, None),
+        ["build", "--llvm", path, "-o", output] => aot::build_llvm(path, Some(output)),
         ["build"] => aot::build(".", None),
         ["build", "-o", output] => aot::build(".", Some(output)),
         ["build", path] => aot::build(path, None),
@@ -81,6 +89,8 @@ fn main() -> ExitCode {
         ["dev", "copies", "--run"] => on_big_stack(copies::copies_in_a_run, "."),
         ["dev", "copies", "--run", path] => on_big_stack(copies::copies_in_a_run, path),
         ["dev", "copies", path] => on_big_stack(copies::copies, path),
+        ["dev", "reference"] => reference(false),
+        ["dev", "reference", "--check"] => reference(true),
         ["dev", "changes"] => changes::changes("."),
         ["dev", "changes", path] => changes::changes(path),
         ["--version" | "-V"] => {
@@ -90,6 +100,17 @@ fn main() -> ExitCode {
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
+        }
+    }
+}
+
+/// `fennec dev reference [--check]`: writes the language reference, or checks it can be.
+fn reference(check: bool) -> ExitCode {
+    match fennec_reference::write(check) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("error: {message}");
+            ExitCode::FAILURE
         }
     }
 }

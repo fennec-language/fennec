@@ -180,6 +180,9 @@ struct Tree:
         ty = param.ty
         if ty is not None:
             self.write_type_expr(ty)
+        default = param.default
+        if default is not None:
+            self.write_expr(default)
         self.close()
 
     def write_type_expr(mut self, ty: TypeExpr):

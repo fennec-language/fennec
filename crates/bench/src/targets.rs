@@ -34,6 +34,11 @@ pub(crate) fn path(dir: &Path) -> PathBuf {
     dir.join(format!("{}.txt", std::env::consts::ARCH))
 }
 
+/// This machine's targets from twins with no overflow checks, kept for reference.
+pub(crate) fn unchecked_path(dir: &Path) -> PathBuf {
+    path(&dir.join("unchecked"))
+}
+
 /// Reads a targets file. A file that isn't there means no targets yet.
 pub(crate) fn read(path: &Path) -> Result<Targets, String> {
     match std::fs::read_to_string(path) {

@@ -1,3 +1,5 @@
+# decision: `case` takes or-patterns and guards, as in Python.
+
 ## `case` takes several patterns separated by `|`, and an `if` guard that has to be true
 ## for the case to be taken. A guarded case never counts toward handling every case.
 

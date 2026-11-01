@@ -1,3 +1,5 @@
+# decision: Taking from an empty `Deque`, `Heap` or `PriorityQueue` gives `None`.
+
 from std.collections import Counter, Deque, Heap, PriorityQueue
 
 ## Steps from `start` to every square of a grid, by breadth-first search. `#` is a wall.

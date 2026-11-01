@@ -3,6 +3,9 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::time::Duration;
+
+use crate::supervise::STUCK;
 
 /// A part of Fennec to fuzz.
 pub(crate) struct Target {
@@ -12,6 +15,8 @@ pub(crate) struct Target {
     /// What the target's inputs are made of.
     pub(crate) tokens: &'static [&'static str],
     pub(crate) run: fn(&[u8]) -> Result<(), String>,
+    /// How long one input may take before it counts as stuck.
+    pub(crate) stuck: Duration,
 }
 
 const PROGRAMS: [&str; 5] =
@@ -93,28 +98,52 @@ const BYTES: [&str; 8] = ["\u{7f}", "é", "🦊", "\u{800}", "\u{10ffff}", "\0",
 const ANYTHING: [&str; 4] = ["\0", "\u{7f}", "é", "🦊"];
 
 pub(crate) const TARGETS: [Target; 9] = [
-    Target { name: "lexer", corpus: &PROGRAMS, tokens: &SYNTAX, run: lexer },
-    Target { name: "parser", corpus: &PROGRAMS, tokens: &SYNTAX, run: parser },
-    Target { name: "formatter", corpus: &PROGRAMS, tokens: &SYNTAX, run: formatter },
-    Target { name: "checker", corpus: &PROGRAMS, tokens: &SYNTAX, run: checker },
-    Target { name: "json", corpus: &["crates/fuzz/seeds/json"], tokens: &JSON, run: json },
-    Target { name: "toml", corpus: &["crates/fuzz/seeds/toml"], tokens: &TOML, run: toml },
-    Target { name: "regex", corpus: &["crates/fuzz/seeds/regex"], tokens: &PATTERNS, run: regex },
-    Target { name: "jit", corpus: &["crates/fuzz/seeds/jit"], tokens: &ANYTHING, run: crate::engines::jit },
+    Target { name: "lexer", corpus: &PROGRAMS, tokens: &SYNTAX, run: lexer, stuck: STUCK },
+    Target { name: "parser", corpus: &PROGRAMS, tokens: &SYNTAX, run: parser, stuck: STUCK },
+    Target { name: "formatter", corpus: &PROGRAMS, tokens: &SYNTAX, run: formatter, stuck: STUCK },
+    Target { name: "checker", corpus: &PROGRAMS, tokens: &SYNTAX, run: checker, stuck: STUCK },
+    Target { name: "json", corpus: &["crates/fuzz/seeds/json"], tokens: &JSON, run: json, stuck: STUCK },
+    Target { name: "toml", corpus: &["crates/fuzz/seeds/toml"], tokens: &TOML, run: toml, stuck: STUCK },
+    Target {
+        name: "regex",
+        corpus: &["crates/fuzz/seeds/regex"],
+        tokens: &PATTERNS,
+        run: regex,
+        stuck: STUCK,
+    },
+    Target {
+        name: "jit",
+        corpus: &["crates/fuzz/seeds/jit"],
+        tokens: &ANYTHING,
+        run: crate::engines::jit,
+        stuck: STUCK,
+    },
     Target {
         name: "runtime",
         corpus: &["crates/fuzz/seeds/abi"],
         tokens: &ANYTHING,
         run: crate::engines::runtime,
+        stuck: STUCK,
     },
 ];
 
+/// Programs built through LLVM against the interpreter, which runs only when named, since it
+/// needs `fennec`, its runtime library and LLVM's tools.
+pub(crate) const LLVM: Target = Target {
+    name: "llvm",
+    corpus: &["crates/fuzz/seeds/jit"],
+    tokens: &ANYTHING,
+    run: crate::llvm::llvm,
+    // It runs `opt`, `llc` and the linker for every input, which a busy machine slows down.
+    stuck: Duration::from_secs(60),
+};
+
 /// The UTF-8 reader is fuzzed with the bytes it's given, so it has its own way to be run.
 pub(crate) const UTF8: Target =
-    Target { name: "utf8", corpus: &["crates/fuzz/seeds/utf8"], tokens: &BYTES, run: utf8 };
+    Target { name: "utf8", corpus: &["crates/fuzz/seeds/utf8"], tokens: &BYTES, run: utf8, stuck: STUCK };
 
 pub(crate) fn find(name: &str) -> Option<&'static Target> {
-    TARGETS.iter().chain(std::iter::once(&UTF8)).find(|target| target.name == name)
+    TARGETS.iter().chain([&UTF8, &LLVM]).find(|target| target.name == name)
 }
 
 impl Target {
@@ -266,11 +295,11 @@ fn utf8(input: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TARGETS, UTF8, find, literal};
+    use super::{LLVM, TARGETS, UTF8, find, literal};
 
     #[test]
     fn every_target_can_be_found_by_name() {
-        for target in TARGETS.iter().chain([&UTF8]) {
+        for target in TARGETS.iter().chain([&UTF8, &LLVM]) {
             assert_eq!(find(target.name).map(|found| found.name), Some(target.name));
         }
         assert!(find("no such target").is_none());

@@ -5,6 +5,7 @@
 
 use fennec_syntax::TypeExpr;
 
+use super::decode::{given_types, substituted, written};
 use crate::interp::Interp;
 use crate::value::{Id, IdMap, Value};
 
@@ -42,7 +43,7 @@ impl Interp<'_> {
         let arg = |n: usize| ty.args.get(n);
         match (ty.name.as_str(), value) {
             ("Id", Value::Id(id)) => {
-                let item = arg(0).map(super::decode::written).unwrap_or_default();
+                let item = arg(0).map(written).unwrap_or_default();
                 found.ids.push((name(at), item, *id));
             }
             ("IdMap", Value::IdMap(map)) => {
@@ -52,7 +53,7 @@ impl Interp<'_> {
                         self.find(held, item, &format!("{at}.slots[{n}].value"), found, open);
                     }
                 }
-                found.maps.push((name(at), super::decode::written(item), map.as_ref().clone()));
+                found.maps.push((name(at), written(item), map.as_ref().clone()));
             }
             ("list", Value::List(items)) => {
                 let Some(item) = arg(0) else { return };
@@ -71,14 +72,21 @@ impl Interp<'_> {
                     self.find(held, item, &format!("{at}[{n}]"), found, open);
                 }
             }
-            (struct_name, Value::Instance(instance)) if !open.iter().any(|seen| seen == struct_name) => {
-                let Some(info) = self.type_info(struct_name) else { return };
-                open.push(struct_name.to_owned());
-                for field in &info.def.fields {
+            (type_name, Value::Instance(instance)) if !open.iter().any(|seen| *seen == written(ty)) => {
+                let Some(info) = self.type_info(type_name) else { return };
+                let fields = match &instance.case {
+                    Some(case) => {
+                        info.def.cases.iter().find(|each| *each.name == **case).map(|each| &each.fields)
+                    }
+                    None => Some(&info.def.fields),
+                };
+                let given = given_types(&info.def.generics, ty);
+                open.push(written(ty));
+                for field in fields.into_iter().flatten() {
                     let (Some(field_ty), Some(held)) = (&field.ty, instance.field(&field.name)) else {
                         continue;
                     };
-                    let inner = TypeExpr { optional: false, ..field_ty.clone() };
+                    let inner = TypeExpr { optional: false, ..substituted(field_ty, &given) };
                     self.find(held, &inner, &format!("{at}.{}", field.name), found, open);
                 }
                 open.pop();

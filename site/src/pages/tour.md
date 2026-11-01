@@ -553,7 +553,30 @@ def total_area[T: Shape](shapes: list[T]) -> float:
     sum(shape.area() for shape in shapes)
 ```
 
-For a collection of different kinds of things, use an `enum`.
+For a collection of different kinds of things, use a union or an `enum`. A union mixes types you already have, and an enum defines new cases. Either way each item is stored inline with a one-byte tag, never boxed.
+
+```fennec planned
+type Shape = Circle | Square
+
+def report(shapes: list[Shape], stdout: Stdout):
+    stdout.print(sum(s.area() for s in shapes))   # every member has area(), so Shape does
+    for s in shapes:
+        if s is Circle:
+            stdout.print(s.radius)                 # s is a Circle here
+```
+
+```fennec
+enum Pickup:
+    Coin(value: int)
+    Heart(amount: int)
+
+def worth(pickup: Pickup) -> int:
+    match pickup:
+        case .Coin(value): value
+        case .Heart(amount): amount * 10
+```
+
+**Planned:** unions. Enums work today.
 
 ## Compile-time loops and serialization
 

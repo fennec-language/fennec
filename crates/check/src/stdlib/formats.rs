@@ -67,6 +67,16 @@ impl FnCx<'_> {
         Type::result(ty, Type::named("ParseError"))
     }
 
+    /// The fields of a struct, or of every case of an enum, each with its case.
+    fn fields_of(&self, name: &str) -> Vec<(Option<String>, String)> {
+        let Some(info) = self.checker.program.type_info(name) else { return Vec::new() };
+        let own = info.def.fields.iter().map(|field| (None, field.name.clone()));
+        let cases = info.def.cases.iter().flat_map(|case| {
+            case.fields.iter().map(move |field| (Some(case.name.clone()), field.name.clone()))
+        });
+        own.chain(cases).collect()
+    }
+
     fn is_table(&self, ty: &Type) -> bool {
         matches!(ty, Type::Dict(..) | Type::Unknown)
             || self.checker.program.kind_of(ty) == Some(TypeKind::Struct)
@@ -98,19 +108,27 @@ impl FnCx<'_> {
             }
             Type::Tuple(items) => items.iter().try_for_each(|item| self.holds(format, item, span, seen)),
             Type::Result(..) => Err(unhandled_result(span)),
-            Type::Named(name) if self.checker.program.kind_of(ty) == Some(TypeKind::Struct) => {
-                if seen.contains(name) {
+            Type::Named(name) | Type::Generic(name, _) => {
+                let kind = self.checker.program.type_info(name).map(|info| info.kind);
+                let fits = match kind {
+                    Some(TypeKind::Struct) => true,
+                    // A case is its name, or an object holding its fields, which TOML can't write.
+                    Some(TypeKind::Enum) => format == "JSON",
+                    _ => false,
+                };
+                if !fits {
+                    return Err(cannot(ty));
+                }
+                // Each set of type arguments is looked at once.
+                let key = ty.to_string();
+                if seen.contains(&key) {
                     return Ok(());
                 }
-                seen.push(name.clone());
-                let fields: Vec<String> = self
-                    .checker
-                    .program
-                    .type_info(name)
-                    .map(|info| info.def.fields.iter().map(|field| field.name.clone()).collect())
-                    .unwrap_or_default();
-                for field in fields {
-                    let field_type = self.checker.field_type(name, None, &field);
+                seen.push(key);
+                for (case, field) in self.fields_of(name) {
+                    let given = self.checker.program.type_args(ty);
+                    let field_type =
+                        self.checker.field_type(name, case.as_deref(), &field).substitute(&given);
                     self.holds(format, &field_type, span, seen)?;
                 }
                 Ok(())

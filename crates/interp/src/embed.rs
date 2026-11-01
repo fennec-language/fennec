@@ -28,6 +28,7 @@ pub mod objects;
 mod plans;
 pub mod regex;
 pub mod strings;
+mod table;
 mod tests;
 
 use std::collections::HashMap;

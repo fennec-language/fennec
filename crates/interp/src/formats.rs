@@ -5,6 +5,7 @@ mod decode;
 mod dump;
 mod ids;
 mod json;
+mod shapes;
 mod toml;
 mod toml_value;
 
@@ -146,11 +147,15 @@ impl Interp<'_> {
         match (name, values.as_slice()) {
             ("json.loads", [Value::Str(text)]) => self.parsed(text, json::parse(text), span),
             ("toml.loads", [Value::Str(text)]) => self.parsed(text, toml::parse(text), span),
-            ("json.dumps", [value]) => dump::json(value, indent)
-                .map(|text| Value::str(&text))
-                .map_err(|why| Diagnostic::new(why, span)),
+            ("json.dumps", [value]) => {
+                let value = self.natural(value, span)?;
+                dump::json(&value, indent)
+                    .map(|text| Value::str(&text))
+                    .map_err(|why| Diagnostic::new(why, span))
+            }
             ("toml.dumps", [value]) => {
-                dump::toml(value).map(|text| Value::str(&text)).map_err(|why| Diagnostic::new(why, span))
+                let value = self.natural(value, span)?;
+                dump::toml(&value).map(|text| Value::str(&text)).map_err(|why| Diagnostic::new(why, span))
             }
             _ => Err(Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span)),
         }

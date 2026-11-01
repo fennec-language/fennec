@@ -78,7 +78,9 @@ def main(stdout: Stdout):
     stdout.print(scan([1, 2, 3]), scan([1, 2, 3], limit=1))
 ```
 
-A literal default gives the parameter its type: an `int`, `float`, `str` or `bool`, or an enum case like `mode=Mode.fast`. Writing `limit: int = 8` is an error whose fix drops the `: int`. The type is written when the default is `None`, an empty `[]` or `{}`, or isn't the literal's own type.
+A literal default gives the parameter its type: an `int`, `float`, `str` or `bool`, or an enum case like `mode=Mode.fast`. Writing `limit: int = 8` is an error whose fix drops the `: int`. The type is written when the default is `None`, as in `target: Unit? = None`, or isn't the literal's own type.
+
+**Planned:** a constructor call with its type arguments written, like `dict[str, int]()` or `Packed[int]()`, giving the type the same way, for struct fields and parameters alike. For an empty collection it becomes the only form of default: `items = list[str]()`, with `fennec fix` rewriting `items: list[str] = []`. Inside a function body, `items = []` stays fine.
 
 **Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, neighboring parameters of the same type, and three or more positional arguments unless no two neighbors could be swapped and still compile. The first argument and `self` are exempt.
 
@@ -200,6 +202,8 @@ Planned: `mut a, b = xs.pair(i, j)` for two elements of one list, and a compile 
 world.selected = world.units[i]          # error: edits to one won't reach the other
 world.selected = copy(world.units[i])    # fine: a separate copy, on purpose
 ```
+
+A copy that would happen on every iteration of a loop is planned to be a compile error too, naming the line and why the value is shared: "`state` is copied every iteration because `history` keeps it". A copy that happens once, on the first write, is only a hint.
 
 ## Mutation is visible
 
@@ -589,21 +593,23 @@ def write[T, W: Writer](x: T, mut out: W):
         write(f.get(x), mut out)
 ```
 
-That's what serialization is built on. Each format implements a small `Writer` and `Reader`, one generic function breaks any type down, and a type overrides one format with a method named after it, leaving the others alone:
+That's what serialization is built on. Each format implements a small `Writer` and `Reader`, and one generic function breaks any type down, so a struct is exactly what's on the wire, with no per-format overrides. A field may be named any word, keywords included, and case style is an option on the call:
 
 ```fennec planned
-struct Color:
-    r: int
-    g: int
-    b: int
+from std import json
 
-    def json(self, mut out: JsonWriter):
-        out.str(f"#{self.r:02x}{self.g:02x}{self.b:02x}")
+struct Account:
+    type: str
+    display_name: str
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps(Account(type="admin", display_name="Ash"), names=.camel_case))
+    # {"type": "admin", "displayName": "Ash"}
 ```
 
-Every field is saved, private `_` ones included, and `where` rules check a value as it loads. `@skip` leaves a field out, and it needs a default so loading still builds a whole value.
+Every field is saved, private `_` ones included, and `where` rules check a value as it loads. `@skip` leaves a field out, and it needs a default so loading still builds a whole value. A key the struct doesn't have is an error unless the call says `extra=.ignore`, and `@serialize(name="uid")` renames a field when an API's name isn't yours.
 
-`std.pack` will be the default binary format: no field names on the wire, `where` ranges shrink values, a schema hash, delta encoding and opt-in quantization, all in plain Fennec. Annotations like `@json(name="user_id")` are data read at compile time, and they never change what they're on.
+`std.pack` will be the default binary format: no field names on the wire, `where` ranges shrink values, a schema hash, delta encoding and opt-in quantization, all in plain Fennec. Annotations like `@serialize(name="uid")` are data read at compile time, and they never change what they're on.
 
 JSON and TOML already work today, including typed reading:
 

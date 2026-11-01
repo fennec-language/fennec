@@ -4,7 +4,7 @@ error: this might be None
 9 |     stdout.print(events.popleft().name)
   |                  ^^^^^^^^^^^^^^^^^^^^^
   |
-  = help: check with `if x is None:` first, use `?.`, or give a default with `else`
+  = help: end the chain with `else` and a default, like `x.name else ""`, or check with `if x is None:` first
 
 error: this might be None
   --> examples/errors/deque_maybe_none.fen:10:18
@@ -12,4 +12,4 @@ error: this might be None
 10 |     stdout.print(events.popleft().name)
    |                  ^^^^^^^^^^^^^^^^^^^^^
    |
-   = help: check with `if x is None:` first, use `?.`, or give a default with `else`
+   = help: end the chain with `else` and a default, like `x.name else ""`, or check with `if x is None:` first

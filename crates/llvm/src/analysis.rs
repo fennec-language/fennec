@@ -43,6 +43,9 @@ pub(crate) struct Analysis {
     /// Locals taking an item out of a list to change it and put it back: the local or field
     /// the list is in, which has to be alone before the item's count says anything.
     items_taken: HashMap<usize, (LocalId, Vec<String>)>,
+    /// Locals taking a field of a list's item out to change it, put back through the same place
+    /// read again: `root.list[index].field`, as the root, the list's field and the index.
+    path_taken: HashMap<usize, (LocalId, String, Operand)>,
     /// Locals standing for a list that a `for` loop goes through while changing only the item
     /// it's on: a copy of the list would say the same, and cost a whole list.
     aliases: HashMap<usize, LocalId>,
@@ -351,6 +354,7 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
         borrowed_from: HashMap::new(),
         taken: HashSet::new(),
         items_taken: HashMap::new(),
+        path_taken: HashMap::new(),
         aliases: HashMap::new(),
         reservations: HashMap::new(),
     };
@@ -389,6 +393,7 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
         }
     }
     find_borrows(function, &mut known);
+    find_path_takes(function, &mut known);
     find_aliases(function, &mut known);
     let mut facts = Facts::of(function, changes);
     let stepped: HashSet<usize> = function.counts.iter().map(|count| count.count.0).collect();
@@ -575,13 +580,104 @@ fn find_borrows(function: &Function, known: &mut Analysis) {
                     InstKind::Builtin { name, args, .. }
                         if name == "list.append" && args.first() == Some(&Operand::Local(dest)) => {}
                     InstKind::SetIndex { object, path, .. } if *object == dest && path.is_empty() => {}
-                    InstKind::Make { .. } | InstKind::Copy { .. } => {}
+                    // Making something else, from neither of them.
+                    other @ (InstKind::Make { .. }
+                    | InstKind::MakeList { .. }
+                    | InstKind::MakeTuple { .. }
+                    | InstKind::MakeCase { .. }
+                    | InstKind::Copy { .. })
+                        if !reads_local(other, dest) && !reads_local(other, source) => {}
                     other if is_quiet(other) => {}
                     _ => break,
                 }
             }
         }
     }
+}
+
+/// `root.list[index].field.append(x)`, which the IR writes as reading the field out, changing
+/// it, then reading the item again to put it back: the field is taken, not copied, when nothing
+/// else touches the root meanwhile and the index stays the same.
+fn find_path_takes(function: &Function, known: &mut Analysis) {
+    let steady = |operand: &Operand, known: &Analysis| match operand {
+        Operand::Int(_) => true,
+        Operand::Local(local) => known.writes.get(local.0).copied().unwrap_or(0) <= 1,
+        _ => false,
+    };
+    for block in &function.blocks {
+        let defined = |local: LocalId, before: usize| {
+            block.insts.get(..before).unwrap_or_default().iter().rev().find_map(|inst| match &inst.kind {
+                InstKind::GetField { dest, object: Operand::Local(from), field } if *dest == local => {
+                    Some((Some(field.clone()), *from, None))
+                }
+                InstKind::GetIndex { dest, object: Operand::Local(from), index } if *dest == local => {
+                    Some((None, *from, Some(index.clone())))
+                }
+                _ => None,
+            })
+        };
+        for (at, inst) in block.insts.iter().enumerate() {
+            let InstKind::GetField { dest, object: Operand::Local(item), field } = &inst.kind else {
+                continue;
+            };
+            if known.writes.get(dest.0) != Some(&1) || known.taken.contains(&dest.0) {
+                continue;
+            }
+            let Some((None, list, Some(index))) = defined(*item, at) else { continue };
+            let Some((Some(list_field), root, None)) = defined(list, at) else { continue };
+            if !steady(&index, known) || !known.borrowed.contains(&item.0) {
+                continue;
+            }
+            // Then: changes to it, the same place read again, and it put back there.
+            let mut again: (Option<LocalId>, Option<LocalId>) = (None, None);
+            let mut put_in_item = false;
+            for next in block.insts.get(at + 1..).unwrap_or_default() {
+                match &next.kind {
+                    InstKind::Builtin { name, args, .. }
+                        if name == "list.append"
+                            && args.first() == Some(&Operand::Local(*dest))
+                            && args.iter().skip(1).all(|arg| *arg != Operand::Local(root)) => {}
+                    InstKind::GetField { dest: list2, object: Operand::Local(from), field: name }
+                        if *from == root && *name == list_field && again.0.is_none() =>
+                    {
+                        again.0 = Some(*list2);
+                    }
+                    InstKind::GetIndex { dest: item2, object: Operand::Local(from), index: at_again }
+                        if Some(*from) == again.0 && *at_again == index && again.1.is_none() =>
+                    {
+                        again.1 = Some(*item2);
+                    }
+                    InstKind::SetField { object, path, value: Operand::Local(put) }
+                        if Some(*object) == again.1
+                            && *put == *dest
+                            && path.as_slice() == std::slice::from_ref(field) =>
+                    {
+                        put_in_item = true;
+                    }
+                    InstKind::SetIndex { object, path, index: at_again, value: Operand::Local(put) }
+                        if put_in_item
+                            && *object == root
+                            && path.as_slice() == std::slice::from_ref(&list_field)
+                            && *at_again == index
+                            && Some(*put) == again.1 =>
+                    {
+                        known.taken.insert(dest.0);
+                        known.path_taken.insert(dest.0, (root, list_field.clone(), index.clone()));
+                        break;
+                    }
+                    other if is_quiet(other) && !reads_local(other, root) && !reads_local(other, *dest) => {}
+                    _ => break,
+                }
+            }
+        }
+    }
+}
+
+/// Whether an instruction reads a local.
+fn reads_local(inst: &InstKind, local: LocalId) -> bool {
+    let mut found = false;
+    visit(inst, |operand| found |= *operand == Operand::Local(local), |_| {});
+    found
 }
 
 /// The blocks of a loop: its body, and what that reaches without going back through its test.
@@ -772,6 +868,12 @@ impl Analysis {
     }
 
     /// Where the list is that a local took an item out of.
+    /// Where a field taken out of a list's item to change goes back: the root, the list's
+    /// field, and the index.
+    pub(crate) fn path_home(&self, local: LocalId) -> Option<&(LocalId, String, Operand)> {
+        self.path_taken.get(&local.0)
+    }
+
     pub(crate) fn item_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>)> {
         self.items_taken.get(&local.0)
     }

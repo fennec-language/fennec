@@ -38,7 +38,13 @@ pub(crate) fn not_mut(name: &str, span: Span) -> Diagnostic {
 
 pub(crate) fn might_be_none(span: Span) -> Diagnostic {
     Diagnostic::new("this might be None", span)
-        .with_help("check with `if x is None:` first, use `?.`, or give a default with `else`")
+        .with_help("check with `if x is None:` first, or give a default with `else`")
+}
+
+/// A field or method of something that might be None, which a chain ending in `else` can read.
+pub(crate) fn missing_step(span: Span) -> Diagnostic {
+    Diagnostic::new("this might be None", span)
+        .with_help("end the chain with `else` and a default, like `x.name else \"\"`, or check with `if x is None:` first")
 }
 
 pub(crate) fn unhandled_result(span: Span) -> Diagnostic {

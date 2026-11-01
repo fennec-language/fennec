@@ -272,14 +272,14 @@ def main(stdout: Stdout):
     stdout.print(target.health)              # the compiler knows it's an Enemy here
 ```
 
-**Planned:** reading through something that might be missing, in a chain that ends in `else`. Today the chain is written with `?.`, which is going away, so `?` only ever means a failure passes up.
+A chain that ends in `else` can read through something that might be missing. It stops at the first missing step and gives the default. `?` only ever means a failure passes up.
 
-```fennec planned
+```fennec
 health = find_target(enemies).health else 1     # 1 if there's no target
 score = scores.get(team).get(player) else 0
 ```
 
-Without the `else`, it'll be a compile error whose fix adds one or an `is None` check.
+`else` covers only the chain right before it, so a larger expression needs brackets: `(find_target(enemies).health else 1) + 1`. Without the `else`, it's a compile error that suggests one or an `is None` check. Indexing with `[]` in such a chain isn't built yet.
 
 ## Errors
 

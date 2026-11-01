@@ -184,7 +184,9 @@ impl Emit<'_, '_, '_> {
         };
         let (at, code, result) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{at} = getelementptr inbounds i8, ptr {closure}, i64 {CODE}"));
-        self.line(&format!("{code} = load ptr, ptr {at}"));
+        // A closure's code never changes while it lives, so a call through one LLVM can see made
+        // becomes a direct call, and then inlined.
+        self.line(&format!("{code} = load ptr, ptr {at}, !invariant.load !1"));
         if ret == "void" {
             self.line(&format!("call swiftcc void {code}({})", shown.join(", ")));
         } else {

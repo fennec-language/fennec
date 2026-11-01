@@ -803,10 +803,17 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "str.code"
                     | "int.abs"
                     | "sum"
+                    | "sum.start"
                     | "list.pop"
                     | "sorted.key"
                     | "list.remove_where"
                     | "result.expect"
+                    | "Regex.replace"
+                    | "Regex.split"
+                    | "Regex.find_all"
+                    | "Regex.search"
+                    | "Regex.match"
+                    | "Regex.fullmatch"
             )
         }
         InstKind::GetIndex { object: Operand::Local(list), index, .. } => !known.inside(*list, index),

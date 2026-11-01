@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    counts = {"a": 1}
+    stdout.print(counts.get("b", 0) + 1)

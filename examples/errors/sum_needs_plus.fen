@@ -2,4 +2,4 @@ struct Tag:
     name: str
 
 def main(stdout: Stdout):
-    stdout.print(sum([Tag(name="a")], Tag(name="")))
+    stdout.print(sum([Tag(name="a")], start=Tag(name="")))

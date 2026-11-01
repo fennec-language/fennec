@@ -41,4 +41,4 @@ def main(stdout: Stdout):
     stdout.print(make().add(make()).add(V(x=5)).x, make().x, E.A(n=3).n(), E.B.n())
     stdout.print(tree().me().val(), tree().me().me().v)
     mut v = make()
-    stdout.print(v.bump(), v.add(v).x, v.x, {1: 2}.get(1, 5), {"a": 1}.len())
+    stdout.print(v.bump(), v.add(v).x, v.x, ({1: 2}.get(1) else 5), {"a": 1}.len())

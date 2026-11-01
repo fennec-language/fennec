@@ -530,9 +530,9 @@ struct Color:
 **What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the global functions, like `sum`, `range` and `sorted`.
 *Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
 
-**Network access is a capability, `Net`, like `Fs`.** Its API, for HTTP, sockets and limiting it to certain hosts, is decided when it's built.
+**Network access is a capability, `Net`, like `Fs`.** Its API for HTTP and sockets is decided when it's built; how it narrows is under Supply chain.
 
-**Environment variables and running other programs are capabilities too, `Env` and `Process`,** handed to `main`. `std.process` goes through `Process`.
+**Environment variables and running other programs are capabilities too, `Env` and `Process`,** handed to `main`. `std.process` goes through `Process`. `Process` is the most powerful capability, since a program it runs can reach files and the network too.
 
 **Command-line arguments and standard input are capabilities.** `def main(stdout: Stdout, args: Args, stdin: Stdin):`. `for arg in args:` gives the arguments, not the program's name, which is `args.program`. `stdin.lines()` reads input a line at a time. A program that doesn't name them can't read them, and both are recorded for replay.
 *Why:* A program's input decides what it does, so it comes in the same visible way as files and the clock.
@@ -904,6 +904,7 @@ These are default lints, and the Den requires them.
 **Kits have three tiers, so the audit scales with what a kit can touch.**
 - **Pure** (no capabilities, no `extern`): automatic.
 - **Capability** (`Fs`, `Net` and so on): automatic plus AI review, with capabilities shown on the page. A newly added capability needs the author's own passkey tap at publish. Consumers' approval of an update that asks for more is unchanged.
+- **Process** (`Process`): reviewed like native code, and flagged prominently on the kit's page.
 - **Native** (`extern`, C code): human audit, first-party kits only in v1. Verified third-party authors are the later path, if there's a real need.
 
 *Why:* Most kits can't touch anything, so they need no human, and the people's time goes to the few kits that could do harm.
@@ -947,7 +948,14 @@ These are default lints, and the Den requires them.
 **An update that asks for more capabilities stops until you approve it.** `kit.lock` records the capabilities each dependency receives. A logging kit that starts asking for `Net` doesn't install until you say so. The same goes for an update that adds `unsafe` code.
 *Why:* A trusted package turning malicious in an update is the attack that hit event-stream and ua-parser-js.
 
-**Capabilities can be narrowed:** `fs.only("saves/")`, `net.only("api.example.com")`. A kit gets only the part it needs.
+**Capabilities can be narrowed.** `main` hands each kit only the part it needs:
+- `fs.only("saves/")` reaches only that folder.
+- `net.client()` can only connect out, and `net.server(port=8080)` can only listen on that port.
+- `net.hosts(["api.example.com"])` can reach only those hosts.
+- `process.only("git")` can run only that program.
+
+Narrowing chains, so `net.client().hosts(["api.example.com"])` can only connect out, and only to that host. A kit asking for `Process` is flagged prominently and reviewed like native code.
+*Why:* Connecting out and serving are different powers, and a kit that needs `git` shouldn't get a shell.
 
 **Every kit has an owner's namespace,** `owner/kit`. The Den rejects names a small edit away from popular ones. There's one public registry, and private code comes from git or a path rather than a private registry (below).
 *Why:* That stops typosquatting and dependency confusion.
@@ -971,11 +979,11 @@ These are default lints, and the Den requires them.
 physics = { git = "https://git.example.com/studio/physics", commit = "3f9c2a1e7b4d" }
 tools = { path = "../tools" }
 ```
-- Code from a git or path dependency can't contain `extern`.
+- A git or path dependency may contain `extern`, but adding or updating one that does shows a clear notice, "this dependency contains C code", and needs your approval.
 - A kit with git or path dependencies can't be published to the Den, so they never spread into other people's trees.
 - Capabilities are enforced as for any other code.
 
-*Why:* Go's convenience for private code, while public code stays on the checked Den. Capabilities mean even unreviewed code can't touch files or the network unless it's handed `Fs` or `Net`.
+*Why:* Go's convenience for private code, while public code stays on the checked Den. An app may already use C in its own code, and a game engine split into local kits (`../engine`) needs C for Metal and Vulkan; the Den fence still stops that C from spreading. Capabilities mean even unreviewed code can't touch files or the network unless it's handed `Fs` or `Net`.
 
 ## Engines
 
@@ -1145,7 +1153,7 @@ libraries = ["sqlite3"]
 ```
 The JIT loads them when the program runs, and release builds link them. The C standard library is always available.
 
-**In v1, raw C is allowed only in the standard library's OS layer, first-party `fennec/` kits and your own app.** An app can use `extern` in its own code, which isn't publishing; a game engine needs that for Metal and Vulkan. No third-party native kits go on the Den in v1, even from verified authors, until there's a real need. Verified authors are the later path.
+**In v1, raw C is allowed only in the standard library's OS layer, first-party `fennec/` kits, your own app and git or path dependencies you approve.** An app can use `extern` in its own code, which isn't publishing; a game engine needs that for Metal and Vulkan. No third-party native kits go on the Den in v1, even from verified authors, until there's a real need. Verified authors are the later path.
 *Why:* Native code is the one place Fennec's guarantees stop, since C can ignore capabilities and corrupt memory.
 
 **There's no C compiled to wasm in v1.** It can be reconsidered later if the ecosystem needs it.

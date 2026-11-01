@@ -219,12 +219,12 @@ scan(rows, limit=100)
 This replaces `limit: int = 8` as the written form.
 *Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap. The literal already states the type, so the signature stays complete, and the declaration reads like the call. Making the repeated type an error keeps one way to write it.
 
-**Some positional arguments are a hard error.** These are bare `True` or `False`, three or more positional arguments, and positional arguments to neighboring parameters of the same type. The first argument and `self` are exempt. The fix names them:
+**Some positional arguments are a hard error.** These are bare `True` or `False`, positional arguments to neighboring parameters of the same type, and three or more positional arguments, unless every two neighboring parameters have types that can't hold each other's values, so a swap wouldn't compile: `report(stdout, world, board)` stays as it is. The first argument and `self` are exempt. The fix names them:
 ```fennec
 copy_file(src, overwrite=True)
 move(from_tile=a, to_tile=b)
 ```
-*Why:* A call like `move(a, b, True)` compiles and reads fine when its arguments are swapped. Naming them makes that mistake visible to people and AI, and the first argument is almost always obvious from the function's name.
+*Why:* A call like `move(a, b, True)` compiles and reads fine when its arguments are swapped. Naming them makes that mistake visible to people and AI, and the first argument is almost always obvious from the function's name. Where no two neighbors could be swapped and still compile, the compiler already catches the mistake, so names would only add length.
 
 **A function that can fail says so with `fails Name`, and every exit is visible.**
 ```fennec

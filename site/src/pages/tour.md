@@ -80,7 +80,7 @@ def main(stdout: Stdout):
 
 **Planned:** a literal default giving the type, so that's written `limit=8`, and writing `limit: int = 8` is an error whose fix drops the `: int`. The type stays when the default is `None`, an empty collection or any other expression.
 
-**Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, three or more positional arguments, and neighboring parameters of the same type. The first argument and `self` are exempt.
+**Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, neighboring parameters of the same type, and three or more positional arguments unless no two neighbors could be swapped and still compile. The first argument and `self` are exempt.
 
 ## Built-in types
 

@@ -73,7 +73,7 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 ## Collections
 
-**A struct works as a dict key with nothing to write.** It hashes all its fields automatically. A struct with a float field, or one that defines its own `def ==`, can't be a key, and the compile error suggests keying by a field. There's no `def key`.
+**A struct works as a dict key with nothing to write.** It hashes all its fields automatically. A struct with a float field, or one that defines its own `def ==`, can't be a key, and the compile error suggests keying by a field. There's no `def key`. `==` and `!=` call a type's own `def ==` when it has one; today they don't yet, which is a bug.
 *Why:* A hash can't then disagree with `==`, which is the classic bug in hand-written keys. A float makes a poor key inside a struct, since NaN never equals itself and `0.0` equals `-0.0`.
 
 **Dicts use a fast keyed hash with a random seed per process,** fixed in tests and replays. A dict whose probes get suspiciously long rehashes itself with SipHash.
@@ -394,7 +394,18 @@ def write[T, W: Writer](x: T, mut out: W):
 
 **`Self` in an interface's method means the type that fits it.** `interface Signed: def abs(self) -> Self` says `abs` returns the same type it's called on: a `Money` for a `Money`.
 
-**`Eq`, `Hash`, `Ordered` and `Format` are built-in interfaces,** satisfied automatically wherever the automatic `==`, hashing, ordering and printing apply.
+**`Eq`, `Hash`, `Ordered` and `Format` are built-in interfaces,** satisfied automatically wherever the automatic `==`, hashing, ordering and printing apply. A type with its own `def str` still satisfies `Format`.
+
+**`in` is an operator a type defines,** like `def +`, `def <` and `def []`.
+```fennec
+struct Inventory:
+    _items: SortedMap[str, int]
+
+    def in(self, name: str) -> bool:
+        name in self._items
+```
+`key in m` calls the right-hand value's `def in`, and `not in` follows from it. `list`, `dict`, `set` and `str` define it in `std` the same way, so there's no hook.
+*Why:* User collections like `SortedMap` then read like built-in ones, with no `map.has(key)`.
 
 **`=>` is one expression; anything longer is a nested `def`.** There are no multi-line anonymous functions, as in Python. Function types are written `(int, str) -> bool`.
 
@@ -472,6 +483,13 @@ struct Color:
 - A `shared` handle or a function value is a compile error naming the field.
 
 *Why:* Types don't know about formats and formats don't know about types, so a new format is written once and works with every struct, and a new struct works with every format.
+
+**Printing is one more format.** `print`, `str(x)` and f-strings all go through it.
+- By default a value prints from its fields, through the same generic breakdown as other formats.
+- A type that needs something else writes `def str(self, mut out: StrWriter)`, the same shape as `def json(self, mut out: JsonWriter)`.
+- `std` collections like `SortedMap` and `Deque` print their items, not their internals.
+
+*Why:* One mechanism covers printing and every data format, and it's how `std` types keep their internals hidden. The method is `str`, not `text`, because `text` would clash with common fields like `message.text`, while `str(x)` already means "make text of this", and the name follows `json` and `pack`.
 
 **`std.pack` is the default binary format,** written in plain Fennec.
 - There are no field names on the wire, and a schema hash says which shape the data has.

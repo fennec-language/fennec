@@ -446,8 +446,13 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
 /// given with `set_abandon`. So freeing a block whose type holds no such generator and no
 /// `del` runs no program code.
 pub extern "C" fn free(address: i64) {
-    with(|state| free_block(state, u64::try_from(address).unwrap_or(0)));
-    run_abandons();
+    let abandoning = with(|state| {
+        free_block(state, u64::try_from(address).unwrap_or(0));
+        !state.heap.abandoning.is_empty()
+    });
+    if abandoning {
+        run_abandons();
+    }
 }
 
 /// `free`, for a block native code knows is a string's. A string's block holds no

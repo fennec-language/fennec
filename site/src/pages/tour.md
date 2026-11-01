@@ -78,7 +78,7 @@ def main(stdout: Stdout):
     stdout.print(scan([1, 2, 3]), scan([1, 2, 3], limit=1))
 ```
 
-**Planned:** a literal default giving the type, so that's written `limit=8`, and `fennec fix` drops the `: int`. The type stays when the default is `None`, an empty collection or any other expression.
+**Planned:** a literal default giving the type, so that's written `limit=8`, and writing `limit: int = 8` is an error whose fix drops the `: int`. The type stays when the default is `None`, an empty collection or any other expression.
 
 **Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, three or more positional arguments, and neighboring parameters of the same type. The first argument and `self` are exempt.
 

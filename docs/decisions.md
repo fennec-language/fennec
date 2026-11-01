@@ -199,14 +199,14 @@ scan(rows)
 scan(rows, limit=100)
 ```
 - A literal default gives the parameter its type, for `int`, `float`, `str` and `bool` literals and for enum cases: `mode=Mode.fast`.
-- The type is written when the default is `None`, an empty `[]` or `{}`, a constant's name or any other expression, or when the type isn't the literal's own: `limit: i32 = 8`.
-- `fennec fix` removes a redundant type, turning `limit: int = 8` into `limit=8`, as it removes `-> None`.
+- The type is written when the default is `None`, an empty `[]` or `{}`, a constant's name or any other expression, or when the type isn't the literal's own: `limit: i32 = 8`, `ratio: f32 = 0.5`.
+- Writing the type the literal already gives is a compile error: `name: str = "Chris"` and `limit: int = 8`. The fix removes the type, and `fennec fix` applies it.
 - A default is a plain value computed at compile time, under the same rule as a module constant. Calling without it costs the same as passing the value.
 - There are no exceptions in `std` either. `d.get(key)` returns an optional, so a fallback is written `d.get(key) else 0`, and `sum` takes `start=`.
 - Required parameters may be positional, within the limits below.
 
 This replaces `limit: int = 8` as the written form.
-*Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap. The literal already states the type, so the signature stays complete, and the declaration reads like the call.
+*Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap. The literal already states the type, so the signature stays complete, and the declaration reads like the call. Making the repeated type an error keeps one way to write it.
 
 **Some positional arguments are a hard error.** These are bare `True` or `False`, three or more positional arguments, and positional arguments to neighboring parameters of the same type. The first argument and `self` are exempt. The fix names them:
 ```fennec

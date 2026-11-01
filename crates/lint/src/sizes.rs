@@ -72,7 +72,7 @@ fn deepest(stmts: &[Stmt], depth: usize) -> (usize, Span) {
 }
 
 /// Where the last thing in a block ends.
-fn end_of(stmts: &[Stmt]) -> u32 {
+pub(crate) fn end_of(stmts: &[Stmt]) -> u32 {
     let inner = stmts.iter().flat_map(blocks).map(end_of);
     inner.chain(stmts.iter().map(|stmt| stmt.span.end)).max().unwrap_or(0)
 }

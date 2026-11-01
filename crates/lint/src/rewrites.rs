@@ -8,7 +8,7 @@ use crate::Lint;
 use crate::sizes::{blocks, functions};
 
 /// The source an expression was written as.
-fn written(sources: &Sources, span: Span) -> Option<String> {
+pub(crate) fn written(sources: &Sources, span: Span) -> Option<String> {
     let (_, text, base) = sources.file_at(span)?;
     let start = usize::try_from(span.start.checked_sub(base)?).ok()?;
     let end = usize::try_from(span.end.checked_sub(base)?).ok()?;
@@ -18,7 +18,7 @@ fn written(sources: &Sources, span: Span) -> Option<String> {
 /// Whether an expression's source can be replaced whole. Spans leave out the brackets around a
 /// leading or trailing operand, so `(a or b) == True` starts inside its bracket. Those are left
 /// alone rather than broken.
-fn replaceable(sources: &Sources, expr: &Expr) -> bool {
+pub(crate) fn replaceable(sources: &Sources, expr: &Expr) -> bool {
     written(sources, expr.span).is_some_and(|text| {
         let mut depth = 0_i32;
         for ch in text.chars() {
@@ -33,7 +33,7 @@ fn replaceable(sources: &Sources, expr: &Expr) -> bool {
 
 /// The source of an operand that's going beside a new operator, in brackets if it needs them:
 /// spans leave out the brackets that were around it.
-fn operand(sources: &Sources, expr: &Expr) -> Option<String> {
+pub(crate) fn operand(sources: &Sources, expr: &Expr) -> Option<String> {
     let text = written(sources, expr.span)?;
     let loose = matches!(expr.kind, ExprKind::Binary { .. } | ExprKind::Unary { .. } | ExprKind::Cond { .. });
     Some(if loose { format!("({text})") } else { text })

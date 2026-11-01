@@ -42,6 +42,8 @@ pub(crate) struct Checker {
     pub(crate) defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.
     pub(crate) generator_types: BTreeMap<(u32, u32), String>,
+    /// What each name for a standard library function written in Fennec means.
+    pub(crate) std_names: BTreeMap<(u32, u32), String>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
@@ -69,6 +71,7 @@ impl Checker {
             program.add(prelude, true);
         }
         program.prelude_imports = std::mem::take(&mut program.imports);
+        program.std_functions.clear();
         program.add(module, false);
         let mut diagnostics = std::mem::take(&mut program.problems);
         diagnostics.extend(crate::imports::unimported(module, &program));
@@ -83,6 +86,7 @@ impl Checker {
             float_sums: BTreeSet::new(),
             defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
+            std_names: BTreeMap::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
@@ -157,6 +161,7 @@ impl Checker {
                 places,
                 defaults: self.defaults,
                 generator_types: self.generator_types,
+                std_names: self.std_names,
             });
         }
         let mut diagnostics = self.diagnostics;

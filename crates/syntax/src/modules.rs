@@ -12,7 +12,7 @@ use crate::stdlib::MODULES;
 const EVERYWHERE: [&str; 3] = ["Clock", "Fs", "ParseError"];
 
 /// The module a type or constant that has to be imported comes from, like `collections`
-/// for `Deque`. Functions are builtins named `module.function`, which are imported apart.
+/// for `Deque`. Functions are named `module.function` and are imported apart.
 pub fn importable_type(name: &str) -> Option<&'static str> {
     if EVERYWHERE.contains(&name) || !name.starts_with(|c: char| c.is_ascii_uppercase()) {
         return None;

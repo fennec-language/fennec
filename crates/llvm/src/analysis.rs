@@ -368,7 +368,7 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
     };
     let grown = count_uses(function, changes, &mut known);
     find_reads_again(function, &mut known);
-    find_borrows(function, &mut known);
+    find_borrows(function, changes, &mut known);
     find_path_takes(function, &mut known);
     find_aliases(function, &mut known);
     // A copy shares its source, unless the source is never read again, and a block put inside
@@ -523,7 +523,7 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
 /// Finds reads of a field or item whose value needs no owner of its own: read once, by something
 /// that only looks inside it, before anything could change what it came from; and a field
 /// taken out, changed and put back, with nothing able to see it in between.
-fn find_borrows(function: &Function, known: &mut Analysis) {
+fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known: &mut Analysis) {
     for inst in function.blocks.iter().flat_map(|block| &block.insts) {
         // A character's block lasts the whole run.
         if let InstKind::Builtin { dest: Some(dest), name, .. } = &inst.kind
@@ -562,6 +562,13 @@ fn find_borrows(function: &Function, known: &mut Analysis) {
                         break;
                     }
                 }
+            }
+            // An `IdMap`'s items aren't a list's, so they're read and written as they are.
+            let id_map = |local: LocalId| {
+                matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::IdMap(_)))
+            };
+            if matches!(&inst.kind, InstKind::GetIndex { .. }) && id_map(source) {
+                continue;
             }
             if let InstKind::GetIndex { index, .. } = &inst.kind {
                 let home = from_field.get(&source.0).cloned().unwrap_or((source, Vec::new()));
@@ -602,6 +609,20 @@ fn find_borrows(function: &Function, known: &mut Analysis) {
                     }
                     InstKind::Builtin { name, args, .. }
                         if name == "list.append" && args.first() == Some(&Operand::Local(dest)) => {}
+                    InstKind::Builtin { name, args, changes: true, .. }
+                        if name.starts_with("IdMap.")
+                            && args.first() == Some(&Operand::Local(dest))
+                            && !args.iter().skip(1).any(|arg| {
+                                *arg == Operand::Local(dest) || *arg == Operand::Local(source)
+                            }) => {}
+                    // A method written in Fennec changing it, like `self.inner.add(x)`, given
+                    // it alone and nothing else of what it came from.
+                    InstKind::Call { function: callee, args, .. }
+                        if args.iter().filter(|arg| **arg == Operand::Local(dest)).count() == 1
+                            && changes(callee)
+                                .iter()
+                                .any(|at| args.get(*at) == Some(&Operand::Local(dest)))
+                            && !args.contains(&Operand::Local(source)) => {}
                     InstKind::SetIndex { object, path, .. } if *object == dest && path.is_empty() => {}
                     // Making something else, from neither of them.
                     other @ (InstKind::Make { .. }

@@ -61,6 +61,17 @@ impl Emit<'_, '_, '_> {
 
     /// Prints one value: an optional as what it holds, or `None`.
     fn print_one(&mut self, value: &str, kind: &Kind) -> Result<(), String> {
+        // An `Id` shows its slot, as the interpreter's does.
+        if let Kind::Struct(id) = kind
+            && self.module.layouts.get(*id).is_some_and(|layout| layout.name == "Id")
+        {
+            self.print_text("Id(");
+            let slot = self.temp();
+            self.line(&format!("{slot} = load i64, ptr {value}"));
+            self.print_one(&slot, &Kind::Int)?;
+            self.print_text(")");
+            return Ok(());
+        }
         if let Kind::Maybe(inner) = kind {
             let none = self.temp();
             self.line(&format!("{none} = icmp eq ptr {value}, null"));
@@ -271,6 +282,23 @@ impl Emit<'_, '_, '_> {
         result
     }
 
+    /// Which of two strings comes first, as -1, 0 or 1.
+    pub(crate) fn text_order(&mut self, a: &str, b: &str) -> String {
+        self.declare("declare i64 @fennec_str_compare(ptr, ptr) nounwind");
+        // Strings of up to a word compare as big-endian numbers, the bytes past their
+        // ends masked off, then by length; longer ones go to the runtime.
+        self.declare("declare i64 @llvm.bswap.i64(i64)");
+        self.module.add_helper(
+            "fen_compare_text",
+            format!(
+                "define internal i64 @fen_compare_text(ptr %a, ptr %b) #0 {{\nentry:\n  %a_at = getelementptr inbounds i8, ptr %a, i64 {TEXT_BYTES}\n  %b_at = getelementptr inbounds i8, ptr %b, i64 {TEXT_BYTES}\n  %an = load i64, ptr %a_at\n  %bn = load i64, ptr %b_at\n  %a_short = icmp ule i64 %an, 8\n  %b_short = icmp ule i64 %bn, 8\n  %both = and i1 %a_short, %b_short\n  br i1 %both, label %word, label %slow\nword:\n  %a_text = getelementptr inbounds i8, ptr %a, i64 {TEXT}\n  %b_text = getelementptr inbounds i8, ptr %b, i64 {TEXT}\n  %aw = load i64, ptr %a_text\n  %bw = load i64, ptr %b_text\n  %as = call i64 @llvm.bswap.i64(i64 %aw)\n  %bs = call i64 @llvm.bswap.i64(i64 %bw)\n  %a_bits = shl i64 %an, 3\n  %b_bits = shl i64 %bn, 3\n  %a_shift = sub i64 64, %a_bits\n  %b_shift = sub i64 64, %b_bits\n  %a_empty = icmp eq i64 %an, 0\n  %b_empty = icmp eq i64 %bn, 0\n  %a_keep = select i1 %a_empty, i64 0, i64 %a_shift\n  %b_keep = select i1 %b_empty, i64 0, i64 %b_shift\n  %a_ones = shl i64 -1, %a_keep\n  %b_ones = shl i64 -1, %b_keep\n  %a_mask = select i1 %a_empty, i64 0, i64 %a_ones\n  %b_mask = select i1 %b_empty, i64 0, i64 %b_ones\n  %ak = and i64 %as, %a_mask\n  %bk = and i64 %bs, %b_mask\n  %same = icmp eq i64 %ak, %bk\n  %lt = icmp ult i64 %ak, %bk\n  %gt = icmp ugt i64 %ak, %bk\n  %nlt = icmp ult i64 %an, %bn\n  %ngt = icmp ugt i64 %an, %bn\n  %less = select i1 %same, i1 %nlt, i1 %lt\n  %more = select i1 %same, i1 %ngt, i1 %gt\n  %low = select i1 %less, i64 -1, i64 0\n  %order = select i1 %more, i64 1, i64 %low\n  ret i64 %order\nslow:\n  %counted = call i64 @fennec_str_compare(ptr %a, ptr %b)\n  ret i64 %counted\n}}\n\n"
+            ),
+        );
+        let ordering = self.temp();
+        self.line(&format!("{ordering} = call i64 @fen_compare_text(ptr {a}, ptr {b})"));
+        ordering
+    }
+
     /// An operator on two strings.
     pub(crate) fn string_binary(&mut self, op: BinOp, (a, b): (&str, &str)) -> Result<String, String> {
         match op {
@@ -282,24 +310,13 @@ impl Emit<'_, '_, '_> {
             }
             BinOp::Eq | BinOp::NotEq => Ok(self.same_text(op, (a, b))),
             BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
-                self.declare("declare i64 @fennec_str_compare(ptr, ptr) nounwind");
                 let cc = match op {
                     BinOp::Lt => "slt",
                     BinOp::LtEq => "sle",
                     BinOp::Gt => "sgt",
                     _ => "sge",
                 };
-                // Strings of up to a word compare as big-endian numbers, the bytes past their
-                // ends masked off, then by length; longer ones go to the runtime.
-                self.declare("declare i64 @llvm.bswap.i64(i64)");
-                self.module.add_helper(
-                    "fen_compare_text",
-                    format!(
-                        "define internal i64 @fen_compare_text(ptr %a, ptr %b) #0 {{\nentry:\n  %a_at = getelementptr inbounds i8, ptr %a, i64 {TEXT_BYTES}\n  %b_at = getelementptr inbounds i8, ptr %b, i64 {TEXT_BYTES}\n  %an = load i64, ptr %a_at\n  %bn = load i64, ptr %b_at\n  %a_short = icmp ule i64 %an, 8\n  %b_short = icmp ule i64 %bn, 8\n  %both = and i1 %a_short, %b_short\n  br i1 %both, label %word, label %slow\nword:\n  %a_text = getelementptr inbounds i8, ptr %a, i64 {TEXT}\n  %b_text = getelementptr inbounds i8, ptr %b, i64 {TEXT}\n  %aw = load i64, ptr %a_text\n  %bw = load i64, ptr %b_text\n  %as = call i64 @llvm.bswap.i64(i64 %aw)\n  %bs = call i64 @llvm.bswap.i64(i64 %bw)\n  %a_bits = shl i64 %an, 3\n  %b_bits = shl i64 %bn, 3\n  %a_shift = sub i64 64, %a_bits\n  %b_shift = sub i64 64, %b_bits\n  %a_empty = icmp eq i64 %an, 0\n  %b_empty = icmp eq i64 %bn, 0\n  %a_keep = select i1 %a_empty, i64 0, i64 %a_shift\n  %b_keep = select i1 %b_empty, i64 0, i64 %b_shift\n  %a_ones = shl i64 -1, %a_keep\n  %b_ones = shl i64 -1, %b_keep\n  %a_mask = select i1 %a_empty, i64 0, i64 %a_ones\n  %b_mask = select i1 %b_empty, i64 0, i64 %b_ones\n  %ak = and i64 %as, %a_mask\n  %bk = and i64 %bs, %b_mask\n  %same = icmp eq i64 %ak, %bk\n  %lt = icmp ult i64 %ak, %bk\n  %gt = icmp ugt i64 %ak, %bk\n  %nlt = icmp ult i64 %an, %bn\n  %ngt = icmp ugt i64 %an, %bn\n  %less = select i1 %same, i1 %nlt, i1 %lt\n  %more = select i1 %same, i1 %ngt, i1 %gt\n  %low = select i1 %less, i64 -1, i64 0\n  %order = select i1 %more, i64 1, i64 %low\n  ret i64 %order\nslow:\n  %counted = call i64 @fennec_str_compare(ptr %a, ptr %b)\n  ret i64 %counted\n}}\n\n"
-                    ),
-                );
-                let (ordering, result) = (self.temp(), self.temp());
-                self.line(&format!("{ordering} = call i64 @fen_compare_text(ptr {a}, ptr {b})"));
+                let (ordering, result) = (self.text_order(a, b), self.temp());
                 self.line(&format!("{result} = icmp {cc} i64 {ordering}, 0"));
                 Ok(result)
             }

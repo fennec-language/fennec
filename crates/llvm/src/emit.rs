@@ -846,6 +846,10 @@ impl Emit<'_, '_, '_> {
             Kind::Str => self.string_binary(op, (&a, &b))?,
             Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
             Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b)),
+            Kind::Struct(id) => self.compare_structs(op, id, (&a, &b))?,
+            Kind::Boxed(id) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
+                self.compare_boxed(op, id, (&a, &b))?
+            }
             other => {
                 return Err(format!("it uses an operator on {other:?}, which this backend doesn't take yet"));
             }
@@ -1136,6 +1140,8 @@ impl Emit<'_, '_, '_> {
             "list.append" => self.append(args),
             "result.expect" => self.expect(dest, args, span),
             "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
+            "IdMap" | "IdMap.len" | "IdMap.get" | "IdMap.insert" | "IdMap.remove" | "IdMap.values"
+            | "IdMap.ids" | "IdMap.items" => self.id_map_builtin(dest, name, args, span),
             "is_regex" | "re.is_regex" | "Regex.replace" | "Regex.split" | "Regex.find_all"
             | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)

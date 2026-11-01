@@ -66,6 +66,8 @@ pub(crate) struct Heap {
     plans: Vec<super::plans::Plan>,
     /// How many words each shape's blocks take, by the shape's number.
     sizes: Vec<usize>,
+    /// Words copied out of one block on the way to another, kept to save making them anew.
+    pub(super) scratch: Vec<u64>,
 }
 
 /// What a run of native code allocated and copied. Blocks that live for the whole run, and what

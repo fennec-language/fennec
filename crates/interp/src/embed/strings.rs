@@ -67,17 +67,37 @@ pub extern "C" fn append(text: i64, more: i64) -> i64 {
 
 fn grow(state: &mut State, text: i64, more: i64) -> Option<i64> {
     // Copied first: `text += text` reads the block it writes.
-    let (extra, extra_chars) = bytes(state, more)?;
+    let mut copied = std::mem::take(&mut state.heap.scratch);
+    let lengths = copy_text(state, more, &mut copied);
+    let grown = lengths.and_then(|(extra, extra_chars)| grow_by(state, text, &copied, extra, extra_chars));
+    state.heap.scratch = copied;
+    grown
+}
+
+/// Copies a string's words into `words`, giving back its lengths in bytes and characters.
+fn copy_text(state: &State, address: i64, words: &mut Vec<u64>) -> Option<(usize, u64)> {
+    let block = state.heap.block(u64::try_from(address).ok()?)?;
+    if !super::heap::is_text(state, block) {
+        return None;
+    }
+    let (length, chars) = lengths(block);
+    words.clear();
+    words.extend_from_slice(block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + length.div_ceil(8))?);
+    Some((length, chars))
+}
+
+/// `grow` with the bytes added already copied out of their block.
+fn grow_by(state: &mut State, text: i64, added: &[u64], extra: usize, extra_chars: u64) -> Option<i64> {
     let at = u64::try_from(text).ok()?;
     let block = state.heap.block(at)?;
     let (length, chars) = (usize::try_from(*block.get(2)?).ok()?, *block.get(3)?);
-    let total = length + extra.len();
+    let total = length + extra;
     let needed = TEXT_HEADER_WORDS + total.div_ceil(8).max(1);
     let fits = block.first() == Some(&1) && block.len() >= needed;
     if fits {
         let block = state.heap.block_mut(at)?;
-        put_bytes(block, length, &extra);
-        set_lengths(block, total, chars + u64::try_from(extra_chars).ok()?);
+        put_words(block, length, added, extra);
+        set_lengths(block, total, chars + extra_chars);
         return Some(text);
     }
     let room = 2 * total.div_ceil(8).max(1);
@@ -86,8 +106,8 @@ fn grow(state: &mut State, text: i64, more: i64) -> Option<i64> {
     for (to, from) in grown.iter_mut().zip(state.heap.block(at)?.get(..used)?) {
         *to = *from;
     }
-    put_bytes(&mut grown, length, &extra);
-    set_lengths(&mut grown, total, chars + u64::try_from(extra_chars).ok()?);
+    put_words(&mut grown, length, added, extra);
+    set_lengths(&mut grown, total, chars + extra_chars);
     if let Some([count, .., bytes]) = grown.get_mut(..TEXT_HEADER_WORDS) {
         *count = 1;
         *bytes = u64::try_from(room * 8).unwrap_or(0);
@@ -97,16 +117,25 @@ fn grow(state: &mut State, text: i64, more: i64) -> Option<i64> {
     Some(joined)
 }
 
-/// Writes `bytes` into a string's block, starting `from` bytes into its text.
-fn put_bytes(block: &mut [u64], from: usize, bytes: &[u8]) {
-    let Some(words) = block.get_mut(TEXT_HEADER_WORDS..) else { return };
-    for (at, byte) in (from..).zip(bytes) {
-        if let Some(word) = words.get_mut(at / 8) {
-            let mut each = word.to_le_bytes();
-            if let Some(slot) = each.get_mut(at % 8) {
-                *slot = *byte;
-            }
-            *word = u64::from_le_bytes(each);
+/// Writes `length` bytes, packed in `words`, into a string's block, starting `from` bytes
+/// into its text, a word at a time. What follows them in the block's last word they touch is
+/// zero, as native code compares strings' words whole.
+fn put_words(block: &mut [u64], from: usize, words: &[u64], length: usize) {
+    let Some(to) = block.get_mut(TEXT_HEADER_WORDS..) else { return };
+    let shift = u32::try_from(from % 8 * 8).unwrap_or(0);
+    let kept = if shift == 0 { 0 } else { u64::MAX >> (64 - shift) };
+    let last = length / 8;
+    let tail = u32::try_from(length % 8 * 8).unwrap_or(0);
+    for (n, word) in words.iter().take(length.div_ceil(8)).enumerate() {
+        let word = if n == last && tail > 0 { word & (u64::MAX >> (64 - tail)) } else { *word };
+        let at = from / 8 + n;
+        if let Some(slot) = to.get_mut(at) {
+            *slot = (*slot & kept) | word << shift;
+        }
+        if shift > 0
+            && let Some(slot) = to.get_mut(at + 1)
+        {
+            *slot = word >> (64 - shift);
         }
     }
 }
@@ -397,35 +426,59 @@ pub extern "C" fn strip(address: i64, which: i64) -> i64 {
     })
 }
 
-/// Adds a string block's bytes to `bytes`, giving back how many characters it has.
-fn add_text(block: &[u64], bytes: &mut Vec<u8>) -> usize {
+/// A string's length in bytes and characters, from its block.
+fn lengths(block: &[u64]) -> (usize, u64) {
     let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
-    let words = block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + length.div_ceil(8)).unwrap_or_default();
-    let wanted = bytes.len() + length;
-    for word in words {
-        bytes.extend_from_slice(&word.to_le_bytes());
-    }
-    bytes.truncate(wanted);
-    block.get(3).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0)
+    (length, block.get(3).copied().unwrap_or(0))
 }
 
-/// `separator.join(list)`, for a list of strings.
+/// Puts a string's text into `joined` from `at` bytes in, giving back its lengths.
+fn add_text(joined: &mut [u64], at: usize, part: &[u64]) -> (usize, u64) {
+    let (length, chars) = lengths(part);
+    let words = part.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + length.div_ceil(8)).unwrap_or_default();
+    put_words(joined, at, words, length);
+    (length, chars)
+}
+
+/// How many bytes `separator.join(list)` takes.
+fn joined_length(state: &State, separator: i64, list: i64) -> usize {
+    let block =
+        |address: i64| u64::try_from(address).ok().and_then(|at| state.heap.block(at)).unwrap_or_default();
+    let words = super::lists::items(block(list), 1);
+    let parts = words.iter().filter_map(|word| state.heap.block(*word)).map(|part| lengths(part).0);
+    parts.sum::<usize>() + lengths(block(separator)).0 * words.len().saturating_sub(1)
+}
+
+/// `separator.join(list)`, for a list of strings, written straight into the joined block.
 pub extern "C" fn join(separator: i64, list: i64) -> i64 {
     with(|state| {
+        let mut joined =
+            state.heap.fresh(TEXT_HEADER_WORDS + joined_length(state, separator, list).div_ceil(8).max(1));
         let between = u64::try_from(separator).ok().and_then(|at| state.heap.block(at)).unwrap_or_default();
         let block = u64::try_from(list).ok().and_then(|list| state.heap.block(list)).unwrap_or_default();
-        let room = |block: &[u64]| block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
         let words = super::lists::items(block, 1);
-        let total = words.iter().filter_map(|word| state.heap.block(*word)).map(room).sum::<usize>()
-            + room(between) * words.len();
-        let mut bytes = Vec::with_capacity(total + 8);
-        let mut chars = 0;
-        for (at, word) in words.iter().enumerate() {
-            if at > 0 {
-                chars += add_text(between, &mut bytes);
+        let (mut at, mut chars) = (0, 0);
+        for (n, word) in words.iter().enumerate() {
+            if n > 0 {
+                let (length, count) = add_text(&mut joined, at, between);
+                (at, chars) = (at + length, chars + count);
             }
-            chars += state.heap.block(*word).map_or(0, |part| add_text(part, &mut bytes));
+            if let Some(part) = state.heap.block(*word) {
+                let (length, count) = add_text(&mut joined, at, part);
+                (at, chars) = (at + length, chars + count);
+            }
         }
-        text_from_bytes(state, &bytes, chars)
+        let header = [
+            1,
+            state.tables.str_shape,
+            0,
+            0,
+            u64::try_from(joined.len() - TEXT_HEADER_WORDS).unwrap_or(0) * 8,
+        ];
+        if let Some(start) = joined.get_mut(..TEXT_HEADER_WORDS) {
+            start.copy_from_slice(&header);
+        }
+        set_lengths(&mut joined, at, chars);
+        state.heap.insert(joined)
     })
 }

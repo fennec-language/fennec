@@ -106,6 +106,33 @@ mod tests {
     }
 
     #[test]
+    fn strings_join_and_grow_a_word_at_a_time_from_any_byte() {
+        let str = Rc::new(Element::Str);
+        let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let pieces = ["", "a", "bcdefghij", "é", "klmnopq", "rstuvwxyz0123456789", "ü!"];
+        let mut grown = string("");
+        let mut expected = String::new();
+        for piece in pieces.iter().cycle().take(40) {
+            grown = strings::append(grown, string(piece));
+            expected.push_str(piece);
+            assert_eq!(text_of(grown), expected);
+        }
+        grown = strings::append(grown, grown);
+        assert_eq!(text_of(grown), expected.repeat(2));
+        let list = lists::new(0, 7);
+        for (at, piece) in (LIST_ITEMS..).step_by(8).zip(pieces) {
+            set_word(list, at, u64::try_from(string(piece)).unwrap());
+        }
+        assert_eq!(text_of(strings::join(string(", "), list)), pieces.join(", "));
+        assert_eq!(text_of(strings::join(string(""), list)), pieces.concat());
+        let chars = u64::try_from(pieces.join("--").chars().count()).unwrap();
+        assert_eq!(word(strings::join(string("--"), list), TEXT_CHARS), Some(chars));
+        finish();
+    }
+
+    #[test]
     fn numbers_format_without_a_temporary() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
         start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();

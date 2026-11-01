@@ -7,7 +7,7 @@
 //! block; a change to a shared block first gives the changer a copy of its own. When the
 //! count reaches zero, native code calls `free`, which releases the block's fields too.
 //! The runtime never follows an address it didn't hand out: it finds every block by its
-//! address in a table.
+//! address in a table, `super::table`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -46,7 +46,7 @@ impl Hasher for AddressHasher {
 /// Every live block, by its address, and freed blocks kept for reuse, by size.
 #[derive(Default)]
 pub(crate) struct Heap {
-    blocks: HashMap<usize, Box<[u64]>, BuildHasherDefault<AddressHasher>>,
+    blocks: super::table::Table,
     spare: Vec<Vec<Box<[u64]>>>,
     /// How many of the blocks live for the whole run.
     statics: usize,
@@ -171,24 +171,24 @@ impl Heap {
         self.counts.allocations += 1;
         self.counts.allocated_bytes += u64::try_from(block.len()).unwrap_or(0) * 8;
         let address = block.as_ptr().addr();
-        self.blocks.insert(address, block);
+        self.blocks.insert(block);
         i64::try_from(address).unwrap_or(0)
     }
 
     /// Takes a block out of the heap for reuse, leaving the blocks it refers to as they are:
     /// for a block whose contents moved to a new one.
     pub(super) fn discard(&mut self, address: u64) {
-        if let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(&at)) {
+        if let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at)) {
             self.recycle(block);
         }
     }
 
     pub(crate) fn block(&self, address: u64) -> Option<&[u64]> {
-        self.blocks.get(&usize::try_from(address).ok()?).map(AsRef::as_ref)
+        self.blocks.get(usize::try_from(address).ok()?)
     }
 
     pub(super) fn block_mut(&mut self, address: u64) -> Option<&mut [u64]> {
-        self.blocks.get_mut(&usize::try_from(address).ok()?).map(AsMut::as_mut)
+        self.blocks.get_mut(usize::try_from(address).ok()?)
     }
 }
 
@@ -491,7 +491,7 @@ fn free_block(state: &mut State, address: u64) {
     let mut found = std::mem::take(&mut state.heap.found);
     pending.push(address);
     while let Some(address) = pending.pop() {
-        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove(&at)) else {
+        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove(at)) else {
             continue;
         };
         if is_abandoned(state, &block) {
@@ -500,9 +500,7 @@ fn free_block(state: &mut State, address: u64) {
             if let Some(count) = block.first_mut() {
                 *count = 1;
             }
-            if let Ok(at) = usize::try_from(address) {
-                state.heap.blocks.insert(at, block);
-            }
+            state.heap.blocks.insert(block);
             state.heap.abandoning.push(address);
             continue;
         }

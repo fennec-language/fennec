@@ -213,6 +213,13 @@ impl<'a> Lowerer<'a, '_> {
         Ok(self.struct_of_leaves(words))
     }
 
+    /// Whether `==` on values of this type calls a type's own `def ==`, in it or in what it holds.
+    pub(super) fn own_equality(&self, ty: Ty) -> Result<bool, Diagnostic> {
+        let (Ty::Struct(id) | Ty::Boxed(id)) = ty else { return Ok(false) };
+        let name = self.layout(id)?.name.clone();
+        Ok(self.signatures.own_equality(&fennec_check::Type::Named(name)))
+    }
+
     /// `a == b` or `a != b` on two plain structs or enums of the same type: whether every
     /// leaf has the same bits, which is how the interpreter compares their fields.
     pub(super) fn struct_equality(
@@ -224,10 +231,8 @@ impl<'a> Lowerer<'a, '_> {
         if !matches!(op, BinOp::Eq | BinOp::NotEq) || a_ty != b_ty {
             return Ok(None);
         }
-        // A type with its own `def ==` is compared by calling it.
-        if let Ty::Struct(id) | Ty::Boxed(id) = a_ty
-            && self.shared.compiled.contains_key(&format!("{}.==", self.layout(id)?.name))
-        {
+        // A type with its own `def ==`, or holding one, is compared by calling it.
+        if self.own_equality(a_ty)? {
             return Ok(None);
         }
         if let (Ty::Boxed(id), Some(a), Some(b)) = (a_ty, a, b) {

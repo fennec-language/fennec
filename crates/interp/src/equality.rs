@@ -44,12 +44,16 @@ impl Interp<'_> {
 
     /// Whether two values are equal, calling a type's own `def ==` wherever there is one.
     pub(crate) fn equal(&mut self, a: &Value, b: &Value, span: Span) -> Result<bool, Diagnostic> {
-        if !self.own_equality {
+        if self.own_equality.is_empty() {
             return Ok(a == b);
         }
         match (a, b) {
             (Value::Instance(one), Value::Instance(other)) if one.type_name == other.type_name => {
-                let own = self.type_info(&one.type_name).and_then(|info| info.methods.get("==").cloned());
+                let own = self
+                    .own_equality
+                    .contains(one.type_name.as_ref())
+                    .then(|| self.type_info(&one.type_name));
+                let own = own.flatten().and_then(|info| info.methods.get("==").cloned());
                 if let Some(own) = own {
                     return Ok(
                         self.call_with_values(&own, vec![a.clone(), b.clone()], span)? == Value::Bool(true)

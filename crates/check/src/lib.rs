@@ -275,6 +275,40 @@ pub struct Enum {
 }
 
 impl Signatures {
+    /// Whether `==` on values of this type calls a type's own `def ==`: its own, or one of a
+    /// type it holds, in a field, an enum case or a collection.
+    pub fn own_equality(&self, ty: &Type) -> bool {
+        self.holds_own_equality(ty, &mut Vec::new())
+    }
+
+    fn holds_own_equality(&self, ty: &Type, open: &mut Vec<String>) -> bool {
+        let name = match ty {
+            Type::Named(name) => name,
+            Type::Generic(name, args) => {
+                if args.iter().any(|arg| self.holds_own_equality(arg, open)) {
+                    return true;
+                }
+                name
+            }
+            other => return other.children().into_iter().any(|child| self.holds_own_equality(child, open)),
+        };
+        if open.contains(name) {
+            return false;
+        }
+        if self.functions.contains_key(&format!("{name}.==")) {
+            return true;
+        }
+        open.push(name.clone());
+        let fields = self.structs.get(name).or_else(|| self.errors.get(name)).map(|found| &found.fields);
+        let in_fields =
+            fields.is_some_and(|fields| fields.iter().any(|(_, ty)| self.holds_own_equality(ty, open)));
+        let cases = self.enums.get(name).map(|found| &found.cases);
+        let in_cases = cases.is_some_and(|cases| {
+            cases.iter().flat_map(|(_, fields)| fields).any(|(_, ty)| self.holds_own_equality(ty, open))
+        });
+        in_fields || in_cases
+    }
+
     /// The typed tree of the check that made these signatures.
     pub fn types(&self) -> &Types {
         &self.types

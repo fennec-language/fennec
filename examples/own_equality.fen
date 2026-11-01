@@ -23,3 +23,17 @@ def main(stdout: Stdout):
         if Pair(a=i, b=3 - i) == one:
             same += 1
     stdout.print(same)
+    held(stdout)
+
+## A struct holding a `Pair` compares it with the `Pair`'s own `==`.
+struct Held:
+    pair: Pair
+    name: str
+
+def held(stdout: Stdout):
+    one = Pair(a=1, b=2)
+    two = Pair(a=2, b=1)
+    stdout.print(Held(pair=one, name="x") == Held(pair=two, name="x"))
+    stdout.print(Held(pair=one, name="x") != Held(pair=two, name="y"))
+    pairs = [Pair(a=0, b=0), two]
+    stdout.print(pairs.index(one), pairs.count(one))

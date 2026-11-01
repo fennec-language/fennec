@@ -45,6 +45,10 @@ pub enum Ty {
     /// An optional of something held by a block's address: the address, or 0 for `None`,
     /// with no block for `Some`. Only layouts made by `Layouts::from_definitions` use it.
     Maybe(Block),
+    /// Whatever the block type with this number in the `Layouts` is: how a list holds lists,
+    /// dicts and optionals, which `ListItem` can't name itself. Only `Layouts::from_definitions`
+    /// gives it.
+    Block(u32),
 }
 
 /// Something held by the address of a block the runtime owns, which an optional of it holds
@@ -94,6 +98,9 @@ pub enum ListItem {
     Str,
     /// The address of a boxed value's block, which the list owns, by its layout's number.
     Boxed(u32),
+    /// A block of the type with this number in the `Layouts`, which the list owns: a list, a
+    /// dict, or an optional of one held in one word.
+    Block(u32),
 }
 
 impl ListItem {
@@ -106,6 +113,7 @@ impl ListItem {
             Ty::Struct(id) => ListItem::Struct(id),
             Ty::Str => ListItem::Str,
             Ty::Boxed(id) => ListItem::Boxed(id),
+            Ty::Block(id) => ListItem::Block(id),
             _ => return None,
         })
     }
@@ -119,6 +127,7 @@ impl ListItem {
             ListItem::Struct(id) => Ty::Struct(id),
             ListItem::Str => Ty::Str,
             ListItem::Boxed(id) => Ty::Boxed(id),
+            ListItem::Block(id) => Ty::Block(id),
         }
     }
 }
@@ -126,7 +135,7 @@ impl ListItem {
 impl Ty {
     /// Whether values of this kind are addresses of blocks with an owner count.
     pub fn counted(self) -> bool {
-        matches!(self, Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_) | Ty::Maybe(_))
+        matches!(self, Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_) | Ty::Maybe(_) | Ty::Block(_))
     }
 
     pub fn name(self) -> &'static str {
@@ -144,6 +153,7 @@ impl Ty {
             Ty::List(_) => "list",
             Ty::Known(_) => "function",
             Ty::Maybe(_) => "optional",
+            Ty::Block(_) => "block",
         }
     }
 }
@@ -221,6 +231,7 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Str => Element::Str,
         Ty::Obj => Element::Object,
         Ty::Maybe(block) => Element::Maybe(Rc::new(describe(layouts, block.ty())?)),
+        Ty::Block(id) => describe(layouts, layouts.block(id)?)?,
         Ty::List(item) => Element::List(Rc::new(describe(layouts, item.ty())?)),
         Ty::Dict(key, value) => {
             let str_shape = u64::try_from(layouts.len()).ok()?;

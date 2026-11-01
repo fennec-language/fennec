@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use fennec_interp::embed::dicts::{DICT_HEADER_WORDS, ENTRY_WORDS, Word};
-use fennec_interp::embed::layout::{TEXT, TEXT_BYTES};
+use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::Ty;
 use fennec_syntax::{BinOp, Span};
@@ -397,8 +397,211 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// Where a key that's a slice of a string is: the string's address, and the slice's start and
+    /// end in characters.
+    fn slice_place(&mut self, (text, start, end): &crate::analysis::SliceKey) -> Result<[String; 3], String> {
+        let (text, _) = self.operand(text)?;
+        let mut at = |part: &Option<Operand>| -> Result<String, String> {
+            Ok(match part {
+                Some(part) => self.operand(part)?.0,
+                None => i64::MIN.to_string(),
+            })
+        };
+        Ok([text, at(start)?, at(end)?])
+    }
+
+    /// Where the value of the key that's the slice `text[from:to]` is, or null. In ASCII text a
+    /// character is a byte, so the slice's bytes are hashed as a stored key's are and looked up
+    /// right here; other text asks the runtime.
+    fn slice_value_at(&mut self, dict: &str, [text, from, to]: &[String; 3]) -> String {
+        self.string_slice_helpers();
+        let (bytes_at, chars_at) =
+            (self.offset(text, TEXT_BYTES.unsigned_abs()), self.offset(text, TEXT_CHARS.unsigned_abs()));
+        let (length, chars, ascii) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{length} = load i64, ptr {bytes_at}"));
+        self.line(&format!("{chars} = load i64, ptr {chars_at}"));
+        self.line(&format!("{ascii} = icmp eq i64 {length}, {chars}"));
+        let (here, there, joined) = (self.label("ascii"), self.label("other"), self.label("looked"));
+        self.line(&format!("br i1 {ascii}, label %{here}, label %{there}, !prof !8"));
+        self.start_block(&here);
+        // Slicing's clamping: a missing end, then from the end if negative, then within.
+        let start = self.clamp_place(from, &length, "0");
+        let end = self.clamp_place(to, &length, &length);
+        let (later, size) = (self.temp(), self.temp());
+        self.line(&format!("{later} = call i64 @llvm.smax.i64(i64 {end}, i64 {start})"));
+        self.line(&format!("{size} = sub i64 {later}, {start}"));
+        let text_start = self.offset(text, TEXT.unsigned_abs());
+        let first = self.temp();
+        self.line(&format!("{first} = getelementptr inbounds i8, ptr {text_start}, i64 {start}"));
+        let (mixed, high, folded, hash, entry, none, value_place, found) = (
+            self.temp(),
+            self.temp(),
+            self.temp(),
+            self.temp(),
+            self.temp(),
+            self.temp(),
+            self.temp(),
+            self.temp(),
+        );
+        self.line(&format!("{mixed} = call i64 @fen_slice_hash(ptr {first}, i64 {size})"));
+        self.line(&format!("{high} = lshr i64 {mixed}, 29"));
+        self.line(&format!("{folded} = xor i64 {mixed}, {high}"));
+        self.line(&format!("{hash} = lshr i64 {folded}, 1"));
+        self.line(&format!(
+            "{entry} = call ptr @fen_find_slice(ptr {dict}, ptr {first}, i64 {size}, i64 {hash})"
+        ));
+        self.line(&format!("{none} = icmp eq ptr {entry}, null"));
+        self.line(&format!("{value_place} = getelementptr inbounds i8, ptr {entry}, i64 {ENTRY_VALUE}"));
+        self.line(&format!("{found} = select i1 {none}, ptr null, ptr {value_place}"));
+        let here_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&there);
+        self.declare("declare ptr @fennec_dict_find_slice(ptr, ptr, i64, i64) nounwind");
+        let asked = self.temp();
+        self.line(&format!(
+            "{asked} = call ptr @fennec_dict_find_slice(ptr {dict}, ptr {text}, i64 {from}, i64 {to})"
+        ));
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let value_at = self.temp();
+        self.line(&format!("{value_at} = phi ptr [ {found}, %{here_end} ], [ {asked}, %{there} ]"));
+        value_at
+    }
+
+    /// A slice's end as slicing clamps it into `0..=length`, `missing` standing for `i64::MIN`.
+    fn clamp_place(&mut self, at: &str, length: &str, missing: &str) -> String {
+        let (absent, negative, from_end, low, high, clamped, chosen) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{absent} = icmp eq i64 {at}, {}", i64::MIN));
+        self.line(&format!("{negative} = icmp slt i64 {at}, 0"));
+        self.line(&format!("{from_end} = add i64 {at}, {length}"));
+        self.line(&format!("{low} = call i64 @llvm.smax.i64(i64 {from_end}, i64 0)"));
+        self.line(&format!("{high} = call i64 @llvm.smin.i64(i64 {at}, i64 {length})"));
+        self.line(&format!("{clamped} = select i1 {negative}, i64 {low}, i64 {high}"));
+        self.line(&format!("{chosen} = select i1 {absent}, i64 {missing}, i64 {clamped}"));
+        chosen
+    }
+
+    /// Hashing bytes where they are, as a stored key's block is hashed, and finding them.
+    fn string_slice_helpers(&mut self) {
+        self.declare("declare i64 @llvm.fshl.i64(i64, i64, i64)");
+        self.declare("declare i64 @llvm.smax.i64(i64, i64)");
+        self.declare("declare i64 @llvm.smin.i64(i64, i64)");
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        self.declare("declare i32 @memcmp(ptr, ptr, i64)");
+        // Whole words straight from the bytes, the last part word through a zeroed one, so
+        // nothing past the slice is read.
+        self.module.add_helper(
+            "fen_slice_hash",
+            format!(
+                "define internal i64 @fen_slice_hash(ptr %bytes, i64 %length) #0 {{\nentry:\n  %part = alloca i64\n  %start = mul i64 %length, {MIX}\n  %whole = lshr i64 %length, 3\n  br label %head\nhead:\n  %hash = phi i64 [ %start, %entry ], [ %mixed, %body ]\n  %at = phi i64 [ 0, %entry ], [ %next, %body ]\n  %more = icmp ult i64 %at, %whole\n  br i1 %more, label %body, label %tail\nbody:\n  %place = getelementptr inbounds i64, ptr %bytes, i64 %at\n  %word = load i64, ptr %place, align 1\n  %turned = call i64 @llvm.fshl.i64(i64 %hash, i64 %hash, i64 23)\n  %xored = xor i64 %turned, %word\n  %mixed = mul i64 %xored, {MIX}\n  %next = add i64 %at, 1\n  br label %head\ntail:\n  %rest = and i64 %length, 7\n  %some = icmp ne i64 %rest, 0\n  br i1 %some, label %last, label %done\nlast:\n  store i64 0, ptr %part\n  %from = getelementptr inbounds i64, ptr %bytes, i64 %whole\n  call void @llvm.memcpy.p0.p0.i64(ptr %part, ptr %from, i64 %rest, i1 false)\n  %last_word = load i64, ptr %part\n  %last_turned = call i64 @llvm.fshl.i64(i64 %hash, i64 %hash, i64 23)\n  %last_xored = xor i64 %last_turned, %last_word\n  %last_mixed = mul i64 %last_xored, {MIX}\n  ret i64 %last_mixed\ndone:\n  ret i64 %hash\n}}\n\n"
+            ),
+        );
+        let mut find = find_start("fen_find_slice", "ptr")
+            .replace("(ptr %d, ptr %key, i64 %hash)", "(ptr %d, ptr %key, i64 %length, i64 %hash)");
+        find += &format!(
+            "  %other = load ptr, ptr %other_at\n  %their_length_at = getelementptr inbounds i8, ptr %other, i64 {TEXT_BYTES}\n  %their_length = load i64, ptr %their_length_at\n  %same_length = icmp eq i64 %their_length, %length\n  br i1 %same_length, label %bytes, label %next\nbytes:\n  %their_text = getelementptr inbounds i8, ptr %other, i64 {TEXT}\n  %order = call i32 @memcmp(ptr %their_text, ptr %key, i64 %length)\n  %equal = icmp eq i32 %order, 0\n  br i1 %equal, label %found, label %next\n}}\n\n"
+        );
+        self.module.add_helper("fen_find_slice", find);
+    }
+
+    /// `dict.get(text[a:b])`, finding those bytes where they are.
+    fn slice_get(
+        &mut self,
+        dest: LocalId,
+        dict: &Operand,
+        key: &crate::analysis::SliceKey,
+    ) -> Result<(), String> {
+        let (dict, kind) = self.operand(dict)?;
+        let Kind::Dict(_, value_word) = kind else { return Err("`dict.get` on something else".to_owned()) };
+        let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
+        let place = self.slice_place(key)?;
+        let value_at = self.slice_value_at(&dict, &place);
+        let missing = self.temp();
+        self.line(&format!("{missing} = icmp eq ptr {value_at}, null"));
+        let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
+        self.line(&format!("br i1 {missing}, label %{absent}, label %{found}"));
+        self.start_block(&absent);
+        self.copy(dest, &Operand::None)?;
+        self.line(&format!("br label %{done}"));
+        self.start_block(&found);
+        let optional = self.kind_of(dest)?.clone();
+        if matches!(optional, Kind::Maybe(_)) {
+            self.read_into(dest, &value_kind, &value_at, "")?;
+        } else {
+            let (number, fields) = self.case_of(&optional, "Some")?;
+            let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+            let (slot, memory) = (self.slot(dest), optional.memory(self.module.layouts));
+            self.line(&format!("store {memory} zeroinitializer, ptr {slot}"));
+            self.line(&format!("store i64 {number}, ptr {slot}"));
+            let value = self.load_field(&value_kind, &value_at, "");
+            if value_kind.counted() {
+                self.retain_value(&value, &value_kind);
+            }
+            let at = self.offset(&slot, offset);
+            self.store_field(&value_kind, &value, &at, "");
+        }
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(())
+    }
+
+    /// `dict[text[a:b]] = value`, a key block made only when the key is new.
+    pub(crate) fn slice_set(
+        &mut self,
+        place: &str,
+        value_word: Word,
+        key: &crate::analysis::SliceKey,
+        value: &Operand,
+    ) -> Result<(), String> {
+        let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
+        let (held, fresh) = self.value_for(value, &value_kind)?;
+        let sliced = self.slice_place(key)?;
+        let [text, from, to] = sliced.clone();
+        let (dict, count) = (self.temp(), self.temp());
+        self.line(&format!("{dict} = load ptr, ptr {place}"));
+        // A key that's there, in a dict nothing else holds, just gets its new value.
+        let value_at = self.slice_value_at(&dict, &sliced);
+        self.line(&format!("{count} = load i64, ptr {dict}"));
+        let (alone, there, quick) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        self.line(&format!("{there} = icmp ne ptr {value_at}, null"));
+        self.line(&format!("{quick} = and i1 {alone}, {there}"));
+        let (change, add, done) = (self.label("change"), self.label("add"), self.label("stored"));
+        self.line(&format!("br i1 {quick}, label %{change}, label %{add}"));
+        self.start_block(&change);
+        if value_kind.counted() {
+            if !fresh {
+                self.retain_value(&held, &value_kind);
+            }
+            let old = self.temp();
+            self.line(&format!("{old} = load ptr, ptr {value_at}"));
+            self.line(&format!("store ptr {held}, ptr {value_at}"));
+            self.release_kind(&old, &value_kind);
+        } else if value_kind != Kind::Unit {
+            self.store_field(&value_kind, &held, &value_at, "");
+        }
+        self.line(&format!("br label %{done}"));
+        self.start_block(&add);
+        let word = self.dict_word(&value_kind, &held, !fresh);
+        self.declare("declare ptr @fennec_dict_add_slice(ptr, ptr, i64, i64, i64) nounwind");
+        let changed = self.temp();
+        self.line(&format!(
+            "{changed} = call ptr @fennec_dict_add_slice(ptr {dict}, ptr {text}, i64 {from}, i64 {to}, i64 {word})"
+        ));
+        self.line(&format!("store ptr {changed}, ptr {place}"));
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(())
+    }
+
     /// `dict.get(key, default)`, or `dict.get(key)` as an optional.
     pub(crate) fn dict_get(&mut self, dest: LocalId, args: &[Operand]) -> Result<(), String> {
+        if let [dict, Operand::Local(key)] = args
+            && let Some(sliced) = self.known.slice_keys.get(&key.0).cloned()
+        {
+            return self.slice_get(dest, dict, &sliced);
+        }
         if let [dict, key] = args {
             return self.dict_get_optional(dest, dict, key);
         }

@@ -45,7 +45,7 @@ fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
 
 /// Whether a list of this kind of item owns a block for each.
 pub(super) fn owns_items(element: &Element) -> bool {
-    matches!(element, Element::Str | Element::Boxed(_) | Element::Maybe(_))
+    matches!(element, Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_))
 }
 
 /// One more owner for each block a list of this kind of item holds, for a new list that
@@ -423,7 +423,9 @@ pub extern "C" fn insert(list: i64, at: i64, start: i64, end: i64) -> i64 {
 fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
     match element {
         Element::Float => f64::from_bits(item).total_cmp(&f64::from_bits(word)).is_eq(),
-        Element::Str | Element::Boxed(_) | Element::Maybe(_) => super::heap::same(state, item, word),
+        Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_) => {
+            super::heap::same(state, item, word)
+        }
         _ => item == word,
     }
 }

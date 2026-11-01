@@ -219,6 +219,8 @@ pub(crate) fn element_symbol(layouts: &Layouts, item: ListItem) -> String {
         ListItem::Struct(id) => format!("e_s_{}", layouts.get(id).map_or("?", |layout| layout.name.as_str())),
         ListItem::Str => "e_str".to_owned(),
         ListItem::Boxed(id) => format!("e_b_{}", layouts.get(id).map_or("?", |layout| layout.name.as_str())),
+        // Named by what it holds, so the name stays the same while the program's numbering moves.
+        ListItem::Block(id) => format!("e_k_{:?}", layouts.block(id)),
     }
 }
 

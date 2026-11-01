@@ -1,6 +1,6 @@
 # `Packed` stores many small lists as one: two blocks of memory however many lists, where a
 # `list[list[T]]` needs one for each. Here it holds a graph's edges, each node's list of
-# neighbors one after another.
+# neighbors one after another. `packed[i]` reads one list in place, with no copy.
 from std.collections import Deque, Packed
 
 test "it holds the same lists as a list of lists" for lists: list[list[int]]:
@@ -9,7 +9,7 @@ test "it holds the same lists as a list of lists" for lists: list[list[int]]:
     assert packed.lists() == lists
     assert [items for items in packed] == lists
     for at, items in enumerate(lists):
-        assert packed[at] == items
+        assert list(packed[at]) == items
         assert packed.len_of(at) == items.len()
     assert packed.item_count() == sum(items.len() for items in lists)
     mut flat = []

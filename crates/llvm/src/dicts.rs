@@ -595,6 +595,64 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// `dict.pop(key)`: the runtime takes the key out, failing as the interpreter does if it
+    /// isn't there, and hands back its value with its owner.
+    pub(crate) fn dict_pop(
+        &mut self,
+        dest: Option<LocalId>,
+        args: &[Operand],
+        span: Span,
+    ) -> Result<(), String> {
+        let [Operand::Local(dict), key] = args else { return Err("`dict.pop` on a literal".to_owned()) };
+        let kind = self.kind_of(*dict)?.clone();
+        let Kind::Dict(key_word, value_word) = kind else {
+            return Err("`dict.pop` on something else".to_owned());
+        };
+        let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
+        let key = self.key_value(key, key_word)?;
+        let key_held = self.key_word(key_word, &key)?;
+        self.declare("declare ptr @fennec_dict_pop(ptr, i64, i64, i64) nounwind");
+        self.declare("declare i64 @fennec_dict_popped() nounwind");
+        let place = self.slot(*dict);
+        let (held, changed, word) = (self.temp(), self.temp(), self.temp());
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        self.line(&format!("{held} = load ptr, ptr {place}"));
+        self.line(&format!(
+            "{changed} = call ptr @fennec_dict_pop(ptr {held}, i64 {key_held}, i64 {from}, i64 {to})"
+        ));
+        self.line(&format!("store ptr {changed}, ptr {place}"));
+        self.leave_if_failed();
+        self.line(&format!("{word} = call i64 @fennec_dict_popped()"));
+        // The value's word, read back as what it holds, already with its owner.
+        let at = self.place_for(&Kind::Int);
+        self.line(&format!("store i64 {word}, ptr {at}"));
+        let value = self.load_field(&value_kind, &at, "");
+        match dest {
+            Some(dest) if self.kind_of(dest)? == &value_kind => self.assign(dest, &value),
+            Some(dest) => {
+                // Given where an optional's wanted.
+                let optional = self.kind_of(dest)?.clone();
+                if matches!(optional, Kind::Maybe(_)) {
+                    return self.assign(dest, &value);
+                }
+                let (number, fields) = self.case_of(&optional, "Some")?;
+                let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+                let (slot, memory) = (self.slot(dest), optional.memory(self.module.layouts));
+                self.line(&format!("store {memory} zeroinitializer, ptr {slot}"));
+                self.line(&format!("store i64 {number}, ptr {slot}"));
+                let into = self.offset(&slot, offset);
+                self.store_field(&value_kind, &value, &into, "");
+                Ok(())
+            }
+            None => {
+                if value_kind.counted() {
+                    self.release_kind(&value, &value_kind);
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// `dict.get(key, default)`, or `dict.get(key)` as an optional.
     pub(crate) fn dict_get(&mut self, dest: LocalId, args: &[Operand]) -> Result<(), String> {
         if let [dict, Operand::Local(key)] = args

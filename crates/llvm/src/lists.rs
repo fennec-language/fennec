@@ -535,7 +535,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Where an index points: from the start, or the end if it's negative, failing outside.
-    fn position(&mut self, list: &str, index: &str, span: Span) -> String {
+    pub(crate) fn position(&mut self, list: &str, index: &str, span: Span) -> String {
         let length = self.list_length(list);
         let (inside, from, ok, fail) =
             (self.temp(), self.label("from_end"), self.label("ok"), self.label("outside"));

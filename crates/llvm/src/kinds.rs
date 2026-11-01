@@ -148,6 +148,8 @@ impl Kind {
             Ty::Str => Kind::Str,
             Ty::Dict(key, value) => Kind::Dict(key, value),
             Ty::Maybe(block) => Kind::Maybe(Box::new(Kind::from_ty(layouts, block.ty())?)),
+            // A list's item that's a block of its own: what that block is.
+            Ty::Block(id) => Kind::from_ty(layouts, layouts.block(id)?)?,
             _ => return None,
         })
     }

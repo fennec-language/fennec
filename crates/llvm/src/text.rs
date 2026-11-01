@@ -144,6 +144,105 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// A new string with a plain value's text, as the interpreter writes it: `True`, `(1, 2)`,
+    /// `Point(x=1, y=2)` or `Kind.Stay`. `value` is a bool, or a plain struct's or enum's address.
+    fn plain_text(&mut self, value: &str, kind: &Kind) -> Result<String, String> {
+        self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
+        self.declare("declare ptr @fennec_int_text(i64) nounwind");
+        self.declare("declare ptr @fennec_float_text(double) nounwind");
+        match kind {
+            Kind::Bool => {
+                let (yes, no, text) = (self.literal("True"), self.literal("False"), self.temp());
+                self.line(&format!("{text} = select i1 {value}, ptr {yes}, ptr {no}"));
+                self.retain(&text);
+                Ok(text)
+            }
+            Kind::Int => {
+                let text = self.temp();
+                self.line(&format!("{text} = call ptr @fennec_int_text(i64 {value})"));
+                Ok(text)
+            }
+            Kind::Float => {
+                let text = self.temp();
+                self.line(&format!("{text} = call ptr @fennec_float_text(double {value})"));
+                Ok(text)
+            }
+            Kind::Struct(id) => {
+                let layouts = self.module.layouts;
+                let layout = layouts.get(*id).ok_or("no such layout")?;
+                let tuple = layout.name.starts_with('(');
+                let mut text = self.literal(if tuple { "(" } else { "" });
+                self.retain(&text);
+                if !tuple {
+                    let name = self.literal(&format!("{}(", layout.name));
+                    text = self.joined(&text, &name, false);
+                }
+                for (at, field) in layout.fields.iter().enumerate() {
+                    let field_kind = Kind::from_ty(self.module.layouts, field.ty)
+                        .ok_or("a field this backend doesn't take yet")?;
+                    let label = match (at, tuple) {
+                        (0, true) => String::new(),
+                        (_, true) => ", ".to_owned(),
+                        (0, false) => format!("{}=", field.name),
+                        (_, false) => format!(", {}=", field.name),
+                    };
+                    if !label.is_empty() {
+                        let label = self.literal(&label);
+                        text = self.joined(&text, &label, false);
+                    }
+                    let place = self.offset(value, field.offset);
+                    let held =
+                        if field_kind.in_memory() { place } else { self.load_field(&field_kind, &place, "") };
+                    let piece = self.plain_text(&held, &field_kind)?;
+                    text = self.joined(&text, &piece, true);
+                }
+                let end = self.literal(if tuple && layout.fields.len() == 1 { ",)" } else { ")" });
+                Ok(self.joined(&text, &end, false))
+            }
+            Kind::Enum(id) => {
+                let layouts = self.module.layouts;
+                let layout = layouts.get(*id).ok_or("no such layout")?;
+                let cases = layout.cases.as_ref().ok_or("an enum with no cases")?;
+                if cases.iter().any(|case| !case.fields.is_empty()) {
+                    return Err(
+                        "it formats an enum whose cases hold values, which this backend doesn't take yet"
+                            .to_owned(),
+                    );
+                }
+                let tag = self.temp();
+                self.line(&format!("{tag} = load i64, ptr {value}"));
+                let mut text = self.literal(&format!(
+                    "{}.{}",
+                    layout.name,
+                    cases.first().map_or("", |case| case.name.as_str())
+                ));
+                for (number, case) in cases.iter().enumerate().skip(1) {
+                    let (this, same, picked) =
+                        (self.literal(&format!("{}.{}", layout.name, case.name)), self.temp(), self.temp());
+                    self.line(&format!("{same} = icmp eq i64 {tag}, {number}"));
+                    self.line(&format!("{picked} = select i1 {same}, ptr {this}, ptr {text}"));
+                    text = picked;
+                }
+                self.retain(&text);
+                Ok(text)
+            }
+            other => {
+                Err(format!("it formats a {other:?} inside a struct, which this backend doesn't take yet"))
+            }
+        }
+    }
+
+    /// Two strings joined into a new one, letting go of the first and, if it's owned, the second.
+    fn joined(&mut self, first: &str, second: &str, second_owned: bool) -> String {
+        let text = self.temp();
+        self.line(&format!("{text} = call ptr @fennec_str_concat(ptr {first}, ptr {second})"));
+        self.release(first);
+        if second_owned {
+            self.release(second);
+        }
+        text
+    }
+
     /// A new string holding a value, by a spec if it has one.
     fn piece(&mut self, value: &Operand, spec: Option<&str>, span: Span) -> Result<String, String> {
         let (value, kind) = self.operand(value)?;
@@ -162,6 +261,7 @@ impl Emit<'_, '_, '_> {
                     self.retain(&value);
                     return Ok(value);
                 }
+                Kind::Bool | Kind::Struct(_) | Kind::Enum(_) => return self.plain_text(&value, &kind),
                 Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
                     self.declare("declare i64 @fennec_mark() nounwind");
                     self.declare("declare void @fennec_truncate(i64) nounwind");

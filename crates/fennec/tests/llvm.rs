@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 21;
+const BUILDING_EXAMPLES: usize = 29;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
@@ -658,6 +658,91 @@ fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
         counts[chunk] = (counts.get(chunk) else 0) + 1
     for key, value in sorted(counts.items()):
         stdout.print(key, value)
+"#,
+    )
+}
+
+#[test]
+fn std_pieces_the_proof_program_uses_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    // Lists of lists and `dict.pop`.
+    same_as_the_jit(
+        "nested",
+        r#"def main(stdout: Stdout):
+    mut grid: list[list[int]] = [[], [1, 2]]
+    grid[0].append(5)
+    grid.append([7, 8, 9])
+    copy_of = grid
+    grid[1][0] = 42
+    total = 0
+    mut sum_of = 0
+    for row in grid:
+        for n in row:
+            sum_of += n
+    stdout.print(grid, copy_of, sum_of, grid[2].len())
+    mut counts: dict[str, int] = {"a": 1, "b": 2}
+    gone = counts.pop("a")
+    stdout.print(gone, counts.len(), "a" in counts)
+"#,
+    )?;
+    // std's `PriorityQueue`, which compares tuples and pops from a dict.
+    same_as_the_jit(
+        "queue",
+        r#"from std.collections import PriorityQueue
+
+def main(stdout: Stdout):
+    mut queue: PriorityQueue[str, int] = PriorityQueue()
+    for n in [5, 1, 4, 2, 3]:
+        queue.push(f"job{n}", n)
+    stdout.print(queue.peek() else "none", queue.len())
+    while queue.len() > 0:
+        stdout.print(queue.pop() else "none")
+"#,
+    )?;
+    // f-strings of bools, tuples, plain structs and enums, and `list.pop(at)`.
+    same_as_the_jit(
+        "formats",
+        r#"enum Team:
+    Red
+    Blue
+
+struct Spot:
+    x: int
+    y: float
+    on: bool
+    team: Team
+
+def main(stdout: Stdout):
+    at = (3, 4)
+    one = Spot(x=1, y=2.5, on=True, team=Team.Blue)
+    flag = 3 > 2
+    stdout.print(f"at {at} {one} {flag} {not flag} {Team.Red}")
+    mut items = [5, 6, 7, 8]
+    gone = items.pop(1)
+    last = items.pop(-1)
+    stdout.print(gone, last, items)
+    mut spots = [Spot(x=9, y=0.5, on=False, team=Team.Red), one]
+    first = spots.pop(0)
+    stdout.print(f"{first}", spots.len())
+"#,
+    )?;
+    // std's `Random`, drawn as the interpreter draws it, ending in its failure.
+    same_message_as_the_jit(
+        "random",
+        r#"from std.random import Random
+
+def main(stdout: Stdout):
+    mut dice = Random(seed=42)
+    mut total = 0
+    for _ in range(1000):
+        total += dice.randint(1, 6)
+    stdout.print(total, dice.randint(-5, 5), dice.drawn)
+    stdout.print(f"{dice.random():.6f}", f"{dice.uniform(2.0, 3.0):.6f}")
+    mut wide = Random(seed=-7)
+    stdout.print(wide.randint(-9223372036854775807, 9223372036854775807))
+    stdout.print(dice.randint(3, 1))
 "#,
     )
 }

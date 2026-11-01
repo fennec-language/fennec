@@ -199,4 +199,17 @@ fn a_name_a_function_binds_itself_isnt_flagged() {
     let source = "def between(low: int, high: int):\n    pass\n\n\
                   def main():\n    between = other\n    between(1, 2)\n";
     assert_eq!(rules(source), NONE, "a local");
+    let looped = "def between(low: int, high: int):\n    pass\n\n\
+                  def main(items: list[int]):\n    for between in items:\n        pass\n    between(1, 2)\n";
+    assert_eq!(rules(looped), NONE, "a loop's name");
+    let with = "def between(low: int, high: int):\n    pass\n\n\
+                def main():\n    with open() as between:\n        pass\n    between(1, 2)\n";
+    assert_eq!(rules(with), NONE, "a `with`'s name");
+}
+
+#[test]
+fn a_method_added_by_extend_names_its_arguments_too() {
+    let source = "struct P:\n    x: int\n\nextend P:\n    def go(self, x: int, y: int):\n        pass\n\n\
+                  def main():\n    p.go(1, 2)\n";
+    assert_eq!(rules(source), ["positional-arguments"]);
 }

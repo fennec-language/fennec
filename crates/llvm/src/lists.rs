@@ -189,6 +189,11 @@ impl Emit<'_, '_, '_> {
 
     /// A block at `place` with no other owner, so it can change.
     pub(crate) fn alone_at(&mut self, place: &str, helper: &str) -> String {
+        if self.alone_slots_contains(place) {
+            let block = self.temp();
+            self.line(&format!("{block} = load ptr, ptr {place}"));
+            return block;
+        }
         self.declare(&format!("declare ptr @{helper}(ptr) nounwind"));
         let (block, count, alone) = (self.temp(), self.temp(), self.temp());
         let (ok, shared) = (self.label("alone"), self.label("shared"));

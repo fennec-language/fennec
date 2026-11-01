@@ -78,9 +78,9 @@ def main(stdout: Stdout):
     stdout.print(scan([1, 2, 3]), scan([1, 2, 3], limit=1))
 ```
 
-A literal default gives the parameter its type: an `int`, `float`, `str` or `bool`, or an enum case like `mode=Mode.fast`. Writing `limit: int = 8` is an error whose fix drops the `: int`. The type is written when the default is `None`, a bare `[]` or `{}`, or isn't the literal's own type.
+A literal default gives the parameter its type: an `int`, `float`, `str` or `bool`, or an enum case like `mode=Mode.fast`. Writing `limit: int = 8` is an error whose fix drops the `: int`. The type is written when the default is `None`, as in `target: Unit? = None`, or isn't the literal's own type.
 
-**Planned:** a constructor call with its type arguments written, like `dict[str, int]()` or `Packed[int]()`, giving the type the same way, for struct fields and parameters alike.
+**Planned:** a constructor call with its type arguments written, like `dict[str, int]()` or `Packed[int]()`, giving the type the same way, for struct fields and parameters alike. For an empty collection it becomes the only form of default: `items = list[str]()`, with `fennec fix` rewriting `items: list[str] = []`. Inside a function body, `items = []` stays fine.
 
 **Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, neighboring parameters of the same type, and three or more positional arguments unless no two neighbors could be swapped and still compile. The first argument and `self` are exempt.
 

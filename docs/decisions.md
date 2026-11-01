@@ -211,7 +211,8 @@ scan(rows, limit=100)
 ```
 - A literal default gives the parameter its type, for `int`, `float`, `str` and `bool` literals and for enum cases: `mode=Mode.fast`.
 - A call to a type's constructor with its type arguments written, like `Packed[int]()` or `dict[str, int]()`, gives the type the same way, for struct fields and parameters alike. `neighbors = Packed[int]()` needs no `: Packed[int]`.
-- The type is written when the default is `None`, a bare `[]` or `{}`, a constant's name or any other expression, or when the type isn't the literal's own: `limit: i32 = 8`, `ratio: f32 = 0.5`.
+- For an empty collection, the constructor is the only form of default: `items = list[str]()`. `items: list[str] = []` is a lint error whose fix, which `fennec fix` applies, rewrites it to `items = list[str]()`. Inside a function body, `items = []` stays fine, typed from its use.
+- The type is written when the default is `None`, as in `target: Unit? = None`, a constant's name or any other expression, or when the type isn't the literal's own: `limit: i32 = 8`, `ratio: f32 = 0.5`.
 - Writing the type the default already gives is a compile error: `name: str = "Chris"`, `limit: int = 8` and `neighbors: Packed[int] = Packed[int]()`. The fix removes the type, and `fennec fix` applies it.
 - A default is a plain value computed at compile time, under the same rule as a module constant. Calling without it costs the same as passing the value.
 - There are no exceptions in `std` either. `d.get(key)` returns an optional, so a fallback is written `d.get(key) else 0`, and `sum` takes `start=`.

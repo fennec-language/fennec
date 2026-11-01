@@ -26,6 +26,9 @@ attributes #2 = { alwaysinline nounwind \"frame-pointer\"=\"non-leaf\" }\n\
 !7 = !{i64 0, i64 281474976710657}\n\
 !8 = !{!\"branch_weights\", i32 100000, i32 1}\n";
 
+/// Where a string block's bytes start.
+pub(crate) const TEXT_START: u32 = fennec_interp::embed::layout::TEXT.unsigned_abs();
+
 /// A list's header, and what's in it, never overlap its items, and a length is far from any limit.
 pub(crate) const HEADER_ACCESS: &str = ", !tbaa !4";
 pub(crate) const ITEM_ACCESS: &str = ", !tbaa !6";

@@ -304,13 +304,46 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (index, _) = self.operand(index)?;
+        // In an ASCII string a character's place is its byte's, so one inside it comes from the
+        // table, and only the rest go to the runtime, which counts characters from the start.
+        let (bytes_at, chars_at) = (self.offset(text, 16), self.offset(text, 24));
+        let (bytes, chars, ascii, inside, quick) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{bytes} = load i64, ptr {bytes_at}"));
+        self.line(&format!("{chars} = load i64, ptr {chars_at}"));
+        self.line(&format!("{ascii} = icmp eq i64 {bytes}, {chars}"));
+        self.line(&format!("{inside} = icmp ult i64 {index}, {bytes}"));
+        self.line(&format!("{quick} = and i1 {ascii}, {inside}"));
+        let (table_path, runtime_path, joined) =
+            (self.label("table"), self.label("count"), self.label("indexed"));
+        self.line(&format!("br i1 {quick}, label %{table_path}, label %{runtime_path}, !prof !8"));
+        self.start_block(&table_path);
+        self.declare("@fennec_ascii = external dso_local global ptr");
+        let start = self.offset(text, crate::emit::TEXT_START);
+        let (lead_at, lead, wide, table, slot, from_table) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{lead_at} = getelementptr inbounds i8, ptr {start}, i64 {index}"));
+        self.line(&format!("{lead} = load i8, ptr {lead_at}"));
+        self.line(&format!("{wide} = zext i8 {lead} to i64"));
+        self.line(&format!("{table} = load ptr, ptr @fennec_ascii, !invariant.load !1"));
+        self.line(&format!("{slot} = getelementptr inbounds i64, ptr {table}, i64 {wide}"));
+        self.line(&format!("{from_table} = load ptr, ptr {slot}"));
+        self.retain(&from_table);
+        let table_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&runtime_path);
         self.declare("declare ptr @fennec_str_index(ptr, i64, i64, i64) nounwind");
         let (from, to) = (i64::from(span.start), i64::from(span.end));
-        let one = self.temp();
+        let counted = self.temp();
         self.line(&format!(
-            "{one} = call ptr @fennec_str_index(ptr {text}, i64 {index}, i64 {from}, i64 {to})"
+            "{counted} = call ptr @fennec_str_index(ptr {text}, i64 {index}, i64 {from}, i64 {to})"
         ));
         self.leave_if_failed();
+        let runtime_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let one = self.temp();
+        self.line(&format!("{one} = phi ptr [ {from_table}, %{table_end} ], [ {counted}, %{runtime_end} ]"));
         self.assign(dest, &one)
     }
 

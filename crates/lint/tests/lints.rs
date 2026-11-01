@@ -10,10 +10,21 @@ fn found(source: &str) -> Result<Vec<Lint>, String> {
     Ok(lint(&module, &sources))
 }
 
+/// The rules about names, which most tests' short names would set off: `name_rules` has them.
+const NAME_RULES: [&str; 3] = ["short-name", "naming-case", "shadowed-builtin"];
+
 /// The lints' names, which won't match anything a test expects if the source doesn't parse.
-fn rules(source: &str) -> Vec<&'static str> {
+fn all_rules(source: &str) -> Vec<&'static str> {
     found(source)
         .map_or_else(|_| vec!["it doesn't parse"], |found| found.iter().map(|lint| lint.rule).collect())
+}
+
+fn rules(source: &str) -> Vec<&'static str> {
+    all_rules(source).into_iter().filter(|rule| !NAME_RULES.contains(rule)).collect()
+}
+
+fn name_rules(source: &str) -> Vec<&'static str> {
+    all_rules(source).into_iter().filter(|rule| NAME_RULES.contains(rule)).collect()
 }
 
 /// The source with every fix made, which has to parse.
@@ -420,4 +431,65 @@ fn an_index_that_only_indexes_is_an_item() {
     ] {
         assert_eq!(rules(source), NONE, "{why}");
     }
+}
+
+#[test]
+fn each_kind_of_name_is_written_its_own_way() {
+    assert_eq!(name_rules("def DoThing():\n    pass\n"), ["naming-case"]);
+    assert_eq!(name_rules("struct my_point:\n    x: int\n"), ["naming-case"]);
+    assert_eq!(name_rules("limit = 3\n"), ["naming-case"]);
+    assert_eq!(
+        name_rules("LIMIT = 3\n\ndef count_it(start: int) -> int:\n    total_now = start\n    total_now\n"),
+        NONE
+    );
+    assert_eq!(
+        name_rules(
+            "struct Point:\n    _secret: int\n\n    def +(self, other: Point) -> Point:\n        other\n"
+        ),
+        NONE,
+        "a private field and an operator"
+    );
+}
+
+#[test]
+fn a_short_name_is_flagged_unless_it_says_enough() {
+    assert_eq!(name_rules("def area(w: int) -> int:\n    w\n"), ["short-name"]);
+    assert_eq!(
+        name_rules("def f(hp: int) -> int:\n    hp\n").iter().filter(|rule| **rule == "short-name").count(),
+        2,
+        "and `f`"
+    );
+    for fine in [
+        "def area(x: int, y: int, n: int) -> int:\n    x + y + n\n",
+        "def step(dt: float, at: int) -> float:\n    dt\n",
+        "def read(fs: Fs) -> int:\n    1\n",
+        "def total(items: list[int]) -> int:\n    sum(item for item in items)\n",
+    ] {
+        assert_eq!(name_rules(fine), NONE, "{fine}");
+    }
+    assert_eq!(
+        name_rules("from std.json import loads as j\n\ndef read() -> int:\n    j(\"1\")\n"),
+        NONE,
+        "kept apart, see below"
+    );
+}
+
+#[test]
+fn a_local_named_like_a_builtin_is_flagged() {
+    assert_eq!(
+        name_rules("def count_them(items: list[int]) -> int:\n    sum = 0\n    sum\n"),
+        ["shadowed-builtin"]
+    );
+    assert_eq!(name_rules("def count_them(range: int) -> int:\n    range\n"), ["shadowed-builtin"]);
+}
+
+#[test]
+fn an_alias_that_changes_nothing_goes() {
+    let source = "from std import json as json\n\ndef read() -> str:\n    json.dumps([1])\n";
+    assert_eq!(rules(source), ["needless-alias"]);
+    assert_eq!(fixed(source), "from std import json\n\ndef read() -> str:\n    json.dumps([1])\n");
+    let module = "import std.json as json\n\ndef read() -> str:\n    json.dumps([1])\n";
+    assert_eq!(fixed(module), "from std import json\n\ndef read() -> str:\n    json.dumps([1])\n");
+    let twice = "from std.math import sqrt, sqrt as root\n\ndef side() -> float:\n    sqrt(root(2.0))\n";
+    assert_eq!(rules(twice), ["needless-alias"]);
 }

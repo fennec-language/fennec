@@ -32,7 +32,7 @@ When a model reaches for something Fennec doesn't have, the compiler recognizes 
 | `raise NotFound(path)` | There are no exceptions. Write `fail NotFound(path)`, which returns the error. |
 | `try: ... except NotFound:` | Pass errors up with `?`, give a default with `else`, or handle them with `match`. |
 | `lambda x: x * 2` | Write `x => x * 2`. |
-| `print(value)` or `console.log(value)` | There's no global output. Write through the `Stdout` that `main` receives; to inspect a value, use a test or the debugger. |
+| `print(value)` or `console.log(value)` | There's no global output. Write through the `Stdout` that `main` receives; to inspect a value, use a test. |
 | `class Boss(Enemy):` | There are no classes or inheritance. Use a `struct`, and an `enum` for different kinds of enemy. |
 | `def __add__(self, other):` | Write `def +(self, other):`. |
 | `if ready: label = "a"` / `else: label = "b"` | Set it once with an expression: `label = "a" if ready else "b"`. Names don't leak out of blocks. |

@@ -63,8 +63,9 @@ struct Log:
     def write(self, level: LogLevel, message: str, fields: dict[str, str]?):
         if not self.enabled(level): return
         mut parts = [level.label(), Log._one_line(message)]
-        if self.clock is not None:
-            parts = [f"{float(self.clock.now().nanos) / 1_000_000_000.0:.3f}"] + parts
+        clock = self.clock
+        if clock is not None:
+            parts = [f"{float(clock.now().nanos) / 1_000_000_000.0:.3f}"] + parts
         mut all_fields = {name: value for name, value in self.fields.items()}
         if fields is not None:
             all_fields.update(fields)

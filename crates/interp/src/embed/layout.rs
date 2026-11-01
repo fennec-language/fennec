@@ -292,4 +292,21 @@ mod tests {
         assert_eq!(word(text, 0), None);
         finish();
     }
+
+    #[test]
+    fn indexing_text_reads_only_what_it_needs() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let (plain, accented) = (string("abc"), string("aéb€c"));
+        let at = |text, at| text_of(strings::index(text, at, 0, 0));
+        assert_eq!([at(plain, 0), at(plain, 2), at(plain, -1)], ["a", "c", "c"]);
+        assert_eq!(
+            [at(accented, 1), at(accented, 2), at(accented, 3), at(accented, -1)],
+            ["é", "b", "€", "c"]
+        );
+        assert_eq!(strings::index(plain, 3, 0, 0), 0);
+        let (_, failure, _) = finish();
+        assert!(failure.unwrap().message.contains("out of range"));
+    }
 }

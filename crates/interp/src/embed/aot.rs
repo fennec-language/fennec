@@ -5,6 +5,8 @@
 use std::cell::RefCell;
 use std::io::Write;
 
+use fennec_syntax::Sources;
+
 use super::codec::Image;
 use super::{State, heap, with};
 
@@ -16,9 +18,14 @@ const STACK_BYTES: usize = 1 << 30;
 /// interpreter.
 const NATIVE_STACK_BYTES: usize = 1 << 28;
 
+/// What ends the process at once, which the runtime library provides.
+static STOP: std::sync::OnceLock<fn(i32)> = std::sync::OnceLock::new();
+
 thread_local! {
     /// The program's bytes, as they're handed over.
     static IMAGE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// What renders a failure in the program running here.
+    static SOURCES: RefCell<Option<Sources>> = const { RefCell::new(None) };
     /// The text of each string literal native code asks for by number.
     static LITERALS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
@@ -31,7 +38,8 @@ pub extern "C" fn image(word: i64) {
 /// Runs the program handed over, `length` bytes of it, by calling `entry` with the lowest
 /// address its stack may grow to. Prints what it printed, and the failure if it failed.
 /// Gives back the process's exit code.
-pub extern "C" fn run(entry: extern "C" fn(i64), length: i64) -> i32 {
+pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
+    let _ = STOP.set(stop);
     let mut bytes = IMAGE.take();
     bytes.truncate(usize::try_from(length).unwrap_or(0));
     let ran = std::thread::scope(|scope| {
@@ -64,11 +72,25 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
         return (Vec::new(), sources.render(&failure));
     }
     LITERALS.set(literals);
+    SOURCES.set(Some(sources.clone()));
     let here = 0_u8;
     let limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
     entry(i64::try_from(limit).unwrap_or(0));
     let (output, failure, _) = super::finish();
     (output, failure.map(|failure| sources.render(&failure)).unwrap_or_default())
+}
+
+/// Ends the program for a failure where nothing can pass it on, printing what it printed and
+/// the failure, as the end of a run would. In anything but an executable, the failure just
+/// stays for whoever finishes the run.
+pub(super) fn stop_for_failure() {
+    let Some(sources) = SOURCES.take() else { return };
+    let (output, failure, _) = super::finish();
+    let failure = failure.map(|failure| sources.render(&failure)).unwrap_or_default();
+    let code = report(&output, &failure);
+    if let Some(stop) = STOP.get() {
+        stop(code);
+    }
 }
 
 /// Prints a run's output and, if there is one, its failure; gives back the exit code.

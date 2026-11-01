@@ -132,6 +132,7 @@ impl Layouts {
             self.place_fields(typed, start)
         };
         match def {
+            Written::Generator(_) => None,
             Written::Struct(fields) => {
                 let (fields, size) = place(fields, 0)?;
                 Some(Layout {
@@ -180,13 +181,15 @@ impl Layouts {
                 layouts.place_fields(typed, start)
             };
             let layout = match written {
-                Written::Struct(fields) => place(self, fields, 0).map(|(fields, size)| Layout {
-                    name: name.clone(),
-                    fields,
-                    size: size.max(WORD),
-                    cases: None,
-                    boxed: true,
-                }),
+                Written::Struct(fields) | Written::Generator(fields) => {
+                    place(self, fields, 0).map(|(fields, size)| Layout {
+                        name: name.clone(),
+                        fields,
+                        size: size.max(WORD),
+                        cases: None,
+                        boxed: true,
+                    })
+                }
                 Written::Enum(cases) => {
                     let mut placed = Vec::with_capacity(cases.len());
                     let mut size = WORD;
@@ -473,6 +476,8 @@ pub type WrittenField = (String, Type, Option<Expr>);
 #[derive(Clone)]
 pub enum Written {
     Struct(Vec<WrittenField>),
+    /// A generator's block: always boxed, with the fields every generator has first.
+    Generator(Vec<WrittenField>),
     Enum(Vec<(String, Vec<WrittenField>)>),
 }
 
@@ -505,11 +510,30 @@ fn written(sources: &Sources<'_>, name: &str) -> Option<Written> {
     (!cases.is_empty()).then_some(Written::Enum(cases))
 }
 
+/// A generator's block, by what it gives, what it can fail with, and the locals it keeps. A
+/// field's offset counts from the first word after the block's count and shape.
+#[must_use]
+pub fn generator_definition(item: &Type, failure: Option<&Type>, slots: &[Type]) -> Written {
+    let field = |name: &str, ty: &Type| (name.to_owned(), ty.clone(), None);
+    let mut fields = vec![
+        field("\0resume", &Type::Int),
+        field("\0pc", &Type::Int),
+        field("\0started", &Type::Bool),
+        field("\0failure", failure.unwrap_or(&Type::Int)),
+        field("\0item", item),
+    ];
+    for (at, slot) in slots.iter().enumerate() {
+        fields.push(field(&format!("\0slot{at}"), slot));
+    }
+    Written::Generator(fields)
+}
+
 #[cfg(test)]
 mod tests {
     use fennec_check::Type;
+    use fennec_interp::embed::layout::{FIELDS, GEN_FAILURE, GEN_ITEM, GEN_PC, GEN_RESUME, GEN_STARTED};
 
-    use super::{Layouts, Written};
+    use super::{Layouts, Written, generator_definition};
     use crate::Ty;
 
     fn fields(names: &[(&str, Type)]) -> Vec<super::WrittenField> {
@@ -554,5 +578,22 @@ mod tests {
         let layouts = Layouts::from_definitions(&definitions);
         let id = layouts.id("Tree").unwrap();
         assert_eq!(layouts.ty(&tree), Ty::Boxed(id));
+    }
+
+    #[test]
+    fn a_generator_is_boxed_with_the_header_every_generator_has() {
+        let definitions =
+            vec![("g".to_owned(), generator_definition(&Type::Str, None, &[Type::Int, Type::Str]))];
+        let layouts = Layouts::from_definitions(&definitions);
+        let id = layouts.id("g").unwrap();
+        assert_eq!(layouts.ty(&Type::Named("g".to_owned())), Ty::Boxed(id));
+        let at = |name: &str| {
+            let field = layouts.get(id).unwrap().fields.iter().find(|field| field.name == name).unwrap();
+            i32::try_from(field.offset).unwrap() + FIELDS
+        };
+        assert_eq!(
+            [at("\0resume"), at("\0pc"), at("\0started"), at("\0failure"), at("\0item")],
+            [GEN_RESUME, GEN_PC, GEN_STARTED, GEN_FAILURE, GEN_ITEM]
+        );
     }
 }

@@ -491,10 +491,18 @@ shared Cache:
 
     def set(mut self, key: str, page: Page):
         self._pages[key] = page
+```
 
-with a, b as mut x, mut y:               # several at once
-    x.total -= amount
-    y.total += amount
+Calling `cache.set(key, page)` takes the lock for that call. To change several handles together, `with` locks them all, always in the same order, so two transfers can't deadlock:
+
+```fennec planned
+shared Account:
+    total = 0
+
+def transfer(a: Account, b: Account, amount: int):
+    with a, b as mut x, mut y:               # both locked for the block
+        x.total -= amount
+        y.total += amount
 ```
 
 It holds plain values and `Id`s, never another `shared`, so handles can't form a cycle. Lock bodies can't do I/O, and there's no module-level `shared`: a handle in a signature acts like a capability, so a function's parameters show what it can reach. And a search for `shared` finds every shared thing in your program.

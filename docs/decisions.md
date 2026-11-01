@@ -607,10 +607,16 @@ shared Cache:
 
     def set(mut self, key: str, page: Page):
         self._pages[key] = page
+```
+Calling `cache.set(key, page)` takes the lock for the call. To change several handles together, `with` locks them all, always in the same order:
+```fennec
+shared Account:
+    total = 0
 
-with a, b as mut x, mut y:
-    x.total -= amount
-    y.total += amount
+def transfer(a: Account, b: Account, amount: int):
+    with a, b as mut x, mut y:            # both locked for the block
+        x.total -= amount
+        y.total += amount
 ```
 - `a = cache` gives a second name for the same cell. Fields are private with `_name`.
 - It holds plain values and `Id`s, never another `shared`, so handles can't form a cycle. There's no `weak` and no cycle collector.

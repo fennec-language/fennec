@@ -1381,6 +1381,14 @@ def f() -> int:
     sum(n for n in held())
 ";
     assert!(printed(source, "held.resume").is_ok());
+    let closing = printed(source, "held.abandon").unwrap();
+    assert!(closing.contains("call Door.del"), "{closing}");
+    let module = fennec_syntax::parse(source).unwrap();
+    let checked = fennec_check::check(&module).unwrap();
+    let program = lower(&module, &checked);
+    let generators: Vec<_> =
+        program.generators.iter().map(|def| (&*def.name, def.abandon.as_deref())).collect();
+    assert_eq!(generators, [("held", Some("held.abandon"))]);
     assert!(!printed(source, "f").unwrap().contains("list.append"));
 }
 

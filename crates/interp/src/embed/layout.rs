@@ -122,7 +122,7 @@ mod tests {
 
     /// Closes a generator, calling back into the runtime as program code would.
     extern "C" fn close(generator: i64) {
-        assert_eq!(word(generator, super::GEN_PC), Some(u64::MAX));
+        assert!(word(generator, super::GEN_PC).is_some_and(|pc| pc > 0 && pc < 10));
         let text = strings::int_text(5_000);
         heap::free(text);
         CLOSED.set(CLOSED.get() + 1);

@@ -41,6 +41,7 @@ Each of these is decided and not built.
 - `fails Name` in signatures, with one `error` listing several cases. `?` required wherever a failure passes up, narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
 - `xs.get(i)`, and `sum(xs, start=...)` replacing today's positional start.
 - `_name` hiding a field, and `pub` on top-level things only.
+- Union types, `Circle | Square`, inline with a one-byte tag, narrowed with `is` and `match`.
 - Hard errors for positional calls that are easy to get backwards.
 - `with a() as x, b() as y:` and a block's last line as its value.
 - A compile error for a dict key struct with its own `def ==`.

@@ -311,8 +311,8 @@ impl Checker {
                 name: param.name.clone(),
                 ty: match (&param.ty, &entry.owner) {
                     (Some(ty), _) => self.program.resolve_in(ty, &generics).unwrap_or(Type::Unknown),
-                    (None, Some(owner)) => self.program.method_self_type(entry, owner),
-                    (None, None) => Type::Unknown,
+                    (None, Some(owner)) if param.is_self => self.program.method_self_type(entry, owner),
+                    (None, _) => self.program.default_type(param).unwrap_or(Type::Unknown),
                 },
                 is_mut: param.is_mut,
                 default: param.default.clone(),

@@ -219,12 +219,12 @@ scan(rows, limit=100)
 This replaces `limit: int = 8` as the written form.
 *Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap. The literal already states the type, so the signature stays complete, and the declaration reads like the call. Making the repeated type an error keeps one way to write it.
 
-**Some positional arguments are a hard error.** These are bare `True` or `False`, three or more positional arguments, and positional arguments to neighboring parameters of the same type. The first argument and `self` are exempt. The fix names them:
+**Some positional arguments are a hard error.** These are bare `True` or `False`, positional arguments to neighboring parameters of the same type, and three or more positional arguments, unless every two neighboring parameters have types that can't hold each other's values, so a swap wouldn't compile: `report(stdout, world, board)` stays as it is. The first argument and `self` are exempt. The fix names them:
 ```fennec
 copy_file(src, overwrite=True)
 move(from_tile=a, to_tile=b)
 ```
-*Why:* A call like `move(a, b, True)` compiles and reads fine when its arguments are swapped. Naming them makes that mistake visible to people and AI, and the first argument is almost always obvious from the function's name.
+*Why:* A call like `move(a, b, True)` compiles and reads fine when its arguments are swapped. Naming them makes that mistake visible to people and AI, and the first argument is almost always obvious from the function's name. Where no two neighbors could be swapped and still compile, the compiler already catches the mistake, so names would only add length.
 
 **A function that can fail says so with `fails Name`, and every exit is visible.**
 ```fennec
@@ -401,7 +401,29 @@ def write[T, W: Writer](x: T, mut out: W):
 **Generics compile the way Swift's do.** Development builds, including the JIT, compile a generic function once and share that code across every type it's used with, passing each type's methods alongside its values. Release builds compile a copy for each type, so every call is direct and can be inlined, then merge copies whose machine code comes out identical. What a program does is the same either way.
 *Why:* Development builds compile once per generic function instead of once per type, which keeps them fast to build. Release builds get full speed, without paying in binary size for copies that are identical anyway. This replaces the earlier rule that generics are compiled per type in every build.
 
-**Mixed types are an `enum`; open sets are function values.** A list that holds different types is a list of an enum: each element is inline with a one-byte tag, and `match` compiles to a jump table. When other kits must be able to add kinds, as with plugins, a struct with function fields does it, and a call through a function value is the only run-time dispatch a program can ask for. Generic code shared in development builds is the compiler's choice, and release builds compile it away.
+**`A | B` is a union: a value that's exactly one of those types.** It's stored inline with a one-byte tag, sized for its largest member, and never boxed. `type Shape = Circle | Square` names one.
+```fennec
+type Shape = Circle | Square
+
+def report(shapes: list[Shape], stdout: Stdout):
+    stdout.print(sum(s.area() for s in shapes))   # every member has area(), so Shape does
+    for s in shapes:
+        if s is Circle:
+            stdout.print(s.radius)                 # s is a Circle here
+```
+- A `Circle` goes anywhere a `Circle | Square` is expected. `if s is Circle:` narrows `s` inside the block, and `match` handles each member, checked for exhaustiveness.
+- When every member has a method, the union has it too, and the union fits any interface all its members fit. Calls go through a jump table.
+- Order and nesting don't matter: `A | B` is `B | A`, and a union inside a union flattens. A duplicate member, like `int | int`, is an error. Two union values are equal when they hold the same member with equal values, and they hash the same way.
+- `None` is never a member. `str | None` is an error whose fix writes `str?`, and an optional union is `(A | B)?`, so an optional of an optional, `T??`, never collapses into `T?`.
+- Failures stay separate: a function that can fail returns `-> T fails E`, never `-> T | E`.
+- Members are concrete types, not type parameters; generic code uses an enum, like `enum Either[L, R]`. A union refers to itself only through a collection, as in `type Json = str | int | float | bool | list[Json] | dict[str, Json]`, and direct recursion is an error.
+- A union mixes types that already exist, and an enum defines new cases. A union may have an enum type as a member.
+- A literal assigned to a union takes its default type: `3` is an `int`.
+- JSON always writes a union tagged with its member's type name, `{"Circle": {...}}` or `{"Tile": "Grass"}`, so loading is never ambiguous. The tag is the full name only when two members share a short name.
+
+*Why:* Mixed lists stay fast and unboxed, and they read like a Python type hint. Unions add nothing new to learn beyond `is` and `match`.
+
+**Mixed types are a union or an `enum`; open sets are function values.** A list that holds different existing types is a list of a union, `list[Circle | Square]`, and a list of new cases is a list of an enum. Either way each element is inline with a one-byte tag, and `match` compiles to a jump table. When other kits must be able to add kinds, as with plugins, a struct with function fields does it, and a call through a function value is the only run-time dispatch a program can ask for. Generic code shared in development builds is the compiler's choice, and release builds compile it away.
 
 **`Self` in an interface's method means the type that fits it.** `interface Signed: def abs(self) -> Self` says `abs` returns the same type it's called on: a `Money` for a `Money`.
 
@@ -489,11 +511,17 @@ struct Color:
     def json(self, mut out: JsonWriter):
         out.str(f"#{self.r:02x}{self.g:02x}{self.b:02x}")
 ```
-- `_name` fields are skipped.
 - A type overrides one format with a method named for it, which leaves other formats alone. `Color` above is a hex string in JSON and three small integers in `std.pack`.
-- A `shared` handle or a function value is a compile error naming the field.
+- A `shared` handle, a function value or a `Secret[str]` is a compile error naming the field.
 
 *Why:* Types don't know about formats and formats don't know about types, so a new format is written once and works with every struct, and a new struct works with every format.
+
+**Every field is serialized by default, private `_` fields included.** This replaces the rule that `_name` fields are skipped.
+- `@skip` on a field leaves it out, and the field must have a default, so loading still builds a valid value. `@skip` on a field without a default is a compile error.
+- `where` rules run when a value is loaded, as on any write, so a bad save fails with a clear error.
+- A type that needs a different shape, or setup after loading, writes its own `def json(self, mut out: JsonWriter)` and the matching reader. There's no hidden after-load hook. Derived state is computed when it's asked for, or kept in a `@skip` field with a default.
+
+*Why:* Saving a value and loading it gives back exactly the same value, and leaving something out is visible. Private means other code can't touch a field, not that it isn't part of the value, and skipping private fields breaks round-trips silently: a `Grid` saved with no cells.
 
 **Printing is one more format.** `print`, `str(x)` and f-strings all go through it.
 - By default a value prints from its fields, through the same generic breakdown as other formats.
@@ -530,9 +558,9 @@ struct Color:
 **What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the global functions, like `sum`, `range` and `sorted`.
 *Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
 
-**Network access is a capability, `Net`, like `Fs`.** Its API, for HTTP, sockets and limiting it to certain hosts, is decided when it's built.
+**Network access is a capability, `Net`, like `Fs`.** Its API for HTTP and sockets is decided when it's built; how it narrows is under Supply chain.
 
-**Environment variables and running other programs are capabilities too, `Env` and `Process`,** handed to `main`. `std.process` goes through `Process`.
+**Environment variables and running other programs are capabilities too, `Env` and `Process`,** handed to `main`. `std.process` goes through `Process`. `Process` is the most powerful capability, since a program it runs can reach files and the network too.
 
 **Command-line arguments and standard input are capabilities.** `def main(stdout: Stdout, args: Args, stdin: Stdin):`. `for arg in args:` gives the arguments, not the program's name, which is `args.program`. `stdin.lines()` reads input a line at a time. A program that doesn't name them can't read them, and both are recorded for replay.
 *Why:* A program's input decides what it does, so it comes in the same visible way as files and the clock.
@@ -594,7 +622,7 @@ A big program that wants walls between its own parts splits into local kits in o
 
 ## Files and kits
 
-**A kit is a folder with a `kit.toml` and its code under `src`.** `src/main.fen` holds `main`, and the module `enemies.ai` is the file `src/enemies/ai.fen`. `kit.toml` has `name`, `version` and `fennec`, the toolchain the kit is built with (see Toolchain). Until the launcher exists, a kit asking for a newer Fennec than the one running is an error. Its `[dependencies]` table is reserved for kits from the Den. `fennec run` and `fennec test` with no file run the kit around the current folder; `fennec test` runs the tests in every file under `src`.
+**A kit is a folder with a `kit.toml` and its code under `src`.** `src/main.fen` holds `main`, and the module `enemies.ai` is the file `src/enemies/ai.fen`. `kit.toml` has `name`, `version` and `fennec`, the toolchain the kit is built with (see Toolchain). Until the launcher exists, a kit asking for a newer Fennec than the one running is an error. Its `[dependencies]` table names kits from the Den, or from git or a path (see Supply chain). `fennec run` and `fennec test` with no file run the kit around the current folder; `fennec test` runs the tests in every file under `src`.
 *Why:* One layout means no configuration, and finding a module's file needs no search.
 
 **A file uses another file's names only after importing them.** `from enemies import spawn` brings in names, and `import physics` brings in the module, used as `physics.step`. For a module in a folder, `import world.physics` is used as `world.physics.step`, and `from world import physics` as `physics.step`. A file's own names need no import.
@@ -904,6 +932,7 @@ These are default lints, and the Den requires them.
 **Kits have three tiers, so the audit scales with what a kit can touch.**
 - **Pure** (no capabilities, no `extern`): automatic.
 - **Capability** (`Fs`, `Net` and so on): automatic plus AI review, with capabilities shown on the page. A newly added capability needs the author's own passkey tap at publish. Consumers' approval of an update that asks for more is unchanged.
+- **Process** (`Process`): reviewed like native code, and flagged prominently on the kit's page.
 - **Native** (`extern`, C code): human audit, first-party kits only in v1. Verified third-party authors are the later path, if there's a real need.
 
 *Why:* Most kits can't touch anything, so they need no human, and the people's time goes to the few kits that could do harm.
@@ -941,12 +970,22 @@ These are default lints, and the Den requires them.
 
 **Installing a kit never runs anything.** There are no install or build scripts.
 
+**Updates are always explicit.** `kit.lock` pins every dependency by hash, and nothing changes without `fennec update`. It shows each update's semantic diff and any capability it newly asks for, and a new capability needs your approval. No version range ever resolves silently.
+*Why:* What builds today builds the same tomorrow, and every change to a dependency is one you saw.
+
 **An update that asks for more capabilities stops until you approve it.** `kit.lock` records the capabilities each dependency receives. A logging kit that starts asking for `Net` doesn't install until you say so. The same goes for an update that adds `unsafe` code.
 *Why:* A trusted package turning malicious in an update is the attack that hit event-stream and ua-parser-js.
 
-**Capabilities can be narrowed:** `fs.only("saves/")`, `net.only("api.example.com")`. A kit gets only the part it needs.
+**Capabilities can be narrowed.** `main` hands each kit only the part it needs:
+- `fs.only("saves/")` reaches only that folder.
+- `net.client()` can only connect out, and `net.server(port=8080)` can only listen on that port.
+- `net.hosts(["api.example.com"])` can reach only those hosts.
+- `process.only("git")` can run only that program.
 
-**Every kit has an owner's namespace,** `owner/kit`. The Den rejects names a small edit away from popular ones. There's one public registry, and private kits live in their own namespace.
+Narrowing chains, so `net.client().hosts(["api.example.com"])` can only connect out, and only to that host. A kit asking for `Process` is flagged prominently and reviewed like native code.
+*Why:* Connecting out and serving are different powers, and a kit that needs `git` shouldn't get a shell.
+
+**Every kit has an owner's namespace,** `owner/kit`. The Den rejects names a small edit away from popular ones. There's one public registry, and private code comes from git or a path rather than a private registry (below).
 *Why:* That stops typosquatting and dependency confusion.
 
 **Den accounts sign in with passkeys only.** There are no passwords and no recovery by email.
@@ -961,6 +1000,18 @@ These are default lints, and the Den requires them.
 **`fennec audit` is built in.** It checks every dependency against the advisory database, and CI fails on a known vulnerability.
 
 **New versions wait a week** before `fennec update` picks them up (already decided), and versions are chosen by minimal version selection.
+
+**Private kits and work in progress come from git or a path, fenced off from the Den.** `kit.toml` can name a git URL pinned to an exact commit hash, never a branch or tag, or a local path. No private registry is needed.
+```toml
+[dependencies]
+physics = { git = "https://git.example.com/studio/physics", commit = "3f9c2a1e7b4d" }
+tools = { path = "../tools" }
+```
+- A git or path dependency may contain `extern`, but adding or updating one that does shows a clear notice, "this dependency contains C code", and needs your approval.
+- A kit with git or path dependencies can't be published to the Den, so they never spread into other people's trees.
+- Capabilities are enforced as for any other code.
+
+*Why:* Go's convenience for private code, while public code stays on the checked Den. An app may already use C in its own code, and a game engine split into local kits (`../engine`) needs C for Metal and Vulkan; the Den fence still stops that C from spreading. Capabilities mean even unreviewed code can't touch files or the network unless it's handed `Fs` or `Net`.
 
 ## Engines
 
@@ -1130,7 +1181,7 @@ libraries = ["sqlite3"]
 ```
 The JIT loads them when the program runs, and release builds link them. The C standard library is always available.
 
-**In v1, raw C is allowed only in the standard library's OS layer, first-party `fennec/` kits and your own app.** An app can use `extern` in its own code, which isn't publishing; a game engine needs that for Metal and Vulkan. No third-party native kits go on the Den in v1, even from verified authors, until there's a real need. Verified authors are the later path.
+**In v1, raw C is allowed only in the standard library's OS layer, first-party `fennec/` kits, your own app and git or path dependencies you approve.** An app can use `extern` in its own code, which isn't publishing; a game engine needs that for Metal and Vulkan. No third-party native kits go on the Den in v1, even from verified authors, until there's a real need. Verified authors are the later path.
 *Why:* Native code is the one place Fennec's guarantees stop, since C can ignore capabilities and corrupt memory.
 
 **There's no C compiled to wasm in v1.** It can be reconsidered later if the ecosystem needs it.

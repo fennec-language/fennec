@@ -175,6 +175,24 @@ fn an_argument_that_can_be_read_stays_as_it_is() {
 }
 
 #[test]
+fn three_arguments_of_types_that_cant_be_swapped_stay_positional() {
+    let types = "struct World:\n    size: int\n\nstruct Board:\n    wide: int\n\n\
+        interface Named:\n    def name(self) -> str\n\ntype Meters = int\n\n";
+    let program = |def: &str, call: &str| format!("{types}{def}\n    pass\n\ndef main():\n    {call}\n");
+    let report = "def report(out: Stdout, world: World, board: Board):";
+    assert_eq!(rules(&program(report, "report(stdout, world, board)")), NONE);
+    for (def, call) in [
+        ("def report(out: Stdout, world: World, again: World):", "report(stdout, world, other)"),
+        ("def place[T](at: T, x: int, label: str):", "place(1, 2, \"a\")"),
+        ("def place(at: Named, x: World, label: str):", "place(world, world, \"a\")"),
+        ("def place(at: Meters, x: int, label: str):", "place(1, 2, \"a\")"),
+        ("def place(at: int?, x: int, label: str):", "place(1, 2, \"a\")"),
+    ] {
+        assert_eq!(rules(&program(def, call)), ["positional-arguments"], "{def}");
+    }
+}
+
+#[test]
 fn a_method_with_two_shapes_cant_be_told_apart_so_it_isnt_flagged() {
     let source = "struct A:\n    def go(self, x: int, y: int):\n        pass\n\n\
         struct B:\n    def go(self, x: str, y: str):\n        pass\n\n\

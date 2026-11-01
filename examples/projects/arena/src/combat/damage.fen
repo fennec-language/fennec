@@ -19,5 +19,5 @@ def hit(mut enemy: enemies.Enemy, amount: int) -> int:
     enemy.health
 
 test "hitting takes health away":
-    mut enemy = enemies.spawn("dummy", position=Vec3.zero, health=100)
+    mut enemy = enemies.spawn("dummy", Vec3.zero, 100)
     assert hit(mut enemy, 10) == Ok(90)

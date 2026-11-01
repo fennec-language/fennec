@@ -71,16 +71,16 @@ def factorial(n: int) -> int:
 A parameter can have a default, which is passed by name only. Defaults are plain values computed at compile time, so Python's shared-mutable-default surprise can't happen:
 
 ```fennec
-def scan(rows: list[int], limit: int = 8) -> list[int]:
+def scan(rows: list[int], limit=8) -> list[int]:
     rows[:limit]
 
 def main(stdout: Stdout):
     stdout.print(scan([1, 2, 3]), scan([1, 2, 3], limit=1))
 ```
 
-**Planned:** a literal default giving the type, so that's written `limit=8`, and writing `limit: int = 8` is an error whose fix drops the `: int`. The type stays when the default is `None`, an empty collection or any other expression.
+A literal default gives the parameter its type: an `int`, `float`, `str` or `bool`, or an enum case like `mode=Mode.fast`. Writing `limit: int = 8` is an error whose fix drops the `: int`. The type is written when the default is `None`, an empty `[]` or `{}`, or isn't the literal's own type.
 
-**Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, three or more positional arguments, and neighboring parameters of the same type. The first argument and `self` are exempt.
+**Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, neighboring parameters of the same type, and three or more positional arguments unless no two neighbors could be swapped and still compile. The first argument and `self` are exempt.
 
 ## Built-in types
 
@@ -553,7 +553,30 @@ def total_area[T: Shape](shapes: list[T]) -> float:
     sum(shape.area() for shape in shapes)
 ```
 
-For a collection of different kinds of things, use an `enum`.
+For a collection of different kinds of things, use a union or an `enum`. A union mixes types you already have, and an enum defines new cases. Either way each item is stored inline with a one-byte tag, never boxed.
+
+```fennec planned
+type Shape = Circle | Square
+
+def report(shapes: list[Shape], stdout: Stdout):
+    stdout.print(sum(s.area() for s in shapes))   # every member has area(), so Shape does
+    for s in shapes:
+        if s is Circle:
+            stdout.print(s.radius)                 # s is a Circle here
+```
+
+```fennec
+enum Pickup:
+    Coin(value: int)
+    Heart(amount: int)
+
+def worth(pickup: Pickup) -> int:
+    match pickup:
+        case .Coin(value): value
+        case .Heart(amount): amount * 10
+```
+
+**Planned:** unions. Enums work today.
 
 ## Compile-time loops and serialization
 
@@ -577,6 +600,8 @@ struct Color:
     def json(self, mut out: JsonWriter):
         out.str(f"#{self.r:02x}{self.g:02x}{self.b:02x}")
 ```
+
+Every field is saved, private `_` ones included, and `where` rules check a value as it loads. `@skip` leaves a field out, and it needs a default so loading still builds a whole value.
 
 `std.pack` will be the default binary format: no field names on the wire, `where` ranges shrink values, a schema hash, delta encoding and opt-in quantization, all in plain Fennec. Annotations like `@json(name="user_id")` are data read at compile time, and they never change what they're on.
 

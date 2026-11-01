@@ -1,10 +1,15 @@
 //! Writing values as JSON or TOML text. Dicts and structs become objects or tables, lists
-//! and tuples become arrays. A value the format can't hold, like a set, stops the program.
+//! and tuples become arrays. An enum case with no fields is its name, and one with fields is
+//! `{"Case": {fields}}`. An `Id` is its slot and generation, and an `IdMap` is every slot
+//! with its generation, so the `Id`s a program saved still find their items once it's read
+//! back. A value the format can't hold, like a set, stops the program.
 
 use std::fmt::Write;
 
+use std::rc::Rc;
+
 use crate::format;
-use crate::value::Value;
+use crate::value::{IdMap, Value};
 
 /// A dict's or struct's entries, by name; `None` for any other value.
 fn entries(value: &Value, format: &str) -> Result<Option<Vec<(String, Value)>>, String> {
@@ -21,8 +26,31 @@ fn entries(value: &Value, format: &str) -> Result<Option<Vec<(String, Value)>>, 
         Value::Instance(instance) if instance.case.is_none() && !instance.is_error => {
             Ok(Some(instance.fields.iter().map(|(name, value)| (name.to_string(), value.clone())).collect()))
         }
+        Value::Instance(instance) if !instance.is_error && !instance.fields.is_empty() => {
+            let case = instance.case.as_deref().unwrap_or_default().to_owned();
+            let fields: Vec<(Value, Value)> =
+                instance.fields.iter().map(|(name, value)| (Value::str(name), value.clone())).collect();
+            Ok(Some(vec![(case, Value::Dict(Rc::new(fields.into())))]))
+        }
+        Value::Id(id) => Ok(Some(vec![
+            ("slot".to_owned(), Value::Int(i64::try_from(id.slot).unwrap_or(i64::MAX))),
+            ("generation".to_owned(), Value::Int(i64::from(id.generation))),
+        ])),
+        Value::IdMap(map) => Ok(Some(vec![("slots".to_owned(), slots(map))])),
         _ => Ok(None),
     }
+}
+
+/// An `IdMap`'s slots, each its generation and, unless it's free, its value.
+fn slots(map: &IdMap) -> Value {
+    let slots = map.slots.iter().map(|slot| {
+        let mut pairs = vec![(Value::str("generation"), Value::Int(i64::from(slot.generation)))];
+        if let Some(value) = &slot.value {
+            pairs.push((Value::str("value"), value.clone()));
+        }
+        Value::Dict(Rc::new(pairs.into()))
+    });
+    Value::list(slots.collect())
 }
 
 fn a(value: &Value) -> String {
@@ -83,6 +111,9 @@ fn write_json(out: &mut String, value: &Value, indent: Option<usize>, depth: usi
         Value::List(items) | Value::Tuple(items) => {
             let entries = items.iter().map(|item| (None, item.clone())).collect();
             json_container(out, ('[', ']'), entries, indent, depth)?;
+        }
+        Value::Instance(instance) if !instance.is_error && instance.case.is_some() => {
+            out.push_str(&quoted(instance.case.as_deref().unwrap_or_default()));
         }
         other => return Err(format!("JSON can't hold {}", a(other))),
     }

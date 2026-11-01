@@ -198,6 +198,18 @@ impl Lowerer<'_, '_> {
     ) -> Result<Value, Diagnostic> {
         let (at, at_ty) = self.expr(index)?;
         let at = self.convert(at, at_ty, Ty::Int, index.span)?;
+        self.address_at(name, item, at, write, span)
+    }
+
+    /// The address of the item at a position already worked out, checked like `item_address`.
+    pub(super) fn address_at(
+        &mut self,
+        name: &str,
+        item: Ty,
+        at: Value,
+        write: bool,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
         let len = self.list_length(name, item)?;
         if self.known_inside(at, len) {
             return self.item_at(name, item, write, at);

@@ -64,6 +64,8 @@ pub(crate) struct Heap {
     pub(super) counts: Counts,
     /// Where each shape's blocks hold addresses, by the shape's number.
     plans: Vec<super::plans::Plan>,
+    /// How many words each shape's blocks take, by the shape's number.
+    sizes: Vec<usize>,
 }
 
 /// What a run of native code allocated and copied. Blocks that live for the whole run, and what
@@ -114,6 +116,7 @@ impl Heap {
     /// The heap, knowing where blocks of each shape hold addresses, for freeing them.
     pub(crate) fn planned(mut self, shapes: &[Rc<Element>]) -> Heap {
         self.plans = shapes.iter().map(|shape| super::plans::plan(shape)).collect();
+        self.sizes = shapes.iter().map(|shape| HEADER_WORDS + shape.words()).collect();
         self
     }
 
@@ -419,10 +422,12 @@ fn children(state: &State, block: &[u64]) -> Vec<u64> {
 /// A new block of a shape, owned once, its fields zero.
 pub extern "C" fn alloc(shape: i64) -> i64 {
     with(|state| {
-        let Some(element) = usize::try_from(shape).ok().and_then(|at| state.tables.shapes.get(at)) else {
+        let at = usize::try_from(shape).ok();
+        let Some(words) = at.and_then(|at| state.heap.sizes.get(at).copied()).or_else(|| {
+            at.and_then(|at| state.tables.shapes.get(at)).map(|element| HEADER_WORDS + element.words())
+        }) else {
             return 0;
         };
-        let words = HEADER_WORDS + element.words();
         let mut block = state.heap.fresh(words);
         if let [count, kind, ..] = &mut *block {
             *count = 1;
@@ -505,8 +510,11 @@ fn free_block(state: &mut State, address: u64) {
             continue;
         }
         if is_text(state, &block) {
-            if let Ok(at) = usize::try_from(address) {
-                state.heap.texts.get_mut().remove(&at);
+            let texts = state.heap.texts.get_mut();
+            if !texts.is_empty()
+                && let Ok(at) = usize::try_from(address)
+            {
+                texts.remove(&at);
             }
         } else if block.get(1) == Some(&CELL_SHAPE) {
             let number = block.get(2).and_then(|number| usize::try_from(*number).ok());

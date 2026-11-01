@@ -70,9 +70,9 @@ pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str
         library: reachable_later.keys().map(String::as_str).collect(),
         generic_types: generic_types(&modules),
         instances: generics::Instances::default(),
-        generators: every
+        generators: functions
             .iter()
-            .filter(|(key, def)| functions.iter().any(|(own, _)| own == *key) && fuse::has_yield(&def.body))
+            .filter(|(_, def)| fuse::has_yield(&def.body))
             .map(|(key, def)| (key.clone(), *def))
             .collect(),
     };

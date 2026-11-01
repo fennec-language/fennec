@@ -63,11 +63,29 @@ impl Interp<'_> {
                 Ok(Value::list(read))
             }
             ("dict", Value::Dict(pairs)) => {
-                let item = arg(1)?;
+                let (key_type, item) = (arg(0)?, arg(1)?);
                 let mut read = Vec::new();
                 for (key, value) in pairs.iter() {
                     let place = inside(at, &format!("[{}]", crate::format::repr(key)));
-                    read.push((key.clone(), self.decode(value.clone(), &item, &place, span)?));
+                    let key = object_key(key, &key_type, at)?;
+                    read.push((key, self.decode(value.clone(), &item, &place, span)?));
+                }
+                Ok(Value::Dict(Rc::new(read.into())))
+            }
+            // A dict whose keys aren't text or ints is an array of `[key, value]` pairs.
+            ("dict", Value::List(items)) => {
+                let (key_type, item) = (arg(0)?, arg(1)?);
+                let mut read = Vec::new();
+                for (n, pair) in items.iter().enumerate() {
+                    let place = inside(at, &format!("[{n}]"));
+                    let Value::List(parts) = pair else {
+                        return Err(misfit(&place, "[key, value] pair", pair));
+                    };
+                    let [key, value] = parts.as_slice() else {
+                        return Err(format!("{} should be a [key, value] pair", self::place(&place)));
+                    };
+                    let key = self.decode(key.clone(), &key_type, &inside(&place, "[0]"), span)?;
+                    read.push((key, self.decode(value.clone(), &item, &inside(&place, "[1]"), span)?));
                 }
                 Ok(Value::Dict(Rc::new(read.into())))
             }
@@ -80,6 +98,10 @@ impl Interp<'_> {
             }
             ("Id", Value::Dict(pairs)) => id_of(&pairs, at).map(Value::Id),
             ("IdMap", Value::Dict(pairs)) => self.decode_id_map(&pairs, &arg(0)?, at, span),
+            (name, value) if self.has_shape(name) => {
+                let read = self.decode(value, &Self::shape_of(ty), at, span)?;
+                self.build_shaped(name, read, at, span)
+            }
             (name, value) if self.is_enum(name) => self.decode_case(ty, &value, at, span),
             (name, Value::Dict(pairs)) if self.is_struct(name) => self.decode_struct(ty, &pairs, at, span),
             (_, value) => Err(misfit(at, &written(ty), &value)),
@@ -270,6 +292,18 @@ impl Interp<'_> {
             }
             (like, value) => Err(misfit(at, &like.type_name(), &value)),
         }
+    }
+}
+
+/// A key of an object as the dict's key type wants it: an int key is written as its digits.
+/// `at` is where the dict is.
+fn object_key(key: &Value, wanted: &TypeExpr, at: &str) -> Result<Value, Misfit> {
+    match (wanted.name.as_str(), key) {
+        ("int", Value::Str(text)) => text
+            .parse()
+            .map(Value::Int)
+            .map_err(|_| format!("{} has the key {text:?}, which isn't an int", place(at))),
+        _ => Ok(key.clone()),
     }
 }
 

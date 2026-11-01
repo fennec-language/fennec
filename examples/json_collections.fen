@@ -1,0 +1,133 @@
+# The standard library's collections are written in their natural shape: a `SortedMap` is an
+# object, a `SortedSet` or a `Deque` is an array, and a `Grid` is an array of rows. They read
+# back the same way, so the JSON doesn't change when how they're stored inside does.
+#
+# A dict or a `SortedMap` with text or int keys is an object, an int key written as its digits.
+# With any other key, it's an array of `[key, value]` pairs.
+from std import json
+from std.collections import Deque, Grid, SortedMap, SortedSet
+
+enum Side:
+    North
+    South
+
+struct Spot:
+    x: int
+    y: int
+
+struct Board:
+    cells: Grid[int]
+    scores: SortedMap[str, int]
+    seen: SortedSet[int]
+    queue: Deque[str]
+
+def failure[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Err(error):
+            error.message
+        case _:
+            "loaded"
+
+test "each collection is written as what it holds":
+    mut scores = SortedMap[str, int]()
+    scores["vex"] = 3
+    scores["ash"] = 1
+    assert json.dumps(scores) == "{\"ash\": 1, \"vex\": 3}"
+    assert json.dumps(SortedSet.of([3, 1, 2])) == "[1, 2, 3]"
+    mut queue = Deque.of(["a", "b", "c"])
+    queue.popleft()
+    queue.append("d")
+    assert json.dumps(queue) == "[\"b\", \"c\", \"d\"]"
+    assert json.dumps(Grid.of([[1, 2], [3, 4]])) == "[[1, 2], [3, 4]]"
+
+test "they read back the same":
+    scores = json.loads[SortedMap[str, int]]("{\"vex\": 3, \"ash\": 1}")?
+    assert scores.items() == [("ash", 1), ("vex", 3)]
+    seen = json.loads[SortedSet[int]]("[3, 1, 3]")?
+    assert seen.items() == [1, 3]
+    queue = json.loads[Deque[str]]("[\"x\", \"y\"]")?
+    assert queue.items() == ["x", "y"]
+    grid = json.loads[Grid[int]]("[[1, 2, 3], [4, 5, 6]]")?
+    assert grid.width == 3 and grid.height == 2 and grid[(2, 1)] == 6
+
+test "a struct holding them round-trips":
+    mut cells = Grid.filled(width=2, height=2, value=0)
+    cells[(1, 0)] = 7
+    mut scores = SortedMap[str, int]()
+    scores["kit"] = 2
+    board = Board(cells=cells, scores=scores, seen=SortedSet.of([4, 2]), queue=Deque.of(["go"]))
+    text = json.dumps(board)
+    assert (
+        text
+        == "{\"cells\": [[0, 7], [0, 0]], \"scores\": {\"kit\": 2}, \"seen\": [2, 4], \"queue\": [\"go\"]}"
+    )
+    loaded = json.loads[Board](text)?
+    assert loaded == board
+
+test "int keys are written as their digits and read back as ints":
+    levels = {1: "intro", 42: "boss"}
+    assert json.dumps(levels) == "{\"1\": \"intro\", \"42\": \"boss\"}"
+    assert json.loads[dict[int, str]](json.dumps(levels))? == levels
+    mut ranks = SortedMap[int, str]()
+    ranks[10] = "ten"
+    ranks[2] = "two"
+    assert json.dumps(ranks) == "{\"2\": \"two\", \"10\": \"ten\"}"
+    loaded = json.loads[SortedMap[int, str]](json.dumps(ranks))?
+    assert loaded.items() == ranks.items()
+
+test "other keys make arrays of pairs":
+    sides = {Side.North: 3, Side.South: 1}
+    assert json.dumps(sides) == "[[\"North\", 3], [\"South\", 1]]"
+    assert json.loads[dict[Side, int]](json.dumps(sides))? == sides
+    spots = {Spot(x=1, y=2): "tree", (Spot(x=0, y=0)): "rock"}
+    assert json.loads[dict[Spot, str]](json.dumps(spots))? == spots
+    corners = {(0, 0): "start", (3, 4): "end"}
+    assert json.dumps(corners) == "[[[0, 0], \"start\"], [[3, 4], \"end\"]]"
+    assert json.loads[dict[(int, int), str]](json.dumps(corners))? == corners
+    mut by_side = SortedMap[(int, int), str]()
+    by_side[(2, 0)] = "b"
+    by_side[(1, 0)] = "a"
+    assert json.dumps(by_side) == "[[[1, 0], \"a\"], [[2, 0], \"b\"]]"
+
+test "a key that isn't what the map holds says where":
+    assert (
+        failure(json.loads[dict[int, str]]("{\"7\": \"a\", \"x\": \"b\"}"))
+        == "the text has the key \"x\", which isn't an int"
+    )
+    assert (
+        failure(json.loads[SortedMap[int, str]]("{\"1\": \"a\", \"one\": \"b\"}"))
+        == "the text has the key \"one\", which isn't an int"
+    )
+    assert (
+        failure(json.loads[dict[Side, int]]("[[\"East\", 1]]"))
+        == "`[0][0]` is \"East\", which isn't a case of `Side`"
+    )
+    assert (
+        failure(json.loads[dict[Side, int]]("[[\"North\"]]"))
+        == "`[0]` should be a [key, value] pair"
+    )
+
+test "rows that don't line up say where":
+    assert (
+        failure(json.loads[Grid[int]]("[[1, 2], [3]]"))
+        == "`[1]` has 1 cell, but the first row has 2"
+    )
+    assert (
+        failure(
+            json.loads[Board](
+                "{\"cells\": [[1], [2, 3]], \"scores\": {}, \"seen\": [], \"queue\": []}",
+            ),
+        )
+        == "`cells[1]` has 2 cells, but the first row has 1"
+    )
+    assert (
+        failure(json.loads[SortedSet[int]]("[1, \"two\"]"))
+        == "`[1]` should be an int, but it's a str"
+    )
+
+def main(stdout: Stdout):
+    mut scores = SortedMap[str, int]()
+    for name in ["vex", "ash", "kit"]:
+        scores[name] = name.len()
+    stdout.print(json.dumps(scores))
+    stdout.print(json.dumps(Grid.of([["#", "."], [".", "#"]])))

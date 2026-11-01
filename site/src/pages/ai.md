@@ -8,6 +8,8 @@ description: How Fennec is designed so AI models write correct code on the first
 
 <p class="lede">A growing share of new code is written with AI help. Fennec is designed so a model's first attempt is likely to be right, and so its mistakes are caught by the compiler instead of by you.</p>
 
+> **Some of this is planned.** Much of it works today. Not built yet: `ignore`, `expect` and `todo()`, a required finish on types like `Transaction`, the check for weakened tests, JSON diagnostics, the task suite and the agent tools at the end of this page.
+
 ## A shape models already know
 
 Fennec reads like typed Python: indentation, `def`, comprehensions, f-strings, `and`, `or` and `not`, `True`, `False` and `None`. Python is the language models have written more of than any other, so they write Fennec fluently from a short guide rather than a learning curve.
@@ -40,8 +42,8 @@ When a model reaches for something Fennec doesn't have, the compiler recognizes 
 | The mistake | What stops it |
 | --- | --- |
 | Forgetting a value might be missing | An `Enemy?` can't be used until it's checked for `None`. |
-| Tangled shared state | There are no references. Every value is independent, so code can't change data another part of the program is holding. |
-| Expecting a copy to change the original | Changing a copy that's never used afterwards is a compile error that says where the original is. |
+| Tangled shared state | Data is plain values in tables. The one reference type, `shared`, is planned, rare, and locks on every method. |
+| Expecting a copy to change the original | Planned: `mut x = place` edits the real thing, and a copy that can go stale is a compile error. |
 | Changing a list while looping over it | A compile error, with `remove_where` suggested instead. |
 | Ignoring an error | A call that can fail needs `?`, `else` or `match`. Discarding an error on purpose needs `ignore(result, "why")`. |
 | Assuming something can't fail | Asserting success needs `expect("reason")`, and an empty reason is rejected. |
@@ -53,7 +55,7 @@ When a model reaches for something Fennec doesn't have, the compiler recognizes 
 
 ## Signatures that tell the truth
 
-A function's parameters say what it changes (`mut`) and what it can touch (capabilities like `Fs` and `Clock`). Its written return type says what it produces, and the errors it can fail with, inferred by the compiler and shown by the editor and tools, say how it can fail. A model, or a reviewer, can understand a call without reading the function behind it.
+A function's parameters say what it changes (`mut`) and what it can touch (capabilities like `Fs` and `Clock`). Its written return type says what it produces, and the errors it can fail with say how it can fail. Today those are inferred; `fails Name` will put them in the signature. A model, or a reviewer, can understand a call without reading the function behind it.
 
 ## Errors written to be fixed
 

@@ -8,21 +8,21 @@ description: Fennec's batteries-included standard library, from files and JSON t
 
 <p class="lede">Fennec comes with batteries included, like Python. Where Python has a module for something, Fennec's usually has the same name.</p>
 
-> **Planned.** The standard library grows alongside the compiler. See the [roadmap](/roadmap/) for what comes when.
+> **Partly built.** `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re` work today, along with `Fs`, `Clock`, `Args` and `Stdin`. Everything else below is planned, and the built modules don't have everything listed yet. See the [roadmap](/roadmap/).
 
 ## What's in it
 
 | Area | Modules |
 | --- | --- |
 | Basics | `math`, `random`, `time`, `datetime`, `string`, `re`, `unicode` |
-| Collections | `collections`: `Deque`, `Counter`, `SortedDict`, heaps, `IdMap`, `Tree`, ring buffers |
+| Collections | `collections`: `Deque`, `Counter`, `Heap`, `PriorityQueue`, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed` |
 | Files and the OS | `fs`, `path`, `env`, `process`, `cli` |
-| Data formats | `json`, `toml`, `csv`, `base64`, `compress` |
+| Data formats | `json`, `toml`, `pack`, `csv`, `base64`, `compress` |
 | Networking | `net`: TCP, UDP, TLS, an HTTP client and server, and WebSocket; `url` |
 | Security | `crypto`: hashes, HMAC and secure random numbers; `uuid` |
 | Storage | `sql`: one interface, with drivers as first-party kits |
 | Diagnostics | `log`, `profile`, `test` |
-| Games | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat4`, `simd`, `layout`, `arena`; later `audio` and `gpu` |
+| Games | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat4`, `IdMap`, `simd`, `layout`; later `audio` and `gpu` |
 
 ## Importing what you use
 
@@ -46,20 +46,24 @@ struct Settings:
     volume = 0.8
     fullscreen = False
 
-text = json.dumps(settings)
-loaded = json.loads[Settings](text)?
+def main(stdout: Stdout):
+    text = json.dumps(Settings())
+    loaded = json.loads[Settings](text) else Settings()
+    stdout.print(loaded)
 ```
 
-The same works for TOML and CSV.
+This works for JSON and TOML today, with CSV planned.
+
+**Planned:** one `Writer` and `Reader` interface that every format implements, so one generic function breaks any struct down, and `std.pack`, the default binary format: no field names on the wire, `where` ranges that shrink values, a schema hash, delta encoding and opt-in quantization, written in plain Fennec.
 
 ## Built the same way as your code
 
-- **I/O goes through capabilities.** `http.get(net, url)` takes a `Net`, so even the standard library can't reach the outside world unexpectedly, and every module works with test fakes.
+- **I/O goes through capabilities.** `fs.read_text(path)` needs an `Fs`, so even the standard library can't reach the outside world unexpectedly. `Net` and test fakes are planned.
 - **Errors are typed,** with the same `error`, `fail` and `?` as everywhere else.
-- **You only pay for what you use.** The library is prebuilt and cached, and only what you import ends up in your program.
+- **You only pay for what you use.** Only what your program reaches gets compiled.
 
 ## Stable and next
 
-The stable core is reliable to build on. New modules start in `std.next`, where they can still change, and graduate once they've settled. That way a module never gets stuck with an early mistake.
+**Planned:** new modules start in `std.next`, where they can still change, and graduate once they've settled. That way a module never gets stuck with an early mistake.
 
 The standard library is written in Fennec wherever possible, and only its OS layer calls C. Windows, input, image formats, machine learning and database drivers come as first-party kits rather than `std`.

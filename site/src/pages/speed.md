@@ -1,34 +1,43 @@
 ---
 layout: ../layouts/Doc.astro
-title: Two speeds
-description: How Fennec makes development builds nearly instant and release builds as fast as hand-tuned native code.
+title: How Fennec gets fast
+description: Fennec's plan for speed, one LLVM backend with a function-level cache, along with what runs today.
 ---
 
-# Two speeds
+# How Fennec gets fast
 
-<p class="lede">Developing and shipping are different jobs. Fennec gives each its own path: development builds optimize for your time, and release builds optimize for runtime.</p>
+<p class="lede">The plan is simple: one optimizing backend, and a cache good enough that you rarely wait for it. What you run while you work is what you ship.</p>
 
-## While you work
+## Today
 
-The goal for development builds is that a change runs in moments.
+`fennec run` and `fennec build` compile to native code with Cranelift, one function at a time, and each function is cached by its content, so a change recompiles only what it touched. `fennec build --llvm` handles part of the language. The [benchmarks](/benchmarks/) show where this stands against its targets.
 
-- **Your code runs as native code right away.** A fast compiler turns each function into machine code the first time it's called, in microseconds. Only the code that runs gets compiled, so a large program starts instantly.
-- **Reruns reuse what's already compiled.** Compiled functions are cached on your machine by their content, so a change recompiles only what it touched.
-- **Dependencies are built once.** Libraries are compiled fully optimized a single time and shared across every project on your machine, so a development build of a game still runs its engine and physics at full speed.
-- **Your code and its dependencies use the same memory layout.** Your code calls into them directly, with no conversion in between.
-- **Hot reload is a goal.** Swapping a changed function into a running game should be the normal way to iterate on gameplay.
+## The plan: one backend
 
-## When you ship
+**Planned.** These are decided, and not built yet.
 
-Release builds take as long as they need to produce the fastest code.
+- **LLVM for everything,** with per-function `-O3`. There's no separate development engine, no tiering and no hot reload.
+- **`fennec run` makes real binaries** in a store, so what you try is what you ship.
+- **Whole-program optimization only in `--release`.** It's the one step that sees everything at once, so it's the one step you opt into.
+- **Cranelift goes away** when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
 
-- A mature optimizing compiler backend, with the whole program optimized together.
-- Every generic function specialized for each type it's used with.
-- The language's guarantees passed to the optimizer: a `mut` parameter is known to be the only reference to its data, which unlocks optimizations most languages can't prove are safe.
-- Compact data layouts: field reordering, and optional values (`Enemy?`) that take no extra space.
-- Immutable updates done in place: `replace()` reuses the original's memory when the original isn't used again.
-- Generators compiled to state machines on the stack, so streaming through data allocates nothing.
-- No garbage collector, and a fast memory allocator by default.
+## The plan: one store
+
+**Planned.** Today's cache becomes one content store per machine.
+
+- **Results are named by hash** and written by atomic rename, with a size cap and eviction. There are no `target` folders.
+- **A key covers what matters:** a function's typed IR, the signatures of what it calls, the bodies of anything inlined into it, and the compiler version, target and flags.
+- **An unchanged signature skips the callers,** so a change inside a function stays inside it.
+- **A daemon is optional and purely a speedup.** The plain command gives identical results without it.
+- **A shared cache** can be written only by trusted builds, and CI does a clean rebuild and compares it, because a wrong cache is the worst bug a build system can have.
+
+## What the language hands the optimizer
+
+These come from the design, so they apply whichever backend runs:
+
+- A `mut` parameter is known to be the only way to reach its data, which most languages can't prove.
+- Fields can be reordered and optional values packed, because nothing can observe where a value sits in memory.
+- No garbage collector, and flat data with no hidden pointers.
 
 ## Values without references
 
@@ -42,28 +51,19 @@ Fennec code never handles references, but the compiler uses them behind the scen
 | `b = a`, and both are used | Shares the memory until one of them changes, then copies once |
 | Small values like `Vec3` | Copies them in registers, for free |
 
-The cost of sharing is a reference count on large data, mostly optimized away, and a copy the first time shared data changes. That copy isn't written in the code, so three things keep it in check: the compiler warns when a change inside a loop might copy, `noalloc` code rejects it outright, and the profiler reports hidden copies by name.
+The cost of sharing is a reference count on large data, mostly optimized away, and a copy the first time shared data changes. That copy isn't written in the code, so the plan is to keep it in check three ways: a warning when a change inside a loop might copy, `@hot` rejecting it outright, and a report of hidden copies by name.
 
 ## Libraries can't change silently
 
-Errors are inferred, so a library could change how a function fails without any visible edit to its signature. When a package is published, Fennec compares the inferred signatures of everything it exports, including the errors each function can fail with, against the previous version, and flags every change.
-
-## The engines
-
-| Engine | Starts running | Runtime speed | Used for |
-| --- | --- | --- | --- |
-| Interpreter | Instantly | Several times slower than native | First run of changed code, compile-time evaluation, tests |
-| Fast compiler | Quickly, per function | Close to native | Hot code in development builds |
-| Optimizing compiler | Slowly | Full speed | Release builds |
+When a package is published, Fennec will compare the signatures of everything it exports, including the errors each function can fail with, against the previous version, and flag every change.
 
 ## Why builds stay fast
 
 Fast builds come from design decisions, not just a fast compiler.
 
 - **Changes stay local.** When you edit a function, the compiler checks whether its signature changed, including the errors it can fail with. Almost always it hasn't, and nothing that calls the function is checked again.
-- **No macros.** Code generation at compile time runs through the interpreter in a sandbox, so its results can be cached.
-- **Simple type checking.** Parameters are typed, so each function is checked on its own once the signatures it calls are known. There are no program-wide inference puzzles, and files are checked in parallel.
-- **One shared cache with a size limit.** Build output is stored once per machine and shared by every project, with old entries removed automatically, so builds don't fill your disk.
+- **No macros.** Compile-time loops are ordinary checked code with no I/O, so their results can be cached.
+- **Simple type checking.** Parameters are typed, so each function is checked on its own once the signatures it calls are known. There are no program-wide inference puzzles.
 
 ## The performance target
 
@@ -77,4 +77,4 @@ Each benchmark has a target: idiomatic code for the same work in the fastest est
 
 ## What costs nothing
 
-These features exist only at compile time and have no runtime cost: `mut`, type inference, `?`, `?.` and `else`, optional types, error handling, enums and `match`, interfaces and generics, generators, tuples, `with`, capabilities, and `noalloc`.
+These exist only at compile time and have no runtime cost: `mut`, type inference, `?`, `?.` and `else`, optional types, interfaces, tuples and capabilities.

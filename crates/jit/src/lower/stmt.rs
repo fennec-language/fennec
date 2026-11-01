@@ -210,9 +210,21 @@ impl Lowerer<'_, '_> {
                 self.assign_dict((var, key, item), target, index, op, value)
             }
             ExprKind::Index { object, index } if let Some((name, item)) = self.packed(object) => {
+                // Left to right, as the interpreter does: the position, then the value, then
+                // what's there now for an operator.
                 let span = target.span.to(value.span);
-                let new = self.assigned(target, op, value)?;
-                let address = self.item_address(&name, item, index, true, target.span)?;
+                let (at, at_ty) = self.expr(index)?;
+                let at = self.convert(at, at_ty, Ty::Int, index.span)?;
+                let more = self.expr(value)?;
+                let new = match op {
+                    None => more,
+                    Some(op) => {
+                        let address = self.address_at(&name, item, at, false, target.span)?;
+                        let current = self.load_item(address, item)?;
+                        self.operate(op, current, more, span)?
+                    }
+                };
+                let address = self.address_at(&name, item, at, true, target.span)?;
                 self.store_item(address, item, new, span)
             }
             ExprKind::Attr { object, name, optional: false }

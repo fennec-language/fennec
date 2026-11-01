@@ -52,41 +52,84 @@ impl Emit<'_, '_, '_> {
             }
             match kind {
                 None => self.print_text(value),
-                Some(Kind::Int) => {
-                    self.declare("declare void @fennec_print_int(i64) nounwind");
-                    self.line(&format!("call void @fennec_print_int(i64 {value})"));
-                }
-                Some(Kind::Float) => {
-                    self.declare("declare void @fennec_print_float(double) nounwind");
-                    self.line(&format!("call void @fennec_print_float(double {value})"));
-                }
-                Some(Kind::Bool) => {
-                    self.declare("declare void @fennec_print_bool(i8) nounwind");
-                    let wide = self.temp();
-                    self.line(&format!("{wide} = zext i1 {value} to i8"));
-                    self.line(&format!("call void @fennec_print_bool(i8 {wide})"));
-                }
-                Some(Kind::Str) => {
-                    self.declare("declare void @fennec_str_print(ptr) nounwind");
-                    self.line(&format!("call void @fennec_str_print(ptr {value})"));
-                }
-                Some(Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..)) => {
-                    self.declare("declare i64 @fennec_mark() nounwind");
-                    self.declare("declare void @fennec_truncate(i64) nounwind");
-                    self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
-                    self.declare("declare void @fennec_print_value(i64) nounwind");
-                    let (mark, handle) = (self.temp(), self.temp());
-                    self.line(&format!("{mark} = call i64 @fennec_mark()"));
-                    self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
-                    self.line(&format!("call void @fennec_print_value(i64 {handle})"));
-                    self.line(&format!("call void @fennec_truncate(i64 {mark})"));
-                }
-                Some(other) => {
-                    return Err(format!("it prints a {other:?}, which this backend doesn't take yet"));
-                }
+                Some(kind) => self.print_one(value, kind)?,
             }
         }
         self.print_text("\n");
+        Ok(())
+    }
+
+    /// Prints one value: an optional as what it holds, or `None`.
+    fn print_one(&mut self, value: &str, kind: &Kind) -> Result<(), String> {
+        if let Kind::Maybe(inner) = kind {
+            let none = self.temp();
+            self.line(&format!("{none} = icmp eq ptr {value}, null"));
+            let (holds, missing, joined) = (self.label("holds"), self.label("none"), self.label("printed"));
+            self.line(&format!("br i1 {none}, label %{missing}, label %{holds}"));
+            self.start_block(&holds);
+            self.print_one(value, inner)?;
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&missing);
+            self.print_text("None");
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&joined);
+            return Ok(());
+        }
+        if self.is_optional(kind) {
+            let (number, fields) = self.case_of(kind, "Some")?;
+            let (_, offset, held) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+            let held = held.ok_or("an optional of something this backend doesn't take yet")?;
+            let base = self.fields_at(value, kind);
+            let (tag, some) = (self.temp(), self.temp());
+            self.line(&format!("{tag} = load i64, ptr {base}"));
+            self.line(&format!("{some} = icmp eq i64 {tag}, {number}"));
+            let (holds, none, joined) = (self.label("holds"), self.label("none"), self.label("printed"));
+            self.line(&format!("br i1 {some}, label %{holds}, label %{none}"));
+            self.start_block(&holds);
+            let at = self.offset(&base, offset);
+            let inner = if held.in_memory() { at } else { self.load_field(&held, &at, "") };
+            self.print_one(&inner, &held)?;
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&none);
+            self.print_text("None");
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&joined);
+            return Ok(());
+        }
+        match kind {
+            Kind::Int => {
+                self.declare("declare void @fennec_print_int(i64) nounwind");
+                self.line(&format!("call void @fennec_print_int(i64 {value})"));
+            }
+            Kind::Float => {
+                self.declare("declare void @fennec_print_float(double) nounwind");
+                self.line(&format!("call void @fennec_print_float(double {value})"));
+            }
+            Kind::Bool => {
+                self.declare("declare void @fennec_print_bool(i8) nounwind");
+                let wide = self.temp();
+                self.line(&format!("{wide} = zext i1 {value} to i8"));
+                self.line(&format!("call void @fennec_print_bool(i8 {wide})"));
+            }
+            Kind::Str => {
+                self.declare("declare void @fennec_str_print(ptr) nounwind");
+                self.line(&format!("call void @fennec_str_print(ptr {value})"));
+            }
+            Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
+                self.declare("declare i64 @fennec_mark() nounwind");
+                self.declare("declare void @fennec_truncate(i64) nounwind");
+                self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
+                self.declare("declare void @fennec_print_value(i64) nounwind");
+                let (mark, handle) = (self.temp(), self.temp());
+                self.line(&format!("{mark} = call i64 @fennec_mark()"));
+                self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
+                self.line(&format!("call void @fennec_print_value(i64 {handle})"));
+                self.line(&format!("call void @fennec_truncate(i64 {mark})"));
+            }
+            other => {
+                return Err(format!("it prints a {other:?}, which this backend doesn't take yet"));
+            }
+        }
         Ok(())
     }
 
@@ -261,13 +304,46 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (index, _) = self.operand(index)?;
+        // In an ASCII string a character's place is its byte's, so one inside it comes from the
+        // table, and only the rest go to the runtime, which counts characters from the start.
+        let (bytes_at, chars_at) = (self.offset(text, 16), self.offset(text, 24));
+        let (bytes, chars, ascii, inside, quick) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{bytes} = load i64, ptr {bytes_at}"));
+        self.line(&format!("{chars} = load i64, ptr {chars_at}"));
+        self.line(&format!("{ascii} = icmp eq i64 {bytes}, {chars}"));
+        self.line(&format!("{inside} = icmp ult i64 {index}, {bytes}"));
+        self.line(&format!("{quick} = and i1 {ascii}, {inside}"));
+        let (table_path, runtime_path, joined) =
+            (self.label("table"), self.label("count"), self.label("indexed"));
+        self.line(&format!("br i1 {quick}, label %{table_path}, label %{runtime_path}, !prof !8"));
+        self.start_block(&table_path);
+        self.declare("@fennec_ascii = external dso_local global ptr");
+        let start = self.offset(text, crate::emit::TEXT_START);
+        let (lead_at, lead, wide, table, slot, from_table) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{lead_at} = getelementptr inbounds i8, ptr {start}, i64 {index}"));
+        self.line(&format!("{lead} = load i8, ptr {lead_at}"));
+        self.line(&format!("{wide} = zext i8 {lead} to i64"));
+        self.line(&format!("{table} = load ptr, ptr @fennec_ascii, !invariant.load !1"));
+        self.line(&format!("{slot} = getelementptr inbounds i64, ptr {table}, i64 {wide}"));
+        self.line(&format!("{from_table} = load ptr, ptr {slot}"));
+        self.retain(&from_table);
+        let table_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&runtime_path);
         self.declare("declare ptr @fennec_str_index(ptr, i64, i64, i64) nounwind");
         let (from, to) = (i64::from(span.start), i64::from(span.end));
-        let one = self.temp();
+        let counted = self.temp();
         self.line(&format!(
-            "{one} = call ptr @fennec_str_index(ptr {text}, i64 {index}, i64 {from}, i64 {to})"
+            "{counted} = call ptr @fennec_str_index(ptr {text}, i64 {index}, i64 {from}, i64 {to})"
         ));
         self.leave_if_failed();
+        let runtime_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let one = self.temp();
+        self.line(&format!("{one} = phi ptr [ {from_table}, %{table_end} ], [ {counted}, %{runtime_end} ]"));
         self.assign(dest, &one)
     }
 

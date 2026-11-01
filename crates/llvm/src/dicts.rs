@@ -313,8 +313,68 @@ impl Emit<'_, '_, '_> {
         self.read_into(dest, &value_kind, &value_at, "")
     }
 
-    /// `dict.get(key, default)`.
+    /// `dict.get(key)`: the value as an optional, `None` when the key isn't there.
+    fn dict_get_optional(&mut self, dest: LocalId, dict: &Operand, key: &Operand) -> Result<(), String> {
+        let (dict, kind) = self.operand(dict)?;
+        let Kind::Dict(key_word, value_word) = kind else {
+            return Err("`dict.get` on something else".to_owned());
+        };
+        let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
+        let optional = self.kind_of(dest)?.clone();
+        if matches!(optional, Kind::Maybe(_)) {
+            let key = self.key_value(key, key_word)?;
+            let entry = self.find(&dict, key_word, &key);
+            let missing = self.temp();
+            let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
+            self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
+            self.line(&format!("br i1 {missing}, label %{absent}, label %{found}"));
+            self.start_block(&absent);
+            self.copy(dest, &Operand::None)?;
+            self.line(&format!("br label %{done}"));
+            self.start_block(&found);
+            let value_at = self.temp();
+            self.line(&format!("{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {ENTRY_VALUE}"));
+            self.read_into(dest, &value_kind, &value_at, "")?;
+            self.line(&format!("br label %{done}"));
+            self.start_block(&done);
+            return Ok(());
+        }
+        if !matches!(optional, Kind::Enum(_)) {
+            return Err(format!("`dict.get` gives a {optional:?}, which this backend doesn't take yet"));
+        }
+        let (number, fields) = self.case_of(&optional, "Some")?;
+        let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+        let key = self.key_value(key, key_word)?;
+        let entry = self.find(&dict, key_word, &key);
+        let missing = self.temp();
+        let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
+        self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
+        self.line(&format!("br i1 {missing}, label %{absent}, label %{found}"));
+        self.start_block(&absent);
+        self.copy(dest, &Operand::None)?;
+        self.line(&format!("br label %{done}"));
+        self.start_block(&found);
+        let (slot, memory) = (self.slot(dest), optional.memory(self.module.layouts));
+        self.line(&format!("store {memory} zeroinitializer, ptr {slot}"));
+        self.line(&format!("store i64 {number}, ptr {slot}"));
+        let value_at = self.temp();
+        self.line(&format!("{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {ENTRY_VALUE}"));
+        let value = self.load_field(&value_kind, &value_at, "");
+        if value_kind.counted() {
+            self.retain_value(&value, &value_kind);
+        }
+        let at = self.offset(&slot, offset);
+        self.store_field(&value_kind, &value, &at, "");
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(())
+    }
+
+    /// `dict.get(key, default)`, or `dict.get(key)` as an optional.
     pub(crate) fn dict_get(&mut self, dest: LocalId, args: &[Operand]) -> Result<(), String> {
+        if let [dict, key] = args {
+            return self.dict_get_optional(dest, dict, key);
+        }
         let [dict, key, default] = args else { return Err("`dict.get` with no default".to_owned()) };
         let (dict, kind) = self.operand(dict)?;
         let Kind::Dict(key_word, value_word) = kind else {

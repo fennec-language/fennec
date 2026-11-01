@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 17;
+const BUILDING_EXAMPLES: usize = 21;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
@@ -171,7 +171,7 @@ def main(stdout: Stdout):
     bump(mut holder, 1)
     stdout.print(holder.packets[1].id, keep.packets[1].id, one[1].id, two[1].id)
     stdout.print(holder.packets[1].data[0], keep.packets[1].data[0], two[1].data[0])
-    mut list_only = two
+    mut list_only = copy(two)
     shown = list_only[0]
     list_only[0].id = 77
     stdout.print(shown.id, list_only[0].id, two[0].id)
@@ -182,7 +182,7 @@ def main(stdout: Stdout):
     copied = kept
     kept.packets.append(a)
     stdout.print(kept.packets.len(), copied.packets.len())
-    mut nested = kept
+    mut nested = copy(kept)
     other = nested
     nested.packets[0].data[1] = 123
     stdout.print(nested.packets[0].data[1], other.packets[0].data[1], kept.packets[0].data[1])
@@ -238,7 +238,7 @@ def main(stdout: Stdout):
     a = Point(x=1.0, y=2.0, on=True)
     b = moved(a, 0.5)
     stdout.print(a.x, b.x, a.on)
-    mut c = b
+    mut c = copy(b)
     nudge(mut c)
     stdout.print(b.y, c.y, b.on, c.on)
     mut line = Line(start=a, end=c, weight=3)
@@ -313,14 +313,14 @@ def twice(n: int, change: (int) -> int) -> int:
 def main(stdout: Stdout):
     mut counts: dict[int, int] = {}
     for i in range(50):
-        counts[i % 7] = counts.get(i % 7, 0) + i
-    stdout.print(counts[3], counts.len(), 3 in counts, 99 in counts, counts.get(99, -1))
+        counts[i % 7] = (counts.get(i % 7) else 0) + i
+    stdout.print(counts[3], counts.len(), 3 in counts, 99 in counts, (counts.get(99) else -1))
     shared = counts
     counts[3] = 0
     stdout.print(counts[3], shared[3])
     mut words: dict[str, int] = {"a": 1}
     for word in ["fox", "fennec", "fox", "a"]:
-        words[word] = words.get(word, 0) + 1
+        words[word] = (words.get(word) else 0) + 1
     for name, count in sorted(words.items()):
         stdout.print(name, count)
     mut keys: dict[Key, int] = {}
@@ -431,6 +431,76 @@ def main(stdout: Stdout):
         "expect",
         "error Fault:\n    reason: str\n\ndef half(n: int) -> int:\n    if n % 2 == 1: fail Fault(\"odd\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
     )
+}
+
+#[test]
+fn regexes_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "regexes",
+        r#"from std.re import Regex, is_regex
+
+def main(stdout: Stdout):
+    words = Regex(r"(\w)(\w*)")
+    for found in words.find_all("fox and éclair"):
+        stdout.print(found.text, found.start, found.end, found.groups.len(), found.groups[0], found.groups[1])
+    optional = Regex(r"a(x)?b")
+    for found in optional.find_all("ab axb"):
+        stdout.print(found.text, found.groups[0] is None)
+    stdout.print(words.replace("fox den", r"\2\1"), Regex(" +").split("a  b c").len())
+    stdout.print(is_regex("("), is_regex("a+"))
+    first = Regex(r"\d+").search("ab 42 7")
+    if first is not None:
+        stdout.print(first.text, first.start)
+    stdout.print(Regex(r"\d+").match("ab 42") is None)
+"#,
+    )
+}
+
+/// What a built program says it copied and allocated, as `FENNEC_COUNTS` has it report.
+fn counts_of(name: &str, source: &str) -> std::io::Result<String> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output()?;
+    std::fs::remove_dir_all(&dir)?;
+    let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+    Ok(errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned())
+}
+
+#[test]
+fn a_dict_in_a_field_changes_without_being_copied() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "field",
+        "struct Counter:\n    counts: dict[int, int]\n\n    def bump(mut self, key: int):\n        self.counts[key] = (self.counts.get(key) else 0) + 1\n\ndef main(stdout: Stdout):\n    mut counter = Counter(counts={})\n    for i in range(1000):\n        counter.bump(i % 64)\n    stdout.print(counter.counts[0])\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    Ok(())
+}
+
+#[test]
+fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = "def find(names: list[str], wanted: str) -> str?:\n    for name in names:\n        if name == wanted: return name\n    None\n\nstruct Seen:\n    last: str?\n\ndef main(stdout: Stdout):\n    names = [\"fox\", \"kit\", \"den\"]\n    mut seen = Seen(last=None)\n    mut hits = 0\n    for at in range(1000):\n        found = find(names, names[at % 3])\n        if found is not None:\n            hits += 1\n        seen.last = found\n    stdout.print(hits, seen.last, find(names, \"owl\"))\n";
+    same_as_the_jit("optional", source)?;
+    let counts = counts_of("optional", source)?;
+    let allocations = counts
+        .split_whitespace()
+        .skip_while(|word| *word != "allocations")
+        .nth(1)
+        .and_then(|number| number.parse::<u64>().ok());
+    assert!(allocations.is_some_and(|count| count < 100), "{counts}");
+    Ok(())
 }
 
 #[test]

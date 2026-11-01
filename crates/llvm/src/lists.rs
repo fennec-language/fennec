@@ -12,7 +12,7 @@ use crate::kinds::{Kind, element_symbol};
 type CaseField = (String, u32, Option<Kind>);
 
 /// Where a block's fields start.
-const FIELDS_OFFSET: u32 = FIELDS.unsigned_abs();
+pub(crate) const FIELDS_OFFSET: u32 = FIELDS.unsigned_abs();
 
 impl Emit<'_, '_, '_> {
     /// The address `offset` bytes into something.
@@ -26,7 +26,7 @@ impl Emit<'_, '_, '_> {
         self.module.layouts.get(id).ok_or_else(|| "no such layout".to_owned())
     }
 
-    fn field(&self, kind: &Kind, name: &str) -> Result<(u32, Kind), String> {
+    pub(crate) fn field(&self, kind: &Kind, name: &str) -> Result<(u32, Kind), String> {
         let (Kind::Struct(id) | Kind::Boxed(id)) = kind else {
             return Err(format!("it reads a field of a {kind:?}, which this backend doesn't take yet"));
         };
@@ -60,7 +60,7 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         let (value, fresh) = self.value_for(operand, kind)?;
         if kind.counted() && !fresh {
-            self.retain_value(&value);
+            self.retain_value(&value, kind);
         }
         self.store_field(kind, &value, at, access);
         Ok(())
@@ -74,12 +74,30 @@ impl Emit<'_, '_, '_> {
         at: &str,
         access: &str,
     ) -> Result<(), String> {
+        let wanted = self.kind_of(dest)?.clone();
+        // A list's items hold an optional as an enum, where a local holds it as one word: what a
+        // `Some` holds, and as `None` never writes that word, it's null for `None`.
+        let (kind, at, access) = if matches!(wanted, Kind::Maybe(_)) && self.is_optional(kind) {
+            let (_, fields) = self.case_of(kind, "Some")?;
+            let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+            let (base, inner) = if matches!(kind, Kind::Boxed(_)) {
+                let block = self.temp();
+                self.line(&format!("{block} = load ptr, ptr {at}{access}"));
+                (self.fields_at(&block, kind), "")
+            } else {
+                (at.to_owned(), access)
+            };
+            (wanted.clone(), self.offset(&base, offset), inner)
+        } else {
+            (kind.clone(), at.to_owned(), access)
+        };
+        let (kind, at) = (&kind, at.as_str());
         if kind.in_memory() {
             return self.assign_memory(dest, at, access);
         }
         let value = self.load_field(kind, at, access);
         if kind.counted() && !self.known.is_borrowed(dest) && !self.known.is_taken(dest) {
-            self.retain_value(&value);
+            self.retain_value(&value, kind);
         }
         self.assign(dest, &value)
     }
@@ -178,7 +196,7 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store ptr {value}, ptr {place}"));
         } else if kind.counted() {
             if !fresh {
-                self.retain_value(&value);
+                self.retain_value(&value, &kind);
             }
             let old = self.temp();
             self.line(&format!("{old} = load ptr, ptr {place}"));
@@ -232,6 +250,12 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn is_case(&mut self, dest: LocalId, value: &Operand, case: &str) -> Result<(), String> {
         let (base, kind) = self.operand(value)?;
+        if matches!(kind, Kind::Maybe(_)) {
+            let cc = if case == "None" { "eq" } else { "ne" };
+            let same = self.temp();
+            self.line(&format!("{same} = icmp {cc} ptr {base}, null"));
+            return self.assign(dest, &same);
+        }
         let (number, _) = self.case_of(&kind, case)?;
         let fields = self.fields_at(&base, &kind);
         let (word, same) = (self.temp(), self.temp());
@@ -278,7 +302,7 @@ impl Emit<'_, '_, '_> {
         same
     }
 
-    fn item_kind(&self, item: ListItem) -> Result<Kind, String> {
+    pub(crate) fn item_kind(&self, item: ListItem) -> Result<Kind, String> {
         Kind::from_ty(self.module.layouts, item.ty())
             .ok_or_else(|| "a list item this backend doesn't take yet".to_owned())
     }
@@ -470,7 +494,7 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store ptr {value}, ptr {at}{ITEM_ACCESS}"));
         } else if held.counted() {
             if !fresh {
-                self.retain_value(&value);
+                self.retain_value(&value, &held);
             }
             let old = self.temp();
             self.line(&format!("{old} = load ptr, ptr {at}{ITEM_ACCESS}"));
@@ -593,7 +617,7 @@ impl Emit<'_, '_, '_> {
     }
 }
 
-fn list_item(list: &Kind) -> Result<ListItem, String> {
+pub(crate) fn list_item(list: &Kind) -> Result<ListItem, String> {
     match list {
         Kind::List(item) => Ok(*item),
         other => Err(format!("it indexes a {other:?}, which this backend doesn't take yet")),

@@ -84,22 +84,8 @@ impl FnCx<'_> {
                 }
             }
             ExprKind::Name(name) if self.lookup(name).is_none() => {
-                if self.checker.program.functions.contains_key(name) {
-                    self.record(callee.span, &Type::Function(name.clone()));
-                    return self.call_function(name, name, args, span);
-                }
-                if let Some(function) = self.std_function(name, callee.span) {
-                    self.record(callee.span, &Type::Function(function.clone()));
-                    return self.call_function(&function, name, args, span);
-                }
-                if self.checker.program.is_type_name(name) {
-                    return self.construct(name, args, span);
-                }
-                if let Some(builtin) = self.checker.program.imported(name, callee.span).cloned() {
-                    return self.call_builtin(&builtin, args, span);
-                }
-                if matches!(name.as_str(), "len" | "abs") || builtins::is_builtin(name) {
-                    return self.call_global(name, callee, args, span);
+                if let Some(returns) = self.call_by_name(name, callee, args, span) {
+                    return returns;
                 }
             }
             _ => {}
@@ -124,6 +110,28 @@ impl FnCx<'_> {
                 self.unusable(Diagnostic::new(message, callee.span), args)
             }
         }
+    }
+
+    /// A call to a name that isn't a local: a function, a type or a builtin.
+    fn call_by_name(&mut self, name: &str, callee: &Expr, args: &[Arg], span: Span) -> Option<Type> {
+        if self.checker.program.functions.contains_key(name) {
+            self.record(callee.span, &Type::Function(name.to_owned()));
+            return Some(self.call_function(name, name, args, span));
+        }
+        if let Some(function) = self.std_function(name, callee.span) {
+            self.record(callee.span, &Type::Function(function.clone()));
+            return Some(self.call_function(&function, name, args, span));
+        }
+        if self.checker.program.is_type_name(name) {
+            return Some(self.construct(name, args, span));
+        }
+        if let Some(builtin) = self.checker.program.imported(name, callee.span).cloned() {
+            return Some(self.call_builtin(&builtin, args, span));
+        }
+        if matches!(name, "len" | "abs") || builtins::is_builtin(name) {
+            return Some(self.call_global(name, callee, args, span));
+        }
+        None
     }
 
     /// `json.loads` or `toml.loads`, imported by module or by name, without being called.

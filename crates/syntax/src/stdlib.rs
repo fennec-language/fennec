@@ -47,19 +47,19 @@ modules! {
 
 /// What's available everywhere without an import: the errors standard operations fail
 /// with, and the built-in types' methods written in Fennec.
-const CORE: [&str; 5] = [
-    include_str!("stdlib/errors.fen"),
-    include_str!("stdlib/str.fen"),
-    include_str!("stdlib/list.fen"),
-    include_str!("stdlib/dict.fen"),
-    include_str!("stdlib/set.fen"),
+const CORE: [(&str, &str); 5] = [
+    ("errors", include_str!("stdlib/errors.fen")),
+    ("str", include_str!("stdlib/str.fen")),
+    ("list", include_str!("stdlib/list.fen")),
+    ("dict", include_str!("stdlib/dict.fen")),
+    ("set", include_str!("stdlib/set.fen")),
 ];
 
 /// The standard library written in Fennec, loaded before every program by both the
 /// interpreter and the type checker: the core, then each module's code.
 pub fn prelude() -> impl Iterator<Item = &'static str> {
     let modules = MODULES.iter().map(|module| module.source).filter(|source| !source.is_empty());
-    CORE.into_iter().chain(modules)
+    CORE.into_iter().map(|(_, source)| source).chain(modules)
 }
 
 /// The prelude's sources parsed, once for the whole process: the checker, the compiler and
@@ -74,15 +74,28 @@ pub fn prelude_modules() -> Result<&'static [crate::Module], crate::Diagnostic> 
 }
 
 fn parse_prelude() -> Result<Vec<crate::Module>, crate::Diagnostic> {
-    let mut parsed: Vec<crate::Module> =
-        CORE.into_iter().map(crate::parser::parse_prelude).collect::<Result<_, _>>()?;
+    let mut parsed = Vec::new();
+    for (name, source) in CORE {
+        parsed.push(parse_module(name, source)?);
+    }
     let mut modules = Vec::new();
     for module in MODULES.iter().filter(|module| !module.source.is_empty()) {
-        modules.push((module.name, crate::parser::parse_prelude(module.source)?));
+        modules.push((module.name, parse_module(module.name, module.source)?));
     }
     qualify_functions(&mut modules);
     parsed.extend(modules.into_iter().map(|(_, module)| module));
     Ok(parsed)
+}
+
+/// Parses one file of the standard library. A mistake in one says which file and line, since it
+/// can't be shown against a program's own lines.
+fn parse_module(name: &str, source: &str) -> Result<crate::Module, crate::Diagnostic> {
+    crate::parser::parse_prelude(source).map_err(|problem| {
+        let at = problem.span.start.saturating_sub(crate::Span::PRELUDE) as usize;
+        let line = source.get(..at).map_or(1, |before| before.matches('\n').count() + 1);
+        let message = format!("the standard library's `{name}.fen`, line {line}: {}", problem.message);
+        crate::Diagnostic { message, ..problem }
+    })
 }
 
 /// Gives each module's top-level functions the name `module.function`, which no one can write
@@ -147,6 +160,16 @@ pub fn given() -> impl Iterator<Item = (&'static str, &'static str)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_mistake_in_a_module_says_where() {
+        let problem = super::parse_module("csv", "struct A:\n    x = 1\n\ndef (\n").err().unwrap();
+        assert!(
+            problem.message.starts_with("the standard library's `csv.fen`, line 4: "),
+            "{}",
+            problem.message
+        );
+    }
+
     /// The JIT compiles a type's methods only once something gives it one, so every method
     /// that gives back a standard library type has to be listed.
     #[test]

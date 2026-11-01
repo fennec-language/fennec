@@ -52,7 +52,14 @@ pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
 /// Checks a parsed module. Returns the signatures and the type of every expression and
 /// name, or every problem found, in source order.
 pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
+    library_parses()?;
     checker::Checker::new(module).run(false)
+}
+
+/// A mistake in the standard library's own code comes first, since without it a program's
+/// names would seem not to exist.
+fn library_parses() -> Result<(), Vec<Diagnostic>> {
+    fennec_syntax::prelude_modules().map(|_| ()).map_err(|problem| vec![problem])
 }
 
 /// Whether the language provides `name` everywhere, with no import: a builtin like `len`,
@@ -89,6 +96,7 @@ pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnost
 /// checked only when the module reaches them, so its signatures hold just those. The
 /// library's own tests check all of it.
 pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
+    library_parses()?;
     let checked = checker::Checker::new(module).run(true)?;
     Ok(resolved(module, checked))
 }

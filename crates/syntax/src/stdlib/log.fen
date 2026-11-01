@@ -1,3 +1,5 @@
+from std.json import dumps
+
 ## How much a log entry matters, least first.
 enum LogLevel:
     Debug
@@ -27,13 +29,23 @@ enum LogLevel:
             case .Error:
                 "ERROR"
 
+## How each entry is written.
+enum LogFormat:
+    ## `INFO saved file=a.txt`, for people.
+    Text
+    ## `{"level": "INFO", "message": "saved", "file": "a.txt"}`, one object a line, for tools
+    ## that collect logs.
+    Json
+
 ## Where a program's log entries go, and which ones it wants. There's nothing global: a
 ## function that logs takes a `Log`, so its signature says so, and a kit logs however the
 ## program that uses it chose. Each entry is one line, like `INFO saved file=a.txt size=12`.
 ## Give it a `Clock` and each line starts with the seconds since the clock started.
+## `format=.Json` writes each entry as a JSON object instead.
 struct Log:
     out: Stdout
     level = LogLevel.Info
+    format = LogFormat.Text
     clock: Clock? = None
     fields: dict[str, str] = {}
 
@@ -62,15 +74,39 @@ struct Log:
 
     def write(self, level: LogLevel, message: str, fields: dict[str, str]?):
         if not self.enabled(level): return
-        mut parts = [level.label(), Log._one_line(message)]
-        if self.clock is not None:
-            parts = [f"{float(self.clock.now().nanos) / 1_000_000_000.0:.3f}"] + parts
         mut all_fields = {name: value for name, value in self.fields.items()}
         if fields is not None:
             all_fields.update(fields)
-        for name, value in all_fields.items():
+        mut seconds = ""
+        if self.clock is not None:
+            seconds = f"{float(self.clock.now().nanos) / 1_000_000_000.0:.3f}"
+        line = match self.format:
+            case .Text:
+                Log._text(level, message, all_fields, seconds)
+            case .Json:
+                Log._json(level, message, all_fields, seconds)
+        self.out.print(line)
+
+    def _text(level: LogLevel, message: str, fields: dict[str, str], seconds: str) -> str:
+        mut parts = [level.label(), Log._one_line(message)]
+        if seconds != "":
+            parts = [seconds] + parts
+        for name, value in fields.items():
             parts.append(f"{Log._one_line(name)}={Log._value(value)}")
-        self.out.print(" ".join(parts))
+        " ".join(parts)
+
+    ## One JSON object. The time is a number of seconds, and a field can't replace `time`,
+    ## `level` or `message`.
+    def _json(level: LogLevel, message: str, fields: dict[str, str], seconds: str) -> str:
+        mut parts = []
+        if seconds != "":
+            parts.append(f"\"time\": {seconds}")
+        parts.append(f"\"level\": {dumps(level.label())}")
+        parts.append(f"\"message\": {dumps(message)}")
+        for name, value in fields.items():
+            if name != "time" and name != "level" and name != "message":
+                parts.append(f"{dumps(name)}: {dumps(value)}")
+        "{" + ", ".join(parts) + "}"
 
     ## Text that can't start another line, so an entry can't pretend to be two.
     def _one_line(text: str) -> str:

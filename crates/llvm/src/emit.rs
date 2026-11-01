@@ -26,6 +26,9 @@ attributes #2 = { alwaysinline nounwind \"frame-pointer\"=\"non-leaf\" }\n\
 !7 = !{i64 0, i64 281474976710657}\n\
 !8 = !{!\"branch_weights\", i32 100000, i32 1}\n";
 
+/// Where a string block's bytes start.
+pub(crate) const TEXT_START: u32 = fennec_interp::embed::layout::TEXT.unsigned_abs();
+
 /// A list's header, and what's in it, never overlap its items, and a length is far from any limit.
 pub(crate) const HEADER_ACCESS: &str = ", !tbaa !4";
 pub(crate) const ITEM_ACCESS: &str = ", !tbaa !6";
@@ -490,20 +493,61 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// One more owner for a value, unless it's the one that's nothing.
-    pub(crate) fn retain_value(&mut self, value: &str) {
-        if value != "null" {
-            self.retain(value);
+    /// One more owner for a value, unless it's the one that's nothing: an optional's may be.
+    pub(crate) fn retain_value(&mut self, value: &str, kind: &Kind) {
+        if value == "null" {
+            return;
         }
+        if !matches!(kind, Kind::Maybe(_)) {
+            self.retain(value);
+            return;
+        }
+        let (none, held, done) = (self.temp(), self.label("some"), self.label("retained"));
+        self.line(&format!("{none} = icmp eq ptr {value}, null"));
+        self.line(&format!("br i1 {none}, label %{done}, label %{held}"));
+        self.start_block(&held);
+        self.retain(value);
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+    }
+
+    /// A one-word optional as the enum a list's items hold it as, with an owner of its own.
+    fn optional_as_enum(&mut self, value: &str, held: &Kind, kind: &Kind) -> Result<(String, bool), String> {
+        let (some, fields) = self.case_of(kind, "Some")?;
+        let (none, _) = self.case_of(kind, "None")?;
+        let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+        self.retain_value(value, held);
+        let (missing, tag) = (self.temp(), self.temp());
+        self.line(&format!("{missing} = icmp eq ptr {value}, null"));
+        self.line(&format!("{tag} = select i1 {missing}, i64 {none}, i64 {some}"));
+        let (place, fields_at) = if let Kind::Boxed(id) = kind {
+            let block = self.new_block(*id)?;
+            let fields_at = self.offset(&block, crate::lists::FIELDS_OFFSET);
+            (block, fields_at)
+        } else {
+            let place = self.place_for(kind);
+            let text = self.text_of(kind);
+            self.line(&format!("store {text} zeroinitializer, ptr {place}"));
+            (place.clone(), place)
+        };
+        self.line(&format!("store i64 {tag}, ptr {fields_at}"));
+        let at = self.offset(&fields_at, offset);
+        self.line(&format!("store ptr {value}, ptr {at}"));
+        Ok((place, true))
     }
 
     /// A value to go where this kind goes: `None` needs telling what it's `None` of. The second
     /// half says the value is new, and already has an owner for its new home.
     pub(crate) fn value_for(&mut self, operand: &Operand, kind: &Kind) -> Result<(String, bool), String> {
         if *operand != Operand::None {
-            return Ok((self.operand(operand)?.0, false));
+            let (value, held) = self.operand(operand)?;
+            if matches!(held, Kind::Maybe(_)) && self.is_optional(kind) {
+                return self.optional_as_enum(&value, &held, kind);
+            }
+            return Ok((value, false));
         }
         match kind {
+            Kind::Maybe(_) => Ok(("null".to_owned(), false)),
             Kind::Enum(_) => {
                 // Word 0 is which case, and `None` comes first.
                 let (at, text) = (self.label("%none"), self.text_of(kind));
@@ -1115,7 +1159,7 @@ impl Emit<'_, '_, '_> {
                     let slot = self.slot(*from);
                     self.line(&format!("store ptr null, ptr {slot}"));
                 }
-                _ => self.retain_value(&held),
+                _ => self.retain_value(&held, &kind),
             }
         }
         self.assign(dest, &held)?;
@@ -1278,7 +1322,7 @@ impl Emit<'_, '_, '_> {
             _ => None,
         };
         if returns.counted() && moved.is_none() && !fresh {
-            self.retain_value(&held);
+            self.retain_value(&held, &returns);
         }
         self.release_locals(moved);
         self.line(&format!("ret {text} {held}"));

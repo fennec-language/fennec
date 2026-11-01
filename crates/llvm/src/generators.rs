@@ -121,7 +121,7 @@ impl<'p> Emit<'_, '_, 'p> {
         let at = self.offset(&block, offset);
         if kind.counted() {
             if !fresh {
-                self.retain_value(&value);
+                self.retain_value(&value, &kind);
             }
             let old = self.temp();
             self.line(&format!("{old} = load ptr, ptr {at}"));

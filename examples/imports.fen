@@ -11,7 +11,7 @@ from std.re import Regex
 
 def first_word(text: str) -> str:
     found = Regex(r"\w+").search(text)
-    found?.text else ""
+    found.text else ""
 
 def main(stdout: Stdout):
     mut queue = std.collections.Deque()

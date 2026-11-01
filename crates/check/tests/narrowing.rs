@@ -48,7 +48,12 @@ fn optionals_are_checked_before_use() {
         ]
     );
     let help = helps(&format!("{FIND}\ndef f():\n    find('a').name\n"));
-    assert_eq!(help, ["check with `if x is None:` first, use `?.`, or give a default with `else`"]);
+    assert_eq!(
+        help,
+        [
+            "end the chain with `else` and a default, like `x.name else \"\"`, or check with `if x is None:` first"
+        ]
+    );
 }
 
 #[test]
@@ -146,30 +151,33 @@ fn narrowing_ends_with_the_code_it_guards() {
 }
 
 #[test]
-fn question_mark_optional_chaining_and_else_unwrap() {
+fn question_mark_and_else_chains() {
     let program = "
         def b(name: str):
-            damage = find(name)?.weapon?.damage else 0
+            damage = find(name).weapon.damage else 0
             damage + 1
 
         def c(name: str):
-            name_length = (find(name)?.name).len()
+            name_length = (find(name).name else '').len()
 
         def d(name: str):
             player = find(name) else Player(name='x')
             player.name.upper()
-            find(name)?.name.upper()
+            find(name).name.upper()
 
         def e(name: str):
             player = find(name)?
             player.name
+
+        def f(name: str):
+            longer = find(name).name.len() + 1 else 0
     ";
     assert_eq!(
         problems(&format!("{FIND}\n{}", crate::dedent(program))),
         [
-            "this might be None @ find(name)?.name",
-            "this might be None @ find(name)?.name",
+            "this might be None @ find(name).name",
             "`?` needs a result, but this is a Player? @ find(name)",
+            "this might be None @ find(name).name",
         ]
     );
 }

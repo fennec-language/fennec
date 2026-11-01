@@ -1,10 +1,60 @@
 //! How a value of each type is held: in LLVM's terms, and in memory the way the runtime and the
 //! JIT lay it out, with `fennec_layout` deciding. Numbers are a word each, a bool included.
 
+use std::collections::BTreeMap;
+
 use fennec_check::Type;
-use fennec_layout::{Layouts, ListItem, Ty};
+use fennec_interp::embed::dicts::Word;
+use fennec_layout::{Layouts, ListItem, Ty, Written};
 
 const WORD: u32 = 8;
+
+/// The name a tuple, optional or result goes by, laid out as a struct or enum of that name, so
+/// that where one fits in memory, and what it holds on to, works as for any other type.
+pub(crate) fn canon(ty: &Type) -> Type {
+    match ty {
+        Type::Tuple(_) | Type::Generic(..) => Type::Named(ty.to_string()),
+        Type::Optional(inner) => Type::Named(format!("Option[{inner}]")),
+        Type::Result(value, error) => Type::Named(format!("Result[{value}, {error}]")),
+        Type::List(item) => Type::List(Box::new(canon(item))),
+        Type::Set(item) => Type::Set(Box::new(canon(item))),
+        Type::Dict(key, value) => Type::Dict(Box::new(canon(key)), Box::new(canon(value))),
+        other => other.clone(),
+    }
+}
+
+/// The definitions of the tuples, optionals and results a type mentions.
+pub(crate) fn define_named(ty: &Type, out: &mut BTreeMap<String, Written>) {
+    let field = |name: &str, ty: &Type| (name.to_owned(), canon(ty), None);
+    match ty {
+        Type::Tuple(items) => {
+            items.iter().for_each(|item| define_named(item, out));
+            let fields = items.iter().enumerate().map(|(at, item)| field(&format!("_{at}"), item)).collect();
+            out.insert(ty.to_string(), Written::Struct(fields));
+        }
+        Type::Optional(inner) => {
+            define_named(inner, out);
+            let cases =
+                vec![("None".to_owned(), Vec::new()), ("Some".to_owned(), vec![field("value", inner)])];
+            out.insert(format!("Option[{inner}]"), Written::Enum(cases));
+        }
+        Type::Result(value, error) => {
+            define_named(value, out);
+            define_named(error, out);
+            let cases = vec![
+                ("Ok".to_owned(), vec![field("value", value)]),
+                ("Err".to_owned(), vec![field("error", error)]),
+            ];
+            out.insert(format!("Result[{value}, {error}]"), Written::Enum(cases));
+        }
+        Type::List(item) | Type::Set(item) => define_named(item, out),
+        Type::Dict(key, value) => {
+            define_named(key, out);
+            define_named(value, out);
+        }
+        _ => {}
+    }
+}
 
 /// What this backend can hold so far.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,35 +71,24 @@ pub(crate) enum Kind {
     Enum(u32),
     /// The address of a boxed struct's or enum's block, which something owns.
     Boxed(u32),
-    /// A block's address, or zero for `None`.
-    Optional(Box<Kind>),
-    /// A tuple, laid out like a plain struct.
-    Tuple(Vec<Kind>),
     /// The address of a list's block, which something owns.
     List(ListItem),
     /// The address of a string's block, which something owns.
     Str,
+    /// The address of a dict's or set's block, which something owns, by what it holds.
+    Dict(Word, Word),
+    /// The address of a closure, which something owns: what it takes, and gives back.
+    Closure(Vec<Kind>, Box<Kind>),
 }
 
 impl Kind {
     pub(crate) fn of(layouts: &Layouts, ty: &Type) -> Result<Kind, String> {
-        if let Type::Tuple(items) = ty {
-            let items: Result<Vec<Kind>, String> = items.iter().map(|item| Kind::of(layouts, item)).collect();
-            let items = items?;
-            if items.iter().any(Kind::counted) {
-                return Err("it uses a tuple holding a list or string, which this backend doesn't take yet"
-                    .to_owned());
-            }
-            return Ok(Kind::Tuple(items));
+        if let Type::Arrow(params, returns) = ty {
+            let params: Result<Vec<Kind>, String> =
+                params.iter().map(|param| Kind::of(layouts, param)).collect();
+            return Ok(Kind::Closure(params?, Box::new(Kind::of(layouts, returns)?)));
         }
-        if let Type::Optional(inner) = ty {
-            let inner = Kind::of(layouts, inner)?;
-            if inner.counted() {
-                return Ok(Kind::Optional(Box::new(inner)));
-            }
-            return Err(format!("it uses a {ty:?}, which this backend doesn't take yet"));
-        }
-        let held = layouts.ty(ty);
+        let held = layouts.ty(&canon(ty));
         Kind::from_ty(layouts, held)
             .ok_or_else(|| format!("it uses a {ty:?}, which this backend doesn't take yet"))
     }
@@ -68,18 +107,19 @@ impl Kind {
             Ty::Boxed(id) => Kind::Boxed(id),
             Ty::List(item) => Kind::List(item),
             Ty::Str => Kind::Str,
+            Ty::Dict(key, value) => Kind::Dict(key, value),
             _ => return None,
         })
     }
 
     /// Whether this is the address of a block with an owner count.
     pub(crate) fn counted(&self) -> bool {
-        matches!(self, Kind::List(_) | Kind::Str | Kind::Boxed(_) | Kind::Optional(_))
+        matches!(self, Kind::List(_) | Kind::Str | Kind::Boxed(_) | Kind::Dict(..) | Kind::Closure(..))
     }
 
     /// Whether this is held in memory and passed by address.
     pub(crate) fn in_memory(&self) -> bool {
-        matches!(self, Kind::Struct(_) | Kind::Tuple(_) | Kind::Enum(_))
+        matches!(self, Kind::Struct(_) | Kind::Enum(_))
     }
 
     /// How LLVM holds it in a local's slot.
@@ -96,14 +136,12 @@ impl Kind {
             Kind::Int | Kind::Bool => "i64".to_owned(),
             Kind::Float => "double".to_owned(),
             Kind::Unit => "void".to_owned(),
-            Kind::Cap | Kind::List(_) | Kind::Str | Kind::Boxed(_) | Kind::Optional(_) => "ptr".to_owned(),
+            Kind::Cap | Kind::List(_) | Kind::Str | Kind::Boxed(_) | Kind::Dict(..) | Kind::Closure(..) => {
+                "ptr".to_owned()
+            }
             Kind::Enum(id) => format!("[{} x i64]", layouts.get(*id).map_or(1, |layout| layout.size / WORD)),
             Kind::Struct(id) => {
                 format!("%\"s.{}\"", layouts.get(*id).map_or("?", |layout| layout.name.as_str()))
-            }
-            Kind::Tuple(items) => {
-                let items: Vec<String> = items.iter().map(|item| item.memory(layouts)).collect();
-                format!("{{ {} }}", items.join(", "))
             }
         }
     }
@@ -113,7 +151,6 @@ impl Kind {
         match self {
             Kind::Unit => 0,
             Kind::Struct(id) | Kind::Enum(id) => layouts.get(*id).map_or(0, |layout| layout.size),
-            Kind::Tuple(items) => items.iter().map(|item| item.size(layouts)).sum(),
             _ => WORD,
         }
     }

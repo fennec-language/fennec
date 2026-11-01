@@ -70,7 +70,7 @@ impl Emit<'_, '_, '_> {
                     self.declare("declare void @fennec_str_print(ptr) nounwind");
                     self.line(&format!("call void @fennec_str_print(ptr {value})"));
                 }
-                Some(Kind::List(_) | Kind::Boxed(_)) => {
+                Some(Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..)) => {
                     self.declare("declare i64 @fennec_mark() nounwind");
                     self.declare("declare void @fennec_truncate(i64) nounwind");
                     self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");

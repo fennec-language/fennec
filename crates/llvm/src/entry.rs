@@ -32,6 +32,12 @@ impl Image {
             Some((symbol.clone(), i64::try_from(number).ok()?))
         });
         elements.extend(boxed);
+        let str_shape = u64::try_from(layouts.len()).unwrap_or(0);
+        let dicts = shared.dicts.iter().filter_map(|(symbol, (key, value))| {
+            let number = fennec_interp::embed::dicts::shape(str_shape, *key, *value)?;
+            Some((symbol.clone(), i64::try_from(number).ok()?))
+        });
+        elements.extend(dicts);
         let strings =
             shared.strings.iter().map(|(symbol, text)| (symbol.clone(), registry.string(text))).collect();
         Ok(Image {

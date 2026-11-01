@@ -22,6 +22,9 @@
 
 mod analysis;
 mod build;
+mod builtins;
+mod closures;
+mod dicts;
 mod emit;
 mod entry;
 mod kinds;
@@ -30,6 +33,7 @@ mod text;
 
 use std::collections::BTreeMap;
 
+use fennec_interp::embed::dicts::Word;
 use fennec_ir::{EnumDef, Program};
 use fennec_layout::{Layouts, ListItem, Written};
 
@@ -50,23 +54,36 @@ pub struct Shared {
     pub elements: BTreeMap<String, ListItem>,
     /// Each boxed type's symbol for its shape's number, and its layout's number.
     pub shapes: BTreeMap<String, u32>,
+    /// Each kind of dict's symbol for its shape's number, and what it holds.
+    pub dicts: BTreeMap<String, (Word, Word)>,
 }
 
-/// The layouts of everything a program defines, generic types' copies included.
+/// The layouts of everything a program defines, generic types' copies included, and of the
+/// tuples, optionals and results it uses.
 pub fn layouts_of(program: &Program) -> Layouts {
     let fields = |fields: &[(String, fennec_check::Type)]| {
-        fields.iter().map(|(name, ty)| (name.clone(), ty.clone(), None)).collect::<Vec<_>>()
+        fields.iter().map(|(name, ty)| (name.clone(), kinds::canon(ty), None)).collect::<Vec<_>>()
     };
     let enums = |def: &EnumDef| {
         let cases = def.cases.iter().map(|case| (case.name.clone(), fields(&case.fields))).collect();
         (def.name.clone(), Written::Enum(cases))
     };
-    let definitions: Vec<(String, Written)> = program
-        .structs
-        .iter()
+    let mut named = BTreeMap::new();
+    let structs = program.structs.iter().chain(&program.errors);
+    for (_, ty) in structs.clone().flat_map(|def| &def.fields) {
+        kinds::define_named(ty, &mut named);
+    }
+    for (_, ty) in program.enums.iter().flat_map(|def| &def.cases).flat_map(|case| &case.fields) {
+        kinds::define_named(ty, &mut named);
+    }
+    for function in program.functions.iter().chain(&program.constants) {
+        kinds::define_named(&function.returns, &mut named);
+        function.locals.iter().for_each(|local| kinds::define_named(&local.ty, &mut named));
+    }
+    let definitions: Vec<(String, Written)> = structs
         .map(|def| (def.name.clone(), Written::Struct(fields(&def.fields))))
         .chain(program.enums.iter().map(enums))
-        .chain(program.errors.iter().map(|def| (def.name.clone(), Written::Struct(fields(&def.fields)))))
+        .chain(named)
         .collect();
     Layouts::from_definitions(&definitions)
 }

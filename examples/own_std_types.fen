@@ -1,6 +1,6 @@
 # A program's own type can share a name with one in the standard library, and the library's
 # code still uses its own.
-from std.time import Clock, Instant
+from std.time import Clock
 
 struct Duration:
     label: str

@@ -361,4 +361,16 @@ mod tests {
         }
         finish();
     }
+
+    /// Native code hashes string keys itself, slices of strings too, so this is fixed.
+    #[test]
+    fn a_string_key_s_hash_stays_what_native_code_works_out() {
+        use super::super::dicts::hash_text;
+        assert_eq!(hash_text(0, &[]), 0);
+        let word = u64::from_le_bytes(*b"ggta\0\0\0\0");
+        let mix: u64 = 0x9E37_79B9_7F4A_7C15;
+        let h = (4_u64.wrapping_mul(mix).rotate_left(23) ^ word).wrapping_mul(mix);
+        assert_eq!(hash_text(4, &[word]), (h ^ (h >> 29)) >> 1);
+        assert_eq!(hash_text(4, &[word]), 0x6b45_6e2d_7b01_4de3);
+    }
 }

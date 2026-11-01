@@ -1154,7 +1154,7 @@ fn dev_fallbacks_lists_what_isnt_native_hot_loops_first() {
     std::fs::write(
         &program,
         "def main(stdout: Stdout):\n    mut groups: dict[int, list[int]] = {}\n    for i in range(10):\n        \
-         groups[i % 3] = groups.get(i % 3, []) + [i]\n    stdout.print(groups.len())\n",
+         groups[i % 3] = (groups.get(i % 3) else []) + [i]\n    stdout.print(groups.len())\n",
     )
     .unwrap();
     let output = fennec(&["dev", "fallbacks", program.to_str().unwrap()], "").unwrap();
@@ -1164,7 +1164,7 @@ fn dev_fallbacks_lists_what_isnt_native_hot_loops_first() {
     assert!(first.contains("groups.fen:4:"), "{printed}");
     assert!(first.contains("in `main` (in a loop)"), "{printed}");
     assert!(printed.contains("the interpreter calls the method `get`"), "{printed}");
-    assert!(printed.contains("    groups[i % 3] = groups.get(i % 3, []) + [i]\n"), "{printed}");
+    assert!(printed.contains("    groups[i % 3] = (groups.get(i % 3) else []) + [i]\n"), "{printed}");
     assert!(printed.ends_with("places aren't native\n"), "{printed}");
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -1237,7 +1237,7 @@ fn a_loop_changing_a_dict_in_a_struct_stays_small() {
     std::fs::write(
         &program,
         "struct Counter:\n    counts: dict[int, int]\n\n    def bump(mut self, key: int):\n        \
-         self.counts[key] = self.counts.get(key, 0) + 1\n\ndef main(stdout: Stdout):\n    mut counter = \
+         self.counts[key] = (self.counts.get(key) else 0) + 1\n\ndef main(stdout: Stdout):\n    mut counter = \
          Counter(counts={})\n    for i in range(20_000):\n        counter.bump(i * 7919 % 10_007)\n    \
          stdout.print(counter.counts.len())\n",
     )

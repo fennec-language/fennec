@@ -368,7 +368,7 @@ def main(stdout: Stdout):
     stdout.print(seen.get(Tile(x=1, y=2)) else 0, seen.get(Tile(x=0, y=0)) else 0)
 ```
 
-**Planned:** a compile error for a key struct with a float field or its own `def ==`, suggesting you key by a field instead; `SortedMap` and `SortedSet` on B-trees; `Grid` and `Packed`; and `sum(wallet, start=Money(cents=0))`, which replaces today's positional start.
+**Planned:** a compile error for a key struct with its own `def ==`, suggesting you key by a field instead; `SortedMap` and `SortedSet` on B-trees; `Grid` and `Packed`; and `sum(wallet, start=Money(cents=0))`, which replaces today's positional start.
 
 ## Strings
 
@@ -491,10 +491,18 @@ shared Cache:
 
     def set(mut self, key: str, page: Page):
         self._pages[key] = page
+```
 
-with a, b as mut x, mut y:               # several at once
-    x.total -= amount
-    y.total += amount
+Calling `cache.set(key, page)` takes the lock for that call. To change several handles together, `with` locks them all, always in the same order, so two transfers can't deadlock:
+
+```fennec planned
+shared Account:
+    total = 0
+
+def transfer(a: Account, b: Account, amount: int):
+    with a, b as mut x, mut y:               # both locked for the block
+        x.total -= amount
+        y.total += amount
 ```
 
 It holds plain values and `Id`s, never another `shared`, so handles can't form a cycle. Lock bodies can't do I/O, and there's no module-level `shared`: a handle in a signature acts like a capability, so a function's parameters show what it can reach. And a search for `shared` finds every shared thing in your program.
@@ -649,7 +657,7 @@ def update(mut particles: list[Particle], dt: f32):
         particle.position += particle.velocity * dt
 ```
 
-`@fast_math` opts one function out of Fennec's deterministic floats. Without it, floats follow IEEE operators, with no fused operations, and `sorted`, `min` and `max` use one order with NaN last, so results stay the same on every machine.
+`@fast_math` opts one function out of Fennec's deterministic floats. Without it, there are no fused operations, so results stay the same on every machine. Floats will also have one equality, order and hash: NaN equals itself and sorts last, `0.0` equals `-0.0`, and `a.approx(b, within=...)` compares computed values with a tolerance.
 
 ## C and unsafe code
 

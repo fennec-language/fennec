@@ -43,9 +43,9 @@ Each of these is decided and not built.
 - `_name` hiding a field, and `pub` on top-level things only.
 - Hard errors for positional calls that are easy to get backwards.
 - `with a() as x, b() as y:` and a block's last line as its value.
-- A compile error for a dict key struct with a float field or its own `def ==`.
+- A compile error for a dict key struct with its own `def ==`.
 - `@hot`, which proves a function allocates nothing, copies nothing and has no leftover count checks, or doesn't compile. It replaces today's `noalloc def`.
-- `@fast_math`, and one order for `sorted`, `min` and `max` with NaN last.
+- One equality, order and hash for floats, with NaN equal to itself and sorted last, `x.approx(y, within=...)`, and `@fast_math`.
 
 ## After that: concurrency and sharing
 

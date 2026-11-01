@@ -180,7 +180,7 @@ def main(stdout: Stdout):
     stdout.print(units[0].stats.health)
 ```
 
-**Planned: `mut x = place`.** This is the biggest change still to come. Today `mut x = place` makes a copy. In the locked design, it names the real place, so writing through it edits the original, as you'd expect from Python:
+`mut x = place` names the real place, so writing through it edits the original, as you'd expect from Python:
 
 ```fennec planned
 mut unit = world.units[id]
@@ -188,10 +188,11 @@ unit.stats.health -= 10          # edits the unit in the table
 
 best = unit                      # replacing a name makes a new value
 mut backup = copy(unit)          # a separate value, on purpose
-mut a, b = xs.pair(i, j)         # two elements of one list, checked as it runs
 ```
 
-Writing through a name and replacing it on the same name is a compile error, and so is a copy that can quietly go stale:
+Writing through a name and replacing it on the same name is a compile error. So is reading what the name came from while the name is still in use. The name can't be stored, returned or captured, so there are no lifetimes to write.
+
+Planned: `mut a, b = xs.pair(i, j)` for two elements of one list, and a compile error for a copy that can quietly go stale:
 
 ```fennec planned
 world.selected = world.units[i]          # error: edits to one won't reach the other

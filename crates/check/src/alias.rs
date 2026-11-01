@@ -80,6 +80,20 @@ fn is_name(expr: &Expr, name: &str) -> bool {
 }
 
 impl<'a> Uses<'a> {
+    fn new(name: &'a str, checker: &'a Checker, body: Option<&'a Body>) -> Self {
+        Uses {
+            name,
+            checker,
+            body,
+            edits: Vec::new(),
+            replaces: Vec::new(),
+            escapes: Vec::new(),
+            mentions: Vec::new(),
+            written: Vec::new(),
+            loops: Vec::new(),
+        }
+    }
+
     fn rooted(&self, expr: &Expr) -> bool {
         path(expr).is_some_and(|found| found.root == self.name)
     }
@@ -96,9 +110,29 @@ impl<'a> Uses<'a> {
     }
 
     fn stmts(&mut self, stmts: &'a [Stmt]) {
-        for stmt in stmts {
+        for (at, stmt) in stmts.iter().enumerate() {
             self.stmt(stmt);
+            self.named_again(stmt, stmts.get(at + 1..).unwrap_or_default());
         }
+    }
+
+    /// `mut other = x.part`: editing `other` edits `x`, which stays in use as long as `other`.
+    fn named_again(&mut self, stmt: &'a Stmt, rest: &'a [Stmt]) {
+        let StmtKind::Assign { target, value, declare_mut: true, .. } = &stmt.kind else { return };
+        let ExprKind::Name(other) = &target.kind else { return };
+        if !self.rooted(value) {
+            return;
+        }
+        let mut uses = Uses::new(other, self.checker, self.body);
+        uses.stmts(rest);
+        if uses.edits.is_empty() {
+            return;
+        }
+        self.edits.push(value.span);
+        let root = Path { root: self.name, steps: Vec::new() };
+        let used = uses.mentions.iter().filter(|(path, _)| path.root == *other);
+        let used: Vec<(Path<'a>, Span)> = used.map(|(_, span)| (root.clone(), *span)).collect();
+        self.mentions.extend(used);
     }
 
     fn stmt(&mut self, stmt: &'a Stmt) {
@@ -378,17 +412,7 @@ impl<'a> Check<'a> {
         if !self.is_local(place.root) {
             return;
         }
-        let mut uses = Uses {
-            name,
-            checker: self.checker,
-            body: self.body,
-            edits: Vec::new(),
-            replaces: Vec::new(),
-            escapes: Vec::new(),
-            mentions: Vec::new(),
-            written: Vec::new(),
-            loops: Vec::new(),
-        };
+        let mut uses = Uses::new(name, self.checker, self.body);
         uses.stmts(rest);
         if let Some(StmtKind::Expr(last)) = self.last.map(|last| &last.kind)
             && is_name(last, name)

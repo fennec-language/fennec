@@ -43,7 +43,7 @@ When a model reaches for something Fennec doesn't have, the compiler recognizes 
 | --- | --- |
 | Forgetting a value might be missing | An `Enemy?` can't be used until it's checked for `None`. |
 | Tangled shared state | Data is plain values in tables. The one reference type, `shared`, is planned, rare, and locks on every method. |
-| Expecting a copy to change the original | Planned: `mut x = place` edits the real thing, and a copy that can go stale is a compile error. |
+| Expecting a copy to change the original | `mut x = place` edits the real thing. Planned: a copy that can go stale is a compile error. |
 | Changing a list while looping over it | A compile error, with `remove_where` suggested instead. |
 | Ignoring an error | A call that can fail needs `?`, `else` or `match`. Discarding an error on purpose needs `ignore(result, "why")`. |
 | Assuming something can't fail | Asserting success needs `expect("reason")`, and an empty reason is rejected. |

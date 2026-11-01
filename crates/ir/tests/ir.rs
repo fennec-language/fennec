@@ -327,7 +327,7 @@ struct Body:
 
 def moved(body: Body, by: float) -> Body:
     mut next = body
-    next.pos.x = body.pos.x + by
+    next.pos.x = next.pos.x + by
     next.mass *= 2.0
     next
 ";
@@ -344,7 +344,7 @@ def moved(body: Body, by: float) -> Body:
   local _7: float
   bb0:
     _2 = _0
-    _3 = _0.pos
+    _3 = _2.pos
     _4 = _3.x
     _5 = _4 + _1
     _2.pos.x = _5

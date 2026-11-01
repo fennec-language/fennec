@@ -763,6 +763,49 @@ fn run_no_test_with_no_path_runs_the_kit_here() {
 }
 
 #[test]
+fn check_and_lint_say_the_same_in_json() {
+    let dir = scratch("json").unwrap();
+    let program = dir.join("game.fen");
+    let path = program.to_string_lossy().into_owned();
+    let json = |args: &[&str]| {
+        let output = fennec(args, "").unwrap();
+        let report = fennec_lsp::Json::parse(text(&output.stdout).trim()).unwrap_or(fennec_lsp::Json::Null);
+        (output.status.code(), report)
+    };
+    let rules = |report: &fennec_lsp::Json| -> Vec<String> {
+        let found = report.get("diagnostics").and_then(fennec_lsp::Json::as_array).unwrap_or_default();
+        found.iter().filter_map(|item| item.get("rule")?.as_str().map(str::to_owned)).collect()
+    };
+    std::fs::write(
+        &program,
+        "def one() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
+         held = items\n    items.append(2)\n    stdout.print(held.len(), one())\n",
+    )
+    .unwrap();
+    let (code, report) = json(&["lint", "--json", &path]);
+    assert_eq!(code, Some(1));
+    assert_eq!(rules(&report), ["needless-return", "copies"]);
+    let first = report.at(&["diagnostics"]).and_then(fennec_lsp::Json::as_array).and_then(<[_]>::first);
+    let at = |key: &str| first.and_then(|item| item.get(key)).and_then(fennec_lsp::Json::as_usize);
+    assert_eq!((at("line"), at("column")), (Some(2), Some(5)));
+    assert_eq!(report.get("fixable").and_then(fennec_lsp::Json::as_usize), Some(1));
+    assert_eq!(
+        json(&["check", "--json", &path]),
+        (Some(0), fennec_lsp::Json::parse(r#"{"diagnostics":[],"errors":0,"hints":0,"fixable":0}"#).unwrap())
+    );
+
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(1 + \"a\")\n").unwrap();
+    let (code, report) = json(&["check", "--json", &path]);
+    assert_eq!((code, rules(&report)), (Some(1), vec!["check".to_owned()]));
+    assert_eq!(fennec(&["check", &path], "").unwrap().status.code(), Some(1));
+
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print((\n").unwrap();
+    let (code, report) = json(&["lint", "--json", &path]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!((code, rules(&report)), (Some(1), vec!["load".to_owned()]));
+}
+
+#[test]
 fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     let dir = scratch("lint").unwrap();
     let program = dir.join("game.fen");

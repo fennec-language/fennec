@@ -80,7 +80,7 @@ impl Interp<'_> {
             }
             ("Id", Value::Dict(pairs)) => id_of(&pairs, at).map(Value::Id),
             ("IdMap", Value::Dict(pairs)) => self.decode_id_map(&pairs, &arg(0)?, at, span),
-            (name, value) if self.is_enum(name) => self.decode_case(ty, value, at, span),
+            (name, value) if self.is_enum(name) => self.decode_case(ty, &value, at, span),
             (name, Value::Dict(pairs)) if self.is_struct(name) => self.decode_struct(ty, &pairs, at, span),
             (_, value) => Err(misfit(at, &written(ty), &value)),
         }
@@ -122,14 +122,14 @@ impl Interp<'_> {
     }
 
     /// An enum case: its name, or for one with fields, `{"Case": {fields}}`.
-    fn decode_case(&mut self, ty: &TypeExpr, value: Value, at: &str, span: Span) -> Result<Value, Misfit> {
+    fn decode_case(&mut self, ty: &TypeExpr, value: &Value, at: &str, span: Span) -> Result<Value, Misfit> {
         let name = ty.name.as_str();
         let info = self.type_info(name).ok_or_else(|| format!("`{name}` isn't a type"))?;
-        let (case, pairs) = match &value {
+        let (case, pairs) = match value {
             Value::Str(case) => (case.to_string(), None),
             Value::Dict(pairs) if pairs.len() == 1 => match pairs.iter().next() {
                 Some((Value::Str(case), Value::Dict(fields))) => (case.to_string(), Some(fields.clone())),
-                _ => return Err(misfit(at, name, &value)),
+                _ => return Err(misfit(at, name, value)),
             },
             other => return Err(misfit(at, name, other)),
         };
@@ -266,7 +266,7 @@ impl Interp<'_> {
                     optional: false,
                     span,
                 };
-                self.decode_case(&ty, value, at, span)
+                self.decode_case(&ty, &value, at, span)
             }
             (like, value) => Err(misfit(at, &like.type_name(), &value)),
         }
@@ -328,7 +328,8 @@ fn misfit(at: &str, wanted: &str, value: &Value) -> Misfit {
 }
 
 fn article(name: &str) -> String {
-    if name.starts_with(['a', 'e', 'i', 'o', 'u']) { format!("an {name}") } else { format!("a {name}") }
+    let vowel = name.starts_with(|c: char| "aeiouAEIOU".contains(c));
+    if vowel { format!("an {name}") } else { format!("a {name}") }
 }
 
 /// A type as it's written, like `list[int]`.

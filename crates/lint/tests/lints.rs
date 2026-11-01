@@ -304,3 +304,26 @@ fn a_local_nothing_reads_keeps_what_its_value_does() {
         assert_eq!(rules(source), NONE, "{source}");
     }
 }
+
+#[test]
+fn mut_on_a_local_nothing_changes_goes() {
+    let source = "def f() -> int:\n    mut speed = 4\n    speed + 1\n";
+    assert_eq!(rules(source), ["needless-mut"]);
+    assert_eq!(fixed(source), "def f() -> int:\n    speed = 4\n    speed + 1\n");
+    let changed = [
+        "def f() -> int:\n    mut n = 0\n    n += 1\n    n\n",
+        "def f() -> int:\n    mut n = 0\n    n = 2\n    n\n",
+        "def f() -> int:\n    mut xs = [1]\n    xs.append(2)\n    xs.len()\n",
+        "def f() -> int:\n    mut xs = [1]\n    xs[0] = 2\n    xs[0]\n",
+        "def f(p: P) -> int:\n    mut q = p\n    q.pos.x = 1\n    q.pos.x\n",
+        "def f() -> int:\n    mut xs = [1]\n    g(mut xs)\n    xs[0]\n",
+        "def f() -> int:\n    mut xs = [1]\n    for mut x in xs:\n        x += 1\n    xs[0]\n",
+        "def f() -> int:\n    mut n = 0\n    def bump():\n        n += 1\n    bump()\n    n\n",
+        "def f() -> int:\n    mut n = 0\n    m, n = pair()\n    m + n\n",
+        "def f() -> int:\n    mut w = W(xs=[1])\n    mut part = w.xs\n    mut deeper = part\n    deeper[0] = 2\n    w.xs[0]\n",
+        "def f(s: S) -> int:\n    mut at = s\n    match at:\n        case .A(inner):\n            at = inner\n        case _:\n            pass\n    1\n",
+    ];
+    for source in changed {
+        assert_eq!(rules(source), NONE, "{source}");
+    }
+}

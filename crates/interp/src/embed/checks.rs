@@ -11,6 +11,19 @@ pub const NEGATIVE_SQRT: i64 = 5;
 pub const NOT_AN_INT: i64 = 6;
 pub const BAD_SHIFT: i64 = 7;
 
+/// Fails with a string's text at a span: an `assert`, a `where` rule, or a generator used
+/// twice, which end the program.
+pub extern "C" fn stop(message: i64, start: i64, end: i64) {
+    let span = Span { start: u32::try_from(start).unwrap_or(0), end: u32::try_from(end).unwrap_or(0) };
+    let text = super::with(|state| {
+        u64::try_from(message)
+            .ok()
+            .and_then(|at| state.heap.block(at))
+            .map_or_else(String::new, super::heap::block_text)
+    });
+    super::fail_with(Diagnostic::new(text, span));
+}
+
 /// Called by native code when one of its own checks fails.
 pub extern "C" fn fail(code: i64, start: i64, end: i64) {
     let span = Span { start: u32::try_from(start).unwrap_or(0), end: u32::try_from(end).unwrap_or(0) };

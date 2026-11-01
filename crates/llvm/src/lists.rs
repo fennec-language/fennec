@@ -203,6 +203,7 @@ impl Emit<'_, '_, '_> {
         ));
         self.start_block(&ok);
         self.line(&format!("{resolved} = phi ptr [ {block}, %{came_from} ], [ {copy}, %{shared} ]"));
+        self.alone_from_now(&resolved);
         resolved
     }
 
@@ -612,7 +613,18 @@ impl Emit<'_, '_, '_> {
         ));
         self.start_block(&ok);
         self.line(&format!("{resolved} = phi ptr [ {list}, %{came_from} ], [ {copy}, %{shared} ]"));
+        self.alone_from_now(&resolved);
         resolved
+    }
+
+    /// A block just made alone, either way, has one owner: saying so lets LLVM drop the next
+    /// check of it when nothing between could have given it another.
+    fn alone_from_now(&mut self, block: &str) {
+        self.declare("declare void @llvm.assume(i1)");
+        let (count, one) = (self.temp(), self.temp());
+        self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
+        self.line(&format!("{one} = icmp eq i64 {count}, 1"));
+        self.line(&format!("call void @llvm.assume(i1 {one})"));
     }
 
     /// The local's list, ready to change. One nothing else here comes to hold was checked

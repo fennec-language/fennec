@@ -10,7 +10,7 @@ description: What Fennec does today, what's being built next, and the design que
 
 ## Works today
 
-- `fennec run`, which runs the tests a change affects and then your program. `fennec test`, `fennec bench`, `fennec new`, `fennec init`, `fennec fmt`, `fennec fix`, `fennec repl` and a language server.
+- `fennec run`, which runs the tests a change affects and then your program. `fennec test`, `fennec bench`, `fennec new`, `fennec init`, `fennec fmt`, `fennec lint`, `fennec fix`, `fennec repl` and a language server.
 - Programs over several files: a kit is a folder with a `kit.toml`, and its files import from each other.
 - Names and `mut`, functions with written return types, default parameters passed by name, nested functions and arrow functions.
 - Structs with defaults, methods, named constructors and `where` rules; enums and `match`; operators; interfaces and generics.

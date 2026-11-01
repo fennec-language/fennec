@@ -37,6 +37,7 @@ mod entry;
 mod generators;
 mod kinds;
 mod lists;
+mod regex;
 mod text;
 
 use std::collections::BTreeMap;

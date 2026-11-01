@@ -313,14 +313,14 @@ def twice(n: int, change: (int) -> int) -> int:
 def main(stdout: Stdout):
     mut counts: dict[int, int] = {}
     for i in range(50):
-        counts[i % 7] = counts.get(i % 7, 0) + i
-    stdout.print(counts[3], counts.len(), 3 in counts, 99 in counts, counts.get(99, -1))
+        counts[i % 7] = (counts.get(i % 7) else 0) + i
+    stdout.print(counts[3], counts.len(), 3 in counts, 99 in counts, (counts.get(99) else -1))
     shared = counts
     counts[3] = 0
     stdout.print(counts[3], shared[3])
     mut words: dict[str, int] = {"a": 1}
     for word in ["fox", "fennec", "fox", "a"]:
-        words[word] = words.get(word, 0) + 1
+        words[word] = (words.get(word) else 0) + 1
     for name, count in sorted(words.items()):
         stdout.print(name, count)
     mut keys: dict[Key, int] = {}
@@ -431,6 +431,59 @@ def main(stdout: Stdout):
         "expect",
         "error Fault:\n    reason: str\n\ndef half(n: int) -> int:\n    if n % 2 == 1: fail Fault(\"odd\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
     )
+}
+
+#[test]
+fn regexes_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "regexes",
+        r#"from std.re import Regex, is_regex
+
+def main(stdout: Stdout):
+    words = Regex(r"(\w)(\w*)")
+    for found in words.find_all("fox and éclair"):
+        stdout.print(found.text, found.start, found.end, found.groups.len(), found.groups[0], found.groups[1])
+    optional = Regex(r"a(x)?b")
+    for found in optional.find_all("ab axb"):
+        stdout.print(found.text, found.groups[0] is None)
+    stdout.print(words.replace("fox den", r"\2\1"), Regex(" +").split("a  b c").len())
+    stdout.print(is_regex("("), is_regex("a+"))
+    first = Regex(r"\d+").search("ab 42 7")
+    if first is not None:
+        stdout.print(first.text, first.start)
+    stdout.print(Regex(r"\d+").match("ab 42") is None)
+"#,
+    )
+}
+
+/// What a built program says it copied and allocated, as `FENNEC_COUNTS` has it report.
+fn counts_of(name: &str, source: &str) -> std::io::Result<String> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output()?;
+    std::fs::remove_dir_all(&dir)?;
+    let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+    Ok(errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned())
+}
+
+#[test]
+fn a_dict_in_a_field_changes_without_being_copied() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "field",
+        "struct Counter:\n    counts: dict[int, int]\n\n    def bump(mut self, key: int):\n        self.counts[key] = (self.counts.get(key) else 0) + 1\n\ndef main(stdout: Stdout):\n    mut counter = Counter(counts={})\n    for i in range(1000):\n        counter.bump(i % 64)\n    stdout.print(counter.counts[0])\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    Ok(())
 }
 
 #[test]

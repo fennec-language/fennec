@@ -503,6 +503,8 @@ impl FnCx<'_> {
             && let Some(path) = path(object)
             && let Some((ty, _)) = self.lookup(&format!("{path}.{name}"))
         {
+            // What it's read from still has a type, for compilers to read it through.
+            self.expr(object);
             return ty;
         }
         let ty = self.expr(object);

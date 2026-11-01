@@ -505,6 +505,32 @@ fn what_a_field_or_an_items_field_holds_changes_without_being_copied() -> std::i
     Ok(())
 }
 
+/// One number from a `counts_of` line, like `copies`.
+fn count(counts: &str, name: &str) -> Option<u64> {
+    counts.split_whitespace().skip_while(|word| *word != name).nth(1).and_then(|number| number.parse().ok())
+}
+
+#[test]
+fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = "from std.collections import Packed\n\ndef main(stdout: Stdout):\n    mut packed = Packed[int]()\n    for n in range(100):\n        packed.append([n, n + 1, n + 2])\n";
+    let building = counts_of("packed_built", &format!("{source}    stdout.print(packed.len())\n"))?;
+    let looped = counts_of(
+        "packed_looped",
+        &format!(
+            "{source}    mut total = 0\n    for _ in range(100):\n        for at in range(packed.len()):\n            for item in packed[at]:\n                total += item\n    stdout.print(total)\n"
+        ),
+    )?;
+    // Reading a list goes through its items in place, and the loop over `packed[at]` fuses
+    // into a plain loop: 10,000 reads copy and allocate nothing more than building did.
+    for what in ["copies", "copied_bytes", "allocations", "allocated_bytes"] {
+        assert_eq!(count(&looped, what), count(&building, what), "{what}: {building} / {looped}");
+    }
+    Ok(())
+}
+
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

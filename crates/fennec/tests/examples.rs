@@ -21,6 +21,8 @@ const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] = &[
     ("generators.fen", &["checked", "countdown", "doubled", "holding", "naturals", "words"]),
     ("generators_fused.fen", &["checked", "odd", "running", "three", "upto"]),
     ("operators.fen", &["Grid.iter"]),
+    // A generator method from the standard library, as `Grid.iter` is from the program.
+    ("std_packed.fen", &["Packed.[]"]),
 ];
 
 /// Examples that compile to plain machine code: nothing handed to the interpreter, and no

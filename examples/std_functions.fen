@@ -11,3 +11,7 @@ def main(stdout: Stdout):
     stdout.print(math.lerp(0.0, 4.0, 0.25))
     stdout.print(lerp("this lerp"))
     stdout.print(max([1.0, 3.0], key=n => math.lerp(0.0, n, -1.0)))
+
+test "a std function written in Fennec works in a test":
+    assert math.lerp(0.0, 2.0, 0.5) == 1.0
+    assert blend(1.0, 3.0, 0.5) == 2.0

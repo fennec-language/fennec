@@ -57,6 +57,12 @@ pub fn all_texts(path: &Path) -> Option<Vec<(String, String)>> {
     Some(program.sources.files().map(|(path, text)| (path.to_owned(), text.to_owned())).collect())
 }
 
+/// Where each file of a kit is, by module name, with the manifest as `kit.toml`. None if `dir`
+/// isn't in a kit.
+pub fn kit_paths(dir: &Path) -> Option<Vec<(String, PathBuf)>> {
+    load::kit_paths(dir)
+}
+
 /// Loads some of a kit's modules and everything they import, by their names.
 pub fn load_modules(dir: &Path, shown_as: &str, modules: &[String]) -> Result<Program, Problems> {
     load::kit_modules(dir, shown_as, modules)

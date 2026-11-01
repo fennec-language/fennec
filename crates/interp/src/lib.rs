@@ -10,6 +10,7 @@ mod constants;
 pub mod embed;
 mod eval;
 mod exec;
+mod fakes;
 mod format;
 mod formats;
 mod generators;

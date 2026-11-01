@@ -296,16 +296,32 @@ impl<'c> FnCx<'c> {
         self.error(diagnostic);
     }
 
+    /// Whether this is the check of a `test` block.
+    pub(crate) fn in_a_test(&self) -> bool {
+        self.key.starts_with("test \"")
+    }
+
     pub(crate) fn check_test(checker: &'c mut Checker, test: &TestDef) {
         let key = format!("test \"{}\"", test.name);
         let mut cx = FnCx::new(checker, &key, "test", true);
+        for capability in &test.capabilities {
+            let name = capability.ty.as_ref().map_or("", |ty| ty.name.as_str());
+            let fits = matches!(name, "Stdout" | "Fs" | "Clock") && capability.default.is_none();
+            if !fits {
+                let message = format!("a test can't receive `{}` this way", capability.name);
+                let help = "a test can receive `stdout: Stdout`, `fs: Fs` and `clock: Clock`";
+                cx.error(Diagnostic::new(message, capability.span).with_help(help));
+            }
+            let ty = if fits { Type::named(name) } else { Type::Unknown };
+            cx.declare(&capability.name, ty, capability.is_mut, capability.span);
+        }
         for input in &test.inputs {
             let ty = input.ty.as_ref().map_or(Type::Unknown, |ty| cx.resolve(ty));
             cx.declare(&input.name, ty, input.is_mut, input.span);
         }
         cx.stmts(&test.body, false);
         cx.finish(&[]);
-        if test.inputs.is_empty() {
+        if test.inputs.is_empty() && test.capabilities.is_empty() {
             checker.record_test(key, &test.body);
         }
     }

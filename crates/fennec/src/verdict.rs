@@ -9,11 +9,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use fennec_blake3::Hash;
-use fennec_build::{Cache, Row, TestRecord};
+use fennec_build::{Cache, KitFile, KitState, Row, TestRecord};
 use fennec_check::Signatures;
 use fennec_kit::Program;
-use fennec_syntax::{Item, Sources, Span};
+use fennec_syntax::{Item, Span};
 
 const BUILD: &str = env!("FENNEC_BUILD");
 
@@ -25,24 +24,53 @@ pub(crate) struct Plan {
     pub(crate) unchanged: Vec<TestRecord>,
 }
 
-/// Each of a kit's files, by module name, with a hash of its text.
-pub(crate) fn kit_files(path: &str) -> Option<Vec<(String, Hash)>> {
+/// A kit when its tests last passed, if they did.
+pub(crate) fn last_state((cache, name): (&Cache, &str)) -> Option<KitState> {
+    cache.kit_state(name, BUILD)
+}
+
+/// One of a kit's files as it is now. Its text is only read if its size and when it changed don't
+/// already say what it is.
+fn kit_file(module: String, path: &Path, state: Option<&KitState>) -> Option<KitFile> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let changed_at =
+        metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_nanos());
+    let size = metadata.len();
+    let known = state.and_then(|state| state.same_text(&module, size, changed_at));
+    let text = match known {
+        Some(text) => text,
+        None => fennec_blake3::hash(std::fs::read(path).ok()?.as_slice()),
+    };
+    Some(KitFile { module, text, size, changed_at })
+}
+
+/// Each of a kit's files as they are now, or None if this isn't a kit.
+pub(crate) fn kit_files(path: &str, state: Option<&KitState>) -> Option<Vec<KitFile>> {
     let dir = Path::new(path);
     if !dir.is_dir() {
         return None;
     }
-    let texts = fennec_kit::all_texts(dir)?;
-    Some(texts.into_iter().map(|(module, text)| (module, fennec_blake3::hash(text.as_bytes()))).collect())
+    let paths = fennec_kit::kit_paths(dir)?;
+    paths.into_iter().map(|(module, path)| kit_file(module, &path, state)).collect()
 }
 
-/// The module a file shown like this holds, among a kit's.
-fn module_of<'f>(shown: &str, files: &'f [(String, Hash)]) -> Option<&'f str> {
-    let found = files.iter().map(|(module, _)| module.as_str()).find(|module| {
-        shown
-            .strip_suffix(".fen")
-            .is_some_and(|path| path.ends_with(&format!("src/{}", module.replace('.', "/"))))
-    });
-    found.or_else(|| files.iter().map(|(module, _)| module.as_str()).find(|module| *module == shown))
+/// A kit's modules, to tell which one a file holds from how it's shown.
+pub(crate) struct Modules<'f>(HashSet<&'f str>);
+
+impl<'f> Modules<'f> {
+    pub(crate) fn of(files: &'f [KitFile]) -> Self {
+        Modules(files.iter().map(|file| file.module.as_str()).collect())
+    }
+
+    /// The module a file shown like this holds: what follows `src/`, wherever that is in a path
+    /// that may have another `src` folder before it.
+    pub(crate) fn of_file(&self, shown: &str) -> Option<&'f str> {
+        let path = shown.strip_suffix(".fen")?;
+        path.match_indices("src/").find_map(|(at, _)| {
+            let module = path.get(at + 4..)?.replace('/', ".");
+            self.0.get(module.as_str()).copied()
+        })
+    }
 }
 
 /// Where an item is written.
@@ -59,23 +87,19 @@ fn span_of(item: &Item) -> Span {
     }
 }
 
-/// The module an item of a loaded program came from.
-pub(crate) fn module_at<'f>(sources: &Sources, span: Span, files: &'f [(String, Hash)]) -> Option<&'f str> {
-    module_of(sources.file_at(span)?.0, files)
-}
-
-/// The definitions of each module of a loaded program.
-fn rows_by_module(program: &Program, files: &[(String, Hash)]) -> HashMap<String, Vec<Row>> {
-    let mut items: HashMap<&str, Vec<&Item>> = HashMap::new();
+/// The definitions of each module a loaded program has.
+fn rows_by_module(program: &Program, files: &[KitFile]) -> HashMap<String, Vec<Row>> {
+    let modules = Modules::of(files);
+    let mut items: HashMap<&str, (Option<&str>, Vec<&Item>)> = HashMap::new();
     for item in &program.module.items {
-        if let Some(module) = module_at(&program.sources, span_of(item), files) {
-            items.entry(module).or_default().push(item);
-        }
+        let Some((shown, ..)) = program.sources.file_at(span_of(item)) else { continue };
+        items.entry(shown).or_insert_with(|| (modules.of_file(shown), Vec::new())).1.push(item);
     }
     let mut found: HashMap<String, Vec<Row>> = HashMap::new();
-    for (module, _) in files {
-        let of_module = items.get(module.as_str()).map_or(&[][..], Vec::as_slice);
-        found.insert(module.clone(), fennec_build::rows(of_module.iter().copied()));
+    for (module, of_module) in items.values() {
+        if let Some(module) = module {
+            found.insert((*module).to_owned(), fennec_build::rows(of_module.iter().copied()));
+        }
     }
     found
 }
@@ -83,18 +107,17 @@ fn rows_by_module(program: &Program, files: &[(String, Hash)]) -> HashMap<String
 /// What a run needs, or None to look at the whole program.
 pub(crate) fn plan(
     path: &str,
-    (cache, name): (&Cache, &str),
-    files: &[(String, Hash)],
+    cache: &Cache,
+    (state, files): (&KitState, &[KitFile]),
     passed: &HashMap<String, TestRecord>,
 ) -> Option<Plan> {
-    let state = cache.kit_state(name, BUILD)?;
-    if state.len() != files.len() {
+    if state.files.len() != files.len() {
         return None;
     }
     let mut changed: Vec<String> = Vec::new();
-    for (module, text) in files {
-        if *state.get(module)? != *text {
-            changed.push(module.clone());
+    for file in files {
+        if state.files.get(&file.module)?.text != file.text {
+            changed.push(file.module.clone());
         }
     }
     if changed.iter().any(|module| module == "kit.toml") {
@@ -105,8 +128,10 @@ pub(crate) fn plan(
     let rows = rows_by_module(&loaded, files);
     let mut bodies: HashSet<String> = HashSet::new();
     for module in &changed {
-        let old = cache.file_rows(*state.get(module)?)?;
-        bodies.extend(fennec_build::changed_bodies(&old, rows.get(module)?)?);
+        let old = cache.file_rows(state.files.get(module)?.text)?;
+        // A file with nothing left in it has no items to find.
+        let new = rows.get(module).map_or(&[][..], Vec::as_slice);
+        bodies.extend(fennec_build::changed_bodies(&old, new)?);
     }
     let affected = |record: &TestRecord| {
         bodies.contains(&format!("test \"{}\"", record.test))
@@ -135,16 +160,17 @@ pub(crate) fn plan(
 /// Remembers that all of a kit's tests pass with its files as they are.
 pub(crate) fn remember(
     (cache, name): (&Cache, &str),
-    files: &[(String, Hash)],
+    files: &[KitFile],
     program: &Program,
 ) -> std::io::Result<()> {
-    let mut rows = rows_by_module(program, files);
-    for (module, text) in files {
-        // A file that wasn't loaded, and so has no definitions here, already has them kept.
-        if !cache.has_file_rows(*text)
-            && let Some(rows) = rows.remove(module)
+    // A file that wasn't loaded already has its definitions kept. One that was may not, and one
+    // that has no definitions at all leaves the next edit to it looking at the whole program.
+    let rows = rows_by_module(program, files);
+    for file in files {
+        if let Some(rows) = rows.get(&file.module)
+            && !cache.has_file_rows(file.text)
         {
-            cache.store_file_rows(*text, &rows)?;
+            cache.store_file_rows(file.text, rows)?;
         }
     }
     cache.store_kit_state(name, BUILD, files)

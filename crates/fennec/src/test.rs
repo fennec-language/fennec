@@ -18,17 +18,30 @@ use std::process::ExitCode;
 
 use fennec_build::{Cache, TestGraph, TestRecord};
 
-use crate::verdict::Plan;
+use crate::verdict::{Modules, Plan};
 
 /// How `fennec test` was asked to run.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Options {
-    /// Run every test, not only what a change affects.
-    all: bool,
+    /// Which tests run, and what they get.
+    run: Run,
     /// List the tests that pass too.
     verbose: bool,
     /// Keep standard output for the program that runs next, and say nothing if all is well.
     before_a_run: bool,
+}
+
+/// Which tests run, and what they get.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Run {
+    /// The tests a change affects.
+    #[default]
+    Affected,
+    /// Every test.
+    All,
+    /// Every test, with the real capabilities rather than fakes. The world can change between
+    /// runs, so passing says nothing about the next run.
+    Real,
 }
 
 impl Options {
@@ -38,8 +51,10 @@ impl Options {
         let mut path = None;
         for arg in args {
             match *arg {
-                "--all" => options.all = true,
+                "--all" if options.run == Run::Affected => options.run = Run::All,
+                "--all" => {}
                 "--verbose" | "-v" => options.verbose = true,
+                "--real" => options.run = Run::Real,
                 flag if flag.starts_with("--") => return None,
                 written if path.is_none() => path = Some(written),
                 _ => return None,
@@ -77,11 +92,13 @@ pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
 }
 
 pub(crate) fn test(path: &str, options: Options) -> ExitCode {
-    let results = Results::open(path, options.all);
-    let files = crate::verdict::kit_files(path);
-    let planned = match (&results.cache, &files) {
-        (Some((cache, name)), Some(files)) if !options.all => {
-            crate::verdict::plan(path, (cache, name), files, &results.passed)
+    let results = Results::open(path, options.run != Run::Affected);
+    let cached = results.cache.as_ref().map(|(cache, name)| (cache, name.as_str()));
+    let state = cached.and_then(crate::verdict::last_state);
+    let files = crate::verdict::kit_files(path, state.as_ref());
+    let planned = match (cached, &state, &files) {
+        (Some((cache, _)), Some(state), Some(files)) if options.run == Run::Affected => {
+            crate::verdict::plan(path, cache, (state, files), &results.passed)
         }
         _ => None,
     };
@@ -121,7 +138,7 @@ fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
 
 /// A test as it's kept once it has passed.
 fn record_of(
-    (graph, program, files): (&TestGraph, &fennec_kit::Program, Option<&[(String, fennec_blake3::Hash)]>),
+    (graph, program, modules): (&TestGraph, &fennec_kit::Program, &Modules<'_>),
     test: &str,
     ran: Option<Vec<String>>,
 ) -> Option<TestRecord> {
@@ -130,11 +147,8 @@ fn record_of(
         fennec_syntax::Item::Test(found) if found.name == test => Some(found.span),
         _ => None,
     });
-    let module = span
-        .zip(files)
-        .and_then(|(span, files)| crate::verdict::module_at(&program.sources, span, files))
-        .unwrap_or_default()
-        .to_owned();
+    let shown = span.and_then(|span| program.sources.file_at(span)).map(|(shown, ..)| shown);
+    let module = shown.and_then(|shown| modules.of_file(shown)).unwrap_or_default().to_owned();
     let reach = if ran.is_some() { Vec::new() } else { graph.reach(test) };
     Some(TestRecord { test: test.to_owned(), module, key, ran, reach })
 }
@@ -143,7 +157,7 @@ fn run_plan(
     path: &str,
     options: Options,
     results: &Results,
-    files: Option<&[(String, fennec_blake3::Hash)]>,
+    files: Option<&[fennec_build::KitFile]>,
     plan: Plan,
 ) -> ExitCode {
     let Plan { program, signatures, wanted, unchanged } = plan;
@@ -154,7 +168,7 @@ fn run_plan(
     let mut native = fennec_jit::run_tests(&program.module, &signatures, &wanted, cache);
     let mut outcomes = std::mem::take(&mut native.outcomes);
     if !native.left.is_empty() {
-        match interpreted(&program.module, &native.left) {
+        match interpreted(&program.module, &native.left, options.run == Run::Real) {
             Ok(more) => outcomes.extend(more),
             Err(diagnostic) => {
                 eprint!("{}", render(&diagnostic));
@@ -171,6 +185,7 @@ fn run_plan(
         }
         return ExitCode::SUCCESS;
     }
+    let modules = Modules::of(files.unwrap_or_default());
     let mut failed = 0;
     let mut passing: Vec<TestRecord> = unchanged.clone();
     for outcome in &outcomes {
@@ -181,7 +196,7 @@ fn run_plan(
                     println!("  ✓ {}{cases}", outcome.name);
                 }
                 let ran = native.ran.remove(&outcome.name);
-                passing.extend(record_of((&graph, &program, files), &outcome.name, ran));
+                passing.extend(record_of((&graph, &program, &modules), &outcome.name, ran));
             }
             Some(diagnostic) => {
                 failed += 1;
@@ -194,13 +209,16 @@ fn run_plan(
             }
         }
     }
-    results.store(&passing);
-    if let (Some((cache, name)), Some(files)) = (&results.cache, files) {
-        if failed == 0 {
-            // A cache that can't be written only means looking at all of it next time.
-            let _ = crate::verdict::remember((cache, name), files, &program);
-        } else {
-            crate::verdict::forget((cache, name));
+    // A run with real capabilities says nothing about the next one, so none of it is kept.
+    if options.run != Run::Real {
+        results.store(&passing);
+        if let (Some((cache, name)), Some(files)) = (&results.cache, files) {
+            if failed == 0 {
+                // A cache that can't be written only means looking at all of it next time.
+                let _ = crate::verdict::remember((cache, name), files, &program);
+            } else {
+                crate::verdict::forget((cache, name));
+            }
         }
     }
     let passed = outcomes.len() + unchanged.len() - failed;
@@ -227,9 +245,14 @@ fn say_totals(options: Options, (passed, failed): (usize, usize), (ran, unchange
 fn interpreted(
     module: &fennec_syntax::Module,
     names: &[String],
+    real: bool,
 ) -> Result<Vec<fennec_interp::TestOutcome>, fennec_syntax::Diagnostic> {
-    let mut out = std::io::sink();
+    let mut out: Box<dyn std::io::Write> =
+        if real { Box::new(std::io::stdout()) } else { Box::new(std::io::sink()) };
     let mut interp = fennec_interp::Interp::new(&mut out)?;
+    if real {
+        interp.use_real_capabilities();
+    }
     interp.load(module)?;
     Ok(interp.run_tests_where(&|name| names.iter().any(|left| left == name)))
 }

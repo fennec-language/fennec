@@ -65,20 +65,26 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
 /// manifest as `kit.toml`. None if `dir` isn't in a kit, or a file can't be read: loading it
 /// will say why.
 pub(crate) fn kit_texts(dir: &Path) -> Option<Vec<(String, String)>> {
+    let paths = kit_paths(dir)?;
+    paths.into_iter().map(|(module, path)| Some((module, std::fs::read_to_string(path).ok()?))).collect()
+}
+
+/// Where each file of a kit is, by module name, with the manifest as `kit.toml`.
+pub(crate) fn kit_paths(dir: &Path) -> Option<Vec<(String, PathBuf)>> {
     let (root, _) = find_root(dir, ".")?;
     let src = root.join("src");
     let mut modules = Vec::new();
     find_modules(&src, &mut Vec::new(), &mut modules);
     modules.sort();
-    let mut texts = Vec::with_capacity(modules.len() + 1);
+    let mut paths = Vec::with_capacity(modules.len() + 1);
     for module in modules {
         let mut path = src.clone();
         path.extend(&module);
         path.set_extension("fen");
-        texts.push((module.join("."), std::fs::read_to_string(&path).ok()?));
+        paths.push((module.join("."), path));
     }
-    texts.push(("kit.toml".to_owned(), std::fs::read_to_string(root.join("kit.toml")).ok()?));
-    Some(texts)
+    paths.push(("kit.toml".to_owned(), root.join("kit.toml")));
+    Some(paths)
 }
 
 /// Loads some of a kit's modules and what they import, by name. What they don't import can't

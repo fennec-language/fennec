@@ -86,34 +86,76 @@ pub fn changed_bodies(old: &[Row], new: &[Row]) -> Option<Vec<String>> {
 const RECORD: char = '\u{1}';
 const FIELD: char = '\u{0}';
 
+/// One of a kit's files when its tests last passed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KitFile {
+    pub module: String,
+    pub text: Hash,
+    pub size: u64,
+    /// When it was last changed, in nanoseconds.
+    pub changed_at: u128,
+}
+
+/// A kit when all its tests last passed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KitState {
+    pub files: HashMap<String, KitFile>,
+    /// When this was noted, in nanoseconds.
+    pub noted_at: u128,
+}
+
+/// How close to when it's noted a file's change can't be told apart from an edit just after,
+/// on a filesystem with coarse times. Such a file is read again, as `git` does.
+const TOO_CLOSE: u128 = 2_000_000_000;
+
+impl KitState {
+    /// A file's text, if a file of this size changed at this time can only be what was noted.
+    pub fn same_text(&self, module: &str, size: u64, changed_at: u128) -> Option<Hash> {
+        let file = self.files.get(module)?;
+        let settled = changed_at.saturating_add(TOO_CLOSE) < self.noted_at;
+        (file.size == size && file.changed_at == changed_at && settled).then_some(file.text)
+    }
+}
+
 impl Cache {
     fn state_name(program: &str, build: &str) -> String {
         format!("{}.state", fennec_blake3::hash(format!("{program}{FIELD}{build}").as_bytes()).to_hex())
     }
 
-    /// The text of each of a kit's files when all its tests last passed, for this build.
-    pub fn kit_state(&self, program: &str, build: &str) -> Option<HashMap<String, Hash>> {
+    /// A kit when all its tests last passed, for this build.
+    pub fn kit_state(&self, program: &str, build: &str) -> Option<KitState> {
         let bytes = self.read("kit-state", &Self::state_name(program, build))?;
         let text = String::from_utf8(bytes).ok()?;
-        let mut state = HashMap::new();
-        for record in text.split(RECORD).filter(|record| !record.is_empty()) {
-            let (hash, module) = record.split_once(FIELD)?;
-            state.insert(module.to_owned(), from_hex(hash)?);
+        let (noted_at, records) = text.split_once(RECORD)?;
+        let mut state = KitState { files: HashMap::new(), noted_at: noted_at.parse().ok()? };
+        for record in records.split(RECORD).filter(|record| !record.is_empty()) {
+            let mut fields = record.split(FIELD);
+            let (text, size, changed_at, module) =
+                (fields.next()?, fields.next()?, fields.next()?, fields.next()?);
+            let file = KitFile {
+                module: module.to_owned(),
+                text: from_hex(text)?,
+                size: size.parse().ok()?,
+                changed_at: changed_at.parse().ok()?,
+            };
+            state.files.insert(file.module.clone(), file);
         }
         Some(state)
     }
 
-    pub fn store_kit_state(
-        &self,
-        program: &str,
-        build: &str,
-        files: &[(String, Hash)],
-    ) -> std::io::Result<()> {
-        let mut text = String::new();
-        for (module, hash) in files {
-            text.push_str(&hash.to_hex());
+    pub fn store_kit_state(&self, program: &str, build: &str, files: &[KitFile]) -> std::io::Result<()> {
+        let noted_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let mut text = format!("{noted_at}{RECORD}");
+        for file in files {
+            text.push_str(&file.text.to_hex());
             text.push(FIELD);
-            text.push_str(module);
+            text.push_str(&file.size.to_string());
+            text.push(FIELD);
+            text.push_str(&file.changed_at.to_string());
+            text.push(FIELD);
+            text.push_str(&file.module);
             text.push(RECORD);
         }
         self.write("kit-state", &Self::state_name(program, build), text.as_bytes())
@@ -196,6 +238,20 @@ mod tests {
         }
         let added = format!("{SOURCE}\ndef g() -> int:\n    1\n");
         assert_eq!(changed(&added), None, "a new function");
+    }
+
+    #[test]
+    fn a_files_text_is_only_trusted_when_its_time_can_be_told_apart() {
+        let text = fennec_blake3::hash(b"text");
+        let file = super::KitFile { module: "m".to_owned(), text, size: 4, changed_at: 1_000 };
+        let noted_at = 1_000 + super::TOO_CLOSE + 1;
+        let state = super::KitState { files: [("m".to_owned(), file)].into(), noted_at };
+        assert_eq!(state.same_text("m", 4, 1_000), Some(text));
+        assert_eq!(state.same_text("m", 5, 1_000), None, "its size changed");
+        assert_eq!(state.same_text("m", 4, 1_001), None, "its time changed");
+        assert_eq!(state.same_text("other", 4, 1_000), None, "it's new");
+        let close = super::KitState { noted_at: noted_at - 1, ..state };
+        assert_eq!(close.same_text("m", 4, 1_000), None, "an edit could hide in that time");
     }
 
     #[test]

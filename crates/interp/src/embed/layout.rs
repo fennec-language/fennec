@@ -36,8 +36,50 @@ pub const TEXT: i32 = 40;
 
 #[cfg(test)]
 mod tests {
-    use super::super::{heap, lists};
-    use super::{FIELDS, LIST_ITEMS, TEXT};
+    use std::rc::Rc;
+
+    use fennec_syntax::Module;
+
+    use super::super::{Tables, finish, heap, lists, start, strings, with};
+    use super::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM, TEXT};
+    use crate::packed::Element;
+
+    /// Reads a word of a block.
+    fn word(address: i64, offset: i32) -> Option<u64> {
+        with(|state| {
+            let block = state.heap.block(u64::try_from(address).ok()?)?;
+            block.get(usize::try_from(offset / 8).ok()?).copied()
+        })
+    }
+
+    fn text_of(address: i64) -> String {
+        with(|state| {
+            u64::try_from(address)
+                .ok()
+                .and_then(|at| state.heap.block(at))
+                .map_or_else(String::new, heap::block_text)
+        })
+    }
+
+    #[test]
+    fn a_list_with_room_is_empty_and_has_it() {
+        let tables = Tables { elements: vec![Rc::new(Element::Int)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let list = lists::with_room(0, 100);
+        assert_eq!(word(list, LIST_LENGTH), Some(0));
+        assert_eq!(word(list, LIST_ROOM), Some(100));
+        finish();
+    }
+
+    #[test]
+    fn numbers_format_without_a_temporary() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let (two, comma) = with(|state| (heap::text_address(state, ".2f"), heap::text_address(state, ",")));
+        assert_eq!(text_of(strings::float_spec_text(1.5, two, 0, 0)), "1.50");
+        assert_eq!(text_of(strings::int_spec_text(1000, comma, 0, 0)), "1,000");
+        finish();
+    }
 
     /// These restate how the runtime lays out blocks, for code generators. They can't drift.
     #[test]

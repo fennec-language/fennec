@@ -138,7 +138,7 @@
         },
         {
           "name": "storage.modifier.fennec",
-          "match": "\\b(mut|noalloc|unsafe)\\b"
+          "match": "\\b(mut|shared|noalloc|unsafe)\\b"
         },
         {
           "name": "keyword.operator.logical.fennec",

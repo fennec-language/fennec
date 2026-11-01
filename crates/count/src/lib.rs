@@ -77,6 +77,12 @@ impl Counter {
 
     /// How many instructions a program runs.
     pub fn count(&self, program: &Program) -> Option<u64> {
+        self.count_set_up(program, |_| {})
+    }
+
+    /// How many instructions a program runs, after `set_up` gives it the folder and environment
+    /// it needs.
+    pub fn count_set_up(&self, program: &Program, set_up: impl FnOnce(&mut Command)) -> Option<u64> {
         let input = program.input().ok()?;
         let mut command = match self {
             Counter::Perf(report) => {
@@ -95,6 +101,7 @@ impl Counter {
                 time
             }
         };
+        set_up(&mut command);
         let output = command.arg(&program.command).args(&program.args).stdin(input).output().ok()?;
         if !output.status.success() {
             return None;

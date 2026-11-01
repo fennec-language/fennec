@@ -1,0 +1,85 @@
+## How much a log entry matters, least first.
+enum LogLevel:
+    Debug
+    Info
+    Warn
+    Error
+
+    def rank(self) -> int:
+        match self:
+            case .Debug:
+                0
+            case .Info:
+                1
+            case .Warn:
+                2
+            case .Error:
+                3
+
+    def label(self) -> str:
+        match self:
+            case .Debug:
+                "DEBUG"
+            case .Info:
+                "INFO"
+            case .Warn:
+                "WARN"
+            case .Error:
+                "ERROR"
+
+## Where a program's log entries go, and which ones it wants. There's nothing global: a
+## function that logs takes a `Log`, so its signature says so, and a kit logs however the
+## program that uses it chose. Each entry is one line, like `INFO saved file=a.txt size=12`.
+## Give it a `Clock` and each line starts with the seconds since the clock started.
+struct Log:
+    out: Stdout
+    level = LogLevel.Info
+    clock: Clock? = None
+    fields: dict[str, str] = {}
+
+    def debug(self, message: str, fields: dict[str, str]? = None):
+        self.write(LogLevel.Debug, message, fields)
+
+    def info(self, message: str, fields: dict[str, str]? = None):
+        self.write(LogLevel.Info, message, fields)
+
+    def warn(self, message: str, fields: dict[str, str]? = None):
+        self.write(LogLevel.Warn, message, fields)
+
+    def error(self, message: str, fields: dict[str, str]? = None):
+        self.write(LogLevel.Error, message, fields)
+
+    ## Whether an entry of this level would be written, for when making one takes work.
+    def enabled(self, level: LogLevel) -> bool:
+        level.rank() >= self.level.rank()
+
+    ## A log that adds these fields to every entry, like the request it's handling. Its own
+    ## value replaces this log's for a field they both have.
+    def with_fields(self, fields: dict[str, str]) -> Log:
+        mut all_fields = {name: value for name, value in self.fields.items()}
+        all_fields.update(fields)
+        replace(self, fields=all_fields)
+
+    def write(self, level: LogLevel, message: str, fields: dict[str, str]?):
+        if not self.enabled(level): return
+        mut parts = [level.label(), Log._one_line(message)]
+        clock = self.clock
+        if clock is not None:
+            parts = [f"{float(clock.now().nanos) / 1_000_000_000.0:.3f}"] + parts
+        mut all_fields = {name: value for name, value in self.fields.items()}
+        if fields is not None:
+            all_fields.update(fields)
+        for name, value in all_fields.items():
+            parts.append(f"{Log._one_line(name)}={Log._value(value)}")
+        self.out.print(" ".join(parts))
+
+    ## Text that can't start another line, so an entry can't pretend to be two.
+    def _one_line(text: str) -> str:
+        text.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+
+    ## A field's value, in quotes if it couldn't be told apart from what follows it.
+    def _value(value: str) -> str:
+        text = Log._one_line(value)
+        plain = text != "" and " " not in text and "=" not in text and "\"" not in text
+        if plain: return text
+        "\"" + text.replace("\"", "\\\"") + "\""

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, types};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_jit::{ArenaMemoryProvider, JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use fennec_syntax::{Diagnostic, Span};
 
@@ -50,8 +50,19 @@ pub(super) fn new_module(span: Span) -> Result<JITModule, Diagnostic> {
     // The failure flag is the run's thread's own, and the program runs on this thread.
     let failed = std::ptr::with_exposed_provenance::<u8>(fennec_interp::embed::failed_flag());
     builder.symbol(super::symbols::FAILED, failed);
+    // On arm, code reads its data by an offset of up to 2 GB, so the two have to stay together.
+    // Left to the system they can land further apart than that, depending on the address space.
+    if cfg!(target_arch = "aarch64") {
+        let arena =
+            ArenaMemoryProvider::new_with_size(CODE_AND_DATA_BYTES).map_err(|err| internal(err, span))?;
+        builder.memory_provider(Box::new(arena));
+    }
     Ok(JITModule::new(builder))
 }
+
+/// The address space a program's code and data are kept in on arm. It's only reserved, not used,
+/// until they need it.
+const CODE_AND_DATA_BYTES: usize = 1 << 29;
 
 /// The entry point: calls `main`, and fails the way the interpreter does if `main` gives
 /// back a failure.

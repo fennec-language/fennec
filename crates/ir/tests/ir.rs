@@ -2282,3 +2282,45 @@ def main_total() -> int:
     assert!(used.contains("= resume"), "{used}");
     assert!(used.contains("this generator has already been used"), "{used}");
 }
+
+/// The locals that are given `true` or `false` somewhere in a function.
+fn given_bools(text: &str) -> std::collections::BTreeSet<&str> {
+    text.lines()
+        .filter_map(|line| line.trim().split_once(" = "))
+        .filter(|(_, value)| matches!(*value, "true" | "false"))
+        .map(|(local, _)| local)
+        .collect()
+}
+
+#[test]
+fn any_and_all_write_their_answer_to_what_they_give_back() {
+    let source = "def has(xs: list[int]) -> bool:
+    any(x > 2 for x in xs)
+
+def every(xs: list[int]) -> bool:
+    all(x > 2 for x in xs)
+";
+    for function in ["has", "every"] {
+        let text = printed(source, function).unwrap();
+        assert_eq!(given_bools(&text).len(), 1, "{text}");
+    }
+}
+
+#[test]
+fn leaving_a_copied_generator_early_writes_one_flag() {
+    let source = "def three() -> Iterator[int]:
+    yield 1
+    yield 2
+    yield 3
+
+def first_big() -> int:
+    mut found = 0
+    for n in three():
+        found = n
+        if n > 1:
+            break
+    found
+";
+    let text = printed(source, "first_big").unwrap();
+    assert_eq!(given_bools(&text).len(), 1, "{text}");
+}

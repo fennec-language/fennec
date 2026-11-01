@@ -1328,7 +1328,7 @@ mod tests {
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        let source = "def f() -> dict[int, int]:\n    {1: 2}\n\ndef main(stdout: Stdout):\n    stdout.print(f().len())\n";
+        let source = "def f() -> list[list[int]]:\n    [[1]]\n\ndef main(stdout: Stdout):\n    stdout.print(f().len())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

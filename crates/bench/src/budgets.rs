@@ -35,9 +35,10 @@ const FORMAT: Budget = Budget { name: "format one file", limit: Duration::from_m
 const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: false };
 const VERDICT: Budget =
     Budget { name: "edit to verdict, one function", limit: Duration::from_secs(1), enforced: true };
-/// What an edit's verdict may run: about what a second is on CI's machines, from its time and
-/// count on them. See `Counted`.
-const MOST_VERDICT_INSTRUCTIONS: u64 = u64::MAX;
+/// What an edit's verdict may run: about what a second is on CI's machines. It ran 6.66 billion
+/// when this was written, counted by Valgrind, which took between 650 and 1170 ms depending on the
+/// machine, about 7.4 billion a second in the middle.
+const MOST_VERDICT_INSTRUCTIONS: u64 = 7_500_000_000;
 
 const RUN: Budget =
     Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: false };

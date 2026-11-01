@@ -283,7 +283,9 @@ impl FnCx<'_> {
         let (left, right) = self.settle_sides(left, right);
         match op {
             BinOp::Eq | BinOp::NotEq => {
-                self.comparable(&left, &right, op, span);
+                if !self.own_equality(&left, &right, op, span, spans.1) {
+                    self.comparable(&left, &right, op, span);
+                }
                 return Type::Bool;
             }
             BinOp::In | BinOp::NotIn => {
@@ -361,6 +363,22 @@ impl FnCx<'_> {
 
     /// `==` and `!=` need two values that could be equal. A value of a type parameter can
     /// be compared only if its bounds say so.
+    /// `==` or `!=` on a type with its own `def ==`, which they call. `!=` is written in as
+    /// `not (a == b)`. Whether there was one.
+    fn own_equality(&mut self, left: &Type, right: &Type, op: BinOp, span: Span, at: Span) -> bool {
+        let Some(name) = left.method_owner() else { return false };
+        let Some((key, _)) = self.checker.program.method(name, "==") else { return false };
+        let returns = self.call_operator(left, &key, right, at);
+        if !matches!(returns, Type::Bool | Type::Unknown) {
+            let message = format!("`{name}`'s `def ==` gives back {}, so `==` can't use it", a(&returns));
+            self.error(Diagnostic::new(message, span).with_help("make `def ==` give back a bool"));
+        }
+        if op == BinOp::NotEq {
+            self.checker.not_equals.insert((span.start, span.end));
+        }
+        true
+    }
+
     fn comparable(&mut self, left: &Type, right: &Type, op: BinOp, span: Span) {
         if let Type::Param(name) = left
             && let Err((_, fix)) = self.fits_bound(left, "Eq")

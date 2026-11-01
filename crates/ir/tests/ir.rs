@@ -2324,3 +2324,20 @@ def first_big() -> int:
     let text = printed(source, "first_big").unwrap();
     assert_eq!(given_bools(&text).len(), 1, "{text}");
 }
+
+#[test]
+fn equality_calls_a_types_own_def_eq() {
+    let source = "\
+struct Pair:
+    a: int
+    b: int
+
+    def ==(self, other: Pair) -> bool:
+        self.a + self.b == other.a + other.b
+
+def same(one: Pair, two: Pair) -> bool:
+    one == two and not (one != two)
+";
+    let text = printed(source, "same").unwrap();
+    assert_eq!(text.matches("Pair.==").count(), 2, "{text}");
+}

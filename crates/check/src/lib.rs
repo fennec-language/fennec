@@ -106,6 +106,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
         || !checked.float_sums.is_empty()
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
+        || !checked.not_equals.is_empty()
         || !checked.std_names.is_empty()
     {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
@@ -121,6 +122,9 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             }
             if let Some(function) = checked.std_names.get(&span) {
                 expr.kind = fennec_syntax::ExprKind::Name(function.clone());
+            }
+            if checked.not_equals.contains(&span) {
+                fennec_syntax::visit::not_of_equals(expr);
             }
             if let Some(shown) = checked.generator_types.get(&span) {
                 fennec_syntax::visit::name_generator_type(expr, shown);
@@ -153,6 +157,8 @@ pub struct Checked {
     generator_types: BTreeMap<(u32, u32), String>,
     /// What each name for a standard library function written in Fennec means.
     std_names: BTreeMap<(u32, u32), String>,
+    /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
+    not_equals: BTreeSet<(u32, u32)>,
 }
 
 /// The typed tree: the type of every expression and every declared name in a program,

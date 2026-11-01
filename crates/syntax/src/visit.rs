@@ -1,7 +1,9 @@
 //! Walking every expression of a module to change it in place, as the kit loader and the
 //! checker do when they work out which enum a leading-dot case like `.Int(value)` belongs to.
 
-use crate::ast::{Expr, ExprKind, FStrPart, FnDef, Item, Module, Pattern, Stmt, StmtKind, TypeDef};
+use crate::ast::{
+    BinOp, Expr, ExprKind, FStrPart, FnDef, Item, Module, Pattern, Stmt, StmtKind, TypeDef, UnaryOp,
+};
 
 /// Calls `change` on every expression in `module`, outer ones before the ones inside them.
 pub fn exprs_mut(module: &mut Module, change: &mut dyn FnMut(&mut Expr)) {
@@ -32,6 +34,14 @@ pub fn in_function(def: &mut FnDef, change: &mut dyn FnMut(&mut Expr)) {
 /// Calls `change` on every expression in some statements.
 pub fn in_stmts(body: &mut [Stmt], change: &mut dyn FnMut(&mut Expr)) {
     stmts(body, change);
+}
+
+/// Makes `a != b` into `not (a == b)`, for a type whose `def ==` decides both.
+pub fn not_of_equals(compare: &mut Expr) {
+    let ExprKind::Binary { op: op @ BinOp::NotEq, .. } = &mut compare.kind else { return };
+    *op = BinOp::Eq;
+    let equals = Expr { kind: compare.kind.clone(), span: compare.span };
+    compare.kind = ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(equals) };
 }
 
 /// Makes a leading-dot case name its enum: `.Int(value)` becomes `ExprKind.Int(value)`.

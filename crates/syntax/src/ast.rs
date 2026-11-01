@@ -467,9 +467,14 @@ impl BinOp {
     /// The name of the method that defines this operator on your own types, like `def +`.
     pub fn method_name(self) -> Option<&'static str> {
         match self {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod | BinOp::Lt => {
-                Some(self.symbol())
-            }
+            BinOp::Add
+            | BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::FloorDiv
+            | BinOp::Mod
+            | BinOp::Lt
+            | BinOp::Eq => Some(self.symbol()),
             _ => None,
         }
     }

@@ -224,6 +224,12 @@ impl<'a> Lowerer<'a, '_> {
         if !matches!(op, BinOp::Eq | BinOp::NotEq) || a_ty != b_ty {
             return Ok(None);
         }
+        // A type with its own `def ==` is compared by calling it.
+        if let Ty::Struct(id) | Ty::Boxed(id) = a_ty
+            && self.shared.compiled.contains_key(&format!("{}.==", self.layout(id)?.name))
+        {
+            return Ok(None);
+        }
         if let (Ty::Boxed(id), Some(a), Some(b)) = (a_ty, a, b) {
             let same = self.boxed_equality(op == BinOp::NotEq, a, b, id)?;
             return Ok(Some((Some(same), Ty::Bool)));

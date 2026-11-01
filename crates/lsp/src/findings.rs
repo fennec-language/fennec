@@ -77,7 +77,10 @@ pub(crate) fn located(sources: &Sources, lints: &[Lint]) -> Vec<Located> {
 /// finds, then what may copy or allocate, as `fennec lint` shows them.
 pub(crate) fn of_clean(module: &Module, sources: &Sources, checked: &Checked) -> Vec<Located> {
     let mut lints = fennec_lint::lint(module, sources);
-    lints.extend(fennec_lint::costs(&fennec_ir::lower(module, &checked.signatures_with_types())));
+    // Lowering takes the module with what checking works out written in, so it gets a copy.
+    let mut resolved = module.clone();
+    let signatures = checked.resolve(&mut resolved);
+    lints.extend(fennec_lint::costs(&fennec_ir::lower(&resolved, &signatures)));
     located(sources, &lints)
 }
 

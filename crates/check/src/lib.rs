@@ -161,11 +161,12 @@ impl Checked {
         Signatures { types: self.types, ..self.signatures }
     }
 
-    /// The signatures with every expression's type in them, as `check` gives them back, for
-    /// lowering a program checked with `check_typed`.
+    /// Writes into `module`, a copy of the one checked, what `check_and_resolve` would, and gives
+    /// back the signatures lowering takes: a program checked with `check_typed` can then be
+    /// lowered without being checked twice.
     #[must_use]
-    pub fn signatures_with_types(&self) -> Signatures {
-        Signatures { types: self.types.clone(), ..self.signatures.clone() }
+    pub fn resolve(&self, module: &mut Module) -> Signatures {
+        resolved(module, self.clone())
     }
 }
 

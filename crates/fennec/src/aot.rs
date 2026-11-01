@@ -128,7 +128,10 @@ fn llvm_objects(program: &fennec_kit::Program) -> Result<(Vec<Vec<u8>>, usize, u
         .map(fennec_build::Cache::new);
     let work = std::env::temp_dir().join(format!("fennec-llvm-{}", std::process::id()));
     let built = fennec_llvm::compile(&tools, &units, &entry, cache.as_ref(), &work);
-    let _ = std::fs::remove_dir_all(&work);
+    // `FENNEC_LLVM_KEEP` leaves the modules' text to look at.
+    if std::env::var_os("FENNEC_LLVM_KEEP").is_none() {
+        let _ = std::fs::remove_dir_all(&work);
+    }
     let built = built?;
     Ok((built.objects, units.len(), built.compiled))
 }

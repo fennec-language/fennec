@@ -169,6 +169,45 @@ fn diagnostics_cover_every_file_and_clear_when_fixed() {
 }
 
 #[test]
+fn a_mistake_in_an_edited_body_is_found_and_cleared() {
+    let mut editor = Editor::new("edited_body").unwrap();
+    editor.open("src/main.fen", MAIN);
+    editor.open("src/combat.fen", COMBAT);
+    let published = editor.change("src/combat.fen", &COMBAT.replace("power * 2", "power * True"));
+    let in_combat = for_file(&published, "combat.fen").unwrap();
+    assert_eq!(in_combat.len(), 1, "{:?}", messages(in_combat));
+    assert_eq!(line_of(&in_combat[0]), 15, "a line in the edited file");
+    let published = editor.change("src/combat.fen", &COMBAT.replace("power * 2", "power * 3"));
+    assert_eq!(for_file(&published, "combat.fen"), Some(&[][..]));
+}
+
+#[test]
+fn a_changed_signature_still_finds_what_it_breaks_in_other_files() {
+    let mut editor = Editor::new("edited_signature").unwrap();
+    editor.open("src/combat.fen", COMBAT);
+    let published = editor.change("src/combat.fen", &COMBAT.replace("power: int,", "power: str,"));
+    let in_main = messages(for_file(&published, "main.fen").unwrap());
+    assert!(!in_main.is_empty(), "main.fen isn't open, but it's what broke");
+
+    let published = editor.change("src/combat.fen", COMBAT);
+    assert_eq!(for_file(&published, "main.fen"), Some(&[][..]), "and it clears when that's undone");
+}
+
+#[test]
+fn asking_about_code_after_a_quick_edit_looks_at_the_whole_program() {
+    let mut editor = Editor::new("after_edit").unwrap();
+    editor.open("src/main.fen", MAIN);
+    let edited = COMBAT.replace("power * 2", "power * 3");
+    editor.open("src/combat.fen", COMBAT);
+    editor.change("src/combat.fen", &edited);
+    let hit = editor.at("textDocument/hover", "src/main.fen", MAIN, "hit(fighter", 0);
+    let shown = hit.at(&["contents", "value"]).and_then(Json::as_str).unwrap();
+    assert!(shown.contains("def hit("), "{shown}");
+    let found = editor.at("textDocument/definition", "src/main.fen", MAIN, "hit(fighter", 0);
+    assert!(found.to_string().contains("combat.fen"), "{found:?}");
+}
+
+#[test]
 fn unsaved_text_is_checked_in_place_of_the_file() {
     let mut editor = Editor::new("unsaved").unwrap();
     editor.open("src/main.fen", MAIN);

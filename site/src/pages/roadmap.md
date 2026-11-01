@@ -59,7 +59,7 @@ Each of these is decided and not built.
 
 - Compile-time loops over a type, `Writer` and `Reader` for every format, annotations as data, and `std.pack`.
 - `SortedMap`, `SortedSet`, `Grid` and `Packed`.
-- `std.net`, `std.sql`, `std.process`, `std.crypto`, `std.log`, `std.cli` and `std.csv`.
+- `std.net`, `std.sql`, `std.process`, `std.crypto` and `std.cli`.
 - `extern "C"` and `unsafe`, for what can't be written in Fennec, and first-party native kits.
 - SIMD and GPU types, and [the Den](/den/), Fennec's registry for kits.
 - A Fennec compiler written in Fennec.

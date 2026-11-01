@@ -397,6 +397,8 @@ dependencies = [
 name = "fennec-lsp"
 version = "0.0.1"
 dependencies = [
+ "fennec-blake3",
+ "fennec-build",
  "fennec-check",
  "fennec-fmt",
  "fennec-kit",

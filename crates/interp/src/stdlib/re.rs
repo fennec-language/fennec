@@ -162,7 +162,7 @@ impl Interp<'_> {
 }
 
 /// How many characters lie between two byte offsets.
-fn chars(text: &str, from: usize, to: usize) -> usize {
+pub(crate) fn chars(text: &str, from: usize, to: usize) -> usize {
     text.get(from..to).map_or(0, |part| part.chars().count())
 }
 
@@ -222,6 +222,12 @@ fn template(replacement: &str, groups: usize, span: Span) -> Result<Vec<Part>, D
         parts.push(Part::Text(text));
     }
     Ok(parts)
+}
+
+/// `text` with every match replaced, where `\\1` in `with` is group 1.
+pub(crate) fn replaced(text: &str, regex: &Regex, with: &str, span: Span) -> Result<String, Diagnostic> {
+    let parts = template(with, regex.groups(), span)?;
+    Ok(replace(text, regex, &parts))
 }
 
 fn replace(text: &str, regex: &Regex, parts: &[Part]) -> String {

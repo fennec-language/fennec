@@ -14,6 +14,7 @@ mod snapshot;
 mod store;
 mod traced;
 mod tree;
+mod verdict;
 
 pub use cache::{Cache, Cleanup, DEFAULT_CAP, VERSION};
 pub use changes::{Change, Kind, changes};
@@ -24,3 +25,4 @@ pub use snapshot::{FileRecord, Run, Snapshot};
 pub use store::{fennec_home, load, save};
 pub use traced::{TestGraph, TestRecord};
 pub use tree::{definitions, tree_hash};
+pub use verdict::{KitFile, KitState, Row, changed_bodies, item_span, rows};

@@ -455,8 +455,8 @@ impl<'a> Lowering<'a> {
     fn stmt(&mut self, stmt: &Stmt, tail: Tail) -> Lowered<()> {
         match &stmt.kind {
             StmtKind::Expr(expr) => self.tail_expr(expr, tail)?,
-            StmtKind::Assign { target, op, value, ty: _, declare_mut: _ } => {
-                self.assign(target, *op, value, stmt.span)?;
+            StmtKind::Assign { target, op, value, ty: _, declare_mut } => {
+                self.assign(target, (*op, *declare_mut), value, stmt.span)?;
             }
             StmtKind::If { branches, otherwise } => self.if_stmt(branches, otherwise.as_deref(), tail)?,
             StmtKind::While { cond, body } => self.while_stmt(cond, body)?,
@@ -506,7 +506,13 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    fn assign(&mut self, target: &Expr, op: Option<BinOp>, value: &Expr, span: Span) -> Lowered<()> {
+    fn assign(
+        &mut self,
+        target: &Expr,
+        (op, declares): (Option<BinOp>, bool),
+        value: &Expr,
+        span: Span,
+    ) -> Lowered<()> {
         if let ExprKind::Tuple(targets) = &target.kind {
             return self.assign_unpacking(targets, value, span);
         }
@@ -514,7 +520,7 @@ impl<'a> Lowering<'a> {
             return self.assign_place(target, op, value, span);
         };
         // A name made while fusing a stage is new, and holds what it's first given.
-        let binds_item = target.span == value.span && op.is_none();
+        let binds_item = declares && target.span == value.span && op.is_none();
         if binds_item || (name.starts_with('\0') && self.lookup(name).is_none()) {
             let ty = self.fused_type(value)?;
             let value = self.expr(value)?;

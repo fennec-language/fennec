@@ -4,11 +4,14 @@
 //! A document in a kit's `src` folder belongs to the whole kit, every file of it, since a
 //! change in one file can break another. Any other `.fen` file is a program of its own.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use fennec_blake3::Hash;
+use fennec_build::{Row, item_span, rows};
 use fennec_check::Checked;
 use fennec_kit::{Entry, Overlay};
-use fennec_syntax::{Diagnostic, Module, Sources, Span};
+use fennec_syntax::{Diagnostic, Item, Module, Sources, Span};
 
 use crate::json::Json;
 use crate::text;
@@ -23,6 +26,8 @@ pub(crate) struct Analysis {
     pub(crate) module: Option<Module>,
     /// The types of everything, when the program has no mistakes.
     pub(crate) checked: Option<Checked>,
+    /// Whether this looked at only part of the program. See `edited_bodies`.
+    pub(crate) partial: bool,
 }
 
 /// The program a file belongs to: its kit's folder when it's in a kit's `src`, or else the
@@ -36,6 +41,77 @@ pub(crate) fn program_of(file: &Path) -> PathBuf {
     kit.map_or_else(|| file.to_path_buf(), Path::to_path_buf)
 }
 
+/// A program that had no mistakes, by each file's text and definitions, to tell what an edit
+/// can have changed.
+pub(crate) struct Clean {
+    program: PathBuf,
+    files: HashMap<String, (Hash, Vec<Row>)>,
+}
+
+impl Clean {
+    /// What an analysis says about a program, if it had no mistakes.
+    pub(crate) fn of(program: &Path, analysis: &Analysis) -> Option<Clean> {
+        if analysis.partial || analysis.checked.is_none() || !analysis.diagnostics.is_empty() {
+            return None;
+        }
+        let module = analysis.module.as_ref()?;
+        let mut items: HashMap<&str, Vec<&Item>> = HashMap::new();
+        for item in &module.items {
+            if let Some((path, ..)) = analysis.sources.file_at(item_span(item)) {
+                items.entry(path).or_default().push(item);
+            }
+        }
+        let files = analysis.sources.files().map(|(path, text)| {
+            let of_file = items.get(path).map_or(&[][..], Vec::as_slice);
+            (path.to_owned(), (fennec_blake3::hash(text.as_bytes()), rows(of_file.iter().copied())))
+        });
+        Some(Clean { program: program.to_path_buf(), files: files.collect() })
+    }
+}
+
+/// The module a document is, if it's in a kit's `src` folder.
+fn module_of(program: &Path, file: &Path) -> Option<String> {
+    let relative = file.strip_prefix(program.join("src")).ok()?.with_extension("");
+    let parts: Vec<String> = relative.iter().map(|part| part.to_string_lossy().into_owned()).collect();
+    Some(parts.join("."))
+}
+
+/// An analysis of what an edit can have broken, when it only changed the bodies of functions:
+/// the open files and what they import. A kit's files only reach each other through imports, and
+/// what uses a function only depends on its signature, so the rest still has no mistakes. None
+/// if the edit reaches further, or there's something this can't say, which takes all of the
+/// program. It knows mistakes only, so anything that asks more of it needs the whole program.
+pub(crate) fn edited_bodies(clean: &Clean, program: &Path, overlay: &Overlay) -> Option<Analysis> {
+    if clean.program != program {
+        return None;
+    }
+    let modules: Vec<String> = overlay.keys().filter_map(|file| module_of(program, file)).collect();
+    let mut loaded = fennec_kit::load_modules_with(program, &text::shown(program), &modules, overlay).ok()?;
+    let mut items: HashMap<&str, Vec<&Item>> = HashMap::new();
+    for item in &loaded.module.items {
+        if let Some((path, ..)) = loaded.sources.file_at(item_span(item)) {
+            items.entry(path).or_default().push(item);
+        }
+    }
+    for (path, text) in loaded.sources.files() {
+        let (old_text, old_rows) = clean.files.get(path)?;
+        if fennec_blake3::hash(text.as_bytes()) != *old_text {
+            let of_file = items.get(path).map_or(&[][..], Vec::as_slice);
+            fennec_build::changed_bodies(old_rows, &rows(of_file.iter().copied()))?;
+        }
+    }
+    drop(items);
+    let diagnostics = fennec_check::check_to_run(&mut loaded.module).err().unwrap_or_default();
+    Some(Analysis {
+        sources: loaded.sources,
+        diagnostics,
+        unplaced: Vec::new(),
+        module: None,
+        checked: None,
+        partial: true,
+    })
+}
+
 /// Loads and checks a program, reading the files in `overlay` from it.
 pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
     let shown = text::shown(program);
@@ -46,6 +122,7 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
             unplaced: problems.unplaced,
             module: None,
             checked: None,
+            partial: false,
         },
         Ok(loaded) => {
             let (diagnostics, checked) = match fennec_check::check_typed(&loaded.module) {
@@ -58,6 +135,7 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
                 unplaced: Vec::new(),
                 module: Some(loaded.module),
                 checked,
+                partial: false,
             }
         }
     }

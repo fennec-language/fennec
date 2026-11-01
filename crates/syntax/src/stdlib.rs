@@ -26,11 +26,13 @@ macro_rules! modules {
 
 modules! {
     collections,
+    csv,
     fs,
     game,
     hash,
     json,
     layout,
+    log,
     math,
     path,
     random,

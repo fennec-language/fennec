@@ -47,13 +47,25 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
     match (result, flushed) {
         (Ok(()), Ok(())) => ExitCode::SUCCESS,
         (Err(diagnostic), _) => {
-            eprint!("{}", program.sources.render(&diagnostic));
+            eprint!("{}", rendered(&program, path, &diagnostic));
             ExitCode::FAILURE
         }
         (Ok(()), Err(err)) => {
             eprintln!("error: couldn't write output: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// A failure against its source. A program started from a kept image doesn't have its source, so
+/// this reads it, which only a failing run has to wait for.
+fn rendered(program: &fennec_kit::Program, path: &str, diagnostic: &fennec_syntax::Diagnostic) -> String {
+    if program.sources.files().next().is_some() {
+        return program.sources.render(diagnostic);
+    }
+    match fennec_kit::load(std::path::Path::new(path), path, fennec_kit::Entry::Main) {
+        Ok(whole) => whole.sources.render(diagnostic),
+        Err(_) => format!("error: {}\n", diagnostic.message),
     }
 }
 
@@ -93,6 +105,12 @@ fn whole(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), 
 /// always runs, so its machine code is reused from the very first run.
 fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), ExitCode> {
     let Some(cache) = cache() else { return whole(path) };
+    if let Some(mut program) = crate::image::load(path, &cache)
+        && let Ok(signatures) = fennec_check::check_to_run(&mut program.module)
+    {
+        return Ok((program, signatures));
+    }
+    let files = crate::image::files_now(path, &cache);
     let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
     let name = passed_name(path);
     let text = fingerprint(program.sources.files());
@@ -104,6 +122,9 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures)
         let _ = cache.write("checked", &name, text.as_bytes());
     }
     fennec_build::keep_what_main_reaches(&mut program.module);
+    if let Some(files) = &files {
+        crate::image::store(path, &cache, files, &program.module);
+    }
     match fennec_check::check_to_run(&mut program.module) {
         Ok(signatures) => Ok((program, signatures)),
         // Cutting it down missed something the whole program has.

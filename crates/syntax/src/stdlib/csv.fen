@@ -1,0 +1,131 @@
+## CSV text: rows of fields separated by commas, as RFC 4180 describes. A field holding a
+## comma, a quote or a line break is written in quotes, with its quotes doubled. Lines can end
+## in `\n`, `\r\n` or `\r`, and blank lines aren't rows. Every field is text.
+struct Csv:
+    ## The rows of `text`. Text that isn't CSV fails with a `ParseError`.
+    def loads(text: str, delimiter: str = ",") -> list[list[str]]:
+        [row for _, row in Csv._rows(text, delimiter)?]
+
+    ## The rows after the first as dicts, with the first row's fields as their keys. A row
+    ## with a different number of fields fails with a `ParseError`.
+    def records(text: str, delimiter: str = ",") -> list[dict[str, str]]:
+        rows = Csv._rows(text, delimiter)?
+        if rows.len() == 0: return []
+        _, names = rows[0]
+        if set(names).len() != names.len():
+            fail Csv._problem("the first row has the same name twice", 1, 1)
+        mut found = []
+        for line, row in rows[1:]:
+            if row.len() != names.len():
+                problem = f"the first row sets {names.len()} as the number of fields, but this row has {row.len()}"
+                fail Csv._problem(problem, line, 1)
+            found.append({name: field for name, field in zip(names, row)})
+        found
+
+    ## CSV text of `rows`, each ending in `\n`.
+    def dumps(rows: list[list[str]], delimiter: str = ",") -> str:
+        mut lines = []
+        for row in rows:
+            lines.append(Csv._line(row, delimiter))
+        "".join(lines)
+
+    ## CSV text with `names` as its first row, then each record's value for each name, which
+    ## is empty when it has none. Other keys aren't written.
+    def dumps_records(names: list[str], records: list[dict[str, str]], delimiter: str = ",") -> str:
+        mut rows = [names]
+        for record in records:
+            rows.append([(record.get(name) else "") for name in names])
+        Csv.dumps(rows, delimiter)
+
+    ## One row and the newline after it. A row of one empty field is written in quotes,
+    ## since a blank line isn't a row.
+    def _line(row: list[str], delimiter: str) -> str:
+        if row == [""]: return "\"\"\n"
+        delimiter.join([Csv._field(field, delimiter) for field in row]) + "\n"
+
+    def _field(field: str, delimiter: str) -> str:
+        special = delimiter in field or "\"" in field or "\n" in field or "\r" in field
+        if not special: return field
+        "\"" + field.replace("\"", "\"\"") + "\""
+
+    def _problem(problem: str, line: int, column: int) -> ParseError:
+        ParseError(message=f"{problem} at line {line}, column {column}", line=line, column=column)
+
+    ## Each row, with the line it starts on. It goes through the characters once, since
+    ## finding a character by its position can mean walking from the start.
+    def _rows(text: str, delimiter: str) -> list[(int, list[str])]:
+        mut rows = []
+        mut row = []
+        mut field = ""
+        mut line = 1
+        mut column = 0
+        mut row_line = 1
+        mut quote_line = 1
+        mut quote_column = 1
+        # Inside quotes, just past a quote that may turn out to be a doubled one, and whether
+        # this field had quotes, which makes it a field even when it's empty.
+        mut in_quotes = False
+        mut after_quote = False
+        mut was_quoted = False
+        mut after_return = False
+        for c in text:
+            column += 1
+            if in_quotes:
+                if c == "\"":
+                    in_quotes = False
+                    after_quote = True
+                else:
+                    field += c
+                    if c == "\n":
+                        line += 1
+                        column = 0
+                continue
+            if after_return:
+                after_return = False
+                if c == "\n":
+                    column = 0
+                    continue
+            if line == 1 and column == 1 and c.code() == 65279:
+                column = 0
+                continue
+            if after_quote and c == "\"":
+                field += c
+                after_quote = False
+                in_quotes = True
+            elif c == delimiter:
+                row.append(field)
+                field = ""
+                after_quote = False
+                was_quoted = False
+            elif c == "\n" or c == "\r":
+                if row.len() > 0 or field != "" or was_quoted:
+                    row.append(field)
+                    rows.append((row_line, row))
+                row = []
+                field = ""
+                after_quote = False
+                was_quoted = False
+                line += 1
+                column = 0
+                row_line = line
+                after_return = c == "\r"
+            elif after_quote:
+                fail Csv._problem("a field can't go on after its closing quote", line, column)
+            elif c == "\"":
+                if field != "":
+                    fail Csv._problem(
+                        "a quote in a field needs the whole field in quotes",
+                        line,
+                        column,
+                    )
+                in_quotes = True
+                was_quoted = True
+                quote_line = line
+                quote_column = column
+            else:
+                field += c
+        if in_quotes: fail Csv._problem("this quote never ends", quote_line, quote_column)
+        if row.len() > 0 or field != "" or was_quoted:
+            row.append(field)
+            rows.append((row_line, row))
+        rows

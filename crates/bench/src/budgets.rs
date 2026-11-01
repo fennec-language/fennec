@@ -32,19 +32,29 @@ struct Budget {
 }
 
 const FORMAT: Budget = Budget { name: "format one file", limit: Duration::from_millis(50), enforced: true };
-const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: false };
+const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: true };
 const VERDICT: Budget =
     Budget { name: "edit to verdict, one function", limit: Duration::from_secs(1), enforced: true };
-/// What an edit's verdict may run: about what a second is on CI's machines. It ran 6.66 billion
-/// when this was written, counted by Valgrind, which took between 650 and 1170 ms depending on the
-/// machine, about 7.4 billion a second in the middle.
-const MOST_VERDICT_INSTRUCTIONS: u64 = 7_500_000_000;
+/// How many instructions CI's slower machines run in a second. An old verdict ran 6,658 million of
+/// them in between 792 and 988 ms, depending on the machine, so 6.7 billion a second on the slow
+/// end. Limits use that, so they mean what they say even on a slow machine.
+const INSTRUCTIONS_A_SECOND: u64 = 6_700_000_000;
+
+/// What an edit's verdict may run: a second.
+const MOST_VERDICT_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND;
 
 const RUN: Budget =
-    Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: false };
+    Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: true };
 
-/// How many times longer an edit's verdict may take on the big kit than on one a tenth its
-/// size. It shouldn't depend on the size of a project at all; some allowance is for noise.
+/// What starting an unchanged program may run: 100 ms.
+const MOST_RUN_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 10;
+
+/// What an edit may cost the language server: 100 ms.
+const MOST_CHECK_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 10;
+
+/// How many times the work an edit's verdict may be on the big kit, against one a tenth its size.
+/// It shouldn't depend on the size of a project at all. Reading and hashing every file does, by
+/// a little, and this fails the run if that stops being little.
 const MOST_GROWTH: f64 = 1.5;
 
 /// How big a kit to measure on: files, each with this many functions and a tenth as many tests.
@@ -100,13 +110,13 @@ pub(crate) fn run(fennec: &Path, runs: usize, files: usize) -> Result<bool, Stri
     let _ = std::fs::remove_dir_all(&dir);
     let measured = measured?;
     let small = smaller_verdict(&dir, fennec, runs, files)?;
-    let growth = measured
-        .iter()
-        .find(|measured| measured.budget.name == VERDICT.name)
-        .map_or(0.0, |verdict| verdict.warm.as_secs_f64() / small.as_secs_f64().max(f64::MIN_POSITIVE));
+    let verdict = measured.iter().find(|measured| measured.budget.name == VERDICT.name);
+    let growth = verdict.map(|verdict| Growth::between(verdict, &small));
     let lines = format!("{} files, {} functions", files + 1, files * FUNCTIONS_PER_FILE);
     let mut table = table(&measured, &lines);
-    let _ = writeln!(table, "\n{}", growth_line(growth, small));
+    if let Some(growth) = growth {
+        let _ = writeln!(table, "\n{}", growth.line());
+    }
     print!("{table}");
     if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
         crate::append(Path::new(&summary), &format!("## Instant-feedback budgets\n\n{table}"))
@@ -116,30 +126,51 @@ pub(crate) fn run(fennec: &Path, runs: usize, files: usize) -> Result<bool, Stri
         let Budget { name, limit, .. } = over.budget;
         println!("::warning title=Over budget::{name} took {}, over {}", millis(over.warm), millis(limit));
     }
-    if growth > MOST_GROWTH {
-        println!("::warning title=Over budget::{}", growth_line(growth, small));
+    let grew = growth.is_some_and(|growth| growth.times > MOST_GROWTH);
+    if let Some(growth) = growth.filter(|_| grew) {
+        println!("::error title=Over budget::{}", growth.line());
     }
-    Ok(passes(&measured))
+    Ok(passes(&measured) && !grew)
 }
 
-/// How long an edit's verdict takes on a kit a tenth the size of the big one.
-fn smaller_verdict(dir: &Path, fennec: PathBuf, runs: usize, files: usize) -> Result<Duration, String> {
+/// An edit's verdict on a kit a tenth the size of the big one.
+fn smaller_verdict(dir: &Path, fennec: PathBuf, runs: usize, files: usize) -> Result<Measured, String> {
     let kit = Kit::write(dir, fennec, (files / 10).max(EDITED_FILE + 1))
         .map_err(|err| format!("couldn't write the kit: {err}"))?;
     kit.timed(&["fmt"])?;
     let verdict = kit.verdict(runs);
     let _ = kit.command(&["daemon", "stop"]).output();
     let _ = std::fs::remove_dir_all(dir);
-    Ok(verdict?.warm)
+    verdict
 }
 
-/// What growing a project tenfold does to an edit's verdict. It warns until #152 makes a
-/// verdict independent of the size of the project.
-fn growth_line(growth: f64, small: Duration) -> String {
-    format!(
-        "An edit's verdict takes {growth:.1} times as long on the big kit as on one a tenth its size ({}); it should take at most {MOST_GROWTH} times.",
-        millis(small)
-    )
+/// What growing a project tenfold does to an edit's verdict, which shouldn't depend on the size
+/// of the project. It's worked out from counts of instructions where there are any, which the
+/// machine doesn't change, and from time where there aren't.
+#[derive(Clone, Copy)]
+struct Growth {
+    times: f64,
+    by_count: bool,
+}
+
+impl Growth {
+    #[expect(clippy::cast_precision_loss, reason = "a ratio doesn't need every digit of a count")]
+    fn between(big: &Measured, small: &Measured) -> Growth {
+        if let (Some(big), Some(small)) = (big.counted, small.counted) {
+            let times = big.instructions as f64 / (small.instructions as f64).max(1.0);
+            return Growth { times, by_count: true };
+        }
+        let times = big.warm.as_secs_f64() / small.warm.as_secs_f64().max(f64::MIN_POSITIVE);
+        Growth { times, by_count: false }
+    }
+
+    fn line(self) -> String {
+        let measure = if self.by_count { "instructions" } else { "time" };
+        format!(
+            "An edit's verdict takes {:.1} times the {measure} on the big kit as on one a tenth its size; it can take {MOST_GROWTH} times.",
+            self.times
+        )
+    }
 }
 
 /// Whether every enforced budget is met.
@@ -164,12 +195,13 @@ fn table(measured: &[Measured], size: &str) -> String {
 fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     kit.timed(&["fmt"])?;
     let (check_warm, check_cold) = edit_to_checked(kit, runs)?;
-    let mut measured = vec![
-        Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold), counted: None },
-        kit.format(runs)?,
-    ];
+    let counted = kit.counted_edit();
+    let check = Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold), counted };
+    let mut measured = vec![check, kit.format(runs)?];
     measured.push(kit.verdict(runs)?);
-    measured.push(kit.repeated(RUN, &["run"], runs)?);
+    let mut run = kit.repeated(RUN, &["run"], runs)?;
+    run.counted = kit.counted(&["run"], MOST_RUN_INSTRUCTIONS);
+    measured.push(run);
     Ok(measured)
 }
 
@@ -291,7 +323,7 @@ impl Kit {
         }
         let edited = original.replace(EDITED_LINE, "    y = x + 300 + 1000\n");
         std::fs::write(&path, edited).map_err(|err| err.to_string())?;
-        let counted = self.counted_verdict();
+        let counted = self.counted(&["test"], MOST_VERDICT_INSTRUCTIONS);
         std::fs::write(&path, original).map_err(|err| err.to_string())?;
         Ok(Measured { budget: VERDICT, warm: median(times), cold: Some(cold), counted })
     }
@@ -303,15 +335,68 @@ fn ran_one_test(printed: &str) -> bool {
 }
 
 impl Kit {
-    /// How many instructions `fennec test` runs just after an edit, where they can be counted.
-    fn counted_verdict(&self) -> Option<Counted> {
+    /// How many instructions a command runs, against the most it may, where they can be counted.
+    fn counted(&self, args: &[&str], most: u64) -> Option<Counted> {
         let folder = self.dir.join("counting");
         std::fs::create_dir_all(&folder).ok()?;
         let counter = Counter::find(&folder)?;
-        let program = Program { command: self.fennec.clone(), args: vec!["test".to_owned()], stdin: None };
+        let args = args.iter().map(|arg| (*arg).to_owned()).collect();
+        let program = Program { command: self.fennec.clone(), args, stdin: None };
         let instructions = counter.count_set_up(&program, |command| self.set_up(command))?;
-        Some(Counted { instructions, most: MOST_VERDICT_INSTRUCTIONS })
+        Some(Counted { instructions, most })
     }
+}
+
+impl Kit {
+    /// How many instructions one edit costs a language server of its own, where they can be
+    /// counted: a session with an edit, less the same session without it.
+    fn counted_edit(&self) -> Option<Counted> {
+        let path = std::fs::canonicalize(self.dir.join(EDITED)).ok()?;
+        let uri = fennec_lsp::uri_of(&path);
+        let text = std::fs::read_to_string(&path).ok()?;
+        let folder = self.dir.join("counting");
+        std::fs::create_dir_all(&folder).ok()?;
+        let counter = Counter::find(&folder)?;
+        let count = |name: &str, edits: usize| -> Option<u64> {
+            let script = folder.join(name);
+            std::fs::write(&script, session_script(&uri, &text, edits).ok()?).ok()?;
+            let program =
+                Program { command: self.fennec.clone(), args: vec!["lsp".to_owned()], stdin: Some(script) };
+            counter.count_set_up(&program, |command| {
+                self.set_up(command);
+                command.env("FENNEC_NO_DAEMON", "1");
+            })
+        };
+        let without = count("without", 1)?;
+        let with = count("with", 2)?;
+        Some(Counted { instructions: with.saturating_sub(without), most: MOST_CHECK_INSTRUCTIONS })
+    }
+}
+
+/// What an editor sends a language server: opening a document, then `edits` edits to it.
+fn session_script(uri: &str, text: &str, edits: usize) -> std::io::Result<Vec<u8>> {
+    let mut script = Vec::new();
+    let document = Json::object([
+        ("uri", Json::string(uri)),
+        ("languageId", Json::string("fennec")),
+        ("version", Json::number(1)),
+        ("text", Json::string(text)),
+    ]);
+    let open = Json::object([("textDocument", document)]);
+    let message =
+        |method: &str, params: Json| Json::object([("method", Json::string(method)), ("params", params)]);
+    fennec_lsp::write(&mut script, &message("textDocument/didOpen", open))?;
+    for edit in 1..=edits {
+        let edited = text.replace(EDITED_LINE, &format!("    y = x + 300 + {edit}\n"));
+        let document = Json::object([("uri", Json::string(uri)), ("version", Json::number(edit + 1))]);
+        let changes = Json::Array(vec![Json::object([("text", Json::string(edited))])]);
+        let params = Json::object([("textDocument", document), ("contentChanges", changes)]);
+        fennec_lsp::write(&mut script, &message("textDocument/didChange", params))?;
+    }
+    let shutdown = Json::object([("id", Json::number(1)), ("method", Json::string("shutdown"))]);
+    fennec_lsp::write(&mut script, &shutdown)?;
+    fennec_lsp::write(&mut script, &Json::object([("method", Json::string("exit"))]))?;
+    Ok(script)
 }
 
 /// A language server session, which is how an edit gets checked.
@@ -407,12 +492,17 @@ mod tests {
     }
 
     #[test]
-    fn the_growth_line_says_how_much_and_how_much_is_allowed() {
-        let line = super::growth_line(9.56, Duration::from_millis(50));
-        assert!(
-            line.contains("9.6 times") && line.contains("50.0 ms") && line.contains("1.5 times"),
-            "{line}"
-        );
+    fn growth_goes_by_counts_when_both_runs_have_them() {
+        let counted = |warm, instructions| Measured {
+            counted: Some(super::Counted { instructions, most: 100 }),
+            ..measured(true, warm)
+        };
+        let growth = super::Growth::between(&counted(900, 150), &counted(1, 100));
+        assert!((growth.times - 1.5).abs() < 1e-9 && growth.by_count);
+        assert!(growth.line().contains("1.5 times the instructions"), "{}", growth.line());
+        let growth = super::Growth::between(&measured(true, 300), &measured(true, 100));
+        assert!((growth.times - 3.0).abs() < 1e-9 && !growth.by_count);
+        assert!(growth.line().contains("3.0 times the time"), "{}", growth.line());
     }
 
     #[test]
@@ -433,6 +523,17 @@ mod tests {
         let table = table(&[counted(900, 100), counted(1, 101)], "a size");
         assert!(table.contains("met by its count, over by the clock"), "{table}");
         assert!(table.contains("**over**"), "{table}");
+    }
+
+    #[test]
+    fn a_session_script_is_framed_messages_ending_in_exit() {
+        let script = super::session_script("file:///a.fen", "    y = x + 300\n", 2).unwrap();
+        let text = String::from_utf8_lossy(&script);
+        assert_eq!(text.matches("Content-Length").count(), 5, "{text}");
+        assert!(
+            text.contains("didOpen") && text.contains("300 + 2") && text.ends_with("{\"method\":\"exit\"}"),
+            "{text}"
+        );
     }
 
     #[test]

@@ -130,14 +130,39 @@ pub extern "C" fn char_at(text: i64, at: i64) -> i64 {
 
 /// `text[at]`, a string of one character, counting characters as the interpreter does.
 pub extern "C" fn index(address: i64, at: i64, start: i64, end: i64) -> i64 {
-    attempt(|state: &mut State| {
+    let byte = attempt(|state: &mut State| byte_of_char(state, address, at, (start, end)).map(Some));
+    byte.map_or(0, |byte| char_at(address, byte))
+}
+
+/// Where the `at`th character starts, in bytes, reading only the text before it, and none of
+/// it for ASCII. An index past either end fails as the interpreter's does.
+fn byte_of_char(state: &State, address: i64, at: i64, (start, end): (i64, i64)) -> Result<i64, Diagnostic> {
+    let block = u64::try_from(address).ok().and_then(|address| state.heap.block(address));
+    let block = block.filter(|block| super::heap::is_text(state, block)).ok_or_else(|| lost(start, end))?;
+    let header = |at: usize| block.get(at).and_then(|n| i64::try_from(*n).ok()).unwrap_or(0);
+    let (length, chars) = (header(2), header(3));
+    let wanted = if at < 0 { at + chars } else { at };
+    if !(0..chars).contains(&wanted) {
         let whole = text(state, address).ok_or_else(|| lost(start, end))?;
-        let at = crate::ops::index(&Value::str(&whole), &Value::Int(at), span(start, end))?;
-        match at {
-            Value::Str(one) => Ok(text_address(state, &one)),
-            _ => Err(lost(start, end)),
+        crate::ops::index(&Value::str(&whole), &Value::Int(at), span(start, end))?;
+        return Err(lost(start, end));
+    }
+    if length == chars {
+        return Ok(wanted);
+    }
+    let words = block.get(TEXT_HEADER_WORDS..).unwrap_or_default();
+    let mut seen = -1;
+    let bytes = words.iter().flat_map(|word| word.to_le_bytes()).take(usize::try_from(length).unwrap_or(0));
+    for (byte_at, byte) in bytes.enumerate() {
+        // Every byte but a continuation byte starts a character.
+        if byte & 0xC0 != 0x80 {
+            seen += 1;
+            if seen == wanted {
+                return i64::try_from(byte_at).map_err(|_| lost(start, end));
+            }
         }
-    })
+    }
+    Err(lost(start, end))
 }
 
 /// A string block's bytes, and its length in characters.

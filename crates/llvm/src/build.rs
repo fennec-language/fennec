@@ -12,25 +12,68 @@ const KIND: &str = "llvm";
 const MOST_THREADS: usize = 4;
 const PIPELINE: &str = "default<O3>";
 
+/// Whether `FENNEC_SANITIZE=address` asks for `AddressSanitizer`, to test that built programs
+/// touch only memory they own. Every function with attributes is instrumented, after the rest
+/// of the pipeline, as Clang does it, and the link takes `-fsanitize=address`.
+#[must_use]
+pub fn sanitizing() -> bool {
+    std::env::var_os("FENNEC_SANITIZE").is_some_and(|asked| asked == "address")
+}
+
+/// The passes `opt` runs.
+fn pipeline() -> String {
+    if sanitizing() { format!("{PIPELINE},asan") } else { PIPELINE.to_owned() }
+}
+
+/// A module's text, marked for `AddressSanitizer` to instrument when it's asked for: it only
+/// instruments functions that say `sanitize_address`, and they all take one of its attribute sets.
+fn marked(text: &str) -> std::borrow::Cow<'_, str> {
+    if !sanitizing() {
+        return text.into();
+    }
+    let lines = text.lines().map(|line| {
+        if line.starts_with("attributes #") {
+            line.replacen(" = { ", " = { sanitize_address ", 1)
+        } else {
+            line.to_owned()
+        }
+    });
+    lines.collect::<Vec<_>>().join("\n").into()
+}
+
 /// LLVM's programs.
 #[derive(Clone, Debug)]
 pub struct Tools {
     opt: PathBuf,
     llc: PathBuf,
+    link: PathBuf,
 }
 
 impl Tools {
     /// From `FENNEC_LLVM_BIN`, or the Rust toolchain's `llvm-tools` component. Nothing's
-    /// downloaded; what's missing is reported.
+    /// downloaded; what's missing is reported. Where the toolchain keeps them is remembered in
+    /// the Fennec home, as asking `rustc` each build costs more than the rest of an unchanged one.
     pub fn find() -> Result<Self, String> {
-        let folder = match std::env::var_os("FENNEC_LLVM_BIN") {
-            Some(folder) => PathBuf::from(folder),
-            None => toolchain_tools()?,
+        let remembered = fennec_build::fennec_home().map(|home| home.join("llvm-tools"));
+        let folder = if let Some(folder) = std::env::var_os("FENNEC_LLVM_BIN") {
+            PathBuf::from(folder)
+        } else if let Some(folder) = remembered.as_deref().and_then(remembered_folder) {
+            folder
+        } else {
+            let folder = toolchain_tools()?;
+            if let Some(at) = &remembered {
+                let _ = std::fs::write(at, folder.to_string_lossy().as_bytes());
+            }
+            folder
         };
-        let tools = Tools { opt: folder.join("opt"), llc: folder.join("llc") };
+        let tools =
+            Tools { opt: folder.join("opt"), llc: folder.join("llc"), link: folder.join("llvm-link") };
         if tools.opt.is_file() && tools.llc.is_file() {
             Ok(tools)
         } else {
+            if let Some(at) = &remembered {
+                let _ = std::fs::remove_file(at);
+            }
             Err(format!(
                 "LLVM's `opt` and `llc` aren't in {}; run `rustup component add llvm-tools` or set FENNEC_LLVM_BIN",
                 folder.display()
@@ -38,11 +81,33 @@ impl Tools {
         }
     }
 
-    /// What makes one version of the tools differ from another, for cache keys.
+    /// What makes one version of the tools differ from another, for cache keys: remembered
+    /// beside `llc`'s size and time, so it's only asked again when `llc` changes.
     fn version(&self) -> Result<String, String> {
+        let stamp = std::fs::metadata(&self.llc)
+            .ok()
+            .map(|meta| format!("{} {:?}", meta.len(), meta.modified().ok()));
+        let remembered = fennec_build::fennec_home().map(|home| home.join("llvm-version"));
+        if let (Some(stamp), Some(at)) = (&stamp, &remembered)
+            && let Ok(text) = std::fs::read_to_string(at)
+            && let Some((was, version)) = text.split_once('\n')
+            && was == stamp
+        {
+            return Ok(version.to_owned());
+        }
         let out = Command::new(&self.llc).arg("--version").output().map_err(|err| err.to_string())?;
-        Ok(String::from_utf8_lossy(&out.stdout).lines().take(2).collect::<Vec<_>>().join(" "))
+        let version = String::from_utf8_lossy(&out.stdout).lines().take(2).collect::<Vec<_>>().join(" ");
+        if let (Some(stamp), Some(at)) = (stamp, remembered) {
+            let _ = std::fs::write(at, format!("{stamp}\n{version}"));
+        }
+        Ok(version)
     }
+}
+
+/// The folder remembered for the toolchain's tools, if they're still there.
+fn remembered_folder(at: &Path) -> Option<PathBuf> {
+    let folder = PathBuf::from(std::fs::read_to_string(at).ok()?.trim());
+    (folder.join("opt").is_file() && folder.join("llc").is_file()).then_some(folder)
 }
 
 fn toolchain_tools() -> Result<PathBuf, String> {
@@ -72,7 +137,8 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, optimize: bool) -> Re
     let input = work.join(format!("{name}.ll"));
     let middle = work.join(format!("{name}.bc"));
     let output = work.join(format!("{name}.o"));
-    std::fs::write(&input, text).map_err(|err| format!("couldn't write {}: {err}", input.display()))?;
+    std::fs::write(&input, marked(text).as_bytes())
+        .map_err(|err| format!("couldn't write {}: {err}", input.display()))?;
     let run = |command: &mut Command, what: &str| {
         let done = command.output().map_err(|err| format!("couldn't run {what}: {err}"))?;
         if done.status.success() {
@@ -83,7 +149,11 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, optimize: bool) -> Re
     };
     let compiled_from = if optimize {
         run(
-            Command::new(&tools.opt).arg(format!("-passes={PIPELINE}")).arg(&input).arg("-o").arg(&middle),
+            Command::new(&tools.opt)
+                .arg(format!("-passes={}", pipeline()))
+                .arg(&input)
+                .arg("-o")
+                .arg(&middle),
             "opt",
         )?;
         &middle
@@ -99,6 +169,57 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, optimize: bool) -> Re
         "llc",
     )?;
     std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))
+}
+
+/// For a release: every function's module and `entry` linked into one, optimized as a whole,
+/// with nothing but `main` seen from outside, so LLVM inlines and specializes across the whole
+/// program. Nothing's cached, as any change changes the whole.
+pub fn compile_whole(tools: &Tools, units: &[Unit], entry: &str, work: &Path) -> Result<Built, String> {
+    std::fs::create_dir_all(work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
+    let mut inputs = Vec::with_capacity(units.len() + 1);
+    for (at, unit) in units.iter().enumerate() {
+        let input = work.join(format!("f{at}.ll"));
+        std::fs::write(&input, marked(&unit.text).as_bytes())
+            .map_err(|err| format!("couldn't write {}: {err}", input.display()))?;
+        inputs.push(input);
+    }
+    let entry_at = work.join("entry.ll");
+    std::fs::write(&entry_at, entry)
+        .map_err(|err| format!("couldn't write {}: {err}", entry_at.display()))?;
+    inputs.push(entry_at);
+    let (whole, optimized, output) = (work.join("whole.bc"), work.join("optimized.bc"), work.join("whole.o"));
+    let run = |command: &mut Command, what: &str| {
+        let done = command.output().map_err(|err| format!("couldn't run {what}: {err}"))?;
+        if done.status.success() {
+            Ok(())
+        } else {
+            Err(format!("{what} failed on the whole program:\n{}", String::from_utf8_lossy(&done.stderr)))
+        }
+    };
+    if !tools.link.is_file() {
+        return Err(format!("LLVM's `llvm-link` isn't beside `opt` in {}", tools.link.display()));
+    }
+    run(Command::new(&tools.link).args(&inputs).arg("-o").arg(&whole), "llvm-link")?;
+    run(
+        Command::new(&tools.opt)
+            .arg(format!("-passes=internalize,{}", pipeline()))
+            .arg("-internalize-public-api-list=main")
+            .arg(&whole)
+            .arg("-o")
+            .arg(&optimized),
+        "opt",
+    )?;
+    run(
+        Command::new(&tools.llc)
+            .args(["-O3", "-filetype=obj", "-relocation-model=pic"])
+            .arg(&optimized)
+            .arg("-o")
+            .arg(&output),
+        "llc",
+    )?;
+    let object =
+        std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))?;
+    Ok(Built { objects: vec![object], compiled: units.len() })
 }
 
 /// Compiles every function's module, using the cache's copy of any it already has, and `entry`.
@@ -125,8 +246,9 @@ pub fn compile(
                         at
                     };
                     let Some(unit) = units.get(at) else { return };
-                    let key = fennec_blake3::hash(format!("{version}\n{PIPELINE}\n{}", unit.text).as_bytes())
-                        .to_hex();
+                    let key =
+                        fennec_blake3::hash(format!("{version}\n{}\n{}", pipeline(), unit.text).as_bytes())
+                            .to_hex();
                     let cached = cache.and_then(|cache| cache.read(KIND, &key));
                     let result = match cached {
                         Some(bytes) => Ok((bytes, false)),

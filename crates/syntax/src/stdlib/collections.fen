@@ -220,6 +220,69 @@ struct Counter[T: Hashable]:
     def iter(self) -> list[T]:
         self.counts.keys()
 
+## Many small lists stored as one: every item in a single list, and a table of where each
+## inner list starts. However many lists it holds, that's two blocks of memory, where a
+## `list[list[T]]` needs one for each inner list. For graphs, mesh faces and grouped data,
+## the layout written by hand as compressed sparse rows. Lists are added whole at the end
+## and read back by position. They can't grow in the middle, which is the price of being
+## dense.
+struct Packed[T]:
+    _items: list[T] = []
+    ## Where each list starts in `_items`, and one more for where the last one ends.
+    _starts: list[int] = [0]
+
+    ## A packed copy of `lists`.
+    def of(lists: list[list[T]]) -> Packed[T]:
+        mut packed = Packed()
+        for items in lists:
+            packed.append(items)
+        packed
+
+    ## How many lists it holds.
+    def len(self) -> int:
+        self._starts.len() - 1
+
+    ## The list at `at`. One past the end stops the program, like a list.
+    def [](self, at: int) -> list[T]:
+        assert 0 <= at and at < self.len()
+        self._items[self._starts[at]:self._starts[at + 1]]
+
+    ## How many items the list at `at` holds, without reading them.
+    def len_of(self, at: int) -> int:
+        assert 0 <= at and at < self.len()
+        self._starts[at + 1] - self._starts[at]
+
+    ## How many items all the lists hold together.
+    def item_count(self) -> int:
+        self._items.len()
+
+    ## Adds `items` as a new list at the end.
+    def append(mut self, items: list[T]):
+        self._items.extend(items)
+        self._starts.append(self._items.len())
+
+    ## Starts a new, empty list at the end, for `push` to add to.
+    def start_list(mut self):
+        self._starts.append(self._items.len())
+
+    ## Adds `item` to the end of the last list. With no list yet, it starts one.
+    def push(mut self, item: T):
+        if self.len() == 0:
+            self.start_list()
+        self._items.append(item)
+        self._starts[-1] = self._items.len()
+
+    ## Every item of every list, in order, as one list.
+    def items(self) -> list[T]:
+        self._items
+
+    ## The lists, as a `list[list[T]]`.
+    def lists(self) -> list[list[T]]:
+        [self[at] for at in range(self.len())]
+
+    def iter(self) -> list[list[T]]:
+        self.lists()
+
 ## Moving a node under itself or one of its descendants.
 error TreeCycle:
     message: str
@@ -774,3 +837,100 @@ struct SortedSet[T: Ordered]:
     ## Whether every item is in `other`.
     def is_subset(self, other: SortedSet[T]) -> bool:
         all(other.has(item) for item in self.items())
+
+## A fixed-size table of cells, `width` across and `height` down, for boards, tile maps and
+## images. A cell is reached by its column and row, `grid[(x, y)]`, from `(0, 0)` at the top
+## left. A position outside the grid stops the program, like an index out of range; `get`
+## gives None for one instead. The cells are stored row by row in one list.
+struct Grid[T]:
+    width: int
+    height: int
+    _cells: list[T] = []
+
+    ## A grid with every cell set to `value`.
+    def filled(width: int, height: int, value: T) -> Grid[T]:
+        assert width >= 0 and height >= 0
+        Grid(width=width, height=height, _cells=[value for _ in range(width * height)])
+
+    ## A grid of `rows`, which all have to be the same length.
+    def of(rows: list[list[T]]) -> Grid[T]:
+        width = rows[0].len() if rows.len() > 0 else 0
+        mut cells = []
+        for row in rows:
+            assert row.len() == width
+            cells.extend(row)
+        Grid(width=width, height=rows.len(), _cells=cells)
+
+    ## How many cells it has.
+    def len(self) -> int:
+        self.width * self.height
+
+    ## Whether `(x, y)` is a cell of the grid.
+    def contains(self, at: (int, int)) -> bool:
+        x, y = at
+        0 <= x and x < self.width and 0 <= y and y < self.height
+
+    def [](self, at: (int, int)) -> T:
+        self._cells[self._spot(at)]
+
+    def []=(mut self, at: (int, int), value: T):
+        spot = self._spot(at)
+        self._cells[spot] = value
+
+    ## The cell at `(x, y)`, or None when that's outside the grid.
+    def get(self, at: (int, int)) -> T?:
+        if not self.contains(at): return None
+        self[at]
+
+    ## Sets every cell to `value`.
+    def fill(mut self, value: T):
+        self._cells = [value for _ in range(self.len())]
+
+    ## The cells that share an edge with `(x, y)`, up, right, down and left, leaving out
+    ## any outside the grid.
+    def neighbors(self, at: (int, int)) -> list[(int, int)]:
+        x, y = at
+        [near for near in [(x, y - 1), (x + 1, y), (x, y + 1), (x - 1, y)] if self.contains(near)]
+
+    ## The cells that share an edge or a corner with `(x, y)`, clockwise from the top left,
+    ## leaving out any outside the grid.
+    def neighbors8(self, at: (int, int)) -> list[(int, int)]:
+        x, y = at
+        around = [
+            (x - 1, y - 1),
+            (x, y - 1),
+            (x + 1, y - 1),
+            (x + 1, y),
+            (x + 1, y + 1),
+            (x, y + 1),
+            (x - 1, y + 1),
+            (x - 1, y),
+        ]
+        [near for near in around if self.contains(near)]
+
+    ## Every position, row by row from the top left.
+    def positions(self) -> list[(int, int)]:
+        [(at % self.width, at // self.width) for at in range(self.len())]
+
+    ## The cells of row `y`, from the left.
+    def row(self, y: int) -> list[T]:
+        assert 0 <= y and y < self.height
+        self._cells[y * self.width:(y + 1) * self.width]
+
+    ## The cells of column `x`, from the top.
+    def column(self, x: int) -> list[T]:
+        assert 0 <= x and x < self.width
+        [self._cells[y * self.width + x] for y in range(self.height)]
+
+    ## The rows, from the top.
+    def rows(self) -> list[list[T]]:
+        [self.row(y) for y in range(self.height)]
+
+    ## Every cell, row by row from the top left.
+    def iter(self) -> list[T]:
+        self._cells
+
+    def _spot(self, at: (int, int)) -> int:
+        assert self.contains(at)
+        x, y = at
+        y * self.width + x

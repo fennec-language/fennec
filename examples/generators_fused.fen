@@ -10,10 +10,8 @@ def parse(out: Stdout, line: str) -> Row:
 
 def upto(out: Stdout, limit: int) -> Iterator[int]:
     out.print("opening")
-    mut n = 0
-    while n < limit:
+    for n in range(limit):
         yield n
-        n += 1
     out.print("closing")
 
 def odd(numbers: Iterator[int]) -> Iterator[int]:
@@ -54,9 +52,9 @@ def up_to_failure(limit: int) -> int:
     total
 
 def pipeline(out: Stdout, src: list[str]) -> int:
-    lines = (l.strip() for l in src)
-    rows = (parse(out, l) for l in lines if l != "")
-    total = sum(r.amount for r in rows)
+    lines = (text_line.strip() for text_line in src)
+    rows = (parse(out, text_line) for text_line in lines if text_line != "")
+    total = sum(row.amount for row in rows)
     total
 
 def shadowed(stdout: Stdout):
@@ -105,10 +103,10 @@ def main(stdout: Stdout):
     stdout.print(first_big())
 
     # Each loop over the same function is its own copy.
-    for a in three():
-        for b in three():
-            if a == b:
-                stdout.print(a, b)
+    for outer in three():
+        for inner in three():
+            if outer == inner:
+                stdout.print(outer, inner)
 
     # Stripping, shared or not.
     stdout.print([

@@ -5,11 +5,11 @@ def noisy(out: Stdout, what: str, value: int) -> int:
     value
 
 def main(stdout: Stdout):
-    mut xs = [10, 20, 30]
-    xs[noisy(stdout, "position", 1)] = noisy(stdout, "value", 5)
-    stdout.print(xs)
-    xs[noisy(stdout, "position", 2)] += noisy(stdout, "value", 7)
-    stdout.print(xs)
+    mut values = [10, 20, 30]
+    values[noisy(stdout, "position", 1)] = noisy(stdout, "value", 5)
+    stdout.print(values)
+    values[noisy(stdout, "position", 2)] += noisy(stdout, "value", 7)
+    stdout.print(values)
     mut counts = {"a": 1}
     names = ["a", "b"]
     counts[names[noisy(stdout, "key", 1)]] = noisy(stdout, "value", 2)

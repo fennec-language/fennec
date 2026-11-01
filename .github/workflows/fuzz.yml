@@ -27,11 +27,20 @@ jobs:
             toolchain: ""
             flags: -C overflow-checks=on -C debug-assertions=on
             target: ""
+            only: ""
           # AddressSanitizer needs a nightly compiler, and the standard library built for it.
           - name: AddressSanitizer
             toolchain: nightly
             flags: -Zsanitizer=address -C overflow-checks=on -C debug-assertions=on
             target: x86_64-unknown-linux-gnu
+            only: ""
+          # Programs built through LLVM must print what the interpreter prints. This target runs
+          # only when named, since it needs `fennec`, its runtime library and LLVM's tools.
+          - name: LLVM
+            toolchain: ""
+            flags: ""
+            target: ""
+            only: llvm
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -45,12 +54,20 @@ jobs:
         run: |
           rustup toolchain install nightly --profile minimal --component rust-src
           echo "RUSTUP_TOOLCHAIN=nightly" >> "$GITHUB_ENV"
+      - name: Install LLVM's tools
+        if: matrix.only == 'llvm'
+        run: rustup component add llvm-tools-preview
       - name: Build the fuzzer
         env:
           RUSTFLAGS: ${{ matrix.flags }}
           BUILD_FOR: ${{ matrix.target }}
+          ONLY: ${{ matrix.only }}
         run: |
-          if [ -n "$BUILD_FOR" ]; then
+          if [ "$ONLY" = llvm ]; then
+            cargo build --release --locked -p fennec -p fennec-runtime -p fennec-fuzz
+            cp target/release/fennec-fuzz fennec-fuzz
+            echo "FENNEC=$PWD/target/release/fennec" >> "$GITHUB_ENV"
+          elif [ -n "$BUILD_FOR" ]; then
             cargo build --release --locked -p fennec-fuzz -Zbuild-std --target "$BUILD_FOR"
             cp "target/$BUILD_FOR/release/fennec-fuzz" fennec-fuzz
           else
@@ -59,7 +76,10 @@ jobs:
           fi
       - name: Fuzz every target
         id: fuzz
-        run: ./fennec-fuzz run --seed "$GITHUB_RUN_ID" --seconds 240 --found found | tee fuzz.txt
+        env:
+          ONLY: ${{ matrix.only }}
+        # With no target named, every target runs.
+        run: ./fennec-fuzz run --seed "$GITHUB_RUN_ID" --seconds 240 --found found ${ONLY:+"$ONLY"} | tee fuzz.txt
       - name: Keep what was found
         if: failure() && steps.fuzz.outcome == 'failure'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

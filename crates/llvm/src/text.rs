@@ -1,10 +1,10 @@
 //! Printing and f-strings.
 
-use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
+use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
 use fennec_ir::{FormatPart, LocalId, Operand};
 use fennec_syntax::{BinOp, Span};
 
-use crate::emit::{Emit, LENGTH_ACCESS};
+use crate::emit::{Emit, HEADER_ACCESS, LENGTH_ACCESS};
 use crate::kinds::Kind;
 
 impl Emit<'_, '_, '_> {
@@ -203,9 +203,7 @@ impl Emit<'_, '_, '_> {
                     piece
                 }
                 Some(so_far) => {
-                    self.declare("declare ptr @fennec_str_append(ptr, ptr) nounwind");
-                    let joined = self.temp();
-                    self.line(&format!("{joined} = call ptr @fennec_str_append(ptr {so_far}, ptr {piece})"));
+                    let joined = self.append_text(&so_far, &piece);
                     if owned {
                         self.release(&piece);
                     }
@@ -221,6 +219,56 @@ impl Emit<'_, '_, '_> {
             empty
         };
         self.assign(dest, &value)
+    }
+
+    /// `text += more`, taking over `text`'s owner: in place when nothing else holds it and it
+    /// has room, which needs no call, or by the runtime, which may make a bigger block.
+    pub(crate) fn append_text(&mut self, text: &str, more: &str) -> String {
+        self.declare("declare ptr @fennec_str_append(ptr, ptr) nounwind");
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        let header = HEADER_ACCESS;
+        let at = |emit: &mut Self, block: &str, offset: i32| emit.offset(block, offset.unsigned_abs());
+        let (count, alone) = (self.temp(), self.temp());
+        self.line(&format!("{count} = load i64, ptr {text}{header}"));
+        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        let (length_at, more_length_at, room_at) =
+            (at(self, text, TEXT_BYTES), at(self, more, TEXT_BYTES), at(self, text, TEXT_ROOM));
+        let (length, more_length, total, room, fits, quick) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{length} = load i64, ptr {length_at}{header}"));
+        self.line(&format!("{more_length} = load i64, ptr {more_length_at}{header}"));
+        self.line(&format!("{total} = add i64 {length}, {more_length}"));
+        self.line(&format!("{room} = load i64, ptr {room_at}{header}"));
+        self.line(&format!("{fits} = icmp ule i64 {total}, {room}"));
+        self.line(&format!("{quick} = and i1 {alone}, {fits}"));
+        let (in_place, by_runtime, joined) =
+            (self.label("in_place"), self.label("grow"), self.label("appended"));
+        self.line(&format!("br i1 {quick}, label %{in_place}, label %{by_runtime}, !prof !8"));
+        self.start_block(&in_place);
+        let (start, from) = (at(self, text, TEXT), at(self, more, TEXT));
+        let to = self.temp();
+        self.line(&format!("{to} = getelementptr inbounds i8, ptr {start}, i64 {length}"));
+        self.line(&format!(
+            "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {from}, i64 {more_length}, i1 false)"
+        ));
+        self.line(&format!("store i64 {total}, ptr {length_at}{header}"));
+        let (chars_at, more_chars_at) = (at(self, text, TEXT_CHARS), at(self, more, TEXT_CHARS));
+        let (chars, more_chars, all_chars) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{chars} = load i64, ptr {chars_at}{header}"));
+        self.line(&format!("{more_chars} = load i64, ptr {more_chars_at}{header}"));
+        self.line(&format!("{all_chars} = add i64 {chars}, {more_chars}"));
+        self.line(&format!("store i64 {all_chars}, ptr {chars_at}{header}"));
+        let quick_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&by_runtime);
+        let grown = self.temp();
+        self.line(&format!("{grown} = call ptr @fennec_str_append(ptr {text}, ptr {more})"));
+        let slow_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let result = self.temp();
+        self.line(&format!("{result} = phi ptr [ {text}, %{quick_end} ], [ {grown}, %{slow_end} ]"));
+        result
     }
 
     /// An operator on two strings.
@@ -241,8 +289,17 @@ impl Emit<'_, '_, '_> {
                     BinOp::Gt => "sgt",
                     _ => "sge",
                 };
+                // Strings of up to a word compare as big-endian numbers, the bytes past their
+                // ends masked off, then by length; longer ones go to the runtime.
+                self.declare("declare i64 @llvm.bswap.i64(i64)");
+                self.module.add_helper(
+                    "fen_compare_text",
+                    format!(
+                        "define internal i64 @fen_compare_text(ptr %a, ptr %b) #0 {{\nentry:\n  %a_at = getelementptr inbounds i8, ptr %a, i64 {TEXT_BYTES}\n  %b_at = getelementptr inbounds i8, ptr %b, i64 {TEXT_BYTES}\n  %an = load i64, ptr %a_at\n  %bn = load i64, ptr %b_at\n  %a_short = icmp ule i64 %an, 8\n  %b_short = icmp ule i64 %bn, 8\n  %both = and i1 %a_short, %b_short\n  br i1 %both, label %word, label %slow\nword:\n  %a_text = getelementptr inbounds i8, ptr %a, i64 {TEXT}\n  %b_text = getelementptr inbounds i8, ptr %b, i64 {TEXT}\n  %aw = load i64, ptr %a_text\n  %bw = load i64, ptr %b_text\n  %as = call i64 @llvm.bswap.i64(i64 %aw)\n  %bs = call i64 @llvm.bswap.i64(i64 %bw)\n  %a_bits = shl i64 %an, 3\n  %b_bits = shl i64 %bn, 3\n  %a_shift = sub i64 64, %a_bits\n  %b_shift = sub i64 64, %b_bits\n  %a_empty = icmp eq i64 %an, 0\n  %b_empty = icmp eq i64 %bn, 0\n  %a_keep = select i1 %a_empty, i64 0, i64 %a_shift\n  %b_keep = select i1 %b_empty, i64 0, i64 %b_shift\n  %a_ones = shl i64 -1, %a_keep\n  %b_ones = shl i64 -1, %b_keep\n  %a_mask = select i1 %a_empty, i64 0, i64 %a_ones\n  %b_mask = select i1 %b_empty, i64 0, i64 %b_ones\n  %ak = and i64 %as, %a_mask\n  %bk = and i64 %bs, %b_mask\n  %same = icmp eq i64 %ak, %bk\n  %lt = icmp ult i64 %ak, %bk\n  %gt = icmp ugt i64 %ak, %bk\n  %nlt = icmp ult i64 %an, %bn\n  %ngt = icmp ugt i64 %an, %bn\n  %less = select i1 %same, i1 %nlt, i1 %lt\n  %more = select i1 %same, i1 %ngt, i1 %gt\n  %low = select i1 %less, i64 -1, i64 0\n  %order = select i1 %more, i64 1, i64 %low\n  ret i64 %order\nslow:\n  %counted = call i64 @fennec_str_compare(ptr %a, ptr %b)\n  ret i64 %counted\n}}\n\n"
+                    ),
+                );
                 let (ordering, result) = (self.temp(), self.temp());
-                self.line(&format!("{ordering} = call i64 @fennec_str_compare(ptr {a}, ptr {b})"));
+                self.line(&format!("{ordering} = call i64 @fen_compare_text(ptr {a}, ptr {b})"));
                 self.line(&format!("{result} = icmp {cc} i64 {ordering}, 0"));
                 Ok(result)
             }

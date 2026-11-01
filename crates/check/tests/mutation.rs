@@ -344,3 +344,25 @@ fn only_places_can_be_assigned() {
     ";
     assert_eq!(problems(program), ["this can't be assigned to @ make()[0]"]);
 }
+
+#[test]
+fn a_parallel_loop_changes_its_own_items() {
+    let text = "struct Unit:\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit(hp=1)]\n    \
+        for mut unit in parallel(units):\n        unit.hp += 1\n        bonus = unit.hp * 2\n        stdout.print(bonus)\n";
+    let empty: [&str; 0] = [];
+    assert_eq!(problems(text), empty);
+}
+
+#[test]
+fn a_parallel_loop_cant_change_names_outside_it() {
+    let text = "def main(stdout: Stdout):\n    mut hps = [1, 2]\n    mut total = 0\n    mut log: list[int] = []\n    \
+        for mut hp in parallel(hps):\n        total += hp\n        log.append(hp)\n    for hp in parallel(hps):\n        total = hp\n";
+    assert_eq!(
+        problems(text),
+        [
+            "a `parallel` loop can't change `total`, which is outside it @ total",
+            "a `parallel` loop can't change `log`, which is outside it @ log",
+            "a `parallel` loop can't change `total`, which is outside it @ total",
+        ]
+    );
+}

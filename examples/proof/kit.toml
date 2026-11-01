@@ -1,0 +1,7 @@
+# Skirmish: a small tactics simulation, written to test whether values and `Id`s are enough
+# for graph-heavy code with no references.
+name = "skirmish"
+version = "0.1.0"
+fennec = "0.0.1"
+
+[dependencies]

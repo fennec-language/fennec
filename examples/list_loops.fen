@@ -10,19 +10,19 @@ struct Particle:
     def nudge(mut self, by: float):
         self.x += by
 
-def first_negative(xs: list[int]) -> int:
+def first_negative(numbers: list[int]) -> int:
     mut i = 0
-    while i < xs.len():
-        if xs[i] < 0: return i
+    while i < numbers.len():
+        if numbers[i] < 0: return i
         i += 1
     -1
 
 def main(stdout: Stdout):
-    mut xs = [1, 2, 3, 4]
-    copy = xs
-    for i in range(xs.len()):
-        xs[i] *= 10
-    stdout.print(xs, copy)
+    mut numbers = [1, 2, 3, 4]
+    kept = numbers
+    for i in range(numbers.len()):
+        numbers[i] *= 10
+    stdout.print(numbers, kept)
 
     mut grid = [0 for _ in range(12)]
     for row in range(3):
@@ -39,7 +39,5 @@ def main(stdout: Stdout):
     stdout.print(particles[0].x, particles[2].x)
 
     lists = [[1, 2], [3, 4]]
-    mut total = 0
-    for xs in lists:
-        total += xs[0] * xs[1]
-    stdout.print(total, xs)
+    total = sum(numbers[0] * numbers[1] for numbers in lists)
+    stdout.print(total, numbers)

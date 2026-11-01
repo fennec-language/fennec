@@ -1,0 +1,89 @@
+# `Tree` keeps parents and children in sync, on top of `IdMap`, with no references. A scene:
+# what's attached to what, read and changed through IDs.
+from std.collections import Tree, TreeCycle, TreeNode
+from std.game import Id
+
+struct Part:
+    name: str
+    x = 0.0
+
+    def shift(mut self, by: float):
+        self.x += by
+
+# Writing the type of an ID is only needed where one is stored.
+type PartId = Id[TreeNode[Part]]
+
+struct Camera:
+    follows: PartId
+
+# Where a part really is: its own position plus everything it's attached to.
+def world_x(scene: Tree[Part], id: PartId) -> float:
+    mut x = scene[id].x
+    for above in scene.ancestors(id):
+        x += scene[above].x
+    x
+
+def names(scene: Tree[Part], ids: list[PartId]) -> list[str]:
+    [scene[id].name for id in ids]
+
+def main(stdout: Stdout):
+    mut scene = Tree[Part]()
+    car = scene.add(Part(name="car", x=10.0))
+    trailer = scene.add(Part(name="trailer", x=-5.0))
+    wheel = scene.add(Part(name="wheel", x=2.0), parent=car)
+    hub = scene.add(Part(name="hub", x=0.5), parent=wheel)
+    door = scene.add(Part(name="door", x=1.0), parent=car)
+    camera = Camera(follows=hub)
+    stdout.print(scene.len(), names(scene, scene.roots()))
+
+    # Values are changed through an ID.
+    scene[car].x += 5.0
+    scene[door].shift(0.5)
+    scene[door].name += " (left)"
+    stdout.print(scene[car], scene[door], world_x(scene, camera.follows))
+
+    # Walking up and down.
+    stdout.print(
+        scene.parent(wheel) == car,
+        scene.parent(car),
+        scene.up(hub, 2) == car,
+        scene.up(hub, 3),
+    )
+    stdout.print(names(scene, scene.children(car)), names(scene, scene.ancestors(hub)))
+    stdout.print(names(scene, scene.descendants(car)))
+
+    # A copy is independent, so undo is a saved value.
+    saved = scene
+
+    # Moving a subtree takes what's below it along.
+    scene.move(wheel, trailer)?
+    stdout.print(names(scene, scene.children(car)), names(scene, scene.descendants(trailer)))
+    stdout.print(world_x(scene, hub), world_x(saved, hub))
+
+    # A node can't end up below itself.
+    match scene.move(trailer, hub):
+        case Ok():
+            stdout.print("moved")
+        case Err(TreeCycle(message)):
+            stdout.print(message)
+    match scene.move(hub, hub):
+        case Ok():
+            stdout.print("moved")
+        case Err(TreeCycle(message)):
+            stdout.print(message)
+
+    scene.make_root(wheel)
+    stdout.print(names(scene, scene.roots()), scene.parent(wheel))
+
+    # Removing a node removes what's below it, and old IDs say so.
+    scene.remove(wheel)
+    stdout.print(
+        scene.len(),
+        names(scene, scene.roots()),
+        scene.get(hub),
+        scene.get(car) == scene[car],
+    )
+    scene.remove(trailer)
+    stdout.print(names(scene, scene.roots()), saved.len(), saved[hub].name)
+    scene.remove(door)
+    stdout.print(scene.children(car))

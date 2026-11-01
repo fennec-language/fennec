@@ -28,9 +28,9 @@ def main(stdout: Stdout):
     by_pair[(1, "k1")] = [7]
     stdout.print(by_pair[(1, "k1")], by_pair.keys()[by_pair.len() - 1])
 
-    copy = by_pair
+    kept = by_pair
     by_pair[(2, "new")] = [1]
-    stdout.print(copy.len(), by_pair.len(), copy == by_pair, copy == copy, (2, "new") in copy)
+    stdout.print(kept.len(), by_pair.len(), kept == by_pair, kept == kept, (2, "new") in kept)
 
     mut floats: dict[float, int] = {}
     for i in range(40):

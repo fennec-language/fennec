@@ -16,7 +16,7 @@ pub(crate) const WRONG: u8 = 3;
 /// How a run says a panic ended it.
 pub(crate) const PANICKED: u8 = 4;
 
-/// How long one input may take before it counts as stuck.
+/// How long one input may take before it counts as stuck, unless its target says otherwise.
 pub(crate) const STUCK: Duration = Duration::from_secs(10);
 /// The most memory a worker may hold.
 const MOST_KILOBYTES: u64 = 4 * 1024 * 1024;
@@ -145,7 +145,7 @@ impl Run<'_> {
             let _ = std::fs::remove_file(&progress);
             let mut child = self.worker(next, inputs, &progress)?;
             let mut last = None;
-            let failure = watch(&mut child, STUCK, Some(deadline), || {
+            let failure = watch(&mut child, self.target.stuck, Some(deadline), || {
                 let now = noted(&progress);
                 let moved = now != last;
                 last = now;

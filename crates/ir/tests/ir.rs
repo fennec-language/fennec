@@ -1440,22 +1440,25 @@ fn a_tuple_pattern_tests_each_part() {
 }
 
 #[test]
-fn a_question_dot_gives_none_for_none() {
+fn an_else_chain_gives_the_default_for_none() {
     let source = "struct P:
     level: int
 
-def f(p: P?) -> int?:
-    p?.level
+def f(p: P?) -> int:
+    p.level else 0
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(_0) -> int?
+        "fn f(_0) -> int
   local _0 p: P?
   local _1: int?
   local _2: bool
   local _3: P
   local _4: int
   local _5: int?
+  local _6: bool
+  local _7: int
+  local _8: int
   bb0:
     _2 = _0 is none
     branch _2 bb1 bb2
@@ -1469,7 +1472,17 @@ def f(p: P?) -> int?:
     _1 = _5
     jump bb3
   bb3:
-    return _1
+    _6 = _1 is none
+    branch _6 bb4 bb5
+  bb4:
+    _7 = 0
+    jump bb6
+  bb5:
+    _8 = _1 as some
+    _7 = _8
+    jump bb6
+  bb6:
+    return _7
 "
     );
 }
@@ -1777,25 +1790,28 @@ fn an_assert_stops_the_program() {
 }
 
 #[test]
-fn a_question_dot_call_runs_only_on_a_value() {
+fn an_else_chain_call_runs_only_on_a_value() {
     let source = "struct P:
     level: int
 
     def up(self) -> int:
         self.level + 1
 
-def f(p: P?) -> int?:
-    p?.up()
+def f(p: P?) -> int:
+    p.up() else 0
 ";
     assert_eq!(
         printed(source, "f").unwrap(),
-        "fn f(_0) -> int?
+        "fn f(_0) -> int
   local _0 p: P?
   local _1: int?
   local _2: bool
   local _3 ?.: P
   local _4: int
   local _5: int?
+  local _6: bool
+  local _7: int
+  local _8: int
   bb0:
     _2 = _0 is none
     branch _2 bb1 bb2
@@ -1809,7 +1825,17 @@ def f(p: P?) -> int?:
     _1 = _5
     jump bb3
   bb3:
-    return _1
+    _6 = _1 is none
+    branch _6 bb4 bb5
+  bb4:
+    _7 = 0
+    jump bb6
+  bb5:
+    _8 = _1 as some
+    _7 = _8
+    jump bb6
+  bb6:
+    return _7
 "
     );
 }
@@ -2400,4 +2426,55 @@ def found(pair: Pair, pairs: list[Pair]) -> bool:
     assert!(same.contains(".pair") && same.contains("Pair.=="), "{same}");
     let problem = printed(source, "found").unwrap_err();
     assert!(problem.contains("its own `==`"), "{problem}");
+}
+
+/// Every lowered function whose name starts with `name`, printed.
+fn printed_copies(source: &str, name: &str) -> Result<String, String> {
+    let program = lowered(source)?;
+    let found: Vec<String> = program
+        .functions
+        .iter()
+        .filter(|function| function.name.starts_with(name))
+        .map(ToString::to_string)
+        .collect();
+    if found.is_empty() {
+        return Err(format!("no {name}: {:?}", program.not_lowered));
+    }
+    Ok(found.join("\n"))
+}
+
+#[test]
+fn a_loop_over_what_a_yield_method_gives_is_a_plain_loop() {
+    let methods = "
+    def [](self, at: int) -> Iterator[T]:
+        for item in self.items[self.starts[at]:self.starts[at + 1]]:
+            yield item
+
+    def all(self) -> Iterator[T]:
+        for item in self.items:
+            yield item
+";
+    let total = "
+def total(packed: Packed[int], at: int) -> int:
+    mut sum_so_far = 0
+    for n in packed[at]:
+        sum_so_far += n
+    for n in packed.all():
+        sum_so_far += n
+    sum_so_far
+
+def main(stdout: Stdout):
+    stdout.print(total(Packed(items=[1, 2, 3], starts=[0, 2, 3]), 1))
+";
+    let generic = format!("struct Packed[T]:\n    items: list[T]\n    starts: list[int]\n{methods}{total}");
+    let plain = generic
+        .replace("Packed[T]", "Packed")
+        .replace("Iterator[T]", "Iterator[int]")
+        .replace("list[T]", "list[int]")
+        .replace("Packed[int]", "Packed");
+    for source in [plain, generic] {
+        let text = printed_copies(&source, "total").unwrap();
+        assert!(!text.contains("generator") && !text.contains("resume"), "{text}");
+        assert!(!text.contains("call "), "{text}");
+    }
 }

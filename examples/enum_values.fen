@@ -56,7 +56,7 @@ def step(at: Cell, dir: Dir, count: int) -> Cell:
 def apply(robot: Robot, move: Move) -> Robot:
     match move:
         case .Step(dir, count):
-            Robot(at=step(robot.at, dir, count), facing=dir, last=move)
+            Robot(at=step(robot.at, dir=dir, count=count), facing=dir, last=move)
         case .Jump(Cell(row, col)):
             Robot(at=Cell(row=row, col=col), facing=robot.facing, last=move)
         case _:
@@ -108,7 +108,7 @@ def main(stdout: Stdout):
         .Step(.North, 3),
         Move.Step(dir=.East, count=0),
         .Step(.West, 2),
-        .Jump(Cell(0, 0)),
+        .Jump(Cell(0, col=0)),
         .Jump(to=Cell(row=4, col=-1)),
         .Wait(),
         .Wait(turns=3),
@@ -125,10 +125,16 @@ def main(stdout: Stdout):
     stdout.print(start)
 
     # Copies are independent, and `==` compares case and contents.
-    mut a = Move.Step(.South, 2)
-    b = a
-    a = .Step(.South, 3)
-    stdout.print(a == b, a != b, b == .Step(.South, 2), b == Move.Quit, Move.Wait() == .Wait(1))
+    mut first = Move.Step(.South, 2)
+    second = first
+    first = .Step(.South, 3)
+    stdout.print(
+        first == second,
+        first != second,
+        second == .Step(.South, 2),
+        second == Move.Quit,
+        Move.Wait() == .Wait(1),
+    )
     stdout.print(Token.Decimal(0.0) == .Decimal(-0.0), Token.Decimal(1.5) == .Decimal(1.5))
 
     tokens = [

@@ -4,4 +4,4 @@ error: this might be None
 12 |     stdout.print(player.name)
    |                  ^^^^^^^^^^^
    |
-   = help: check with `if x is None:` first, use `?.`, or give a default with `else`
+   = help: end the chain with `else` and a default, like `x.name else ""`, or check with `if x is None:` first

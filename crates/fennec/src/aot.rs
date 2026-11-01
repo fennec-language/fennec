@@ -61,7 +61,7 @@ pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
 
 /// `fennec build --llvm`: the same through LLVM, which says what it can't take yet rather than
 /// falling back to anything.
-pub(crate) fn build_llvm(path: &str, output: Option<&str>) -> ExitCode {
+pub(crate) fn build_llvm(path: &str, output: Option<&str>, release: bool) -> ExitCode {
     if cfg!(windows) {
         eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run`");
         return ExitCode::FAILURE;
@@ -72,7 +72,7 @@ pub(crate) fn build_llvm(path: &str, output: Option<&str>) -> ExitCode {
     }
     let output = output.map_or_else(|| default_output(path, &program), PathBuf::from);
     let started = Instant::now();
-    match llvm_objects(&program) {
+    match llvm_objects(&program, release) {
         Ok((objects, total, fresh)) => {
             let compiled = started.elapsed();
             match link_objects(&objects, &output) {
@@ -100,7 +100,10 @@ pub(crate) fn build_llvm(path: &str, output: Option<&str>) -> ExitCode {
 
 /// Lowers what the program reaches and compiles it: the objects, how many functions, and how
 /// many weren't already in the cache.
-fn llvm_objects(program: &fennec_kit::Program) -> Result<(Vec<Vec<u8>>, usize, usize), String> {
+fn llvm_objects(
+    program: &fennec_kit::Program,
+    release: bool,
+) -> Result<(Vec<Vec<u8>>, usize, usize), String> {
     let mut reached = program.module.clone();
     fennec_build::keep_what_main_reaches(&mut reached);
     let checked =
@@ -127,7 +130,11 @@ fn llvm_objects(program: &fennec_kit::Program) -> Result<(Vec<Vec<u8>>, usize, u
         .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
         .map(fennec_build::Cache::new);
     let work = std::env::temp_dir().join(format!("fennec-llvm-{}", std::process::id()));
-    let built = fennec_llvm::compile(&tools, &units, &entry, cache.as_ref(), &work);
+    let built = if release {
+        fennec_llvm::compile_whole(&tools, &units, &entry, &work)
+    } else {
+        fennec_llvm::compile(&tools, &units, &entry, cache.as_ref(), &work)
+    };
     // `FENNEC_LLVM_KEEP` leaves the modules' text to look at.
     if std::env::var_os("FENNEC_LLVM_KEEP").is_none() {
         let _ = std::fs::remove_dir_all(&work);
@@ -152,6 +159,8 @@ fn link_objects(objects: &[Vec<u8>], output: &Path) -> Result<std::time::Duratio
         .args(&paths)
         .arg(&runtime)
         .args(SYSTEM_LIBRARIES)
+        // `FENNEC_SANITIZE=address` links in AddressSanitizer's runtime.
+        .args(fennec_llvm::sanitizing().then_some("-fsanitize=address"))
         .arg("-o")
         .arg(output)
         .output()

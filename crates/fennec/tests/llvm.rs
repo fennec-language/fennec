@@ -4,6 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use crate::executables::runtime_built;
+
 /// How many examples this backend takes, at least.
 const BUILDING_EXAMPLES: usize = 21;
 
@@ -42,11 +44,19 @@ fn same_message_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
 
 /// What the program printed, its errors and its exit code, built with LLVM and run by the JIT.
 fn both(name: &str, source: &str) -> std::io::Result<(Outcome, Outcome)> {
+    both_built(name, source, &["--llvm"])
+}
+
+/// The same, built with these options.
+fn both_built(name: &str, source: &str, how: &[&str]) -> std::io::Result<(Outcome, Outcome)> {
     let dir = folder(name)?;
     let program = dir.join(format!("{name}.fen"));
     std::fs::write(&program, source)?;
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
-    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    let output = executable.to_string_lossy().into_owned();
+    let args: Vec<&str> =
+        ["build"].into_iter().chain(how.iter().copied()).chain([program.as_str(), "-o", &output]).collect();
+    let built = fennec(&args, &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = outcome(&Command::new(&executable).output()?);
     let jit = outcome(&fennec(&["run", &program], &dir)?);
@@ -62,16 +72,6 @@ fn outcome(output: &Output) -> Outcome {
         String::from_utf8_lossy(&output.stderr).into_owned(),
         output.status.code(),
     )
-}
-
-/// The runtime library, built as `executables.rs` builds it, every time.
-fn runtime_built() -> bool {
-    let profile = if cfg!(debug_assertions) { None } else { Some("--release") };
-    Command::new(env!("CARGO"))
-        .args(["build", "--quiet", "-p", "fennec-runtime"])
-        .args(profile)
-        .status()
-        .is_ok_and(|status| status.success())
 }
 
 #[test]
@@ -348,6 +348,14 @@ def main(stdout: Stdout):
     mut text = "abc"
     text += "def"
     stdout.print(text, text.len(), text[1:3], "bc" in text, text < "b")
+    zeros = [0 for _ in range(5)]
+    mut flags = [False for _ in range(3)]
+    flags[1] = True
+    mut none = [0 for _ in range(0 - 2)]
+    none.append(7)
+    stdout.print(zeros.len(), zeros[4], flags, none)
+    first = "abc"
+    stdout.print("a" < "b", "ab" < "a", "" < "a", first <= "abc", "é" > "z", "abcdefghij" < "abcdefghik", "b" >= "abc")
     maybe: int? = None
     other: int? = 5
     stdout.print(maybe is None, other is None)
@@ -474,13 +482,18 @@ fn counts_of(name: &str, source: &str) -> std::io::Result<String> {
 }
 
 #[test]
-fn a_dict_in_a_field_changes_without_being_copied() -> std::io::Result<()> {
+fn what_a_field_or_an_items_field_holds_changes_without_being_copied() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
         return Ok(());
     }
     let counts = counts_of(
         "field",
         "struct Counter:\n    counts: dict[int, int]\n\n    def bump(mut self, key: int):\n        self.counts[key] = (self.counts.get(key) else 0) + 1\n\ndef main(stdout: Stdout):\n    mut counter = Counter(counts={})\n    for i in range(1000):\n        counter.bump(i % 64)\n    stdout.print(counter.counts[0])\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    let counts = counts_of(
+        "items",
+        "struct Var:\n    value: int\n    links: list[int]\n\nstruct Holder:\n    vars: list[Var]\n\n    def add(mut self, value: int):\n        self.vars.append(Var(value=value, links=[]))\n\n    def link(mut self, at: int, other: int):\n        self.vars[at].links.append(other)\n\ndef main(stdout: Stdout):\n    mut holder = Holder(vars=[])\n    for i in range(100):\n        holder.add(i)\n    for i in range(1000):\n        holder.link(i % 100, i)\n    stdout.print(holder.vars[5].links.len())\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     Ok(())
@@ -500,6 +513,18 @@ fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
         .nth(1)
         .and_then(|number| number.parse::<u64>().ok());
     assert!(allocations.is_some_and(|count| count < 100), "{counts}");
+    Ok(())
+}
+
+#[test]
+fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = "struct Point:\n    x: int\n    y: int\n\n    def moved(self, by: int) -> Point:\n        Point(x=self.x + by, y=self.y - by)\n\ndef count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef main(stdout: Stdout):\n    mut points = [Point(x=i, y=i * 2) for i in range(5)]\n    mut seen: dict[str, int] = {}\n    for point in points:\n        moved = point.moved(3)\n        seen[f\"{moved.x}\"] = moved.y\n    stdout.print(seen.len(), sum(n for n in count_up(10)), points[4].moved(1).y)\n    stdout.print([1, 2][5])\n";
+    let (ours, jit) = both_built("release", source, &["--llvm", "--release"])?;
+    assert_eq!((ours.0, ours.2), (jit.0, jit.2));
+    assert_eq!(ours.1.lines().next(), jit.1.lines().next());
     Ok(())
 }
 

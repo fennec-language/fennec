@@ -19,7 +19,7 @@ struct Holder:
         self.total
 
     def label(self) -> str:
-        self.maybe?.label else "none"
+        self.maybe.label else "none"
 
     def set_inner(mut self, label: str):
         self.maybe = Inner(label=label, note=None)
@@ -52,16 +52,16 @@ def main(stdout: Stdout):
     stdout.print(holder.count, holder.maybe, holder.pair, holder.grid, holder.words, holder.label())
     stdout.print(holder.bump(), holder.bump(), holder.total)
     holder.set_inner("kit")
-    stdout.print(holder.label(), holder.maybe?.note, holder.maybe)
+    stdout.print(holder.label(), holder.maybe.note else "none", holder.maybe)
 
-    copy = holder
+    saved = holder
     holder.pair = (2, "two")
     holder.grid[0][1] = 9
     holder.grid.append([7])
     holder.words.append("b")
     holder.count = 100
-    stdout.print(copy.pair, holder.pair, copy.grid, holder.grid, copy.words, holder.words)
-    stdout.print(copy.count, holder.count, copy == holder, copy == copy)
+    stdout.print(saved.pair, holder.pair, saved.grid, holder.grid, saved.words, holder.words)
+    stdout.print(saved.count, holder.count, saved == holder, saved == saved)
     x, y = holder.pair
     stdout.print(x, y, holder.grid[1], holder.grid[0][1], holder.words[2])
     for row in holder.grid:
@@ -84,12 +84,12 @@ def main(stdout: Stdout):
     # A value handed over as an object stays as it was, whatever native code does next.
     mut original = fresh()
     original.grid = [[1]]
-    held = maybe(original, True)
+    held = maybe(original, given=True)
     kept = (original, 5)
     original.count = 77
     original.grid.append([2])
     original.words.append("later")
-    stdout.print(held?.count, held?.grid, original.count, original.grid, kept)
-    stdout.print(held is None, held is not None, held == original, held?.pair)
-    missing = maybe(original, False)
-    stdout.print(missing is None, missing?.count)
+    stdout.print(held.count else 0, held.grid else [], original.count, original.grid, kept)
+    stdout.print(held is None, held is not None, held == original, held.pair else (0, ""))
+    missing = maybe(original, given=False)
+    stdout.print(missing is None, missing.count else -1)

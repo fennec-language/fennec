@@ -11,7 +11,7 @@ from std.re import Regex
 
 def first_word(text: str) -> str:
     found = Regex(r"\w+").search(text)
-    found?.text else ""
+    found.text else ""
 
 def main(stdout: Stdout):
     mut queue = std.collections.Deque()
@@ -20,6 +20,6 @@ def main(stdout: Stdout):
     stdout.print(queue.popleft(), queue.len())
 
     mut rng = random.Random(seed=7)
-    stdout.print(rng.randint(1, 6))
+    stdout.print(rng.randint(1, high=6))
 
     stdout.print(first_word("  hello world"))

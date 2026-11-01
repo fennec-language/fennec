@@ -29,6 +29,7 @@ mod index;
 mod infer;
 mod keys;
 mod messages;
+mod parallel;
 mod pattern;
 mod place;
 mod program;
@@ -170,6 +171,8 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
         || !checked.not_equals.is_empty()
+        || !checked.parallel_changes.is_empty()
+        || !checked.optional_steps.is_empty()
         || !checked.std_names.is_empty()
     {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
@@ -185,6 +188,17 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             }
             if let Some(function) = checked.std_names.get(&span) {
                 expr.kind = fennec_syntax::ExprKind::Name(function.clone());
+            }
+            if checked.optional_steps.contains(&span)
+                && let fennec_syntax::ExprKind::Attr { optional, .. } = &mut expr.kind
+            {
+                *optional = true;
+            }
+            if checked.parallel_changes.contains(&span)
+                && let fennec_syntax::ExprKind::Call { args, .. } = &expr.kind
+                && let Some(items) = args.first()
+            {
+                *expr = items.value.clone();
             }
             if checked.not_equals.contains(&span) {
                 fennec_syntax::visit::not_of_equals(expr);
@@ -224,6 +238,11 @@ pub struct Checked {
     std_names: BTreeMap<(u32, u32), String>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     not_equals: BTreeSet<(u32, u32)>,
+    /// The fields and method calls on a value that might be missing, in a chain an `else`
+    /// ends, which are written in as optional.
+    optional_steps: BTreeSet<(u32, u32)>,
+    /// The `parallel(xs)` that a `for mut` loops over, which becomes `xs`.
+    parallel_changes: BTreeSet<(u32, u32)>,
 }
 
 /// The typed tree: the type of every expression and every declared name in a program,

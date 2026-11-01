@@ -1,0 +1,7 @@
+error: `times` takes its type from its default, so `: int` isn't needed
+ --> examples/errors/default_type_written.fen:1:30
+  |
+1 | def repeat(text: str, times: int = 2) -> str:
+  |                              ^^^
+  |
+  = help: remove the type, so it reads `times=` and its default

@@ -24,14 +24,14 @@ def count(shape: Shape) -> int:
         case .Moved(_, inner):
             count(inner)
 
-def shift(shape: Shape, dx: int) -> Shape:
+def shift(shape: Shape, offset: int) -> Shape:
     match shape:
         case .Dot(at):
-            .Dot(Point(x=at.x + dx, y=at.y))
+            .Dot(Point(x=at.x + offset, y=at.y))
         case .Group(first, rest):
-            .Group(shift(first, dx), shift(rest, dx))
+            .Group(shift(first, offset), rest=shift(rest, offset))
         case moved:
-            .Moved(Point(x=dx, y=0), moved)
+            .Moved(Point(x=offset, y=0), moved)
 
 def first_dot(shape: Shape) -> Point:
     mut at = shape
@@ -56,7 +56,7 @@ def deepest(shapes: list[Shape], limit: int) -> int:
 def row(n: int) -> Shape:
     mut shape = Shape.Dot(Point(x=0, y=0))
     for i in range(1, n):
-        shape = .Group(.Dot(Point(x=i, y=i * i)), shape)
+        shape = .Group(.Dot(Point(x=i, y=i * i)), rest=shape)
     shape
 
 def main(stdout: Stdout):

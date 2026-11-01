@@ -331,4 +331,86 @@ mod tests {
         assert_eq!(word(dict, 16), Some(3));
         finish();
     }
+
+    #[test]
+    fn indexing_text_reads_only_what_it_needs() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let (plain, accented) = (string("abc"), string("aéb€c"));
+        let at = |text, at| text_of(strings::index(text, at, 0, 0));
+        assert_eq!([at(plain, 0), at(plain, 2), at(plain, -1)], ["a", "c", "c"]);
+        assert_eq!(
+            [at(accented, 1), at(accented, 2), at(accented, 3), at(accented, -1)],
+            ["é", "b", "€", "c"]
+        );
+        assert_eq!(strings::index(plain, 3, 0, 0), 0);
+        let (_, failure, _) = finish();
+        assert!(failure.unwrap().message.contains("out of range"));
+    }
+
+    #[test]
+    fn stripping_takes_off_what_str_trim_does() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        for text in ["  a b  ", "\t\n\x0b\x0cx\r ", "   ", "", "ok", " é ", "\x1fy\x1f", "a\u{a0}"] {
+            for (which, expected) in [(0, text.trim()), (1, text.trim_start()), (2, text.trim_end())] {
+                assert_eq!(text_of(strings::strip(string(text), which)), expected, "{text:?} {which}");
+            }
+        }
+        finish();
+    }
+
+    /// Native code hashes string keys itself, slices of strings too, so this is fixed.
+    #[test]
+    fn a_string_key_s_hash_stays_what_native_code_works_out() {
+        use super::super::dicts::hash_text;
+        assert_eq!(hash_text(0, &[]), 0);
+        let word = u64::from_le_bytes(*b"ggta\0\0\0\0");
+        let mix: u64 = 0x9E37_79B9_7F4A_7C15;
+        let h = (4_u64.wrapping_mul(mix).rotate_left(23) ^ word).wrapping_mul(mix);
+        assert_eq!(hash_text(4, &[word]), (h ^ (h >> 29)) >> 1);
+        assert_eq!(hash_text(4, &[word]), 0x6b45_6e2d_7b01_4de3);
+    }
+
+    #[test]
+    fn popping_a_dict_key_hands_back_its_value() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let words = super::super::dicts::Word::Int;
+        let shape = super::super::dicts::shape(0, words, words).unwrap();
+        let mut dict = super::super::dicts::new(i64::try_from(shape).unwrap(), 4);
+        dict = super::super::dicts::set(dict, 3, 30);
+        dict = super::super::dicts::set(dict, 4, 40);
+        dict = super::super::dicts::pop(dict, 3, 0, 0);
+        assert_eq!(super::super::dicts::popped(), 30);
+        assert_eq!(word(dict, 16), Some(1));
+        super::super::dicts::pop(dict, 3, 0, 0);
+        let (_, failure, _) = finish();
+        assert_eq!(failure.unwrap().message, "the dict has no key 3");
+    }
+
+    #[test]
+    fn a_struct_named_after_a_tuple_type_reads_and_writes_as_a_tuple() {
+        let pair = Element::Struct {
+            name: Rc::from("(int, str)"),
+            fields: vec![(Rc::from("_0"), Element::Int), (Rc::from("_1"), Element::Str)],
+        };
+        let tables = Tables {
+            shapes: vec![Rc::new(pair.clone()), Rc::new(Element::Str)],
+            str_shape: 1,
+            ..Tables::default()
+        };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        with(|state| {
+            let tuple =
+                crate::value::Value::tuple(vec![crate::value::Value::Int(1), crate::value::Value::str("a")]);
+            let mut words = Vec::new();
+            heap::write(state, &pair, &tuple, &mut words).unwrap();
+            let block = heap::write_block(state, 0, &tuple).unwrap();
+            assert_eq!(heap::read_block(state, u64::try_from(block).unwrap()), tuple);
+        });
+        finish();
+    }
 }

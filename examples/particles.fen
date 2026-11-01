@@ -3,39 +3,43 @@
 
 struct Particle:
     x = 0.0
-    vx = 1.0
+    velocity = 1.0
     hits = 0
 
     def step(mut self, dt: float):
-        self.x += self.vx * dt
+        self.x += self.velocity * dt
         if self.x > 10.0:
-            self.vx = -self.vx
+            self.velocity = -self.velocity
             self.hits += 1
 
     def +(self, other: Particle) -> Particle:
-        Particle(x=self.x + other.x, vx=self.vx + other.vx, hits=self.hits + other.hits)
+        Particle(
+            x=self.x + other.x,
+            velocity=self.velocity + other.velocity,
+            hits=self.hits + other.hits,
+        )
 
 struct Swarm:
     particles: list[Particle]
 
     def run(mut self, frames: int):
         for frame in range(frames):
-            for mut p in self.particles:
-                p.step(0.5)
+            for mut particle in self.particles:
+                particle.step(0.5)
 
     # Stops at the first particle that has bounced, after nudging it.
     def nudge_first_bounced(mut self) -> bool:
-        for mut p in self.particles:
-            if p.hits > 0:
-                p.x = 0.0
+        for mut particle in self.particles:
+            if particle.hits > 0:
+                particle.x = 0.0
                 return True
         False
 
 def main(stdout: Stdout):
-    mut swarm = Swarm(particles=[Particle(vx=float(i)) for i in range(4)])
+    mut swarm = Swarm(particles=[Particle(velocity=float(i)) for i in range(4)])
     swarm.run(12)
-    for p in swarm.particles:
-        stdout.print(f"{p.x:.1f} {p.vx} {p.hits}")
+    for particle in swarm.particles:
+        stdout.print(f"{particle.x:.1f} {particle.velocity} {particle.hits}")
     stdout.print(swarm.nudge_first_bounced(), swarm.particles[2].x)
 
     total = swarm.particles[0] + swarm.particles[3]

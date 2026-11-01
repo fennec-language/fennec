@@ -1,7 +1,7 @@
 //! Writing functions as LLVM's text. Each local is a stack slot and every read and write goes
 //! through it, which LLVM's first pass turns into proper SSA.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use fennec_interp::embed::layout::COUNT;
@@ -24,7 +24,9 @@ attributes #2 = { alwaysinline nounwind \"frame-pointer\"=\"non-leaf\" }\n\
 !5 = !{!\"item\", !2, i64 0}\n\
 !6 = !{!5, !5, i64 0}\n\
 !7 = !{i64 0, i64 281474976710657}\n\
-!8 = !{!\"branch_weights\", i32 100000, i32 1}\n";
+!8 = !{!\"branch_weights\", i32 100000, i32 1}\n\
+!9 = !{!\"field\", !2, i64 0}\n\
+!10 = !{!9, !9, i64 0}\n";
 
 /// Where a string block's bytes start.
 pub(crate) const TEXT_START: u32 = fennec_interp::embed::layout::TEXT.unsigned_abs();
@@ -32,12 +34,16 @@ pub(crate) const TEXT_START: u32 = fennec_interp::embed::layout::TEXT.unsigned_a
 /// A list's header, and what's in it, never overlap its items, and a length is far from any limit.
 pub(crate) const HEADER_ACCESS: &str = ", !tbaa !4";
 pub(crate) const ITEM_ACCESS: &str = ", !tbaa !6";
+/// A boxed struct's or enum's fields never overlap a block's header or a list's items.
+pub(crate) const FIELD_ACCESS: &str = ", !tbaa !10";
 pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7";
 
 /// Below this many instructions, a function that calls nothing is always inlined.
 const ALWAYS_INLINE: usize = 16;
-/// Below this many, a function that calls nothing is copied to its callers to be inlined.
+/// Below this many, a function is copied to its callers to be inlined.
 const COPIED: usize = 64;
+/// How many calls deep what's copied may call other small functions.
+const COPY_DEPTH: usize = 2;
 /// Below this many, a recursive function gets one level of itself inlined, as in the JIT.
 const SELF_INLINED: usize = 24;
 
@@ -70,6 +76,17 @@ pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared), String> {
 
 fn size(function: &Function) -> usize {
     function.blocks.iter().map(|block| block.insts.len() + 1).sum()
+}
+
+/// Whether a function is small enough to copy into its callers, with everything it calls, which
+/// must be too, `depth` calls deep. A recursive one isn't.
+fn copyable(whole: &Whole<'_>, function: &Function, depth: usize) -> bool {
+    size(function) <= COPIED
+        && callees(function).all(|name| {
+            depth > 0
+                && name != function.name
+                && whole.functions.get(name).is_some_and(|callee| copyable(whole, callee, depth - 1))
+        })
 }
 
 pub(crate) fn symbol(name: &str) -> String {
@@ -115,17 +132,27 @@ fn unit<'p>(
         helpers: BTreeMap::new(),
     };
     module.defined.insert(&function.name);
-    // Small functions that call nothing come along, to be inlined and thrown away.
-    let made = function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
-        InstKind::MakeClosure { function, .. } => Some(function.as_str()),
-        _ => None,
-    });
-    let copies: Vec<&Function> = callees(function)
-        .chain(made)
-        .filter(|name| *name != function.name)
-        .filter_map(|name| whole.functions.get(name).copied())
-        .filter(|callee| size(callee) <= COPIED && callees(callee).next().is_none())
-        .collect();
+    // Small functions come along, with the small functions they call, to be inlined and thrown
+    // away.
+    let made = |function: &'p Function| {
+        function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
+            InstKind::MakeClosure { function, .. } => Some(function.as_str()),
+            _ => None,
+        })
+    };
+    let mut copies: Vec<&Function> = Vec::new();
+    let mut waiting: Vec<&str> = callees(function).chain(made(function)).collect();
+    while let Some(name) = waiting.pop() {
+        let Some(callee) = whole.functions.get(name).copied() else { continue };
+        if name == function.name
+            || copies.iter().any(|copy| copy.name == name)
+            || !copyable(whole, callee, COPY_DEPTH)
+        {
+            continue;
+        }
+        copies.push(callee);
+        waiting.extend(callees(callee).chain(made(callee)));
+    }
     for copy in &copies {
         module.defined.insert(&copy.name);
     }
@@ -301,6 +328,8 @@ impl<'p> Module<'_, 'p> {
             start,
             start_symbol,
             self_target,
+            taken_at: BTreeMap::new(),
+            found_entries: Vec::new(),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -336,6 +365,11 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     start: u32,
     start_symbol: String,
     self_target: Option<&'e str>,
+    /// Where each item taken out of a list to change was, to put it back without looking again.
+    pub(crate) taken_at: BTreeMap<usize, String>,
+    /// Where lookups since the last change found their keys: the dict's local, the key, and the
+    /// entry or null.
+    pub(crate) found_entries: Vec<(LocalId, Operand, String)>,
 }
 
 pub(crate) fn float_text(value: f64) -> String {
@@ -450,13 +484,52 @@ impl Emit<'_, '_, '_> {
                 self.check_alone(local);
             }
         }
+        // Every caller passes the flag clear, so saying so lets a check after an inlined call
+        // that didn't fail go away. An assumption, as a store would be inlined into loops.
+        if self.module.flagged(&function.name) {
+            self.declare("declare void @llvm.assume(i1)");
+            self.line("%err_in = load ptr, ptr %err");
+            self.line("%err_clear = icmp eq ptr %err_in, null");
+            self.line("call void @llvm.assume(i1 %err_clear)");
+        }
         self.line("br label %bb0");
+        // Which blocks lead to each, so a lookup can carry on into a block every way in has
+        // come through, once each of those is written.
+        let mut before: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (at, block) in function.blocks.iter().enumerate() {
+            for next in block.end.targets() {
+                before.entry(next.0).or_default().push(at);
+            }
+        }
+        let mut left_with: HashMap<usize, Vec<(LocalId, Operand, String)>> = HashMap::new();
         for (at, block) in function.blocks.iter().enumerate() {
             self.start_block(&format!("bb{at}"));
+            let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
+            self.found_entries = match ways_in.split_first() {
+                Some((first, rest)) if ways_in.iter().all(|from| *from < at) => {
+                    let mut kept = left_with.get(first).cloned().unwrap_or_default();
+                    for from in rest {
+                        let theirs = left_with.get(from).map_or(&[][..], Vec::as_slice);
+                        kept.retain(|entry| theirs.contains(entry));
+                    }
+                    kept
+                }
+                _ => Vec::new(),
+            };
             for inst in &block.insts {
+                self.forget_entries(&inst.kind);
                 self.inst(&inst.kind, inst.span, at)?;
+                // A store may have grown the dict, moving every entry: any dict, through a path.
+                if let InstKind::SetIndex { object, path, .. } = &inst.kind {
+                    if path.is_empty() {
+                        self.found_entries.retain(|(dict, _, _)| dict != object);
+                    } else {
+                        self.found_entries.clear();
+                    }
+                }
                 self.let_go_after(&inst.kind);
             }
+            left_with.insert(at, std::mem::take(&mut self.found_entries));
             if let Some((list, limit)) = self.known.reservations.get(&at).cloned() {
                 self.reserve(LocalId(list), &limit)?;
             }
@@ -765,9 +838,8 @@ impl Emit<'_, '_, '_> {
             }
             Kind::Str if op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) => {
                 // `text += more` takes over the owner the local had, and grows in place if it can.
-                self.declare("declare ptr @fennec_str_append(ptr, ptr) nounwind");
-                let (joined, slot) = (self.temp(), self.slot(dest));
-                self.line(&format!("{joined} = call ptr @fennec_str_append(ptr {a}, ptr {b})"));
+                let joined = self.append_text(&a, &b);
+                let slot = self.slot(dest);
                 self.line(&format!("store ptr {joined}, ptr {slot}"));
                 return Ok(());
             }
@@ -1012,7 +1084,10 @@ impl Emit<'_, '_, '_> {
         } else {
             symbol(name)
         };
-        self.check_stack(span);
+        // A copy is inlined, and calls only other copies, so it can't go deeper.
+        if name == self.function.name || !self.module.defined.contains(name) {
+            self.check_stack(span);
+        }
         let result = self.temp();
         if ret == "void" {
             self.line(&format!("call swiftcc void {target}({shown})"));
@@ -1248,6 +1323,33 @@ impl Emit<'_, '_, '_> {
             }
             other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
         }
+    }
+
+    /// Lookups only stay good across instructions that leave dicts alone and don't change the
+    /// dict's or the key's local.
+    fn forget_entries(&mut self, inst: &InstKind) {
+        if self.found_entries.is_empty() {
+            return;
+        }
+        let harmless = matches!(
+            inst,
+            InstKind::Binary { .. }
+                | InstKind::Unary { .. }
+                | InstKind::Copy { .. }
+                | InstKind::IsNone { .. }
+                | InstKind::GetSome { .. }
+                | InstKind::MakeSome { .. }
+                | InstKind::SetIndex { .. }
+        );
+        let mut written = Vec::new();
+        visit(inst, |_| {}, |local| written.push(local));
+        if !harmless {
+            self.found_entries.clear();
+            return;
+        }
+        self.found_entries.retain(|(dict, key, _)| {
+            !written.contains(dict) && !matches!(key, Operand::Local(local) if written.contains(local))
+        });
     }
 
     /// A local read once lets go of its value right after that, rather than when the function

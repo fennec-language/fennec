@@ -11,10 +11,14 @@ def distances(grid: list[str], start: (int, int)) -> dict[(int, int), int]:
         here = frontier.popleft()
         if here is None: break
         x, y = here
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-            next = (x + dx, y + dy)
-            nx, ny = next
-            open = 0 <= ny < grid.len() and 0 <= nx < grid[ny].len() and grid[ny][nx] != "#"
+        for step_x, step_y in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            next = (x + step_x, y + step_y)
+            next_x, next_y = next
+            open = (
+                0 <= next_y < grid.len()
+                and 0 <= next_x < grid[next_y].len()
+                and grid[next_y][next_x] != "#"
+            )
             if open and next not in steps:
                 steps[next] = steps[here] + 1
                 frontier.append(next)

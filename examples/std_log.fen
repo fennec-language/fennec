@@ -1,7 +1,7 @@
 # `std.log` is one way for every kit to log. Nothing is global: a function that logs takes a
 # `Log`, so its signature says so, and the program chooses where entries go and how many.
 from std import json
-from std.log import Log, LogFormat, LogLevel
+from std.log import Log
 from std.time import Duration
 
 def save(log: Log, name: str, size: int):

@@ -87,6 +87,9 @@ pub(crate) struct FnCx<'c> {
     /// The type expected of the value of the block being checked: the return type for a
     /// function's body, or what's expected of a `match` for its cases.
     pub(crate) tail: Option<Type>,
+    /// The fields and method calls in the chain before an `else`, which may be on a value
+    /// that might be missing.
+    pub(crate) else_chain: std::collections::HashSet<(u32, u32)>,
 }
 
 impl<'c> FnCx<'c> {
@@ -113,6 +116,7 @@ impl<'c> FnCx<'c> {
             first_var,
             expecting: None,
             tail: None,
+            else_chain: std::collections::HashSet::new(),
         }
     }
 
@@ -176,6 +180,7 @@ impl<'c> FnCx<'c> {
         }
         cx.push(false);
         for (param, written) in params.iter().zip(&def.params) {
+            cx.default_written(written);
             if let Some(default) = &written.default {
                 let actual = cx.expr_as(default, &param.ty);
                 cx.check_arg(param, &actual, default.span);
@@ -300,6 +305,37 @@ impl<'c> FnCx<'c> {
     /// Whether this is the check of a `test` block.
     pub(crate) fn in_a_test(&self) -> bool {
         self.key.starts_with("test \"")
+    }
+
+    /// A default's type comes from its literal, so writing that type too is a mistake, and a
+    /// default that isn't such a literal needs its type written.
+    fn default_written(&mut self, param: &fennec_syntax::Param) {
+        let Some(default) = &param.default else { return };
+        let given = crate::program::literal_type(default, &self.checker.program);
+        match (&param.ty, given) {
+            (None, None) => {
+                let message = format!("can't tell the type of `{}` from its default", param.name);
+                let help = format!("write its type, like `{}: list[int] = []`", param.name);
+                self.error(Diagnostic::new(message, default.span).with_help(help));
+            }
+            (Some(written), Some(given))
+                if written.args.is_empty() && !written.optional && self.resolve(written) == given =>
+            {
+                let message = format!(
+                    "`{}` takes its type from its default, so `: {}` isn't needed",
+                    param.name, written.name
+                );
+                // A default rules out `mut`, so the name starts the parameter.
+                let name_end = param.span.start + u32::try_from(param.name.len()).unwrap_or(0);
+                let between = Span { start: name_end, end: default.span.start };
+                self.error(
+                    Diagnostic::new(message, written.span)
+                        .with_help(format!("remove the type, so it reads `{}=` and its default", param.name))
+                        .with_fix(between, "="),
+                );
+            }
+            _ => {}
+        }
     }
 
     pub(crate) fn check_test(checker: &'c mut Checker, test: &TestDef) {

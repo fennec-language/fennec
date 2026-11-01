@@ -9,7 +9,7 @@ def label(n: int) -> str:
 
 def main(stdout: Stdout):
     name = "fox"
-    stdout.print(f"plain", f"{name}", f"{name}!", f"<{name}>", f"")
+    stdout.print("plain", f"{name}", f"{name}!", f"<{name}>", "")
     stdout.print(f"{1} {2.5} {True} {False} {-7} {name} {1 + 2}")
     stdout.print(f"{3.14159:.2f} {1234567:,} {name}", f"{{braces}} {2 ** 10}")
     stdout.print(f"{[1, 2]} {Point(x=1, y=2.0)} {(1, 2)} {{}}", f"{label(4)}{label(5)}")
@@ -29,6 +29,10 @@ def main(stdout: Stdout):
         ", ".join([str(n) for n in range(3)]),
     )
 
+    slices(stdout)
+
+## Slicing lists and strings, and testing what's in them.
+def slices(stdout: Stdout):
     numbers = [0, 1, 2, 3, 4, 5]
     stdout.print(
         numbers[1:3],
@@ -59,7 +63,7 @@ def main(stdout: Stdout):
     stdout.print(
         any(n > 4 for n in numbers if n < 3),
         all(n < 3 for n in numbers if n < 3),
-        any(c == "o" for c in "fox"),
+        any(char == "o" for char in "fox"),
     )
     stdout.print(
         any(True for _ in numbers[:0]),

@@ -20,6 +20,7 @@ use fennec_interp::embed::{
 ///
 /// Nothing exported unwinds: a panic crossing `extern "C"` aborts the program.
 pub const CAN_FAIL: &[&str] = &[
+    "fennec_dict_pop",
     "fennec_stop",
     "fennec_list_sorted_with",
     "fennec_regex_split",
@@ -69,6 +70,11 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_unary",
     "fennec_unpack",
 ];
+
+/// What an executable's program allocates through: its big blocks, and what the runtime
+/// allocates for itself while it works.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Exports each function under a symbol: `symbol(params) -> result => function(args);`.
 macro_rules! export {
@@ -171,6 +177,8 @@ export! {
     fennec_str_code(a0: i64, a1: i64, a2: i64) -> i64 => strings::code(a0, a1, a2);
     fennec_dict_find_slice(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => dicts::find_slice(a0, a1, a2, a3);
     fennec_dict_add_slice(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => dicts::add_slice(a0, a1, a2, a3, a4);
+    fennec_dict_pop(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => dicts::pop(a0, a1, a2, a3);
+    fennec_dict_popped() -> i64 => dicts::popped();
     fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
     fennec_list_sorted_with(a0: i64, a1: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_with(a0, a1);
     fennec_regex_is_valid(a0: i64) -> i8 => regex::is_valid(a0);

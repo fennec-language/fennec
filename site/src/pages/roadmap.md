@@ -18,7 +18,7 @@ description: What Fennec does today, what's being built next, and the design que
 - Lists, dicts, sets, tuples, comprehensions and slices. Structs work as dict keys with nothing to write.
 - Lazy generators, used once, with `yield` allowed inside `with`.
 - `with` and `def del`: any way out of a block closes what it opened.
-- Tables: `IdMap`, `Id` and `Tree`.
+- Tables: `IdMap`, `Id` and `Tree`, and `SortedMap` on a B-tree.
 - A type checker that runs before every program and test.
 - The first standard library: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`.
 - Native code: `fennec run` and `fennec build` compile with Cranelift, and every example gives exactly the interpreter's output. `fennec build --llvm` handles part of the language.
@@ -41,6 +41,7 @@ Each of these is decided and not built.
 - `fails Name` in signatures, with one `error` listing several cases. `?` required wherever a failure passes up, narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
 - `xs.get(i)`, and `sum(xs, start=...)` replacing today's positional start.
 - `_name` hiding a field, and `pub` on top-level things only.
+- Union types, `Circle | Square`, inline with a one-byte tag, narrowed with `is` and `match`.
 - Hard errors for positional calls that are easy to get backwards.
 - `with a() as x, b() as y:` and a block's last line as its value.
 - A compile error for a dict key struct with its own `def ==`.
@@ -58,7 +59,7 @@ Each of these is decided and not built.
 ## After that: libraries and C
 
 - Compile-time loops over a type, `Writer` and `Reader` for every format, annotations as data, and `std.pack`.
-- `SortedMap`, `SortedSet`, `Grid` and `Packed`.
+- `SortedSet`, `Grid` and `Packed`.
 - `std.net`, `std.sql`, `std.process` and `std.crypto`.
 - `extern "C"` and `unsafe`, for what can't be written in Fennec, and first-party native kits.
 - SIMD and GPU types, and [the Den](/den/), Fennec's registry for kits.

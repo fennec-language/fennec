@@ -1,0 +1,92 @@
+# JSON holds enums and generic structs. A case with no fields is its name, and a case with
+# fields is an object holding them under the case's name. So a whole game world, with its
+# grid, its packed lists and its sorted maps, saves and loads with one call each.
+from std import json
+from std.collections import Grid, Packed, SortedMap
+
+enum Tile:
+    Floor
+    Wall
+    Door(locked: bool)
+
+enum Order:
+    Hold
+    Move(to: (int, int))
+    Guard(around: (int, int), range: int)
+
+struct Pair[T]:
+    first: T
+    second: T
+
+struct Level:
+    tiles: Grid[Tile]
+    rooms: Packed[int]
+    orders: list[Order]
+    scores: SortedMap[str, int]
+
+def failure[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Err(error):
+            error.message
+        case _:
+            "loaded"
+
+test "cases are their names, or objects of their fields":
+    orders = [Order.Hold, Order.Move(to=(2, 3)), Order.Guard(around=(1, 1), range=4)]
+    text = json.dumps(orders)
+    assert (
+        text
+        == "[\"Hold\", {\"Move\": {\"to\": [2, 3]}}, {\"Guard\": {\"around\": [1, 1], \"range\": 4}}]"
+    )
+    assert json.loads[list[Order]](text)? == orders
+
+test "a generic struct reads its fields with its type filled in":
+    pair = Pair(first=Tile.Wall, second=Tile.Door(locked=True))
+    loaded = json.loads[Pair[Tile]](json.dumps(pair))?
+    assert loaded == pair
+    assert json.loads[Pair[int]]("{\"first\": 1, \"second\": 2}")? == Pair(first=1, second=2)
+
+test "a whole level saves and loads with one call":
+    mut tiles = Grid.filled(width=3, height=2, value=Tile.Floor)
+    tiles[(1, 0)] = Tile.Wall
+    tiles[(2, 1)] = Tile.Door(locked=False)
+    mut scores = SortedMap[str, int]()
+    for name in ["vex", "ash", "kit"]:
+        scores[name] = name.len()
+    level = Level(
+        tiles=tiles,
+        rooms=Packed.of([[0, 1], [], [5]]),
+        orders=[Order.Hold],
+        scores=scores,
+    )
+    text = json.dumps(level)
+    loaded = json.loads[Level](text)?
+    assert json.dumps(loaded) == text
+    assert loaded.tiles[(2, 1)] == Tile.Door(locked=False)
+    assert loaded.rooms.lists() == [[0, 1], [], [5]]
+    assert loaded.scores.items() == [("ash", 3), ("kit", 3), ("vex", 3)]
+
+test "a case that doesn't exist says where":
+    assert (
+        failure(json.loads[list[Order]]("[\"Hold\", \"Run\"]"))
+        == "`[1]` is \"Run\", which isn't a case of `Order`"
+    )
+    assert (
+        failure(json.loads[Order]("\"Move\"")) == "the text is `Order.Move`, which needs its fields"
+    )
+    assert (
+        failure(json.loads[Order]("{\"Move\": {\"to\": [1, 2], \"fast\": true}}"))
+        == "`Order.Move` has no field \"fast\", but the text has one"
+    )
+    assert failure(json.loads[Order]("3")) == "the text should be an Order, but it's an int"
+    assert (
+        failure(json.loads[Order]("{\"Hold\": 1, \"Move\": 2}"))
+        == "the text should be an Order, but it's a table"
+    )
+
+def main(stdout: Stdout):
+    tiles = Grid.of([[Tile.Floor, Tile.Wall], [Tile.Door(locked=True), Tile.Floor]])
+    text = json.dumps(tiles)
+    stdout.print(text)
+    loaded = json.loads[Grid[Tile]](text) else tiles
+    stdout.print(loaded[(0, 1)], loaded == tiles)

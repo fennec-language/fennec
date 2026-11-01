@@ -12,7 +12,7 @@ enum Sign:
 enum Calc:
     Lit(value: int)
     Arg
-    Op(sign: Sign, left: Calc, right: Calc)
+    Binary(sign: Sign, left: Calc, right: Calc)
     Times(left: Calc, right: Calc)
     Clamp(range: Range, inner: Calc)
 
@@ -22,59 +22,64 @@ def run(calc: Calc, arg: int) -> int:
             n
         case .Arg:
             arg
-        case .Op(.Plus, a, b):
-            run(a, arg) + run(b, arg)
-        case .Op(_, a, b):
-            run(a, arg) - run(b, arg)
-        case .Times(a, b):
-            run(a, arg) * run(b, arg)
+        case .Binary(.Plus, left_side, right_side):
+            run(left_side, arg) + run(right_side, arg)
+        case .Binary(_, left_side, right_side):
+            run(left_side, arg) - run(right_side, arg)
+        case .Times(left_side, right_side):
+            run(left_side, arg) * run(right_side, arg)
         case .Clamp(Range(-50, high), inner):
             min(max(run(inner, arg), -50), high)
-        case .Clamp(range, inner):
-            min(max(run(inner, arg), range.low), range.high)
+        case .Clamp(bounds, inner):
+            min(max(run(inner, arg), bounds.low), bounds.high)
 
 def fold(calc: Calc) -> Calc:
     match calc:
         case .Times(.Lit(0), _):
             .Lit(0)
-        case .Times(.Lit(1), b):
-            fold(b)
-        case .Op(.Plus, .Lit(0), b):
-            fold(b)
-        case .Op(sign, a, b):
-            .Op(sign, fold(a), fold(b))
-        case .Times(a, b):
-            .Times(fold(a), fold(b))
-        case .Clamp(range, inner):
-            .Clamp(range, fold(inner))
+        case .Times(.Lit(1), right_side):
+            fold(right_side)
+        case .Binary(.Plus, .Lit(0), right_side):
+            fold(right_side)
+        case .Binary(sign, left_side, right_side):
+            .Binary(sign, left=fold(left_side), right=fold(right_side))
+        case .Times(left_side, right_side):
+            .Times(fold(left_side), right=fold(right_side))
+        case .Clamp(bounds, inner):
+            .Clamp(bounds, fold(inner))
         case other:
             other
 
 def grow(depth: int, seed: int) -> Calc:
     if depth == 0: return Calc.Arg if seed % 3 == 0 else .Lit(seed % 7)
-    a = grow(depth - 1, seed * 5 + 1)
-    b = grow(depth - 1, seed * 3 + 2)
+    left_side = grow(depth - 1, seed=seed * 5 + 1)
+    right_side = grow(depth - 1, seed=seed * 3 + 2)
     match seed % 6:
         case 0:
-            .Op(.Plus, a, b)
+            .Binary(.Plus, left=left_side, right=right_side)
         case 1:
-            .Op(.Minus, .Lit(0), b)
+            .Binary(.Minus, left=.Lit(0), right=right_side)
         case 2:
-            .Times(.Lit(1), a)
+            .Times(.Lit(1), right=left_side)
         case 3:
-            .Clamp(Range(low=-50, high=50), .Times(a, b))
+            .Clamp(Range(low=-50, high=50), .Times(left_side, right=right_side))
         case 4:
-            .Times(.Lit(0), a)
+            .Times(.Lit(0), right=left_side)
         case _:
-            .Op(.Minus, a, b)
+            .Binary(.Minus, left=left_side, right=right_side)
 
 def main(stdout: Stdout):
-    calc = grow(10, 1)
+    calc = grow(10, seed=1)
     folded = fold(calc)
     mut same = 0
     for arg in range(-5, 6):
         if run(calc, arg) == run(folded, arg):
             same += 1
     stdout.print(same, run(calc, 3), run(folded, 3))
-    stdout.print(fold(folded) == folded, calc == folded, grow(10, 1) == calc, calc != grow(10, 2))
+    stdout.print(
+        fold(folded) == folded,
+        calc == folded,
+        grow(10, seed=1) == calc,
+        calc != grow(10, seed=2),
+    )
     stdout.print(Range(low=1, high=2) == Range(low=1, high=2), Sign.Plus == .Minus)

@@ -4,21 +4,21 @@
 enum Tok:
     Name(text: str)
     Number(value: int)
-    Op(text: str)
+    Symbol(text: str)
     Text(body: str)
 
 struct Token:
     tok: Tok
     line: int
 
-def is_digit(c: str) -> bool:
-    c >= "0" and c <= "9"
+def is_digit(char: str) -> bool:
+    char >= "0" and char <= "9"
 
-def is_letter(c: str) -> bool:
-    (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or c == "_"
+def is_letter(char: str) -> bool:
+    (char >= "a" and char <= "z") or (char >= "A" and char <= "Z") or char == "_"
 
-def digit(c: str) -> int:
-    match c:
+def digit(char: str) -> int:
+    match char:
         case "0":
             0
         case "1":
@@ -48,7 +48,7 @@ def describe(token: Token) -> str:
             "name " + text
         case .Number(value):
             f"number {value}"
-        case .Op(text):
+        case .Symbol(text):
             "op " + text
         case .Text(body):
             "text " + body + " (" + str(body.len()) + " chars)"
@@ -58,24 +58,24 @@ def tokenize(source: str) -> list[Token]:
     mut at = 0
     mut line = 1
     while at < source.len():
-        c = source[at]
-        if c == "\n":
+        char = source[at]
+        if char == "\n":
             line += 1
             at += 1
-        elif c == " ":
+        elif char == " ":
             at += 1
-        elif is_digit(c):
+        elif is_digit(char):
             mut value = 0
             while at < source.len() and is_digit(source[at]):
                 value = value * 10 + digit(source[at])
                 at += 1
             tokens.append(Token(tok=.Number(value), line=line))
-        elif is_letter(c):
+        elif is_letter(char):
             start = at
             while at < source.len() and (is_letter(source[at]) or is_digit(source[at])):
                 at += 1
             tokens.append(Token(tok=.Name(source[start:at]), line=line))
-        elif c == "\"":
+        elif char == "\"":
             start = at + 1
             at += 1
             while at < source.len() and source[at] != "\"":
@@ -85,10 +85,10 @@ def tokenize(source: str) -> list[Token]:
         else:
             two = source[at:at + 2]
             if two == "->" or two == "==" or two == "<=":
-                tokens.append(Token(tok=.Op(two), line=line))
+                tokens.append(Token(tok=.Symbol(two), line=line))
                 at += 2
             else:
-                tokens.append(Token(tok=.Op(c), line=line))
+                tokens.append(Token(tok=.Symbol(char), line=line))
                 at += 1
     tokens
 
@@ -110,6 +110,6 @@ def main(stdout: Stdout):
         word == "naïve",
         word != "naive",
     )
-    copy = word
-    joined = copy + copy
-    stdout.print(joined, joined.len(), joined[5:], copy == word)
+    kept = word
+    joined = kept + kept
+    stdout.print(joined, joined.len(), joined[5:], kept == word)

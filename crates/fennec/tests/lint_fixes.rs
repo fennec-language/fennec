@@ -1,5 +1,6 @@
-//! The linter's fixes never change what a program does: every example, with every fix made,
-//! still checks and prints exactly its `.out` file.
+//! The linter's fixes never change what a program does: every program in `fixtures/unlinted`, with
+//! every fix made, still checks and prints exactly its `.out` file. They're examples as they were
+//! before they were lint-clean, kept so the fixes have something to fix.
 
 use std::path::Path;
 
@@ -48,12 +49,12 @@ fn every_example_with_every_fix_does_the_same() {
     let result = std::sync::Arc::clone(&compared);
     on_big_stack(move || *result.lock().unwrap() = every_example()).unwrap();
     let compared = compared.lock().unwrap().clone().unwrap();
-    assert!(compared > 10, "only {compared} examples had fixes to try");
+    assert!(compared >= 14, "only {compared} programs had fixes to try");
 }
 
-/// How many examples had fixes to try, each of which still did the same, or the first that didn't.
+/// How many programs had fixes to try, each of which still did the same, or the first that didn't.
 fn every_example() -> Result<usize, String> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/unlinted");
     let mut compared = 0;
     for entry in std::fs::read_dir(&dir).map_err(|err| err.to_string())? {
         let path = entry.map_err(|err| err.to_string())?.path();
@@ -62,10 +63,6 @@ fn every_example() -> Result<usize, String> {
             continue;
         }
         let source = std::fs::read_to_string(&path).map_err(|err| err.to_string())?;
-        // Examples that read input or files are run by their own tests.
-        if source.contains("stdin") || source.contains("Fs") || source.contains("Clock") {
-            continue;
-        }
         let changed = fixed(&source);
         let before = output_of(&source);
         if changed == source || before.as_ref().ok() != Some(&expected) {

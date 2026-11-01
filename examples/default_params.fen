@@ -1,6 +1,6 @@
 # A parameter can have a default: a plain value, passed by name if at all.
 
-def repeat(text: str, times: int = 2, between: str = "") -> str:
+def repeat(text: str, times = 2, between = "") -> str:
     mut out = ""
     for at in range(times):
         if at > 0:
@@ -8,14 +8,14 @@ def repeat(text: str, times: int = 2, between: str = "") -> str:
         out += text
     out
 
-def offset(by: int = -1, scale: float = -0.5, label: str? = None) -> str:
+def offset(by = -1, scale = -0.5, label: str? = None) -> str:
     shown = label else "none"
     f"{by} {scale} {shown}"
 
 struct Tally:
     count: int
 
-    def bump(mut self, by: int = 1, again: bool = False):
+    def bump(mut self, by = 1, again = False):
         self.count += by
         if again:
             self.count += by

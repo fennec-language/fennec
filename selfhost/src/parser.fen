@@ -415,11 +415,15 @@ struct Parser:
         name = self.name("a parameter name")?
         if name == "self":
             return Param(name=name, ty=None, is_mut=is_mut, is_self=True, default=None, span=start.to(self.prev_span()))
+        # `limit=8` takes its type from the literal.
+        if self.eat_punct("="):
+            given = self.param_default(name, is_mut)?
+            return Param(name=name, ty=None, is_mut=is_mut, is_self=False, default=given, span=start.to(self.prev_span()))
         if not self.eat_punct(":"):
             fail Diagnostic(
                 message=f"parameter `{name}` needs a type",
                 span=self.prev_span(),
-                help=f"write it with its type, like `{name}: int`",
+                help=f"write it with its type, like `{name}: int`, or give it a default, like `{name}=8`",
             )
         ty = self.type_expr()?
         mut default = None

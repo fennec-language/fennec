@@ -62,7 +62,7 @@ def apply(robot: Robot, move: Move) -> Robot:
         case .Step(dir, 0):
             Robot(at=robot.at, facing=dir, waited=robot.waited + 1)
         case .Step(dir, count):
-            Robot(at=step(robot.at, dir, count), facing=dir, waited=robot.waited)
+            Robot(at=step(robot.at, dir=dir, count=count), facing=dir, waited=robot.waited)
         case .Jump(to):
             Robot(at=to, facing=robot.facing, waited=robot.waited)
         case .Turn:

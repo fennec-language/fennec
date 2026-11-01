@@ -1,0 +1,80 @@
+# A calculator over syntax trees, compiled to plain machine code: the trees are boxed,
+# `match` is a switch, and `==` compares trees and plain values natively.
+
+struct Range:
+    low: int
+    high: int
+
+enum Sign:
+    Plus
+    Minus
+
+enum Calc:
+    Lit(value: int)
+    Arg
+    Op(sign: Sign, left: Calc, right: Calc)
+    Times(left: Calc, right: Calc)
+    Clamp(range: Range, inner: Calc)
+
+def run(calc: Calc, arg: int) -> int:
+    match calc:
+        case .Lit(n):
+            n
+        case .Arg:
+            arg
+        case .Op(.Plus, a, b):
+            run(a, arg) + run(b, arg)
+        case .Op(_, a, b):
+            run(a, arg) - run(b, arg)
+        case .Times(a, b):
+            run(a, arg) * run(b, arg)
+        case .Clamp(Range(-50, high), inner):
+            min(max(run(inner, arg), -50), high)
+        case .Clamp(range, inner):
+            min(max(run(inner, arg), range.low), range.high)
+
+def fold(calc: Calc) -> Calc:
+    match calc:
+        case .Times(.Lit(0), _):
+            .Lit(0)
+        case .Times(.Lit(1), b):
+            fold(b)
+        case .Op(.Plus, .Lit(0), b):
+            fold(b)
+        case .Op(sign, a, b):
+            .Op(sign, fold(a), fold(b))
+        case .Times(a, b):
+            .Times(fold(a), fold(b))
+        case .Clamp(range, inner):
+            .Clamp(range, fold(inner))
+        case other:
+            other
+
+def grow(depth: int, seed: int) -> Calc:
+    if depth == 0: return Calc.Arg if seed % 3 == 0 else .Lit(seed % 7)
+    a = grow(depth - 1, seed * 5 + 1)
+    b = grow(depth - 1, seed * 3 + 2)
+    match seed % 6:
+        case 0:
+            .Op(.Plus, a, b)
+        case 1:
+            .Op(.Minus, .Lit(0), b)
+        case 2:
+            .Times(.Lit(1), a)
+        case 3:
+            .Clamp(Range(low=-50, high=50), .Times(a, b))
+        case 4:
+            .Times(.Lit(0), a)
+        case _:
+            .Op(.Minus, a, b)
+
+def main(stdout: Stdout):
+    calc = grow(10, 1)
+    folded = fold(calc)
+    mut same = 0
+    for arg in range(-5, 6):
+        if run(calc, arg) == run(folded, arg):
+            same += 1
+    stdout.print(same, run(calc, 3), run(folded, 3))
+    stdout.print(fold(folded) == folded, calc == folded, grow(10, 1) == calc, calc != grow(10, 2))
+    stdout.print(Range(low=1, high=2) == Range(low=1, high=2), Sign.Plus == .Minus)

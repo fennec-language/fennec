@@ -50,8 +50,8 @@ def parse(text: str) -> Result[int, str]:
 def call(make: () -> int) -> int:
     make()
 
-def combine(join: (int, int) -> int, a: int, b: int) -> int:
-    join(a, b)
+def combine(join: (int, int) -> int, left_value: int, right_value: int) -> int:
+    join(left_value, right_value)
 
 def main(stdout: Stdout):
     # A named constructor that takes nothing can be used without parentheses.
@@ -74,10 +74,10 @@ def main(stdout: Stdout):
         door.out.print("inside")
     stdout.print("outside")
 
-    # `?.` skips a method call on None.
+    # A method call on a value that might be None needs `else` to end the chain.
     stdout.print(
-        find("Vex")?.greet(),
-        find("Kit")?.greet(),
+        find("Vex").greet() else "nobody",
+        find("Kit").greet() else "nobody",
         find("Kit") is not None,
         find("Vex") is not None,
     )
@@ -86,8 +86,8 @@ def main(stdout: Stdout):
     # function type.
     stdout.print(
         call(() => 42),
-        combine((a, b) => a + b, 2, 3),
-        combine((first, second) => second, 1, 2),
+        combine((left_value, right_value) => left_value + right_value, left_value=2, right_value=3),
+        combine((first, second) => second, left_value=1, right_value=2),
     )
 
     # Collections can end with a comma.

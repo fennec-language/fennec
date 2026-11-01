@@ -57,6 +57,8 @@ pub(crate) struct Program {
     pub(crate) imports: BTreeMap<String, String>,
     /// What the standard library's own code imports, which only that code sees.
     pub(crate) prelude_imports: BTreeMap<String, String>,
+    /// Standard library functions written in Fennec, by the name they're imported under.
+    pub(crate) std_functions: BTreeMap<String, String>,
     /// Standard library types imported by name, like `Deque` from `std.collections`.
     pub(crate) imported_types: std::collections::BTreeSet<String>,
     /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
@@ -127,6 +129,8 @@ impl Program {
                     let builtin = format!("{module}.{name}");
                     if crate::builtins::is_builtin(&builtin) {
                         self.imports.insert(alias, builtin);
+                    } else if self.functions.contains_key(&builtin) {
+                        self.std_functions.insert(alias, builtin);
                     } else {
                         self.imported_types.insert(name);
                     }

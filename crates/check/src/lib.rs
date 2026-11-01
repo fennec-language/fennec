@@ -97,6 +97,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
         || !checked.float_sums.is_empty()
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
+        || !checked.std_names.is_empty()
     {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
             let span = (expr.span.start, expr.span.end);
@@ -108,6 +109,9 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             }
             if let Some(defaults) = checked.defaults.get(&span) {
                 fennec_syntax::visit::add_defaults(expr, defaults);
+            }
+            if let Some(function) = checked.std_names.get(&span) {
+                expr.kind = fennec_syntax::ExprKind::Name(function.clone());
             }
             if let Some(shown) = checked.generator_types.get(&span) {
                 fennec_syntax::visit::name_generator_type(expr, shown);
@@ -138,6 +142,8 @@ pub struct Checked {
     defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.
     generator_types: BTreeMap<(u32, u32), String>,
+    /// What each name for a standard library function written in Fennec means.
+    std_names: BTreeMap<(u32, u32), String>,
 }
 
 /// The typed tree: the type of every expression and every declared name in a program,

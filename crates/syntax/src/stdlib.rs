@@ -2,6 +2,11 @@
 //! provides and its code written in Fennec, and its own files in the interpreter and the
 //! checker for anything written in Rust. Adding a module adds one line to each list.
 
+use std::collections::{HashMap, HashSet};
+
+use crate::ast::{ExprKind, Item};
+use crate::modules::Imported;
+
 /// One module under `std`.
 pub(crate) struct Module {
     pub(crate) name: &'static str,
@@ -61,9 +66,75 @@ pub fn prelude() -> impl Iterator<Item = &'static str> {
 pub fn prelude_modules() -> Result<&'static [crate::Module], crate::Diagnostic> {
     static PARSED: std::sync::OnceLock<Result<Vec<crate::Module>, crate::Diagnostic>> =
         std::sync::OnceLock::new();
-    match PARSED.get_or_init(|| prelude().map(crate::parser::parse_prelude).collect()) {
+    match PARSED.get_or_init(parse_prelude) {
         Ok(modules) => Ok(modules),
         Err(diagnostic) => Err(diagnostic.clone()),
+    }
+}
+
+fn parse_prelude() -> Result<Vec<crate::Module>, crate::Diagnostic> {
+    let mut parsed: Vec<crate::Module> =
+        CORE.into_iter().map(crate::parser::parse_prelude).collect::<Result<_, _>>()?;
+    let mut modules = Vec::new();
+    for module in MODULES.iter().filter(|module| !module.source.is_empty()) {
+        modules.push((module.name, crate::parser::parse_prelude(module.source)?));
+    }
+    qualify_functions(&mut modules);
+    parsed.extend(modules.into_iter().map(|(_, module)| module));
+    Ok(parsed)
+}
+
+/// Gives each module's top-level functions the name `module.function`, which no one can write
+/// by accident, so two modules or a program can use the same name. A program reaches one by
+/// importing it, and a module's own calls are written in here. A local in a module can't share
+/// a name with one of the module's functions.
+fn qualify_functions(modules: &mut [(&'static str, crate::Module)]) {
+    let mut all = HashSet::new();
+    for (name, module) in modules.iter_mut() {
+        for item in &mut module.items {
+            if let Item::Function(def) = item {
+                def.name = format!("{name}.{}", def.name);
+                all.insert(def.name.clone());
+            }
+        }
+    }
+    for (name, module) in modules.iter_mut() {
+        let prefix = format!("{name}.");
+        let mut names: HashMap<String, String> = all
+            .iter()
+            .filter_map(|function| Some((function.strip_prefix(&prefix)?.to_owned(), function.clone())))
+            .collect();
+        let mut aliases = HashMap::new();
+        let imports = module.items.iter().filter_map(|item| match item {
+            Item::Import(import) => crate::std_import(import).ok(),
+            _ => None,
+        });
+        for imported in imports.flatten() {
+            match imported {
+                Imported::Module { alias, module } => {
+                    aliases.insert(alias, module);
+                }
+                Imported::Name { name, alias, module } => {
+                    let function = format!("{module}.{name}");
+                    if all.contains(&function) {
+                        names.insert(alias, function);
+                    }
+                }
+            }
+        }
+        crate::visit::exprs_mut(module, &mut |expr| {
+            let function = match &expr.kind {
+                ExprKind::Name(found) => names.get(found).cloned(),
+                ExprKind::Attr { object, name, optional: false } => crate::dotted(object)
+                    .and_then(|alias| aliases.get(&alias))
+                    .map(|module| format!("{module}.{name}"))
+                    .filter(|function| all.contains(function)),
+                _ => None,
+            };
+            if let Some(function) = function {
+                expr.kind = ExprKind::Name(function);
+            }
+        });
     }
 }
 

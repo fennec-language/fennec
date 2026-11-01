@@ -71,6 +71,14 @@ impl FnCx<'_> {
                     self.record(object.span, &Type::Function(name.clone()));
                     return self.call_with_types(name, name, (args, &types), span);
                 }
+                if let ExprKind::Name(name) = &object.kind
+                    && self.lookup(name).is_none()
+                    && let Some(function) = self.std_function(name, object.span)
+                {
+                    let types = self.types_in(index);
+                    self.record(object.span, &Type::Function(function.clone()));
+                    return self.call_with_types(&function, name, (args, &types), span);
+                }
                 if let Some(builtin) = self.loads(object) {
                     return self.typed_loads(&builtin, index, args, span);
                 }
@@ -79,6 +87,10 @@ impl FnCx<'_> {
                 if self.checker.program.functions.contains_key(name) {
                     self.record(callee.span, &Type::Function(name.clone()));
                     return self.call_function(name, name, args, span);
+                }
+                if let Some(function) = self.std_function(name, callee.span) {
+                    self.record(callee.span, &Type::Function(function.clone()));
+                    return self.call_function(&function, name, args, span);
                 }
                 if self.checker.program.is_type_name(name) {
                     return self.construct(name, args, span);

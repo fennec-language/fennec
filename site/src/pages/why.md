@@ -12,11 +12,9 @@ Builds that take minutes break your focus. Build setups that need pages of confi
 
 ## What Fennec is for
 
-**Fast iteration while you work.** When you change a line, you should see the result in moments. Development builds in Fennec are designed for that alone: changed code runs in an interpreter right away, and everything you didn't touch comes from a cache.
+**Fast iteration while you work.** When you change a line, you should see the result in moments. Fennec compiles a function at a time and caches each one by its content, so a change costs only what it touches.
 
-**Full speed when you ship.** Release builds take their time and produce code that runs as fast as hand-tuned native code, with no garbage collector and no hidden allocation.
-
-**A gap between the two is fine.** Developing and shipping are different jobs. A development build optimizes for your time; a release build optimizes for the player's or user's time. Fennec doesn't pretend one build can do both well.
+**What you run is what ships.** The plan is one optimizing backend, so the program you try while you work is the one you ship, with no garbage collector. Whole-program optimization is the only extra step, and it comes with `--release`.
 
 **Code that reads like Python.** If you can read Python, you can read Fennec: indentation, `def`, comprehensions and f-strings, with types checked before anything runs.
 

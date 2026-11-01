@@ -91,6 +91,14 @@ impl Interp<'_> {
         if let Some(module) = stdlib::module_of(name) {
             return (module.call)(self, name, args, span);
         }
+        // `sum`'s start is passed by name, and comes after its items.
+        let mut args = args;
+        if name == "sum" {
+            args.sort_by_key(|arg| arg.name.is_some());
+            for arg in args.iter_mut().filter(|arg| arg.name.as_deref() == Some("start")) {
+                arg.name = None;
+            }
+        }
         let (values, key) = split_key(args, name)?;
         if key.is_some() && !matches!(name, "min" | "max" | "sorted") {
             return Err(Diagnostic::new(format!("`{name}` doesn't take `key`"), span));

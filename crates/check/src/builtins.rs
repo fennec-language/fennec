@@ -274,8 +274,14 @@ impl FnCx<'_> {
             let expected = self.checker.settled(expected);
             self.error(mismatch(&format!("`{name}`'s argument"), &expected, actual, *at));
         }
-        // `table.get(key, default)` gives the default instead of None.
-        if let (Type::Dict(_, value), [_, _]) = (ty, plain.as_slice()) {
+        // `get` has no default of its own, since an optional's `else` says it.
+        if let (Type::Dict(_, value), "get", [(_, key), (_, default)]) = (ty, name, plain.as_slice()) {
+            self.error(
+                Diagnostic::new("`get` takes only a key", *default)
+                    .with_help("write `table.get(key) else default`")
+                    .with_fix(Span { start: span.start, end: span.start }, "(")
+                    .with_fix(Span { start: key.end, end: default.start }, ") else "),
+            );
             return value.as_ref().clone();
         }
         method.returns
@@ -292,6 +298,7 @@ impl FnCx<'_> {
         span: Span,
     ) -> Vec<(Type, Span)> {
         let mut plain = Vec::new();
+        let mut start = None;
         for arg in args {
             let ty = self.arg_value(arg, receives);
             match arg.name.as_deref() {
@@ -299,6 +306,7 @@ impl FnCx<'_> {
                     self.error(Diagnostic::new(format!("`{name}` doesn't take `key`"), span));
                 }
                 Some("key") => {}
+                Some("start") if named.contains(&"start") => start = Some((ty, arg.value.span)),
                 Some("indent") if named.contains(&"indent") => {
                     if !self.checker.fits(&Type::Int, &ty) {
                         self.error(mismatch("`indent`", &Type::Int, &ty, arg.value.span));
@@ -314,6 +322,7 @@ impl FnCx<'_> {
         if args.iter().any(|arg| arg.is_mut) {
             self.error(needless_mut(name, span));
         }
+        plain.extend(start);
         plain
     }
 
@@ -329,6 +338,7 @@ impl FnCx<'_> {
         let item = peek_item(&first);
         let named: &[&str] = match (name, stdlib::function(name)) {
             ("min" | "max" | "sorted", _) => &["key"],
+            ("sum", _) => &["start"],
             (_, Some((_, function))) => function.named,
             _ => &[],
         };

@@ -26,6 +26,7 @@ mod generic;
 mod imports;
 mod index;
 mod infer;
+mod keys;
 mod messages;
 mod pattern;
 mod place;

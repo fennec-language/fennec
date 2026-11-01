@@ -78,7 +78,10 @@ fn run(source: &str, shown_as: &str) -> Result<String, String> {
 /// Runs a program's `test` blocks, returning each failure, rendered.
 fn failing_tests(source: &str, shown_as: &str) -> Result<Vec<String>, String> {
     let render = |diagnostic: fennec_syntax::Diagnostic| diagnostic.render(shown_as, source);
-    let module = fennec_syntax::parse(source).map_err(render)?;
+    let mut module = fennec_syntax::parse(source).map_err(render)?;
+    // What runs a module needs it resolved, as `fennec test` does.
+    fennec_check::check_and_resolve(&mut module)
+        .map_err(|problems| problems.into_iter().map(render).collect::<Vec<_>>().join("\n"))?;
     let mut out = std::io::sink();
     let mut interp = fennec_interp::Interp::new(&mut out).map_err(render)?;
     interp.load(&module).map_err(render)?;

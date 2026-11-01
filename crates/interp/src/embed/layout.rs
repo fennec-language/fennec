@@ -373,4 +373,30 @@ mod tests {
         assert_eq!(hash_text(4, &[word]), (h ^ (h >> 29)) >> 1);
         assert_eq!(hash_text(4, &[word]), 0x6b45_6e2d_7b01_4de3);
     }
+
+    #[test]
+    fn a_list_of_lists_owns_its_lists() {
+        let ints = Rc::new(Element::Int);
+        let lists = Rc::new(Element::List(Rc::clone(&ints)));
+        let tables = Tables {
+            elements: vec![Rc::clone(&lists), ints],
+            shapes: vec![Rc::new(Element::Str)],
+            ..Tables::default()
+        };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let int = crate::value::Value::Int;
+        let nested = crate::value::Value::list(vec![
+            crate::value::Value::list(vec![int(1), int(2)]),
+            crate::value::Value::list(vec![int(3)]),
+        ]);
+        let outer = with(|state| lists::write_list(state, &lists, &nested)).unwrap();
+        let inner = i64::try_from(word(outer, LIST_ITEMS).unwrap()).unwrap();
+        let read = with(|state| {
+            crate::format::repr(&heap::read_block(state, u64::try_from(outer).unwrap()).unpacked())
+        });
+        assert_eq!(read, "[[1, 2], [3]]");
+        heap::free(outer);
+        assert_eq!(word(inner, 0), None);
+        finish();
+    }
 }

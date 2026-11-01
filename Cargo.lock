@@ -387,7 +387,9 @@ dependencies = [
  "fennec-blake3",
  "fennec-build",
  "fennec-check",
+ "fennec-interp",
  "fennec-ir",
+ "fennec-layout",
  "fennec-syntax",
 ]
 

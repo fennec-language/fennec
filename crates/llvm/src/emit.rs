@@ -4,18 +4,32 @@
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write as _;
 
-use fennec_check::Type;
+use fennec_interp::embed::layout::COUNT;
 use fennec_ir::{Function, InstKind, LocalId, Operand, Program, Terminator};
+use fennec_layout::Layouts;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
 use crate::Shared;
 use crate::analysis::{Analysis, Whole, callees, whole};
+use crate::kinds::{Kind, struct_definitions};
 
 const ATTRIBUTES: &str = "attributes #0 = { nounwind \"frame-pointer\"=\"non-leaf\" }\n\
 attributes #1 = { cold nounwind }\n\
 attributes #2 = { alwaysinline nounwind \"frame-pointer\"=\"non-leaf\" }\n\
 !0 = !{!\"branch_weights\", i32 1, i32 100000}\n\
-!1 = !{}\n";
+!1 = !{}\n\
+!2 = !{!\"fennec\"}\n\
+!3 = !{!\"header\", !2, i64 0}\n\
+!4 = !{!3, !3, i64 0}\n\
+!5 = !{!\"item\", !2, i64 0}\n\
+!6 = !{!5, !5, i64 0}\n\
+!7 = !{i64 0, i64 281474976710657}\n\
+!8 = !{!\"branch_weights\", i32 100000, i32 1}\n";
+
+/// A list's header, and what's in it, never overlap its items, and a length is far from any limit.
+pub(crate) const HEADER_ACCESS: &str = ", !tbaa !4";
+pub(crate) const ITEM_ACCESS: &str = ", !tbaa !6";
+pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7";
 
 /// Below this many instructions, a function that calls nothing is always inlined.
 const ALWAYS_INLINE: usize = 16;
@@ -40,10 +54,11 @@ pub struct Unit {
 pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared), String> {
     let header = crate::header()?;
     let everything = whole(program);
+    let layouts = crate::layouts_of(program);
     let mut shared = Shared::default();
     let mut units = Vec::with_capacity(program.functions.len());
     for function in &program.functions {
-        let text = unit(function, &everything, &mut shared, header)
+        let text = unit(function, &everything, &layouts, &mut shared, header)
             .map_err(|why| format!("`{}`: {why}", function.name))?;
         units.push(Unit { function: function.name.clone(), text });
     }
@@ -69,9 +84,10 @@ struct Definition<'d> {
 }
 
 /// What one module holds so far.
-struct Module<'w, 'p> {
+pub(crate) struct Module<'w, 'p> {
     whole: &'w Whole<'p>,
-    shared: &'w mut Shared,
+    pub(crate) layouts: &'w Layouts,
+    pub(crate) shared: &'w mut Shared,
     declares: BTreeSet<String>,
     defined: HashSet<&'p str>,
     bodies: String,
@@ -80,11 +96,18 @@ struct Module<'w, 'p> {
 fn unit<'p>(
     function: &'p Function,
     whole: &Whole<'p>,
+    layouts: &Layouts,
     shared: &mut Shared,
     header: &str,
 ) -> Result<String, String> {
-    let mut module =
-        Module { whole, shared, declares: BTreeSet::new(), defined: HashSet::new(), bodies: String::new() };
+    let mut module = Module {
+        whole,
+        layouts,
+        shared,
+        declares: BTreeSet::new(),
+        defined: HashSet::new(),
+        bodies: String::new(),
+    };
     module.defined.insert(&function.name);
     // Small functions that call nothing come along, to be inlined and thrown away.
     let copies: Vec<&Function> = callees(function)
@@ -133,27 +156,53 @@ fn unit<'p>(
     Ok(out)
 }
 
-fn type_text(ty: &Type) -> Result<&'static str, String> {
-    Ok(match ty {
-        Type::Int => "i64",
-        Type::Float => "double",
-        Type::Bool => "i1",
-        Type::Unit => "void",
-        Type::Named(name) if name == "Stdout" => "ptr",
-        other => return Err(format!("it uses a {other:?}, which this backend doesn't take yet")),
-    })
-}
-
 impl<'p> Module<'_, 'p> {
     fn flagged(&self, name: &str) -> bool {
         self.whole.can_fail.contains(name)
     }
 
+    pub(crate) fn declare(&mut self, line: &str) {
+        self.declares.insert(format!("{line}\n"));
+    }
+
+    /// Has the types a kind needs defined.
+    fn define_types(&mut self, kind: &Kind) {
+        match kind {
+            Kind::Struct(id) => {
+                let mut lines = Vec::new();
+                struct_definitions(self.layouts, *id, &mut lines);
+                self.declares.extend(lines);
+            }
+            Kind::Tuple(items) => items.iter().for_each(|item| self.define_types(item)),
+            Kind::List(item) => {
+                if let Some(kind) = Kind::from_ty(self.layouts, item.ty()) {
+                    self.define_types(&kind);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn kind(&self, ty: &fennec_check::Type) -> Result<Kind, String> {
+        Kind::of(self.layouts, ty)
+    }
+
+    /// A function's parameters, with their names and attributes or just their types.
     fn params(&self, function: &Function, named: bool) -> Result<String, String> {
-        let mut params = Vec::with_capacity(function.params + 1);
+        let mut params = Vec::with_capacity(function.params + 2);
+        let returns = self.kind(&function.returns)?;
+        if returns.in_memory() {
+            params.push(if named { "ptr noalias captures(none) %ret".to_owned() } else { "ptr".to_owned() });
+        }
         for (at, local) in function.locals.iter().take(function.params).enumerate() {
-            let ty = type_text(&local.ty)?;
-            params.push(if named { format!("{ty} %p{at}") } else { ty.to_owned() });
+            let kind = self.kind(&local.ty)?;
+            let by_address = function.mut_params.contains(&at);
+            let ty = if by_address || kind.in_memory() { "ptr".to_owned() } else { kind.slot(self.layouts) };
+            params.push(match (named, by_address) {
+                (false, _) => ty,
+                (true, true) => format!("ptr noalias captures(none) %p{at}"),
+                (true, false) => format!("{ty} %p{at}"),
+            });
         }
         if self.flagged(&function.name) {
             params.push(if named { "ptr swifterror %err".to_owned() } else { "ptr swifterror".to_owned() });
@@ -161,9 +210,17 @@ impl<'p> Module<'_, 'p> {
         Ok(params.join(", "))
     }
 
+    fn ret_text(&self, function: &Function) -> Result<String, String> {
+        let kind = self.kind(&function.returns)?;
+        Ok(match kind {
+            Kind::Unit | Kind::Cap | Kind::Struct(_) | Kind::Tuple(_) => "void".to_owned(),
+            other => other.slot(self.layouts),
+        })
+    }
+
     fn define(&mut self, function: &'p Function, how: &Definition<'_>) -> Result<(), String> {
         let Definition { linkage, name, always_inline, self_target } = *how;
-        let ret = type_text(&function.returns)?;
+        let ret = self.ret_text(function)?;
         let params = self.params(function, true)?;
         let attributes = if always_inline { 2 } else { 0 };
         let start_symbol = format!("p_{}", function.name);
@@ -175,7 +232,7 @@ impl<'p> Module<'_, 'p> {
             .min()
             .unwrap_or(0);
         self.shared.starts.insert(start_symbol.clone(), start);
-        self.declares.insert(format!("@\"{start_symbol}\" = external dso_local global i64\n"));
+        self.declare(&format!("@\"{start_symbol}\" = external dso_local global i64"));
         let failed = if self.flagged(&function.name) {
             let leave = if ret == "void" { "ret void".to_owned() } else { format!("ret {ret} poison") };
             format!("store ptr inttoptr (i64 1 to ptr), ptr %err\n  {leave}")
@@ -183,22 +240,37 @@ impl<'p> Module<'_, 'p> {
             "unreachable".to_owned()
         };
         let known = self.whole.analyses.get(function.name.as_str()).ok_or("no analysis")?;
+        let mut kinds = Vec::with_capacity(function.locals.len());
+        for local in &function.locals {
+            let kind = self.kind(&local.ty)?;
+            self.define_types(&kind);
+            kinds.push(kind);
+        }
+        let returns = self.kind(&function.returns)?;
+        self.define_types(&returns);
         let mut emit = Emit {
             module: self,
             function,
             known,
+            kinds,
+            returns,
+            allocas: String::new(),
             out: String::new(),
             cold: String::new(),
             next: 0,
+            current: "entry".to_owned(),
             failed,
             needs_prop: false,
             start,
             start_symbol,
             self_target,
         };
-        let _ = writeln!(emit.out, "define {linkage}swiftcc {ret} {name}({params}) #{attributes} {{\nentry:");
         emit.body()?;
-        let (out, cold, failed, needs_prop) = (emit.out, emit.cold, emit.failed, emit.needs_prop);
+        let (allocas, out, cold, failed, needs_prop) =
+            (emit.allocas, emit.out, emit.cold, emit.failed, emit.needs_prop);
+        let _ =
+            writeln!(self.bodies, "define {linkage}swiftcc {ret} {name}({params}) #{attributes} {{\nentry:");
+        self.bodies += &allocas;
         self.bodies += &out;
         self.bodies += &cold;
         if needs_prop {
@@ -210,13 +282,18 @@ impl<'p> Module<'_, 'p> {
 }
 
 /// One function being written.
-struct Emit<'e, 'w, 'p> {
-    module: &'e mut Module<'w, 'p>,
-    function: &'p Function,
-    known: &'w Analysis,
+pub(crate) struct Emit<'e, 'w, 'p> {
+    pub(crate) module: &'e mut Module<'w, 'p>,
+    pub(crate) function: &'p Function,
+    pub(crate) known: &'w Analysis,
+    kinds: Vec<Kind>,
+    returns: Kind,
+    allocas: String,
     out: String,
     cold: String,
     next: usize,
+    /// The block being written.
+    pub(crate) current: String,
     failed: String,
     needs_prop: bool,
     start: u32,
@@ -224,54 +301,155 @@ struct Emit<'e, 'w, 'p> {
     self_target: Option<&'e str>,
 }
 
-fn float_text(value: f64) -> String {
+pub(crate) fn float_text(value: f64) -> String {
     format!("0x{:016X}", value.to_bits())
 }
 
 impl Emit<'_, '_, '_> {
-    fn temp(&mut self) -> String {
+    pub(crate) fn temp(&mut self) -> String {
         self.next += 1;
         format!("%t{}", self.next)
     }
 
-    fn label(&mut self, word: &str) -> String {
+    pub(crate) fn label(&mut self, word: &str) -> String {
         self.next += 1;
         format!("{word}{}", self.next)
     }
 
-    fn line(&mut self, text: &str) {
+    pub(crate) fn line(&mut self, text: &str) {
         let _ = writeln!(self.out, "  {text}");
     }
 
-    fn declare(&mut self, line: &str) {
-        self.module.declares.insert(format!("{line}\n"));
+    pub(crate) fn start_block(&mut self, label: &str) {
+        let _ = writeln!(self.out, "{label}:");
+        label.clone_into(&mut self.current);
     }
 
-    fn local_type(&self, local: LocalId) -> Result<&'static str, String> {
-        type_text(&self.function.locals.get(local.0).ok_or("no such local")?.ty)
+    /// Adds a block away from the hot path.
+    pub(crate) fn cold_block(&mut self, text: &str) {
+        self.cold.push_str(text);
+    }
+
+    pub(crate) fn declare(&mut self, line: &str) {
+        self.module.declare(line);
+    }
+
+    pub(crate) fn kind_of(&self, local: LocalId) -> Result<&Kind, String> {
+        self.kinds.get(local.0).ok_or_else(|| "no such local".to_owned())
+    }
+
+    pub(crate) fn text_of(&self, kind: &Kind) -> String {
+        kind.slot(self.module.layouts)
+    }
+
+    fn is_param(&self, local: LocalId) -> bool {
+        local.0 < self.function.params
+    }
+
+    fn is_mut_param(&self, local: LocalId) -> bool {
+        self.is_param(local) && self.function.mut_params.contains(&local.0)
+    }
+
+    /// A parameter the caller's slot or block is used for directly, since nothing writes it.
+    fn is_lent(&self, local: LocalId) -> bool {
+        self.is_param(local) && !self.is_mut_param(local) && !self.known.written(local)
+    }
+
+    /// Where a local is held.
+    pub(crate) fn slot(&self, local: LocalId) -> String {
+        let in_memory = self.kinds.get(local.0).is_some_and(Kind::in_memory);
+        if self.is_mut_param(local) || (self.is_lent(local) && in_memory) {
+            format!("%p{}", local.0)
+        } else {
+            format!("%l{}", local.0)
+        }
+    }
+
+    /// Whether this local's slot holds an owner, for it to release.
+    fn owns(&self, local: LocalId) -> bool {
+        self.kinds.get(local.0).is_some_and(Kind::counted)
+            && !self.is_mut_param(local)
+            && !self.is_lent(local)
     }
 
     fn body(&mut self) -> Result<(), String> {
         let function = self.function;
-        for (at, local) in function.locals.iter().enumerate() {
-            let ty = type_text(&local.ty)?;
-            if ty != "void" {
-                self.line(&format!("%l{at} = alloca {ty}"));
+        let kinds = self.kinds.clone();
+        for (at, kind) in kinds.iter().enumerate() {
+            let local = LocalId(at);
+            let text = self.text_of(kind);
+            if text == "void" || self.is_mut_param(local) || (self.is_lent(local) && kind.in_memory()) {
+                continue;
+            }
+            let _ = writeln!(self.allocas, "  %l{at} = alloca {text}");
+            if kind.counted() {
+                let _ = writeln!(self.allocas, "  store ptr null, ptr %l{at}");
             }
         }
-        for (at, local) in function.locals.iter().take(function.params).enumerate() {
-            let ty = type_text(&local.ty)?;
-            self.line(&format!("store {ty} %p{at}, ptr %l{at}"));
+        for (at, kind) in kinds.iter().take(function.params).enumerate() {
+            let local = LocalId(at);
+            if self.is_mut_param(local) || (self.is_lent(local) && kind.in_memory()) {
+                continue;
+            }
+            let text = self.text_of(kind);
+            if kind.in_memory() {
+                let held = self.temp();
+                self.line(&format!("{held} = load {text}, ptr %p{at}"));
+                self.line(&format!("store {text} {held}, ptr %l{at}"));
+            } else if text != "void" {
+                if self.owns(local) {
+                    self.retain(&format!("%p{at}"));
+                }
+                self.line(&format!("store {text} %p{at}, ptr %l{at}"));
+            }
+        }
+        for (at, kind) in kinds.iter().take(function.params).enumerate() {
+            let local = LocalId(at);
+            if matches!(kind, Kind::List(_)) && self.known.alone_once_checked(local) {
+                self.check_alone(local);
+            }
         }
         self.line("br label %bb0");
         for (at, block) in function.blocks.iter().enumerate() {
-            let _ = writeln!(self.out, "bb{at}:");
+            self.start_block(&format!("bb{at}"));
             for inst in &block.insts {
-                self.inst(&inst.kind, inst.span)?;
+                self.inst(&inst.kind, inst.span, at)?;
+            }
+            if let Some((list, limit)) = self.known.reservations.get(&at).cloned() {
+                self.reserve(LocalId(list), &limit)?;
             }
             self.terminator(&block.end)?;
         }
         Ok(())
+    }
+
+    /// One more owner for a block.
+    pub(crate) fn retain(&mut self, block: &str) {
+        let (count, more) = (self.temp(), self.temp());
+        self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
+        self.line(&format!("{more} = add i64 {count}, 1"));
+        self.line(&format!("store i64 {more}, ptr {block}{HEADER_ACCESS}"));
+    }
+
+    /// One owner fewer for a block, if there's a block, freeing it when that was the last.
+    pub(crate) fn release(&mut self, block: &str) {
+        debug_assert_eq!(COUNT, 0);
+        self.declare("declare void @fennec_free(ptr) nounwind");
+        let (none, held, last, done) =
+            (self.temp(), self.label("held"), self.label("last"), self.label("done"));
+        self.line(&format!("{none} = icmp eq ptr {block}, null"));
+        self.line(&format!("br i1 {none}, label %{done}, label %{held}"));
+        self.start_block(&held);
+        let (count, fewer, gone) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
+        self.line(&format!("{fewer} = add i64 {count}, -1"));
+        self.line(&format!("store i64 {fewer}, ptr {block}{HEADER_ACCESS}"));
+        self.line(&format!("{gone} = icmp eq i64 {fewer}, 0"));
+        self.line(&format!("br i1 {gone}, label %{last}, label %{done}"));
+        self.start_block(&last);
+        self.line(&format!("call void @fennec_free(ptr {block})"));
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
     }
 
     /// Fails if a call here would go too deep. The limit never changes once the program's
@@ -287,46 +465,119 @@ impl Emit<'_, '_, '_> {
         self.fail_if(&low, TOO_DEEP, span);
     }
 
+    /// Where a span is, from the symbol for where this function starts, for failing with.
+    pub(crate) fn span_values(&mut self, fail: &str, span: Span) -> (String, String) {
+        let symbol = self.start_symbol.clone();
+        let (from, to) = (span.start.saturating_sub(self.start), span.end.saturating_sub(self.start));
+        let text = format!(
+            "  %s{fail} = load i64, ptr @\"{symbol}\"\n  %a{fail} = add i64 %s{fail}, {from}\n  %b{fail} = add i64 %s{fail}, {to}\n"
+        );
+        (text, format!("i64 %a{fail}, i64 %b{fail}"))
+    }
+
+    /// How a function leaves when it has failed.
+    pub(crate) fn failed_exit(&self) -> String {
+        self.failed.clone()
+    }
+
+    /// Leaves the function, the failure already recorded, when `failed` holds.
+    pub(crate) fn leave_if(&mut self, failed: &str) {
+        let ok = self.label("ok");
+        self.needs_prop = true;
+        self.line(&format!("br i1 {failed}, label %prop, label %{ok}, !prof !0"));
+        self.start_block(&ok);
+    }
+
     /// Calls the runtime's failure and leaves the function when `bad` holds.
     fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
         let (fail, ok) = (self.label("fail"), self.label("ok"));
         self.line(&format!("br i1 {bad}, label %{fail}, label %{ok}, !prof !0"));
-        let _ = writeln!(self.out, "{ok}:");
+        self.start_block(&ok);
         self.declare("declare void @fennec_fail(i64, i64, i64) #1");
-        let symbol = self.start_symbol.clone();
-        let (from, to) = (span.start.saturating_sub(self.start), span.end.saturating_sub(self.start));
+        let (place, args) = self.span_values(&fail, span);
         let failed = self.failed.clone();
-        let _ = writeln!(
-            self.cold,
-            "{fail}:\n  %s{fail} = load i64, ptr @\"{symbol}\"\n  %a{fail} = add i64 %s{fail}, {from}\n  %b{fail} = add i64 %s{fail}, {to}\n  call void @fennec_fail(i64 {code}, i64 %a{fail}, i64 %b{fail})\n  {failed}"
-        );
+        let _ =
+            writeln!(self.cold, "{fail}:\n{place}  call void @fennec_fail(i64 {code}, {args})\n  {failed}");
     }
 
-    fn operand(&mut self, operand: &Operand) -> Result<(String, Type), String> {
+    /// A value: a number as itself, a block's address, or the slot of something in memory.
+    pub(crate) fn operand(&mut self, operand: &Operand) -> Result<(String, Kind), String> {
         Ok(match operand {
             Operand::Local(local) => {
-                let held = self.function.locals.get(local.0).ok_or("no such local")?;
-                let ty = type_text(&held.ty)?;
+                let kind = self.kind_of(*local)?.clone();
+                let slot = self.slot(*local);
+                if kind.in_memory() {
+                    return Ok((slot, kind));
+                }
+                let text = self.text_of(&kind);
                 let temp = self.temp();
-                self.line(&format!("{temp} = load {ty}, ptr %l{}", local.0));
-                (temp, held.ty.clone())
+                self.line(&format!("{temp} = load {text}, ptr {slot}"));
+                (temp, kind)
             }
-            Operand::Int(value) => (value.to_string(), Type::Int),
-            Operand::Float(value) => (float_text(*value), Type::Float),
-            Operand::Bool(value) => (value.to_string(), Type::Bool),
-            Operand::Str(_) => {
-                return Err("it holds a string, which this backend doesn't take yet".to_owned());
-            }
+            Operand::Int(value) => (value.to_string(), Kind::Int),
+            Operand::Float(value) => (float_text(*value), Kind::Float),
+            Operand::Bool(value) => (value.to_string(), Kind::Bool),
+            Operand::Str(text) => (self.literal(text), Kind::Str),
             Operand::None => return Err("it holds `None`, which this backend doesn't take yet".to_owned()),
         })
     }
 
-    fn store(&mut self, dest: LocalId, value: &str) -> Result<(), String> {
-        let ty = self.local_type(dest)?;
-        if ty != "void" {
-            self.line(&format!("store {ty} {value}, ptr %l{}", dest.0));
+    /// Puts a value in a local. A local that owns a block lets go of what it held.
+    pub(crate) fn assign(&mut self, dest: LocalId, value: &str) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        let text = self.text_of(&kind);
+        if text == "void" {
+            return Ok(());
+        }
+        let slot = self.slot(dest);
+        if self.owns(dest) || (kind.counted() && self.is_mut_param(dest)) {
+            let old = self.temp();
+            self.line(&format!("{old} = load ptr, ptr {slot}"));
+            self.line(&format!("store ptr {value}, ptr {slot}"));
+            self.release(&old);
+        } else {
+            self.line(&format!("store {text} {value}, ptr {slot}"));
         }
         Ok(())
+    }
+
+    /// Copies what's in memory at `from` into a local.
+    pub(crate) fn assign_memory(&mut self, dest: LocalId, from: &str, access: &str) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        let text = self.text_of(&kind);
+        let (held, slot) = (self.temp(), self.slot(dest));
+        self.line(&format!("{held} = load {text}, ptr {from}{access}"));
+        self.line(&format!("store {text} {held}, ptr {slot}"));
+        Ok(())
+    }
+
+    /// Reads a value of this kind from inside something, as a number or a block's address.
+    pub(crate) fn load_field(&mut self, kind: &Kind, at: &str, access: &str) -> String {
+        let memory = kind.memory(self.module.layouts);
+        let held = self.temp();
+        self.line(&format!("{held} = load {memory}, ptr {at}{access}"));
+        if *kind == Kind::Bool {
+            let bit = self.temp();
+            self.line(&format!("{bit} = trunc i64 {held} to i1"));
+            return bit;
+        }
+        held
+    }
+
+    /// Writes a value inside something: a number as a word, or what's at a slot, in memory.
+    pub(crate) fn store_field(&mut self, kind: &Kind, value: &str, at: &str, access: &str) {
+        let memory = kind.memory(self.module.layouts);
+        if kind.in_memory() {
+            let held = self.temp();
+            self.line(&format!("{held} = load {memory}, ptr {value}"));
+            self.line(&format!("store {memory} {held}, ptr {at}{access}"));
+        } else if *kind == Kind::Bool {
+            let word = self.temp();
+            self.line(&format!("{word} = zext i1 {value} to i64"));
+            self.line(&format!("store i64 {word}, ptr {at}{access}"));
+        } else {
+            self.line(&format!("store {memory} {value}, ptr {at}{access}"));
+        }
     }
 
     fn checked(&mut self, name: &str, a: &str, b: &str, span: Span) -> String {
@@ -348,12 +599,12 @@ impl Emit<'_, '_, '_> {
         rhs: &Operand,
         span: Span,
     ) -> Result<(), String> {
-        let (a, ty) = self.operand(lhs)?;
+        let (a, kind) = self.operand(lhs)?;
         let (b, _) = self.operand(rhs)?;
-        let value = match ty {
-            Type::Int => self.int_binary(dest, op, (&a, &b), rhs, span)?,
-            Type::Float => self.float_binary(op, (&a, &b), rhs, span)?,
-            Type::Bool => {
+        let value = match kind {
+            Kind::Int => self.int_binary(dest, op, (&a, &b), rhs, span)?,
+            Kind::Float => self.float_binary(op, (&a, &b), rhs, span)?,
+            Kind::Bool => {
                 let cc = match op {
                     BinOp::Eq => "eq",
                     BinOp::NotEq => "ne",
@@ -363,9 +614,11 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = icmp {cc} i1 {a}, {b}"));
                 temp
             }
-            other => return Err(format!("it uses an operator on {other:?}")),
+            other => {
+                return Err(format!("it uses an operator on {other:?}, which this backend doesn't take yet"));
+            }
         };
-        self.store(dest, &value)
+        self.assign(dest, &value)
     }
 
     fn int_binary(
@@ -496,18 +749,36 @@ impl Emit<'_, '_, '_> {
             .functions
             .get(name)
             .ok_or_else(|| format!("it calls `{name}`, which isn't lowered"))?;
-        if !callee.mut_params.is_empty() {
-            return Err(format!("`{name}` takes a `mut` parameter, which this backend doesn't take yet"));
-        }
-        let ret = type_text(&callee.returns)?;
+        let ret = self.module.ret_text(callee)?;
         if !self.module.defined.contains(name) {
             let params = self.module.params(callee, false)?;
             self.declare(&format!("declare swiftcc {ret} {}({params}) #0", symbol(name)));
         }
-        let mut shown = Vec::with_capacity(args.len() + 1);
-        for arg in args {
-            let (value, ty) = self.operand(arg)?;
-            shown.push(format!("{} {value}", type_text(&ty)?));
+        let returns = self.module.kind(&callee.returns)?;
+        let mut shown = Vec::with_capacity(args.len() + 2);
+        let returned_at = if returns.in_memory() {
+            let at = self.label("%ret");
+            let text = self.text_of(&returns);
+            let _ = writeln!(self.allocas, "  {at} = alloca {text}");
+            shown.push(format!("ptr {at}"));
+            Some(at)
+        } else {
+            None
+        };
+        for (at, arg) in args.iter().enumerate() {
+            if callee.mut_params.contains(&at) {
+                let Operand::Local(local) = arg else {
+                    return Err("it passes a literal for a `mut` parameter".to_owned());
+                };
+                shown.push(format!("ptr {}", self.slot(*local)));
+                continue;
+            }
+            let (value, kind) = self.operand(arg)?;
+            if kind.in_memory() {
+                shown.push(format!("ptr {value}"));
+            } else {
+                shown.push(format!("{} {value}", self.text_of(&kind)));
+            }
         }
         let flagged = self.module.flagged(name);
         if flagged {
@@ -527,69 +798,20 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{result} = call swiftcc {ret} {target}({shown})"));
         }
         if flagged {
-            let (held, failed, ok) = (self.temp(), self.temp(), self.label("ok"));
+            let (held, failed) = (self.temp(), self.temp());
             self.line(&format!("{held} = load ptr, ptr %err"));
             self.line(&format!("{failed} = icmp ne ptr {held}, null"));
-            self.needs_prop = true;
-            self.line(&format!("br i1 {failed}, label %prop, label %{ok}, !prof !0"));
-            let _ = writeln!(self.out, "{ok}:");
+            self.leave_if(&failed);
         }
-        if let (Some(dest), true) = (dest, ret != "void") {
-            self.store(dest, &result)?;
-        }
-        Ok(())
-    }
-
-    /// The number of a string, read from its symbol, since it depends on the whole program.
-    fn string_number(&mut self, text: &str) -> String {
-        let hash = fennec_blake3::hash(text.as_bytes()).to_hex();
-        let name = format!("s_{hash}");
-        self.declare(&format!("@\"{name}\" = external dso_local global i64"));
-        self.module.shared.strings.insert(name.clone(), text.to_owned());
-        let temp = self.temp();
-        self.line(&format!("{temp} = load i64, ptr @\"{name}\""));
-        temp
-    }
-
-    fn print_text(&mut self, text: &str) {
-        let number = self.string_number(text);
-        self.declare("declare void @fennec_print_str(i64)");
-        self.line(&format!("call void @fennec_print_str(i64 {number})"));
-    }
-
-    fn print(&mut self, args: &[Operand]) -> Result<(), String> {
-        // Everything is worked out before anything prints.
-        let mut values = Vec::with_capacity(args.len());
-        for arg in args {
-            values.push(match arg {
-                Operand::Str(text) => (text.clone(), Type::Str),
-                other => self.operand(other)?,
-            });
-        }
-        for (at, (value, ty)) in values.iter().enumerate() {
-            if at > 0 {
-                self.print_text(" ");
+        match (dest, returned_at) {
+            (Some(dest), Some(at)) => self.assign_memory(dest, &at, "")?,
+            (Some(dest), None) if ret != "void" => {
+                self.assign(dest, &result)?;
+                self.alone_from_here(dest);
             }
-            let (helper, text) = match ty {
-                Type::Str => {
-                    self.print_text(value);
-                    continue;
-                }
-                Type::Int => ("fennec_print_int", "i64"),
-                Type::Float => ("fennec_print_float", "double"),
-                Type::Bool => ("fennec_print_bool", "i8"),
-                other => return Err(format!("it prints a {other:?}, which this backend doesn't take yet")),
-            };
-            self.declare(&format!("declare void @{helper}({text})"));
-            if *ty == Type::Bool {
-                let wide = self.temp();
-                self.line(&format!("{wide} = zext i1 {value} to i8"));
-                self.line(&format!("call void @{helper}(i8 {wide})"));
-            } else {
-                self.line(&format!("call void @{helper}({text} {value})"));
-            }
+            (None, None) if returns.counted() => self.release(&result),
+            _ => {}
         }
-        self.print_text("\n");
         Ok(())
     }
 
@@ -603,15 +825,21 @@ impl Emit<'_, '_, '_> {
         let first = args.first();
         match name {
             "Stdout.print" => self.print(args.get(1..).unwrap_or_default()),
+            "list.len" => {
+                let (list, _) = self.operand(first.ok_or("no argument")?)?;
+                let length = self.list_length(&list);
+                self.assign(dest.ok_or("no result")?, &length)
+            }
+            "list.append" => self.append(args),
             "float" => {
-                let (value, ty) = self.operand(first.ok_or("no argument")?)?;
+                let (value, kind) = self.operand(first.ok_or("no argument")?)?;
                 let temp = self.temp();
-                if ty == Type::Int {
+                if kind == Kind::Int {
                     self.line(&format!("{temp} = sitofp i64 {value} to double"));
                 } else {
                     return Err("it calls `float` on something other than an int".to_owned());
                 }
-                self.store(dest.ok_or("no result")?, &temp)
+                self.assign(dest.ok_or("no result")?, &temp)
             }
             "math.sqrt" => {
                 let (value, _) = self.operand(first.ok_or("no argument")?)?;
@@ -621,46 +849,132 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare double @llvm.sqrt.f64(double)");
                 let temp = self.temp();
                 self.line(&format!("{temp} = call double @llvm.sqrt.f64(double {value})"));
-                self.store(dest.ok_or("no result")?, &temp)
+                self.assign(dest.ok_or("no result")?, &temp)
             }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
     }
 
-    fn inst(&mut self, inst: &InstKind, span: Span) -> Result<(), String> {
-        match inst {
-            InstKind::Copy { dest, value } => {
-                let (value, _) = self.operand(value)?;
-                self.store(*dest, &value)
+    /// `dest = value`: a block gets another owner, unless nothing else ever reads `value`.
+    fn copy(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+        let (held, kind) = self.operand(value)?;
+        if kind.in_memory() {
+            return self.assign_memory(dest, &held, "");
+        }
+        if kind.counted() {
+            match value {
+                Operand::Local(from) if self.owns(*from) && self.known.moves(*from) => {
+                    let slot = self.slot(*from);
+                    self.line(&format!("store ptr null, ptr {slot}"));
+                }
+                _ => self.retain(&held),
             }
+        }
+        self.assign(dest, &held)?;
+        self.alone_from_here(dest);
+        Ok(())
+    }
+
+    /// A list that came from somewhere else gets its one check here.
+    fn alone_from_here(&mut self, dest: LocalId) {
+        if self.kinds.get(dest.0).is_some_and(|kind| matches!(kind, Kind::List(_)))
+            && self.known.alone_once_checked(dest)
+        {
+            self.check_alone(dest);
+        }
+    }
+
+    fn inst(&mut self, inst: &InstKind, span: Span, block: usize) -> Result<(), String> {
+        match inst {
+            InstKind::Copy { dest, value } => self.copy(*dest, value),
             InstKind::Unary { dest, op, value } => {
-                let (value, ty) = self.operand(value)?;
-                let result = match (op, ty) {
-                    (UnaryOp::Neg, Type::Int) if self.known.is_safe(*dest) => {
+                let (value, kind) = self.operand(value)?;
+                let result = match (op, kind) {
+                    (UnaryOp::Neg, Kind::Int) if self.known.is_safe(*dest) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = sub nsw i64 0, {value}"));
                         temp
                     }
-                    (UnaryOp::Neg, Type::Int) => self.checked("ssub", "0", &value, span),
-                    (UnaryOp::Neg, Type::Float) => {
+                    (UnaryOp::Neg, Kind::Int) => self.checked("ssub", "0", &value, span),
+                    (UnaryOp::Neg, Kind::Float) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = fneg double {value}"));
                         temp
                     }
-                    (UnaryOp::Not, Type::Bool) => {
+                    (UnaryOp::Not, Kind::Bool) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = xor i1 {value}, true"));
                         temp
                     }
                     (_, other) => return Err(format!("it uses a unary operator on {other:?}")),
                 };
-                self.store(*dest, &result)
+                self.assign(*dest, &result)
             }
             InstKind::Binary { dest, op, lhs, rhs } => self.binary(*dest, *op, lhs, rhs, span),
+            InstKind::Make { dest, fields, .. } => self.make(*dest, fields),
+            InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
+            InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
+            InstKind::MakeTuple { dest, items } => self.make_tuple(*dest, items),
+            InstKind::GetTupleItem { dest, value, at } => self.get_tuple_item(*dest, value, *at),
+            InstKind::MakeList { dest, items } => self.make_list(*dest, items, block),
+            InstKind::GetIndex { dest, object, index } => self.get_index(*dest, object, index, span),
+            InstKind::SetIndex { object, path, index, value } => {
+                if !path.is_empty() {
+                    return Err(
+                        "it changes a list inside a struct, which this backend doesn't take yet".to_owned()
+                    );
+                }
+                self.set_index(*object, index, value, span)
+            }
+            InstKind::Format { dest, parts } => self.format(*dest, parts, span),
             InstKind::Builtin { dest, name, args, .. } => self.builtin(*dest, name, args, span),
             InstKind::Call { dest, function, args } => self.call(*dest, function, args, span),
             other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
         }
+    }
+
+    /// Everything local lets go of what it owns, except what's leaving.
+    fn release_locals(&mut self, except: Option<LocalId>) {
+        for at in 0..self.kinds.len() {
+            let local = LocalId(at);
+            if Some(local) != except && self.owns(local) {
+                let (held, slot) = (self.temp(), self.slot(local));
+                self.line(&format!("{held} = load ptr, ptr {slot}"));
+                self.release(&held);
+            }
+        }
+    }
+
+    fn give_back(&mut self, value: Option<&Operand>) -> Result<(), String> {
+        let returns = self.returns.clone();
+        let text = self.text_of(&returns);
+        if returns.in_memory() {
+            let (at, _) = self.operand(value.ok_or("it returns nothing where a value is due")?)?;
+            let held = self.temp();
+            self.line(&format!("{held} = load {text}, ptr {at}"));
+            self.line(&format!("store {text} {held}, ptr %ret"));
+            self.release_locals(None);
+            self.line("ret void");
+            return Ok(());
+        }
+        if text == "void" {
+            self.release_locals(None);
+            self.line("ret void");
+            return Ok(());
+        }
+        let operand = value.ok_or("it returns nothing where a value is due")?;
+        let (held, _) = self.operand(operand)?;
+        // Leaving, a local's owner goes with its value.
+        let moved = match operand {
+            Operand::Local(local) if returns.counted() && self.owns(*local) => Some(*local),
+            _ => None,
+        };
+        if returns.counted() && moved.is_none() {
+            self.retain(&held);
+        }
+        self.release_locals(moved);
+        self.line(&format!("ret {text} {held}"));
+        Ok(())
     }
 
     fn terminator(&mut self, end: &Terminator) -> Result<(), String> {
@@ -670,17 +984,7 @@ impl Emit<'_, '_, '_> {
                 let (cond, _) = self.operand(cond)?;
                 self.line(&format!("br i1 {cond}, label %bb{}, label %bb{}", then.0, otherwise.0));
             }
-            Terminator::Return(value) => {
-                let ret = type_text(&self.function.returns)?;
-                match (value, ret) {
-                    (_, "void") => self.line("ret void"),
-                    (Some(value), _) => {
-                        let (value, _) = self.operand(value)?;
-                        self.line(&format!("ret {ret} {value}"));
-                    }
-                    (None, _) => return Err("it returns nothing where a value is due".to_owned()),
-                }
-            }
+            Terminator::Return(value) => self.give_back(value.as_ref())?,
             Terminator::Unreachable => self.line("unreachable"),
             Terminator::NoMatch { .. } | Terminator::Stop { .. } => {
                 return Err(format!("it ends with `{end}`, which this backend doesn't take yet"));
@@ -737,8 +1041,7 @@ mod tests {
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        let source =
-            "def f() -> list[int]:\n    [1]\n\ndef main(stdout: Stdout):\n    stdout.print(f().len())\n";
+        let source = "def f() -> dict[int, int]:\n    {1: 2}\n\ndef main(stdout: Stdout):\n    stdout.print(f().len())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

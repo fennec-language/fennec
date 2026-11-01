@@ -71,7 +71,7 @@ error: `enemy` might be None
 14 |     enemy.take_damage(10)
    |     ^^^^^ used without checking
    |
-   = fix: add `if enemy is None: return` above it, or write `enemy?.take_damage(10)`
+   = fix: add `if enemy is None: return` above it, or wrap the call in `if enemy is not None:`
 ```
 
 ## Testing with nothing to set up

@@ -563,6 +563,13 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                     }
                 }
             }
+            // An `IdMap`'s items aren't a list's, so they're read and written as they are.
+            let id_map = |local: LocalId| {
+                matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::IdMap(_)))
+            };
+            if matches!(&inst.kind, InstKind::GetIndex { .. }) && id_map(source) {
+                continue;
+            }
             if let InstKind::GetIndex { index, .. } = &inst.kind {
                 let home = from_field.get(&source.0).cloned().unwrap_or((source, Vec::new()));
                 for next in later {
@@ -602,6 +609,12 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                     }
                     InstKind::Builtin { name, args, .. }
                         if name == "list.append" && args.first() == Some(&Operand::Local(dest)) => {}
+                    InstKind::Builtin { name, args, changes: true, .. }
+                        if name.starts_with("IdMap.")
+                            && args.first() == Some(&Operand::Local(dest))
+                            && !args.iter().skip(1).any(|arg| {
+                                *arg == Operand::Local(dest) || *arg == Operand::Local(source)
+                            }) => {}
                     // A method written in Fennec changing it, like `self.inner.add(x)`, given
                     // it alone and nothing else of what it came from.
                     InstKind::Call { function: callee, args, .. }

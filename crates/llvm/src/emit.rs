@@ -1140,6 +1140,8 @@ impl Emit<'_, '_, '_> {
             "list.append" => self.append(args),
             "result.expect" => self.expect(dest, args, span),
             "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
+            "IdMap" | "IdMap.len" | "IdMap.get" | "IdMap.insert" | "IdMap.remove" | "IdMap.values"
+            | "IdMap.ids" | "IdMap.items" => self.id_map_builtin(dest, name, args, span),
             "is_regex" | "re.is_regex" | "Regex.replace" | "Regex.split" | "Regex.find_all"
             | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)

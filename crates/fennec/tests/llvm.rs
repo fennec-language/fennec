@@ -566,6 +566,42 @@ def main(stdout: Stdout):
 }
 
 #[test]
+fn id_maps_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "idmap",
+        r#"from std.game import Id, IdMap
+
+struct Unit:
+    name: str
+    health: int
+
+def main(stdout: Stdout):
+    mut units = IdMap[Unit]()
+    a = units.insert(Unit(name="fox", health=10))
+    b = units.insert(Unit(name="kit", health=5))
+    units[a].health -= 3
+    stdout.print(units[a].health, units.len(), units.get(b) is None)
+    gone = units.remove(b)
+    stdout.print(units.get(b) is None, units.len(), a == a, a == b)
+    c = units.insert(Unit(name="den", health=7))
+    ids: list[Id[Unit]] = units.ids()
+    for id, unit in units.items():
+        stdout.print(unit.name, unit.health)
+    stdout.print(ids.len(), units.values().len(), c == b)
+    if gone is not None:
+        stdout.print(gone.name)
+"#,
+    )?;
+    same_message_as_the_jit(
+        "stale",
+        "from std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut names = IdMap[str]()\n    fox = names.insert(\"fox\")\n    names.remove(fox)\n    stdout.print(names[fox])\n",
+    )
+}
+
+#[test]
 fn failures_match_the_jit() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
         return Ok(());

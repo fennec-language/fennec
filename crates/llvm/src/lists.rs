@@ -188,7 +188,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A block at `place` with no other owner, so it can change.
-    fn alone_at(&mut self, place: &str, helper: &str) -> String {
+    pub(crate) fn alone_at(&mut self, place: &str, helper: &str) -> String {
         self.declare(&format!("declare ptr @{helper}(ptr) nounwind"));
         let (block, count, alone) = (self.temp(), self.temp(), self.temp());
         let (ok, shared) = (self.label("alone"), self.label("shared"));
@@ -561,6 +561,11 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let inside = matches!(object, Operand::Local(local) if self.known.inside(*local, index));
+        if let Operand::Local(local) = object
+            && self.is_id_map(&self.kind_of(*local)?.clone())
+        {
+            return self.id_map_index(dest, object, index, span);
+        }
         let (list, kind) = self.operand(object)?;
         if let Kind::Dict(key, value) = kind {
             return self.dict_read(dest, &list, (key, value), index, span);
@@ -622,7 +627,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// What's at a field path from a local.
-    fn place_kind(&self, object: LocalId, path: &[String]) -> Result<Kind, String> {
+    pub(crate) fn place_kind(&self, object: LocalId, path: &[String]) -> Result<Kind, String> {
         let mut kind = self.kind_of(object)?.clone();
         for name in path {
             let (_, field) = self.field(&kind, name)?;
@@ -632,7 +637,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Where a field path from a local leads, with no other owner of anything on the way.
-    fn place_of(&mut self, object: LocalId, path: &[String]) -> Result<String, String> {
+    pub(crate) fn place_of(&mut self, object: LocalId, path: &[String]) -> Result<String, String> {
         let mut kind = self.kind_of(object)?.clone();
         let mut place = self.slot(object);
         for name in path {
@@ -680,6 +685,10 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         let inside = path.is_empty() && self.known.inside(object, index);
         let kind = self.place_kind(object, path)?;
+        if self.is_id_map(&kind) {
+            let place = self.place_of(object, path)?;
+            return self.id_map_store(&place, &kind, index, value, span);
+        }
         if let Kind::Dict(key, value_word) = kind {
             let place = self.place_of(object, path)?;
             // A lookup on this dict, or on a local read from this field holding it.

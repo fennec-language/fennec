@@ -61,6 +61,17 @@ impl Emit<'_, '_, '_> {
 
     /// Prints one value: an optional as what it holds, or `None`.
     fn print_one(&mut self, value: &str, kind: &Kind) -> Result<(), String> {
+        // An `Id` shows its slot, as the interpreter's does.
+        if let Kind::Struct(id) = kind
+            && self.module.layouts.get(*id).is_some_and(|layout| layout.name == "Id")
+        {
+            self.print_text("Id(");
+            let slot = self.temp();
+            self.line(&format!("{slot} = load i64, ptr {value}"));
+            self.print_one(&slot, &Kind::Int)?;
+            self.print_text(")");
+            return Ok(());
+        }
         if let Kind::Maybe(inner) = kind {
             let none = self.temp();
             self.line(&format!("{none} = icmp eq ptr {value}, null"));

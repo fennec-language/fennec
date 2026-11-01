@@ -63,6 +63,15 @@ impl TestGraph {
         })
     }
 
+    /// Every function a test can reach, by the keys the compiler knows them by.
+    pub fn reach(&self, test: &str) -> Vec<String> {
+        self.graph
+            .definitions
+            .iter()
+            .position(|definition| definition.test.as_deref() == Some(test))
+            .map_or_else(Vec::new, |at| self.graph.functions_reached(at))
+    }
+
     fn traced_key(&self, test: usize, ran: &[String]) -> Hash {
         let mut reached = BTreeSet::from([test]);
         // A function it ran that's gone has no definition, and that changes the key too.
@@ -117,8 +126,20 @@ fn runs(definition: &Definition) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TestRecord {
     pub test: String,
+    /// The module of its kit it's in.
+    pub module: String,
     pub key: Hash,
     pub ran: Option<Vec<String>>,
+    /// All the functions it can reach, for a test nothing traced.
+    pub reach: Vec<String>,
+}
+
+impl TestRecord {
+    /// Whether changing the body of the function with this key can change its result.
+    pub fn depends_on(&self, function: &str) -> bool {
+        let among = |functions: &[String]| functions.iter().any(|name| name == function);
+        self.ran.as_deref().map_or_else(|| among(&self.reach), among)
+    }
 }
 
 /// What separates records, and the fields of one. Neither can be in a name in a source file
@@ -133,8 +154,10 @@ fn encode(records: &[TestRecord]) -> String {
         text.push(FIELD);
         text.push_str(&record.test);
         text.push(FIELD);
+        text.push_str(&record.module);
+        text.push(FIELD);
         text.push_str(if record.ran.is_some() { "traced" } else { "reached" });
-        for function in record.ran.iter().flatten() {
+        for function in record.ran.as_ref().unwrap_or(&record.reach) {
             text.push(FIELD);
             text.push_str(function);
         }
@@ -147,17 +170,23 @@ fn decode(text: &str) -> HashMap<String, TestRecord> {
     let mut records = HashMap::new();
     for record in text.split(RECORD) {
         let mut fields = record.split(FIELD);
-        let (Some(key), Some(name), Some(kind)) = (fields.next(), fields.next(), fields.next()) else {
+        let (Some(key), Some(name), Some(module), Some(kind)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
             continue;
         };
         let Some(key) = from_hex(key) else { continue };
-        let ran = (kind == "traced").then(|| fields.map(str::to_owned).collect());
-        records.insert(name.to_owned(), TestRecord { test: name.to_owned(), key, ran });
+        let functions: Vec<String> = fields.map(str::to_owned).collect();
+        let (ran, reach) = if kind == "traced" { (Some(functions), Vec::new()) } else { (None, functions) };
+        records.insert(
+            name.to_owned(),
+            TestRecord { test: name.to_owned(), module: module.to_owned(), key, ran, reach },
+        );
     }
     records
 }
 
-fn from_hex(text: &str) -> Option<Hash> {
+pub(crate) fn from_hex(text: &str) -> Option<Hash> {
     let mut bytes = [0_u8; 32];
     if text.len() != bytes.len() * 2 {
         return None;
@@ -234,11 +263,25 @@ mod tests {
         let records = [
             TestRecord {
                 test: "a".to_owned(),
+                module: "main".to_owned(),
                 key: fennec_blake3::hash(b"a"),
                 ran: Some(vec!["f".to_owned(), "T.m".to_owned()]),
+                reach: Vec::new(),
             },
-            TestRecord { test: "b".to_owned(), key: fennec_blake3::hash(b"b"), ran: None },
-            TestRecord { test: "c".to_owned(), key: fennec_blake3::hash(b"c"), ran: Some(Vec::new()) },
+            TestRecord {
+                test: "b".to_owned(),
+                module: "m.n".to_owned(),
+                key: fennec_blake3::hash(b"b"),
+                ran: None,
+                reach: vec!["g".to_owned()],
+            },
+            TestRecord {
+                test: "c".to_owned(),
+                module: String::new(),
+                key: fennec_blake3::hash(b"c"),
+                ran: Some(Vec::new()),
+                reach: Vec::new(),
+            },
         ];
         let read = decode(&encode(&records));
         for record in &records {

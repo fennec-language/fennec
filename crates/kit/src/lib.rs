@@ -46,8 +46,8 @@ pub fn load(path: &Path, shown_as: &str, entry: Entry) -> Result<Program, String
     load_with(path, shown_as, entry, &Overlay::new()).map_err(|problems| problems.render())
 }
 
-/// The text of every file a program's tests can see, by path: all of a kit's, read without
-/// parsing them, or a single file's and what it imports. None if they can't be read or loaded,
+/// The text of every file a program's tests can see: all of a kit's by module name, read
+/// without parsing them, or a single file's and what it imports by path. None if they can't be read or loaded,
 /// which loading it properly will explain.
 pub fn all_texts(path: &Path) -> Option<Vec<(String, String)>> {
     if path.is_dir() {
@@ -55,6 +55,11 @@ pub fn all_texts(path: &Path) -> Option<Vec<(String, String)>> {
     }
     let program = load(path, &path.to_string_lossy(), Entry::Everything).ok()?;
     Some(program.sources.files().map(|(path, text)| (path.to_owned(), text.to_owned())).collect())
+}
+
+/// Loads some of a kit's modules and everything they import, by their names.
+pub fn load_modules(dir: &Path, shown_as: &str, modules: &[String]) -> Result<Program, Problems> {
+    load::kit_modules(dir, shown_as, modules)
 }
 
 /// Text to read in place of files on disk, by path: an editor's unsaved changes. A path is

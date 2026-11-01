@@ -61,8 +61,9 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
     loader.finish(Some(manifest))
 }
 
-/// The text of every file of a kit, without parsing any of it, by path. None if `dir` isn't in a
-/// kit, or a file can't be read: loading it will say why.
+/// The text of every file of a kit, without parsing any of it, by its module name, with the
+/// manifest as `kit.toml`. None if `dir` isn't in a kit, or a file can't be read: loading it
+/// will say why.
 pub(crate) fn kit_texts(dir: &Path) -> Option<Vec<(String, String)>> {
     let (root, _) = find_root(dir, ".")?;
     let src = root.join("src");
@@ -70,18 +71,33 @@ pub(crate) fn kit_texts(dir: &Path) -> Option<Vec<(String, String)>> {
     find_modules(&src, &mut Vec::new(), &mut modules);
     modules.sort();
     let mut texts = Vec::with_capacity(modules.len() + 1);
-    let manifest = root.join("kit.toml");
-    let paths = modules.iter().map(|module| {
+    for module in modules {
         let mut path = src.clone();
-        path.extend(module);
+        path.extend(&module);
         path.set_extension("fen");
-        path
-    });
-    for path in paths.chain(std::iter::once(manifest)) {
-        let text = std::fs::read_to_string(&path).ok()?;
-        texts.push((path.to_string_lossy().into_owned(), text));
+        texts.push((module.join("."), std::fs::read_to_string(&path).ok()?));
     }
+    texts.push(("kit.toml".to_owned(), std::fs::read_to_string(root.join("kit.toml")).ok()?));
     Some(texts)
+}
+
+/// Loads some of a kit's modules and what they import, by name. What they don't import can't
+/// reach them.
+pub(crate) fn kit_modules(dir: &Path, shown_as: &str, modules: &[String]) -> Result<Program, Problems> {
+    let Some((root, shown_root)) = find_root(dir, shown_as) else {
+        return Err(Problems::unplaced("error: this isn't in a kit\n".to_owned()));
+    };
+    let manifest = read_manifest(&root, &shown_root).map_err(Problems::unplaced)?;
+    let overlay = Overlay::new();
+    let mut loader = Loader::new(root.join("src"), format!("{shown_root}src/"), &overlay);
+    let modules: Vec<Vec<String>> =
+        modules.iter().map(|module| module.split('.').map(str::to_owned).collect()).collect();
+    loader.parse_ahead(modules.clone());
+    for module in modules {
+        let (real, shown) = loader.module_path(&module);
+        loader.visit(&module.join("."), &real, shown, None);
+    }
+    loader.finish(Some(manifest))
 }
 
 /// The nearest folder at or above `dir` with a `kit.toml`, and how messages show it: by

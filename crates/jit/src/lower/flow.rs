@@ -173,6 +173,9 @@ impl Lowerer<'_, '_> {
 
     /// `value else default`: the value inside a result or optional, or else the default.
     pub(super) fn else_value(&mut self, value: &Expr, default: &Expr) -> Result<Lowered, Diagnostic> {
+        if let Some(native) = self.dict_get_else(value, default)? {
+            return Ok(native);
+        }
         let (value, ty) = self.expr(value)?;
         if ty != Ty::Obj {
             return Ok((value, ty));

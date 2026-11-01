@@ -170,3 +170,33 @@ fn a_method_with_two_shapes_cant_be_told_apart_so_it_isnt_flagged() {
         def main():\n    a.go(1, 2)\n";
     assert_eq!(rules(source), NONE);
 }
+
+#[test]
+fn an_enum_case_names_its_arguments_too() {
+    let enumerated = "enum Shape:\n    Rect(wide: int, high: int)\n    Dot\n\n";
+    for (call, named) in [("Shape.Rect(1, 2)", "Shape.Rect(1, high=2)"), (".Rect(1, 2)", ".Rect(1, high=2)")]
+    {
+        let source = format!("{enumerated}def main():\n    x = {call}\n");
+        assert_eq!(rules(&source), ["positional-arguments"], "{call}");
+        assert_eq!(fixed(&source), format!("{enumerated}def main():\n    x = {named}\n"), "{call}");
+    }
+}
+
+#[test]
+fn the_standard_librarys_types_count_unless_the_program_replaces_them() {
+    let library = "def main():\n    x = Vec3(1.0, 2.0, 3.0)\n";
+    assert_eq!(rules(library), ["positional-arguments"], "std.math's Vec3");
+    assert_eq!(fixed(library), "def main():\n    x = Vec3(1.0, y=2.0, z=3.0)\n");
+    let replaced = "def Vec3(a: int, b: str):\n    pass\n\ndef main():\n    x = Vec3(1, \"a\")\n";
+    assert_eq!(rules(replaced), NONE, "the program's own parameters are what matter");
+}
+
+#[test]
+fn a_name_a_function_binds_itself_isnt_flagged() {
+    let source = "def between(low: int, high: int):\n    pass\n\n\
+                  def main(between: (int, int) -> int):\n    between(1, 2)\n";
+    assert_eq!(rules(source), NONE, "a parameter");
+    let source = "def between(low: int, high: int):\n    pass\n\n\
+                  def main():\n    between = other\n    between(1, 2)\n";
+    assert_eq!(rules(source), NONE, "a local");
+}

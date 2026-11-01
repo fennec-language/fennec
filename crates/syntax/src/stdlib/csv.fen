@@ -34,7 +34,7 @@ struct Csv:
     def dumps_records(names: list[str], records: list[dict[str, str]], delimiter: str = ",") -> str:
         mut rows = [names]
         for record in records:
-            rows.append([record.get(name, "") for name in names])
+            rows.append([(record.get(name) else "") for name in names])
         Csv.dumps(rows, delimiter)
 
     ## One row and the newline after it. A row of one empty field is written in quotes,

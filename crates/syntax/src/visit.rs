@@ -56,12 +56,12 @@ pub fn add_defaults(call: &mut Expr, defaults: &[(String, Expr)]) {
     }
 }
 
-/// Gives a call to `sum` of floats its start: `sum(xs)` becomes `sum(xs, 0.0)`.
+/// Gives a call to `sum` of floats its start: `sum(xs)` becomes `sum(xs, start=0.0)`.
 pub fn add_float_start(call: &mut Expr) {
     let at = crate::Span { start: call.span.end, end: call.span.end };
     if let ExprKind::Call { args, .. } = &mut call.kind {
         let value = Expr { kind: ExprKind::Float(0.0), span: at };
-        args.push(crate::ast::Arg { name: None, is_mut: false, value });
+        args.push(crate::ast::Arg { name: Some("start".to_owned()), is_mut: false, value });
     }
 }
 

@@ -1,13 +1,19 @@
 //! `positional-arguments`: an argument whose meaning can't be read from the call has to be named.
 //! That's a bare `True` or `False`, any argument past the first when there are three or more,
 //! and an argument beside a parameter of the same type, which are easy to swap unnoticed. The
-//! first argument and `self` are exempt. A call this can't be sure of the target of isn't flagged.
+//! first argument and `self` are exempt. A call this can't be sure of the target of isn't flagged:
+//! a name a function binds itself might be anything, and so might a method or case with the same
+//! name but different parameters on two types, since which type isn't known here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, FnDef, Item, Module, Param, Span, TypeExpr};
+use fennec_syntax::{
+    Arg, Diagnostic, Expr, ExprKind, Field, FnDef, Item, Module, Param, Span, Stmt, StmtKind, TypeDef,
+    TypeExpr,
+};
 
 use crate::Lint;
+use crate::sizes::{blocks, functions};
 
 /// What a callee takes: each parameter's name and written type, without `self`.
 type Takes<'m> = Vec<(&'m str, Option<&'m TypeExpr>)>;
@@ -30,26 +36,72 @@ struct Callees<'m> {
     named: HashMap<&'m str, Takes<'m>>,
     /// Every method with a name, on any type: the type isn't known here.
     methods: HashMap<&'m str, Vec<Takes<'m>>>,
+    /// Every enum case with a name, written `.Circle(...)` or `Shape.Circle(...)`.
+    cases: HashMap<&'m str, Vec<Takes<'m>>>,
+    enums: HashSet<&'m str>,
+    /// The names some function binds for itself, which might not mean what's defined here.
+    locals: HashSet<&'m str>,
+}
+
+/// The names a block binds, and those of the blocks inside it.
+fn bound<'m>(stmts: &'m [Stmt], names: &mut HashSet<&'m str>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Assign { target, .. } => {
+                if let ExprKind::Name(name) = &target.kind {
+                    names.insert(name);
+                }
+            }
+            StmtKind::For { names: loop_names, .. } => names.extend(loop_names.iter().map(String::as_str)),
+            StmtKind::With { name: Some(name), .. } => {
+                names.insert(name);
+            }
+            _ => {}
+        }
+        for block in blocks(stmt) {
+            bound(block, names);
+        }
+    }
 }
 
 impl<'m> Callees<'m> {
     fn of(module: &'m Module) -> Self {
         let mut callees = Callees::default();
+        // The standard library's come first, so the program's own take over from them.
+        for library in fennec_syntax::prelude_modules().unwrap_or_default() {
+            callees.add_items(library);
+        }
+        callees.add_items(module);
+        for def in functions(module) {
+            callees.locals.extend(def.params.iter().map(|param| param.name.as_str()));
+            bound(&def.body, &mut callees.locals);
+        }
+        callees
+    }
+
+    fn add_items(&mut self, module: &'m Module) {
         for item in &module.items {
             match item {
                 Item::Function(def) => {
-                    callees.named.insert(&def.name, takes_params(&def.params));
+                    self.named.insert(&def.name, takes_params(&def.params));
                 }
                 Item::Struct(def) | Item::Error(def) => {
-                    callees.named.insert(&def.name, takes_fields(&def.fields));
-                    callees.add_methods(&def.methods);
+                    self.named.insert(&def.name, takes_fields(&def.fields));
+                    self.add_methods(&def.methods);
                 }
-                Item::Enum(def) => callees.add_methods(&def.methods),
-                Item::Extend(extension) => callees.add_methods(&extension.methods),
+                Item::Enum(def) => self.add_enum(def),
+                Item::Extend(extension) => self.add_methods(&extension.methods),
                 _ => {}
             }
         }
-        callees
+    }
+
+    fn add_enum(&mut self, def: &'m TypeDef) {
+        self.enums.insert(&def.name);
+        self.add_methods(&def.methods);
+        for case in &def.cases {
+            self.cases.entry(&case.name).or_default().push(takes_fields(&case.fields));
+        }
     }
 
     fn add_methods(&mut self, methods: &'m [FnDef]) {
@@ -60,12 +112,18 @@ impl<'m> Callees<'m> {
 
     /// What a call's target takes, if there's only one thing it can be.
     fn of_call(&self, callee: &Expr) -> Option<&Takes<'m>> {
+        let the_one = |found: &'_ Vec<Takes<'m>>| -> bool {
+            found.first().is_some_and(|first| found.iter().all(|other| other == first))
+        };
         match &callee.kind {
+            ExprKind::Name(name) if self.locals.contains(name.as_str()) => None,
             ExprKind::Name(name) => self.named.get(name.as_str()),
-            ExprKind::Attr { name, .. } => {
-                let methods = self.methods.get(name.as_str())?;
-                let first = methods.first()?;
-                methods.iter().all(|other| other == first).then_some(first)
+            ExprKind::Variant(name) => self.cases.get(name.as_str()).filter(|found| the_one(found))?.first(),
+            ExprKind::Attr { object, name, .. } => {
+                let on_an_enum =
+                    matches!(&object.kind, ExprKind::Name(owner) if self.enums.contains(owner.as_str()));
+                let found = if on_an_enum { &self.cases } else { &self.methods };
+                found.get(name.as_str()).filter(|found| the_one(found))?.first()
             }
             _ => None,
         }

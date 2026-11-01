@@ -32,7 +32,7 @@ const pillars = [
     title: 'Runs fast',
     number: `${low}–${high}%`,
     caption: "of its speed target today, in the JIT",
-    body: `Native code with no garbage collector. No benchmark meets its target yet, and release builds, the fastest path, aren't built yet.`,
+    body: `Native code with no garbage collector. No benchmark meets its target yet. The goal is to beat each one, built with overflow checks as Fennec is, through one LLVM backend, which isn't finished.`,
   },
   {
     title: 'Built for agents',
@@ -164,7 +164,7 @@ with launch(physics_loop) as physics:
           <div class="range" role="img" aria-label={`Today ${low} to ${high} percent of the speed target`}>
             <span class="range-fill" style={`left: ${Math.min(low, 100)}%; width: ${Math.min(high, 100) - Math.min(low, 100)}%`}></span>
           </div>
-          <span class="range-note">JIT today · the floor is {targets.jit}% on every benchmark</span>
+          <span class="range-note">JIT today · its goal is {targets.jit}% on every benchmark, and we aren't there yet</span>
         </div>
       </div>
     </div>

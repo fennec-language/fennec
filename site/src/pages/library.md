@@ -52,7 +52,7 @@ def main(stdout: Stdout):
     stdout.print(loaded)
 ```
 
-This works for JSON and TOML today, with CSV planned.
+This works for JSON and TOML today. CSV reads and writes rows of text with `Csv.loads` and `Csv.dumps`, and reading it into structs is planned.
 
 **Planned:** one `Writer` and `Reader` interface that every format implements, so one generic function breaks any struct down, and `std.pack`, the default binary format: no field names on the wire, `where` ranges that shrink values, a schema hash, delta encoding and opt-in quantization, written in plain Fennec.
 

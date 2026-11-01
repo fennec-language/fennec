@@ -1,0 +1,7 @@
+error: `get` takes only a key
+ --> examples/errors/dict_get_with_a_default.fen:3:34
+  |
+3 |     stdout.print(counts.get("b", 0) + 1)
+  |                                  ^
+  |
+  = help: write `table.get(key) else default`

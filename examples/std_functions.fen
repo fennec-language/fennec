@@ -1,0 +1,13 @@
+# Standard library functions can be written in Fennec. Each belongs to its module, so a program
+# can use the same name for something else.
+from std import math
+from std.math import lerp as blend
+
+def lerp(text: str) -> str:
+    text + " is mine"
+
+def main(stdout: Stdout):
+    stdout.print(blend(0.0, 10.0, 0.5))
+    stdout.print(math.lerp(0.0, 4.0, 0.25))
+    stdout.print(lerp("this lerp"))
+    stdout.print(max([1.0, 3.0], key=n => math.lerp(0.0, n, -1.0)))

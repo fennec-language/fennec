@@ -1,0 +1,47 @@
+# `mut x = place` names a place. Writing through the name edits the real thing, however deeply
+# it's nested, and there's no copy to put back.
+struct Stats:
+    hp = 10
+    mp = 5
+
+struct Unit:
+    name: str
+    stats: Stats
+
+struct World:
+    units: list[Unit]
+
+def hurt(mut stats: Stats, damage: int):
+    stats.hp -= damage
+
+def main(stdout: Stdout):
+    mut world = World(units=[Unit(name="fox", stats=Stats()), Unit(name="owl", stats=Stats())])
+
+    # An edit goes to the place.
+    mut owl = world.units[1]
+    owl.stats.hp -= 3
+    hurt(mut owl.stats, 1)
+    stdout.print(world.units[1].stats.hp)
+
+    # A name for a name inside it works too.
+    mut fox = world.units[0]
+    mut stats = fox.stats
+    stats.mp += 2
+    stats.hp = 1
+    stdout.print(world.units[0].stats.mp, world.units[0].stats.hp)
+
+    # A name that's only replaced holds a value of its own.
+    mut best = world.units[0].stats.hp
+    best = 100
+    stdout.print(best, world.units[0].stats.hp)
+
+    # `copy` edits a value of its own.
+    mut spare = copy(world.units[0].stats)
+    spare.hp = 50
+    stdout.print(spare.hp, world.units[0].stats.hp)
+
+    # In a loop, each time round names the place again.
+    for i in range(2):
+        mut unit = world.units[i]
+        unit.stats.hp += 10
+    stdout.print(world.units[0].stats.hp, world.units[1].stats.hp)

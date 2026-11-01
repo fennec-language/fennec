@@ -12,7 +12,7 @@ def counted(dna: str, size: int) -> dict[str, int]:
     mut counts: dict[str, int] = {}
     for at in range(dna.len() - size + 1):
         piece = dna[at:at + size]
-        counts[piece] = counts.get(piece, 0) + 1
+        counts[piece] = (counts.get(piece) else 0) + 1
     counts
 
 def main(stdout: Stdout):
@@ -22,4 +22,4 @@ def main(stdout: Stdout):
         for negative, piece in sorted([(-count, piece) for piece, count in counts.items()]):
             stdout.print(piece, -negative)
     for piece in ["ggt", "ggta", "ggtatt", "ggtattttaatt", "ggtattttaatttatagt"]:
-        stdout.print(counted(dna, piece.len()).get(piece, 0), piece)
+        stdout.print((counted(dna, piece.len()).get(piece) else 0), piece)

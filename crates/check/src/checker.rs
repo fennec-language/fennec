@@ -42,6 +42,8 @@ pub(crate) struct Checker {
     pub(crate) defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.
     pub(crate) generator_types: BTreeMap<(u32, u32), String>,
+    /// What each name for a standard library function written in Fennec means.
+    pub(crate) std_names: BTreeMap<(u32, u32), String>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
@@ -69,6 +71,7 @@ impl Checker {
             program.add(prelude, true);
         }
         program.prelude_imports = std::mem::take(&mut program.imports);
+        program.std_functions.clear();
         program.add(module, false);
         let mut diagnostics = std::mem::take(&mut program.problems);
         diagnostics.extend(crate::imports::unimported(module, &program));
@@ -83,6 +86,7 @@ impl Checker {
             float_sums: BTreeSet::new(),
             defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
+            std_names: BTreeMap::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
             revisit: BTreeSet::new(),
@@ -132,6 +136,7 @@ impl Checker {
         if self.diagnostics.is_empty() {
             self.unknowns_left();
         }
+        let places = if self.diagnostics.is_empty() { self.names_for_places() } else { BTreeSet::new() };
         if self.diagnostics.is_empty() {
             let enums = self.enums();
             // An enum nothing uses isn't checked, so reading its fields can't report anything.
@@ -153,8 +158,10 @@ impl Checker {
                 types,
                 cases: self.cases,
                 float_sums: self.float_sums,
+                places,
                 defaults: self.defaults,
                 generator_types: self.generator_types,
+                std_names: self.std_names,
             });
         }
         let mut diagnostics = self.diagnostics;
@@ -269,6 +276,19 @@ impl Checker {
 
     fn generic_names(&self, entry: &FnEntry) -> Vec<String> {
         self.program.generics_of(entry).into_iter().map(|generic| generic.name).collect()
+    }
+
+    /// Works out every `mut x = place` in the program's own functions.
+    fn names_for_places(&mut self) -> BTreeSet<(u32, u32)> {
+        let mut places = BTreeSet::new();
+        let mut problems = Vec::new();
+        for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
+            let (found, named) = crate::alias::check_function(self, &entry.def, self.typed.get(key));
+            problems.extend(found);
+            places.extend(named.into_iter().map(|span| (span.start, span.end)));
+        }
+        self.diagnostics.extend(problems);
+        places
     }
 
     fn params(&self, entry: &FnEntry) -> Vec<ParamType> {

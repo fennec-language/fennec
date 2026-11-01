@@ -296,7 +296,7 @@ fn optional_results_of_builtins_might_be_none() {
         let operand = expression.rsplit_once(" + ").map_or("", |(left, _)| left);
         assert_eq!(problems(&program), [format!("this might be None @ {operand}")], "{expression}");
     }
-    assert_eq!(in_main("stdout.print({'a': 1}.get('a', 0) + 1)"), Vec::<String>::new());
+    assert_eq!(in_main("stdout.print(({'a': 1}.get('a') else 0) + 1)"), Vec::<String>::new());
 }
 
 #[test]

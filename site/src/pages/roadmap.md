@@ -14,7 +14,7 @@ description: What Fennec does today, what's being built next, and the design que
 - Programs over several files: a kit is a folder with a `kit.toml`, and its files import from each other.
 - Names and `mut`, functions with written return types, default parameters passed by name, nested functions and arrow functions.
 - Structs with defaults, methods, named constructors and `where` rules; enums and `match`; operators; interfaces and generics.
-- Errors with `error`, `fail`, `?`, `else`, `match` and `from`; optional values with `None`, `?.` and `else`.
+- Errors with `error`, `fail`, `?`, `else`, `match` and `from`; optional values with `None` and `else`.
 - Lists, dicts, sets, tuples, comprehensions and slices. Structs work as dict keys with nothing to write.
 - Lazy generators, used once, with `yield` allowed inside `with`.
 - `with` and `def del`: any way out of a block closes what it opened.
@@ -37,7 +37,7 @@ description: What Fennec does today, what's being built next, and the design que
 
 Each of these is decided and not built.
 
-- `mut x = place` naming the real place, instead of today's copy. `copy(x)`, `xs.pair(i, j)` and a compile error for copies that can go stale.
+- `xs.pair(i, j)`, and a compile error for copies that can go stale.
 - `fails Name` in signatures, with one `error` listing several cases. `?` required wherever a failure passes up, narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
 - `xs.get(i)`, and `sum(xs, start=...)` replacing today's positional start.
 - `_name` hiding a field, and `pub` on top-level things only.
@@ -59,7 +59,7 @@ Each of these is decided and not built.
 
 - Compile-time loops over a type, `Writer` and `Reader` for every format, annotations as data, and `std.pack`.
 - `SortedMap`, `SortedSet`, `Grid` and `Packed`.
-- `std.net`, `std.sql`, `std.process`, `std.crypto` and `std.cli`.
+- `std.net`, `std.sql`, `std.process` and `std.crypto`.
 - `extern "C"` and `unsafe`, for what can't be written in Fennec, and first-party native kits.
 - SIMD and GPU types, and [the Den](/den/), Fennec's registry for kits.
 - A Fennec compiler written in Fennec.

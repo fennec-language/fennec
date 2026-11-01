@@ -12,6 +12,7 @@ mod library;
 mod mutation;
 mod names;
 mod narrowing;
+mod places;
 mod returns;
 mod signatures;
 mod strict;

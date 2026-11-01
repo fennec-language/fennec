@@ -16,7 +16,7 @@ def main(stdout: Stdout):
         sum([1, 2, 3]),
         sum([0.5, 1.5]),
         sum(float(n) for n in evens),
-        sum([], 7),
+        sum([], start=7),
     )
     stdout.print(
         [p.x for p in [Point(x=1, y=2.0), Point(x=3, y=4.0)]],

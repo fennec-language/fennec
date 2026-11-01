@@ -3,6 +3,8 @@
 //! matches an exact form.
 
 mod calls;
+mod dead;
+mod flow;
 mod rewrites;
 mod sizes;
 
@@ -28,6 +30,8 @@ pub fn lint(module: &Module, sources: &Sources) -> Vec<Lint> {
     let mut found = sizes::of(module, sources);
     found.extend(rewrites::of(module, sources));
     found.extend(calls::of(module));
+    found.extend(flow::of(module, sources));
+    found.extend(dead::of(module, sources));
     found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
     found
 }

@@ -13,6 +13,7 @@
 //! besides the signatures, a check gives the type of every expression and every name: the
 //! typed tree a compiler builds on. See [`Types`].
 
+mod alias;
 mod builtins;
 mod call;
 mod checker;
@@ -26,6 +27,7 @@ mod generic;
 mod imports;
 mod index;
 mod infer;
+mod keys;
 mod messages;
 mod pattern;
 mod place;
@@ -51,7 +53,14 @@ pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
 /// Checks a parsed module. Returns the signatures and the type of every expression and
 /// name, or every problem found, in source order.
 pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
+    library_parses()?;
     checker::Checker::new(module).run(false)
+}
+
+/// A mistake in the standard library's own code comes first, since without it a program's
+/// names would seem not to exist.
+fn library_parses() -> Result<(), Vec<Diagnostic>> {
+    fennec_syntax::prelude_modules().map(|_| ()).map_err(|problem| vec![problem])
 }
 
 /// Whether the language provides `name` everywhere, with no import: a builtin like `len`,
@@ -88,15 +97,22 @@ pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnost
 /// checked only when the module reaches them, so its signatures hold just those. The
 /// library's own tests check all of it.
 pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
+    library_parses()?;
     let checked = checker::Checker::new(module).run(true)?;
     Ok(resolved(module, checked))
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
+    if !checked.places.is_empty() {
+        fennec_syntax::visit::functions_mut(module, &mut |def| {
+            alias::write_in(&mut def.body, &checked.places);
+        });
+    }
     if !checked.cases.is_empty()
         || !checked.float_sums.is_empty()
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
+        || !checked.std_names.is_empty()
     {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
             let span = (expr.span.start, expr.span.end);
@@ -108,6 +124,9 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             }
             if let Some(defaults) = checked.defaults.get(&span) {
                 fennec_syntax::visit::add_defaults(expr, defaults);
+            }
+            if let Some(function) = checked.std_names.get(&span) {
+                expr.kind = fennec_syntax::ExprKind::Name(function.clone());
             }
             if let Some(shown) = checked.generator_types.get(&span) {
                 fennec_syntax::visit::name_generator_type(expr, shown);
@@ -134,10 +153,14 @@ pub struct Checked {
     cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     float_sums: BTreeSet<(u32, u32)>,
+    /// The statements that name a place, by `mut x = place`.
+    places: BTreeSet<(u32, u32)>,
     /// The defaults each call leaves out, to write into it.
     defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.
     generator_types: BTreeMap<(u32, u32), String>,
+    /// What each name for a standard library function written in Fennec means.
+    std_names: BTreeMap<(u32, u32), String>,
 }
 
 /// The typed tree: the type of every expression and every declared name in a program,

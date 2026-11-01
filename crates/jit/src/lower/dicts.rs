@@ -232,6 +232,37 @@ impl Lowerer<'_, '_> {
         Ok(Some((Some(got), word_ty(value_word))))
     }
 
+    /// `dict.get(key) else default` natively, when working the default out has no effects, so
+    /// it doesn't matter that it's worked out first.
+    pub(super) fn dict_get_else(
+        &mut self,
+        value: &Expr,
+        default: &Expr,
+    ) -> Result<Option<Lowered>, Diagnostic> {
+        let ExprKind::Call { callee, args } = &value.kind else { return Ok(None) };
+        let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return Ok(None) };
+        let (Some(Ty::Dict(key_word, value_word)), "get", [key]) =
+            (self.static_ty(object), name.as_str(), &args[..])
+        else {
+            return Ok(None);
+        };
+        let plain = match &default.kind {
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Str(_)
+            | ExprKind::Name(_) => true,
+            ExprKind::Unary { expr, .. } => matches!(expr.kind, ExprKind::Int(_) | ExprKind::Float(_)),
+            _ => false,
+        };
+        if !plain {
+            return Ok(None);
+        }
+        let default = Arg { name: None, is_mut: false, value: default.clone() };
+        let both = [key.clone(), default];
+        self.call_dict_method(object, (key_word, value_word), "get", &both)
+    }
+
     /// The dict a `for` loop goes over natively, and what it gives each time round: `dict`
     /// or `dict.keys()` its keys, `dict.values()` its values, `dict.items()` both.
     pub(super) fn dict_walk<'e>(&self, iter: &'e Expr, names: &[String]) -> Option<(&'e Expr, Walk)> {

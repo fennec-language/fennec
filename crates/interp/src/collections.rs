@@ -111,7 +111,6 @@ impl Interp<'_> {
             },
             Value::Dict(pairs) => match (method, args.as_slice()) {
                 ("get", [key]) => Ok(lookup(pairs, key).unwrap_or(Value::None)),
-                ("get", [key, default]) => Ok(lookup(pairs, key).unwrap_or_else(|| default.clone())),
                 ("keys", []) => Ok(Value::list(pairs.iter().map(|(key, _)| key.clone()).collect())),
                 ("values", []) => Ok(Value::list(pairs.iter().map(|(_, value)| value.clone()).collect())),
                 ("items", []) => Ok(Value::list(

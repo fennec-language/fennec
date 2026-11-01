@@ -13,7 +13,7 @@ use crate::{ParamType, Signature};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 22] = [
+const BUILTINS: [(&str, usize, usize); 23] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("all", 1, 1),
@@ -22,6 +22,7 @@ const BUILTINS: [(&str, usize, usize); 22] = [
     ("enumerate", 1, 1),
     ("float", 1, 1),
     ("ignore", 2, 2),
+    ("copy", 1, 1),
     ("int", 1, 1),
     ("list", 1, 1),
     ("max", 1, usize::MAX),
@@ -274,8 +275,14 @@ impl FnCx<'_> {
             let expected = self.checker.settled(expected);
             self.error(mismatch(&format!("`{name}`'s argument"), &expected, actual, *at));
         }
-        // `table.get(key, default)` gives the default instead of None.
-        if let (Type::Dict(_, value), [_, _]) = (ty, plain.as_slice()) {
+        // `get` has no default of its own, since an optional's `else` says it.
+        if let (Type::Dict(_, value), "get", [(_, key), (_, default)]) = (ty, name, plain.as_slice()) {
+            self.error(
+                Diagnostic::new("`get` takes only a key", *default)
+                    .with_help("write `table.get(key) else default`")
+                    .with_fix(Span { start: span.start, end: span.start }, "(")
+                    .with_fix(Span { start: key.end, end: default.start }, ") else "),
+            );
             return value.as_ref().clone();
         }
         method.returns
@@ -292,6 +299,7 @@ impl FnCx<'_> {
         span: Span,
     ) -> Vec<(Type, Span)> {
         let mut plain = Vec::new();
+        let mut start = None;
         for arg in args {
             let ty = self.arg_value(arg, receives);
             match arg.name.as_deref() {
@@ -299,6 +307,7 @@ impl FnCx<'_> {
                     self.error(Diagnostic::new(format!("`{name}` doesn't take `key`"), span));
                 }
                 Some("key") => {}
+                Some("start") if named.contains(&"start") => start = Some((ty, arg.value.span)),
                 Some("indent") if named.contains(&"indent") => {
                     if !self.checker.fits(&Type::Int, &ty) {
                         self.error(mismatch("`indent`", &Type::Int, &ty, arg.value.span));
@@ -314,6 +323,7 @@ impl FnCx<'_> {
         if args.iter().any(|arg| arg.is_mut) {
             self.error(needless_mut(name, span));
         }
+        plain.extend(start);
         plain
     }
 
@@ -329,6 +339,7 @@ impl FnCx<'_> {
         let item = peek_item(&first);
         let named: &[&str] = match (name, stdlib::function(name)) {
             ("min" | "max" | "sorted", _) => &["key"],
+            ("sum", _) => &["start"],
             (_, Some((_, function))) => function.named,
             _ => &[],
         };
@@ -378,6 +389,7 @@ impl FnCx<'_> {
         let types: Vec<Type> = plain.iter().map(|(ty, _)| ty.clone()).collect();
         let (first, at) = plain.first().cloned().unwrap_or((Type::Unit, span));
         match name {
+            "copy" => first,
             "Ok" => Type::result(first, self.checker.fresh(span, Hole::OkError)),
             "Err" => Type::result(self.checker.fresh(span, Hole::ErrValue), first),
             "range" => {

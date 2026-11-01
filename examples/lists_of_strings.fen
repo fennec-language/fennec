@@ -27,10 +27,10 @@ def main(stdout: Stdout):
     words[0] = "plum"
     stdout.print(words, join(words))
 
-    copy = words
+    same = words
     words[1] = "date"
     words.append("lime")
-    stdout.print(copy, words, copy == words, copy == copy)
+    stdout.print(same, words, same == words, same == same)
 
     stdout.print(sorted(words), sorted(words, key=(w) => w.len()), sorted(words, key=(w) => w[-1]))
     stdout.print(sorted(["b", "a", "ab", "", "aa", "abcdefghi", "abcdefgh", "abcdefgz", "é", "z"]))
@@ -46,7 +46,7 @@ def main(stdout: Stdout):
 
     trees = [Tree.Leaf, Tree.Node(left=Tree.Leaf, value=1, right=Tree.Leaf)]
     stdout.print(depth(trees[0]), depth(trees[1]), trees.len())
-    mut grown = trees
+    mut grown = copy(trees)
     grown.append(Tree.Node(left=trees[1], value=2, right=trees[1]))
     grown[0] = grown[2]
     total = sum(depth(tree) for tree in grown)

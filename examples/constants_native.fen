@@ -16,10 +16,10 @@ WORDS = ["a", "b"]
 DOUBLE = LIMIT * 2
 
 def around(n: int) -> int:
-    return n + NONE
+    n + NONE
 
-def shadow(LIMIT: int) -> int:
-    return LIMIT + 1
+def shadow(limit: int) -> int:
+    limit + 1
 
 def main(stdout: Stdout):
     stdout.print(NONE, LIMIT, ALSO, HALF, NEGATIVE, READY, NAME, TYPED, WORDS, DOUBLE)

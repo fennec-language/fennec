@@ -1,0 +1,97 @@
+# decision: Collections are values.
+
+## Lists are values: a copy keeps its items when the original changes, and a `mut`
+## parameter changes the caller's list.
+
+struct Point:
+    x: float
+    y: float
+
+def grow(mut xs: list[int], n: int):
+    for i in range(n):
+        xs.append(i * 10)
+
+def doubled(xs: list[int]) -> list[int]:
+    mut out: list[int] = []
+    for x in xs:
+        out.append(x * 2)
+    return out
+
+def nudge(mut points: list[Point]):
+    for i in range(points.len()):
+        points[i].x += 1.0
+
+def both(xs: list[int], mut ys: list[int]) -> int:
+    ys.append(9)
+    ys[0] = 7
+    return xs.len() * 10 + xs[0]
+
+def spread(
+    mut a: list[int],
+    mut b: list[float],
+    mut c: list[int],
+    mut d: list[bool],
+    n: int,
+) -> float:
+    for i in range(n):
+        a.append(i)
+        b.append(float(i) / 2.0)
+        c[0] += i
+        d.append(i % 2 == 0)
+    return b[-1] * 2.0
+
+def main(stdout: Stdout):
+    mut xs = [1, 2, 3]
+    copy = xs
+    xs[0] = 100
+    xs.append(4)
+    stdout.print(xs, copy, xs.len(), copy.len())
+
+    mut shared = [7]
+    alias = shared
+    shared.append(8)
+    stdout.print(shared, alias)
+
+    grow(mut xs, 3)
+    stdout.print(xs, doubled(xs), xs == copy, copy == [1, 2, 3])
+
+    mut many: list[int] = []
+    for i in range(1_000):
+        many.append(i)
+    mut total = 0
+    for v in many:
+        total += v
+    stdout.print(many.len(), total, many[-1], many[500])
+
+    mut points = [Point(x=0.0, y=1.0), Point(x=2.0, y=3.0)]
+    before = points
+    nudge(mut points)
+    points.append(Point(x=9.0, y=9.0))
+    stdout.print(points, before)
+
+    mut sorted = [3, 1, 2]
+    sorted.sort()
+    last = sorted.pop()
+    stdout.print(sorted, last, sorted + [5], xs[1:3])
+
+    mut walked = [1, 2, 3]
+    for w in walked:
+        walked.append(w)
+    stdout.print(walked)
+
+    # Passed both ways, the argument without `mut` keeps its items.
+    mut twice = [1, 2]
+    stdout.print(both(twice, mut twice), twice)
+
+    # A call can give back more than fits in a machine's return registers.
+    mut ints = [1]
+    mut floats = [0.5]
+    mut counts = [10]
+    mut flags = [False]
+    stdout.print(
+        spread(mut ints, mut floats, mut counts, mut flags, 100),
+        ints.len(),
+        floats[50],
+        counts,
+        flags[-1],
+    )

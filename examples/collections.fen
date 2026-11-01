@@ -3,14 +3,14 @@ def main(stdout: Stdout):
     x, y = point
     stdout.print(point, x + y)
 
-    quotient, remainder = divmod(17, 5)
+    quotient, remainder = divmod(17, divisor=5)
     stdout.print(quotient, remainder)
 
-    hp = {"ash": 70, "kit": 40}
-    mut roster = copy(hp)
+    healths = {"ash": 70, "kit": 40}
+    mut roster = copy(healths)
     roster["vex"] = 90
     roster["kit"] += 5
-    stdout.print(hp)
+    stdout.print(healths)
     stdout.print(roster, roster.len(), "vex" in roster)
     stdout.print(roster.get("nobody"), (roster.get("nobody") else 0))
 
@@ -32,5 +32,5 @@ def main(stdout: Stdout):
         stdout.print(at, name)
     stdout.print(list(zip([1, 2], ["one", "two"])))
 
-def divmod(a: int, b: int) -> (int, int):
-    (a // b, a % b)
+def divmod(dividend: int, divisor: int) -> (int, int):
+    (dividend // divisor, dividend % divisor)

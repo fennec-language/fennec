@@ -197,7 +197,7 @@ impl FnCx<'_> {
         if name == "PI" {
             return Type::Float;
         }
-        let modules = &self.checker.program.modules;
+        let modules = self.checker.program.modules_at(span);
         let problem = if let Some(module) = modules.get(name) {
             fennec_syntax::module_as_value(name, module, span)
         } else if let Some((path, module)) =
@@ -227,7 +227,7 @@ impl FnCx<'_> {
         if self.lookup(alias.split('.').next().unwrap_or_default()).is_some() {
             return None;
         }
-        let modules = &self.checker.program.modules;
+        let modules = self.checker.program.modules_at(span);
         let Some(&module) = modules.get(&alias) else {
             // `std.toml` after `import std.json`, which binds `std` but not `std.toml`.
             let path = format!("{alias}.{name}");
@@ -268,7 +268,7 @@ impl FnCx<'_> {
                 if self.lookup(alias.split('.').next().unwrap_or_default()).is_some() {
                     return None;
                 }
-                let module = self.checker.program.modules.get(&alias)?;
+                let module = self.checker.program.modules_at(expr.span).get(&alias)?;
                 fennec_syntax::std_member(module, name, expr.span).ok()?;
                 name
             }

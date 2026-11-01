@@ -68,9 +68,7 @@ def checked(limit: int) -> Iterator[int]:
         yield n
 
 def total_up_to(limit: int) -> int:
-    mut total = 0
-    for n in checked(limit)?:
-        total += n
+    total = sum(n for n in checked(limit)?)
     total
 
 def bump(mut count: int) -> int:

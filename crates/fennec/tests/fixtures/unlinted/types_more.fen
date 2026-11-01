@@ -1,0 +1,109 @@
+from std.game import IdMap
+from std.layout import SoaList
+
+enum Light:
+    Red
+    Green
+
+    def default() -> Light:
+        Light.Red
+
+enum Coin:
+    Heads
+    Tails
+
+struct Money:
+    cents: int
+
+    def <(self, other: Money) -> bool:
+        self.cents < other.cents
+
+    def /(self, parts: int) -> Money:
+        Money(cents=self.cents // parts)
+
+    def %(self, parts: int) -> Money:
+        Money(cents=self.cents % parts)
+
+struct Score:
+    value: int where value >= 0
+
+struct Door:
+    out: Stdout
+
+    def del(self):
+        self.out.print("closing the door")
+
+struct Player:
+    name: str
+
+    def greet(self) -> str:
+        f"hi, {self.name}"
+
+def find(name: str) -> Player?:
+    if name == "Kit": return Player(name="Kit")
+    None
+
+def parse(text: str) -> Result[int, str]:
+    if not text.isdigit(): return Err(f"{text} isn't a number")
+    Ok(int(text) else 0)
+
+def call(make: () -> int) -> int:
+    make()
+
+def combine(join: (int, int) -> int, a: int, b: int) -> int:
+    join(a, b)
+
+def main(stdout: Stdout):
+    # A named constructor that takes nothing can be used without parentheses.
+    stdout.print(Light.default(), Light.default, Light.Green)
+    # A case name that only one enum has needs no type in front of it.
+    stdout.print([.Heads, .Tails], .Green)
+
+    # Types with their own `<` get the other comparisons from it.
+    small = Money(cents=5)
+    big = Money(cents=9)
+    stdout.print(small <= big, big <= small, small >= big, big >= small, small <= small)
+    stdout.print(big / 2, big % 2)
+
+    # `where` rules: literals are checked as the program is read; anything else gives a result.
+    for value in [5, -1]:
+        stdout.print(Score(value=value))
+
+    # `with` runs `del` when the block ends.
+    with Door(out=stdout) as door:
+        door.out.print("inside")
+    stdout.print("outside")
+
+    # `?.` skips a method call on None.
+    stdout.print(
+        find("Vex")?.greet(),
+        find("Kit")?.greet(),
+        find("Kit") is not None,
+        find("Vex") is not None,
+    )
+
+    # Arrow functions can take no arguments, or several, when passed for a parameter with a
+    # function type.
+    stdout.print(
+        call(() => 42),
+        combine((a, b) => a + b, 2, 3),
+        combine((first, second) => second, 1, 2),
+    )
+
+    # Collections can end with a comma.
+    stdout.print({"a": 1}, {1, 2}, [1], (1,))
+
+    # A function can return a result it made itself.
+    stdout.print(parse("12"), parse("twelve"))
+
+    # `and` and `or` stop as soon as they know the answer.
+    stdout.print(True or 1 // 0 == 0, False and 1 // 0 == 0, True and False, False or True)
+
+    # An Id stops working once its item is removed, even after its slot is reused.
+    mut enemies = IdMap[str]()
+    ash = enemies.insert("ash")
+    enemies.remove(ash)
+    kit = enemies.insert("kit")
+    stdout.print(enemies.get(ash), enemies[kit])
+
+    stdout.print(SoaList[int](), SoaList[int]().len())

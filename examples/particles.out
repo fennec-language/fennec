@@ -3,5 +3,5 @@
 10.0 -2.0 1
 3.0 -3.0 1
 True 0.0
-Particle(x=3.0, vx=-3.0, hits=1)
+Particle(x=3.0, velocity=-3.0, hits=1)
 [10, 20, 3, 4]

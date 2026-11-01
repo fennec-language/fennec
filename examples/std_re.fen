@@ -1,4 +1,4 @@
-from std.re import Match, Regex
+from std.re import Regex
 
 struct Command:
     verb: str
@@ -28,14 +28,14 @@ def main(stdout: Stdout):
     stdout.print(stat.replace(log, r"\1: \2"))
     stdout.print(Regex(r"\s*[,;]\s*").split("sword, shield;bow ,  arrows"))
     stdout.print(Regex(r"colou?r").search("What colour is it?"))
-    stdout.print([m.start for m in Regex(r"\bcat\b").find_all("cat concat cat.")])
+    stdout.print([hit.start for hit in Regex(r"\bcat\b").find_all("cat concat cat.")])
 
     # Patterns written in the program are checked before it runs. One built while it runs
     # might not be valid, so making it gives a result.
     for pattern in ["[0-9]+", "[0-9+"]:
         match Regex(pattern):
             case Ok(regex):
-                stdout.print(pattern, "finds", [m.text for m in regex.find_all("a1b22")])
+                stdout.print(pattern, "finds", [hit.text for hit in regex.find_all("a1b22")])
             case Err(error):
                 stdout.print(pattern, "->", error.message)
 

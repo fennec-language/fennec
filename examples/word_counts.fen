@@ -4,13 +4,11 @@ def tally(words: list[str]) -> dict[str, int]:
     mut counts: dict[str, int] = {}
     for word in words:
         counts[word] = (counts.get(word) else 0) + 1
-    return counts
+    counts
 
 def total(counts: dict[str, int]) -> int:
-    mut sum = 0
-    for word in counts:
-        sum += counts[word]
-    return sum
+    summed = sum(counts[word] for word in counts)
+    summed
 
 def bump(mut counts: dict[str, int], word: str):
     counts[word] = (counts.get(word) else 0) + 1
@@ -35,10 +33,10 @@ def main(stdout: Stdout):
     )
 
     # A copy keeps its value when the original changes.
-    copy = squares
+    kept = squares
     squares[7] = -1
     squares[7] += 10
-    stdout.print(copy[7], squares[7], squares == copy)
+    stdout.print(kept[7], squares[7], squares == kept)
 
     # The loop goes over the dict as it was when the loop started.
     mut grow: dict[int, int] = {1: 1}

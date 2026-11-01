@@ -190,3 +190,10 @@ fn as_binds_an_import_under_another_name() {
         ]
     );
 }
+
+#[test]
+fn a_module_the_library_imports_isnt_a_name_in_programs() {
+    // `std.math` imports `math` for itself, which a program doesn't see.
+    let text = "def main(stdout: Stdout):\n    stdout.print(math.sqrt(4.0))\n";
+    assert_eq!(problems(text), ["`math` doesn't exist @ math"]);
+}

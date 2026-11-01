@@ -28,11 +28,11 @@ def main(stdout: Stdout, fs: Fs):
     stdout.print(items)
 
     # Dicts.
-    mut hp = {"ash": 70, "kit": 40, "vex": 90}
-    stdout.print(hp["kit"], hp.get("vex"), hp.keys(), hp.values())
-    stdout.print(hp.pop("kit"), hp, "vex" in hp, "kit" in hp)
-    hp.clear()
-    stdout.print(hp, hp.get("ash"))
+    mut healths = {"ash": 70, "kit": 40, "vex": 90}
+    stdout.print(healths["kit"], healths.get("vex"), healths.keys(), healths.values())
+    stdout.print(healths.pop("kit"), healths, "vex" in healths, "kit" in healths)
+    healths.clear()
+    stdout.print(healths, healths.get("ash"))
 
     # Sets.
     mut seen = {"fire", "ice"}

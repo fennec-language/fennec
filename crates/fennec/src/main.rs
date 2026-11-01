@@ -2,6 +2,10 @@
 #![expect(clippy::print_stdout, reason = "the command line prints its results")]
 #![expect(clippy::print_stderr, reason = "the command line reports errors")]
 
+/// What `fennec` allocates through, programs it runs included.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod aot;
 mod bench;
 mod changes;

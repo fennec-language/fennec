@@ -4,6 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use crate::executables::runtime_built;
+
 /// How many examples this backend takes, at least.
 const BUILDING_EXAMPLES: usize = 21;
 
@@ -62,16 +64,6 @@ fn outcome(output: &Output) -> Outcome {
         String::from_utf8_lossy(&output.stderr).into_owned(),
         output.status.code(),
     )
-}
-
-/// The runtime library, built as `executables.rs` builds it, every time.
-fn runtime_built() -> bool {
-    let profile = if cfg!(debug_assertions) { None } else { Some("--release") };
-    Command::new(env!("CARGO"))
-        .args(["build", "--quiet", "-p", "fennec-runtime"])
-        .args(profile)
-        .status()
-        .is_ok_and(|status| status.success())
 }
 
 #[test]

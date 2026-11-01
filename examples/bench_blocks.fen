@@ -1,7 +1,5 @@
 def total(count: int) -> int:
-    mut sum_so_far = 0
-    for at in range(count):
-        sum_so_far += at
+    sum_so_far = sum(at for at in range(count))
     sum_so_far
 
 test "a total adds everything":

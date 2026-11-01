@@ -5,28 +5,26 @@ struct Point:
     x = 0.0
     y = 0.0
 
-    def nudge(mut self, dx: float):
-        self.x += dx
+    def nudge(mut self, amount: float):
+        self.x += amount
 
 def total(values: list[float]) -> float:
-    mut sum = 0.0
-    for value in values:
-        sum += value
-    return sum
+    summed = sum(value for value in values)
+    summed
 
 def main(stdout: Stdout):
     mut scores = [3, 1, 4]
     scores.append(1)
     scores.append(5)
-    copy = scores
+    kept = scores
     scores[0] = 9
     scores[-1] += 10
-    stdout.print(scores, copy, scores.len(), scores[-2])
+    stdout.print(scores, kept, scores.len(), scores[-2])
 
     mut points = [Point(x=float(i), y=float(i) * 2.0) for i in range(3)]
-    for mut p in points:
-        p.nudge(0.5)
-        p.y = -p.y
+    for mut point in points:
+        point.nudge(0.5)
+        point.y = -point.y
     points[1].x = 100.0
     points.append(Point(y=7.0))
     stdout.print(points[0], points[1].x, points[-1], points.len())
@@ -34,11 +32,11 @@ def main(stdout: Stdout):
     mut weights = [0.5, 1.5, 2.0]
     stdout.print(total(weights))
     # This loop names its own list, so it goes through the runtime's way.
-    for w in weights:
-        if w > 1.0:
-            weights.append(w * 10.0)
+    for weight in weights:
+        if weight > 1.0:
+            weights.append(weight * 10.0)
     stdout.print(weights)
 
     mut flags = [True, False]
     flags[1] = not flags[0]
-    stdout.print(flags, [p.x for p in points])
+    stdout.print(flags, [point.x for point in points])

@@ -56,17 +56,17 @@ def main(stdout: Stdout):
     saved = scene
 
     # Moving a subtree takes what's below it along.
-    scene.move(wheel, trailer)?
+    scene.move(wheel, parent=trailer)?
     stdout.print(names(scene, scene.children(car)), names(scene, scene.descendants(trailer)))
     stdout.print(world_x(scene, hub), world_x(saved, hub))
 
     # A node can't end up below itself.
-    match scene.move(trailer, hub):
+    match scene.move(trailer, parent=hub):
         case Ok():
             stdout.print("moved")
         case Err(TreeCycle(message)):
             stdout.print(message)
-    match scene.move(hub, hub):
+    match scene.move(hub, parent=hub):
         case Ok():
             stdout.print("moved")
         case Err(TreeCycle(message)):

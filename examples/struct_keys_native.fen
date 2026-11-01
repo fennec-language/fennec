@@ -38,25 +38,23 @@ def main(stdout: Stdout):
 
     literal = {Cell(x=1, y=2): "a", Cell(x=3, y=4): "b", Cell(x=1, y=2): "c"}
     stdout.print(literal, literal[Cell(x=1, y=2)], literal.len())
-    mut total = 0
-    for key in literal:
-        total += key.x + key.y
+    mut total = sum(key.x + key.y for key in literal)
     for key, word in literal.items():
         stdout.print(key.x, key, word)
     for key in literal.keys():
         total += key.y
     stdout.print(total, [word for word in literal.values()])
 
-    copy = seen
+    kept = seen
     seen[Cell(x=100, y=100)] = 1
     seen[Cell(x=0, y=0)] = 0
     stdout.print(
-        copy.len(),
+        kept.len(),
         seen.len(),
-        copy[Cell(x=0, y=0)],
+        kept[Cell(x=0, y=0)],
         seen[Cell(x=0, y=0)],
-        copy == seen,
-        copy == copy,
+        kept == seen,
+        kept == kept,
     )
 
     tagged = {Tagged(at=Cell(x=1, y=1), weight=5, live=True): 1}

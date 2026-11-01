@@ -8,7 +8,7 @@ def pick(flag: bool, n: int) -> int:
             total += 1
         elif i == 2:
             break
-    return total
+    total
 
 def both(flag: bool, other: bool) -> str:
     mut out = ""
@@ -16,7 +16,7 @@ def both(flag: bool, other: bool) -> str:
         out += "y" if flag else "n"
         if other:
             out += "o"
-    return out
+    out
 
 def shadow(flag: bool) -> int:
     mut n = 0
@@ -25,50 +25,50 @@ def shadow(flag: bool) -> int:
         flag2 = i > 0
         if flag2:
             n += 10
-    return n
+    n
 
 def early(flag: bool) -> int:
     for i in range(5):
         if flag: return i
-    return -1
+    -1
 
 def chars(text: str) -> int:
     mut n = 0
-    for c in text:
-        if c == "a":
+    for char in text:
+        if char == "a":
             n += 1
-        elif c == "é":
+        elif char == "é":
             n += 10
-        elif c != "b":
+        elif char != "b":
             n += 100
-    return n
+    n
 
 def main(stdout: Stdout):
     stdout.print(
         pick(True, 5),
         pick(False, 5),
-        both(True, False),
-        both(False, True),
+        both(True, other=False),
+        both(False, other=True),
         shadow(True),
         early(True),
         early(False),
     )
     stdout.print(chars("abécé"), chars("aaa"), chars(""))
     mut kept = ""
-    for c in "héllo wörld":
-        kept += c
-        d = c
-        e = d + "!"
-        stdout.print(d, e, d == "é", c == kept[-1])
+    for char in "héllo wörld":
+        kept += char
+        same = char
+        shout = same + "!"
+        stdout.print(same, shout, same == "é", char == kept[-1])
     for i in range(0, 12, 5):
         stdout.print(i % 3, i // 3, i % 4, i // 4)
-    a = "x" if len0() > 0 else "y"
-    stdout.print(a, a == "y", a + "z")
-    mut b = "p" if a == "y" else "q"
-    b += "r"
-    stdout.print(b)
+    picked = "x" if len0() > 0 else "y"
+    stdout.print(picked, picked == "y", picked + "z")
+    mut alternative = "p" if picked == "y" else "q"
+    alternative += "r"
+    stdout.print(alternative)
     for n in range(-3, 3):
         stdout.print(n % 3, n // 3)
 
 def len0() -> int:
-    return "".len()
+    "".len()

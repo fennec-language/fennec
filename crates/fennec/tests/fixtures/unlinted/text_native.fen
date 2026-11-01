@@ -1,0 +1,92 @@
+## Text native code makes itself: f-strings, `str`, `join`, `code` and slices of lists.
+
+struct Point:
+    x: int
+    y: float
+
+def label(n: int) -> str:
+    f"n={n}"
+
+def main(stdout: Stdout):
+    name = "fox"
+    stdout.print(f"plain", f"{name}", f"{name}!", f"<{name}>", f"")
+    stdout.print(f"{1} {2.5} {True} {False} {-7} {name} {1 + 2}")
+    stdout.print(f"{3.14159:.2f} {1234567:,} {name}", f"{{braces}} {2 ** 10}")
+    stdout.print(f"{[1, 2]} {Point(x=1, y=2.0)} {(1, 2)} {{}}", f"{label(4)}{label(5)}")
+    stdout.print(str(5), str(-5), str(2.5), str(True), str(name), str([1]), str(Point(x=0, y=0.5)))
+    stdout.print(label(10).len(), str(12345).len(), f"é{name}é".len())
+
+    mut built = ""
+    for i in range(30):
+        built = f"{built}{i % 10}"
+    stdout.print(built)
+
+    stdout.print("a".code(), "é".code(), "fox"[1].code(), "7".isdigit(), "x".isdigit())
+    stdout.print(
+        ",".join(["a", "b", "c"]),
+        "".join(["x"]),
+        "-".join([]),
+        ", ".join([str(n) for n in range(3)]),
+    )
+
+    numbers = [0, 1, 2, 3, 4, 5]
+    stdout.print(
+        numbers[1:3],
+        numbers[:2],
+        numbers[4:],
+        numbers[:],
+        numbers[-2:],
+        numbers[:-4],
+        numbers[3:1],
+        numbers[9:],
+        numbers[:99],
+    )
+    words = ["a", "b", "c"]
+    part = words[1:]
+    stdout.print(part, words, part[0], words[1:][1].len())
+    points = [Point(x=1, y=1.0), Point(x=2, y=2.0)]
+    stdout.print(points[1:][0].x, points[:1])
+    mut changing = numbers[2:]
+    changing.append(9)
+    changing[0] = 7
+    stdout.print(changing, numbers)
+    stdout.print(
+        any(n > 4 for n in numbers),
+        any(n > 9 for n in numbers),
+        all(n >= 0 for n in numbers),
+        all(n > 0 for n in numbers),
+    )
+    stdout.print(
+        any(n > 4 for n in numbers if n < 3),
+        all(n < 3 for n in numbers if n < 3),
+        any(c == "o" for c in "fox"),
+    )
+    stdout.print(
+        any(True for _ in numbers[:0]),
+        all(False for _ in numbers[:0]),
+        "".isdigit(),
+        "12".isdigit(),
+        "1x".isdigit(),
+        "ab".startswith("a"),
+        "ab".endswith("a"),
+    )
+    long = "abcdefghijklmnopqrstuvwxyz"
+    stdout.print(
+        long[0:9],
+        long[3:11],
+        long[7:8],
+        long[1:17],
+        long[:0],
+        long[20:],
+        long[-3:],
+        long[9:9].len(),
+        long[3:11].len(),
+    )
+    stdout.print(
+        long[3:11] == "defghijk",
+        long[0:8] + long[8:16],
+        "é" + long[2:5],
+        "aéb"[1:2],
+        "aéb"[1:],
+    )
+    stdout.print({long[0:2]: 1, long[1:3]: 2}[long[1:3]], long[5:9] < long[6:10])

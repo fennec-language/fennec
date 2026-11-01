@@ -1,7 +1,7 @@
 # Bit operators work on ints. A shift by a count outside 0 to 63 stops the program.
 
-def flags(a: int, b: int) -> list[int]:
-    [a & b, a | b, a ^ b, ~a, a << 3, a >> 1]
+def flags(left: int, right: int) -> list[int]:
+    [left & right, left | right, left ^ right, ~left, left << 3, left >> 1]
 
 def hash_step(start: int, byte: int) -> int:
     mut hash = start
@@ -13,15 +13,15 @@ def hash_step(start: int, byte: int) -> int:
     hash
 
 def main(stdout: Stdout):
-    stdout.print(flags(12, 10))
-    stdout.print(flags(-12, 10))
+    stdout.print(flags(12, right=10))
+    stdout.print(flags(-12, right=10))
     # Tighter than comparisons and looser than `+`, as in Python.
     stdout.print(1 | 2 ^ 3 & 4, 1 + 2 << 3, 6 & 3 == 2, ~1 + 1)
     # Bits shifted past the top are lost: `<<` doesn't overflow.
     stdout.print(1 << 63, 3 << 63, -1 >> 63, -8 >> 1)
     mut hash = 7
     for byte in [1, 200, 33]:
-        hash = hash_step(hash, byte)
+        hash = hash_step(hash, byte=byte)
     stdout.print(hash)
     # A mask of the low 8 bits.
     mask = (1 << 8) - 1

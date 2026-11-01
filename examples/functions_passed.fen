@@ -16,9 +16,7 @@ interface Shape:
     def area(self) -> float
 
 def total[T: Shape](shapes: list[T]) -> float:
-    mut sum_of = 0.0
-    for shape in shapes:
-        sum_of += shape.area()
+    sum_of = sum(shape.area() for shape in shapes)
     sum_of
 
 def largest[T](items: list[T], better: (T, T) -> bool) -> T:
@@ -71,23 +69,26 @@ def main(stdout: Stdout):
     stdout.print(total([Circle(radius=1.0), Circle(radius=2.0)]), total([Square(side=3.0)]))
     circles = [Circle(radius=float(i % 4)) for i in range(9)]
     stdout.print(
-        largest(circles, (a, b) => a.radius > b.radius),
-        largest([3, 9, 2], (a, b) => a > b),
+        largest(circles, (left, right) => left.radius > right.radius),
+        largest([3, 9, 2], (left, right) => left > right),
     )
     stdout.print(
-        largest(["fox", "den"], (a, b) => a < b),
+        largest(["fox", "den"], (left, right) => left < right),
         identity(4),
         identity("s"),
         identity(2.5),
         identity(circles[1]),
     )
-    stdout.print(map_all([1, 2, 3], (n) => n * n), first_big([1, 5, 9], 4, (v, l) => v > l))
+    stdout.print(
+        map_all([1, 2, 3], (n) => n * n),
+        first_big([1, 5, 9], limit=4, big=(candidate, threshold) => candidate > threshold),
+    )
     stdout.print(
         keep((n) => n + offset)(1),
         shadow(1, (n) => n + offset),
         countdown(3, (n) => n * offset),
     )
-    stdout.print(twice(1, (n) => twice(n, (m) => m * 3 + offset)))
+    stdout.print(twice(1, (n) => twice(n, (inner) => inner * 3 + offset)))
     words = ["a", "bb"]
     stdout.print(
         apply(words[1].len(), (n) => n + words.len()),

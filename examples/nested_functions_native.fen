@@ -10,9 +10,9 @@ def scaled(items: list[int], factor: int) -> list[int]:
 def labelled(name: str, n: int) -> str:
     def part(i: int) -> str:
         prefix = f"{name}-"
-        return prefix + str(i)
-    def both(a: int, b: int) -> str:
-        part(a) + "/" + part(b)
+        prefix + str(i)
+    def both(left_value: int, right_value: int) -> str:
+        part(left_value) + "/" + part(right_value)
     both(n, n + 1)
 
 def by_branch(n: int) -> int:
@@ -24,9 +24,7 @@ def by_branch(n: int) -> int:
 def kept(start: int) -> list[int]:
     def seen(n: int) -> int:
         n + start
-    mut found = []
-    for n in range(3):
-        found.append(seen(n))
+    found = [seen(n) for n in range(3)]
     found
 
 def rolling(items: list[int]) -> list[int]:

@@ -1,0 +1,11 @@
+4 4
+1 Point(x=0, y=0)
+3 Point(x=2, y=4)
+4 Point(x=13, y=9)
+50 Point(x=49, y=2401)
+Shape.Group(first=Shape.Dot(at=Point(x=13, y=9)), rest=Shape.Group(first=Shape.Dot(at=Point(x=12, y=4)), rest=Shape.Group(first=Shape.Dot(at=Point(x=11, y=1)), rest=Shape.Dot(at=Point(x=10, y=0)))))
+Point(x=6, y=1) 1
+Layer(depth=2, origin=Point(x=7, y=0), shape=Shape.Moved(by=Point(x=7, y=0), inner=Shape.Group(first=Shape.Dot(at=Point(x=1, y=1)), rest=Shape.Dot(at=Point(x=0, y=0)))))
+Layer(depth=1, origin=Point(x=0, y=0), shape=Shape.Group(first=Shape.Dot(at=Point(x=1, y=1)), rest=Shape.Dot(at=Point(x=0, y=0))))
+False True True
+2 dots, depth 2

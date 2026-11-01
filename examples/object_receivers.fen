@@ -6,7 +6,7 @@ struct Shelf:
     name: str
 
 def first(shelf: Shelf) -> int:
-    return shelf.items[0]
+    shelf.items[0]
 
 def main(stdout: Stdout):
     mut shelf = Shelf(items=[3, 1, 2], counts={"a": 1}, name="oak")

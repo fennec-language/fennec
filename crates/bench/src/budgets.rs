@@ -43,8 +43,9 @@ const MOST_VERDICT_INSTRUCTIONS: u64 = 7_500_000_000;
 const RUN: Budget =
     Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: false };
 
-/// How many times longer an edit's verdict may take on the big kit than on one a tenth its
-/// size. It shouldn't depend on the size of a project at all; some allowance is for noise.
+/// How many times the work an edit's verdict may be on the big kit, against one a tenth its size.
+/// It shouldn't depend on the size of a project at all. Reading and hashing every file does, by
+/// a little, and this fails the run if that stops being little.
 const MOST_GROWTH: f64 = 1.5;
 
 /// How big a kit to measure on: files, each with this many functions and a tenth as many tests.
@@ -100,13 +101,13 @@ pub(crate) fn run(fennec: &Path, runs: usize, files: usize) -> Result<bool, Stri
     let _ = std::fs::remove_dir_all(&dir);
     let measured = measured?;
     let small = smaller_verdict(&dir, fennec, runs, files)?;
-    let growth = measured
-        .iter()
-        .find(|measured| measured.budget.name == VERDICT.name)
-        .map_or(0.0, |verdict| verdict.warm.as_secs_f64() / small.as_secs_f64().max(f64::MIN_POSITIVE));
+    let verdict = measured.iter().find(|measured| measured.budget.name == VERDICT.name);
+    let growth = verdict.map(|verdict| Growth::between(verdict, &small));
     let lines = format!("{} files, {} functions", files + 1, files * FUNCTIONS_PER_FILE);
     let mut table = table(&measured, &lines);
-    let _ = writeln!(table, "\n{}", growth_line(growth, small));
+    if let Some(growth) = growth {
+        let _ = writeln!(table, "\n{}", growth.line());
+    }
     print!("{table}");
     if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
         crate::append(Path::new(&summary), &format!("## Instant-feedback budgets\n\n{table}"))
@@ -116,30 +117,51 @@ pub(crate) fn run(fennec: &Path, runs: usize, files: usize) -> Result<bool, Stri
         let Budget { name, limit, .. } = over.budget;
         println!("::warning title=Over budget::{name} took {}, over {}", millis(over.warm), millis(limit));
     }
-    if growth > MOST_GROWTH {
-        println!("::warning title=Over budget::{}", growth_line(growth, small));
+    let grew = growth.is_some_and(|growth| growth.times > MOST_GROWTH);
+    if let Some(growth) = growth.filter(|_| grew) {
+        println!("::error title=Over budget::{}", growth.line());
     }
-    Ok(passes(&measured))
+    Ok(passes(&measured) && !grew)
 }
 
-/// How long an edit's verdict takes on a kit a tenth the size of the big one.
-fn smaller_verdict(dir: &Path, fennec: PathBuf, runs: usize, files: usize) -> Result<Duration, String> {
+/// An edit's verdict on a kit a tenth the size of the big one.
+fn smaller_verdict(dir: &Path, fennec: PathBuf, runs: usize, files: usize) -> Result<Measured, String> {
     let kit = Kit::write(dir, fennec, (files / 10).max(EDITED_FILE + 1))
         .map_err(|err| format!("couldn't write the kit: {err}"))?;
     kit.timed(&["fmt"])?;
     let verdict = kit.verdict(runs);
     let _ = kit.command(&["daemon", "stop"]).output();
     let _ = std::fs::remove_dir_all(dir);
-    Ok(verdict?.warm)
+    verdict
 }
 
-/// What growing a project tenfold does to an edit's verdict. It warns until #152 makes a
-/// verdict independent of the size of the project.
-fn growth_line(growth: f64, small: Duration) -> String {
-    format!(
-        "An edit's verdict takes {growth:.1} times as long on the big kit as on one a tenth its size ({}); it should take at most {MOST_GROWTH} times.",
-        millis(small)
-    )
+/// What growing a project tenfold does to an edit's verdict, which shouldn't depend on the size
+/// of the project. It's worked out from counts of instructions where there are any, which the
+/// machine doesn't change, and from time where there aren't.
+#[derive(Clone, Copy)]
+struct Growth {
+    times: f64,
+    by_count: bool,
+}
+
+impl Growth {
+    #[expect(clippy::cast_precision_loss, reason = "a ratio doesn't need every digit of a count")]
+    fn between(big: &Measured, small: &Measured) -> Growth {
+        if let (Some(big), Some(small)) = (big.counted, small.counted) {
+            let times = big.instructions as f64 / (small.instructions as f64).max(1.0);
+            return Growth { times, by_count: true };
+        }
+        let times = big.warm.as_secs_f64() / small.warm.as_secs_f64().max(f64::MIN_POSITIVE);
+        Growth { times, by_count: false }
+    }
+
+    fn line(self) -> String {
+        let measure = if self.by_count { "instructions" } else { "time" };
+        format!(
+            "An edit's verdict takes {:.1} times the {measure} on the big kit as on one a tenth its size; it can take {MOST_GROWTH} times.",
+            self.times
+        )
+    }
 }
 
 /// Whether every enforced budget is met.
@@ -407,12 +429,17 @@ mod tests {
     }
 
     #[test]
-    fn the_growth_line_says_how_much_and_how_much_is_allowed() {
-        let line = super::growth_line(9.56, Duration::from_millis(50));
-        assert!(
-            line.contains("9.6 times") && line.contains("50.0 ms") && line.contains("1.5 times"),
-            "{line}"
-        );
+    fn growth_goes_by_counts_when_both_runs_have_them() {
+        let counted = |warm, instructions| Measured {
+            counted: Some(super::Counted { instructions, most: 100 }),
+            ..measured(true, warm)
+        };
+        let growth = super::Growth::between(&counted(900, 150), &counted(1, 100));
+        assert!((growth.times - 1.5).abs() < 1e-9 && growth.by_count);
+        assert!(growth.line().contains("1.5 times the instructions"), "{}", growth.line());
+        let growth = super::Growth::between(&measured(true, 300), &measured(true, 100));
+        assert!((growth.times - 3.0).abs() < 1e-9 && !growth.by_count);
+        assert!(growth.line().contains("3.0 times the time"), "{}", growth.line());
     }
 
     #[test]

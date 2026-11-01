@@ -60,6 +60,8 @@ pub struct Tables {
     pub ascii: Box<[u64]>,
     /// The address of each string literal's block, by its text.
     pub literals: HashMap<String, i64>,
+    /// What closes what's open in a generator that's let go partway, by its block's shape.
+    pub abandons: HashMap<u64, extern "C" fn(i64)>,
 }
 
 impl Tables {
@@ -144,6 +146,11 @@ thread_local! {
 
 /// Where this thread's failure flag lives, for native code to read. Code compiled for one
 /// thread must run on that thread.
+pub(crate) fn failed() -> bool {
+    FAILED.get() != 0
+}
+
+/// Where the failure flag is.
 pub fn failed_flag() -> usize {
     FAILED.with(|flag| flag.as_ptr().addr())
 }
@@ -202,6 +209,7 @@ pub struct Leftovers {
 
 /// Ends the run: what it printed, why it failed if it did, and what it left behind.
 pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
+    heap::run_abandons();
     let state = STATE.take();
     FAILED.set(0);
     match state {

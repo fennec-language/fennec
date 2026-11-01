@@ -52,6 +52,8 @@ pub(crate) struct Heap {
     statics: usize,
     /// Strings' text as the interpreter holds it, made once per block.
     texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
+    /// Generators let go partway, waiting for what closes what they hold.
+    abandoning: Vec<u64>,
     /// Blocks waiting to be freed and a freed block's children, kept to save making them anew.
     pending: Vec<u64>,
     found: Vec<u64>,
@@ -90,6 +92,10 @@ const CELL_SHAPE: u64 = u64::MAX - 1;
 
 /// Words a cell takes: owner count, shape and the number of its value.
 const CELL_WORDS: usize = 3;
+
+/// Which word of a generator's block says where it goes on from, and what says it's finished.
+const GENERATOR_PC: usize = (super::layout::GEN_PC / 8).unsigned_abs() as usize;
+const FINISHED: u64 = u64::MAX;
 
 /// The owner count of a block that's never freed: retaining and releasing it never get
 /// near zero.
@@ -415,8 +421,50 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
 
 /// Frees a block whose last owner let it go, and releases its boxed fields, freeing those
 /// that had no other owner, all the way down.
+///
+/// Program code only runs here for a generator let go partway, by the function its shape was
+/// given with `set_abandon`. So freeing a block whose type holds no such generator and no
+/// `del` runs no program code.
 pub extern "C" fn free(address: i64) {
     with(|state| free_block(state, u64::try_from(address).unwrap_or(0)));
+    run_abandons();
+}
+
+/// Says what closes what's open in a generator with this shape that's let go partway. Only
+/// shapes given here are treated specially when they're freed.
+pub extern "C" fn set_abandon(shape: i64, abandon: extern "C" fn(i64)) {
+    with(|state| {
+        state.tables.abandons.insert(u64::try_from(shape).unwrap_or(u64::MAX), abandon);
+    });
+}
+
+/// Runs what closes the generators let go of, each only once nothing here is borrowed, since
+/// it's program code calling back in. A failure then ends the program on the spot: whatever
+/// released the generator isn't expecting one.
+pub(super) fn run_abandons() {
+    while let Some((address, abandon)) = with(next_abandoned) {
+        abandon(i64::try_from(address).unwrap_or(0));
+        if super::failed() {
+            super::aot::stop_for_failure();
+        }
+        with(|state| release(state, address));
+    }
+}
+
+/// The next generator to close, marked as finished so that it's freed for good afterward.
+fn next_abandoned(state: &mut State) -> Option<(u64, extern "C" fn(i64))> {
+    let address = state.heap.abandoning.pop()?;
+    let block = state.heap.block_mut(address)?;
+    let shape = *block.get(1)?;
+    *block.get_mut(GENERATOR_PC)? = FINISHED;
+    Some((address, *state.tables.abandons.get(&shape)?))
+}
+
+/// Whether a block being freed is a generator stopped at a `yield` with something to close.
+fn is_abandoned(state: &State, block: &[u64]) -> bool {
+    !state.tables.abandons.is_empty()
+        && block.get(1).is_some_and(|shape| state.tables.abandons.contains_key(shape))
+        && block.get(GENERATOR_PC).is_some_and(|pc| i64::from_ne_bytes(pc.to_ne_bytes()) > 0)
 }
 
 /// Frees a block and releases its boxed fields, freeing those with no other owner, all the
@@ -429,6 +477,18 @@ fn free_block(state: &mut State, address: u64) {
         let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove(&at)) else {
             continue;
         };
+        if is_abandoned(state, &block) {
+            // It lives until what closes it has run, which holds it as its one owner.
+            let mut block = block;
+            if let Some(count) = block.first_mut() {
+                *count = 1;
+            }
+            if let Ok(at) = usize::try_from(address) {
+                state.heap.blocks.insert(at, block);
+            }
+            state.heap.abandoning.push(address);
+            continue;
+        }
         if is_text(state, &block) {
             if let Ok(at) = usize::try_from(address) {
                 state.heap.texts.get_mut().remove(&at);

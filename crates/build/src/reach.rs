@@ -186,8 +186,8 @@ impl Graph {
         }
     }
 
-    /// The key of everything the definition at `start` reaches, itself included.
-    pub(crate) fn key(&self, start: usize) -> Hash {
+    /// Every definition reachable from the one at `start`, itself included.
+    fn reached(&self, start: usize) -> BTreeSet<usize> {
         let mut reached = BTreeSet::from([start]);
         let mut pending = vec![start];
         while let Some(at) = pending.pop() {
@@ -201,6 +201,20 @@ impl Graph {
                 }
             }
         }
+        reached
+    }
+
+    /// The functions reachable from a definition, by the keys the compiler knows them by.
+    pub(crate) fn functions_reached(&self, start: usize) -> Vec<String> {
+        self.reached(start)
+            .iter()
+            .filter_map(|at| self.definitions.get(*at)?.key.strip_prefix("def ").map(str::to_owned))
+            .collect()
+    }
+
+    /// The key of everything the definition at `start` reaches, itself included.
+    pub(crate) fn key(&self, start: usize) -> Hash {
+        let reached = self.reached(start);
         let mut parts: Vec<(&str, &Hash)> = reached
             .iter()
             .filter_map(|at| self.definitions.get(*at))

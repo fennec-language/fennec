@@ -63,6 +63,12 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 **Copies are visible.** A lint lists every place the compiler had to copy a value, and why: "copied `enemies` because it's used again on line 42".
 *Why:* A hidden copy in a game loop is a frame-time spike nobody can find.
 
+**A copy that would happen on every iteration of a loop is a compile error,** including one in a function the loop calls. The error names the line and why the value is shared: "`state` is copied every iteration because `history` keeps it". The fix is to drop the other holder, restructure, or write `copy(state)` to make it explicit.
+- A one-time copy inside a loop, where the first write copies and the value has one owner after that, is only a hint, and the compiler may move the copy before the loop.
+- `@hot` still forbids any copy at all.
+
+*Why:* In a values language every implicit copy happens at a known line, at most once per sharing. So a loop that copies on every iteration is either a bug or should say `copy` on purpose, and a frame loop can never quietly copy.
+
 **`IdMap` and `Id[T]` are the way to point at things.** An `Id[Enemy]` is an index, a generation and a tag for its map, made by an `IdMap[Enemy]`. It can't index a map of another type, and the tag means an ID from another map can't find the wrong item.
 - `map[id]` stops the program on a dead ID, like an index out of range. `map.get(id)` returns an optional, for when the item may be gone.
 - A map reports how many items are live, which makes a forgotten item visible.
@@ -210,8 +216,10 @@ scan(rows)
 scan(rows, limit=100)
 ```
 - A literal default gives the parameter its type, for `int`, `float`, `str` and `bool` literals and for enum cases: `mode=Mode.fast`.
-- The type is written when the default is `None`, an empty `[]` or `{}`, a constant's name or any other expression, or when the type isn't the literal's own: `limit: i32 = 8`, `ratio: f32 = 0.5`.
-- Writing the type the literal already gives is a compile error: `name: str = "Chris"` and `limit: int = 8`. The fix removes the type, and `fennec fix` applies it.
+- A call to a type's constructor with its type arguments written, like `Packed[int]()` or `dict[str, int]()`, gives the type the same way, for struct fields and parameters alike. `neighbors = Packed[int]()` needs no `: Packed[int]`.
+- For an empty collection, the constructor is the only form of default: `items = list[str]()`. `items: list[str] = []` is a lint error whose fix, which `fennec fix` applies, rewrites it to `items = list[str]()`. Inside a function body, `items = []` stays fine, typed from its use.
+- The type is written when the default is `None`, as in `target: Unit? = None`, a constant's name or any other expression, or when the type isn't the literal's own: `limit: i32 = 8`, `ratio: f32 = 0.5`.
+- Writing the type the default already gives is a compile error: `name: str = "Chris"`, `limit: int = 8` and `neighbors: Packed[int] = Packed[int]()`. The fix removes the type, and `fennec fix` applies it.
 - A default is a plain value computed at compile time, under the same rule as a module constant. Calling without it costs the same as passing the value.
 - There are no exceptions in `std` either. `d.get(key)` returns an optional, so a fallback is written `d.get(key) else 0`, and `sum` takes `start=`.
 - Required parameters may be positional, within the limits below.
@@ -395,7 +403,7 @@ def write[T, W: Writer](x: T, mut out: W):
 
 *Why:* It covers serialization, SQL rows, CLI parsing, ECS queries and test helpers, and the checker sees ordinary code. With no I/O, builds stay deterministic and cacheable, and a kit can't run anything on your machine while it compiles, which closes a real supply-chain hole.
 
-**Annotations are data, read at compile time.** `@json(name="user_id")` on a field says something a generic function can read. An annotation never wraps or changes what it's on.
+**Annotations are data, read at compile time.** `@serialize(name="uid")` on a field says something a generic function can read. An annotation never wraps or changes what it's on.
 *Why:* A few things can't be said any other way, like a field's name in someone else's format, and data can't hide behavior.
 
 **Generics compile the way Swift's do.** Development builds, including the JIT, compile a generic function once and share that code across every type it's used with, passing each type's methods alongside its values. Release builds compile a copy for each type, so every call is direct and can be inlined, then merge copies whose machine code comes out identical. What a program does is the same either way.
@@ -501,34 +509,37 @@ with db.transaction() as mut tx:
 **`SortedMap`, `SortedSet`, `Heap`, `Grid` and `Packed` are in `std`,** with `SortedMap` and `SortedSet` on B-trees. All of them hide their internals.
 *Why:* These are the structures people would otherwise reach for stored references to build. Written once in `std`, no program has to rebuild them, and their layout can improve without breaking anyone.
 
-**Each serialization format implements a `Writer` and `Reader` interface,** with one method per basic value and container. One generic function breaks any type down recursively, so structs need no code.
-```fennec
-struct Color:
-    r: int
-    g: int
-    b: int
-
-    def json(self, mut out: JsonWriter):
-        out.str(f"#{self.r:02x}{self.g:02x}{self.b:02x}")
-```
-- A type overrides one format with a method named for it, which leaves other formats alone. `Color` above is a hex string in JSON and three small integers in `std.pack`.
-- A `shared` handle, a function value or a `Secret[str]` is a compile error naming the field.
-
+**Each serialization format implements a `Writer` and `Reader` interface,** with one method per basic value and container. One generic function breaks any type down recursively, so structs need no code. A `shared` handle, a function value or a `Secret[str]` is a compile error naming the field.
 *Why:* Types don't know about formats and formats don't know about types, so a new format is written once and works with every struct, and a new struct works with every format.
+
+**Structs mirror the wire format.** In JSON:
+- Numbers and strings are themselves, `True` and `False` are `true` and `false`, and `None` is `null`.
+- Lists, tuples and sets are arrays. Dicts with `str` keys, and structs, are objects.
+- An enum case is `"Case"`, or `{"Case": {...}}` when it has data. A union is tagged with its member's type name, as under Functions and types.
+- `std` collections take their natural shape: `SortedMap` is an object, `SortedSet` and `Deque` are arrays, and `Grid` is a list of rows.
+
+There's no per-format override, like a `def json` method on a type. This replaces the earlier rule that a type overrides one format with a method named for it.
+*Why:* What's on the wire is what's in the struct, with nothing hidden.
+
+**Case style is an option on each call,** not on the type: `json.dumps(x, names=.camel_case)` and `json.loads[T](text, names=.camel_case)`. The styles are `.snake_case`, the default, `.camel_case`, `.pascal_case` and `.kebab_case`. A name is converted word by word, with no acronym rules: `user_id` becomes `userId` in camel case, never `userID`.
+
+**`@serialize(name="uid")` on a field renames it,** for the rare real case like an API's `"uid"`. A key that isn't a word, like `"first name"`, loads into a dict instead. This replaces `@json(name=...)`.
+
+**Unknown keys are an error when loading,** and `extra=.ignore` skips them: `json.loads[T](text, extra=.ignore)`. Against mass assignment, load a request body into a type that holds only the fields a caller may set.
 
 **Every field is serialized by default, private `_` fields included.** This replaces the rule that `_name` fields are skipped.
 - `@skip` on a field leaves it out, and the field must have a default, so loading still builds a valid value. `@skip` on a field without a default is a compile error.
 - `where` rules run when a value is loaded, as on any write, so a bad save fails with a clear error.
-- A type that needs a different shape, or setup after loading, writes its own `def json(self, mut out: JsonWriter)` and the matching reader. There's no hidden after-load hook. Derived state is computed when it's asked for, or kept in a `@skip` field with a default.
+- `@skip` is for derived data. There's no after-load hook: derived data is built by the type's normal constructor from what was loaded, like `Map.from_data(json.loads[MapData](text))`, or computed when it's asked for.
 
 *Why:* Saving a value and loading it gives back exactly the same value, and leaving something out is visible. Private means other code can't touch a field, not that it isn't part of the value, and skipping private fields breaks round-trips silently: a `Grid` saved with no cells.
 
 **Printing is one more format.** `print`, `str(x)` and f-strings all go through it.
 - By default a value prints from its fields, through the same generic breakdown as other formats.
-- A type that needs something else writes `def str(self, mut out: StrWriter)`, the same shape as `def json(self, mut out: JsonWriter)`.
+- A type that needs something else writes `def str(self, mut out: StrWriter)`.
 - `std` collections like `SortedMap` and `Deque` print their items, not their internals.
 
-*Why:* One mechanism covers printing and every data format, and it's how `std` types keep their internals hidden. The method is `str`, not `text`, because `text` would clash with common fields like `message.text`, while `str(x)` already means "make text of this", and the name follows `json` and `pack`.
+*Why:* One mechanism covers printing and every data format, and it's how `std` types keep their internals hidden. The method is `str`, not `text`, because `text` would clash with common fields like `message.text`, while `str(x)` already means "make text of this".
 
 **`std.pack` is the default binary format,** written in plain Fennec.
 - There are no field names on the wire, and a schema hash says which shape the data has.
@@ -797,8 +808,8 @@ match tok:
 
 **`"  " * depth` repeats a string.** It's `str`'s own `def *`.
 
-**Keywords can't be names, including field names.** A field holding a function is `function`, not `def`.
-*Why:* Python doesn't allow it either, and a name that's sometimes a keyword is harder to read.
+**Fields may be named any word, keywords included; locals and functions can't be keywords.** `type: str`, `user.type` and `User(type="admin")` all work, since a field name is unambiguous where it's declared, after a dot and before `=`. This replaces the rule that field names can't be keywords.
+*Why:* Structs mirror the wire format, and real formats use keys like `type`, `class` and `from`. Locals and functions stay as Python has them, where a name that's sometimes a keyword would be harder to read.
 
 **f-strings have `{x=}` and no `!r`.** `f"{hp=}"` gives `hp=100`. Format specs like `{x:.2f}` stay.
 *Why:* `{x=}` is what people want when debugging; `!r` has no meaning without Python's `repr`.

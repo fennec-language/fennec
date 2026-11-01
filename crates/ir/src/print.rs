@@ -9,6 +9,15 @@ use crate::{BlockId, FormatPart, Function, InstKind, LocalId, Operand, Program, 
 
 impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut text = String::new();
+        self.write(&mut text)?;
+        f.write_str(&as_written(&text))
+    }
+}
+
+impl Program {
+    fn write(&self, f: &mut String) -> fmt::Result {
+        use fmt::Write as _;
         for def in &self.structs {
             writeln!(f, "struct {}", def.name)?;
             for (name, ty) in &def.fields {
@@ -38,6 +47,36 @@ impl fmt::Display for Program {
 
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut text = String::new();
+        self.write(&mut text)?;
+        f.write_str(&as_written(&text))
+    }
+}
+
+/// IR text with each type a program declares under a library type's name shown as written:
+/// `Grid` for the checker's `Grid'`.
+fn as_written(text: &str) -> String {
+    let marker = fennec_syntax::rename::RENAMED;
+    let mut shown = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(marker) {
+        let (before, after) = rest.split_at(at);
+        let after = after.strip_prefix(marker).unwrap_or(after);
+        let ends_a_name = before.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_')
+            && !after.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_');
+        shown.push_str(before);
+        if !ends_a_name {
+            shown.push_str(marker);
+        }
+        rest = after;
+    }
+    shown.push_str(rest);
+    shown
+}
+
+impl Function {
+    fn write(&self, f: &mut String) -> fmt::Result {
+        use fmt::Write as _;
         let params: Vec<String> = (0..self.params)
             .map(|at| {
                 let word = if self.mut_params.contains(&at) { "mut " } else { "" };

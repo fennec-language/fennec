@@ -68,16 +68,6 @@ mod tests {
         })
     }
 
-    fn set_word(address: i64, offset: i32, value: u64) {
-        with(|state| {
-            let at = u64::try_from(address).unwrap_or(0);
-            let word = usize::try_from(offset / 8).unwrap_or(0);
-            if let Some(slot) = state.heap.block_mut(at).and_then(|block| block.get_mut(word)) {
-                *slot = value;
-            }
-        });
-    }
-
     fn text_of(address: i64) -> String {
         with(|state| {
             u64::try_from(address)
@@ -116,28 +106,15 @@ mod tests {
         assert_eq!(words(TEXT), heap::TEXT_HEADER_WORDS);
     }
 
-    /// Puts items in reverse order, calling back into the runtime while it does.
-    extern "C" fn backward(a: i64, b: i64) -> i64 {
-        heap::free(strings::int_text(1000));
-        i64::from(a < b) - i64::from(a > b)
+    fn set_word(address: i64, offset: i32, value: u64) {
+        with(|state| {
+            let at = u64::try_from(address).unwrap_or(0);
+            let word = usize::try_from(offset / 8).unwrap_or(0);
+            if let Some(slot) = state.heap.block_mut(at).and_then(|block| block.get_mut(word)) {
+                *slot = value;
+            }
+        });
     }
-
-    #[test]
-    fn a_comparator_orders_a_copy_of_a_list() {
-        let tables = Tables {
-            elements: vec![Rc::new(Element::Int)],
-            shapes: vec![Rc::new(Element::Str)],
-            ..Tables::default()
-        };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
-        let list = lists::new(0, 3);
-        for (at, value) in [(0, 1), (1, 2), (2, 3)] {
-            set_word(list, LIST_ITEMS + at * 8, value);
-        }
-        let sorted = lists::sorted_with(list, backward);
-        let read = |list: i64| [0, 1, 2].map(|at| word(list, LIST_ITEMS + at * 8).unwrap());
-        assert_eq!(read(sorted), [3, 2, 1]);
-        assert_eq!(read(list), [1, 2, 3]);
 
     thread_local! {
         static CLOSED: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
@@ -175,6 +152,55 @@ mod tests {
     }
 
     #[test]
+    fn a_generator_inside_a_list_inside_a_struct_is_closed_too() {
+        let items = Rc::new(Element::Boxed(0));
+        let holder = Element::Struct {
+            name: Rc::from("holder"),
+            fields: vec![(Rc::from("items"), Element::List(Rc::clone(&items)))],
+        };
+        let shapes = vec![Rc::new(generator_shape()), Rc::new(holder), Rc::new(Element::Str)];
+        let tables = Tables { shapes, str_shape: 2, elements: vec![items], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        heap::set_abandon(0, close);
+        CLOSED.set(0);
+        let generator = heap::alloc(0);
+        set_word(generator, super::GEN_PC, 1);
+        let list = lists::new(0, 1);
+        set_word(list, LIST_ITEMS, u64::try_from(generator).unwrap());
+        let holder = heap::alloc(1);
+        set_word(holder, FIELDS, u64::try_from(list).unwrap());
+        heap::free(holder);
+        assert_eq!(CLOSED.get(), 1);
+        assert_eq!(word(generator, 0), None);
+        finish();
+    }
+
+    /// Puts items in reverse order, calling back into the runtime while it does.
+    extern "C" fn backward(a: i64, b: i64) -> i64 {
+        heap::free(strings::int_text(1000));
+        i64::from(a < b) - i64::from(a > b)
+    }
+
+    #[test]
+    fn a_comparator_orders_a_copy_of_a_list() {
+        let tables = Tables {
+            elements: vec![Rc::new(Element::Int)],
+            shapes: vec![Rc::new(Element::Str)],
+            ..Tables::default()
+        };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let list = lists::new(0, 3);
+        for (at, value) in [(0, 1), (1, 2), (2, 3)] {
+            set_word(list, LIST_ITEMS + at * 8, value);
+        }
+        let sorted = lists::sorted_with(list, backward);
+        let read = |list: i64| [0, 1, 2].map(|at| word(list, LIST_ITEMS + at * 8).unwrap());
+        assert_eq!(read(sorted), [3, 2, 1]);
+        assert_eq!(read(list), [1, 2, 3]);
+        finish();
+    }
+
+    #[test]
     fn regexes_work_by_address() {
         let tables = Tables {
             elements: vec![Rc::new(Element::Int), Rc::new(Element::Str)],
@@ -202,27 +228,6 @@ mod tests {
         assert_eq!(word(anchored, LIST_LENGTH), Some(0));
         let anywhere = regex::find(string("b"), whole, 0, 0, 0, 0);
         assert_eq!(word(anywhere, LIST_LENGTH), Some(2));
-
-    fn a_generator_inside_a_list_inside_a_struct_is_closed_too() {
-        let items = Rc::new(Element::Boxed(0));
-        let holder = Element::Struct {
-            name: Rc::from("holder"),
-            fields: vec![(Rc::from("items"), Element::List(Rc::clone(&items)))],
-        };
-        let shapes = vec![Rc::new(generator_shape()), Rc::new(holder), Rc::new(Element::Str)];
-        let tables = Tables { shapes, str_shape: 2, elements: vec![items], ..Tables::default() };
-        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
-        heap::set_abandon(0, close);
-        CLOSED.set(0);
-        let generator = heap::alloc(0);
-        set_word(generator, super::GEN_PC, 1);
-        let list = lists::new(0, 1);
-        set_word(list, LIST_ITEMS, u64::try_from(generator).unwrap());
-        let holder = heap::alloc(1);
-        set_word(holder, FIELDS, u64::try_from(list).unwrap());
-        heap::free(holder);
-        assert_eq!(CLOSED.get(), 1);
-        assert_eq!(word(generator, 0), None);
         finish();
     }
 }

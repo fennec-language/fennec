@@ -210,8 +210,9 @@ scan(rows)
 scan(rows, limit=100)
 ```
 - A literal default gives the parameter its type, for `int`, `float`, `str` and `bool` literals and for enum cases: `mode=Mode.fast`.
-- The type is written when the default is `None`, an empty `[]` or `{}`, a constant's name or any other expression, or when the type isn't the literal's own: `limit: i32 = 8`, `ratio: f32 = 0.5`.
-- Writing the type the literal already gives is a compile error: `name: str = "Chris"` and `limit: int = 8`. The fix removes the type, and `fennec fix` applies it.
+- A call to a type's constructor with its type arguments written, like `Packed[int]()` or `dict[str, int]()`, gives the type the same way, for struct fields and parameters alike. `neighbors = Packed[int]()` needs no `: Packed[int]`.
+- The type is written when the default is `None`, a bare `[]` or `{}`, a constant's name or any other expression, or when the type isn't the literal's own: `limit: i32 = 8`, `ratio: f32 = 0.5`.
+- Writing the type the default already gives is a compile error: `name: str = "Chris"`, `limit: int = 8` and `neighbors: Packed[int] = Packed[int]()`. The fix removes the type, and `fennec fix` applies it.
 - A default is a plain value computed at compile time, under the same rule as a module constant. Calling without it costs the same as passing the value.
 - There are no exceptions in `std` either. `d.get(key)` returns an optional, so a fallback is written `d.get(key) else 0`, and `sum` takes `start=`.
 - Required parameters may be positional, within the limits below.
@@ -513,7 +514,7 @@ with db.transaction() as mut tx:
 There's no per-format override, like a `def json` method on a type. This replaces the earlier rule that a type overrides one format with a method named for it.
 *Why:* What's on the wire is what's in the struct, with nothing hidden.
 
-**Case style is an option on each call,** not on the type: `json.dumps(x, names=.camel_case)` and `json.loads[T](text, names=.camel_case)`. The styles are `.snake_case`, the default, `.camel_case`, `.pascal_case` and `.kebab_case`.
+**Case style is an option on each call,** not on the type: `json.dumps(x, names=.camel_case)` and `json.loads[T](text, names=.camel_case)`. The styles are `.snake_case`, the default, `.camel_case`, `.pascal_case` and `.kebab_case`. A name is converted word by word, with no acronym rules: `user_id` becomes `userId` in camel case, never `userID`.
 
 **`@serialize(name="uid")` on a field renames it,** for the rare real case like an API's `"uid"`. A key that isn't a word, like `"first name"`, loads into a dict instead. This replaces `@json(name=...)`.
 

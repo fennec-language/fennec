@@ -123,16 +123,16 @@ impl<'a> Uses<'a> {
         if !self.rooted(value) {
             return;
         }
-        let mut uses = Uses::new(other, self.checker, self.body);
-        uses.stmts(rest);
-        if uses.edits.is_empty() {
+        let mut later = Uses::new(other, self.checker, self.body);
+        later.stmts(rest);
+        if later.edits.is_empty() {
             return;
         }
         self.edits.push(value.span);
         let root = Path { root: self.name, steps: Vec::new() };
-        let used = uses.mentions.iter().filter(|(path, _)| path.root == *other);
-        let used: Vec<(Path<'a>, Span)> = used.map(|(_, span)| (root.clone(), *span)).collect();
-        self.mentions.extend(used);
+        let spans = later.mentions.iter().filter(|(path, _)| path.root == *other).map(|(_, span)| *span);
+        let through: Vec<(Path<'a>, Span)> = spans.map(|span| (root.clone(), span)).collect();
+        self.mentions.extend(through);
     }
 
     fn stmt(&mut self, stmt: &'a Stmt) {

@@ -41,6 +41,8 @@ Each of these is decided and not built.
 - `fails Name` in signatures, with one `error` listing several cases. `?` required wherever a failure passes up, narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
 - `xs.get(i)`, and `sum(xs, start=...)` replacing today's positional start.
 - `_name` hiding a field, and `pub` on top-level things only.
+- Fields named with any word, keywords included, like `from: str`. Soft keywords like `type` and `match` work as field names today.
+- `names=` and `extra=` on `json.loads` and `json.dumps`, and `@serialize(name=...)`.
 - Union types, `Circle | Square`, inline with a one-byte tag, narrowed with `is` and `match`.
 - Hard errors for positional calls that are easy to get backwards.
 - `fennec fix` applying only fixes that can't change what a program does, with the rest shown as hints to make by hand.

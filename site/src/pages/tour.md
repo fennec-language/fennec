@@ -589,21 +589,23 @@ def write[T, W: Writer](x: T, mut out: W):
         write(f.get(x), mut out)
 ```
 
-That's what serialization is built on. Each format implements a small `Writer` and `Reader`, one generic function breaks any type down, and a type overrides one format with a method named after it, leaving the others alone:
+That's what serialization is built on. Each format implements a small `Writer` and `Reader`, and one generic function breaks any type down, so a struct is exactly what's on the wire, with no per-format overrides. A field may be named any word, keywords included, and case style is an option on the call:
 
 ```fennec planned
-struct Color:
-    r: int
-    g: int
-    b: int
+from std import json
 
-    def json(self, mut out: JsonWriter):
-        out.str(f"#{self.r:02x}{self.g:02x}{self.b:02x}")
+struct Account:
+    type: str
+    display_name: str
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps(Account(type="admin", display_name="Ash"), names=.camel_case))
+    # {"type": "admin", "displayName": "Ash"}
 ```
 
-Every field is saved, private `_` ones included, and `where` rules check a value as it loads. `@skip` leaves a field out, and it needs a default so loading still builds a whole value.
+Every field is saved, private `_` ones included, and `where` rules check a value as it loads. `@skip` leaves a field out, and it needs a default so loading still builds a whole value. A key the struct doesn't have is an error unless the call says `extra=.ignore`, and `@serialize(name="uid")` renames a field when an API's name isn't yours.
 
-`std.pack` will be the default binary format: no field names on the wire, `where` ranges shrink values, a schema hash, delta encoding and opt-in quantization, all in plain Fennec. Annotations like `@json(name="user_id")` are data read at compile time, and they never change what they're on.
+`std.pack` will be the default binary format: no field names on the wire, `where` ranges shrink values, a schema hash, delta encoding and opt-in quantization, all in plain Fennec. Annotations like `@serialize(name="uid")` are data read at compile time, and they never change what they're on.
 
 JSON and TOML already work today, including typed reading:
 

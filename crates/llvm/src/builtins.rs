@@ -38,7 +38,7 @@ impl Emit<'_, '_, '_> {
         (at, LoopEnd { counter, head, done })
     }
 
-    pub(crate) fn loop_end(&mut self, end: LoopEnd) {
+    pub(crate) fn loop_end(&mut self, end: &LoopEnd) {
         let (at, next) = (self.temp(), self.temp());
         self.line(&format!("{at} = load i64, ptr {}", end.counter));
         self.line(&format!("{next} = add i64 {at}, 1"));
@@ -109,11 +109,21 @@ impl Emit<'_, '_, '_> {
         self.offset(list, 32)
     }
 
-    fn sum(&mut self, dest: LocalId, list: &Operand, span: Span) -> Result<(), String> {
+    fn sum(
+        &mut self,
+        dest: LocalId,
+        list: &Operand,
+        start: Option<&Operand>,
+        span: Span,
+    ) -> Result<(), String> {
         let (list, _, held) = self.list_operand(list)?;
         let length = self.list_length(&list);
         let total = self.place_for(&held);
-        let zero = if held == Kind::Float { crate::emit::float_text(0.0) } else { "0".to_owned() };
+        let zero = match start {
+            Some(start) => self.operand(start)?.0,
+            None if held == Kind::Float => crate::emit::float_text(0.0),
+            None => "0".to_owned(),
+        };
         let text = self.text_of(&held);
         self.line(&format!("store {text} {zero}, ptr {total}"));
         let (at, end) = self.loop_begin(&length);
@@ -128,7 +138,7 @@ impl Emit<'_, '_, '_> {
             self.checked_add(&so_far, &value, span)
         };
         self.line(&format!("store {text} {next}, ptr {total}"));
-        self.loop_end(end);
+        self.loop_end(&end);
         let result = self.temp();
         self.line(&format!("{result} = load {text}, ptr {total}"));
         self.assign(dest, &result)
@@ -152,7 +162,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i1 {}, ptr {result}", !wanted_all));
         self.line(&format!("br label %{carry_on}"));
         self.start_block(&carry_on);
-        self.loop_end(end);
+        self.loop_end(&end);
         let held_result = self.temp();
         self.line(&format!("{held_result} = load i1, ptr {result}"));
         self.assign(dest, &held_result)
@@ -173,7 +183,7 @@ impl Emit<'_, '_, '_> {
         let value = self.item_value(&list, &held, &at);
         let place = self.item_address(&result, &memory, &at);
         self.put_pair(&item_kind, &place, [(&Kind::Int, &at), (&held, &value)])?;
-        self.loop_end(end);
+        self.loop_end(&end);
         self.assign(dest, &result)
     }
 
@@ -196,7 +206,7 @@ impl Emit<'_, '_, '_> {
         let (x, y) = (self.item_value(&a, &a_held, &at), self.item_value(&b, &b_held, &at));
         let place = self.item_address(&result, &memory, &at);
         self.put_pair(&item_kind, &place, [(&a_held, &x), (&b_held, &y)])?;
-        self.loop_end(end);
+        self.loop_end(&end);
         self.assign(dest, &result)
     }
 
@@ -211,11 +221,83 @@ impl Emit<'_, '_, '_> {
 
     fn sorted(&mut self, dest: LocalId, list: &Operand) -> Result<(), String> {
         let (list, _, held) = self.list_operand(list)?;
+        if matches!(held, Kind::Struct(_) | Kind::Boxed(_)) {
+            let compare = self.tuple_comparison(&held)?;
+            self.declare("declare ptr @fennec_list_sorted_with(ptr, ptr) nounwind");
+            let result = self.temp();
+            self.line(&format!("{result} = call ptr @fennec_list_sorted_with(ptr {list}, ptr {compare})"));
+            return self.assign(dest, &result);
+        }
         let how = Self::sort_kind(&held)?;
         self.declare("declare ptr @fennec_list_sorted(ptr, i64) nounwind");
         let result = self.temp();
         self.line(&format!("{result} = call ptr @fennec_list_sorted(ptr {list}, i64 {how})"));
         self.assign(dest, &result)
+    }
+
+    /// The function comparing two tuples in a list, by their items' addresses, item by item.
+    fn tuple_comparison(&mut self, held: &Kind) -> Result<String, String> {
+        let (Kind::Struct(id) | Kind::Boxed(id)) = held else {
+            return Err("a sort of something else".to_owned());
+        };
+        let layouts = self.module.layouts;
+        let layout = layouts.get(*id).ok_or("no such layout")?;
+        if !layout.name.starts_with('(') {
+            return Err(format!("it sorts `{}` values, which this backend doesn't take yet", layout.name));
+        }
+        let boxed = matches!(held, Kind::Boxed(_));
+        let name = format!("@\"cmp_{}\"", layout.name);
+        let mut text = format!(
+            "define internal i64 {name}(i64 %x_at, i64 %y_at) #0 {{\nentry:\n  %x_item = inttoptr i64 %x_at to ptr\n  %y_item = inttoptr i64 %y_at to ptr\n"
+        );
+        if boxed {
+            text += "  %x_block = load ptr, ptr %x_item\n  %y_block = load ptr, ptr %y_item\n  %x = getelementptr inbounds i8, ptr %x_block, i64 16\n  %y = getelementptr inbounds i8, ptr %y_block, i64 16\n";
+        } else {
+            text += "  %x = getelementptr inbounds i8, ptr %x_item, i64 0\n  %y = getelementptr inbounds i8, ptr %y_item, i64 0\n";
+        }
+        text += "  br label %f0\n";
+        for (at, field) in layout.fields.iter().enumerate() {
+            let kind =
+                Kind::from_ty(layouts, field.ty).ok_or("a tuple item this backend doesn't take yet")?;
+            let next = at + 1;
+            let offset = field.offset;
+            text += &format!(
+                "f{at}:\n  %xa{at} = getelementptr inbounds i8, ptr %x, i64 {offset}\n  %ya{at} = getelementptr inbounds i8, ptr %y, i64 {offset}\n"
+            );
+            let (below, above) = match kind {
+                Kind::Int | Kind::Bool => {
+                    text +=
+                        &format!("  %xv{at} = load i64, ptr %xa{at}\n  %yv{at} = load i64, ptr %ya{at}\n");
+                    (format!("icmp slt i64 %xv{at}, %yv{at}"), format!("icmp sgt i64 %xv{at}, %yv{at}"))
+                }
+                Kind::Float => {
+                    text += &format!(
+                        "  %xv{at} = load double, ptr %xa{at}\n  %yv{at} = load double, ptr %ya{at}\n"
+                    );
+                    (format!("fcmp olt double %xv{at}, %yv{at}"), format!("fcmp ogt double %xv{at}, %yv{at}"))
+                }
+                Kind::Str => {
+                    self.declare("declare i64 @fennec_str_compare(ptr, ptr) nounwind");
+                    text += &format!(
+                        "  %xv{at} = load ptr, ptr %xa{at}\n  %yv{at} = load ptr, ptr %ya{at}\n  %o{at} = call i64 @fennec_str_compare(ptr %xv{at}, ptr %yv{at})\n"
+                    );
+                    (format!("icmp slt i64 %o{at}, 0"), format!("icmp sgt i64 %o{at}, 0"))
+                }
+                other => {
+                    return Err(format!(
+                        "it sorts tuples holding a {other:?}, which this backend doesn't take yet"
+                    ));
+                }
+            };
+            text += &format!(
+                "  %b{at} = {below}\n  br i1 %b{at}, label %less, label %g{at}\ng{at}:\n  %a{at} = {above}\n  br i1 %a{at}, label %more, label %f{next}\n"
+            );
+        }
+        let count = layout.fields.len();
+        text += &format!("f{count}:\n  ret i64 0\nless:\n  ret i64 -1\nmore:\n  ret i64 1\n}}\n\n");
+        let key = name.clone();
+        self.module.add_helper(&key, text);
+        Ok(name)
     }
 
     /// `sorted(list, key=f)`: the keys go in a list of their own, which the runtime goes by.
@@ -236,10 +318,10 @@ impl Emit<'_, '_, '_> {
         let (at, end) = self.loop_begin(&length);
         let value = self.item_value(&list, &held, &at);
         let text = if held.in_memory() { "ptr".to_owned() } else { self.text_of(&held) };
-        let got = self.call_closure_with(&closure, &returns, &[format!("{text} {value}")], span)?;
+        let got = self.call_closure_with(&closure, &returns, &[format!("{text} {value}")], span);
         let place = self.item_address(&keys, &key_text, &at);
         self.store_field(&returns, &got, &place, ITEM_ACCESS);
-        self.loop_end(end);
+        self.loop_end(&end);
         self.declare("declare ptr @fennec_list_sorted_by(ptr, ptr, i64) nounwind");
         let result = self.temp();
         self.line(&format!("{result} = call ptr @fennec_list_sorted_by(ptr {list}, ptr {keys}, i64 {how})"));
@@ -304,7 +386,7 @@ impl Emit<'_, '_, '_> {
         let (at, end) = self.loop_begin(&length);
         let value = self.item_value(&list, &held, &at);
         let text = if held.in_memory() { "ptr".to_owned() } else { self.text_of(&held) };
-        let gone = self.call_closure_with(&closure, &returns, &[format!("{text} {value}")], span)?;
+        let gone = self.call_closure_with(&closure, &returns, &[format!("{text} {value}")], span);
         let (drop, keep, next) = (self.label("drop"), self.label("keep"), self.label("next"));
         self.line(&format!("br i1 {gone}, label %{drop}, label %{keep}"));
         self.start_block(&drop);
@@ -321,7 +403,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i64 {later}, ptr {kept}"));
         self.line(&format!("br label %{next}"));
         self.start_block(&next);
-        self.loop_end(end);
+        self.loop_end(&end);
         let (count, length_at) = (self.temp(), self.offset(&list, 16));
         self.line(&format!("{count} = load i64, ptr {kept}"));
         self.line(&format!("store i64 {count}, ptr {length_at}"));
@@ -340,15 +422,32 @@ impl Emit<'_, '_, '_> {
         let (at, end) = self.loop_begin(&count);
         let byte = self.temp();
         self.line(&format!("{byte} = load i64, ptr {byte_place}"));
+        // An ASCII character's block comes from the table, and any other's from the runtime.
+        let (lead_at, lead) = (self.temp(), self.temp());
+        self.line(&format!("{lead_at} = getelementptr inbounds i8, ptr {start}, i64 {byte}"));
+        self.line(&format!("{lead} = load i8, ptr {lead_at}"));
+        self.declare("@fennec_ascii = external dso_local global ptr");
+        let (plain, table, wide, slot, from_table, other) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        let (ascii, rest, joined) = (self.label("ascii"), self.label("rest"), self.label("joined"));
+        self.line(&format!("{plain} = icmp sge i8 {lead}, 0"));
+        self.line(&format!("br i1 {plain}, label %{ascii}, label %{rest}"));
+        self.start_block(&ascii);
+        self.line(&format!("{table} = load ptr, ptr @fennec_ascii, !invariant.load !1"));
+        self.line(&format!("{wide} = zext i8 {lead} to i64"));
+        self.line(&format!("{slot} = getelementptr inbounds i64, ptr {table}, i64 {wide}"));
+        self.line(&format!("{from_table} = load ptr, ptr {slot}"));
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&rest);
+        self.line(&format!("{other} = call ptr @fennec_str_char_at(ptr {text}, i64 {byte})"));
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
         let one = self.temp();
-        self.line(&format!("{one} = call ptr @fennec_str_char_at(ptr {text}, i64 {byte})"));
+        self.line(&format!("{one} = phi ptr [ {from_table}, %{ascii} ], [ {other}, %{rest} ]"));
         self.retain(&one);
         let place = self.item_address(&list, "ptr", &at);
         self.line(&format!("store ptr {one}, ptr {place}{ITEM_ACCESS}"));
-        let (lead_at, lead, under_two, under_three, under_four) =
-            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{lead_at} = getelementptr inbounds i8, ptr {start}, i64 {byte}"));
-        self.line(&format!("{lead} = load i8, ptr {lead_at}"));
+        let (under_two, under_three, under_four) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{under_two} = icmp ult i8 {lead}, -64"));
         self.line(&format!("{under_three} = icmp ult i8 {lead}, -32"));
         self.line(&format!("{under_four} = icmp ult i8 {lead}, -16"));
@@ -358,7 +457,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{size} = select i1 {under_two}, i64 1, i64 {three}"));
         self.line(&format!("{next} = add i64 {byte}, {size}"));
         self.line(&format!("store i64 {next}, ptr {byte_place}"));
-        self.loop_end(end);
+        self.loop_end(&end);
         self.assign(dest, &list)
     }
 
@@ -372,7 +471,8 @@ impl Emit<'_, '_, '_> {
     ) -> Option<Result<(), String>> {
         let result = |dest: Option<LocalId>| dest.ok_or_else(|| "no result".to_owned());
         Some(match (name, args) {
-            ("sum", [list]) => result(dest).and_then(|dest| self.sum(dest, list, span)),
+            ("sum", [list]) => result(dest).and_then(|dest| self.sum(dest, list, None, span)),
+            ("sum", [list, start]) => result(dest).and_then(|dest| self.sum(dest, list, Some(start), span)),
             ("all", [list]) => result(dest).and_then(|dest| self.all_or_any(dest, list, true)),
             ("any", [list]) => result(dest).and_then(|dest| self.all_or_any(dest, list, false)),
             ("enumerate", [list]) => result(dest).and_then(|dest| self.enumerate(dest, list)),
@@ -388,6 +488,10 @@ impl Emit<'_, '_, '_> {
             ("dict.items", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "items")),
             ("dict.keys", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "keys")),
             ("dict.values", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "values")),
+            ("dict.contains" | "set.contains", [dict, key]) => result(dest).and_then(|dest| {
+                let found = self.dict_contains(fennec_syntax::BinOp::In, key, dict)?;
+                self.assign(dest, &found)
+            }),
             ("dict.len" | "set.len", [dict]) => result(dest).and_then(|dest| {
                 let (dict, _) = self.operand(dict)?;
                 let length = self.dict_length(&dict);

@@ -124,11 +124,12 @@ fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(
             read(rhs);
             write(*dest);
         }
-        InstKind::Make { dest, fields, .. } | InstKind::MakeCase { dest, fields, .. } => {
-            fields.iter().for_each(&mut read);
-            write(*dest);
-        }
-        InstKind::MakeList { dest, items } | InstKind::MakeTuple { dest, items } => {
+        InstKind::Make { dest, fields: items, .. }
+        | InstKind::MakeCase { dest, fields: items, .. }
+        | InstKind::MakeList { dest, items }
+        | InstKind::MakeTuple { dest, items }
+        | InstKind::MakeClosure { dest, captures: items, .. }
+        | InstKind::MakeSet { dest, items } => {
             items.iter().for_each(&mut read);
             write(*dest);
         }
@@ -143,10 +144,6 @@ fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(
                     read(value);
                 }
             }
-            write(*dest);
-        }
-        InstKind::MakeClosure { dest, captures: items, .. } | InstKind::MakeSet { dest, items } => {
-            items.iter().for_each(&mut read);
             write(*dest);
         }
         InstKind::MakeDict { dest, pairs } => {

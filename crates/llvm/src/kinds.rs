@@ -28,7 +28,9 @@ pub(crate) fn define_named(ty: &Type, out: &mut BTreeMap<String, Written>) {
     let field = |name: &str, ty: &Type| (name.to_owned(), canon(ty), None);
     match ty {
         Type::Tuple(items) => {
-            items.iter().for_each(|item| define_named(item, out));
+            for item in items {
+                define_named(item, out);
+            }
             let fields = items.iter().enumerate().map(|(at, item)| field(&format!("_{at}"), item)).collect();
             out.insert(ty.to_string(), Written::Struct(fields));
         }

@@ -164,7 +164,7 @@ impl Emit<'_, '_, '_> {
         returns: &Kind,
         args: &[String],
         span: Span,
-    ) -> Result<String, String> {
+    ) -> String {
         self.check_stack(span);
         let mut shown = Vec::with_capacity(args.len() + 3);
         let place = if returns.in_memory() {
@@ -194,7 +194,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{held} = load ptr, ptr %err"));
         self.line(&format!("{failed} = icmp ne ptr {held}, null"));
         self.leave_if(&failed);
-        Ok(place.unwrap_or(result))
+        place.unwrap_or(result)
     }
 
     pub(crate) fn call_closure(
@@ -214,7 +214,7 @@ impl Emit<'_, '_, '_> {
             let text = if param.in_memory() { "ptr".to_owned() } else { self.text_of(param) };
             shown.push(format!("{text} {value}"));
         }
-        let result = self.call_closure_with(&held, &returns, &shown, span)?;
+        let result = self.call_closure_with(&held, &returns, &shown, span);
         match dest {
             Some(dest) if returns.in_memory() => self.assign_memory(dest, &result, ""),
             Some(dest) if !matches!(*returns, Kind::Unit | Kind::Cap) => self.assign(dest, &result),

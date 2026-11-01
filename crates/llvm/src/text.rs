@@ -112,36 +112,30 @@ impl Emit<'_, '_, '_> {
             }
             return Ok(temp);
         };
-        // A spec goes through a temporary of the runtime's until it can take a number directly.
-        let boxed = self.temp();
+        let spec = self.literal(spec);
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
         match kind {
             Kind::Int => {
-                self.declare("declare i64 @fennec_int(i64) nounwind");
-                self.line(&format!("{boxed} = call i64 @fennec_int(i64 {value})"));
+                self.declare("declare ptr @fennec_int_spec_text(i64, ptr, i64, i64) nounwind");
+                self.line(&format!(
+                    "{temp} = call ptr @fennec_int_spec_text(i64 {value}, ptr {spec}, i64 {from}, i64 {to})"
+                ));
             }
             Kind::Float => {
-                self.declare("declare i64 @fennec_float(double) nounwind");
-                self.line(&format!("{boxed} = call i64 @fennec_float(double {value})"));
+                self.declare("declare ptr @fennec_float_spec_text(double, ptr, i64, i64) nounwind");
+                self.line(&format!(
+                    "{temp} = call ptr @fennec_float_spec_text(double {value}, ptr {spec}, i64 {from}, i64 {to})"
+                ));
             }
             other => {
                 return Err(format!("it formats a {other:?} by a spec, which this backend doesn't take yet"));
             }
         }
-        let spec = self.literal(spec);
-        self.declare("declare ptr @fennec_spec_text(i64, ptr, i64, i64) nounwind");
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
-        self.line(&format!(
-            "{temp} = call ptr @fennec_spec_text(i64 {boxed}, ptr {spec}, i64 {from}, i64 {to})"
-        ));
         self.leave_if_failed();
         Ok(temp)
     }
 
     pub(crate) fn format(&mut self, dest: LocalId, parts: &[FormatPart], span: Span) -> Result<(), String> {
-        self.declare("declare i64 @fennec_mark() nounwind");
-        self.declare("declare void @fennec_truncate(i64) nounwind");
-        let mark = self.temp();
-        self.line(&format!("{mark} = call i64 @fennec_mark()"));
         let mut built: Option<String> = None;
         for part in parts {
             let (piece, owned) = match part {
@@ -172,7 +166,6 @@ impl Emit<'_, '_, '_> {
             self.retain(&empty);
             empty
         };
-        self.line(&format!("call void @fennec_truncate(i64 {mark})"));
         self.assign(dest, &value)
     }
 
@@ -340,6 +333,12 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = call i64 @fennec_str_code(ptr {text}, i64 {from}, i64 {to})"));
                 self.leave_if_failed();
                 self.assign(dest.ok_or("no result")?, &temp)
+            }
+            "str.contains" => {
+                let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let (part, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                let found = self.string_binary(BinOp::In, (&part, &text))?;
+                self.assign(dest.ok_or("no result")?, &found)
             }
             "str.join" => {
                 let (separator, _) = self.operand(first.ok_or("no argument")?)?;

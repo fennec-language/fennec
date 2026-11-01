@@ -425,7 +425,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i64 {next_place}, ptr {written}"));
         self.line(&format!("br label %{skip}"));
         self.start_block(&skip);
-        self.loop_end(end);
+        self.loop_end(&end);
         self.assign(dest, &list)
     }
 

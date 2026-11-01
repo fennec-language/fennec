@@ -285,13 +285,17 @@ impl Emit<'_, '_, '_> {
 
     /// A new list of `count` zeroed items.
     pub(crate) fn new_list(&mut self, item: ListItem, count: &str) -> String {
+        self.new_list_with(item, count, "fennec_list_new")
+    }
+
+    fn new_list_with(&mut self, item: ListItem, count: &str, helper: &str) -> String {
         let symbol = element_symbol(self.module.layouts, item);
         self.module.shared.elements.insert(symbol.clone(), item);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
-        self.declare("declare ptr @fennec_list_new(i64, i64) nounwind");
+        self.declare(&format!("declare ptr @{helper}(i64, i64) nounwind"));
         let (element, list) = (self.temp(), self.temp());
         self.line(&format!("{element} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
-        self.line(&format!("{list} = call ptr @fennec_list_new(i64 {element}, i64 {count})"));
+        self.line(&format!("{list} = call ptr @{helper}(i64 {element}, i64 {count})"));
         list
     }
 
@@ -538,9 +542,7 @@ impl Emit<'_, '_, '_> {
         let (above, room) = (self.temp(), self.temp());
         self.line(&format!("{above} = icmp sgt i64 {count}, 0"));
         self.line(&format!("{room} = select i1 {above}, i64 {count}, i64 0"));
-        let list = self.new_list(item, &room);
-        let at = self.offset(&list, u32::try_from(LIST_LENGTH).unwrap_or(0));
-        self.line(&format!("store i64 0, ptr {at}{HEADER_ACCESS}"));
+        let list = self.new_list_with(item, &room, "fennec_list_with_room");
         self.assign(dest, &list)
     }
 

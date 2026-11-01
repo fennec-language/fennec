@@ -20,6 +20,13 @@
 //! reads takes over its owner, and a list with other owners is copied before it changes. A
 //! failure ends the program, so the way out on failing releases nothing.
 
+#![expect(
+    clippy::similar_names,
+    clippy::too_many_lines,
+    clippy::format_push_string,
+    reason = "this writes text: its temporaries are named for what they hold, in long runs of lines"
+)]
+
 mod analysis;
 mod build;
 mod builtins;

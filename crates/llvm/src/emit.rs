@@ -470,6 +470,11 @@ impl Emit<'_, '_, '_> {
         at
     }
 
+    fn is_optional(&self, kind: &Kind) -> bool {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return false };
+        self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Option["))
+    }
+
     /// One owner fewer for a value of this kind.
     pub(crate) fn release_kind(&mut self, value: &str, kind: &Kind) {
         if matches!(kind, Kind::Closure(..)) {
@@ -1004,7 +1009,9 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest.ok_or("no result")?, &length)
             }
             "list.append" => self.append(args),
-            "str.len" | "str" | "str.code" | "str.join" => self.text_builtin(dest, name, args, span),
+            "str.len" | "str" | "str.code" | "str.join" | "str.contains" => {
+                self.text_builtin(dest, name, args, span)
+            }
             "float" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
                 let temp = self.temp();
@@ -1067,6 +1074,24 @@ impl Emit<'_, '_, '_> {
                 return self.assign_memory(dest, &held, "");
             }
             return self.assign(dest, &held);
+        }
+        // Between an optional and what it holds, the IR can write a plain copy.
+        let wanted = self.kind_of(dest)?.clone();
+        let from = match value {
+            Operand::Local(local) => self.kind_of(*local)?.clone(),
+            Operand::Int(_) => Kind::Int,
+            Operand::Float(_) => Kind::Float,
+            Operand::Bool(_) => Kind::Bool,
+            Operand::Str(_) => Kind::Str,
+            Operand::None => wanted.clone(),
+        };
+        if from != wanted {
+            if self.is_optional(&wanted) {
+                return self.make_case(dest, "Some", std::slice::from_ref(value));
+            }
+            if self.is_optional(&from) {
+                return self.get_case_field(dest, value, "Some", "value");
+            }
         }
         let (held, kind) = self.operand(value)?;
         if kind.in_memory() {

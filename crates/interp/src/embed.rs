@@ -24,6 +24,7 @@ pub mod heap;
 pub mod layout;
 pub mod lists;
 pub mod objects;
+pub mod regex;
 pub mod strings;
 mod tests;
 

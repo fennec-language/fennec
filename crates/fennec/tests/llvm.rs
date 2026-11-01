@@ -362,6 +362,78 @@ def main(stdout: Stdout):
 }
 
 #[test]
+fn generators_and_results_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "generators",
+        r#"error Fault:
+    reason: str
+
+def count_up(limit: int) -> Iterator[int]:
+    mut at = 0
+    while at < limit:
+        yield at
+        at += 1
+
+def words(count: int) -> Iterator[str]:
+    for at in range(count):
+        yield f"w{at}"
+
+def odd_squares(numbers: Iterator[int]) -> Iterator[int]:
+    for n in numbers:
+        if n % 2 == 1:
+            yield n * n
+
+def running(numbers: Iterator[int]) -> Iterator[int]:
+    mut total = 0
+    for at, n in enumerate(numbers):
+        total += n + at
+        yield total
+
+def first_over(limit: int, over: int) -> int:
+    for n in odd_squares(count_up(limit)):
+        if n > over: return n
+    0
+
+def half(n: int) -> int:
+    if n % 2 == 1: fail Fault(f"{n} is odd")
+    n // 2
+
+def show(n: int) -> str:
+    match half(n):
+        case Ok(got):
+            f"half is {got}"
+        case Fault(reason):
+            reason
+
+def main(stdout: Stdout):
+    stdout.print(sum(n for n in running(odd_squares(count_up(30)))))
+    for word in words(3):
+        stdout.print(word, word.len())
+    stdout.print(first_over(100, 50), first_over(5, 50))
+    kept = words(4)
+    mut joined = ""
+    for word in kept:
+        joined += word
+    stdout.print(joined)
+    stdout.print(show(10), show(7), half(10).expect("ten is even"))
+    names = ["a", "b"]
+    stdout.print(f"{[1, 2]} and {names}")
+"#,
+    )?;
+    same_message_as_the_jit(
+        "twice",
+        "def count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef total(numbers: Iterator[int]) -> int:\n    mut sum = 0\n    for n in numbers:\n        sum += n\n    sum\n\ndef main(stdout: Stdout):\n    numbers = count_up(3)\n    stdout.print(total(numbers))\n    stdout.print(total(numbers))\n",
+    )?;
+    same_message_as_the_jit(
+        "expect",
+        "error Fault:\n    reason: str\n\ndef half(n: int) -> int:\n    if n % 2 == 1: fail Fault(\"odd\")\n    n // 2\n\ndef main(stdout: Stdout):\n    stdout.print(half(4).expect(\"four is even\"))\n    stdout.print(half(3).expect(\"three is even\"))\n",
+    )
+}
+
+#[test]
 fn failures_match_the_jit() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
         return Ok(());

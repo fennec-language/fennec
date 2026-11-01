@@ -85,7 +85,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Where the fields of what's in `base` start: inline, or in a block.
-    fn fields_at(&mut self, base: &str, kind: &Kind) -> String {
+    pub(crate) fn fields_at(&mut self, base: &str, kind: &Kind) -> String {
         if matches!(kind, Kind::Boxed(_)) { self.offset(base, FIELDS_OFFSET) } else { base.to_owned() }
     }
 
@@ -191,7 +191,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// An enum's case, by name: its number, and its fields with where they go.
-    fn case_of(&self, kind: &Kind, name: &str) -> Result<(i64, Vec<CaseField>), String> {
+    pub(crate) fn case_of(&self, kind: &Kind, name: &str) -> Result<(i64, Vec<CaseField>), String> {
         let (Kind::Enum(id) | Kind::Boxed(id)) = kind else {
             return Err(format!("it reads a case of a {kind:?}, which this backend doesn't take yet"));
         };

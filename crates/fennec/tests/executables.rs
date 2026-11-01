@@ -5,17 +5,23 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::OnceLock;
 
 /// The runtime library executables link against, which `fennec build` expects next to
-/// itself. `cargo test` doesn't build it, so this does, every time: an old one would be
-/// missing what the interpreter has learned since. Cargo does nothing when it's current.
-fn ensure_runtime() -> std::io::Result<bool> {
-    let profile = if cfg!(debug_assertions) { None } else { Some("--release") };
-    let built = Command::new(env!("CARGO"))
-        .args(["build", "--quiet", "-p", "fennec-runtime"])
-        .args(profile)
-        .status()?;
-    Ok(built.success())
+/// itself. `cargo test` doesn't build it, so this does, once a run: an old one would be
+/// missing what the interpreter has learned since. Only once, because even when it's
+/// current Cargo puts the library in place again, removing it first, so a test linking
+/// while another builds it could find it missing. `llvm.rs` uses this too.
+pub(crate) fn runtime_built() -> bool {
+    static BUILT: OnceLock<bool> = OnceLock::new();
+    *BUILT.get_or_init(|| {
+        let profile = if cfg!(debug_assertions) { None } else { Some("--release") };
+        Command::new(env!("CARGO"))
+            .args(["build", "--quiet", "-p", "fennec-runtime"])
+            .args(profile)
+            .status()
+            .is_ok_and(|status| status.success())
+    })
 }
 
 /// Whether mutation testing is running the tests (CI's mutation jobs set
@@ -42,9 +48,9 @@ fn programs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// Builds a program into `work`, giving back the executable, or `None` when it doesn't
-/// build because checking it fails.
-fn build(path: &Path, work: &Path) -> std::io::Result<Option<PathBuf>> {
+/// Builds a program into `work`, giving back the executable, or what `fennec build` said
+/// when it doesn't build.
+fn build(path: &Path, work: &Path) -> std::io::Result<Result<PathBuf, Output>> {
     let executable = work.join(path.file_stem().unwrap_or_default());
     let built = Command::new(env!("CARGO_BIN_EXE_fennec"))
         .arg("build")
@@ -52,7 +58,7 @@ fn build(path: &Path, work: &Path) -> std::io::Result<Option<PathBuf>> {
         .arg("-o")
         .arg(&executable)
         .output()?;
-    Ok(built.status.success().then_some(executable))
+    Ok(if built.status.success() { Ok(executable) } else { Err(built) })
 }
 
 fn run(executable: &Path) -> std::io::Result<Output> {
@@ -73,11 +79,13 @@ fn examples_build_to_executables_that_print_their_expected_output() {
     if under_mutants() {
         return;
     }
-    assert!(ensure_runtime().unwrap(), "couldn't build the runtime library");
+    assert!(runtime_built(), "couldn't build the runtime library");
     let work = work_dir("examples").unwrap();
     for path in programs(&examples_dir()).unwrap() {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let executable = build(&path, &work).unwrap().unwrap_or_else(|| panic!("{name} didn't build"));
+        let executable = build(&path, &work).unwrap().unwrap_or_else(|built| {
+            panic!("{name} didn't build ({}):\n{}", built.status, String::from_utf8_lossy(&built.stderr))
+        });
         let ran = run(&executable).unwrap();
         let expected = fs::read_to_string(path.with_extension("out")).unwrap();
         assert_eq!(String::from_utf8_lossy(&ran.stdout), expected, "{name} printed something different");
@@ -92,13 +100,13 @@ fn failing_examples_fail_the_same_way_as_executables() {
     if under_mutants() {
         return;
     }
-    assert!(ensure_runtime().unwrap(), "couldn't build the runtime library");
+    assert!(runtime_built(), "couldn't build the runtime library");
     let work = work_dir("errors").unwrap();
     let mut built = 0;
     for path in programs(&examples_dir().join("errors")).unwrap() {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         // Most error examples are mistakes the checker catches, which don't build.
-        let Some(executable) = build(&path, &work).unwrap() else { continue };
+        let Ok(executable) = build(&path, &work).unwrap() else { continue };
         built += 1;
         let ran = run(&executable).unwrap();
         let interpreted = Command::new(env!("CARGO_BIN_EXE_fennec")).arg("run").arg(&path).output().unwrap();

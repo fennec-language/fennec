@@ -12,6 +12,35 @@ const KIND: &str = "llvm";
 const MOST_THREADS: usize = 4;
 const PIPELINE: &str = "default<O3>";
 
+/// Whether `FENNEC_SANITIZE=address` asks for `AddressSanitizer`, to test that built programs
+/// touch only memory they own. Every function with attributes is instrumented, after the rest
+/// of the pipeline, as Clang does it, and the link takes `-fsanitize=address`.
+#[must_use]
+pub fn sanitizing() -> bool {
+    std::env::var_os("FENNEC_SANITIZE").is_some_and(|asked| asked == "address")
+}
+
+/// The passes `opt` runs.
+fn pipeline() -> String {
+    if sanitizing() { format!("{PIPELINE},asan") } else { PIPELINE.to_owned() }
+}
+
+/// A module's text, marked for `AddressSanitizer` to instrument when it's asked for: it only
+/// instruments functions that say `sanitize_address`, and they all take one of its attribute sets.
+fn marked(text: &str) -> std::borrow::Cow<'_, str> {
+    if !sanitizing() {
+        return text.into();
+    }
+    let lines = text.lines().map(|line| {
+        if line.starts_with("attributes #") {
+            line.replacen(" = { ", " = { sanitize_address ", 1)
+        } else {
+            line.to_owned()
+        }
+    });
+    lines.collect::<Vec<_>>().join("\n").into()
+}
+
 /// LLVM's programs.
 #[derive(Clone, Debug)]
 pub struct Tools {
@@ -108,7 +137,8 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, optimize: bool) -> Re
     let input = work.join(format!("{name}.ll"));
     let middle = work.join(format!("{name}.bc"));
     let output = work.join(format!("{name}.o"));
-    std::fs::write(&input, text).map_err(|err| format!("couldn't write {}: {err}", input.display()))?;
+    std::fs::write(&input, marked(text).as_bytes())
+        .map_err(|err| format!("couldn't write {}: {err}", input.display()))?;
     let run = |command: &mut Command, what: &str| {
         let done = command.output().map_err(|err| format!("couldn't run {what}: {err}"))?;
         if done.status.success() {
@@ -119,7 +149,11 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, optimize: bool) -> Re
     };
     let compiled_from = if optimize {
         run(
-            Command::new(&tools.opt).arg(format!("-passes={PIPELINE}")).arg(&input).arg("-o").arg(&middle),
+            Command::new(&tools.opt)
+                .arg(format!("-passes={}", pipeline()))
+                .arg(&input)
+                .arg("-o")
+                .arg(&middle),
             "opt",
         )?;
         &middle
@@ -145,7 +179,7 @@ pub fn compile_whole(tools: &Tools, units: &[Unit], entry: &str, work: &Path) ->
     let mut inputs = Vec::with_capacity(units.len() + 1);
     for (at, unit) in units.iter().enumerate() {
         let input = work.join(format!("f{at}.ll"));
-        std::fs::write(&input, &unit.text)
+        std::fs::write(&input, marked(&unit.text).as_bytes())
             .map_err(|err| format!("couldn't write {}: {err}", input.display()))?;
         inputs.push(input);
     }
@@ -168,7 +202,7 @@ pub fn compile_whole(tools: &Tools, units: &[Unit], entry: &str, work: &Path) ->
     run(Command::new(&tools.link).args(&inputs).arg("-o").arg(&whole), "llvm-link")?;
     run(
         Command::new(&tools.opt)
-            .arg(format!("-passes=internalize,{PIPELINE}"))
+            .arg(format!("-passes=internalize,{}", pipeline()))
             .arg("-internalize-public-api-list=main")
             .arg(&whole)
             .arg("-o")
@@ -212,8 +246,9 @@ pub fn compile(
                         at
                     };
                     let Some(unit) = units.get(at) else { return };
-                    let key = fennec_blake3::hash(format!("{version}\n{PIPELINE}\n{}", unit.text).as_bytes())
-                        .to_hex();
+                    let key =
+                        fennec_blake3::hash(format!("{version}\n{}\n{}", pipeline(), unit.text).as_bytes())
+                            .to_hex();
                     let cached = cache.and_then(|cache| cache.read(KIND, &key));
                     let result = match cached {
                         Some(bytes) => Ok((bytes, false)),

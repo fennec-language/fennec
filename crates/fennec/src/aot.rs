@@ -159,6 +159,8 @@ fn link_objects(objects: &[Vec<u8>], output: &Path) -> Result<std::time::Duratio
         .args(&paths)
         .arg(&runtime)
         .args(SYSTEM_LIBRARIES)
+        // `FENNEC_SANITIZE=address` links in AddressSanitizer's runtime.
+        .args(fennec_llvm::sanitizing().then_some("-fsanitize=address"))
         .arg("-o")
         .arg(output)
         .output()

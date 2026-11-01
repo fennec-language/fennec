@@ -81,6 +81,9 @@ struct Writer<'b> {
     made: usize,
     /// Whether what's written may fail while it runs.
     risky: bool,
+    /// Whether a struct or enum is printed through what it gives, as `p.total()` and `area(s)`,
+    /// rather than whole, for an engine that can't print those yet.
+    plainly: bool,
 }
 
 impl Writer<'_> {
@@ -228,6 +231,12 @@ impl Writer<'_> {
                 let value = self.of(kind, 0);
                 let name = self.fresh();
                 let changeable = self.choice(2) == 0;
+                // `mut v2 = v1` would change `v1` through `v2`, so it changes a copy.
+                let value = if changeable && self.names.iter().any(|(held, ..)| *held == value) {
+                    format!("copy({value})")
+                } else {
+                    value
+                };
                 let word = if changeable { "mut " } else { "" };
                 self.line(indent, &format!("{word}{name} = {value}"));
                 self.names.push((name, kind, changeable));
@@ -290,16 +299,30 @@ impl Writer<'_> {
     fn print(&mut self, indent: usize) {
         let kind = self.kind();
         let value = self.of(kind, 0);
+        let value = match kind {
+            Kind::Point if self.plainly => format!("{value}.total()"),
+            Kind::Shape if self.plainly => format!("area({value})"),
+            _ => value,
+        };
         self.line(indent, &format!("stdout.print({value})"));
     }
 }
 
 /// The program these bytes choose.
 pub(crate) fn program(bytes: &[u8]) -> String {
+    written(bytes, false)
+}
+
+/// The program these bytes choose, printing structs and enums through what they give.
+pub(crate) fn printing_plainly(bytes: &[u8]) -> String {
+    written(bytes, true)
+}
+
+fn written(bytes: &[u8], plainly: bool) -> String {
     let risky = bytes.first().is_some_and(|first| first % 8 == 0);
     let bytes = bytes.get(1..).unwrap_or_default();
-    let mut writer =
-        Writer { bytes: bytes.iter(), source: HEADER.to_owned(), names: Vec::new(), made: 0, risky };
+    let source = HEADER.to_owned();
+    let mut writer = Writer { bytes: bytes.iter(), source, names: Vec::new(), made: 0, risky, plainly };
     writer.line(0, "def main(stdout: Stdout):");
     while writer.bytes.len() > 0 && writer.source.len() < 1 << 14 {
         writer.statement(1);
@@ -310,7 +333,7 @@ pub(crate) fn program(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::program;
+    use super::{printing_plainly, program};
 
     #[test]
     fn the_same_bytes_write_the_same_program() {
@@ -327,10 +350,11 @@ mod tests {
     fn what_it_writes_is_a_program_the_checker_accepts() {
         for seed in 0_u8..=255 {
             let bytes: Vec<u8> = (0_u8..64).map(|at| at.wrapping_mul(seed).wrapping_add(seed)).collect();
-            let source = program(&bytes);
-            let module = fennec_syntax::parse(&source).unwrap();
-            let checked = fennec_check::check(&module);
-            assert!(checked.is_ok(), "{source}\n{:?}", checked.err());
+            for source in [program(&bytes), printing_plainly(&bytes)] {
+                let module = fennec_syntax::parse(&source).unwrap();
+                let checked = fennec_check::check(&module);
+                assert!(checked.is_ok(), "{source}\n{:?}", checked.err());
+            }
         }
     }
 }

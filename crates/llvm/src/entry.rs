@@ -32,6 +32,12 @@ impl Image {
             Some((symbol.clone(), i64::try_from(number).ok()?))
         });
         elements.extend(boxed);
+        let str_shape = u64::try_from(layouts.len()).unwrap_or(0);
+        let dicts = shared.dicts.iter().filter_map(|(symbol, (key, value))| {
+            let number = fennec_interp::embed::dicts::shape(str_shape, *key, *value)?;
+            Some((symbol.clone(), i64::try_from(number).ok()?))
+        });
+        elements.extend(dicts);
         let strings =
             shared.strings.iter().map(|(symbol, text)| (symbol.clone(), registry.string(text))).collect();
         Ok(Image {
@@ -68,7 +74,7 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
         return Err("`main` gives back a value, which this backend doesn't take yet".to_owned());
     }
     let mut out = String::from(crate::header()?);
-    out += "@fennec_stack_limit = dso_local global i64 0\n@fennec_failed = dso_local global ptr null\n";
+    out += "@fennec_stack_limit = dso_local global i64 0\n@fennec_failed = dso_local global ptr null\n@fennec_ascii = dso_local global ptr null\n";
     for (symbol, start) in &shared.starts {
         let _ = writeln!(out, "@\"{symbol}\" = dso_local constant i64 {start}");
     }
@@ -82,7 +88,7 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     let shown: Vec<String> = words.iter().map(|word| format!("i64 {word}")).collect();
     let count = words.len();
     let _ = writeln!(out, "@fennec_image = private constant [{count} x i64] [{}]\n", shown.join(", "));
-    out += "declare void @fennec_aot_image(i64)\ndeclare i32 @fennec_aot_run(ptr, i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\n\n";
+    out += "declare void @fennec_aot_image(i64)\ndeclare i32 @fennec_aot_run(ptr, i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\n\n";
     let flagged = crate::analysis::whole(program).can_fail.contains("main");
     let mut args = vec!["ptr null".to_owned(); main.params];
     let mut types = vec!["ptr".to_owned(); main.params];
@@ -91,7 +97,7 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
         types.push("ptr swifterror".to_owned());
     }
     let _ = writeln!(out, "declare swiftcc void @\"f_main\"({})\n", types.join(", "));
-    out += "define void @fennec_entry(i64 %limit) {\n  store i64 %limit, ptr @fennec_stack_limit\n  %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  store ptr %flag_at, ptr @fennec_failed\n";
+    out += "define void @fennec_entry(i64 %limit) {\n  store i64 %limit, ptr @fennec_stack_limit\n  %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  store ptr %flag_at, ptr @fennec_failed\n  %ascii = call i64 @fennec_aot_ascii()\n  %ascii_at = inttoptr i64 %ascii to ptr\n  store ptr %ascii_at, ptr @fennec_ascii\n";
     for (number, symbol) in shared.literals.keys().enumerate() {
         let _ = writeln!(
             out,

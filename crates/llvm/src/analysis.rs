@@ -53,9 +53,11 @@ pub(crate) struct Whole<'p> {
     pub(crate) can_fail: HashSet<&'p str>,
 }
 
+/// What a function calls by name, a constant being a call of a function of no arguments.
 pub(crate) fn callees(function: &Function) -> impl Iterator<Item = &str> {
     function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
         InstKind::Call { function, .. } => Some(function.as_str()),
+        InstKind::Constant { name, .. } => Some(name.as_str()),
         _ => None,
     })
 }
@@ -122,11 +124,12 @@ fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(
             read(rhs);
             write(*dest);
         }
-        InstKind::Make { dest, fields, .. } | InstKind::MakeCase { dest, fields, .. } => {
-            fields.iter().for_each(&mut read);
-            write(*dest);
-        }
-        InstKind::MakeList { dest, items } | InstKind::MakeTuple { dest, items } => {
+        InstKind::Make { dest, fields: items, .. }
+        | InstKind::MakeCase { dest, fields: items, .. }
+        | InstKind::MakeList { dest, items }
+        | InstKind::MakeTuple { dest, items }
+        | InstKind::MakeClosure { dest, captures: items, .. }
+        | InstKind::MakeSet { dest, items } => {
             items.iter().for_each(&mut read);
             write(*dest);
         }
@@ -143,6 +146,21 @@ fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(
             }
             write(*dest);
         }
+        InstKind::MakeDict { dest, pairs } => {
+            for (key, value) in pairs {
+                read(key);
+                read(value);
+            }
+            write(*dest);
+        }
+        InstKind::CallClosure { dest, closure, args } => {
+            read(closure);
+            args.iter().for_each(&mut read);
+            if let Some(dest) = dest {
+                write(*dest);
+            }
+        }
+        InstKind::Constant { dest, .. } => write(*dest),
         InstKind::Builtin { dest, args, .. } | InstKind::Call { dest, args, .. } => {
             args.iter().for_each(&mut read);
             if let Some(dest) = dest {
@@ -671,13 +689,26 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         InstKind::Unary { dest, op: UnaryOp::Neg, value } => {
             function.type_of(value) == Some(Type::Int) && !known.is_safe(*dest)
         }
-        InstKind::Builtin { name, .. } => matches!(name.as_str(), "math.sqrt" | "str.code" | "int.abs"),
+        InstKind::Builtin { name, .. } => {
+            matches!(
+                name.as_str(),
+                "math.sqrt"
+                    | "str.code"
+                    | "int.abs"
+                    | "sum"
+                    | "list.pop"
+                    | "sorted.key"
+                    | "list.remove_where"
+            )
+        }
         InstKind::GetIndex { object: Operand::Local(list), index, .. } => !known.inside(*list, index),
         InstKind::SetIndex { object, path, index, .. } => !path.is_empty() || !known.inside(*object, index),
         InstKind::GetIndex { .. }
         | InstKind::Call { .. }
         | InstKind::Format { .. }
-        | InstKind::Slice { .. } => true,
+        | InstKind::Slice { .. }
+        | InstKind::CallClosure { .. }
+        | InstKind::Constant { .. } => true,
         _ => false,
     };
     function.blocks.iter().any(|block| {
@@ -687,17 +718,13 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
 }
 
 pub(crate) fn whole(program: &Program) -> Whole<'_> {
+    let every = || program.functions.iter().chain(&program.constants);
     let functions: HashMap<&str, &Function> =
-        program.functions.iter().map(|function| (function.name.as_str(), function)).collect();
+        every().map(|function| (function.name.as_str(), function)).collect();
     let changes = |callee: &str| functions.get(callee).map_or_else(Vec::new, |f| f.mut_params.clone());
-    let analyses: HashMap<&str, Analysis> = program
-        .functions
-        .iter()
-        .map(|function| (function.name.as_str(), analyze(function, &changes)))
-        .collect();
-    let can_fail = program
-        .functions
-        .iter()
+    let analyses: HashMap<&str, Analysis> =
+        every().map(|function| (function.name.as_str(), analyze(function, &changes))).collect();
+    let can_fail = every()
         .filter(|function| {
             analyses.get(function.name.as_str()).is_none_or(|known| fails_itself(function, known))
         })

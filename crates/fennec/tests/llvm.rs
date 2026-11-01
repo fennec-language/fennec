@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 11;
+const BUILDING_EXAMPLES: usize = 17;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
@@ -294,6 +294,71 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
     assert!(built >= BUILDING_EXAMPLES, "only {built} examples build");
     Ok(())
+}
+
+#[test]
+fn dicts_sets_closures_and_tuples_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "collections",
+        r#"struct Key:
+    x: int
+    y: int
+
+def twice(n: int, change: (int) -> int) -> int:
+    change(change(n))
+
+def main(stdout: Stdout):
+    mut counts: dict[int, int] = {}
+    for i in range(50):
+        counts[i % 7] = counts.get(i % 7, 0) + i
+    stdout.print(counts[3], counts.len(), 3 in counts, 99 in counts, counts.get(99, -1))
+    shared = counts
+    counts[3] = 0
+    stdout.print(counts[3], shared[3])
+    mut words: dict[str, int] = {"a": 1}
+    for word in ["fox", "fennec", "fox", "a"]:
+        words[word] = words.get(word, 0) + 1
+    for name, count in sorted(words.items()):
+        stdout.print(name, count)
+    mut keys: dict[Key, int] = {}
+    keys[Key(x=1, y=2)] = 5
+    keys[Key(x=1, y=2)] = 6
+    keys[Key(x=2, y=2)] = 7
+    stdout.print(keys[Key(x=1, y=2)], keys.len(), Key(x=9, y=9) in keys)
+    mut seen = {1, 2}
+    seen.add(2)
+    seen.add(3)
+    stdout.print(seen.len(), 3 in seen, 4 in seen)
+    offset = 3
+    stdout.print(twice(1, (n) => n * 2 + offset))
+    pairs = [(1, "one"), (2, "two")]
+    for number, name in pairs:
+        stdout.print(number, name)
+    for at, value in enumerate([5.5, 6.5]):
+        stdout.print(at, value)
+    for a, b in zip([1, 2, 3], ["x", "y"]):
+        stdout.print(a, b)
+    stdout.print(sum([1, 2, 3]), sum([0.5, 1.5]), all([True, False]), any([False, True]))
+    mut stack = [1, 2, 3]
+    stdout.print(stack.pop(), stack.len())
+    stdout.print(sorted([3, 1, 2])[0], sorted(["b", "a"], key=(s) => s)[0])
+    mut text = "abc"
+    text += "def"
+    stdout.print(text, text.len(), text[1:3], "bc" in text, text < "b")
+    maybe: int? = None
+    other: int? = 5
+    stdout.print(maybe is None, other is None)
+    if other is not None:
+        stdout.print(other + 1)
+"#,
+    )?;
+    same_message_as_the_jit(
+        "missing",
+        "def main(stdout: Stdout):\n    d = {1: 2}\n    stdout.print(d[1])\n    stdout.print(d[3])\n",
+    )
 }
 
 #[test]

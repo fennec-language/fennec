@@ -5,7 +5,7 @@ This project uses Fennec. It reads like Python, but it's statically typed, and e
 
 ### Commands
 
-- `fennec run`: run the kit's `main`, or `fennec run file.fen` for one file.
+- `fennec run`: run the tests a change affects, then the kit's `main`, or `fennec run file.fen` for one file. A failing test stops it, and `--no-test` skips them.
 - `fennec test`: run the tests a change affects. It prints only failures and one line of totals, and `--verbose` lists the rest.
 - `fennec fmt`: format the code. There's one style, so don't format by hand.
 - `fennec fix`: make the fixes the type checker suggests. Every error says what to do, so read it first.

@@ -13,11 +13,18 @@ pub(crate) enum Engine {
     Native,
     /// Native code, saying when the interpreter stands in. The benchmarks ask for this.
     NativeNoted,
+    /// Native code, without running the tests first.
+    Untested,
     Interpreter,
 }
 
 /// Runs the program at `path`, handing `main` the `arguments` and this process's input.
 pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode {
+    if engine == Engine::Native
+        && let Some(failed) = crate::test::before_a_run(path)
+    {
+        return failed;
+    }
     let prepared = if engine == Engine::Interpreter { whole(path) } else { reached(path) };
     let (program, signatures) = match prepared {
         Ok(prepared) => prepared,
@@ -88,7 +95,7 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures)
     let Some(cache) = cache() else { return whole(path) };
     let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
     let name = passed_name(path);
-    let text = fingerprint(&program.sources);
+    let text = fingerprint(program.sources.files());
     if cache.read("checked", &name).is_none_or(|passed| passed != text.as_bytes()) {
         if let Err(diagnostics) = fennec_check::check_to_run(&mut program.module.clone()) {
             return Err(reject(&program, &diagnostics));
@@ -123,10 +130,10 @@ pub(crate) fn absolute(path: &str) -> String {
 
 /// A hash of every file of a program, by name and text, and of which build of Fennec read
 /// them, since another build's checker may find what this one doesn't.
-fn fingerprint(sources: &fennec_syntax::Sources) -> fennec_blake3::Hash {
+pub(crate) fn fingerprint<'t>(files: impl Iterator<Item = (&'t str, &'t str)>) -> fennec_blake3::Hash {
     let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec build cache 2026-10-31 passed check");
     hasher.update(env!("FENNEC_BUILD").as_bytes());
-    for (path, text) in sources.files() {
+    for (path, text) in files {
         for part in [path, text] {
             hasher.update(&part.len().to_le_bytes());
             hasher.update(part.as_bytes());

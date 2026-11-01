@@ -18,11 +18,11 @@ test "only entries at the log's level or above are written"(stdout: Stdout):
 
 test "the level starts at info"(stdout: Stdout):
     log = Log(out=stdout)
-    save(log, name="a.txt", size=12)
+    save(log, "a.txt", 12)
     assert stdout.captured() == "INFO saved file=a.txt size=12\n"
 
 test "debug shows when asked for"(stdout: Stdout):
-    save(Log(out=stdout, level=.Debug), name="a", size=1)
+    save(Log(out=stdout, level=.Debug), "a", 1)
     assert stdout.captured() == "DEBUG about to save\nINFO saved file=a size=1\n"
 
 test "a log says whether an entry would be written"(stdout: Stdout):
@@ -83,6 +83,6 @@ test "entries can be JSON, one object a line"(stdout: Stdout, clock: Clock):
 
 def main(stdout: Stdout):
     log = Log(out=stdout, level=.Debug).with_fields({"kit": "demo"})
-    save(log, name="scores.txt", size=120)
+    save(log, "scores.txt", 120)
     log.warn("disk is nearly full", fields={"free": "3 MB"})
     Log(out=stdout, format=.Json).error("no space", fields={"free": "0 B"})

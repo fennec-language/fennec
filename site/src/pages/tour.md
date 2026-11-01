@@ -80,7 +80,7 @@ def main(stdout: Stdout):
 
 A literal default gives the parameter its type: an `int`, `float`, `str` or `bool`, or an enum case like `mode=Mode.fast`. Writing `limit: int = 8` is an error whose fix drops the `: int`. The type is written when the default is `None`, an empty `[]` or `{}`, or isn't the literal's own type.
 
-**Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, three or more positional arguments, and neighboring parameters of the same type. The first argument and `self` are exempt.
+**Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, neighboring parameters of the same type, and three or more positional arguments unless no two neighbors could be swapped and still compile. The first argument and `self` are exempt.
 
 ## Built-in types
 

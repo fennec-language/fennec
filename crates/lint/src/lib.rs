@@ -3,6 +3,7 @@
 //! matches an exact form.
 
 mod calls;
+mod copies;
 mod costs;
 mod dead;
 mod flow;
@@ -60,6 +61,14 @@ pub fn lint(module: &Module, sources: &Sources) -> Vec<Lint> {
     found.extend(names::of(module, sources));
     found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
     found
+}
+
+/// Every explicit `copy` that changes nothing, in a module that checks. Finding them checks the
+/// whole program again for each `copy`, so they're asked for where the whole program is checked
+/// anyway, apart from `lint`.
+#[must_use]
+pub fn needless_copies(module: &Module, sources: &Sources) -> Vec<Lint> {
+    copies::of(module, sources)
 }
 
 /// A hint for each place a lowered program may copy, and each it may allocate in code that runs

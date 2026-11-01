@@ -35,6 +35,7 @@ mod dicts;
 mod emit;
 mod entry;
 mod generators;
+mod idmaps;
 mod kinds;
 mod lists;
 mod regex;

@@ -25,7 +25,8 @@ pub(super) fn abi(ty: Ty) -> Option<types::Type> {
         | Ty::Str
         | Ty::Dict(..)
         | Ty::List(_)
-        | Ty::Maybe(_) => Some(types::I64),
+        | Ty::Maybe(_)
+        | Ty::Block(_) => Some(types::I64),
         Ty::Float => Some(types::F64),
         Ty::Bool => Some(types::I8),
         Ty::Unit | Ty::Cap(_) | Ty::Known(_) => None,

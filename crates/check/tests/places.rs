@@ -114,9 +114,9 @@ fn an_index_has_to_be_plain() {
 }
 
 #[test]
-fn a_name_for_a_name_keeps_the_place_locked() {
+fn editing_a_name_for_a_name_edits_the_first_name() {
     let text = in_main(
         "mut part = unit\nmut stats = part.stats\nstats.hp = 1\nstdout.print(unit.stats.mp)\nstats.mp = 2",
     );
-    assert_eq!(problems(&text), ["`unit` can't be used here, while `part` names part of it @ unit.stats.mp"]);
+    assert_eq!(problems(&text), ["`unit` is read after `part` changes it @ unit.stats.mp"]);
 }

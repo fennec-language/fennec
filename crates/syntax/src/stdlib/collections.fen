@@ -220,6 +220,69 @@ struct Counter[T: Hashable]:
     def iter(self) -> list[T]:
         self.counts.keys()
 
+## Many small lists stored as one: every item in a single list, and a table of where each
+## inner list starts. However many lists it holds, that's two blocks of memory, where a
+## `list[list[T]]` needs one for each inner list. For graphs, mesh faces and grouped data,
+## the layout written by hand as compressed sparse rows. Lists are added whole at the end
+## and read back by position. They can't grow in the middle, which is the price of being
+## dense.
+struct Packed[T]:
+    _items: list[T] = []
+    ## Where each list starts in `_items`, and one more for where the last one ends.
+    _starts: list[int] = [0]
+
+    ## A packed copy of `lists`.
+    def of(lists: list[list[T]]) -> Packed[T]:
+        mut packed = Packed()
+        for items in lists:
+            packed.append(items)
+        packed
+
+    ## How many lists it holds.
+    def len(self) -> int:
+        self._starts.len() - 1
+
+    ## The list at `at`. One past the end stops the program, like a list.
+    def [](self, at: int) -> list[T]:
+        assert 0 <= at and at < self.len()
+        self._items[self._starts[at]:self._starts[at + 1]]
+
+    ## How many items the list at `at` holds, without reading them.
+    def len_of(self, at: int) -> int:
+        assert 0 <= at and at < self.len()
+        self._starts[at + 1] - self._starts[at]
+
+    ## How many items all the lists hold together.
+    def item_count(self) -> int:
+        self._items.len()
+
+    ## Adds `items` as a new list at the end.
+    def append(mut self, items: list[T]):
+        self._items.extend(items)
+        self._starts.append(self._items.len())
+
+    ## Starts a new, empty list at the end, for `push` to add to.
+    def start_list(mut self):
+        self._starts.append(self._items.len())
+
+    ## Adds `item` to the end of the last list. With no list yet, it starts one.
+    def push(mut self, item: T):
+        if self.len() == 0:
+            self.start_list()
+        self._items.append(item)
+        self._starts[-1] = self._items.len()
+
+    ## Every item of every list, in order, as one list.
+    def items(self) -> list[T]:
+        self._items
+
+    ## The lists, as a `list[list[T]]`.
+    def lists(self) -> list[list[T]]:
+        [self[at] for at in range(self.len())]
+
+    def iter(self) -> list[list[T]]:
+        self.lists()
+
 ## Moving a node under itself or one of its descendants.
 error TreeCycle:
     message: str

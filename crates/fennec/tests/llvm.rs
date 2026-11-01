@@ -4,6 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use crate::executables::runtime_built;
+
 /// How many examples this backend takes, at least.
 const BUILDING_EXAMPLES: usize = 21;
 
@@ -42,11 +44,19 @@ fn same_message_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
 
 /// What the program printed, its errors and its exit code, built with LLVM and run by the JIT.
 fn both(name: &str, source: &str) -> std::io::Result<(Outcome, Outcome)> {
+    both_built(name, source, &["--llvm"])
+}
+
+/// The same, built with these options.
+fn both_built(name: &str, source: &str, how: &[&str]) -> std::io::Result<(Outcome, Outcome)> {
     let dir = folder(name)?;
     let program = dir.join(format!("{name}.fen"));
     std::fs::write(&program, source)?;
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
-    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    let output = executable.to_string_lossy().into_owned();
+    let args: Vec<&str> =
+        ["build"].into_iter().chain(how.iter().copied()).chain([program.as_str(), "-o", &output]).collect();
+    let built = fennec(&args, &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = outcome(&Command::new(&executable).output()?);
     let jit = outcome(&fennec(&["run", &program], &dir)?);
@@ -62,16 +72,6 @@ fn outcome(output: &Output) -> Outcome {
         String::from_utf8_lossy(&output.stderr).into_owned(),
         output.status.code(),
     )
-}
-
-/// The runtime library, built as `executables.rs` builds it, every time.
-fn runtime_built() -> bool {
-    let profile = if cfg!(debug_assertions) { None } else { Some("--release") };
-    Command::new(env!("CARGO"))
-        .args(["build", "--quiet", "-p", "fennec-runtime"])
-        .args(profile)
-        .status()
-        .is_ok_and(|status| status.success())
 }
 
 #[test]
@@ -513,6 +513,18 @@ fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
         .nth(1)
         .and_then(|number| number.parse::<u64>().ok());
     assert!(allocations.is_some_and(|count| count < 100), "{counts}");
+    Ok(())
+}
+
+#[test]
+fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = "struct Point:\n    x: int\n    y: int\n\n    def moved(self, by: int) -> Point:\n        Point(x=self.x + by, y=self.y - by)\n\ndef count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef main(stdout: Stdout):\n    mut points = [Point(x=i, y=i * 2) for i in range(5)]\n    mut seen: dict[str, int] = {}\n    for point in points:\n        moved = point.moved(3)\n        seen[f\"{moved.x}\"] = moved.y\n    stdout.print(seen.len(), sum(n for n in count_up(10)), points[4].moved(1).y)\n    stdout.print([1, 2][5])\n";
+    let (ours, jit) = both_built("release", source, &["--llvm", "--release"])?;
+    assert_eq!((ours.0, ours.2), (jit.0, jit.2));
+    assert_eq!(ours.1.lines().next(), jit.1.lines().next());
     Ok(())
 }
 

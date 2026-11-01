@@ -15,6 +15,7 @@ name = "fennec"
 path = "tests/main.rs"
 
 [dependencies]
+mimalloc.workspace = true
 fennec-blake3.workspace = true
 fennec-build.workspace = true
 fennec-check.workspace = true

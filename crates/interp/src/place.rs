@@ -146,13 +146,9 @@ impl Interp<'_> {
         found
     }
 
-    /// The `where` rule of a field of a value, if it has one.
+    /// The `where` rule of a field of a struct, if it has one. Enum cases' fields can't have them.
     pub(crate) fn rule_of_field(&self, instance: &crate::value::Instance, field: &str) -> Option<Expr> {
-        let def = &self.type_info(&instance.type_name)?.def;
-        let fields = match &instance.case {
-            Some(case) => &def.cases.iter().find(|written| written.name == **case)?.fields,
-            None => &def.fields,
-        };
+        let fields = &self.type_info(&instance.type_name)?.def.fields;
         fields.iter().find(|written| written.name == field)?.rule.clone()
     }
 

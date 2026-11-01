@@ -246,4 +246,19 @@ mod tests {
         assert_eq!(failure.message, "assertion failed");
         assert_eq!((failure.span.start, failure.span.end), (3, 7));
     }
+
+    #[test]
+    fn the_counts_line_says_what_was_copied() {
+        let counts = heap::Counts {
+            copies: 2,
+            copied_bytes: 48,
+            largest_copy: 32,
+            allocations: 5,
+            allocated_bytes: 640,
+        };
+        assert_eq!(
+            super::super::aot::counts_line(&counts),
+            "copies 2 copied_bytes 48 largest_copy 32 allocations 5 allocated_bytes 640"
+        );
+    }
 }

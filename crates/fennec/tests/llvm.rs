@@ -348,6 +348,14 @@ def main(stdout: Stdout):
     mut text = "abc"
     text += "def"
     stdout.print(text, text.len(), text[1:3], "bc" in text, text < "b")
+    zeros = [0 for _ in range(5)]
+    mut flags = [False for _ in range(3)]
+    flags[1] = True
+    mut none = [0 for _ in range(0 - 2)]
+    none.append(7)
+    stdout.print(zeros.len(), zeros[4], flags, none)
+    first = "abc"
+    stdout.print("a" < "b", "ab" < "a", "" < "a", first <= "abc", "é" > "z", "abcdefghij" < "abcdefghik", "b" >= "abc")
     maybe: int? = None
     other: int? = 5
     stdout.print(maybe is None, other is None)
@@ -474,13 +482,18 @@ fn counts_of(name: &str, source: &str) -> std::io::Result<String> {
 }
 
 #[test]
-fn a_dict_in_a_field_changes_without_being_copied() -> std::io::Result<()> {
+fn what_a_field_or_an_items_field_holds_changes_without_being_copied() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
         return Ok(());
     }
     let counts = counts_of(
         "field",
         "struct Counter:\n    counts: dict[int, int]\n\n    def bump(mut self, key: int):\n        self.counts[key] = (self.counts.get(key) else 0) + 1\n\ndef main(stdout: Stdout):\n    mut counter = Counter(counts={})\n    for i in range(1000):\n        counter.bump(i % 64)\n    stdout.print(counter.counts[0])\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    let counts = counts_of(
+        "items",
+        "struct Var:\n    value: int\n    links: list[int]\n\nstruct Holder:\n    vars: list[Var]\n\n    def add(mut self, value: int):\n        self.vars.append(Var(value=value, links=[]))\n\n    def link(mut self, at: int, other: int):\n        self.vars[at].links.append(other)\n\ndef main(stdout: Stdout):\n    mut holder = Holder(vars=[])\n    for i in range(100):\n        holder.add(i)\n    for i in range(1000):\n        holder.link(i % 100, i)\n    stdout.print(holder.vars[5].links.len())\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     Ok(())

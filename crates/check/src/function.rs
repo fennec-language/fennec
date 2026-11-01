@@ -87,6 +87,9 @@ pub(crate) struct FnCx<'c> {
     /// The type expected of the value of the block being checked: the return type for a
     /// function's body, or what's expected of a `match` for its cases.
     pub(crate) tail: Option<Type>,
+    /// The fields and method calls in the chain before an `else`, which may be on a value
+    /// that might be missing.
+    pub(crate) else_chain: std::collections::HashSet<(u32, u32)>,
 }
 
 impl<'c> FnCx<'c> {
@@ -113,6 +116,7 @@ impl<'c> FnCx<'c> {
             first_var,
             expecting: None,
             tail: None,
+            else_chain: std::collections::HashSet::new(),
         }
     }
 

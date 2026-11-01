@@ -4,4 +4,4 @@ error: this might be None
 7 |     stdout.print(find([[1], [2, 3]], 3)[0])
   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = help: check with `if x is None:` first, use `?.`, or give a default with `else`
+  = help: check with `if x is None:` first, or give a default with `else`

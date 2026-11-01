@@ -105,7 +105,7 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 **Recursive types need no annotation.** For `next: Node?`, the compiler adds the indirection itself.
 
-**The compiler chooses the layout.** It can reorder fields, pack enums, and in a hot loop store a list of structs as one array per field. None of this can change what a program does, because nothing can observe where a value sits in memory. The debugger and `{x=}` always show the struct as written.
+**The compiler chooses the layout.** It can reorder fields, pack enums, and in a hot loop store a list of structs as one array per field. None of this can change what a program does, because nothing can observe where a value sits in memory. Printing and `{x=}` always show the struct as written.
 
 **Structs in `extern` modules use C's layout exactly.**
 *Why:* C interop must be predictable.
@@ -122,7 +122,7 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 **`@arena` is cut for now,** along with `with arena():`. It's expected back at function level for tree-heavy allocation, after measurement. There are no allocator parameters, now or then.
 *Why:* The compiler handles much of it, and web servers get it per request, so it hasn't earned its place yet. Passing allocators to every function, as Zig does, is a lot of AI pain for little gain.
 
-**Debug builds report allocation.** They show allocations and bytes per frame, find leaks, and can enforce a budget ("this frame allocates under 1 MB").
+**Development builds report allocation.** They show allocations and bytes per frame, find leaks, and can enforce a budget ("this frame allocates under 1 MB").
 
 ## Determinism
 
@@ -154,8 +154,8 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 **`Random` is a seeded value.** `Random(seed=42)` draws the same numbers in the same order on every machine. It's SplitMix64, done in integer math, and `random_int(seed, n, low, high)`, imported from `std.random`, gives the `n`th number of a seed's sequence without keeping a generator. Seeding from the OS will be a capability `main` receives; it isn't built yet.
 *Why:* A seed is all a replay or a lockstep peer needs to see the same numbers. Drawing by position also suits procedural generation, where each chunk of a world takes numbers from its own index.
 
-**Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit, in the debugger, with `fennec replay`. The order tasks reach a `shared` value or a channel is the one source outside this, and how replay records it is still open.
-*Why:* A player's crash report becomes a replay file you can step through. The determinism rules above make it almost free.
+**Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit with `fennec replay`. The order tasks reach a `shared` value or a channel is the one source outside this, and how replay records it is still open.
+*Why:* A player's crash report becomes a replay file that runs again exactly. The determinism rules above make it almost free.
 
 ## Speed
 
@@ -978,6 +978,9 @@ Every build and the language server share one build engine and store, described 
 
 ## Builds
 
+**Builds carry no debug info.** There's one kind of development build, optimized and cached, and no separate debug build. No DWARF or stepping information is written, in development or release. A failure still says what went wrong and where: the function, file and line, and the calls that led there, from Fennec's own source positions, which the runtime gets with each failure.
+*Why:* Nobody, human or AI, steps through Fennec code in a debugger. Tests, failure messages and deterministic replay do that job. Debug info is the bulk of build output and link time.
+
 **The unit of work is the function, keyed by its content.** A function's key covers its typed IR, the signatures of what it calls, the bodies of anything inlined into it, and the compiler version, target and flags. A caller depends on a callee's body only if it inlined that callee. Summaries let a change that leaves a signature alone skip the callers.
 
 **Results are pure.** Cache keys never include paths, timestamps or environment variables, and every key includes the compiler version. Builds are deterministic, so each function of a kit compiles once per machine, ever.
@@ -1111,7 +1114,7 @@ pub struct Database:
 **Declarations are checked against the real headers.** When building, every `extern` struct's size and field offsets, and every function's signature, are compared with the C headers, and a mismatch fails the build. `fennec bindgen header.h` writes the `extern` block from the headers in the first place, and the generated file is checked in.
 *Why:* A wrong signature corrupts memory silently, and it's the mistake AI-written bindings make most.
 
-**Native code is caught misbehaving early.** Debug builds track every owned pointer and stop on a double free or a use after free. Native kits run their tests under AddressSanitizer, UndefinedBehaviorSanitizer and LeakSanitizer, and the Den fuzzes every `extern` wrapper.
+**Native code is caught misbehaving early.** Development builds track every owned pointer and stop on a double free or a use after free. Native kits run their tests under AddressSanitizer, UndefinedBehaviorSanitizer and LeakSanitizer, and the Den fuzzes every `extern` wrapper.
 
 **When the program stops itself,** as on overflow, `def del` still runs for every value holding an `owned ptr`, so C resources are closed. Only a crash inside C skips it.
 

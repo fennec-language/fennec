@@ -78,7 +78,13 @@ impl FnCx<'_> {
                 self.join_or_report(&[then, otherwise], span, "the two sides of this `if` give")
             }
             ExprKind::Else { value, default } => {
+                let mut steps = Vec::new();
+                else_steps(value, &mut steps);
+                self.else_chain.extend(steps.iter().copied());
                 let value = self.expr(value);
+                for step in &steps {
+                    self.else_chain.remove(step);
+                }
                 let default = self.expr(default);
                 match value {
                     Type::Optional(inner) | Type::Result(inner, _) => {
@@ -540,7 +546,19 @@ impl FnCx<'_> {
             return ty;
         }
         let ty = self.expr(object);
+        let optional = optional || self.chained_step(&ty, span);
         self.field_of(&ty, name, optional, span)
+    }
+
+    /// Whether a field or method of a value that might be missing is read in the chain before
+    /// an `else`, which stops at the first missing step. Those are written in as optional.
+    pub(crate) fn chained_step(&mut self, ty: &Type, step: Span) -> bool {
+        let chained =
+            matches!(ty, Type::Optional(_) | Type::None) && self.else_chain.contains(&(step.start, step.end));
+        if chained {
+            self.checker.optional_steps.insert((step.start, step.end));
+        }
+        chained
     }
 
     pub(crate) fn field_of(&mut self, ty: &Type, name: &str, optional: bool, span: Span) -> Type {
@@ -549,7 +567,7 @@ impl FnCx<'_> {
             Type::None if optional => Type::None,
             Type::Optional(inner) if optional => Type::optional(self.field_of(inner, name, false, span)),
             ty if ty.maybe_none() => {
-                self.error(might_be_none(span));
+                self.error(crate::messages::missing_step(span));
                 Type::Unknown
             }
             Type::Result(..) => {
@@ -751,7 +769,7 @@ impl FnCx<'_> {
             Type::Unknown => Type::Unknown,
             other => {
                 let help = if other.maybe_none() {
-                    "`?` passes errors up, not None: give a default with `else`, or check with `if x is None:`"
+                    "`?` passes failures up, not None: end the chain with `else` and a default, or check with `if x is None:`"
                 } else {
                     "only something that can fail gives a result to pass up"
                 };
@@ -785,5 +803,19 @@ fn not_bits(op: BinOp, symbol: &str, ty: &Type, span: Span) -> Diagnostic {
             diagnostic.with_help("sets don't have bit operators: use a loop or a comprehension")
         }
         _ => diagnostic,
+    }
+}
+
+/// The fields and method calls along the chain before an `else`: `a.b().c else d` has `a.b`
+/// and `a.b().c`, but nothing inside the arguments.
+fn else_steps(expr: &Expr, steps: &mut Vec<(u32, u32)>) {
+    match &expr.kind {
+        ExprKind::Attr { object, .. } => {
+            steps.push((expr.span.start, expr.span.end));
+            else_steps(object, steps);
+        }
+        ExprKind::Call { callee, .. } => else_steps(callee, steps),
+        ExprKind::Index { object, .. } => else_steps(object, steps),
+        _ => {}
     }
 }

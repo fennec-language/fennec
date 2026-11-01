@@ -30,9 +30,11 @@ pub(super) struct Table {
     len: usize,
 }
 
-/// An address's region, page in it, and place in the page.
+/// An address's region, page in it, and place in the page. A 32-bit address space is one
+/// region.
 fn split(address: usize) -> (usize, usize, usize) {
-    (address >> REGION_BITS, (address >> PAGE_BITS) % PAGES, (address >> PLACE_BITS) % PLACES)
+    let region = address.checked_shr(REGION_BITS).unwrap_or(0);
+    (region, (address >> PAGE_BITS) % PAGES, (address >> PLACE_BITS) % PLACES)
 }
 
 fn at(block: &[u64]) -> usize {

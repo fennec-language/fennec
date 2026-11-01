@@ -12,7 +12,7 @@ use std::path::Path;
 use fennec_build::{Cache, KitFile, KitState, Row, TestRecord};
 use fennec_check::Signatures;
 use fennec_kit::Program;
-use fennec_syntax::{Item, Span};
+use fennec_syntax::Item;
 
 const BUILD: &str = env!("FENNEC_BUILD");
 
@@ -79,26 +79,12 @@ impl<'f> Modules<'f> {
     }
 }
 
-/// Where an item is written.
-fn span_of(item: &Item) -> Span {
-    match item {
-        Item::Function(def) => def.span,
-        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.span,
-        Item::Interface(interface) => interface.span,
-        Item::Extend(extension) => extension.span,
-        Item::TypeAlias { span, .. } | Item::Const { span, .. } => *span,
-        Item::Import(import) => import.span,
-        Item::Test(test) => test.span,
-        Item::Stmt(stmt) => stmt.span,
-    }
-}
-
 /// The definitions of each module a loaded program has.
 fn rows_by_module(program: &Program, files: &[KitFile]) -> HashMap<String, Vec<Row>> {
     let modules = Modules::of(files);
     let mut items: HashMap<&str, (Option<&str>, Vec<&Item>)> = HashMap::new();
     for item in &program.module.items {
-        let Some((shown, ..)) = program.sources.file_at(span_of(item)) else { continue };
+        let Some((shown, ..)) = program.sources.file_at(fennec_build::item_span(item)) else { continue };
         items.entry(shown).or_insert_with(|| (modules.of_file(shown), Vec::new())).1.push(item);
     }
     let mut found: HashMap<String, Vec<Row>> = HashMap::new();

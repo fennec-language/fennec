@@ -32,20 +32,25 @@ struct Budget {
 }
 
 const FORMAT: Budget = Budget { name: "format one file", limit: Duration::from_millis(50), enforced: true };
-const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: false };
+const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: true };
 const VERDICT: Budget =
     Budget { name: "edit to verdict, one function", limit: Duration::from_secs(1), enforced: true };
-/// What an edit's verdict may run: about what a second is on CI's machines. It ran 6.66 billion
-/// when this was written, counted by Valgrind, which took between 650 and 1170 ms depending on the
-/// machine, about 7.4 billion a second in the middle.
-const MOST_VERDICT_INSTRUCTIONS: u64 = 7_500_000_000;
+/// How many instructions CI's slower machines run in a second. An old verdict ran 6,658 million of
+/// them in between 792 and 988 ms, depending on the machine, so 6.7 billion a second on the slow
+/// end. Limits use that, so they mean what they say even on a slow machine.
+const INSTRUCTIONS_A_SECOND: u64 = 6_700_000_000;
+
+/// What an edit's verdict may run: a second.
+const MOST_VERDICT_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND;
 
 const RUN: Budget =
     Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: true };
 
-/// What starting an unchanged program may run: 100 ms, at the same 7.4 billion a second as a
-/// verdict.
-const MOST_RUN_INSTRUCTIONS: u64 = 740_000_000;
+/// What starting an unchanged program may run: 100 ms.
+const MOST_RUN_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 10;
+
+/// What an edit may cost the language server: 100 ms.
+const MOST_CHECK_INSTRUCTIONS: u64 = INSTRUCTIONS_A_SECOND / 10;
 
 /// How many times the work an edit's verdict may be on the big kit, against one a tenth its size.
 /// It shouldn't depend on the size of a project at all. Reading and hashing every file does, by
@@ -190,10 +195,9 @@ fn table(measured: &[Measured], size: &str) -> String {
 fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     kit.timed(&["fmt"])?;
     let (check_warm, check_cold) = edit_to_checked(kit, runs)?;
-    let mut measured = vec![
-        Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold), counted: None },
-        kit.format(runs)?,
-    ];
+    let counted = kit.counted_edit();
+    let check = Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold), counted };
+    let mut measured = vec![check, kit.format(runs)?];
     measured.push(kit.verdict(runs)?);
     let mut run = kit.repeated(RUN, &["run"], runs)?;
     run.counted = kit.counted(&["run"], MOST_RUN_INSTRUCTIONS);
@@ -343,6 +347,58 @@ impl Kit {
     }
 }
 
+impl Kit {
+    /// How many instructions one edit costs a language server of its own, where they can be
+    /// counted: a session with an edit, less the same session without it.
+    fn counted_edit(&self) -> Option<Counted> {
+        let path = std::fs::canonicalize(self.dir.join(EDITED)).ok()?;
+        let uri = fennec_lsp::uri_of(&path);
+        let text = std::fs::read_to_string(&path).ok()?;
+        let folder = self.dir.join("counting");
+        std::fs::create_dir_all(&folder).ok()?;
+        let counter = Counter::find(&folder)?;
+        let count = |name: &str, edits: usize| -> Option<u64> {
+            let script = folder.join(name);
+            std::fs::write(&script, session_script(&uri, &text, edits).ok()?).ok()?;
+            let program =
+                Program { command: self.fennec.clone(), args: vec!["lsp".to_owned()], stdin: Some(script) };
+            counter.count_set_up(&program, |command| {
+                self.set_up(command);
+                command.env("FENNEC_NO_DAEMON", "1");
+            })
+        };
+        let without = count("without", 1)?;
+        let with = count("with", 2)?;
+        Some(Counted { instructions: with.saturating_sub(without), most: MOST_CHECK_INSTRUCTIONS })
+    }
+}
+
+/// What an editor sends a language server: opening a document, then `edits` edits to it.
+fn session_script(uri: &str, text: &str, edits: usize) -> std::io::Result<Vec<u8>> {
+    let mut script = Vec::new();
+    let document = Json::object([
+        ("uri", Json::string(uri)),
+        ("languageId", Json::string("fennec")),
+        ("version", Json::number(1)),
+        ("text", Json::string(text)),
+    ]);
+    let open = Json::object([("textDocument", document)]);
+    let message =
+        |method: &str, params: Json| Json::object([("method", Json::string(method)), ("params", params)]);
+    fennec_lsp::write(&mut script, &message("textDocument/didOpen", open))?;
+    for edit in 1..=edits {
+        let edited = text.replace(EDITED_LINE, &format!("    y = x + 300 + {edit}\n"));
+        let document = Json::object([("uri", Json::string(uri)), ("version", Json::number(edit + 1))]);
+        let changes = Json::Array(vec![Json::object([("text", Json::string(edited))])]);
+        let params = Json::object([("textDocument", document), ("contentChanges", changes)]);
+        fennec_lsp::write(&mut script, &message("textDocument/didChange", params))?;
+    }
+    let shutdown = Json::object([("id", Json::number(1)), ("method", Json::string("shutdown"))]);
+    fennec_lsp::write(&mut script, &shutdown)?;
+    fennec_lsp::write(&mut script, &Json::object([("method", Json::string("exit"))]))?;
+    Ok(script)
+}
+
 /// A language server session, which is how an edit gets checked.
 struct Editor {
     child: Child,
@@ -467,6 +523,17 @@ mod tests {
         let table = table(&[counted(900, 100), counted(1, 101)], "a size");
         assert!(table.contains("met by its count, over by the clock"), "{table}");
         assert!(table.contains("**over**"), "{table}");
+    }
+
+    #[test]
+    fn a_session_script_is_framed_messages_ending_in_exit() {
+        let script = super::session_script("file:///a.fen", "    y = x + 300\n", 2).unwrap();
+        let text = String::from_utf8_lossy(&script);
+        assert_eq!(text.matches("Content-Length").count(), 5, "{text}");
+        assert!(
+            text.contains("didOpen") && text.contains("300 + 2") && text.ends_with("{\"method\":\"exit\"}"),
+            "{text}"
+        );
     }
 
     #[test]

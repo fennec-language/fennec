@@ -368,7 +368,19 @@ def main(stdout: Stdout):
     stdout.print(seen.get(Tile(x=1, y=2)) else 0, seen.get(Tile(x=0, y=0)) else 0)
 ```
 
-**Planned:** a compile error for a key struct with its own `def ==`, suggesting you key by a field instead; `SortedMap` and `SortedSet` on B-trees; `Grid` and `Packed`; and `sum(wallet, start=Money(cents=0))`, which replaces today's positional start.
+`SortedMap`, in `std.collections`, keeps its keys in order on a B-tree:
+
+```fennec
+from std.collections import SortedMap
+
+def main(stdout: Stdout):
+    mut scores = SortedMap[str, int]()
+    scores["vex"] = 7
+    scores["ash"] = 12
+    stdout.print(scores.keys(), scores["ash"])
+```
+
+**Planned:** a compile error for a key struct with its own `def ==`, suggesting you key by a field instead; `SortedSet`, `Grid` and `Packed`; and `sum(wallet, start=Money(cents=0))`, which replaces today's positional start.
 
 ## Strings
 

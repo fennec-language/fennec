@@ -52,41 +52,70 @@ impl Emit<'_, '_, '_> {
             }
             match kind {
                 None => self.print_text(value),
-                Some(Kind::Int) => {
-                    self.declare("declare void @fennec_print_int(i64) nounwind");
-                    self.line(&format!("call void @fennec_print_int(i64 {value})"));
-                }
-                Some(Kind::Float) => {
-                    self.declare("declare void @fennec_print_float(double) nounwind");
-                    self.line(&format!("call void @fennec_print_float(double {value})"));
-                }
-                Some(Kind::Bool) => {
-                    self.declare("declare void @fennec_print_bool(i8) nounwind");
-                    let wide = self.temp();
-                    self.line(&format!("{wide} = zext i1 {value} to i8"));
-                    self.line(&format!("call void @fennec_print_bool(i8 {wide})"));
-                }
-                Some(Kind::Str) => {
-                    self.declare("declare void @fennec_str_print(ptr) nounwind");
-                    self.line(&format!("call void @fennec_str_print(ptr {value})"));
-                }
-                Some(Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..)) => {
-                    self.declare("declare i64 @fennec_mark() nounwind");
-                    self.declare("declare void @fennec_truncate(i64) nounwind");
-                    self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
-                    self.declare("declare void @fennec_print_value(i64) nounwind");
-                    let (mark, handle) = (self.temp(), self.temp());
-                    self.line(&format!("{mark} = call i64 @fennec_mark()"));
-                    self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
-                    self.line(&format!("call void @fennec_print_value(i64 {handle})"));
-                    self.line(&format!("call void @fennec_truncate(i64 {mark})"));
-                }
-                Some(other) => {
-                    return Err(format!("it prints a {other:?}, which this backend doesn't take yet"));
-                }
+                Some(kind) => self.print_one(value, kind)?,
             }
         }
         self.print_text("\n");
+        Ok(())
+    }
+
+    /// Prints one value: an optional as what it holds, or `None`.
+    fn print_one(&mut self, value: &str, kind: &Kind) -> Result<(), String> {
+        if self.is_optional(kind) {
+            let (number, fields) = self.case_of(kind, "Some")?;
+            let (_, offset, held) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+            let held = held.ok_or("an optional of something this backend doesn't take yet")?;
+            let base = self.fields_at(value, kind);
+            let (tag, some) = (self.temp(), self.temp());
+            self.line(&format!("{tag} = load i64, ptr {base}"));
+            self.line(&format!("{some} = icmp eq i64 {tag}, {number}"));
+            let (holds, none, joined) = (self.label("holds"), self.label("none"), self.label("printed"));
+            self.line(&format!("br i1 {some}, label %{holds}, label %{none}"));
+            self.start_block(&holds);
+            let at = self.offset(&base, offset);
+            let inner = if held.in_memory() { at } else { self.load_field(&held, &at, "") };
+            self.print_one(&inner, &held)?;
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&none);
+            self.print_text("None");
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&joined);
+            return Ok(());
+        }
+        match kind {
+            Kind::Int => {
+                self.declare("declare void @fennec_print_int(i64) nounwind");
+                self.line(&format!("call void @fennec_print_int(i64 {value})"));
+            }
+            Kind::Float => {
+                self.declare("declare void @fennec_print_float(double) nounwind");
+                self.line(&format!("call void @fennec_print_float(double {value})"));
+            }
+            Kind::Bool => {
+                self.declare("declare void @fennec_print_bool(i8) nounwind");
+                let wide = self.temp();
+                self.line(&format!("{wide} = zext i1 {value} to i8"));
+                self.line(&format!("call void @fennec_print_bool(i8 {wide})"));
+            }
+            Kind::Str => {
+                self.declare("declare void @fennec_str_print(ptr) nounwind");
+                self.line(&format!("call void @fennec_str_print(ptr {value})"));
+            }
+            Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
+                self.declare("declare i64 @fennec_mark() nounwind");
+                self.declare("declare void @fennec_truncate(i64) nounwind");
+                self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
+                self.declare("declare void @fennec_print_value(i64) nounwind");
+                let (mark, handle) = (self.temp(), self.temp());
+                self.line(&format!("{mark} = call i64 @fennec_mark()"));
+                self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
+                self.line(&format!("call void @fennec_print_value(i64 {handle})"));
+                self.line(&format!("call void @fennec_truncate(i64 {mark})"));
+            }
+            other => {
+                return Err(format!("it prints a {other:?}, which this backend doesn't take yet"));
+            }
+        }
         Ok(())
     }
 

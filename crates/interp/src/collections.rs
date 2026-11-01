@@ -263,7 +263,7 @@ impl Interp<'_> {
             }
             ("clear", []) => items.clear(),
             ("remove", [value]) => {
-                let at = items.iter().position(|item| item == value).ok_or_else(|| {
+                let at = self.position(items, value, span)?.ok_or_else(|| {
                     Diagnostic::new(format!("{} isn't in the list", format::repr(value)), span)
                 })?;
                 items.remove(at);

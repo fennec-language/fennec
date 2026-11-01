@@ -324,3 +324,18 @@ fn text_repeats_with_its_own_operator() {
         ]
     );
 }
+
+#[test]
+fn a_types_own_equality_has_to_give_back_a_bool() {
+    let text = "struct Pair:\n    a: int\n\n    def ==(self, other: Pair) -> int:\n        1\n\ndef main(stdout: Stdout):\n    stdout.print(Pair(a=1) == Pair(a=2))\n";
+    assert_eq!(
+        problems(text),
+        ["`Pair`'s `def ==` gives back an int, so `==` can't use it @ Pair(a=1) == Pair(a=2)"]
+    );
+}
+
+#[test]
+fn a_types_own_equality_takes_its_own_type() {
+    let text = "struct Pair:\n    a: int\n\n    def ==(self, other: Pair) -> bool:\n        True\n\ndef main(stdout: Stdout):\n    stdout.print(Pair(a=1) != 2)\n";
+    assert!(problems(text).iter().any(|problem| problem.ends_with("@ 2")), "{:?}", problems(text));
+}

@@ -81,6 +81,12 @@ impl Lowering<'_> {
         let mut write_backs = Vec::new();
         let dest;
         if let Some((mut name, object, changes)) = self.builtin(callee) {
+            if name == "list.remove"
+                && let Some(Type::List(held)) = object.and_then(|object| self.type_at(object.span))
+                && self.context.signatures.own_equality(&held)
+            {
+                return Err(super::operators::OWN_EQUALITY.to_owned());
+            }
             let mut values = Vec::with_capacity(args.len() + 1);
             if let Some(object) = object {
                 values.push(if changes {

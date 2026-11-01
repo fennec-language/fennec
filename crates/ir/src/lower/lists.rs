@@ -100,6 +100,11 @@ impl Lowering<'_> {
             ) => owner_name(ty).unwrap_or_default().to_owned(),
             _ => return Err(format!("it uses `{}` on a type of its own", op.symbol())),
         };
+        if let Some(Type::List(held)) = self.type_at(items.span)
+            && self.context.signatures.own_equality(&held)
+        {
+            return Err(super::operators::OWN_EQUALITY.to_owned());
+        }
         let item = self.expr(item)?;
         let items = self.expr(items)?;
         let dest = self.temporary(Type::Bool);

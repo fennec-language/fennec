@@ -86,14 +86,14 @@ impl Table {
         let pages = match self.regions.iter().position(|(number, _)| *number == region) {
             Some(found) => self.regions.get_mut(found),
             None => {
-                self.regions.push((region, std::iter::repeat_with(|| None).take(PAGES).collect()));
+                self.regions.push((region, vec![None; PAGES].into_boxed_slice()));
                 self.regions.last_mut()
             }
         };
         let Some(page) = pages.and_then(|(_, pages)| pages.get_mut(page)) else {
             return;
         };
-        let page = page.get_or_insert_with(|| std::iter::repeat_with(|| None).take(PLACES).collect());
+        let page = page.get_or_insert_with(|| vec![None; PLACES].into_boxed_slice());
         if let Some(slot) = page.get_mut(place)
             && slot.replace(block).is_none()
         {

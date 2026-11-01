@@ -3,6 +3,11 @@
 //! to feel instant. Only warm numbers count, with the daemon running and the cache full; cold
 //! ones are shown too.
 //!
+//! An edit's verdict is held to a count of instructions rather than to its time, because the
+//! machines CI runs on differ by nearly a factor of two, and a pull request shouldn't fail for
+//! landing on a slow one. The limit is what a second means on those machines, so the promise
+//! stays one second. Its time is shown too, and warns.
+//!
 //! A budget that's met fails the run when it's exceeded. One that hasn't been met yet is a
 //! warning, since it would fail every pull request; it starts failing runs once `enforced`
 //! is set, which happens in the change that meets it.
@@ -13,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use fennec_count::{Counter, Program};
 use fennec_lsp::Json;
 
 use crate::report::millis;
@@ -29,6 +35,11 @@ const FORMAT: Budget = Budget { name: "format one file", limit: Duration::from_m
 const CHECK: Budget = Budget { name: "edit to checked", limit: Duration::from_millis(100), enforced: false };
 const VERDICT: Budget =
     Budget { name: "edit to verdict, one function", limit: Duration::from_secs(1), enforced: true };
+/// What an edit's verdict may run: about what a second is on CI's machines. It ran 6.66 billion
+/// when this was written, counted by Valgrind, which took between 650 and 1170 ms depending on the
+/// machine, about 7.4 billion a second in the middle.
+const MOST_VERDICT_INSTRUCTIONS: u64 = 7_500_000_000;
+
 const RUN: Budget =
     Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: false };
 
@@ -44,6 +55,15 @@ struct Measured {
     budget: Budget,
     warm: Duration,
     cold: Option<Duration>,
+    /// What it's held to instead of its time, and what it counted, where that can be counted.
+    counted: Option<Counted>,
+}
+
+/// A count of instructions and the most there may be.
+#[derive(Clone, Copy)]
+struct Counted {
+    instructions: u64,
+    most: u64,
 }
 
 impl Measured {
@@ -51,11 +71,20 @@ impl Measured {
         self.warm > self.budget.limit
     }
 
+    /// Whether this fails the run: an enforced budget that's over, by its count if it has one.
+    fn fails(&self) -> bool {
+        match self.counted {
+            Some(Counted { instructions, most }) => instructions > most,
+            None => self.budget.enforced && self.over(),
+        }
+    }
+
     fn verdict(&self) -> &'static str {
-        match (self.over(), self.budget.enforced) {
-            (false, _) => "met",
-            (true, true) => "**over**",
-            (true, false) => "over, not enforced yet",
+        match (self.fails(), self.over(), self.budget.enforced) {
+            (true, ..) => "**over**",
+            (false, false, _) => "met",
+            (false, true, true) => "met by its count, over by the clock",
+            (false, true, false) => "over, not enforced yet",
         }
     }
 }
@@ -83,7 +112,7 @@ pub(crate) fn run(fennec: &Path, runs: usize, files: usize) -> Result<bool, Stri
         crate::append(Path::new(&summary), &format!("## Instant-feedback budgets\n\n{table}"))
             .map_err(|err| format!("couldn't write the summary: {err}"))?;
     }
-    for over in measured.iter().filter(|measured| measured.over() && !measured.budget.enforced) {
+    for over in measured.iter().filter(|measured| measured.over() && !measured.fails()) {
         let Budget { name, limit, .. } = over.budget;
         println!("::warning title=Over budget::{name} took {}, over {}", millis(over.warm), millis(limit));
     }
@@ -115,7 +144,7 @@ fn growth_line(growth: f64, small: Duration) -> String {
 
 /// Whether every enforced budget is met.
 fn passes(measured: &[Measured]) -> bool {
-    measured.iter().all(|measured| !measured.budget.enforced || !measured.over())
+    !measured.iter().any(Measured::fails)
 }
 
 fn table(measured: &[Measured], size: &str) -> String {
@@ -124,7 +153,10 @@ fn table(measured: &[Measured], size: &str) -> String {
         let cold = measured.cold.map_or_else(String::new, millis);
         let Budget { name, limit, .. } = measured.budget;
         let (limit, warm, verdict) = (millis(limit), millis(measured.warm), measured.verdict());
-        let _ = writeln!(table, "| {name} | {limit} | {warm} | {cold} | {verdict} |");
+        let counted = measured.counted.map_or_else(String::new, |Counted { instructions, most }| {
+            format!("{} of at most {} M instructions: ", instructions / 1_000_000, most / 1_000_000)
+        });
+        let _ = writeln!(table, "| {name} | {limit} | {warm} | {cold} | {counted}{verdict} |");
     }
     table
 }
@@ -132,8 +164,10 @@ fn table(measured: &[Measured], size: &str) -> String {
 fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
     kit.timed(&["fmt"])?;
     let (check_warm, check_cold) = edit_to_checked(kit, runs)?;
-    let mut measured =
-        vec![Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold) }, kit.format(runs)?];
+    let mut measured = vec![
+        Measured { budget: CHECK, warm: check_warm, cold: Some(check_cold), counted: None },
+        kit.format(runs)?,
+    ];
     measured.push(kit.verdict(runs)?);
     measured.push(kit.repeated(RUN, &["run"], runs)?);
     Ok(measured)
@@ -197,14 +231,18 @@ impl Kit {
     /// `fennec` in this kit, with the environment of a person's machine rather than CI's.
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(&self.fennec);
+        command.args(args);
+        self.set_up(&mut command);
         command
-            .args(args)
+    }
+
+    fn set_up(&self, command: &mut Command) {
+        command
             .current_dir(&self.dir)
             .env("FENNEC_HOME", self.dir.join("home"))
             .env_remove("CI")
             .env_remove("FENNEC_NO_CACHE")
             .env_remove("FENNEC_NO_DAEMON");
-        command
     }
 
     /// How long a command takes, and what it prints. It has to succeed.
@@ -226,7 +264,7 @@ impl Kit {
         for _ in 0..runs {
             times.push(self.timed(args)?.0);
         }
-        Ok(Measured { budget, warm: median(times), cold: Some(cold) })
+        Ok(Measured { budget, warm: median(times), cold: Some(cold), counted: None })
     }
 
     fn format(&self, runs: usize) -> Result<Measured, String> {
@@ -251,14 +289,29 @@ impl Kit {
             }
             times.push(took);
         }
+        let edited = original.replace(EDITED_LINE, "    y = x + 300 + 1000\n");
+        std::fs::write(&path, edited).map_err(|err| err.to_string())?;
+        let counted = self.counted_verdict();
         std::fs::write(&path, original).map_err(|err| err.to_string())?;
-        Ok(Measured { budget: VERDICT, warm: median(times), cold: Some(cold) })
+        Ok(Measured { budget: VERDICT, warm: median(times), cold: Some(cold), counted })
     }
 }
 
 /// Whether `fennec test` says it ran exactly one test and left the rest unchanged.
 fn ran_one_test(printed: &str) -> bool {
     printed.contains("(1 run,")
+}
+
+impl Kit {
+    /// How many instructions `fennec test` runs just after an edit, where they can be counted.
+    fn counted_verdict(&self) -> Option<Counted> {
+        let folder = self.dir.join("counting");
+        std::fs::create_dir_all(&folder).ok()?;
+        let counter = Counter::find(&folder)?;
+        let program = Program { command: self.fennec.clone(), args: vec!["test".to_owned()], stdin: None };
+        let instructions = counter.count_set_up(&program, |command| self.set_up(command))?;
+        Some(Counted { instructions, most: MOST_VERDICT_INSTRUCTIONS })
+    }
 }
 
 /// A language server session, which is how an edit gets checked.
@@ -337,7 +390,7 @@ mod tests {
 
     fn measured(enforced: bool, warm: u64) -> Measured {
         let budget = Budget { name: "this", limit: Duration::from_millis(100), enforced };
-        Measured { budget, warm: Duration::from_millis(warm), cold: None }
+        Measured { budget, warm: Duration::from_millis(warm), cold: None, counted: None }
     }
 
     #[test]
@@ -367,6 +420,19 @@ mod tests {
         assert!(super::ran_one_test("10 passed, 0 failed (1 run, 9 unchanged)\n"));
         assert!(!super::ran_one_test("10 passed, 0 failed (2 run, 8 unchanged)\n"));
         assert!(!super::ran_one_test("10 passed, 0 failed\n"));
+    }
+
+    #[test]
+    fn a_count_decides_rather_than_the_clock_when_theres_a_count() {
+        let counted = |warm, instructions| Measured {
+            counted: Some(super::Counted { instructions, most: 100 }),
+            ..measured(true, warm)
+        };
+        assert!(passes(&[counted(900, 100)]), "a slow machine doesn't fail it");
+        assert!(!passes(&[counted(1, 101)]), "a fast machine doesn't hide it");
+        let table = table(&[counted(900, 100), counted(1, 101)], "a size");
+        assert!(table.contains("met by its count, over by the clock"), "{table}");
+        assert!(table.contains("**over**"), "{table}");
     }
 
     #[test]

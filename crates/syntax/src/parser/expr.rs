@@ -247,14 +247,10 @@ impl Parser {
                 let args = self.call_args()?;
                 let span = expr.span.to(self.expect_p(Punct::RParen)?);
                 Expr { kind: ExprKind::Call { callee: Box::new(expr), args }, span }
-            } else if self.at_p(Punct::Dot)
-                || (self.at_p(Punct::Question) && self.peek_at(1) == &Tok::P(Punct::Dot))
-            {
-                let optional = self.eat_p(Punct::Question);
-                self.advance();
+            } else if self.eat_p(Punct::Dot) {
                 let name = self.name("a name after `.`")?;
                 let span = expr.span.to(self.prev_span());
-                Expr { kind: ExprKind::Attr { object: Box::new(expr), name, optional }, span }
+                Expr { kind: ExprKind::Attr { object: Box::new(expr), name, optional: false }, span }
             } else if self.eat_p(Punct::LBracket) {
                 self.index(expr)?
             } else if self.eat_p(Punct::Question) {

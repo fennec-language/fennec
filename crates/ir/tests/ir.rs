@@ -2154,6 +2154,20 @@ def f(n: int) -> int:
 }
 
 #[test]
+fn a_write_runs_only_the_rule_of_the_field_it_writes() {
+    let source = "struct Pair:
+    low: int where low >= 0
+    high: int where high >= 9
+
+def f(mut pair: Pair):
+    pair.low = 1
+";
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("`Pair.low`"), "{text}");
+    assert!(!text.contains("`Pair.high`"), "{text}");
+}
+
+#[test]
 fn every_example_kit_lowers_to_valid_ir() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/projects");
     let mut kits = 0;

@@ -1,0 +1,7 @@
+error: this breaks the `where` rule on `Stats.level`
+ --> examples/errors/where_through_an_item.fen:6:5
+  |
+6 |     party[0].level = 0
+  |     ^^^^^^^^^^^^^^
+  |
+  = help: `where` rules are checked on every write: check the value first

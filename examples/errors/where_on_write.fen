@@ -1,0 +1,12 @@
+struct Player:
+    level: int where level >= 1
+
+    def drain(mut self, by: int):
+        self.level -= by
+
+def main(stdout: Stdout):
+    mut player = Player(level=5)
+    player.drain(3)
+    stdout.print(player.level)
+    player.level -= 5
+    stdout.print(player.level)

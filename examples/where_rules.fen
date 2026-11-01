@@ -1,0 +1,28 @@
+# A `where` rule holds on every write to its field, not just when a value is made.
+
+struct Stats:
+    level: int where level >= 1
+    speed = 1.0
+
+struct Player:
+    name: str where name.len() > 0
+    stats: Stats
+
+    def rise(mut self):
+        self.stats.level += 1
+
+def main(stdout: Stdout):
+    mut stats = Stats(level=1)
+    stats.level += 2
+    stats.speed = 0.5
+    mut player = Player(name="Kit", stats=stats).expect("the name isn't empty")
+    player.rise()
+    player.stats.level -= 1
+    player.name = "Ash"
+    stdout.print(player.name, player.stats.level, player.stats.speed)
+    mut party = [player]
+    party[0].stats.level = 9
+    for mut member in party:
+        member.stats.level -= 8
+    stdout.print(party[0].stats.level)
+    stdout.print(replace(stats, level=7).level)

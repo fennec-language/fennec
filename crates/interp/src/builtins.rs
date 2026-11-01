@@ -86,7 +86,7 @@ impl Interp<'_> {
             ));
         }
         if name == "replace" {
-            return Interp::replace(args, span);
+            return self.replace(args, span);
         }
         if let Some(module) = stdlib::module_of(name) {
             return (module.call)(self, name, args, span);

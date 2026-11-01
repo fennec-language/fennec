@@ -21,16 +21,28 @@ pub struct Tools {
 
 impl Tools {
     /// From `FENNEC_LLVM_BIN`, or the Rust toolchain's `llvm-tools` component. Nothing's
-    /// downloaded; what's missing is reported.
+    /// downloaded; what's missing is reported. Where the toolchain keeps them is remembered in
+    /// the Fennec home, as asking `rustc` each build costs more than the rest of an unchanged one.
     pub fn find() -> Result<Self, String> {
-        let folder = match std::env::var_os("FENNEC_LLVM_BIN") {
-            Some(folder) => PathBuf::from(folder),
-            None => toolchain_tools()?,
+        let remembered = fennec_build::fennec_home().map(|home| home.join("llvm-tools"));
+        let folder = if let Some(folder) = std::env::var_os("FENNEC_LLVM_BIN") {
+            PathBuf::from(folder)
+        } else if let Some(folder) = remembered.as_deref().and_then(remembered_folder) {
+            folder
+        } else {
+            let folder = toolchain_tools()?;
+            if let Some(at) = &remembered {
+                let _ = std::fs::write(at, folder.to_string_lossy().as_bytes());
+            }
+            folder
         };
         let tools = Tools { opt: folder.join("opt"), llc: folder.join("llc") };
         if tools.opt.is_file() && tools.llc.is_file() {
             Ok(tools)
         } else {
+            if let Some(at) = &remembered {
+                let _ = std::fs::remove_file(at);
+            }
             Err(format!(
                 "LLVM's `opt` and `llc` aren't in {}; run `rustup component add llvm-tools` or set FENNEC_LLVM_BIN",
                 folder.display()
@@ -38,11 +50,33 @@ impl Tools {
         }
     }
 
-    /// What makes one version of the tools differ from another, for cache keys.
+    /// What makes one version of the tools differ from another, for cache keys: remembered
+    /// beside `llc`'s size and time, so it's only asked again when `llc` changes.
     fn version(&self) -> Result<String, String> {
+        let stamp = std::fs::metadata(&self.llc)
+            .ok()
+            .map(|meta| format!("{} {:?}", meta.len(), meta.modified().ok()));
+        let remembered = fennec_build::fennec_home().map(|home| home.join("llvm-version"));
+        if let (Some(stamp), Some(at)) = (&stamp, &remembered)
+            && let Ok(text) = std::fs::read_to_string(at)
+            && let Some((was, version)) = text.split_once('\n')
+            && was == stamp
+        {
+            return Ok(version.to_owned());
+        }
         let out = Command::new(&self.llc).arg("--version").output().map_err(|err| err.to_string())?;
-        Ok(String::from_utf8_lossy(&out.stdout).lines().take(2).collect::<Vec<_>>().join(" "))
+        let version = String::from_utf8_lossy(&out.stdout).lines().take(2).collect::<Vec<_>>().join(" ");
+        if let (Some(stamp), Some(at)) = (stamp, remembered) {
+            let _ = std::fs::write(at, format!("{stamp}\n{version}"));
+        }
+        Ok(version)
     }
+}
+
+/// The folder remembered for the toolchain's tools, if they're still there.
+fn remembered_folder(at: &Path) -> Option<PathBuf> {
+    let folder = PathBuf::from(std::fs::read_to_string(at).ok()?.trim());
+    (folder.join("opt").is_file() && folder.join("llc").is_file()).then_some(folder)
 }
 
 fn toolchain_tools() -> Result<PathBuf, String> {

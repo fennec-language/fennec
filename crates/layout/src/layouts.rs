@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use fennec_check::{Signatures, Type};
 use fennec_syntax::{Expr, TypeDef, TypeExpr};
 
-use crate::{Cap, ListItem, Ty, Word};
+use crate::{Block, Cap, ListItem, Ty, Word};
 
 /// The size of every field that isn't a nested struct: an int, a float, or a bool.
 pub const WORD: u32 = 8;
@@ -52,6 +52,8 @@ pub struct Layouts {
     all: Vec<Layout>,
     /// Every enum with a case of each name, plain or not, for `.Circle` without its type.
     owners: HashMap<String, Vec<String>>,
+    /// Whether an optional of something held by a block is that block's address, or 0.
+    one_word_optionals: bool,
 }
 
 /// What laying out types needs to see: the checker's structs, and the enums as written.
@@ -100,7 +102,7 @@ impl Layouts {
             enums: HashMap::new(),
             definitions: definitions.iter().map(|(name, def)| (name.as_str(), def)).collect(),
         };
-        let mut layouts = Layouts::default();
+        let mut layouts = Layouts { one_word_optionals: true, ..Layouts::default() };
         for (name, def) in definitions {
             if let Written::Enum(cases) = def {
                 for (case, _) in cases {
@@ -360,6 +362,9 @@ impl Layouts {
             Type::Dict(key, value) => dict_ty(self, key, value),
             Type::Set(item) => set_ty(self, item),
             Type::List(item) => ListItem::of(self.ty(item)).map_or(Ty::Obj, Ty::List),
+            Type::Optional(inner) if self.one_word_optionals => {
+                Block::of(self.ty(inner)).map_or(Ty::Obj, Ty::Maybe)
+            }
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
                 (Some(cap), _) => Ty::Cap(cap),
                 (None, Some(id)) if self.get(id).is_some_and(|layout| layout.boxed) => Ty::Boxed(id),
@@ -402,6 +407,9 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
         Type::List(item) => ListItem::of(boxed_field_ty(layouts, reserved, item)).map_or(Ty::Obj, Ty::List),
         Type::Dict(key, value) => dict_ty(layouts, key, value),
         Type::Set(item) => set_ty(layouts, item),
+        Type::Optional(inner) if layouts.one_word_optionals => {
+            Block::of(boxed_field_ty(layouts, reserved, inner)).map_or(Ty::Obj, Ty::Maybe)
+        }
         _ => Ty::Obj,
     }
 }
@@ -534,7 +542,7 @@ mod tests {
     use fennec_interp::embed::layout::{FIELDS, GEN_FAILURE, GEN_ITEM, GEN_PC, GEN_RESUME, GEN_STARTED};
 
     use super::{Layouts, Written, generator_definition};
-    use crate::Ty;
+    use crate::{Block, Ty};
 
     fn fields(names: &[(&str, Type)]) -> Vec<super::WrittenField> {
         names.iter().map(|(name, ty)| ((*name).to_owned(), ty.clone(), None)).collect()
@@ -595,5 +603,26 @@ mod tests {
             [at("\0resume"), at("\0pc"), at("\0started"), at("\0failure"), at("\0item")],
             [GEN_RESUME, GEN_PC, GEN_STARTED, GEN_FAILURE, GEN_ITEM]
         );
+    }
+
+    #[test]
+    fn an_optional_of_a_block_is_one_word() {
+        let maybe = |ty: Type| Type::Optional(Box::new(ty));
+        let node = Type::Named("Node".to_owned());
+        let definitions = vec![(
+            "Node".to_owned(),
+            Written::Struct(fields(&[
+                ("name", maybe(Type::Str)),
+                ("next", maybe(node.clone())),
+                ("n", maybe(Type::Int)),
+            ])),
+        )];
+        let layouts = Layouts::from_definitions(&definitions);
+        let id = layouts.id("Node").unwrap();
+        let layout = layouts.get(id).unwrap();
+        let types: Vec<Ty> = layout.fields.iter().map(|field| field.ty).collect();
+        assert_eq!(types, [Ty::Maybe(Block::Str), Ty::Maybe(Block::Boxed(id)), Ty::Obj]);
+        assert_eq!(layouts.ty(&maybe(Type::Str)), Ty::Maybe(Block::Str));
+        assert_eq!(layouts.ty(&maybe(Type::Int)), Ty::Obj);
     }
 }

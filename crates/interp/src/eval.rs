@@ -364,6 +364,11 @@ impl Interp<'_> {
         if matches!(left, Value::Ok(_) | Value::Err(_)) && !matches!(op, BinOp::Eq | BinOp::NotEq) {
             return Err(unhandled_result(span));
         }
+        if !self.own_equality.is_empty()
+            && let Some(found) = self.compare_own(op, &left, &right, span)?
+        {
+            return Ok(found);
+        }
         ops::binary(op, left, right, span)
     }
 }

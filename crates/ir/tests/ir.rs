@@ -2346,3 +2346,44 @@ def first_big() -> int:
     let text = printed(source, "first_big").unwrap();
     assert_eq!(given_bools(&text).len(), 1, "{text}");
 }
+
+#[test]
+fn equality_calls_a_types_own_def_eq() {
+    let source = "\
+struct Pair:
+    a: int
+    b: int
+
+    def ==(self, other: Pair) -> bool:
+        self.a + self.b == other.a + other.b
+
+def same(one: Pair, two: Pair) -> bool:
+    one == two and not (one != two)
+";
+    let text = printed(source, "same").unwrap();
+    assert_eq!(text.matches("Pair.==").count(), 2, "{text}");
+}
+
+#[test]
+fn equality_through_a_type_with_its_own_def_eq_compares_each_field_or_isnt_lowered_yet() {
+    let source = "\
+struct Pair:
+    a: int
+
+    def ==(self, other: Pair) -> bool:
+        True
+
+struct Held:
+    pair: Pair
+
+def same(one: Held, two: Held) -> bool:
+    one == two
+
+def found(pair: Pair, pairs: list[Pair]) -> bool:
+    pair in pairs
+";
+    let same = printed(source, "same").unwrap();
+    assert!(same.contains(".pair") && same.contains("Pair.=="), "{same}");
+    let problem = printed(source, "found").unwrap_err();
+    assert!(problem.contains("its own `==`"), "{problem}");
+}

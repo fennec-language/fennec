@@ -1,10 +1,10 @@
 //! Dead code: imports nothing uses, and locals nothing reads.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use fennec_syntax::{
-    Diagnostic, ExprKind, FnDef, Import, Item, Module, Sources, Span, Stmt, StmtKind, TokenKind, lex_source,
-    parse_at,
+    Diagnostic, Expr, ExprKind, FnDef, Import, Item, Module, Sources, Span, Stmt, StmtKind, TokenKind,
+    lex_source, parse_at,
 };
 
 use crate::Lint;
@@ -169,6 +169,134 @@ fn unused_names(stmts: &[Stmt], counts: &HashMap<String, i64>, found: &mut Vec<L
     }
 }
 
+/// The local a place is in: `x` for `x`, `x.pos.y` and `x[i]`.
+fn root(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some(name),
+        ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } | ExprKind::Slice { object, .. } => {
+            root(object)
+        }
+        _ => None,
+    }
+}
+
+/// The places `mut` names stand for: `mut owl = world.units[1]` makes `owl` a name for part of
+/// `world`, so changing `owl` changes `world`.
+fn names_for(stmts: &[Stmt], found: &mut Vec<(String, String)>) {
+    for stmt in stmts {
+        if let StmtKind::Assign { target, op: None, declare_mut: true, value, .. } = &stmt.kind
+            && let (ExprKind::Name(name), Some(place)) = (&target.kind, root(value))
+        {
+            found.push((name.clone(), place.to_owned()));
+        }
+        if let StmtKind::Def(def) = &stmt.kind {
+            names_for(&def.body, found);
+        }
+        for block in blocks(stmt) {
+            names_for(block, found);
+        }
+    }
+}
+
+/// The locals a body may change: given a new value, written into, called a method on, or passed
+/// as `mut`, directly or through a `mut` name for part of them. Any method call counts, since
+/// which ones change their value isn't known here.
+fn changed(body: &[Stmt]) -> HashSet<String> {
+    let mut found = changed_directly(body);
+    let mut names = Vec::new();
+    names_for(body, &mut names);
+    loop {
+        let more: Vec<String> = names
+            .iter()
+            .filter(|(name, place)| found.contains(name) && !found.contains(place))
+            .map(|(_, place)| place.clone())
+            .collect();
+        if more.is_empty() {
+            return found;
+        }
+        found.extend(more);
+    }
+}
+
+fn changed_directly(body: &[Stmt]) -> HashSet<String> {
+    let mut found = HashSet::new();
+    changed_by_statements(body, &mut found);
+    let mut walked = FnDef {
+        name: String::new(),
+        generics: Vec::new(),
+        params: Vec::new(),
+        ret: None,
+        arrow: None,
+        body: body.to_vec(),
+        span: Span::default(),
+    };
+    fennec_syntax::visit::in_function(&mut walked, &mut |expr| {
+        // A `match` is an expression, so its arms' statements are only found from here.
+        if let ExprKind::Match { arms, .. } = &expr.kind {
+            for arm in arms {
+                changed_by_statements(&arm.body, &mut found);
+            }
+        }
+        if let ExprKind::Call { callee, args } = &expr.kind {
+            if let ExprKind::Attr { object, .. } = &callee.kind {
+                found.extend(root(object).map(str::to_owned));
+            }
+            for arg in args.iter().filter(|arg| arg.is_mut) {
+                found.extend(root(&arg.value).map(str::to_owned));
+            }
+        }
+    });
+    found
+}
+
+fn changed_by_statements(stmts: &[Stmt], found: &mut HashSet<String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Assign { target, op, declare_mut, .. } => {
+                let declares = *declare_mut && op.is_none() && matches!(target.kind, ExprKind::Name(_));
+                // `a, b = pair` gives each of them a new value.
+                let targets = match &target.kind {
+                    ExprKind::Tuple(items) => items.iter().collect(),
+                    _ => vec![target],
+                };
+                if !declares {
+                    found.extend(targets.into_iter().filter_map(root).map(str::to_owned));
+                }
+            }
+            StmtKind::For { is_mut: true, iter, .. } => found.extend(root(iter).map(str::to_owned)),
+            StmtKind::Def(def) => changed_by_statements(&def.body, found),
+            _ => {}
+        }
+        for block in blocks(stmt) {
+            changed_by_statements(block, found);
+        }
+    }
+}
+
+/// `mut` on a local nothing changes.
+fn needless_mut(stmts: &[Stmt], changed: &HashSet<String>, sources: &Sources, found: &mut Vec<Lint>) {
+    for stmt in stmts {
+        if let StmtKind::Assign { target, op: None, declare_mut: true, .. } = &stmt.kind
+            && let ExprKind::Name(name) = &target.kind
+            && !changed.contains(name)
+        {
+            let word = Span { start: stmt.span.start, end: target.span.start };
+            if crate::rewrites::written(sources, word).is_some_and(|text| text.trim_end() == "mut") {
+                let diagnostic =
+                    Diagnostic::new(format!("nothing changes `{name}`, so it isn't `mut`"), target.span)
+                        .with_fix(word, "");
+                found.push(Lint::new("needless-mut", diagnostic));
+            }
+        }
+        if let StmtKind::Def(def) = &stmt.kind {
+            needless_mut(&def.body, changed, sources, found);
+        }
+        for block in blocks(stmt) {
+            needless_mut(block, changed, sources, found);
+        }
+    }
+}
+
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     let mut found = Vec::new();
     for (path, text) in sources.files() {
@@ -182,6 +310,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
         .filter_map(|item| if let Item::Test(test) = item { Some(&test.body) } else { None });
     for body in functions(module).into_iter().map(|def| &def.body).chain(tests) {
         unused_names(body, &reads(body), &mut found);
+        needless_mut(body, &changed(body), sources, &mut found);
     }
     found
 }

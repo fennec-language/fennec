@@ -78,7 +78,10 @@ fn run(source: &str, shown_as: &str) -> Result<String, String> {
 /// Runs a program's `test` blocks, returning each failure, rendered.
 fn failing_tests(source: &str, shown_as: &str) -> Result<Vec<String>, String> {
     let render = |diagnostic: fennec_syntax::Diagnostic| diagnostic.render(shown_as, source);
-    let module = fennec_syntax::parse(source).map_err(render)?;
+    let mut module = fennec_syntax::parse(source).map_err(render)?;
+    // What runs a module needs it resolved, as `fennec test` does.
+    fennec_check::check_and_resolve(&mut module)
+        .map_err(|problems| problems.into_iter().map(render).collect::<Vec<_>>().join("\n"))?;
     let mut out = std::io::sink();
     let mut interp = fennec_interp::Interp::new(&mut out).map_err(render)?;
     interp.load(&module).map_err(render)?;
@@ -567,4 +570,21 @@ def main(stdout: Stdout):
     for (_, failure) in run_both(source).unwrap() {
         assert!(failure.unwrap().contains("can't pass up Bad(at=2)"));
     }
+}
+
+/// `in`, `remove` and `==` on lists use an item type's own `def ==`, the same natively as
+/// in the interpreter.
+#[test]
+fn list_searches_use_an_items_own_equality_the_same_natively() {
+    on_big_stack(|| {
+        let source = "struct Pair:\n    a: int\n    b: int\n\n    def ==(self, other: Pair) -> bool:\n        \
+            self.a + self.b == other.a + other.b\n\n\
+            test \"lists\":\n    one = Pair(a=1, b=2)\n    two = Pair(a=2, b=1)\n    pairs = [Pair(a=0, b=0), two]\n    \
+            assert one in pairs\n    assert Pair(a=9, b=9) not in pairs\n    assert [one] == [two]\n    \
+            mut kept = [Pair(a=0, b=0), two]\n    kept.remove(one)\n    assert kept.len() == 1\n";
+        let (native, interpreted, _) = native_and_interpreted(source).unwrap();
+        assert_eq!(native, interpreted);
+        assert_eq!(native, [("lists".to_owned(), None)]);
+    })
+    .unwrap();
 }

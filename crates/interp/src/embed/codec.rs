@@ -294,6 +294,10 @@ impl Encode for Element {
             }
             Element::Str => to.tag(5),
             Element::Object => to.tag(8),
+            Element::Maybe(inner) => {
+                to.tag(9);
+                inner.encode(to);
+            }
             Element::List(item) => {
                 to.tag(7);
                 item.encode(to);
@@ -318,6 +322,7 @@ impl Decode for Element {
             4 => Element::Boxed(Decode::decode(from)?),
             5 => Element::Str,
             8 => Element::Object,
+            9 => Element::Maybe(Decode::decode(from)?),
             7 => Element::List(Decode::decode(from)?),
             6 => Element::Enum {
                 name: Decode::decode(from)?,
@@ -425,6 +430,7 @@ mod tests {
             words: 3,
         });
         round_trip(&Element::Boxed(4));
+        round_trip(&Element::Maybe(std::rc::Rc::new(Element::Str)));
     }
 
     #[test]

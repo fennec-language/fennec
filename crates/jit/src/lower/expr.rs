@@ -186,7 +186,8 @@ impl Lowerer<'_, '_> {
             }
             Ty::Dict(key, value) => return self.handle_to_dict(handle, key, value, span),
             Ty::List(item) => return self.handle_to_list(handle, item, span),
-            Ty::Unit | Ty::Cap(_) | Ty::Known(_) => {
+            // The JIT's own layouts never hold an optional in one word.
+            Ty::Unit | Ty::Cap(_) | Ty::Known(_) | Ty::Maybe(_) => {
                 return Err(unsupported(&format!("using a value as {}", to.name()), span));
             }
         };
@@ -224,6 +225,7 @@ impl Lowerer<'_, '_> {
                 return self.help(Helper::Capability, &[kind]);
             }
             Ty::Known(at) => return self.known_as_object(at, span),
+            Ty::Maybe(_) => return Err(unsupported("an optional held in one word", span)),
         };
         let value = value.ok_or_else(|| unsupported("this value", span))?;
         self.help(boxing, &[value])

@@ -66,6 +66,8 @@ pub struct Interp<'out> {
     /// How many more steps the program may take, if it's limited.
     pub(crate) steps_left: Option<u64>,
     step_limit: Option<u64>,
+    /// The types with their own `def ==`. While there are any, comparing looks inside values.
+    pub(crate) own_equality: std::collections::HashSet<String>,
     files: bool,
     clock: bool,
     /// What the capabilities of the test that's running reach, with no test running.
@@ -109,6 +111,7 @@ impl<'out> Interp<'out> {
             regexes: HashMap::new(),
             steps_left: None,
             step_limit: None,
+            own_equality: std::collections::HashSet::new(),
             files: true,
             clock: true,
             world: None,
@@ -224,6 +227,9 @@ impl<'out> Interp<'out> {
         for method in &extension.methods {
             methods.insert(method.name.clone(), Rc::new(callable(method, Vec::new())));
         }
+        if methods.contains_key("==") {
+            self.own_equality.insert(extension.name.clone());
+        }
         let extended = TypeInfo { def: info.def.clone(), kind: info.kind, methods };
         self.types.insert(extension.name.clone(), Rc::new(extended));
         Ok(())
@@ -246,7 +252,10 @@ impl<'out> Interp<'out> {
             .methods
             .iter()
             .map(|method| (method.name.clone(), Rc::new(callable(method, Vec::new()))))
-            .collect();
+            .collect::<HashMap<_, _>>();
+        if methods.contains_key("==") {
+            self.own_equality.insert(def.name.clone());
+        }
         self.types.insert(def.name.clone(), Rc::new(TypeInfo { def: def.clone(), kind, methods }));
     }
 

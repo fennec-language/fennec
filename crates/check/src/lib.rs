@@ -112,6 +112,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
         || !checked.float_sums.is_empty()
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
+        || !checked.not_equals.is_empty()
         || !checked.std_names.is_empty()
     {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
@@ -127,6 +128,9 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             }
             if let Some(function) = checked.std_names.get(&span) {
                 expr.kind = fennec_syntax::ExprKind::Name(function.clone());
+            }
+            if checked.not_equals.contains(&span) {
+                fennec_syntax::visit::not_of_equals(expr);
             }
             if let Some(shown) = checked.generator_types.get(&span) {
                 fennec_syntax::visit::name_generator_type(expr, shown);
@@ -161,6 +165,8 @@ pub struct Checked {
     generator_types: BTreeMap<(u32, u32), String>,
     /// What each name for a standard library function written in Fennec means.
     std_names: BTreeMap<(u32, u32), String>,
+    /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
+    not_equals: BTreeSet<(u32, u32)>,
 }
 
 /// The typed tree: the type of every expression and every declared name in a program,
@@ -269,6 +275,40 @@ pub struct Enum {
 }
 
 impl Signatures {
+    /// Whether `==` on values of this type calls a type's own `def ==`: its own, or one of a
+    /// type it holds, in a field, an enum case or a collection.
+    pub fn own_equality(&self, ty: &Type) -> bool {
+        self.holds_own_equality(ty, &mut Vec::new())
+    }
+
+    fn holds_own_equality(&self, ty: &Type, open: &mut Vec<String>) -> bool {
+        let name = match ty {
+            Type::Named(name) => name,
+            Type::Generic(name, args) => {
+                if args.iter().any(|arg| self.holds_own_equality(arg, open)) {
+                    return true;
+                }
+                name
+            }
+            other => return other.children().into_iter().any(|child| self.holds_own_equality(child, open)),
+        };
+        if open.contains(name) {
+            return false;
+        }
+        if self.functions.contains_key(&format!("{name}.==")) {
+            return true;
+        }
+        open.push(name.clone());
+        let fields = self.structs.get(name).or_else(|| self.errors.get(name)).map(|found| &found.fields);
+        let in_fields =
+            fields.is_some_and(|fields| fields.iter().any(|(_, ty)| self.holds_own_equality(ty, open)));
+        let cases = self.enums.get(name).map(|found| &found.cases);
+        let in_cases = cases.is_some_and(|cases| {
+            cases.iter().flat_map(|(_, fields)| fields).any(|(_, ty)| self.holds_own_equality(ty, open))
+        });
+        in_fields || in_cases
+    }
+
     /// The typed tree of the check that made these signatures.
     pub fn types(&self) -> &Types {
         &self.types

@@ -181,7 +181,7 @@ impl Lowerer<'_, '_> {
         else {
             return Ok(None);
         };
-        if matches!(item, ListItem::Struct(_)) || item.ty() != found_ty {
+        if matches!(item, ListItem::Struct(_)) || item.ty() != found_ty || self.own_equality(found_ty)? {
             return Ok(None);
         }
         let mut words = Vec::new();

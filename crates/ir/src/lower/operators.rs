@@ -6,7 +6,10 @@ use fennec_syntax::{BinOp, Span, UnaryOp};
 use super::calls::owner_name;
 use super::{Lowered, Lowering};
 use crate::validate::{fits, plainly_ordered};
-use crate::{InstKind, Operand, type_in};
+use crate::{InstKind, Operand, Terminator, type_in};
+
+/// Why comparing values that hold a type with its own `def ==` isn't lowered yet.
+pub(super) const OWN_EQUALITY: &str = "it compares values holding a type with its own `==`";
 
 impl Lowering<'_> {
     /// `lhs op rhs`, giving a value of type `ty`.
@@ -20,12 +23,55 @@ impl Lowering<'_> {
         if let Some(value) = self.own_operator(op, (&lhs, &rhs), ty, span)? {
             return Ok(value);
         }
+        let left = type_in(&self.locals, &lhs);
+        if matches!(op, BinOp::Eq | BinOp::NotEq)
+            && let Some(left) = left.filter(|left| self.context.signatures.own_equality(left))
+        {
+            return self.fields_equal(op, (lhs, rhs), &left, span);
+        }
         let (lhs, rhs) =
             if matches!(op, BinOp::Eq | BinOp::NotEq) { self.one_type(lhs, rhs, span)? } else { (lhs, rhs) };
         self.check_operands(op, &lhs, &rhs)?;
         let dest = self.temporary(ty.clone());
         self.emit(InstKind::Binary { dest, op, lhs, rhs }, span);
         Ok(Operand::Local(dest))
+    }
+
+    /// `==` on a struct holding a type with its own `def ==`: each field compared in turn, with
+    /// that type's `==` where it has one.
+    fn fields_equal(
+        &mut self,
+        op: BinOp,
+        (lhs, rhs): (Operand, Operand),
+        ty: &Type,
+        span: Span,
+    ) -> Lowered<Operand> {
+        let Type::Named(owner) = ty else { return Err(OWN_EQUALITY.to_owned()) };
+        let fields = self.struct_fields(owner)?;
+        let dest = self.temporary(Type::Bool);
+        self.emit(InstKind::Copy { dest, value: Operand::Bool(true) }, span);
+        let join = self.new_block();
+        for (field, held) in fields {
+            let (mine, theirs) = (self.temporary(held.clone()), self.temporary(held));
+            self.emit(InstKind::GetField { dest: mine, object: lhs.clone(), field: field.clone() }, span);
+            self.emit(InstKind::GetField { dest: theirs, object: rhs.clone(), field }, span);
+            let pair = (Operand::Local(mine), Operand::Local(theirs));
+            let same = self.operate(BinOp::Eq, pair, &Type::Bool, span)?;
+            let (next, differ) = (self.new_block(), self.new_block());
+            self.finish(Terminator::Branch { cond: same, then: next, otherwise: differ });
+            self.current = differ;
+            self.emit(InstKind::Copy { dest, value: Operand::Bool(false) }, span);
+            self.finish(Terminator::Jump(join));
+            self.current = next;
+        }
+        self.finish(Terminator::Jump(join));
+        self.current = join;
+        if op == BinOp::Eq {
+            return Ok(Operand::Local(dest));
+        }
+        let flipped = self.temporary(Type::Bool);
+        self.emit(InstKind::Unary { dest: flipped, op: UnaryOp::Not, value: Operand::Local(dest) }, span);
+        Ok(Operand::Local(flipped))
     }
 
     /// Makes both sides of `==` one type: a value and an optional compare as optionals.

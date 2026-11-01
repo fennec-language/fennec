@@ -99,8 +99,8 @@ fn a_last_line_needs_no_return() {
 
 #[test]
 fn sizes_have_limits() {
-    let lines = "    x = 1\n".repeat(80);
-    assert_eq!(rules(&format!("def f():\n{}", "    x = 1\n".repeat(79))), NONE, "80 lines is allowed");
+    let lines = "    g()\n".repeat(80);
+    assert_eq!(rules(&format!("def f():\n{}", "    g()\n".repeat(79))), NONE, "80 lines is allowed");
     assert_eq!(rules(&format!("def f():\n{lines}")), ["long-function"]);
 
     assert_eq!(rules(&"x = 1\n".repeat(800)), NONE);
@@ -255,6 +255,8 @@ fn a_range_test_is_one_chain() {
     }
     assert_eq!(rules(&in_function("0 <= a and a >= 10")), NONE, "they point different ways");
     assert_eq!(rules(&in_function("0 <= a and x <= 10")), NONE, "they test different things");
+    assert_eq!(rules(&in_function("0 <= a < 10")), NONE, "it's a chain already");
+    assert_eq!(rules(&in_function("0 <= a < 10 and a > 2")), NONE, "and so is this, with more after");
 }
 
 #[test]
@@ -264,4 +266,41 @@ fn a_default_for_none_has_its_own_form() {
         assert_eq!(fixed(&in_function(written)), in_function("x else 1"), "{written}");
     }
     assert_eq!(rules(&in_function("a if x is not None else 1")), NONE);
+}
+
+#[test]
+fn an_import_nothing_uses_goes() {
+    let source = "from std.math import PI, sqrt\n\ndef f() -> float:\n    sqrt(2.0)\n";
+    assert_eq!(rules(source), ["unused-import"]);
+    assert_eq!(fixed(source), "from std.math import sqrt\n\ndef f() -> float:\n    sqrt(2.0)\n");
+    let whole = "import std.json\nfrom std.math import PI\n\ndef f() -> float:\n    PI\n";
+    assert_eq!(fixed(whole), "from std.math import PI\n\ndef f() -> float:\n    PI\n");
+    let renamed = "from std.math import sqrt as root, PI\n\ndef f() -> float:\n    root(PI)\n";
+    assert_eq!(rules(renamed), NONE);
+}
+
+#[test]
+fn a_name_in_an_fstring_or_a_type_is_a_use() {
+    assert_eq!(rules("from std.math import PI\n\ndef f() -> str:\n    f\"{PI}\"\n"), NONE);
+    assert_eq!(rules("from std.math import Vec3\n\ndef f(v: Vec3) -> int:\n    1\n"), NONE);
+    assert_eq!(rules("import std.json\n\ndef f() -> str:\n    std.json.dumps([1])\n"), NONE);
+    assert_eq!(rules("from std import json\n\ndef f() -> str:\n    json.dumps([1])\n"), NONE);
+}
+
+#[test]
+fn a_local_nothing_reads_keeps_what_its_value_does() {
+    let source = "def f() -> int:\n    damage = attack()\n    1\n";
+    assert_eq!(rules(source), ["unused-name"]);
+    assert_eq!(fixed(source), "def f() -> int:\n    attack()\n    1\n");
+    let read = [
+        "def f() -> int:\n    damage = attack()\n    damage\n",
+        "def f() -> int:\n    mut total = 0\n    total += 1\n    2\n",
+        "def f() -> int:\n    xs = [1]\n    xs.append(2)\n    3\n",
+        "def f() -> str:\n    name = \"a\"\n    f\"{name}\"\n",
+        "def f() -> int:\n    n = 1\n    def g() -> int:\n        n\n    g()\n",
+        "def f() -> int:\n    _skip = attack()\n    1\n",
+    ];
+    for source in read {
+        assert_eq!(rules(source), NONE, "{source}");
+    }
 }

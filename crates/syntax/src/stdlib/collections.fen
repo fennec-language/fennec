@@ -328,3 +328,341 @@ struct Tree[T]:
             self._roots.remove(id)
         else:
             self._nodes[parent].children.remove(id)
+
+## One node of a `SortedMap`'s B-tree: keys in order, their values, and for a node that isn't
+## a leaf, the children between and around them.
+struct _SortedNode[K, V]:
+    keys: list[K] = []
+    values: list[V] = []
+    children: list[int] = []
+
+## Keys kept in order, each with a value: a B-tree, so finding, adding and removing a key
+## take time that grows with the log of the size, and walking the keys gives them in order.
+## Keys are compared with `<`. Its nodes live in a list, reached by position, so the map is
+## a plain value: copying one gives an independent map.
+struct SortedMap[K: Ordered, V]:
+    _nodes: list[_SortedNode[K, V]] = []
+    _root = -1
+    _count = 0
+    ## Nodes that were merged away, to be used again.
+    _free: list[int] = []
+
+    def len(self) -> int:
+        self._count
+
+    ## The value of `key`, or None when it has none.
+    def get(self, key: K) -> V?:
+        node, i = self._slot(key)
+        if node < 0: return None
+        self._nodes[node].values[i]
+
+    ## Whether `key` has a value.
+    def has(self, key: K) -> bool:
+        node, _ = self._slot(key)
+        node >= 0
+
+    ## The value of `key`. A key with no value stops the program, like a dict.
+    def [](self, key: K) -> V:
+        node, i = self._slot(key)
+        assert node >= 0
+        self._nodes[node].values[i]
+
+    def []=(mut self, key: K, value: V):
+        self.set(key, value)
+
+    ## Gives `key` the value `value`, replacing any it had.
+    def set(mut self, key: K, value: V):
+        if self._root < 0:
+            self._root = self._new_node(_SortedNode(keys=[key], values=[value]))
+            self._count = 1
+            return
+        if self._nodes[self._root].keys.len() == SortedMap._most():
+            old = self._root
+            self._root = self._new_node(_SortedNode(children=[old]))
+            self._split(self._root, 0)
+        mut at = self._root
+        while True:
+            i = SortedMap._position(self._nodes[at].keys, key)
+            if i < self._nodes[at].keys.len() and self._nodes[at].keys[i] == key:
+                self._nodes[at].values[i] = value
+                return
+            if self._nodes[at].children.len() == 0:
+                self._nodes[at].keys.insert(i, key)
+                self._nodes[at].values.insert(i, value)
+                self._count += 1
+                return
+            mut next = i
+            child = self._nodes[at].children[i]
+            if self._nodes[child].keys.len() == SortedMap._most():
+                self._split(at, i)
+                middle = self._nodes[at].keys[i]
+                if middle == key:
+                    self._nodes[at].values[i] = value
+                    return
+                if middle < key:
+                    next = i + 1
+            at = self._nodes[at].children[next]
+
+    ## Removes `key` and gives back its value, or None when it had none.
+    def remove(mut self, key: K) -> V?:
+        if not self.has(key): return None
+        mut taken: list[V] = []
+        mut wanted = key
+        mut at = self._root
+        while True:
+            i = SortedMap._position(self._nodes[at].keys, wanted)
+            found = i < self._nodes[at].keys.len() and self._nodes[at].keys[i] == wanted
+            leaf = self._nodes[at].children.len() == 0
+            if found and leaf:
+                if taken.len() == 0:
+                    taken.append(self._nodes[at].values[i])
+                self._nodes[at].keys.pop(i)
+                self._nodes[at].values.pop(i)
+                break
+            if found:
+                # The key moves down to a child that can spare one, or into a merged child.
+                if taken.len() == 0:
+                    taken.append(self._nodes[at].values[i])
+                left = self._nodes[at].children[i]
+                right = self._nodes[at].children[i + 1]
+                if self._nodes[left].keys.len() > SortedMap._fewest():
+                    near_key, near_value = self._last_of(left)
+                    self._nodes[at].keys[i] = near_key
+                    self._nodes[at].values[i] = near_value
+                    wanted = near_key
+                    at = left
+                elif self._nodes[right].keys.len() > SortedMap._fewest():
+                    near_key, near_value = self._first_of(right)
+                    self._nodes[at].keys[i] = near_key
+                    self._nodes[at].values[i] = near_value
+                    wanted = near_key
+                    at = right
+                else:
+                    self._merge(at, i)
+                    at = self._shrunk_root(at, left)
+                continue
+            at = self._fill(at, i)
+        self._count -= 1
+        if self._nodes[self._root].keys.len() == 0 and self._nodes[self._root].children.len() == 0:
+            self._release(self._root)
+            self._root = -1
+        taken[0]
+
+    ## The smallest key and its value, or None when the map is empty.
+    def first(self) -> (K, V)?:
+        if self._root < 0: return None
+        self._first_of(self._root)
+
+    ## The largest key and its value, or None when the map is empty.
+    def last(self) -> (K, V)?:
+        if self._root < 0: return None
+        self._last_of(self._root)
+
+    ## The largest key that's at most `key`, and its value, or None when there's none.
+    def floor(self, key: K) -> (K, V)?:
+        mut best: list[(K, V)] = []
+        mut at = self._root
+        while at >= 0:
+            node = self._nodes[at]
+            i = SortedMap._position(node.keys, key)
+            if i < node.keys.len() and node.keys[i] == key: return (node.keys[i], node.values[i])
+            if i > 0:
+                best = [(node.keys[i - 1], node.values[i - 1])]
+            if node.children.len() == 0: break
+            at = node.children[i]
+        if best.len() == 0: return None
+        best[0]
+
+    ## The smallest key that's at least `key`, and its value, or None when there's none.
+    def ceiling(self, key: K) -> (K, V)?:
+        mut best: list[(K, V)] = []
+        mut at = self._root
+        while at >= 0:
+            node = self._nodes[at]
+            i = SortedMap._position(node.keys, key)
+            if i < node.keys.len():
+                if node.keys[i] == key: return (node.keys[i], node.values[i])
+                best = [(node.keys[i], node.values[i])]
+            if node.children.len() == 0: break
+            at = node.children[i]
+        if best.len() == 0: return None
+        best[0]
+
+    ## Each key and its value, from the smallest key.
+    def items(self) -> list[(K, V)]:
+        mut found = []
+        if self._root >= 0:
+            self._walk(self._root, mut found)
+        found
+
+    ## The keys and values from `low` up to, but not including, `high`, in order.
+    def between(self, low: K, high: K) -> list[(K, V)]:
+        mut found = []
+        if self._root >= 0:
+            self._walk_between(self._root, low, high, mut found)
+        found
+
+    def keys(self) -> list[K]:
+        [key for key, _ in self.items()]
+
+    def values(self) -> list[V]:
+        [value for _, value in self.items()]
+
+    def iter(self) -> list[K]:
+        self.keys()
+
+    def clear(mut self):
+        self._nodes = []
+        self._root = -1
+        self._count = 0
+        self._free = []
+
+    ## Half the most keys a node holds, so every node but the root is at least half full.
+    def _degree() -> int:
+        16
+
+    def _most() -> int:
+        2 * SortedMap._degree() - 1
+
+    def _fewest() -> int:
+        SortedMap._degree() - 1
+
+    ## Where `key` is or would go among `keys`: the first place whose key isn't below it.
+    def _position(keys: list[K], key: K) -> int:
+        mut low = 0
+        mut high = keys.len()
+        while low < high:
+            middle = (low + high) // 2
+            if keys[middle] < key:
+                low = middle + 1
+            else:
+                high = middle
+        low
+
+    ## The node holding `key` and where it is in it, or -1 for both when it isn't there.
+    def _slot(self, key: K) -> (int, int):
+        mut at = self._root
+        while at >= 0:
+            node = self._nodes[at]
+            i = SortedMap._position(node.keys, key)
+            if i < node.keys.len() and node.keys[i] == key: return (at, i)
+            if node.children.len() == 0: break
+            at = node.children[i]
+        (-1, -1)
+
+    def _new_node(mut self, node: _SortedNode[K, V]) -> int:
+        if self._free.len() > 0:
+            at = self._free.pop()
+            self._nodes[at] = node
+            return at
+        self._nodes.append(node)
+        self._nodes.len() - 1
+
+    def _release(mut self, at: int):
+        self._nodes[at] = _SortedNode()
+        self._free.append(at)
+
+    ## Splits the full child `i` of `parent` in two, moving its middle key up into `parent`.
+    def _split(mut self, parent: int, i: int):
+        child = self._nodes[parent].children[i]
+        full = self._nodes[child]
+        half = SortedMap._degree()
+        right = _SortedNode(
+            keys=full.keys[half:],
+            values=full.values[half:],
+            children=full.children[half:] if full.children.len() > 0 else [],
+        )
+        right_at = self._new_node(right)
+        self._nodes[parent].keys.insert(i, full.keys[half - 1])
+        self._nodes[parent].values.insert(i, full.values[half - 1])
+        self._nodes[parent].children.insert(i + 1, right_at)
+        self._nodes[child].keys = full.keys[:half - 1]
+        self._nodes[child].values = full.values[:half - 1]
+        if full.children.len() > 0:
+            self._nodes[child].children = full.children[:half]
+
+    ## Merges child `i + 1` of `parent` into child `i`, with the key between them.
+    def _merge(mut self, parent: int, i: int):
+        left = self._nodes[parent].children[i]
+        right = self._nodes[parent].children[i + 1]
+        moved = self._nodes[right]
+        self._nodes[left].keys.append(self._nodes[parent].keys.pop(i))
+        self._nodes[left].values.append(self._nodes[parent].values.pop(i))
+        self._nodes[left].keys.extend(moved.keys)
+        self._nodes[left].values.extend(moved.values)
+        self._nodes[left].children.extend(moved.children)
+        self._nodes[parent].children.pop(i + 1)
+        self._release(right)
+
+    ## When merging emptied the root, the merged child takes its place.
+    def _shrunk_root(mut self, at: int, child: int) -> int:
+        if at == self._root and self._nodes[at].keys.len() == 0:
+            self._release(at)
+            self._root = child
+        child
+
+    ## Makes sure child `i` of `at` has a key to spare before going down into it, by taking
+    ## one from a sibling or merging with one. Gives back the node to go down into.
+    def _fill(mut self, at: int, i: int) -> int:
+        child = self._nodes[at].children[i]
+        if self._nodes[child].keys.len() > SortedMap._fewest(): return child
+        fewest = SortedMap._fewest()
+        siblings = self._nodes[at].children.len()
+        if i > 0 and self._nodes[self._nodes[at].children[i - 1]].keys.len() > fewest:
+            left = self._nodes[at].children[i - 1]
+            self._nodes[child].keys.insert(0, self._nodes[at].keys[i - 1])
+            self._nodes[child].values.insert(0, self._nodes[at].values[i - 1])
+            self._nodes[at].keys[i - 1] = self._nodes[left].keys.pop()
+            self._nodes[at].values[i - 1] = self._nodes[left].values.pop()
+            if self._nodes[left].children.len() > 0:
+                self._nodes[child].children.insert(0, self._nodes[left].children.pop())
+            return child
+        if i + 1 < siblings and self._nodes[self._nodes[at].children[i + 1]].keys.len() > fewest:
+            right = self._nodes[at].children[i + 1]
+            self._nodes[child].keys.append(self._nodes[at].keys[i])
+            self._nodes[child].values.append(self._nodes[at].values[i])
+            self._nodes[at].keys[i] = self._nodes[right].keys.pop(0)
+            self._nodes[at].values[i] = self._nodes[right].values.pop(0)
+            if self._nodes[right].children.len() > 0:
+                self._nodes[child].children.append(self._nodes[right].children.pop(0))
+            return child
+        if i + 1 < siblings:
+            self._merge(at, i)
+            return self._shrunk_root(at, child)
+        left = self._nodes[at].children[i - 1]
+        self._merge(at, i - 1)
+        self._shrunk_root(at, left)
+
+    def _first_of(self, at: int) -> (K, V):
+        mut node = self._nodes[at]
+        while node.children.len() > 0:
+            node = self._nodes[node.children[0]]
+        (node.keys[0], node.values[0])
+
+    def _last_of(self, at: int) -> (K, V):
+        mut node = self._nodes[at]
+        while node.children.len() > 0:
+            node = self._nodes[node.children[-1]]
+        (node.keys[-1], node.values[-1])
+
+    def _walk(self, at: int, mut found: list[(K, V)]):
+        node = self._nodes[at]
+        for i in range(node.keys.len()):
+            if node.children.len() > 0:
+                self._walk(node.children[i], mut found)
+            found.append((node.keys[i], node.values[i]))
+        if node.children.len() > 0:
+            self._walk(node.children[-1], mut found)
+
+    ## Like `_walk`, leaving out the children that can't hold a key in the range.
+    def _walk_between(self, at: int, low: K, high: K, mut found: list[(K, V)]):
+        node = self._nodes[at]
+        leaf = node.children.len() == 0
+        start = SortedMap._position(node.keys, low)
+        for i in range(start, node.keys.len()):
+            if not leaf:
+                self._walk_between(node.children[i], low, high, mut found)
+            if not node.keys[i] < high: return
+            found.append((node.keys[i], node.values[i]))
+        if not leaf:
+            self._walk_between(node.children[-1], low, high, mut found)

@@ -261,4 +261,35 @@ mod tests {
             "copies 2 copied_bytes 48 largest_copy 32 allocations 5 allocated_bytes 640"
         );
     }
+
+    #[test]
+    fn an_optional_block_reads_and_writes_as_one_word() {
+        let maybe = Element::Maybe(Rc::new(Element::Str));
+        let holder = Element::Struct { name: Rc::from("h"), fields: vec![(Rc::from("name"), maybe.clone())] };
+        let tables = Tables {
+            shapes: vec![Rc::new(holder), Rc::new(Element::Str)],
+            str_shape: 1,
+            ..Tables::default()
+        };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        with(|state| {
+            let mut words = Vec::new();
+            heap::write(state, &maybe, &crate::value::Value::None, &mut words).unwrap();
+            assert_eq!(words, [0]);
+            assert_eq!(heap::read_word(state, &maybe, 0), crate::value::Value::None);
+            let mut words = Vec::new();
+            heap::write(state, &maybe, &crate::value::Value::str("hi"), &mut words).unwrap();
+            let [address] = words.as_slice() else { panic!("one word") };
+            assert_ne!(*address, 0);
+            assert_eq!(heap::read_word(state, &maybe, *address), crate::value::Value::str("hi"));
+        });
+        let empty = heap::alloc(0);
+        heap::free(empty);
+        let named = heap::alloc(0);
+        let text = with(|state| heap::text_address(state, "x"));
+        set_word(named, FIELDS, u64::try_from(text).unwrap());
+        heap::free(named);
+        assert_eq!(word(text, 0), None);
+        finish();
+    }
 }

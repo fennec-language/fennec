@@ -28,7 +28,14 @@ pub(super) fn inline_body(function: &Function<'_>) -> Option<Rc<FnDef>> {
         }
         Ty::Int | Ty::Float | Ty::Bool => !param.is_mut,
         Ty::Cap(_) => true,
-        Ty::Unit | Ty::Obj | Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_) | Ty::Known(_) => false,
+        Ty::Unit
+        | Ty::Obj
+        | Ty::Boxed(_)
+        | Ty::Str
+        | Ty::Dict(..)
+        | Ty::List(_)
+        | Ty::Known(_)
+        | Ty::Maybe(_) => false,
     });
     // A struct's body keeps its statements: what it gives back is checked by the last one.
     let body = if matches!(function.ret, Ty::Struct(_)) {

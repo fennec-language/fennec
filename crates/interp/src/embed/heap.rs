@@ -282,7 +282,7 @@ pub fn ascii_table(tables: &mut Tables) -> i64 {
 /// Where each boxed field of a value sits among its words, from `at`.
 fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<usize>) {
     match element {
-        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object => {
+        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
             found.push(*at);
             *at += 1;
         }
@@ -350,7 +350,7 @@ pub extern "C" fn cell_read(address: i64) -> i64 {
 /// The addresses a value holds among its words, from `at`, added to `found`.
 fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<u64>) {
     match element {
-        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object => {
+        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
             found.extend(words.get(*at).copied().filter(|address| *address != 0));
             *at += 1;
         }
@@ -676,6 +676,10 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
         Element::Boxed(_) | Element::Str | Element::Object => read_block(state, word(words)),
         // Only the top of a value the interpreter is handed may be a packed list.
         Element::List(_) => read_block(state, word(words)).unpacked(),
+        Element::Maybe(inner) => match word(words) {
+            0 => Value::None,
+            address => read(state, inner, &mut std::iter::once(&address)),
+        },
         Element::Struct { name, fields } => {
             let fields =
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, words)));
@@ -756,6 +760,8 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
         }
         (Element::Str, Value::Str(text)) => words.push(u64::try_from(text_address(state, text)).ok()?),
         (Element::Object, value) => words.push(u64::try_from(new_cell(state, value.clone())).ok()?),
+        (Element::Maybe(_), Value::None) => words.push(0),
+        (Element::Maybe(inner), value) => write(state, inner, value, words)?,
         (Element::List(item), value) => {
             words.push(u64::try_from(super::lists::write_list(state, item, value)?).ok()?);
         }

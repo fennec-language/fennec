@@ -233,7 +233,7 @@ fn builtin_values_have_their_methods() {
             "use `upper()`",
             "use `lower()`",
             "use `stdout.print(...)`",
-            "values are copied automatically when assigned: `b = a`",
+            "write `copy(value)`",
             "use `.len()`",
             "",
         ]

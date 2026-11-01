@@ -25,7 +25,7 @@ pub fn functions_mut(module: &mut Module, edit: &mut dyn FnMut(&mut FnDef)) {
         match item {
             Item::Function(def) => edit(def),
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
-                def.methods.iter_mut().for_each(&mut *edit)
+                def.methods.iter_mut().for_each(&mut *edit);
             }
             Item::Extend(extension) => extension.methods.iter_mut().for_each(&mut *edit),
             _ => {}

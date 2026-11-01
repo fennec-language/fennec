@@ -97,7 +97,7 @@ pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     if !checked.places.is_empty() {
         fennec_syntax::visit::functions_mut(module, &mut |def| {
-            alias::write_in(&mut def.body, &checked.places)
+            alias::write_in(&mut def.body, &checked.places);
         });
     }
     if !checked.cases.is_empty()

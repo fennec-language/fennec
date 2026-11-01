@@ -160,19 +160,16 @@ impl<'a> Uses<'a> {
     }
 
     fn assign_to(&mut self, target: &'a Expr) {
-        match &target.kind {
-            ExprKind::Name(name) => {
-                self.written.push((name, target.span));
-                if name == self.name {
-                    self.replaces.push(target.span);
-                }
+        if let ExprKind::Name(name) = &target.kind {
+            self.written.push((name, target.span));
+            if name == self.name {
+                self.replaces.push(target.span);
             }
-            _ => {
-                if self.rooted(target) {
-                    self.edits.push(target.span);
-                }
-                self.expr(target);
+        } else {
+            if self.rooted(target) {
+                self.edits.push(target.span);
             }
+            self.expr(target);
         }
     }
 
@@ -188,7 +185,7 @@ impl<'a> Uses<'a> {
         }
         match &expr.kind {
             ExprKind::Call { callee, args } => {
-                self.call(callee, args.iter().map(|arg| (arg.is_mut, &arg.value)))
+                self.call(callee, args.iter().map(|arg| (arg.is_mut, &arg.value)));
             }
             ExprKind::Lambda { body, .. } => self.captured(body),
             ExprKind::Match { subject, arms } => {
@@ -292,7 +289,7 @@ fn collect_changeable<'a>(stmts: &'a [Stmt], names: &mut HashSet<&'a str>) {
                     }
                 }
                 StmtKind::For { names: held, is_mut: true, .. } => {
-                    names.extend(held.iter().map(String::as_str))
+                    names.extend(held.iter().map(String::as_str));
                 }
                 StmtKind::With { name: Some(name), is_mut: true, .. } => {
                     names.insert(name);
@@ -327,8 +324,8 @@ fn for_each_block<'a>(stmts: &'a [Stmt], each: &mut dyn FnMut(&'a [Stmt])) {
             | StmtKind::Fail(value)
             | StmtKind::Yield(value)
             | StmtKind::Assert(value)
-            | StmtKind::Return(Some(value)) => arms_in(value, each),
-            StmtKind::Assign { value, .. } => arms_in(value, each),
+            | StmtKind::Return(Some(value))
+            | StmtKind::Assign { value, .. } => arms_in(value, each),
             StmtKind::Return(None)
             | StmtKind::Break
             | StmtKind::Continue
@@ -366,9 +363,21 @@ impl<'a> Check<'a> {
         }
     }
 
+    /// Whether a name is a value, rather than a type, a module or a constant.
+    fn is_local(&self, name: &str) -> bool {
+        let program = &self.checker.program;
+        let package = format!("{name}.");
+        !program.is_type_name(name)
+            && !program.constants.contains_key(name)
+            && !program.modules.keys().any(|module| module == name || module.starts_with(&package))
+    }
+
     /// `mut name = value`, and what comes after it in its block.
     fn named(&mut self, name: &'a str, value: &'a Expr, rest: &'a [Stmt], at: Span) {
         let Some(place) = path(value) else { return };
+        if !self.is_local(place.root) {
+            return;
+        }
         let mut uses = Uses {
             name,
             checker: self.checker,

@@ -1,0 +1,5 @@
+def main(stdout: Stdout):
+    hp = {"ash": 70}
+    mut roster = hp
+    roster["vex"] = 90
+    stdout.print(hp)

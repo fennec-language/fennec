@@ -10,7 +10,7 @@ use fennec_layout::Layouts;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
 use crate::Shared;
-use crate::analysis::{Analysis, Whole, callees, whole};
+use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
 
 const ATTRIBUTES: &str = "attributes #0 = { nounwind \"frame-pointer\"=\"non-leaf\" }\n\
@@ -447,6 +447,7 @@ impl Emit<'_, '_, '_> {
             self.start_block(&format!("bb{at}"));
             for inst in &block.insts {
                 self.inst(&inst.kind, inst.span, at)?;
+                self.let_go_after(&inst.kind);
             }
             if let Some((list, limit)) = self.known.reservations.get(&at).cloned() {
                 self.reserve(LocalId(list), &limit)?;
@@ -1180,6 +1181,39 @@ impl Emit<'_, '_, '_> {
             InstKind::Builtin { dest, name, args, .. } => self.builtin(*dest, name, args, span),
             InstKind::Call { dest, function, args } => self.call(*dest, function, args, span),
             other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
+        }
+    }
+
+    /// A local read once lets go of its value right after that, rather than when the function
+    /// returns, so it doesn't still count as an owner when the next line changes what it read.
+    fn let_go_after(&mut self, inst: &InstKind) {
+        let (mut reads, mut writes) = (Vec::new(), Vec::new());
+        visit(inst, |operand| reads.push(operand.clone()), |local| writes.push(local));
+        // What's made from it may only be borrowing, or may stand for it.
+        let leans = writes.iter().any(|dest| {
+            self.known.is_borrowed(*dest) || self.known.is_taken(*dest) || self.known.alias(*dest).is_some()
+        });
+        if leans {
+            return;
+        }
+        let mut done_with: Vec<LocalId> = Vec::new();
+        for operand in reads {
+            let Operand::Local(mut local) = operand else { continue };
+            done_with.push(local);
+            // With a borrow finished, what it borrowed from is finished too.
+            while let Some(lender) = self.known.lender(local) {
+                done_with.push(lender);
+                local = lender;
+            }
+        }
+        for local in done_with {
+            if self.owns(local) && self.known.moves(local) && !writes.contains(&local) {
+                let kind = self.kinds.get(local.0).cloned().unwrap_or(Kind::Unit);
+                let (held, slot) = (self.temp(), self.slot(local));
+                self.line(&format!("{held} = load ptr, ptr {slot}"));
+                self.line(&format!("store ptr null, ptr {slot}"));
+                self.release_kind(&held, &kind);
+            }
         }
     }
 

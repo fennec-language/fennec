@@ -1,0 +1,2 @@
+{"width": 2, "height": 2, "_cells": ["Floor", "Wall", {"Door": {"locked": true}}, "Floor"]}
+Tile.Door(locked=True) True

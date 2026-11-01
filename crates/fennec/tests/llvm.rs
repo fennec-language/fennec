@@ -178,6 +178,29 @@ def main(stdout: Stdout):
     holder.packets.append(a)
     holder.packets[2].id = 5
     stdout.print(holder.packets.len(), keep.packets.len(), holder.packets[2].id, a.id)
+    mut kept = holder
+    copied = kept
+    kept.packets.append(a)
+    stdout.print(kept.packets.len(), copied.packets.len())
+    mut nested = kept
+    other = nested
+    nested.packets[0].data[1] = 123
+    stdout.print(nested.packets[0].data[1], other.packets[0].data[1], kept.packets[0].data[1])
+    mut walked = [1, 2, 3]
+    before = walked
+    for mut item in walked:
+        item = item * 2
+    stdout.print(walked[0], walked[2], before[0], before[2])
+    mut grows = [1, 2]
+    for item in grows:
+        grows[0] = item + 10
+        grows[1] = 40
+    stdout.print(grows[0], grows[1])
+    mut points = [Packet(id=1, data=[1]), Packet(id=2, data=[2])]
+    seen = points
+    for mut point in points:
+        point.id = point.id + 1
+    stdout.print(points[0].id, points[1].id, seen[0].id, seen[1].id)
 ",
     )
 }

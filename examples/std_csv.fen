@@ -1,56 +1,57 @@
-# `std.csv` reads and writes CSV. Every field is text, so a program converts what it needs.
-from std.csv import Csv
+# `std.csv` reads and writes CSV, with functions written in Fennec. Every field is text, so
+# a program converts what it needs.
+from std import csv
 
 SCORES = "name,score\nash,12\n\"vex, the third\",7\n"
 
 test "rows come back as written" for rows: list[list[str]]:
     # A row with no fields has no text to come back from.
     written = [row for row in rows if row.len() > 0]
-    assert Csv.loads(Csv.dumps(written))? == written
-    assert Csv.loads(Csv.dumps(written, delimiter="\t"), delimiter="\t")? == written
+    assert csv.loads(csv.dumps(written))? == written
+    assert csv.loads(csv.dumps(written, delimiter="\t"), delimiter="\t")? == written
 
 test "a field can hold anything in quotes":
     assert (
-        Csv.loads("\"a,b\",\"say \"\"hi\"\"\",\"two\nlines\",\"\"\n")?
+        csv.loads("\"a,b\",\"say \"\"hi\"\"\",\"two\nlines\",\"\"\n")?
         == [["a,b", "say \"hi\"", "two\nlines", ""]]
     )
     assert (
-        Csv.dumps([["a,b", "say \"hi\"", "two\nlines", "x\ry", "plain"]])
+        csv.dumps([["a,b", "say \"hi\"", "two\nlines", "x\ry", "plain"]])
         == "\"a,b\",\"say \"\"hi\"\"\",\"two\nlines\",\"x\ry\",plain\n"
     )
 
 test "lines can end in any of the usual ways":
-    assert Csv.loads("a,b\r\nc,d\re,f\ng,h")? == [["a", "b"], ["c", "d"], ["e", "f"], ["g", "h"]]
-    assert Csv.loads("\r\n\r\n")? == []
+    assert csv.loads("a,b\r\nc,d\re,f\ng,h")? == [["a", "b"], ["c", "d"], ["e", "f"], ["g", "h"]]
+    assert csv.loads("\r\n\r\n")? == []
 
 test "blank lines aren't rows, and empty fields are fields":
-    assert Csv.loads("")? == []
-    assert Csv.loads("\n\na\n\n")? == [["a"]]
-    assert Csv.loads(",\n,a\n")? == [["", ""], ["", "a"]]
-    assert Csv.loads("\"\"\n")? == [[""]]
-    assert Csv.loads("\"\"")? == [[""]]
-    assert Csv.loads("a,")? == [["a", ""]]
-    assert Csv.dumps([[""], ["", ""]]) == "\"\"\n,\n"
-    assert Csv.dumps([]) == ""
+    assert csv.loads("")? == []
+    assert csv.loads("\n\na\n\n")? == [["a"]]
+    assert csv.loads(",\n,a\n")? == [["", ""], ["", "a"]]
+    assert csv.loads("\"\"\n")? == [[""]]
+    assert csv.loads("\"\"")? == [[""]]
+    assert csv.loads("a,")? == [["a", ""]]
+    assert csv.dumps([[""], ["", ""]]) == "\"\"\n,\n"
+    assert csv.dumps([]) == ""
 
 test "a mark at the start of the text isn't part of it":
     mark = str.from_code(65279)?
-    assert Csv.loads(mark + "a,b\n")? == [["a", "b"]]
-    assert Csv.loads("a" + mark)? == [["a" + mark]]
-    assert Csv.loads("a\n" + mark + "b")? == [["a"], [mark + "b"]]
+    assert csv.loads(mark + "a,b\n")? == [["a", "b"]]
+    assert csv.loads("a" + mark)? == [["a" + mark]]
+    assert csv.loads("a\n" + mark + "b")? == [["a"], [mark + "b"]]
 
 test "the delimiter can be another character":
-    assert Csv.loads("a;b,c\n", delimiter=";")? == [["a", "b,c"]]
-    assert Csv.dumps([["a", "b;c", "d,e"]], delimiter=";") == "a;\"b;c\";d,e\n"
+    assert csv.loads("a;b,c\n", delimiter=";")? == [["a", "b,c"]]
+    assert csv.dumps([["a", "b;c", "d,e"]], delimiter=";") == "a;\"b;c\";d,e\n"
 
 test "records use the first row's names":
-    assert Csv.records("")? == []
-    assert Csv.records("a,b\n")? == []
-    assert Csv.records("a;b\n1;2\n", delimiter=";")? == [{"a": "1", "b": "2"}]
-    records = Csv.records(SCORES)?
+    assert csv.records("")? == []
+    assert csv.records("a,b\n")? == []
+    assert csv.records("a;b\n1;2\n", delimiter=";")? == [{"a": "1", "b": "2"}]
+    records = csv.records(SCORES)?
     assert records == [{"name": "ash", "score": "12"}, {"name": "vex, the third", "score": "7"}]
-    assert Csv.dumps_records(["name", "score"], records) == SCORES
-    assert Csv.dumps_records(["b", "a"], [{"a": "1", "c": "3"}], delimiter=";") == "b;a\n;1\n"
+    assert csv.dumps_records(["name", "score"], records) == SCORES
+    assert csv.dumps_records(["b", "a"], [{"a": "1", "c": "3"}], delimiter=";") == "b;a\n;1\n"
 
 def problem[T](found: Result[T, ParseError]) -> str:
     match found:
@@ -60,35 +61,35 @@ def problem[T](found: Result[T, ParseError]) -> str:
             "no problem"
 
 test "text that isn't CSV says where":
-    assert problem(Csv.loads("a,\"b\nc\nd")) == "this quote never ends at line 1, column 3"
+    assert problem(csv.loads("a,\"b\nc\nd")) == "this quote never ends at line 1, column 3"
     assert (
-        problem(Csv.loads("a\nb,\"c\"d\n"))
+        problem(csv.loads("a\nb,\"c\"d\n"))
         == "a field can't go on after its closing quote at line 2, column 6"
     )
     assert (
-        problem(Csv.loads("ab\"c\n"))
+        problem(csv.loads("ab\"c\n"))
         == "a quote in a field needs the whole field in quotes at line 1, column 3"
     )
     assert (
-        problem(Csv.loads("\"two\nlines\",\"x\"y"))
+        problem(csv.loads("\"two\nlines\",\"x\"y"))
         == "a field can't go on after its closing quote at line 2, column 11"
     )
     assert (
-        problem(Csv.loads("a\r\nb\""))
+        problem(csv.loads("a\r\nb\""))
         == "a quote in a field needs the whole field in quotes at line 2, column 2"
     )
     assert (
-        problem(Csv.records("a,b\n\n1\n"))
+        problem(csv.records("a,b\n\n1\n"))
         == "the first row sets 2 as the number of fields, but this row has 1 at line 3, column 1"
     )
     assert (
-        problem(Csv.records("a,b,a\n"))
+        problem(csv.records("a,b,a\n"))
         == "the first row has the same name twice at line 1, column 1"
     )
 
 def main(stdout: Stdout):
-    records = Csv.records(SCORES) else []
+    records = csv.records(SCORES) else []
     for record in records:
         stdout.print(record["name"], int(record["score"]) else 0)
-    stdout.print(Csv.loads("a,b\n1,2\n") else [])
-    stdout.write(Csv.dumps([["name", "note"], ["ash", "likes, commas"]]))
+    stdout.print(csv.loads("a,b\n1,2\n") else [])
+    stdout.write(csv.dumps([["name", "note"], ["ash", "likes, commas"]]))

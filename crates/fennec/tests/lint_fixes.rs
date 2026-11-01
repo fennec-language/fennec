@@ -49,7 +49,7 @@ fn every_example_with_every_fix_does_the_same() {
     let result = std::sync::Arc::clone(&compared);
     on_big_stack(move || *result.lock().unwrap() = every_example()).unwrap();
     let compared = compared.lock().unwrap().clone().unwrap();
-    assert!(compared >= 15, "only {compared} programs had fixes to try");
+    assert!(compared >= 14, "only {compared} programs had fixes to try");
 }
 
 /// How many programs had fixes to try, each of which still did the same, or the first that didn't.

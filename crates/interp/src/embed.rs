@@ -24,6 +24,7 @@ pub mod heap;
 pub mod layout;
 pub mod lists;
 pub mod objects;
+mod plans;
 pub mod regex;
 pub mod strings;
 mod tests;
@@ -189,7 +190,7 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
         callers: Vec::new(),
         spare_frames: Vec::new(),
         shared_names: Vec::new(),
-        heap: heap::Heap::new(std::mem::take(&mut tables.statics)),
+        heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes),
         tables,
         failure: None,
     }));

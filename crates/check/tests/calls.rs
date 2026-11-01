@@ -610,3 +610,32 @@ fn only_sum_takes_a_start() {
     let text = "def main(stdout: Stdout):\n    stdout.print(max([1], start=1))\n";
     assert_eq!(problems(text), ["`max` has no parameter called `start` @ 1"]);
 }
+
+#[test]
+fn a_literal_default_gives_its_type() {
+    let text = "enum Mode:\n    Fast\n    Slow\n\ndef scan(limit=8, ratio=-0.5, name='x', on=True, mode=Mode.Fast) -> str:\n    \
+        f'{limit + 1} {ratio * 2.0} {name.upper()} {not on} {mode}'\n\ndef main(stdout: Stdout):\n    \
+        stdout.print(scan(limit=2, mode=Mode.Slow))\n";
+    let empty: [&str; 0] = [];
+    assert_eq!(problems(text), empty);
+    let wrong = text.replace("scan(limit=2", "scan(limit='two'");
+    assert!(problems(&wrong).iter().any(|problem| problem.contains("`limit`")), "{:?}", problems(&wrong));
+}
+
+#[test]
+fn writing_the_type_a_literal_default_gives_is_an_error() {
+    let text = "def scan(limit: int = 8, label: str? = None, items: list[int] = []) -> int:\n    limit\n";
+    assert_eq!(problems(text), ["`limit` takes its type from its default, so `: int` isn't needed @ int"]);
+}
+
+#[test]
+fn a_default_that_isnt_a_literal_needs_its_type() {
+    let text = "def scan(items=[], nothing=None) -> int:\n    1\n";
+    assert_eq!(
+        problems(text),
+        [
+            "can't tell the type of `items` from its default @ []",
+            "can't tell the type of `nothing` from its default @ None",
+        ]
+    );
+}

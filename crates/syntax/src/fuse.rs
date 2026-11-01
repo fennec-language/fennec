@@ -161,6 +161,8 @@ pub struct Surroundings<'a> {
     pub generator: &'a dyn Fn(&str) -> Option<FnDef>,
     /// Whether a name is a local here, hiding anything global of that name.
     pub is_local: &'a dyn Fn(&str) -> bool,
+    /// The key of a method of what an expression gives, which `generator` looks up.
+    pub method: &'a dyn Fn(&Expr, &str) -> Option<String>,
 }
 
 /// `for names in iter: body` with no generator, if `iter` is a stage that can be fused.
@@ -175,6 +177,13 @@ pub fn expand(names: &[String], iter: &Expr, body: &[Stmt], around: &Surrounding
         ExprKind::Try { value, context: None } => called(names, value, body, around),
         ExprKind::Call { .. } => {
             enumerated(names, iter, body, around).or_else(|| called(names, iter, body, around))
+        }
+        // `for x in items[i]` where `[]` yields: the method's body copied in, like a call.
+        ExprKind::Index { object, index } => {
+            let key = (around.method)(object, "[]")?;
+            let args =
+                [object, index].map(|value| Arg { name: None, is_mut: false, value: (**value).clone() });
+            copied_in(names, (&key, &args, iter.span), body, around)
         }
         _ => None,
     }
@@ -283,10 +292,29 @@ fn rename_one(inner: &mut Expr, renamed: &[(String, String)]) {
 /// A `for` over a call to a yield function: its body, with each `yield` running the loop's.
 fn called(names: &[String], call: &Expr, body: &[Stmt], around: &Surroundings<'_>) -> Option<Expansion> {
     let ExprKind::Call { callee, args } = &call.kind else { return None };
-    let ExprKind::Name(key) = &callee.kind else { return None };
-    if (around.is_local)(key) {
-        return None;
+    match &callee.kind {
+        ExprKind::Name(key) if !(around.is_local)(key) => {
+            copied_in(names, (key, args, call.span), body, around)
+        }
+        // `object.method(args)`, the object being the method's `self`.
+        ExprKind::Attr { object, name, optional: false } => {
+            let key = (around.method)(object, name)?;
+            let mut with_self = vec![Arg { name: None, is_mut: false, value: (**object).clone() }];
+            with_self.extend(args.iter().cloned());
+            copied_in(names, (&key, &with_self, call.span), body, around)
+        }
+        _ => None,
     }
+}
+
+/// A `for` over a call to a yield function or method, with these arguments: its body, with
+/// each `yield` running the loop's.
+fn copied_in(
+    names: &[String],
+    (key, args, span): (&str, &[Arg], Span),
+    body: &[Stmt],
+    around: &Surroundings<'_>,
+) -> Option<Expansion> {
     let def = (around.generator)(key)?;
     let mut locals = Vec::new();
     if !can_copy(&def.body, &mut locals) || !def.generics.is_empty() || args.len() != def.params.len() {
@@ -304,7 +332,7 @@ fn called(names: &[String], call: &Expr, body: &[Stmt], around: &Surroundings<'_
         return None;
     }
     let generators = |name: &str| (around.generator)(name).is_some();
-    let (mut stmts, renamed) = bind_params(&def, args, call.span, &locals, &generators)?;
+    let (mut stmts, renamed) = bind_params(&def, args, span, &locals, &generators)?;
     let staged: Vec<String> = def
         .params
         .iter()
@@ -325,20 +353,20 @@ fn called(names: &[String], call: &Expr, body: &[Stmt], around: &Surroundings<'_
         }
     }
     let leaving = exits_loop(body);
-    let stop = hidden("stop", call.span);
-    let span = written_here(call.span);
-    let run = if leaving { one_time_body(body, &stop, span) } else { body.to_vec() };
+    let stop = hidden("stop", span);
+    let written = written_here(span);
+    let run = if leaving { one_time_body(body, &stop, written) } else { body.to_vec() };
     let stopping = leaving.then_some(stop.as_str());
-    replace_yields(&mut copy, names, &run, stopping, span);
+    replace_yields(&mut copy, names, &run, stopping, written);
     if leaving {
-        stmts.push(binding(&stop, Expr { kind: ExprKind::Bool(false), span }, true));
-        copy.push(Stmt { kind: StmtKind::Break, span });
-        let always = Expr { kind: ExprKind::Bool(true), span };
-        stmts.push(Stmt { kind: StmtKind::While { cond: always, body: copy }, span });
+        stmts.push(binding(&stop, Expr { kind: ExprKind::Bool(false), span: written }, true));
+        copy.push(Stmt { kind: StmtKind::Break, span: written });
+        let always = Expr { kind: ExprKind::Bool(true), span: written };
+        stmts.push(Stmt { kind: StmtKind::While { cond: always, body: copy }, span: written });
     } else {
         stmts.extend(copy);
     }
-    Some(Expansion { stmts, copied: Some(key.clone()) })
+    Some(Expansion { stmts, copied: Some(key.to_owned()) })
 }
 
 /// A loop's body that can leave early, as a loop that runs once. `continue` ends the body,

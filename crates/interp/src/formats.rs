@@ -3,6 +3,7 @@
 
 mod decode;
 mod dump;
+mod ids;
 mod json;
 mod toml;
 mod toml_value;
@@ -166,7 +167,8 @@ impl Interp<'_> {
     ) -> Result<Value, Diagnostic> {
         let read = self.format_builtin(name, args, span)?;
         let Value::Ok(value) = read else { return Ok(read) };
-        match self.decode(value.as_ref().clone(), ty, "", span) {
+        let read = self.decode(value.as_ref().clone(), ty, "", span);
+        match read.and_then(|value| self.check_ids(&value, ty).map(|()| value)) {
             Ok(value) => Ok(Value::Ok(Rc::new(value))),
             Err(message) => {
                 let fields = vec![

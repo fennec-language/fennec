@@ -525,6 +525,12 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
 /// taken out, changed and put back, with nothing able to see it in between.
 fn find_borrows(function: &Function, known: &mut Analysis) {
     for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        // A character's block lasts the whole run.
+        if let InstKind::Builtin { dest: Some(dest), name, .. } = &inst.kind
+            && name == "str.char_at_byte"
+        {
+            known.borrowed.insert(dest.0);
+        }
         if let InstKind::GetField { dest, object: Operand::Local(from), field } = &inst.kind
             && known.writes.get(dest.0) == Some(&1)
         {

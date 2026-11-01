@@ -450,6 +450,29 @@ pub extern "C" fn free(address: i64) {
     run_abandons();
 }
 
+/// `free`, for a block native code knows is a string's. A string's block holds no
+/// addresses, so freeing it needs none of the looking `free` does. A block that isn't a
+/// string's is freed as `free` would.
+pub extern "C" fn free_text(address: i64) {
+    let freed = with(|state| {
+        let at = usize::try_from(address).ok()?;
+        let block = state.heap.blocks.remove(at)?;
+        if !is_text(state, &block) {
+            state.heap.blocks.insert(block);
+            return None;
+        }
+        let texts = state.heap.texts.get_mut();
+        if !texts.is_empty() {
+            texts.remove(&at);
+        }
+        state.heap.recycle(block);
+        Some(())
+    });
+    if freed.is_none() {
+        free(address);
+    }
+}
+
 /// Says what closes what's open in a generator with this shape that's let go partway. Only
 /// shapes given here are treated specially when they're freed.
 pub extern "C" fn set_abandon(shape: i64, abandon: extern "C" fn(i64)) {

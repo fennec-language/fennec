@@ -133,6 +133,26 @@ mod tests {
     }
 
     #[test]
+    fn a_string_is_freed_as_one_and_anything_else_as_free_would() {
+        let shapes =
+            vec![Rc::new(Element::Str), Rc::new(Element::Struct { name: "S".into(), fields: Vec::new() })];
+        start(
+            &Module { items: Vec::new() },
+            Tables { shapes, ..Tables::default() },
+            crate::Inputs::default(),
+        )
+        .unwrap();
+        let text = with(|state| heap::text_address(state, "a string long enough to have its own block"));
+        heap::free_text(text);
+        assert_eq!(word(text, 0), None);
+        let other = heap::alloc(1);
+        heap::free_text(other);
+        assert_eq!(word(other, 0), None);
+        heap::free_text(0);
+        finish();
+    }
+
+    #[test]
     fn numbers_format_without_a_temporary() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
         start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();

@@ -65,8 +65,18 @@ impl Options {
 }
 
 /// Runs the tests a change affects before a program runs, giving back how to stop if one fails.
-/// When no file has changed since they last passed, this only reads and hashes the files.
+/// When no file has changed since they last passed, this reads little or nothing.
 pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
+    // A kit whose files are as they were when all its tests passed needs nothing read at all.
+    if let Some(cache) = &crate::run::cache() {
+        let name = crate::run::absolute(path);
+        if let Some(state) = crate::verdict::last_state((cache, &name))
+            && let Some(files) = crate::verdict::kit_files(path, Some(&state))
+            && crate::verdict::same_files(&state, &files)
+        {
+            return None;
+        }
+    }
     let texts = fennec_kit::all_texts(std::path::Path::new(path))?;
     if !texts.iter().any(|(_, text)| text.contains("test \"")) {
         return None;

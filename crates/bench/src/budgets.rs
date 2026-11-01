@@ -41,7 +41,11 @@ const VERDICT: Budget =
 const MOST_VERDICT_INSTRUCTIONS: u64 = 7_500_000_000;
 
 const RUN: Budget =
-    Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: false };
+    Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: true };
+
+/// What starting an unchanged program may run: 100 ms, at the same 7.4 billion a second as a
+/// verdict.
+const MOST_RUN_INSTRUCTIONS: u64 = 740_000_000;
 
 /// How many times the work an edit's verdict may be on the big kit, against one a tenth its size.
 /// It shouldn't depend on the size of a project at all. Reading and hashing every file does, by
@@ -191,7 +195,9 @@ fn measure(kit: &Kit, runs: usize) -> Result<Vec<Measured>, String> {
         kit.format(runs)?,
     ];
     measured.push(kit.verdict(runs)?);
-    measured.push(kit.repeated(RUN, &["run"], runs)?);
+    let mut run = kit.repeated(RUN, &["run"], runs)?;
+    run.counted = kit.counted(&["run"], MOST_RUN_INSTRUCTIONS);
+    measured.push(run);
     Ok(measured)
 }
 
@@ -313,7 +319,7 @@ impl Kit {
         }
         let edited = original.replace(EDITED_LINE, "    y = x + 300 + 1000\n");
         std::fs::write(&path, edited).map_err(|err| err.to_string())?;
-        let counted = self.counted_verdict();
+        let counted = self.counted(&["test"], MOST_VERDICT_INSTRUCTIONS);
         std::fs::write(&path, original).map_err(|err| err.to_string())?;
         Ok(Measured { budget: VERDICT, warm: median(times), cold: Some(cold), counted })
     }
@@ -325,14 +331,15 @@ fn ran_one_test(printed: &str) -> bool {
 }
 
 impl Kit {
-    /// How many instructions `fennec test` runs just after an edit, where they can be counted.
-    fn counted_verdict(&self) -> Option<Counted> {
+    /// How many instructions a command runs, against the most it may, where they can be counted.
+    fn counted(&self, args: &[&str], most: u64) -> Option<Counted> {
         let folder = self.dir.join("counting");
         std::fs::create_dir_all(&folder).ok()?;
         let counter = Counter::find(&folder)?;
-        let program = Program { command: self.fennec.clone(), args: vec!["test".to_owned()], stdin: None };
+        let args = args.iter().map(|arg| (*arg).to_owned()).collect();
+        let program = Program { command: self.fennec.clone(), args, stdin: None };
         let instructions = counter.count_set_up(&program, |command| self.set_up(command))?;
-        Some(Counted { instructions, most: MOST_VERDICT_INSTRUCTIONS })
+        Some(Counted { instructions, most })
     }
 }
 

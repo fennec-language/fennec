@@ -54,6 +54,12 @@ pub(crate) fn kit_files(path: &str, state: Option<&KitState>) -> Option<Vec<KitF
     paths.into_iter().map(|(module, path)| kit_file(module, &path, state)).collect()
 }
 
+/// Whether a kit's files have the text they had when `state` was noted.
+pub(crate) fn same_files(state: &KitState, files: &[KitFile]) -> bool {
+    state.files.len() == files.len()
+        && files.iter().all(|file| state.files.get(&file.module).is_some_and(|known| known.text == file.text))
+}
+
 /// A kit's modules, to tell which one a file holds from how it's shown.
 pub(crate) struct Modules<'f>(HashSet<&'f str>);
 

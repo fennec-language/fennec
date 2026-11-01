@@ -144,3 +144,35 @@ fn the_interpreter_and_the_benchmarks_flag_dont_run_tests() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_kit_started_from_what_it_kept_behaves_the_same() {
+    let dir = scratch("image").unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(dir.join("kit.toml"), manifest).unwrap();
+    let lib = |value: &str| format!("def value() -> int:\n    {value}\n");
+    std::fs::write(dir.join("src/lib.fen"), lib("1")).unwrap();
+    let main = "from lib import value\n\ndef main(stdout: Stdout):\n    stdout.print(value())\n    stdout.print([1][value()])\n";
+    std::fs::write(dir.join("src/main.fen"), main).unwrap();
+    let home = dir.join("home");
+    let shown = |output: &Output| String::from_utf8_lossy(&output.stderr).into_owned();
+    let first = run(&home, &dir).unwrap();
+    assert_eq!(first.status.code(), Some(1));
+    assert!(shown(&first).contains("src/main.fen"), "{}", shown(&first));
+    for _ in 0..2 {
+        let again = run(&home, &dir).unwrap();
+        assert_eq!(stdout(&again), stdout(&first));
+        assert_eq!(shown(&again), shown(&first), "a failure points at the source just the same");
+    }
+    // Long enough that a file's time can be told from when it was noted.
+    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    assert_eq!(stdout(&run(&home, &dir).unwrap()), stdout(&first));
+    let noted = run(&home, &dir).unwrap();
+    assert_eq!(shown(&noted), shown(&first), "started without reading anything");
+
+    std::fs::write(dir.join("src/lib.fen"), lib("0")).unwrap();
+    assert_eq!(stdout(&run(&home, &dir).unwrap()), "0\n1\n", "an edit is seen");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

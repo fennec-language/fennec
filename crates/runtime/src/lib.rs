@@ -179,6 +179,7 @@ export! {
     fennec_case_of(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => objects::case_of(a0, a1, a2, a3);
     fennec_alloc(a0: i64) -> i64 => heap::alloc(a0);
     fennec_free(a0: i64) => heap::free(a0);
+    fennec_set_abandon(a0: i64, a1: extern "C" fn(i64)) => heap::set_abandon(a0, a1);
     fennec_unshare(a0: i64) -> i64 => heap::unshare(a0);
     fennec_box_to_value(a0: i64) -> i64 => heap::to_value(a0);
     fennec_box_from_value(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => heap::from_value(a0, a1, a2, a3);
@@ -205,5 +206,13 @@ export! {
 /// Runs a compiled executable's program: its `main` calls this.
 #[unsafe(no_mangle)]
 pub extern "C" fn fennec_aot_run(entry: extern "C" fn(i64), length: i64) -> i32 {
-    aot::run(entry, length)
+    aot::run(entry, length, stop)
+}
+
+/// Ends the process now, for a failure in cleanup that nothing can pass on.
+fn stop(code: i32) {
+    unsafe extern "C" {
+        safe fn exit(code: i32) -> !;
+    }
+    exit(code);
 }

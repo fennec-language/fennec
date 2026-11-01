@@ -130,12 +130,14 @@ fn unit<'p>(
     module.defined.insert(&function.name);
     // Small functions come along, with the small functions they call, to be inlined and thrown
     // away.
-    let made = function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
-        InstKind::MakeClosure { function, .. } => Some(function.as_str()),
-        _ => None,
-    });
+    let made = |function: &'p Function| {
+        function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
+            InstKind::MakeClosure { function, .. } => Some(function.as_str()),
+            _ => None,
+        })
+    };
     let mut copies: Vec<&Function> = Vec::new();
-    let mut waiting: Vec<&str> = callees(function).chain(made).collect();
+    let mut waiting: Vec<&str> = callees(function).chain(made(function)).collect();
     while let Some(name) = waiting.pop() {
         let Some(callee) = whole.functions.get(name).copied() else { continue };
         if name == function.name
@@ -145,7 +147,7 @@ fn unit<'p>(
             continue;
         }
         copies.push(callee);
-        waiting.extend(callees(callee));
+        waiting.extend(callees(callee).chain(made(callee)));
     }
     for copy in &copies {
         module.defined.insert(&copy.name);

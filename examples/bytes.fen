@@ -1,3 +1,5 @@
+# decision: `bytes` is binary data, a run of ints from 0 to 255.
+
 # `bytes` is binary data: a run of ints from 0 to 255. Text becomes bytes with `encode`,
 # as UTF-8, and comes back with `decode`, which fails on bytes that aren't text.
 

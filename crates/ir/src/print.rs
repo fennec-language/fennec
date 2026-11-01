@@ -89,12 +89,19 @@ impl fmt::Display for Operand {
     }
 }
 
+fn unary_symbol(op: UnaryOp) -> &'static str {
+    match op {
+        UnaryOp::Neg => "-",
+        UnaryOp::Not => "not ",
+        UnaryOp::BitNot => "~",
+    }
+}
+
 impl fmt::Display for InstKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             InstKind::Copy { dest, value } => write!(f, "{dest} = {value}"),
-            InstKind::Unary { dest, op: UnaryOp::Neg, value } => write!(f, "{dest} = -{value}"),
-            InstKind::Unary { dest, op: UnaryOp::Not, value } => write!(f, "{dest} = not {value}"),
+            InstKind::Unary { dest, op, value } => write!(f, "{dest} = {}{value}", unary_symbol(*op)),
             InstKind::Binary { dest, op, lhs, rhs } => write!(f, "{dest} = {lhs} {} {rhs}", op.symbol()),
             InstKind::Make { dest, type_name, fields } => {
                 let fields: Vec<String> = fields.iter().map(ToString::to_string).collect();

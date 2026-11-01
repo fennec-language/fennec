@@ -144,7 +144,7 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 Benchmarks do realistic work that neither side's optimizer can delete.
 
-"Fully optimized" means optimization level 3, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. Twins are built for x86-64-v3 on x86-64 and for the baseline CPU on Arm, so their counts are reproducible and don't hold the twin back against a JIT that uses the running CPU's features.
+"Fully optimized" means optimization level 3, fat link-time optimization, one codegen unit, abort on panic and no debug assertions, with overflow checks on. Fennec always checks for overflow, so the target does the same work. Numbers against twins without those checks are kept in the benchmark reports for reference, labeled as such. Twins are built for x86-64-v3 on x86-64 and for the baseline CPU on Arm, so their counts are reproducible and don't hold the twin back against a JIT that uses the running CPU's features.
 
 Where a twin's standard library choice measures something Fennec doesn't do, like a slower default hash in `dicts`, the target uses a twin with the same hash as Fennec, and the standard default is shown as a separately labeled number.
 *Why:* The whole 20-benchmark suite meeting these targets shows the language's fundamentals carry well.
@@ -612,6 +612,8 @@ total = sum(row.amount for row in rows)
 - `yield` is allowed inside `with`. A generator left partway closes what it holds when its owner goes away.
 - A failure comes out when the item that fails is asked for, and acts like a failure from a call: the loop exits, `with` blocks close, and it passes up. A generator that wants to go on past bad items yields errors as values. Getting one that can fail takes `?`, as in `for x in checked()?:`.
 - Printing one shows `<Iterator[int]>` and doesn't use it.
+
+A stage used once becomes part of what uses it. A stage kept in a name that doesn't change moves to where it's used, leaving behind what it works out when it's made, and a `for` over a stage becomes a plain loop, with a yield function's body copied in. The order things happen in stays the same, so this is purely about speed. Anything that can't fuse, like a stage that's passed around, still works, by asking for each item.
 
 *Why:* Streaming lets a chain of stages read like the steps it is, handles input too big to hold, and can compile to a single loop with nothing allocated per item. Being used once is what keeps that honest: a second loop quietly finding nothing is Python's trap.
 

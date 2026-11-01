@@ -483,8 +483,7 @@ impl<'a> Lowerer<'a, '_> {
             ExprKind::Index { .. } if matches!(self.checked_expr(expr), Some(Ty::Dict(..))) => None,
             // Anything else, like the result of a call: what the checker says it gives.
             _ => {
-                let signatures = self.signatures;
-                let ty = signatures.expr_type(self.current_key(), expr.span)?;
+                let ty = self.checked_type(expr.span)?;
                 Some(self.layouts.ty(ty))
                     .filter(|ty| matches!(ty, Ty::Struct(_) | Ty::Boxed(_) | Ty::Dict(..)))
             }

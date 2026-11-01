@@ -37,7 +37,7 @@ mod types;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fennec_syntax::{Diagnostic, Module, Span};
+use fennec_syntax::{Diagnostic, Expr, Module, Span};
 
 pub use types::Type;
 
@@ -92,7 +92,11 @@ pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> 
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
-    if !checked.cases.is_empty() || !checked.float_sums.is_empty() || !checked.generator_types.is_empty() {
+    if !checked.cases.is_empty()
+        || !checked.float_sums.is_empty()
+        || !checked.generator_types.is_empty()
+        || !checked.defaults.is_empty()
+    {
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
             let span = (expr.span.start, expr.span.end);
             if let Some(owner) = checked.cases.get(&span) {
@@ -101,11 +105,15 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             if checked.float_sums.contains(&span) {
                 fennec_syntax::visit::add_float_start(expr);
             }
+            if let Some(defaults) = checked.defaults.get(&span) {
+                fennec_syntax::visit::add_defaults(expr, defaults);
+            }
             if let Some(shown) = checked.generator_types.get(&span) {
                 fennec_syntax::visit::name_generator_type(expr, shown);
             }
         });
     }
+    fennec_syntax::fuse::stored_stages(module);
     checked.into_signatures()
 }
 
@@ -125,6 +133,8 @@ pub struct Checked {
     cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     float_sums: BTreeSet<(u32, u32)>,
+    /// The defaults each call leaves out, to write into it.
+    defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.
     generator_types: BTreeMap<(u32, u32), String>,
 }
@@ -305,4 +315,6 @@ pub struct ParamType {
     pub name: String,
     pub ty: Type,
     pub is_mut: bool,
+    /// What it holds when a call leaves it out.
+    pub default: Option<Expr>,
 }

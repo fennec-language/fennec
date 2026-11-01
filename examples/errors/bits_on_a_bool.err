@@ -1,0 +1,7 @@
+error: `&` works on ints, but this is a bool
+ --> examples/errors/bits_on_a_bool.fen:2:18
+  |
+2 |     stdout.print(True & False)
+  |                  ^^^^^^^^^^^^
+  |
+  = help: for bools, write `and`

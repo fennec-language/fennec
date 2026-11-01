@@ -28,7 +28,7 @@ macro_rules! fields {
 fields!(Module { items });
 fields!(FnDef { name, generics, params, ret, arrow, body, span });
 fields!(Generic { name, bounds, span });
-fields!(Param { name, ty, is_mut, is_self, span });
+fields!(Param { name, ty, is_mut, is_self, default, span });
 fields!(TypeExpr { name, args, optional, span });
 fields!(TypeDef { name, generics, fields, cases, methods, span });
 fields!(Field { name, ty, default, rule, span });
@@ -62,10 +62,11 @@ macro_rules! units {
     };
 }
 
-units!(UnaryOp[Neg, Not]);
+units!(UnaryOp[Neg, Not, BitNot]);
 units!(CompKind[List, Generator, Set, Dict]);
 units!(BinOp[
     Add, Sub, Mul, Div, FloorDiv, Mod, Pow, Eq, NotEq, Lt, LtEq, Gt, GtEq, And, Or, In, NotIn, Is, IsNot,
+    BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight,
 ]);
 
 impl Encode for Item {

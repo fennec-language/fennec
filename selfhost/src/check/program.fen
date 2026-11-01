@@ -110,6 +110,12 @@ struct Program:
             self.modules.append(imported.alias else ".".join(imported.module))
 
     def add_type(mut self, type_def: TypeDef, kind: TypeKind, prelude: bool):
+        # A program's own type replaces a standard library type of the same name, methods too.
+        if not prelude:
+            methods = f"{type_def.name}."
+            for key in self.functions.keys():
+                if self.functions[key].prelude and key.startswith(methods):
+                    self.functions.pop(key)
         for method in type_def.methods:
             self.add_method(type_def.name, method, prelude, [])
         self.types[type_def.name] = TypeInfo(kind=kind, type_def=type_def, prelude=prelude)
@@ -125,7 +131,7 @@ struct Program:
         elif name in built_in_types() and not prelude:
             self.problems.append(not_own(name, "is built in", extension))
             return
-        elif name == "str" or name == "list":
+        elif name in ["str", "list", "dict", "set"]:
             # The standard library gives built-in types methods, like `str`'s `def *`.
             pass
         elif self.is_interface(name):
@@ -166,10 +172,14 @@ struct Program:
         name = extension.name
         written = [generic.name for generic in extension.generics]
         mut declared = self.type_params(name)
-        if name == "list":
+        if name == "list" or name == "set":
             if written.len() == 1:
                 return None
             declared = ["T"]
+        if name == "dict":
+            if written.len() == 2:
+                return None
+            declared = ["K", "V"]
         if written == declared:
             return None
         if declared.len() == 0:

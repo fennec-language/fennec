@@ -17,6 +17,7 @@ cargo build --release -p fennec -p fennec-bench
 | Strings and text | `strings`, `json`, `k_nucleotide`, `regex` |
 | Structs in a game loop | `particles` |
 | Sorting and generics | `sort`, `generics` |
+| Streaming | `generators`, stages chained through names and functions |
 | Closures and iterators | `comprehensions`, `closures` |
 | Object-heavy code with dispatch | `richards`, `deltablue` |
 | What falls off the fast path | `dict_field`, `struct_keys`, `method_chain`, `comp_helpers` |
@@ -42,6 +43,8 @@ Instructions aren't time, though. They can disagree by a lot, in either directio
 The table also counts the places in each kernel's compiled code that aren't native, from `fennec dev fallbacks`, and the run warns about them, since code that falls off the fast path prints nothing when it runs.
 
 Each kernel also has to print exactly what its target expects, which the target file holds as a hash.
+
+Targets come from twins built with overflow checks on, because Fennec always checks and that's the work being compared. The run's last column shows the percentage against the same twins without those checks, from `targets/unchecked/`. It's for reference only: nothing is judged on it.
 
 ## The floor and the ratchet
 

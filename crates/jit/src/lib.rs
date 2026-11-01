@@ -15,6 +15,7 @@ mod types;
 pub use lower::notes::Note;
 pub use tests_native::{BenchRun, NativeTests, run_bench, run_tests};
 
+use std::collections::HashSet;
 use std::io::Write;
 
 use fennec_check::Signatures;
@@ -237,9 +238,13 @@ pub fn build(module: &Module, sources: &fennec_syntax::Sources) -> Result<Built,
 /// runs, with why, and each operation handed to the interpreter or the runtime's objects.
 /// In source order, the standard library's left out.
 pub fn fallbacks(module: &Module) -> Result<Vec<Note>, Diagnostic> {
-    let signatures = fennec_check::check(module).map_err(|diagnostics| {
+    // As a run sees it, with stages already moved to where they're used.
+    let mut module = module.clone();
+    let module = &mut module;
+    let signatures = fennec_check::check_to_run(module).map_err(|diagnostics| {
         diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default()))
     })?;
+    let module = &*module;
     let prelude = fennec_syntax::prelude_modules().unwrap_or_default();
     let program = types::Program::from_module(module, prelude, &signatures)?;
     let (_, _, compilation) = lower::compile(&program, &signatures, 0, None)?;
@@ -250,6 +255,7 @@ pub fn fallbacks(module: &Module) -> Result<Vec<Note>, Diagnostic> {
         loops: 0,
         compiled_in: function.to_owned(),
     };
+    let fused = fused_generators(&program, &compilation.notes);
     let mut notes: Vec<Note> = compilation
         .interpreted
         .iter()
@@ -257,12 +263,14 @@ pub fn fallbacks(module: &Module) -> Result<Vec<Note>, Diagnostic> {
         .map(|(function, why)| {
             whole(function, format!("the interpreter runs the whole function: {}", why.message))
         })
-        .chain(program.excluded.iter().map(|function| {
-            whole(
-                function,
-                "the interpreter runs the whole function: it's a generator or holds a `def`".to_owned(),
-            )
-        }))
+        .chain(program.excluded.iter().filter(|function| !fused.contains(function.as_str())).map(
+            |function| {
+                whole(
+                    function,
+                    "the interpreter runs the whole function: it's a generator or holds a `def`".to_owned(),
+                )
+            },
+        ))
         .chain(compilation.notes)
         .filter(|note| !note.span.in_prelude())
         .collect();
@@ -282,4 +290,28 @@ fn definition(module: &Module, key: &str) -> Option<Span> {
         }
         _ => None,
     })
+}
+
+/// The yield functions that are only ever copied into the loops over them, so nothing runs
+/// them in the interpreter.
+fn fused_generators(program: &types::Program<'_>, notes: &[Note]) -> HashSet<String> {
+    let mut running: Vec<&str> = program
+        .generators
+        .keys()
+        .map(String::as_str)
+        .filter(|key| notes.iter().any(|note| note.what == format!("the interpreter calls `{key}`")))
+        .collect();
+    let mut at = 0;
+    while let Some(key) = running.get(at).copied() {
+        at += 1;
+        let Some(def) = program.generators.get(key) else { continue };
+        for name in fennec_syntax::fuse::names_in(&def.body) {
+            if let Some((other, _)) = program.generators.get_key_value(&name)
+                && !running.contains(&other.as_str())
+            {
+                running.push(other);
+            }
+        }
+    }
+    program.generators.keys().filter(|key| !running.contains(&key.as_str())).cloned().collect()
 }

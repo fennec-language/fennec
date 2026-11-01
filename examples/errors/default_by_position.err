@@ -1,0 +1,7 @@
+error: `times` has a default, so it's passed by name
+ --> examples/errors/default_by_position.fen:5:31
+  |
+5 |     stdout.print(repeat("ab", 3))
+  |                               ^
+  |
+  = help: write `times=...`

@@ -1,3 +1,5 @@
+# decision: `extend` adds methods to a type from another file of the same kit.
+
 # `extend` adds methods to a type outside its declaration, usually from another file of the
 # same kit. The methods are the type's own: they're called, and checked, like any other.
 

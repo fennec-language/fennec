@@ -1,0 +1,33 @@
+## `set`'s methods written in Fennec. Adding, removing and walking its items are machine
+## operations the engines provide. A new set keeps `self`'s items first, in their order.
+extend set[T: Hashable]:
+    ## Adds every item of `more`.
+    def update(mut self, more: set[T]):
+        for item in more:
+            self.add(item)
+
+    ## The items in either set.
+    def union(self, other: set[T]) -> set[T]:
+        mut found = set(self)
+        found.update(other)
+        found
+
+    ## The items in both sets.
+    def intersection(self, other: set[T]) -> set[T]:
+        {item for item in self if item in other}
+
+    ## The items of this set that aren't in `other`.
+    def difference(self, other: set[T]) -> set[T]:
+        {item for item in self if item not in other}
+
+    ## Whether every item is in `other`.
+    def is_subset(self, other: set[T]) -> bool:
+        all(item in other for item in self)
+
+    ## Whether every item of `other` is in this set.
+    def is_superset(self, other: set[T]) -> bool:
+        other.is_subset(self)
+
+    ## Whether the sets have no items in common.
+    def is_disjoint(self, other: set[T]) -> bool:
+        not any(item in other for item in self)

@@ -113,6 +113,11 @@ impl Parser {
             Tok::P(Punct::MinusEq) => Some(BinOp::Sub),
             Tok::P(Punct::StarEq) => Some(BinOp::Mul),
             Tok::P(Punct::SlashEq) => Some(BinOp::Div),
+            Tok::P(Punct::AmpEq) => Some(BinOp::BitAnd),
+            Tok::P(Punct::PipeEq) => Some(BinOp::BitOr),
+            Tok::P(Punct::CaretEq) => Some(BinOp::BitXor),
+            Tok::P(Punct::ShiftLeftEq) => Some(BinOp::ShiftLeft),
+            Tok::P(Punct::ShiftRightEq) => Some(BinOp::ShiftRight),
             _ => return Ok(StmtKind::Expr(target)),
         };
         self.advance();

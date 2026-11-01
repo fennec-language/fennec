@@ -1,0 +1,30 @@
+# Pinned with rustc 1.99.0 (b940084d7 2026-09-28).
+# Written by `fennec-bench pin`. Only the last column is edited by hand: `yes` once a kernel
+# reaches the JIT's floor, so it can't drop below it again.
+# kernel instructions micros output source enforced
+binary_trees 557506961 0 085da71cd358d51a ead86640e9975b37 no
+closures 115138879 0 543f575536aed548 a744fdad0a82278a no
+comp_helpers 110649599 0 d936ea6b50a54c61 988c4acf2d3eadce no
+comprehensions 86547839 0 87157abf370b4b8b c4a5957e3cddd893 no
+deltablue 98823582 0 038fdc18a6296043 5419347750a33690 no
+dict_field 95308699 0 eb0eceb68b3abd67 4b861ea430aa0aa2 no
+dicts 83381154 0 03f09d5e6aacdd93 f3f7672ae5da1df2 no
+dicts.std 256418244 0 03f09d5e6aacdd93 87059166fc420392 no
+fannkuch 106881253 0 baaaef315c659f3c 60bc9da8c4bd86df no
+fib 293204212 0 c1a7256e0480b2dc 9fd3e96e952c4d92 no
+generators 231603525 0 c5580b8a0b8c1548 6de771f8e2a3a643 no
+generics 97316013 0 abee1c81ec22e56d 86317650d256b575 no
+json 152556999 0 5bc9266e7e6f04df 505ff6fb57a3f819 no
+k_nucleotide 242354504 0 1542cb4fe1d1d1d7 866e603e6b0a9e7f no
+mandelbrot 78699499 0 c573d05d2a7a670c 0c29d0217007938c no
+method_chain 122616522 0 3eeacc007c59ce14 35778e83eb4375cb no
+nbody 77705324 0 4d092d7db6fae7b2 2a7c803ede255443 no
+particles 48450237 0 9e927a27bf9d8df9 6892dd618c1632ed no
+regex 778962186 0 bee675fb854041e9 0303b9aa3220aa0e no
+richards 109153098 0 c34a6cd35b11d1b8 db7f6b9962f9b4c6 no
+selfhost 59480684 0 2832684229ced3ed - no
+sieve 130398753 0 84a70b39ecced192 032ffa192568f63f no
+sort 238088729 0 bd713ad39cc2e9f8 119ad39ea06fd9f6 no
+spectral_norm 58219653 0 b4e227d5abb9fd3a f9de590075b4f0d7 no
+strings 180436267 0 f1a0bd22994baaf5 51aa1c281149b6ee no
+struct_keys 32332353 0 3d6af1c7caec676c ea35015993dfedc7 no

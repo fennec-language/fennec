@@ -37,6 +37,8 @@ pub(crate) struct Program<'m> {
     pub(crate) layouts: Layouts,
     /// Functions and methods the JIT doesn't try to compile, like generators.
     pub(crate) excluded: Vec<String>,
+    /// The yield functions, which a loop over one can take a copy of.
+    pub(crate) generators: HashMap<String, FnDef>,
     pub(crate) main_span: Span,
     /// The standard library modules the program imports, by the name it uses them under,
     /// like `math` in `math.sqrt(x)` or `std.math` in `std.math.sqrt(x)`.
@@ -160,15 +162,20 @@ impl<'m> Program<'m> {
         }
         let mut functions = Vec::new();
         let mut excluded = Vec::new();
+        let mut generators = HashMap::new();
         let mut main_span = None;
         let mut add = |def: &'m FnDef, key: String, from_prelude: bool| {
             if signatures.get(&key).is_none() {
                 return;
             }
-            match function(def, key.clone(), signatures, &layouts) {
-                Some(function) => functions.push(Function { prelude: from_prelude, ..function }),
-                None => excluded.push(key),
+            if let Some(function) = function(def, key.clone(), signatures, &layouts) {
+                functions.push(Function { prelude: from_prelude, ..function });
+                return;
             }
+            if !from_prelude && key == def.name && fennec_syntax::fuse::has_yield(&def.body) {
+                generators.insert(key.clone(), def.clone());
+            }
+            excluded.push(key);
         };
         let modules = prelude.iter().map(|module| (module, true)).chain(std::iter::once((module, false)));
         for (item, from_prelude) in modules
@@ -216,7 +223,7 @@ impl<'m> Program<'m> {
         }
         let (modules, constants) = (std_modules(module), literal_constants(prelude, module));
         let ir = std::rc::Rc::new(typed_ir(module, signatures, &functions));
-        Ok(Program { ir, functions, layouts, excluded, main_span, modules, constants })
+        Ok(Program { ir, functions, layouts, excluded, generators, main_span, modules, constants })
     }
 }
 

@@ -180,6 +180,9 @@ struct Tree:
         ty = param.ty
         if ty is not None:
             self.write_type_expr(ty)
+        default = param.default
+        if default is not None:
+            self.write_expr(default)
         self.close()
 
     def write_type_expr(mut self, ty: TypeExpr):
@@ -352,7 +355,7 @@ struct Tree:
         span = expr.span
         match expr.kind:
             case .Unary(op, operand):
-                self.open("unary " + ("-" if op == .Neg else "not"), span)
+                self.open("unary " + op.symbol(), span)
                 self.write_expr(operand)
             case .Binary(op, lhs, rhs):
                 self.open(f"binary {op.symbol()}", span)

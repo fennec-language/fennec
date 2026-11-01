@@ -158,10 +158,14 @@ pub(crate) enum Punct {
     Arrow,
     FatArrow,
     Question,
-    /// `&`, which joins the interfaces a type parameter has to fit: `T: Ordered & Hashable`.
+    /// `&`, on ints and joining the interfaces a type parameter has to fit: `T: Ordered & Hashable`.
     Amp,
-    /// `|`, which separates the alternatives of a `case`: `case .Int(_) | .Float(_):`.
+    /// `|`, on ints and separating the alternatives of a `case`: `case .Int(_) | .Float(_):`.
     Pipe,
+    Caret,
+    Tilde,
+    ShiftLeft,
+    ShiftRight,
     Plus,
     Minus,
     Star,
@@ -180,10 +184,18 @@ pub(crate) enum Punct {
     MinusEq,
     StarEq,
     SlashEq,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    ShiftLeftEq,
+    ShiftRightEq,
 }
 
 impl Punct {
-    pub(crate) const TWO_CHAR: [(&'static str, Punct); 12] = [
+    pub(crate) const THREE_CHAR: [(&'static str, Punct); 2] =
+        [("<<=", Punct::ShiftLeftEq), (">>=", Punct::ShiftRightEq)];
+
+    pub(crate) const TWO_CHAR: [(&'static str, Punct); 17] = [
         ("->", Punct::Arrow),
         ("=>", Punct::FatArrow),
         ("==", Punct::EqEq),
@@ -196,10 +208,16 @@ impl Punct {
         ("-=", Punct::MinusEq),
         ("*=", Punct::StarEq),
         ("/=", Punct::SlashEq),
+        ("<<", Punct::ShiftLeft),
+        (">>", Punct::ShiftRight),
+        ("&=", Punct::AmpEq),
+        ("|=", Punct::PipeEq),
+        ("^=", Punct::CaretEq),
     ];
 
     pub(crate) fn text(self) -> &'static str {
-        if let Some((text, _)) = Self::TWO_CHAR.iter().find(|(_, punct)| *punct == self) {
+        let longer = Self::THREE_CHAR.iter().chain(&Self::TWO_CHAR);
+        if let Some((text, _)) = longer.into_iter().find(|(_, punct)| *punct == self) {
             return text;
         }
         match self {
@@ -222,6 +240,8 @@ impl Punct {
             Punct::Gt => ">",
             Punct::Amp => "&",
             Punct::Pipe => "|",
+            Punct::Caret => "^",
+            Punct::Tilde => "~",
             _ => "?",
         }
     }
@@ -240,6 +260,8 @@ impl Punct {
             '?' => Punct::Question,
             '&' => Punct::Amp,
             '|' => Punct::Pipe,
+            '^' => Punct::Caret,
+            '~' => Punct::Tilde,
             '+' => Punct::Plus,
             '-' => Punct::Minus,
             '*' => Punct::Star,

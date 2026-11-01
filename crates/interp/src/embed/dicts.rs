@@ -12,7 +12,7 @@
 
 use fennec_syntax::Diagnostic;
 
-use super::heap::{HEADER_WORDS, TEXT_HEADER_WORDS, release, same, text_address};
+use super::heap::{HEADER_WORDS, TEXT_HEADER_WORDS, release, same, text_address, text_from_bytes};
 use super::{State, attempt, span, with};
 use crate::value::Value;
 
@@ -186,6 +186,124 @@ fn find(state: &State, block: &[u64], key_word: Word, key: u64, hash: u64) -> Pr
         }
         slot = (slot + 1) & mask;
     }
+}
+
+/// `text[from:to]`, with positions in characters clamped the way slicing clamps them, as a
+/// string key's block would hold it: its length in bytes and in characters, and its bytes.
+fn slice_of(state: &State, text: i64, from: i64, to: i64) -> Option<(Vec<u8>, usize)> {
+    let block = state.heap.block(u64::try_from(text).ok()?)?;
+    if !super::heap::is_text(state, block) {
+        return None;
+    }
+    let length = usize::try_from(*block.get(2)?).ok()?;
+    let chars = usize::try_from(*block.get(3)?).ok()?;
+    let count = i64::try_from(chars).ok()?;
+    let bound = |at: i64, missing: i64| {
+        let at = if at == i64::MIN { missing } else { at };
+        let at = if at < 0 { at + count } else { at };
+        usize::try_from(at.clamp(0, count)).unwrap_or(0)
+    };
+    let (from, to) = (bound(from, 0), bound(to, count));
+    let to = to.max(from);
+    let words = block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + length.div_ceil(8))?;
+    let byte = |at: usize| words.get(at / 8).and_then(|word| word.to_le_bytes().get(at % 8).copied());
+    if length == chars {
+        // ASCII: a character is a byte, so only the bytes in the slice are read.
+        let bytes: Option<Vec<u8>> = (from..to).map(byte).collect();
+        return Some((bytes?, to - from));
+    }
+    let all: Option<Vec<u8>> = (0..length).map(byte).collect();
+    let all = String::from_utf8(all?).ok()?;
+    let part: String = all.chars().skip(from).take(to - from).collect();
+    Some((part.into_bytes(), to - from))
+}
+
+/// Bytes as a string's block packs them, eight to a word, the last one padded with zeros.
+fn packed_words(bytes: &[u8]) -> Vec<u64> {
+    bytes
+        .chunks(8)
+        .map(|chunk| {
+            let mut word = [0_u8; 8];
+            word.get_mut(..chunk.len()).unwrap_or_default().copy_from_slice(chunk);
+            u64::from_le_bytes(word)
+        })
+        .collect()
+}
+
+/// Where a string key with these bytes is in a dict of string keys, comparing hashes first
+/// and then the key's length and words, with no key of its own made.
+fn find_text(state: &State, block: &[u64], (bytes, chars): (&[u8], usize)) -> Option<(Probe, u64)> {
+    let words = packed_words(bytes);
+    let length = u64::try_from(bytes.len()).ok()?;
+    let hash = hash_text(length, &words);
+    let mask = usize::try_from(*block.get(4)?).ok()?;
+    let start = DICT_HEADER_WORDS + mask + 1;
+    let header = [length, u64::try_from(chars).ok()?];
+    let mut slot = usize::try_from(hash).unwrap_or(0) & mask;
+    loop {
+        let taken = block.get(DICT_HEADER_WORDS + slot).and_then(|taken| usize::try_from(*taken).ok());
+        let Some(entry) = taken.and_then(|taken| taken.checked_sub(1)) else {
+            return Some((Probe::Empty(slot), hash));
+        };
+        let at = start + entry * ENTRY_WORDS;
+        if block.get(at) == Some(&hash) {
+            let key = block.get(at + 1).and_then(|key| state.heap.block(*key));
+            let same_text = key.is_some_and(|key| {
+                key.get(2..4) == Some(&header[..])
+                    && key.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + words.len()) == Some(&words[..])
+            });
+            if same_text {
+                return Some((Probe::Found(entry), hash));
+            }
+        }
+        slot = (slot + 1) & mask;
+    }
+}
+
+/// `dict.get(text[from:to])` for a dict of string keys, with no string made for the key: the
+/// address of the key's value word, to read straight away, or 0 if the key isn't there.
+pub extern "C" fn find_slice(dict: i64, text: i64, from: i64, to: i64) -> i64 {
+    with(|state| {
+        let slice = slice_of(state, text, from, to)?;
+        let block = state.heap.block(u64::try_from(dict).ok()?)?;
+        if kind(state, block)?.0 != Word::Str {
+            return None;
+        }
+        let (Probe::Found(entry), _) = find_text(state, block, (&slice.0, slice.1))? else { return Some(0) };
+        let mask = usize::try_from(*block.get(4)?).ok()?;
+        let word = DICT_HEADER_WORDS + mask + 1 + entry * ENTRY_WORDS + 2;
+        i64::try_from(block.as_ptr().addr() + word * 8).ok()
+    })
+    .unwrap_or(0)
+}
+
+/// `dict[text[from:to]] = value` for a dict of string keys: takes over the owners `dict` and
+/// `value` had, and gives back the dict's, like `set`. A string for the key is only made when
+/// the key is new.
+pub extern "C" fn add_slice(dict: i64, text: i64, from: i64, to: i64, value: i64) -> i64 {
+    with(|state| {
+        let (bytes, chars) = slice_of(state, text, from, to)?;
+        let at = u64::try_from(dict).ok()?;
+        let block = state.heap.block(at)?;
+        let (key_word, value_word) = kind(state, block)?;
+        if key_word != Word::Str {
+            return None;
+        }
+        let unique = block.first() == Some(&1);
+        if let (true, (Probe::Found(entry), _)) = (unique, find_text(state, block, (&bytes, chars))?) {
+            let mask = usize::try_from(*block.get(4)?).ok()?;
+            let word = DICT_HEADER_WORDS + mask + 1 + entry * ENTRY_WORDS + 2;
+            let value = u64::from_ne_bytes(value.to_ne_bytes());
+            let old = std::mem::replace(state.heap.block_mut(at)?.get_mut(word)?, value);
+            if value_word.owned() {
+                release(state, old);
+            }
+            return Some(dict);
+        }
+        let key = text_from_bytes(state, &bytes, chars);
+        set_in(state, dict, key, value)
+    })
+    .unwrap_or(dict)
 }
 
 /// A new empty dict of a shape, owned once, with room for `room` keys.

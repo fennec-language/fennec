@@ -1,0 +1,48 @@
+# Collections written in Fennec compare what they hold, not how they hold it: two sorted maps
+# built in different orders are equal, and so are two deques with different room to spare.
+from std.collections import Deque, SortedMap, SortedSet
+
+test "sorted maps with the same items are equal, however they were built":
+    mut up = SortedMap[int, str]()
+    mut down = SortedMap[int, str]()
+    for key in range(200):
+        up[key] = f"{key}"
+        down[199 - key] = f"{199 - key}"
+    assert up == down
+    down[5] = "changed"
+    assert up != down
+    down[5] = "5"
+    assert up == down
+    down.remove(5)
+    assert up != down
+    assert SortedMap[int, str]() == SortedMap[int, str]()
+
+test "sorted sets with the same items are equal":
+    mut one = SortedSet.of(range(100))
+    two = SortedSet.of([99 - n for n in range(100)])
+    assert one == two
+    one.discard(50)
+    assert one != two
+    one.add(50)
+    assert one == two
+
+test "deques with the same items are equal, whatever room they have":
+    mut grown = Deque[int]()
+    for n in range(10):
+        grown.append(n)
+    for _ in range(7):
+        grown.popleft()
+    assert grown == Deque.of([7, 8, 9])
+    grown.appendleft(6)
+    assert grown != Deque.of([7, 8, 9])
+    assert grown == Deque.of([6, 7, 8, 9])
+
+def main(stdout: Stdout):
+    mut first = SortedMap[str, int]()
+    first["b"] = 2
+    first["a"] = 1
+    mut second = SortedMap[str, int]()
+    second["a"] = 1
+    second["b"] = 2
+    stdout.print(first == second, first != second)
+    stdout.print(SortedSet.of([3, 1]) == SortedSet.of([1, 3]), Deque.of([1]) == Deque.of([2]))

@@ -24,7 +24,9 @@ attributes #2 = { alwaysinline nounwind \"frame-pointer\"=\"non-leaf\" }\n\
 !5 = !{!\"item\", !2, i64 0}\n\
 !6 = !{!5, !5, i64 0}\n\
 !7 = !{i64 0, i64 281474976710657}\n\
-!8 = !{!\"branch_weights\", i32 100000, i32 1}\n";
+!8 = !{!\"branch_weights\", i32 100000, i32 1}\n\
+!9 = !{!\"field\", !2, i64 0}\n\
+!10 = !{!9, !9, i64 0}\n";
 
 /// Where a string block's bytes start.
 pub(crate) const TEXT_START: u32 = fennec_interp::embed::layout::TEXT.unsigned_abs();
@@ -32,6 +34,8 @@ pub(crate) const TEXT_START: u32 = fennec_interp::embed::layout::TEXT.unsigned_a
 /// A list's header, and what's in it, never overlap its items, and a length is far from any limit.
 pub(crate) const HEADER_ACCESS: &str = ", !tbaa !4";
 pub(crate) const ITEM_ACCESS: &str = ", !tbaa !6";
+/// A boxed struct's or enum's fields never overlap a block's header or a list's items.
+pub(crate) const FIELD_ACCESS: &str = ", !tbaa !10";
 pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7";
 
 /// Below this many instructions, a function that calls nothing is always inlined.
@@ -324,6 +328,7 @@ impl<'p> Module<'_, 'p> {
             start,
             start_symbol,
             self_target,
+            taken_at: BTreeMap::new(),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -359,6 +364,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     start: u32,
     start_symbol: String,
     self_target: Option<&'e str>,
+    /// Where each item taken out of a list to change was, to put it back without looking again.
+    pub(crate) taken_at: BTreeMap<usize, String>,
 }
 
 pub(crate) fn float_text(value: f64) -> String {

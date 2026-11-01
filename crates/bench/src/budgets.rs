@@ -43,8 +43,9 @@ const MOST_VERDICT_INSTRUCTIONS: u64 = 7_500_000_000;
 const RUN: Budget =
     Budget { name: "`fennec run` startup", limit: Duration::from_millis(100), enforced: true };
 
-/// What starting an unchanged program may run: about what 100 ms is on CI's machines.
-const MOST_RUN_INSTRUCTIONS: u64 = u64::MAX;
+/// What starting an unchanged program may run: 100 ms, at the same 7.4 billion a second as a
+/// verdict.
+const MOST_RUN_INSTRUCTIONS: u64 = 740_000_000;
 
 /// How many times the work an edit's verdict may be on the big kit, against one a tenth its size.
 /// It shouldn't depend on the size of a project at all. Reading and hashing every file does, by

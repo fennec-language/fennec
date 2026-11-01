@@ -72,6 +72,12 @@ struct Deque[T]:
         self.slots = slots
         self.head = 0
 
+## Deques of items that can be compared are equal when they hold equal items in the same
+## order, whatever room each has spare.
+extend Deque[T: Eq]:
+    def ==(self, other: Deque[T]) -> bool:
+        self.items() == other.items()
+
 ## A binary min-heap: `pop` gives back the smallest item. Items are compared with `<`, so
 ## they can be numbers, strings, tuples, or structs with `def <`. For the largest first,
 ## push negated numbers, or use a `PriorityQueue` with negated priorities.
@@ -667,11 +673,21 @@ struct SortedMap[K: Ordered, V]:
         if not leaf:
             self._walk_between(node.children[-1], low, high, mut found)
 
+## Sorted maps of values that can be compared are equal when they hold equal keys with equal
+## values, however their trees are shaped.
+extend SortedMap[K: Ordered, V: Eq]:
+    def ==(self, other: SortedMap[K, V]) -> bool:
+        self.len() == other.len() and self.items() == other.items()
+
 ## Items kept in order, each once: a `SortedMap` with no values, so finding, adding and
 ## removing an item take time that grows with the log of the size. Items are compared with
 ## `<`, and copying a set gives an independent set.
 struct SortedSet[T: Ordered]:
     _items: SortedMap[T, bool] = SortedMap[T, bool]()
+
+    ## Equal when they hold the same items.
+    def ==(self, other: SortedSet[T]) -> bool:
+        self._items == other._items
 
     ## A set of `items`.
     def of(items: list[T]) -> SortedSet[T]:

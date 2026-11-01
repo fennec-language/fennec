@@ -247,6 +247,10 @@ impl Emit<'_, '_, '_> {
 
     /// Writes an optional block where nothing was: `Some` of an owned block, or `None`.
     fn write_option(&mut self, kind: &Kind, value: Option<&str>, at: &str) -> Result<(), String> {
+        if let Kind::Maybe(_) = kind {
+            self.line(&format!("store ptr {}, ptr {at}", value.unwrap_or("null")));
+            return Ok(());
+        }
         let case = if value.is_some() { "Some" } else { "None" };
         let (number, fields) = self.case_of(kind, case)?;
         let base = if let Kind::Boxed(id) = kind {

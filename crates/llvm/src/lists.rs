@@ -16,7 +16,7 @@ const FIELDS_OFFSET: u32 = FIELDS.unsigned_abs();
 
 impl Emit<'_, '_, '_> {
     /// The address `offset` bytes into something.
-    fn offset(&mut self, base: &str, offset: u32) -> String {
+    pub(crate) fn offset(&mut self, base: &str, offset: u32) -> String {
         let at = self.temp();
         self.line(&format!("{at} = getelementptr inbounds i8, ptr {base}, i64 {offset}"));
         at
@@ -38,7 +38,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A new block of a boxed type, its shape's number read from a symbol.
-    fn new_block(&mut self, id: u32) -> Result<String, String> {
+    pub(crate) fn new_block(&mut self, id: u32) -> Result<String, String> {
         let name = self.layout_of(id)?.name.clone();
         let symbol = format!("h_{name}");
         self.module.shared.shapes.insert(symbol.clone(), id);
@@ -51,21 +51,35 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Writes a value inside something that hasn't held one before, with an owner if it needs one.
-    fn fill(&mut self, kind: &Kind, value: &str, at: &str, access: &str) {
-        if kind.counted() {
-            self.retain_value(value, kind);
+    pub(crate) fn fill(
+        &mut self,
+        kind: &Kind,
+        operand: &Operand,
+        at: &str,
+        access: &str,
+    ) -> Result<(), String> {
+        let (value, fresh) = self.value_for(operand, kind)?;
+        if kind.counted() && !fresh {
+            self.retain_value(&value);
         }
-        self.store_field(kind, value, at, access);
+        self.store_field(kind, &value, at, access);
+        Ok(())
     }
 
     /// Reads a value inside something into a local, with an owner if it needs one.
-    fn read_into(&mut self, dest: LocalId, kind: &Kind, at: &str, access: &str) -> Result<(), String> {
+    pub(crate) fn read_into(
+        &mut self,
+        dest: LocalId,
+        kind: &Kind,
+        at: &str,
+        access: &str,
+    ) -> Result<(), String> {
         if kind.in_memory() {
             return self.assign_memory(dest, at, access);
         }
         let value = self.load_field(kind, at, access);
         if kind.counted() && !self.known.is_borrowed(dest) && !self.known.is_taken(dest) {
-            self.retain_value(&value, kind);
+            self.retain_value(&value);
         }
         self.assign(dest, &value)
     }
@@ -93,9 +107,8 @@ impl Emit<'_, '_, '_> {
         };
         for ((offset, held), value) in written.into_iter().zip(fields) {
             let held = held.ok_or("a field this backend doesn't take yet")?;
-            let (value, _) = self.operand(value)?;
             let at = self.offset(&base, offset);
-            self.fill(&held, &value, &at, "");
+            self.fill(&held, value, &at, "")?;
         }
         if let Some(block) = block {
             self.assign(dest, &block)?;
@@ -145,7 +158,8 @@ impl Emit<'_, '_, '_> {
         value: &Operand,
     ) -> Result<(), String> {
         let put_back = matches!(value, Operand::Local(local) if self.known.is_taken(*local));
-        let (value, _) = self.operand(value)?;
+        let field_kind = self.place_kind(object, path)?;
+        let (value, fresh) = self.value_for(value, &field_kind)?;
         let mut place = self.slot(object);
         let mut kind = self.kind_of(object)?.clone();
         for name in path {
@@ -163,7 +177,9 @@ impl Emit<'_, '_, '_> {
             // The field's old value was taken out, and this is what became of it.
             self.line(&format!("store ptr {value}, ptr {place}"));
         } else if kind.counted() {
-            self.retain_value(&value, &kind);
+            if !fresh {
+                self.retain_value(&value);
+            }
             let old = self.temp();
             self.line(&format!("{old} = load ptr, ptr {place}"));
             self.line(&format!("store ptr {value}, ptr {place}"));
@@ -205,9 +221,8 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i64 {number}, ptr {base}"));
         for ((_, offset, held), value) in written.into_iter().zip(fields) {
             let held = held.ok_or("a field this backend doesn't take yet")?;
-            let (value, _) = self.operand(value)?;
             let at = self.offset(&base, offset);
-            self.fill(&held, &value, &at, "");
+            self.fill(&held, value, &at, "")?;
         }
         if let Some(block) = block {
             self.assign(dest, &block)?;
@@ -263,53 +278,24 @@ impl Emit<'_, '_, '_> {
         same
     }
 
-    pub(crate) fn make_tuple(&mut self, dest: LocalId, items: &[Operand]) -> Result<(), String> {
-        let slot = self.slot(dest);
-        let mut offset = 0;
-        for item in items {
-            let (value, kind) = self.operand(item)?;
-            let at = self.offset(&slot, offset);
-            self.store_field(&kind, &value, &at, "");
-            offset += kind.size(self.module.layouts);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn get_tuple_item(
-        &mut self,
-        dest: LocalId,
-        value: &Operand,
-        position: usize,
-    ) -> Result<(), String> {
-        let (base, kind) = self.operand(value)?;
-        let Kind::Tuple(items) = kind else {
-            return Err("it reads an item of something not a tuple".to_owned());
-        };
-        let layouts = self.module.layouts;
-        let offset: u32 = items.iter().take(position).map(|item| item.size(layouts)).sum();
-        let held = items.get(position).ok_or("no such item")?;
-        let at = self.offset(&base, offset);
-        if held.in_memory() {
-            return self.assign_memory(dest, &at, "");
-        }
-        let value = self.load_field(held, &at, "");
-        self.assign(dest, &value)
-    }
-
     fn item_kind(&self, item: ListItem) -> Result<Kind, String> {
         Kind::from_ty(self.module.layouts, item.ty())
             .ok_or_else(|| "a list item this backend doesn't take yet".to_owned())
     }
 
     /// A new list of `count` zeroed items.
-    fn new_list(&mut self, item: ListItem, count: &str) -> String {
+    pub(crate) fn new_list(&mut self, item: ListItem, count: &str) -> String {
+        self.new_list_with(item, count, "fennec_list_new")
+    }
+
+    fn new_list_with(&mut self, item: ListItem, count: &str, helper: &str) -> String {
         let symbol = element_symbol(self.module.layouts, item);
         self.module.shared.elements.insert(symbol.clone(), item);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
-        self.declare("declare ptr @fennec_list_new(i64, i64) nounwind");
+        self.declare(&format!("declare ptr @{helper}(i64, i64) nounwind"));
         let (element, list) = (self.temp(), self.temp());
         self.line(&format!("{element} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
-        self.line(&format!("{list} = call ptr @fennec_list_new(i64 {element}, i64 {count})"));
+        self.line(&format!("{list} = call ptr @{helper}(i64 {element}, i64 {count})"));
         list
     }
 
@@ -320,7 +306,7 @@ impl Emit<'_, '_, '_> {
         length
     }
 
-    fn item_address(&mut self, list: &str, memory: &str, position: &str) -> String {
+    pub(crate) fn item_address(&mut self, list: &str, memory: &str, position: &str) -> String {
         let (items, at) = (self.temp(), self.temp());
         self.line(&format!("{items} = getelementptr inbounds i8, ptr {list}, i64 {LIST_ITEMS}"));
         self.line(&format!("{at} = getelementptr inbounds {memory}, ptr {items}, i64 {position}"));
@@ -356,6 +342,9 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         let inside = matches!(object, Operand::Local(local) if self.known.inside(*local, index));
         let (list, kind) = self.operand(object)?;
+        if let Kind::Dict(key, value) = kind {
+            return self.dict_read(dest, &list, (key, value), index, span);
+        }
         if kind == Kind::Str {
             return self.string_index(dest, &list, index, span);
         }
@@ -396,7 +385,7 @@ impl Emit<'_, '_, '_> {
 
     /// The local's list, ready to change. One nothing else here comes to hold was checked
     /// when the local got it, which leaves LLVM free to see through the writes.
-    fn unshared(&mut self, local: LocalId) -> String {
+    pub(crate) fn unshared(&mut self, local: LocalId) -> String {
         if self.known.alone_once_checked(local) {
             let (list, slot) = (self.temp(), self.slot(local));
             self.line(&format!("{list} = load ptr, ptr {slot}"));
@@ -413,6 +402,24 @@ impl Emit<'_, '_, '_> {
             kind = field;
         }
         Ok(kind)
+    }
+
+    /// Where a field path from a local leads, with no other owner of anything on the way.
+    fn place_of(&mut self, object: LocalId, path: &[String]) -> Result<String, String> {
+        let mut kind = self.kind_of(object)?.clone();
+        let mut place = self.slot(object);
+        for name in path {
+            let inner = if matches!(kind, Kind::Boxed(_)) {
+                let block = self.alone_at(&place, "fennec_unshare");
+                self.offset(&block, FIELDS_OFFSET)
+            } else {
+                place
+            };
+            let (offset, field) = self.field(&kind, name)?;
+            place = self.offset(&inner, offset);
+            kind = field;
+        }
+        Ok(place)
     }
 
     /// The list at a field path from a local, with no other owner, nor anything it's inside.
@@ -446,11 +453,15 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         let inside = path.is_empty() && self.known.inside(object, index);
         let kind = self.place_kind(object, path)?;
+        if let Kind::Dict(key, value_word) = kind {
+            let place = self.place_of(object, path)?;
+            return self.dict_store(&place, (key, value_word), index, Some(value));
+        }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
         let put_back = matches!(value, Operand::Local(local) if self.known.is_taken(*local));
         let (index, _) = self.operand(index)?;
-        let (value, _) = self.operand(value)?;
+        let (value, fresh) = self.value_for(value, &held)?;
         let list = if path.is_empty() { self.unshared(object) } else { self.alone_list(object, path)? };
         let position = if inside { index } else { self.position(&list, &index, span) };
         let memory = held.memory(self.module.layouts);
@@ -458,7 +469,9 @@ impl Emit<'_, '_, '_> {
         if put_back && held.counted() {
             self.line(&format!("store ptr {value}, ptr {at}{ITEM_ACCESS}"));
         } else if held.counted() {
-            self.retain_value(&value, &held);
+            if !fresh {
+                self.retain_value(&value);
+            }
             let old = self.temp();
             self.line(&format!("{old} = load ptr, ptr {at}{ITEM_ACCESS}"));
             self.line(&format!("store ptr {value}, ptr {at}{ITEM_ACCESS}"));
@@ -515,9 +528,8 @@ impl Emit<'_, '_, '_> {
         let list = self.new_list(item, &items.len().to_string());
         let memory = held.memory(self.module.layouts);
         for (position, value) in items.iter().enumerate() {
-            let (value, _) = self.operand(value)?;
             let at = self.item_address(&list, &memory, &position.to_string());
-            self.fill(&held, &value, &at, ITEM_ACCESS);
+            self.fill(&held, value, &at, ITEM_ACCESS)?;
         }
         self.assign(dest, &list)
     }
@@ -530,9 +542,7 @@ impl Emit<'_, '_, '_> {
         let (above, room) = (self.temp(), self.temp());
         self.line(&format!("{above} = icmp sgt i64 {count}, 0"));
         self.line(&format!("{room} = select i1 {above}, i64 {count}, i64 0"));
-        let list = self.new_list(item, &room);
-        let at = self.offset(&list, u32::try_from(LIST_LENGTH).unwrap_or(0));
-        self.line(&format!("store i64 0, ptr {at}{HEADER_ACCESS}"));
+        let list = self.new_list_with(item, &room, "fennec_list_with_room");
         self.assign(dest, &list)
     }
 
@@ -544,7 +554,7 @@ impl Emit<'_, '_, '_> {
         let kind = self.kind_of(*local)?.clone();
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
-        let (value, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+        let new_item = args.get(1).ok_or("no argument")?;
         self.declare("declare ptr @fennec_list_grow(ptr) nounwind");
         let slot = self.slot(*local);
         let (list, count, length, room_at, room) =
@@ -578,7 +588,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{resolved} = phi ptr [ {list}, %{quick} ], [ {grown}, %{grow} ]"));
         let memory = held.memory(self.module.layouts);
         let at = self.item_address(&resolved, &memory, &length);
-        self.fill(&held, &value, &at, ITEM_ACCESS);
+        self.fill(&held, new_item, &at, ITEM_ACCESS)?;
         Ok(())
     }
 }

@@ -20,6 +20,7 @@ use fennec_interp::embed::{
 ///
 /// Nothing exported unwinds: a panic crossing `extern "C"` aborts the program.
 pub const CAN_FAIL: &[&str] = &[
+    "fennec_stop",
     "fennec_list_sorted_with",
     "fennec_regex_split",
     "fennec_regex_find",
@@ -168,6 +169,7 @@ export! {
     fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);
     fennec_spec_text(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::spec_text(a0, a1, a2, a3);
     fennec_str_code(a0: i64, a1: i64, a2: i64) -> i64 => strings::code(a0, a1, a2);
+    fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
     fennec_list_sorted_with(a0: i64, a1: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_with(a0, a1);
     fennec_regex_is_valid(a0: i64) -> i8 => regex::is_valid(a0);
     fennec_regex_replace(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => regex::replace(a0, a1, a2, a3, a4);

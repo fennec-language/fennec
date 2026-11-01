@@ -10,4 +10,4 @@ def main(stdout: Stdout):
     for mut particle in parallel(particles):
         particle.position += particle.velocity * dt
     stdout.print(particles)
-    stdout.print(sum(p.position for p in parallel(particles)))
+    stdout.print(sum(particle.position for particle in parallel(particles)))

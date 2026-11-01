@@ -90,9 +90,8 @@ impl Context<'_> {
         let inner = |item: &Type| Box::new(self.concrete(item, subst));
         match ty {
             Type::Param(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
-            // The IR shows a generator as the list it fills, not one item at a time. Nothing
-            // compiles a generator from the IR yet.
-            Type::List(item) | Type::Iterator(item) => Type::List(inner(item)),
+            Type::List(item) => Type::List(inner(item)),
+            Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Set(item) => Type::Set(inner(item)),
             Type::Optional(item) => Type::Optional(inner(item)),
             Type::IdMap(item) => Type::IdMap(inner(item)),

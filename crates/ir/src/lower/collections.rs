@@ -143,7 +143,15 @@ impl Lowering<'_> {
         (names, iter): (&[String], &Expr),
     ) -> Lowered<Operand> {
         let span = expr.span;
-        let dest = self.temporary(self.ty(expr)?);
+        if kind == CompKind::Generator {
+            return self.generator_expression(expr, (parts.elem, parts.cond), (names, iter));
+        }
+        // What collects a generator written in place has the generator's span.
+        let ty = match self.ty(expr)? {
+            Type::Iterator(item) => Type::List(item),
+            ty => ty,
+        };
+        let dest = self.temporary(ty);
         self.emit(
             match kind {
                 CompKind::List | CompKind::Generator => InstKind::MakeList { dest, items: Vec::new() },

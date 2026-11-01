@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 
 use fennec_blake3::Hash;
-use fennec_syntax::{FnDef, Item};
+use fennec_syntax::{FnDef, Item, Span};
 
 use crate::Cache;
 use crate::traced::from_hex;
@@ -59,6 +59,20 @@ pub fn rows<'i>(items: impl Iterator<Item = &'i Item>) -> Vec<Row> {
         }
     }
     found
+}
+
+/// Where an item is written.
+pub fn item_span(item: &Item) -> Span {
+    match item {
+        Item::Function(def) => def.span,
+        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.span,
+        Item::Interface(interface) => interface.span,
+        Item::Extend(extension) => extension.span,
+        Item::TypeAlias { span, .. } | Item::Const { span, .. } => *span,
+        Item::Import(import) => import.span,
+        Item::Test(test) => test.span,
+        Item::Stmt(stmt) => stmt.span,
+    }
 }
 
 /// The functions and tests whose bodies changed, by key, or None if an edit reaches further.

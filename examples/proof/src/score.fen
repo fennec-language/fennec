@@ -1,0 +1,54 @@
+## The scoreboard: kills, damage and healing by team, and what happened, in order.
+##
+## The design has a scoreboard be `shared Scoreboard:`, a locked handle every task can update.
+## `shared` isn't built yet, so this is a plain struct the tick passes along as `mut`, and the
+## parallel part of a tick only reads.
+
+from units import Team, World
+
+struct Event:
+    tick: int
+    text: str
+
+struct Scoreboard:
+    kills: dict[str, int] = {}
+    damage: dict[str, int] = {}
+    healing: dict[str, int] = {}
+    events: list[Event] = []
+
+    def hit(mut self, team: Team, amount: int):
+        name = team.name()
+        self.damage[name] = (self.damage.get(name) else 0) + amount
+
+    def healed(mut self, team: Team, amount: int):
+        name = team.name()
+        self.healing[name] = (self.healing.get(name) else 0) + amount
+
+    def killed(mut self, team: Team, tick: int, text: str):
+        name = team.name()
+        self.kills[name] = (self.kills.get(name) else 0) + 1
+        self.events.append(Event(tick=tick, text=text))
+
+    def note(mut self, tick: int, text: str):
+        self.events.append(Event(tick=tick, text=text))
+
+    def line(self, team: Team) -> str:
+        name = team.name()
+        kills = self.kills.get(name) else 0
+        damage = self.damage.get(name) else 0
+        healing = self.healing.get(name) else 0
+        f"{name}: {kills} kills, {damage} damage, {healing} healed"
+
+## The health each team has left, added up across its units at once.
+def health_left(world: World, team: Team) -> int:
+    sum(unit.health for unit in parallel(world.units.values()) if unit.team == team)
+
+test "the scoreboard adds up by team":
+    mut board = Scoreboard()
+    board.hit(.Red, 10)
+    board.hit(.Red, 5)
+    board.healed(.Blue, 3)
+    board.killed(.Red, 4, "ash fell")
+    assert board.line(.Red) == "red: 1 kills, 15 damage, 0 healed"
+    assert board.line(.Blue) == "blue: 0 kills, 0 damage, 3 healed"
+    assert board.events == [Event(tick=4, text="ash fell")]

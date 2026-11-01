@@ -509,19 +509,19 @@ fn looping_one_list_of_a_packed_copies_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
         return Ok(());
     }
-    let build = "from std.collections import Packed\n\ndef main(stdout: Stdout):\n    mut packed = Packed[int]()\n    for n in range(100):\n        packed.append([n, n + 1, n + 2])\n";
-    let built = counts_of("packed_built", &format!("{build}    stdout.print(packed.len())\n"))?;
+    let source = "from std.collections import Packed\n\ndef main(stdout: Stdout):\n    mut packed = Packed[int]()\n    for n in range(100):\n        packed.append([n, n + 1, n + 2])\n";
+    let building = counts_of("packed_built", &format!("{source}    stdout.print(packed.len())\n"))?;
     let looped = counts_of(
         "packed_looped",
         &format!(
-            "{build}    mut total = 0\n    for _ in range(100):\n        for at in range(packed.len()):\n            for item in packed[at]:\n                total += item\n    stdout.print(total)\n"
+            "{source}    mut total = 0\n    for _ in range(100):\n        for at in range(packed.len()):\n            for item in packed[at]:\n                total += item\n    stdout.print(total)\n"
         ),
     )?;
     // Reading a list goes through its items in place: 10,000 reads copy nothing more than
     // building did. Each read still makes its generator, until a generator reached through
     // `[]` fuses into a plain loop.
-    assert_eq!(count(&looped, "copies"), count(&built, "copies"), "{built} / {looped}");
-    assert_eq!(count(&looped, "copied_bytes"), count(&built, "copied_bytes"), "{built} / {looped}");
+    assert_eq!(count(&looped, "copies"), count(&building, "copies"), "{building} / {looped}");
+    assert_eq!(count(&looped, "copied_bytes"), count(&building, "copied_bytes"), "{building} / {looped}");
     Ok(())
 }
 

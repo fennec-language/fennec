@@ -401,7 +401,29 @@ def write[T, W: Writer](x: T, mut out: W):
 **Generics compile the way Swift's do.** Development builds, including the JIT, compile a generic function once and share that code across every type it's used with, passing each type's methods alongside its values. Release builds compile a copy for each type, so every call is direct and can be inlined, then merge copies whose machine code comes out identical. What a program does is the same either way.
 *Why:* Development builds compile once per generic function instead of once per type, which keeps them fast to build. Release builds get full speed, without paying in binary size for copies that are identical anyway. This replaces the earlier rule that generics are compiled per type in every build.
 
-**Mixed types are an `enum`; open sets are function values.** A list that holds different types is a list of an enum: each element is inline with a one-byte tag, and `match` compiles to a jump table. When other kits must be able to add kinds, as with plugins, a struct with function fields does it, and a call through a function value is the only run-time dispatch a program can ask for. Generic code shared in development builds is the compiler's choice, and release builds compile it away.
+**`A | B` is a union: a value that's exactly one of those types.** It's stored inline with a one-byte tag, sized for its largest member, and never boxed. `type Shape = Circle | Square` names one.
+```fennec
+type Shape = Circle | Square
+
+def report(shapes: list[Shape], stdout: Stdout):
+    stdout.print(sum(s.area() for s in shapes))   # every member has area(), so Shape does
+    for s in shapes:
+        if s is Circle:
+            stdout.print(s.radius)                 # s is a Circle here
+```
+- A `Circle` goes anywhere a `Circle | Square` is expected. `if s is Circle:` narrows `s` inside the block, and `match` handles each member, checked for exhaustiveness.
+- When every member has a method, the union has it too, and the union fits any interface all its members fit. Calls go through a jump table.
+- Order and nesting don't matter: `A | B` is `B | A`, and a union inside a union flattens. A duplicate member, like `int | int`, is an error. Two union values are equal when they hold the same member with equal values, and they hash the same way.
+- `None` is never a member. `str | None` is an error whose fix writes `str?`, and an optional union is `(A | B)?`, so an optional of an optional, `T??`, never collapses into `T?`.
+- Failures stay separate: a function that can fail returns `-> T fails E`, never `-> T | E`.
+- Members are concrete types, not type parameters; generic code uses an enum, like `enum Either[L, R]`. A union refers to itself only through a collection, as in `type Json = str | int | float | bool | list[Json] | dict[str, Json]`, and direct recursion is an error.
+- A union mixes types that already exist, and an enum defines new cases. A union may have an enum type as a member.
+- A literal assigned to a union takes its default type: `3` is an `int`.
+- JSON always writes a union tagged with its member's type name, `{"Circle": {...}}` or `{"Tile": "Grass"}`, so loading is never ambiguous. The tag is the full name only when two members share a short name.
+
+*Why:* Mixed lists stay fast and unboxed, and they read like a Python type hint. Unions add nothing new to learn beyond `is` and `match`.
+
+**Mixed types are a union or an `enum`; open sets are function values.** A list that holds different existing types is a list of a union, `list[Circle | Square]`, and a list of new cases is a list of an enum. Either way each element is inline with a one-byte tag, and `match` compiles to a jump table. When other kits must be able to add kinds, as with plugins, a struct with function fields does it, and a call through a function value is the only run-time dispatch a program can ask for. Generic code shared in development builds is the compiler's choice, and release builds compile it away.
 
 **`Self` in an interface's method means the type that fits it.** `interface Signed: def abs(self) -> Self` says `abs` returns the same type it's called on: a `Money` for a `Money`.
 

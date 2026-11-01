@@ -1,10 +1,10 @@
 //! Printing and f-strings.
 
-use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
+use fennec_interp::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
 use fennec_ir::{FormatPart, LocalId, Operand};
 use fennec_syntax::{BinOp, Span};
 
-use crate::emit::{Emit, LENGTH_ACCESS};
+use crate::emit::{Emit, HEADER_ACCESS, LENGTH_ACCESS};
 use crate::kinds::Kind;
 
 impl Emit<'_, '_, '_> {
@@ -203,9 +203,7 @@ impl Emit<'_, '_, '_> {
                     piece
                 }
                 Some(so_far) => {
-                    self.declare("declare ptr @fennec_str_append(ptr, ptr) nounwind");
-                    let joined = self.temp();
-                    self.line(&format!("{joined} = call ptr @fennec_str_append(ptr {so_far}, ptr {piece})"));
+                    let joined = self.append_text(&so_far, &piece);
                     if owned {
                         self.release(&piece);
                     }
@@ -221,6 +219,56 @@ impl Emit<'_, '_, '_> {
             empty
         };
         self.assign(dest, &value)
+    }
+
+    /// `text += more`, taking over `text`'s owner: in place when nothing else holds it and it
+    /// has room, which needs no call, or by the runtime, which may make a bigger block.
+    pub(crate) fn append_text(&mut self, text: &str, more: &str) -> String {
+        self.declare("declare ptr @fennec_str_append(ptr, ptr) nounwind");
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        let header = HEADER_ACCESS;
+        let at = |emit: &mut Self, block: &str, offset: i32| emit.offset(block, offset.unsigned_abs());
+        let (count, alone) = (self.temp(), self.temp());
+        self.line(&format!("{count} = load i64, ptr {text}{header}"));
+        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        let (length_at, more_length_at, room_at) =
+            (at(self, text, TEXT_BYTES), at(self, more, TEXT_BYTES), at(self, text, TEXT_ROOM));
+        let (length, more_length, total, room, fits, quick) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{length} = load i64, ptr {length_at}{header}"));
+        self.line(&format!("{more_length} = load i64, ptr {more_length_at}{header}"));
+        self.line(&format!("{total} = add i64 {length}, {more_length}"));
+        self.line(&format!("{room} = load i64, ptr {room_at}{header}"));
+        self.line(&format!("{fits} = icmp ule i64 {total}, {room}"));
+        self.line(&format!("{quick} = and i1 {alone}, {fits}"));
+        let (in_place, by_runtime, joined) =
+            (self.label("in_place"), self.label("grow"), self.label("appended"));
+        self.line(&format!("br i1 {quick}, label %{in_place}, label %{by_runtime}, !prof !8"));
+        self.start_block(&in_place);
+        let (start, from) = (at(self, text, TEXT), at(self, more, TEXT));
+        let to = self.temp();
+        self.line(&format!("{to} = getelementptr inbounds i8, ptr {start}, i64 {length}"));
+        self.line(&format!(
+            "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {from}, i64 {more_length}, i1 false)"
+        ));
+        self.line(&format!("store i64 {total}, ptr {length_at}{header}"));
+        let (chars_at, more_chars_at) = (at(self, text, TEXT_CHARS), at(self, more, TEXT_CHARS));
+        let (chars, more_chars, all_chars) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{chars} = load i64, ptr {chars_at}{header}"));
+        self.line(&format!("{more_chars} = load i64, ptr {more_chars_at}{header}"));
+        self.line(&format!("{all_chars} = add i64 {chars}, {more_chars}"));
+        self.line(&format!("store i64 {all_chars}, ptr {chars_at}{header}"));
+        let quick_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&by_runtime);
+        let grown = self.temp();
+        self.line(&format!("{grown} = call ptr @fennec_str_append(ptr {text}, ptr {more})"));
+        let slow_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let result = self.temp();
+        self.line(&format!("{result} = phi ptr [ {text}, %{quick_end} ], [ {grown}, %{slow_end} ]"));
+        result
     }
 
     /// An operator on two strings.

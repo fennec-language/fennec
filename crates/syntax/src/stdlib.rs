@@ -25,6 +25,7 @@ macro_rules! modules {
 }
 
 modules! {
+    cli,
     collections,
     csv,
     fs,

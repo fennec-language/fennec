@@ -1,0 +1,244 @@
+## Arguments a program wasn't given in a way it understands. `message` says what's wrong.
+error CliError:
+    message: str
+
+## One flag, option or positional argument a program takes.
+struct CliArg:
+    name: str
+    short = ""
+    help = ""
+    ## Whether it takes a value: an option or a positional argument, not a flag.
+    takes_value = False
+    positional = False
+    required = False
+    default = ""
+    ## For the last positional argument: whether it collects all the rest.
+    many = False
+
+## The arguments a program was given, read the way its `Cli` describes.
+struct CliArgs:
+    flags: set[str] = set()
+    values: dict[str, str] = {}
+    rest: list[str] = []
+    ## Whether `--help` or `-h` was given, so the program can print `cli.help()` and stop.
+    wants_help = False
+
+    ## Whether a flag was given.
+    def flag(self, name: str) -> bool:
+        name in self.flags
+
+    ## An option's or positional argument's value, its default when it wasn't given, or None
+    ## when it has neither.
+    def value(self, name: str) -> str?:
+        self.values.get(name)
+
+    ## What the last positional argument collected, when it takes many.
+    def many(self) -> list[str]:
+        self.rest
+
+## What a program takes on its command line, built up one argument at a time, then used to
+## read `args` and to write the help:
+## ```fennec
+## cli = Cli(name="greet").flag("loud", short="l").option("name", default="world")
+## given = cli.parse([arg for arg in args])?
+## ```
+## Options are written `--name value`, `--name=value` or `-n value`. Flags take no value, and
+## short ones can be written together, `-lv`. Everything after `--` is positional.
+struct Cli:
+    name: str
+    about = ""
+    takes: list[CliArg] = []
+
+    ## A flag, which is either given or not.
+    def flag(self, name: str, short: str = "", help: str = "") -> Cli:
+        self._with(CliArg(name=name, short=short, help=help))
+
+    ## An option, which takes a value. With no default and not required, it has no value
+    ## unless it's given.
+    def option(
+        self,
+        name: str,
+        short: str = "",
+        help: str = "",
+        default: str = "",
+        required: bool = False,
+    ) -> Cli:
+        self._with(
+            CliArg(
+                name=name,
+                short=short,
+                help=help,
+                takes_value=True,
+                required=required,
+                default=default,
+            ),
+        )
+
+    ## A positional argument, given in order. `many` makes it collect all the rest.
+    def positional(
+        self,
+        name: str,
+        help: str = "",
+        required: bool = True,
+        many: bool = False,
+    ) -> Cli:
+        self._with(
+            CliArg(
+                name=name,
+                help=help,
+                takes_value=True,
+                positional=True,
+                required=required,
+                many=many,
+            ),
+        )
+
+    ## Reads `args`, the program's arguments without its name. Arguments that don't fit fail
+    ## with a `CliError` that says why.
+    def parse(self, args: list[str]) -> CliArgs:
+        mut given = CliArgs()
+        mut positionals = []
+        mut at = 0
+        mut only_positional = False
+        while at < args.len():
+            arg = args[at]
+            at += 1
+            if only_positional or arg == "-" or not arg.startswith("-"):
+                positionals.append(arg)
+            elif arg == "--":
+                only_positional = True
+            elif arg == "--help" or arg == "-h":
+                given.wants_help = True
+            elif arg.startswith("--"):
+                mut name = arg[2:]
+                mut value: str? = None
+                found = name.find("=")
+                if found is not None:
+                    value = name[found + 1:]
+                    name = name[:found]
+                taken = self._named(name)?
+                if not taken.takes_value:
+                    if value is not None:
+                        fail CliError(message=f"`--{name}` is a flag, so it takes no value")
+                    given.flags.add(name)
+                else:
+                    if value is None:
+                        if at >= args.len(): fail CliError(message=f"`--{name}` needs a value")
+                        value = args[at]
+                        at += 1
+                    given.values[name] = value
+            else:
+                at = self._shorts(arg, args, at, mut given)?
+        self._place(positionals, mut given)?
+        if not given.wants_help:
+            for taken in self.takes:
+                if taken.required and taken.name not in given.values and not taken.many:
+                    what = f"<{taken.name}>" if taken.positional else f"`--{taken.name}`"
+                    fail CliError(message=f"{what} is required")
+        for taken in self.takes:
+            if taken.default != "" and taken.name not in given.values:
+                given.values[taken.name] = taken.default
+        given
+
+    ## What the program takes, for `--help`.
+    def help(self) -> str:
+        mut lines = [f"usage: {self.name}{self._usage()}"]
+        if self.about != "":
+            lines.extend(["", self.about])
+        positionals = [
+            (Cli._shown(taken), Cli._explained(taken)) for taken in self.takes if taken.positional
+        ]
+        mut named = [
+            (
+                Cli._shown(taken),
+                Cli._explained(taken),
+            ) for taken in self.takes if not taken.positional
+        ]
+        named.append(("-h, --help", "show this help"))
+        # Both tables line up with each other.
+        width = max([shown.len() for shown, _ in positionals + named])
+        if positionals.len() > 0:
+            lines.extend(["", "arguments:"])
+            lines.extend(Cli._table(positionals, width))
+        lines.extend(["", "options:"])
+        lines.extend(Cli._table(named, width))
+        "\n".join(lines) + "\n"
+
+    ## This `Cli` with one more argument. Two with the same name is a mistake in the program.
+    def _with(self, taken: CliArg) -> Cli:
+        assert all(each.name != taken.name for each in self.takes)
+        replace(self, takes=self.takes + [taken])
+
+    def _named(self, name: str) -> CliArg:
+        for taken in self.takes:
+            if taken.name == name and not taken.positional: return taken
+        fail CliError(message=f"there's no option `--{name}`")
+
+    ## `-l`, `-lv` or `-n value`: short flags, the last of which may take a value. Gives back
+    ## where the next argument starts.
+    def _shorts(self, arg: str, args: list[str], at: int, mut given: CliArgs) -> int:
+        mut next = at
+        letters = arg[1:]
+        for spot, letter in enumerate(letters):
+            mut found: CliArg? = None
+            for taken in self.takes:
+                if taken.short == letter and not taken.positional:
+                    found = taken
+            if found is None: fail CliError(message=f"there's no option `-{letter}`")
+            if not found.takes_value:
+                given.flags.add(found.name)
+                continue
+            rest = letters[spot + 1:]
+            if rest != "":
+                given.values[found.name] = rest
+            elif next < args.len():
+                given.values[found.name] = args[next]
+                next += 1
+            else:
+                fail CliError(message=f"`-{letter}` needs a value")
+            return next
+        next
+
+    ## Gives each positional argument its value, in order.
+    def _place(self, positionals: list[str], mut given: CliArgs):
+        mut left = positionals
+        for taken in self.takes:
+            if not taken.positional: continue
+            if taken.many:
+                given.rest = left
+                left = []
+            elif left.len() > 0:
+                given.values[taken.name] = left[0]
+                left = left[1:]
+        if left.len() > 0: fail CliError(message=f"`{left[0]}` wasn't expected")
+
+    def _usage(self) -> str:
+        mut usage = ""
+        if any(not taken.positional for taken in self.takes):
+            usage += " [options]"
+        for taken in self.takes:
+            if not taken.positional: continue
+            shown = f"{taken.name}..." if taken.many else taken.name
+            usage += f" <{shown}>" if taken.required else f" [{shown}]"
+        usage
+
+    def _shown(taken: CliArg) -> str:
+        if taken.positional: return taken.name
+        long = f"--{taken.name}" + (" <value>" if taken.takes_value else "")
+        if taken.short == "": return f"    {long}"
+        f"-{taken.short}, {long}"
+
+    def _explained(taken: CliArg) -> str:
+        mut parts = [] if taken.help == "" else [taken.help]
+        if taken.default != "":
+            parts.append(f"(default: {taken.default})")
+        elif taken.required and not taken.positional:
+            parts.append("(required)")
+        " ".join(parts)
+
+    ## Rows of two columns, the second starting past `width`.
+    def _table(rows: list[(str, str)], width: int) -> list[str]:
+        [
+            ("  " + shown + " " * (width - shown.len() + 2) + explained).rstrip() for shown,
+            explained in rows
+        ]

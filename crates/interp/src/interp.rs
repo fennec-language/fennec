@@ -51,6 +51,8 @@ pub struct Interp<'out> {
     pub(crate) prelude_imports: HashMap<String, &'static str>,
     /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
     pub(crate) modules: HashMap<String, &'static str>,
+    /// What the standard library's own code imports as modules, which only that code sees.
+    pub(crate) prelude_modules: HashMap<String, &'static str>,
     pub(crate) tests: Vec<TestDef>,
     pub(crate) frame: Frame,
     pub(crate) depth: usize,
@@ -100,6 +102,7 @@ impl<'out> Interp<'out> {
             imports: HashMap::new(),
             prelude_imports: HashMap::new(),
             modules: HashMap::new(),
+            prelude_modules: HashMap::new(),
             tests: Vec::new(),
             frame: Frame::new(),
             depth: 0,
@@ -123,6 +126,7 @@ impl<'out> Interp<'out> {
             interp.load(module)?;
         }
         interp.prelude_imports = std::mem::take(&mut interp.imports);
+        interp.prelude_modules = std::mem::take(&mut interp.modules);
         Ok(interp)
     }
 
@@ -342,6 +346,11 @@ impl<'out> Interp<'out> {
         self.out
             .flush()
             .map_err(|err| Diagnostic::new(format!("couldn't write output: {err}"), Span::default()))
+    }
+
+    /// The modules imported where `span` is: the standard library's own, or the program's.
+    pub(crate) fn modules_at(&self, span: Span) -> &HashMap<String, &'static str> {
+        if span.in_prelude() { &self.prelude_modules } else { &self.modules }
     }
 
     pub(crate) fn type_info(&self, name: &str) -> Option<Rc<TypeInfo>> {

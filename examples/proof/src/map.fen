@@ -1,0 +1,192 @@
+## The battlefield: a grid of tiles, the walkable neighbors of every cell packed into one
+## block, and pathfinding over them.
+
+from std.collections import Deque, Grid, Packed, PriorityQueue
+
+enum Tile:
+    Floor
+    Wall
+    Forest
+    Water
+
+    ## How many steps crossing the tile costs. Water can't be crossed.
+    def cost(self) -> int:
+        match self:
+            case .Floor:
+                1
+            case .Forest:
+                2
+            case .Wall:
+                0
+            case .Water:
+                0
+
+    def walkable(self) -> bool:
+        self.cost() > 0
+
+    def symbol(self) -> str:
+        match self:
+            case .Floor:
+                "."
+            case .Wall:
+                "#"
+            case .Forest:
+                "^"
+            case .Water:
+                "~"
+
+## A tile drawn as `symbol` gives back.
+def tile_of(symbol: str) -> Tile:
+    match symbol:
+        case "#":
+            Tile.Wall
+        case "^":
+            Tile.Forest
+        case "~":
+            Tile.Water
+        case _:
+            Tile.Floor
+
+struct Map:
+    tiles: Grid[Tile]
+    ## For each cell, by its number `y * width + x`, the numbers of the walkable cells next to it.
+    links: Packed[int]
+
+    ## A map drawn with one character a tile, every row the same length.
+    def drawn(rows: list[str]) -> Map:
+        tiles = Grid.of([[tile_of(symbol) for symbol in row] for row in rows])
+        Map(tiles=tiles, links=links_of(tiles))
+
+    def width(self) -> int:
+        self.tiles.width
+
+    def height(self) -> int:
+        self.tiles.height
+
+    def number(self, at: (int, int)) -> int:
+        x, y = at
+        y * self.tiles.width + x
+
+    def position(self, number: int) -> (int, int):
+        (number % self.tiles.width, number // self.tiles.width)
+
+    def walkable(self, at: (int, int)) -> bool:
+        tile = self.tiles.get(at)
+        if tile is None: return False
+        tile.walkable()
+
+    ## The walkable cells next to `at`.
+    def next_to(self, at: (int, int)) -> list[(int, int)]:
+        [self.position(number) for number in self.links[self.number(at)]]
+
+    ## The cheapest way from `start` to `goal`, without `start`, or None when there's none.
+    ## Cells in `blocked` can't be walked through, though `goal` may be one of them.
+    def path(self, start: (int, int), goal: (int, int), blocked: set[(int, int)]) -> list[(
+        int,
+        int,
+    )]?:
+        if start == goal: return []
+        if not self.walkable(goal): return None
+        cells = self.tiles.len()
+        mut cost = [-1 for _ in range(cells)]
+        mut came_from = [-1 for _ in range(cells)]
+        first = self.number(start)
+        last = self.number(goal)
+        cost[first] = 0
+        mut waiting = PriorityQueue[int]()
+        waiting.push(first, distance(start, goal))
+        while waiting.len() > 0:
+            here = waiting.pop() else first
+            if here == last: break
+            for near in self.links[here]:
+                at = self.position(near)
+                if near != last and at in blocked: continue
+                tile = self.tiles[at]
+                step = cost[here] + tile.cost()
+                if cost[near] == -1 or step < cost[near]:
+                    cost[near] = step
+                    came_from[near] = here
+                    waiting.push(near, step + distance(at, goal))
+        if cost[last] == -1: return None
+        mut steps = []
+        mut at = last
+        while at != first:
+            steps.append(self.position(at))
+            at = came_from[at]
+        steps.reverse()
+        steps
+
+    ## How many steps every cell is from `start`, or -1 when it can't be reached.
+    def reach(self, start: (int, int)) -> Grid[int]:
+        mut steps = Grid.filled(width=self.width(), height=self.height(), value=-1)
+        steps[start] = 0
+        mut waiting = Deque.of([start])
+        while waiting.len() > 0:
+            here = waiting.popleft() else start
+            for near in self.next_to(here):
+                if steps[near] == -1:
+                    steps[near] = steps[here] + 1
+                    waiting.append(near)
+        steps
+
+    def drawing(self) -> list[str]:
+        ["".join([tile.symbol() for tile in row]) for row in self.tiles.rows()]
+
+## The walkable neighbors of every cell, in cell order.
+def links_of(tiles: Grid[Tile]) -> Packed[int]:
+    mut links = Packed[int]()
+    for at in tiles.positions():
+        links.start_list()
+        if not tiles[at].walkable(): continue
+        for near in tiles.neighbors(at):
+            if tiles[near].walkable():
+                x, y = near
+                links.push(y * tiles.width + x)
+    links
+
+## Steps between two cells, going only across and down: a guess that's never too high.
+def distance(a: (int, int), b: (int, int)) -> int:
+    ax, ay = a
+    bx, by = b
+    (ax - bx).abs() + (ay - by).abs()
+
+test "a map knows its walls and its links":
+    map = Map.drawn(["..#", ".~.", "^.."])
+    assert map.width() == 3 and map.height() == 3
+    assert map.walkable((0, 0)) and not map.walkable((2, 0)) and not map.walkable((1, 1))
+    assert not map.walkable((5, 5))
+    assert sorted(map.next_to((0, 0))) == [(0, 1), (1, 0)]
+    assert sorted(map.next_to((2, 2))) == [(1, 2), (2, 1)]
+    assert map.next_to((2, 0)) == []
+    assert map.drawing() == ["..#", ".~.", "^.."]
+
+test "a path goes round water and walls":
+    map = Map.drawn(["....", ".##.", ".~..", "...."])
+    found = map.path((0, 0), (3, 3), set())
+    assert found is not None
+    if found is not None:
+        assert found.len() == 6 and found[-1] == (3, 3)
+
+test "a path is cheapest, not shortest":
+    # Through the forest is 7; round it is 6.
+    map = Map.drawn([".^^^.", ".....", "....."])
+    found = map.path((0, 0), (4, 0), set())
+    assert found == [(0, 1), (1, 1), (2, 1), (3, 1), (4, 1), (4, 0)]
+
+test "there may be no path":
+    map = Map.drawn([".#.", ".#.", ".#."])
+    assert map.path((0, 0), (2, 0), set()) is None
+    assert map.path((0, 0), (1, 0), set()) is None
+    assert map.path((0, 0), (0, 0), set()) == []
+
+test "blocked cells are walked round, but the goal may be blocked":
+    map = Map.drawn(["...", "...", "..."])
+    found = map.path((0, 1), (2, 1), {(1, 1), (2, 1)})
+    assert found is not None
+    if found is not None:
+        assert (1, 1) not in found and found[-1] == (2, 1)
+
+test "reach counts steps from a cell":
+    map = Map.drawn(["..#", "..#", "~.."])
+    steps = map.reach((0, 0))
+    assert steps.rows() == [[0, 1, -1], [1, 2, -1], [-1, 3, 4]]

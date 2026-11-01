@@ -1,0 +1,71 @@
+# `Packed` stores many small lists as one: two blocks of memory however many lists, where a
+# `list[list[T]]` needs one for each. Here it holds a graph's edges, each node's list of
+# neighbors one after another.
+from std.collections import Deque, Packed
+
+test "it holds the same lists as a list of lists" for lists: list[list[int]]:
+    packed = Packed.of(lists)
+    assert packed.len() == lists.len()
+    assert packed.lists() == lists
+    assert [items for items in packed] == lists
+    for at, items in enumerate(lists):
+        assert packed[at] == items
+        assert packed.len_of(at) == items.len()
+    assert packed.item_count() == sum(items.len() for items in lists)
+    mut flat = []
+    for items in lists:
+        flat.extend(items)
+    assert packed.items() == flat
+
+test "lists are added whole, or one item at a time to the last":
+    mut packed = Packed[str]()
+    assert packed.len() == 0 and packed.lists() == []
+    packed.append(["a", "b"])
+    packed.append([])
+    packed.start_list()
+    packed.push("c")
+    packed.push("d")
+    assert packed.lists() == [["a", "b"], [], ["c", "d"]]
+    assert packed.items() == ["a", "b", "c", "d"]
+    assert packed.len_of(1) == 0
+
+test "push with no list starts one":
+    mut packed = Packed[int]()
+    packed.push(1)
+    packed.push(2)
+    assert packed.lists() == [[1, 2]]
+
+test "a copy is independent":
+    mut packed = Packed.of([[1], [2, 3]])
+    saved = packed
+    packed.append([4])
+    packed.push(5)
+    assert saved.lists() == [[1], [2, 3]]
+    assert packed.lists() == [[1], [2, 3], [4, 5]]
+
+## How many steps each node is from `start`, or -1 when it can't be reached.
+def steps_from(edges: Packed[int], start: int) -> list[int]:
+    mut steps = [-1 for _ in range(edges.len())]
+    steps[start] = 0
+    mut waiting = Deque.of([start])
+    while waiting.len() > 0:
+        here = waiting.popleft() else start
+        for near in edges[here]:
+            if steps[near] == -1:
+                steps[near] = steps[here] + 1
+                waiting.append(near)
+    steps
+
+test "a graph's edges, walked breadth first":
+    edges = Packed.of([[1, 2], [3], [3], [4], [], [0]])
+    assert steps_from(edges, 0) == [0, 1, 1, 2, 3, -1]
+
+def main(stdout: Stdout):
+    mut edges = Packed[int]()
+    for node in range(6):
+        edges.start_list()
+        for near in [node + 1, node + 3]:
+            if near < 6 and near != node:
+                edges.push(near)
+    stdout.print(edges.len(), edges.item_count(), edges.lists())
+    stdout.print(steps_from(edges, 0))

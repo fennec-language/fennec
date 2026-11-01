@@ -1,0 +1,156 @@
+## What each unit decides to do in a tick. Deciding only reads the world, so every unit can
+## decide at once; `combat` then carries the decisions out one at a time.
+
+from std.game import Id
+
+import map
+from units import Kind, Unit, World
+
+enum Action:
+    Wait
+    Step(to: (int, int))
+    Attack(target: Id[Unit])
+    Heal(target: Id[Unit])
+
+## What one unit does next.
+struct Decision:
+    actor: Id[Unit]
+    action: Action
+    ## Who it's after now, which it remembers for the next tick.
+    target: Id[Unit]?
+    ## The rest of the way to where it's going.
+    path: list[(int, int)] = []
+
+## Steps between two cells, going only across and down.
+def gap(a: (int, int), b: (int, int)) -> int:
+    map.distance(a, b)
+
+## Whether `target` still stands and is still worth going after.
+def still_good(world: World, actor: Unit, target: Id[Unit]?) -> bool:
+    if target is None: return False
+    found = world.units.get(target)
+    if found is None: return False
+    if actor.kind == Kind.Medic:
+        return found.team == actor.team and found.health < found.kind.most_health()
+    found.team != actor.team
+
+## The nearest enemy, or for a medic, the most hurt friend nearby.
+def choose_target(world: World, id: Id[Unit], actor: Unit) -> Id[Unit]?:
+    mut best: Id[Unit]? = None
+    mut best_score = 1_000_000
+    for other_id, other in world.units.items():
+        if other_id == id: continue
+        mut score = 0
+        if actor.kind == Kind.Medic:
+            if other.team != actor.team or other.health >= other.kind.most_health(): continue
+            # The more hurt, the better, and nearer is better still.
+            score = other.health * 2 + gap(actor.at, other.at)
+            if gap(actor.at, other.at) > 8: continue
+        else:
+            if other.team == actor.team: continue
+            score = gap(actor.at, other.at) * 100 + other.health
+        if score < best_score:
+            best = other_id
+            best_score = score
+    best
+
+## Where to walk when there's nobody to go after: behind the leader, or to the squad's rally.
+def destination(world: World, actor: Unit) -> (int, int)?:
+    leader = actor.following
+    if leader is not None:
+        found = world.units.get(leader)
+        if found is not None: return found.at
+    squad = actor.squad
+    if squad is not None:
+        found = world.squads.get(squad)
+        if found is not None: return found.rally
+    None
+
+## The next step towards `goal`, keeping the path it has when that still leads there.
+def walk(world: World, actor: Unit, goal: (int, int), blocked: set[(int, int)]) -> (
+    Action,
+    list[(int, int)],
+):
+    mut path = actor.path
+    still_leads = path.len() > 0 and path[-1] == goal and path[0] not in blocked
+    if not still_leads:
+        found = world.field.path(actor.at, goal, blocked)
+        if found is None: return (Action.Wait, [])
+        path = found
+    if path.len() == 0: return (Action.Wait, [])
+    next = path[0]
+    # Someone may be standing on the goal itself; stop next to them.
+    if next in blocked: return (Action.Wait, [])
+    (Action.Step(to=next), path[1:])
+
+def decide(world: World, id: Id[Unit], blocked: set[(int, int)]) -> Decision:
+    actor = world.units[id]
+    mut target = actor.target
+    if not still_good(world, actor, target):
+        target = choose_target(world, id, actor)
+    if target is not None:
+        aim = world.units[target]
+        if gap(actor.at, aim.at) <= actor.kind.reach():
+            if actor.kind == Kind.Medic:
+                return Decision(actor=id, action=Action.Heal(target=target), target=target)
+            return Decision(actor=id, action=Action.Attack(target=target), target=target)
+        action, path = walk(world, actor, aim.at, blocked)
+        return Decision(actor=id, action=action, target=target, path=path)
+    goal = destination(world, actor)
+    if goal is None or gap(actor.at, goal) <= 1:
+        return Decision(actor=id, action=Action.Wait, target=None)
+    action, path = walk(world, actor, goal, blocked)
+    Decision(actor=id, action=action, target=None, path=path)
+
+## Every unit's decision for this tick, worked out together, in the order units were made.
+def decide_all(world: World) -> list[Decision]:
+    blocked = world.occupied()
+    [decide(world, id, blocked) for id in parallel(world.units.ids())]
+
+test "a soldier goes after the nearest enemy":
+    mut world = World(field=map.Map.drawn([".....", "....."]))
+    ash = world.spawn("ash", .Red, .Soldier, (0, 0))
+    near = world.spawn("vex", .Blue, .Soldier, (2, 0))
+    world.spawn("far", .Blue, .Soldier, (4, 1))
+    decision = decide(world, ash, world.occupied())
+    assert decision.target == near
+    assert decision.action == Action.Step(to=(1, 0))
+
+test "a unit in reach attacks":
+    mut world = World(field=map.Map.drawn(["..."]))
+    ash = world.spawn("ash", .Red, .Soldier, (0, 0))
+    vex = world.spawn("vex", .Blue, .Soldier, (1, 0))
+    assert decide(world, ash, world.occupied()).action == Action.Attack(target=vex)
+
+test "an archer shoots from afar":
+    mut world = World(field=map.Map.drawn(["......"]))
+    bow = world.spawn("bow", .Red, .Archer, (0, 0))
+    vex = world.spawn("vex", .Blue, .Soldier, (4, 0))
+    assert decide(world, bow, world.occupied()).action == Action.Attack(target=vex)
+
+test "a medic heals the most hurt friend":
+    mut world = World(field=map.Map.drawn(["....."]))
+    doc = world.spawn("doc", .Red, .Medic, (2, 0))
+    a = world.spawn("a", .Red, .Soldier, (1, 0))
+    b = world.spawn("b", .Red, .Soldier, (3, 0))
+    world.units[a].health = 50
+    world.units[b].health = 20
+    assert decide(world, doc, world.occupied()).action == Action.Heal(target=b)
+
+test "a dead target is let go":
+    mut world = World(field=map.Map.drawn(["....."]))
+    ash = world.spawn("ash", .Red, .Soldier, (0, 0))
+    gone = world.spawn("gone", .Blue, .Soldier, (1, 0))
+    other = world.spawn("other", .Blue, .Soldier, (4, 0))
+    world.units[ash].target = gone
+    world.units.remove(gone)
+    assert decide(world, ash, world.occupied()).target == other
+
+test "with nobody to fight, a unit follows its leader":
+    mut world = World(field=map.Map.drawn(["......"]))
+    lead = world.spawn("lead", .Red, .Soldier, (5, 0))
+    tail = world.spawn("tail", .Red, .Soldier, (0, 0))
+    world.form_squad("pair", [lead, tail], (5, 0))
+    decision = decide(world, tail, world.occupied())
+    assert decision.action == Action.Step(to=(1, 0))
+    assert decision.path == [(2, 0), (3, 0), (4, 0), (5, 0)]

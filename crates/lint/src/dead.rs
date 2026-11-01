@@ -11,7 +11,7 @@ use crate::Lint;
 use crate::sizes::{blocks, functions};
 
 /// Whether `text` has `name` in it as a whole word.
-fn has_word(text: &str, name: &str) -> bool {
+pub(crate) fn has_word(text: &str, name: &str) -> bool {
     text.match_indices(name).any(|(at, _)| {
         let word = |ch: char| ch.is_alphanumeric() || ch == '_';
         let before = text.get(..at).and_then(|before| before.chars().next_back());
@@ -201,7 +201,7 @@ fn names_for(stmts: &[Stmt], found: &mut Vec<(String, String)>) {
 /// The locals a body may change: given a new value, written into, called a method on, or passed
 /// as `mut`, directly or through a `mut` name for part of them. Any method call counts, since
 /// which ones change their value isn't known here.
-fn changed(body: &[Stmt]) -> HashSet<String> {
+pub(crate) fn changed(body: &[Stmt]) -> HashSet<String> {
     let mut found = changed_directly(body);
     let mut names = Vec::new();
     names_for(body, &mut names);

@@ -327,3 +327,97 @@ fn mut_on_a_local_nothing_changes_goes() {
         assert_eq!(rules(source), NONE, "{source}");
     }
 }
+
+/// The source, with `fennec fix`'s blank lines left by removed lines taken out.
+fn fixed_tidy(source: &str) -> String {
+    let text = fixed(source);
+    let kept: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+    kept.join("\n") + "\n"
+}
+
+#[test]
+fn an_unused_index_needs_no_enumerate() {
+    let source = "def f(xs: list[int]):\n    for i, x in enumerate(xs):\n        g(x)\n";
+    assert_eq!(rules(source), ["needless-enumerate"]);
+    assert_eq!(fixed(source), "def f(xs: list[int]):\n    for x in xs:\n        g(x)\n");
+    assert_eq!(rules("def f(xs: list[int]):\n    for i, x in enumerate(xs):\n        g(i, x)\n"), NONE);
+}
+
+#[test]
+fn a_loop_that_only_appends_is_a_comprehension() {
+    let source = "def f(ps: list[P]) -> list[str]:\n    mut names = []\n    for p in ps:\n        if p.alive:\n            names.append(p.name)\n    names\n";
+    assert_eq!(rules(source), ["manual-comprehension"]);
+    assert_eq!(
+        fixed(source),
+        "def f(ps: list[P]) -> list[str]:\n    mut names = [p.name for p in ps if p.alive]\n    names\n"
+    );
+    let more = "def f(ps: list[P]) -> list[str]:\n    mut names = []\n    for p in ps:\n        names.append(p.name)\n        g()\n    names\n";
+    assert_eq!(rules(more), NONE, "the loop does something else too");
+    let started = "def f(ps: list[P]) -> list[str]:\n    mut names = [\"a\"]\n    for p in ps:\n        names.append(p.name)\n    names\n";
+    assert_eq!(rules(started), NONE, "it didn't start empty");
+    let bracketed = "def f(ps: list[int]) -> list[int]:\n    mut out = []\n    for p in ps:\n        out.append(p + (p if p > 0 else 0))\n    out\n";
+    assert_eq!(rules(bracketed), NONE, "the span leaves out a bracket it needs");
+}
+
+#[test]
+fn a_loop_that_only_adds_is_a_sum() {
+    let source = "def f(cart: list[I]) -> int:\n    mut total = 0\n    for item in cart:\n        total += item.price\n    total\n";
+    assert_eq!(rules(source), ["manual-builtin"]);
+    assert_eq!(
+        fixed(source),
+        "def f(cart: list[I]) -> int:\n    mut total = sum(item.price for item in cart)\n    total\n"
+    );
+    let uses_total = "def f(cart: list[I]) -> int:\n    mut total = 0\n    for item in cart:\n        total += total\n    total\n";
+    assert_eq!(rules(uses_total), NONE);
+}
+
+#[test]
+fn a_counted_while_is_a_for() {
+    let source = "def f(n: int):\n    mut i = 0\n    while i < n:\n        g(i)\n        i += 1\n";
+    assert_eq!(rules(source), ["counted-while"]);
+    assert_eq!(fixed_tidy(source), "def f(n: int):\n    for i in range(n):\n        g(i)\n");
+    for (why, source) in [
+        (
+            "it skips a step",
+            "def f(n: int):\n    mut i = 0\n    while i < n:\n        if i == 2:\n            continue\n        i += 1\n",
+        ),
+        (
+            "it's used after",
+            "def f(n: int) -> int:\n    mut i = 0\n    while i < n:\n        i += 1\n    i\n",
+        ),
+        (
+            "the limit moves",
+            "def f(mut n: int):\n    mut i = 0\n    while i < n:\n        n -= 1\n        i += 1\n",
+        ),
+        (
+            "it moves elsewhere too",
+            "def f(n: int):\n    mut i = 0\n    while i < n:\n        i += 2\n        i += 1\n",
+        ),
+    ] {
+        assert_eq!(rules(source), NONE, "{why}");
+    }
+}
+
+#[test]
+fn an_index_that_only_indexes_is_an_item() {
+    let source = "def f(enemies: list[E]):\n    for i in range(enemies.len()):\n        draw(enemies[i])\n";
+    assert_eq!(rules(source), ["range-len"]);
+    assert_eq!(fixed(source), "def f(enemies: list[E]):\n    for enemy in enemies:\n        draw(enemy)\n");
+    for (why, source) in [
+        ("it's used for more", "def f(xs: list[int]):\n    for i in range(xs.len()):\n        g(i, xs[i])\n"),
+        (
+            "it writes the list",
+            "def f(mut xs: list[int]):\n    for i in range(xs.len()):\n        xs[i] = xs[i] + 1\n",
+        ),
+        (
+            "a dict's keys aren't its items",
+            "def f(xs: dict[int, int]):\n    for i in range(xs.len()):\n        g(xs[i])\n",
+        ),
+        (
+            "the name is taken",
+            "def f(points: list[int]):\n    point = 1\n    for i in range(points.len()):\n        g(points[i], point)\n",
+        ),
+    ] {
+        assert_eq!(rules(source), NONE, "{why}");
+    }
+}

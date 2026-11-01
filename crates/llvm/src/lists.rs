@@ -526,7 +526,16 @@ impl Emit<'_, '_, '_> {
         let kind = self.place_kind(object, path)?;
         if let Kind::Dict(key, value_word) = kind {
             let place = self.place_of(object, path)?;
-            return self.dict_store(&place, (key, value_word), index, Some(value));
+            let found = if path.is_empty() {
+                self.found_entries
+                    .iter()
+                    .rev()
+                    .find(|(dict, looked_up, _)| *dict == object && looked_up == index)
+                    .map(|(_, _, entry)| entry.clone())
+            } else {
+                None
+            };
+            return self.dict_store_at(&place, (key, value_word), index, Some(value), found);
         }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;

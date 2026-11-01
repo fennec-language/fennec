@@ -1,7 +1,7 @@
 //! Writing functions as LLVM's text. Each local is a stack slot and every read and write goes
 //! through it, which LLVM's first pass turns into proper SSA.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use fennec_interp::embed::layout::COUNT;
@@ -329,6 +329,7 @@ impl<'p> Module<'_, 'p> {
             start_symbol,
             self_target,
             taken_at: BTreeMap::new(),
+            found_entries: Vec::new(),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -366,6 +367,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     self_target: Option<&'e str>,
     /// Where each item taken out of a list to change was, to put it back without looking again.
     pub(crate) taken_at: BTreeMap<usize, String>,
+    /// Where lookups since the last change found their keys: the dict's local, the key, and the
+    /// entry or null.
+    pub(crate) found_entries: Vec<(LocalId, Operand, String)>,
 }
 
 pub(crate) fn float_text(value: f64) -> String {
@@ -481,12 +485,39 @@ impl Emit<'_, '_, '_> {
             }
         }
         self.line("br label %bb0");
+        // Which blocks lead to each, so a lookup can carry on into a block every way in has
+        // come through, once each of those is written.
+        let mut before: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (at, block) in function.blocks.iter().enumerate() {
+            for next in block.end.targets() {
+                before.entry(next.0).or_default().push(at);
+            }
+        }
+        let mut left_with: HashMap<usize, Vec<(LocalId, Operand, String)>> = HashMap::new();
         for (at, block) in function.blocks.iter().enumerate() {
             self.start_block(&format!("bb{at}"));
+            let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
+            self.found_entries = match ways_in.split_first() {
+                Some((first, rest)) if ways_in.iter().all(|from| *from < at) => {
+                    let mut kept = left_with.get(first).cloned().unwrap_or_default();
+                    for from in rest {
+                        let theirs = left_with.get(from).map_or(&[][..], Vec::as_slice);
+                        kept.retain(|entry| theirs.contains(entry));
+                    }
+                    kept
+                }
+                _ => Vec::new(),
+            };
             for inst in &block.insts {
+                self.forget_entries(&inst.kind);
                 self.inst(&inst.kind, inst.span, at)?;
+                // A store may have grown the dict, moving every entry.
+                if let InstKind::SetIndex { object, .. } = &inst.kind {
+                    self.found_entries.retain(|(dict, _, _)| dict != object);
+                }
                 self.let_go_after(&inst.kind);
             }
+            left_with.insert(at, std::mem::take(&mut self.found_entries));
             if let Some((list, limit)) = self.known.reservations.get(&at).cloned() {
                 self.reserve(LocalId(list), &limit)?;
             }
@@ -1281,6 +1312,33 @@ impl Emit<'_, '_, '_> {
             }
             other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
         }
+    }
+
+    /// Lookups only stay good across instructions that leave dicts alone and don't change the
+    /// dict's or the key's local.
+    fn forget_entries(&mut self, inst: &InstKind) {
+        if self.found_entries.is_empty() {
+            return;
+        }
+        let harmless = matches!(
+            inst,
+            InstKind::Binary { .. }
+                | InstKind::Unary { .. }
+                | InstKind::Copy { .. }
+                | InstKind::IsNone { .. }
+                | InstKind::GetSome { .. }
+                | InstKind::MakeSome { .. }
+                | InstKind::SetIndex { .. }
+        );
+        let mut written = Vec::new();
+        visit(inst, |_| {}, |local| written.push(local));
+        if !harmless {
+            self.found_entries.clear();
+            return;
+        }
+        self.found_entries.retain(|(dict, key, _)| {
+            !written.contains(dict) && !matches!(key, Operand::Local(local) if written.contains(local))
+        });
     }
 
     /// A local read once lets go of its value right after that, rather than when the function

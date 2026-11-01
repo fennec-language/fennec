@@ -42,29 +42,39 @@ fn keys_in(ty: &Type, keys: &mut Vec<Type>) {
 /// Why a type can't be a key, if it can't. `open` holds the types being looked at, since a type
 /// can hold itself.
 fn key_problem(cx: &mut FnCx<'_>, ty: &Type, open: &mut Vec<String>) -> Option<String> {
-    let Type::Named(name) = ty else {
-        return ty.children().into_iter().find_map(|child| key_problem(cx, child, open));
+    let name = match ty {
+        Type::Named(name) => name,
+        Type::Generic(name, args) => {
+            if let Some(problem) = args.iter().find_map(|arg| key_problem(cx, arg, open)) {
+                return Some(problem);
+            }
+            name
+        }
+        _ => return ty.children().into_iter().find_map(|child| key_problem(cx, child, open)),
     };
     if open.contains(name) {
         return None;
     }
     let info = cx.checker.program.type_info(name)?;
     let (kind, def) = (info.kind, info.def.clone());
-    if kind != TypeKind::Struct {
+    if !matches!(kind, TypeKind::Struct | TypeKind::Enum) {
         return None;
     }
     if cx.checker.program.method(name, "==").is_some() {
         return Some(format!("`{name}` has its own `==`"));
     }
     open.push(name.clone());
+    let fields = def.fields.iter().map(|field| (None, field));
+    let in_cases =
+        def.cases.iter().flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
     let mut found = None;
-    for field in &def.fields {
-        let held = cx.checker.field_type(name, None, &field.name);
-        if held == Type::Float {
-            found = Some(format!("its field `{}` is a float", field.name));
+    for (case, field) in fields.chain(in_cases) {
+        let held = cx.checker.field_type(name, case, &field.name);
+        found = if held == Type::Float {
+            Some(format!("its field `{}` is a float", field.name))
         } else {
-            found = key_problem(cx, &held, open);
-        }
+            key_problem(cx, &held, open)
+        };
         if found.is_some() {
             break;
         }

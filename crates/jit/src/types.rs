@@ -149,7 +149,10 @@ impl<'m> Program<'m> {
         signatures: &Signatures,
         tests: &'m [(String, FnDef)],
     ) -> Result<Self, Diagnostic> {
-        let items = || prelude.iter().chain(std::iter::once(module)).flat_map(|module| &module.items);
+        let declared = declared_types(module);
+        let hidden = |item: &Item| hides(&declared, item);
+        let library = || prelude.iter().flat_map(|module| &module.items).filter(|item| !hidden(item));
+        let items = || library().chain(&module.items);
         let enums = items().filter_map(|item| match item {
             Item::Enum(def) => Some(def),
             _ => None,
@@ -177,9 +180,8 @@ impl<'m> Program<'m> {
             }
             excluded.push(key);
         };
-        let modules = prelude.iter().map(|module| (module, true)).chain(std::iter::once((module, false)));
-        for (item, from_prelude) in modules
-            .flat_map(|(module, from_prelude)| module.items.iter().map(move |item| (item, from_prelude)))
+        for (item, from_prelude) in
+            library().map(|item| (item, true)).chain(module.items.iter().map(|item| (item, false)))
         {
             match item {
                 Item::Function(def) => {
@@ -252,4 +254,26 @@ fn function<'m>(
     let direct = Some(layouts.ty(&signature.returns))
         .filter(|ty| signature.can_fail && ty.counted() && def.name != "main");
     Some(Function { def, key, prelude: false, params, ret, fallible: signature.can_fail, direct })
+}
+
+/// The types a program declares, which take the place of the standard library's of the same
+/// names, as they do for the checker and the interpreter.
+fn declared_types(module: &Module) -> HashSet<&str> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(ty) | Item::Enum(ty) | Item::Error(ty) => Some(ty.name.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether a library item is of a type the program declares for itself.
+fn hides(declared: &HashSet<&str>, item: &Item) -> bool {
+    match item {
+        Item::Struct(ty) | Item::Enum(ty) | Item::Error(ty) => declared.contains(ty.name.as_str()),
+        Item::Extend(extension) => declared.contains(extension.name.as_str()),
+        _ => false,
+    }
 }

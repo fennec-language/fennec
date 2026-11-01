@@ -1,0 +1,71 @@
+# `std.log` is one way for every kit to log. Nothing is global: a function that logs takes a
+# `Log`, so its signature says so, and the program chooses where entries go and how many.
+from std.log import Log, LogLevel
+from std.time import Duration
+
+def save(log: Log, name: str, size: int):
+    log.debug("about to save")
+    log.info("saved", fields={"file": name, "size": f"{size}"})
+
+test "only entries at the log's level or above are written"(stdout: Stdout):
+    quiet = Log(out=stdout, level=.Warn)
+    quiet.debug("a")
+    quiet.info("b")
+    quiet.warn("c")
+    quiet.error("d")
+    assert stdout.captured() == "WARN c\nERROR d\n"
+
+test "the level starts at info"(stdout: Stdout):
+    log = Log(out=stdout)
+    save(log, "a.txt", 12)
+    assert stdout.captured() == "INFO saved file=a.txt size=12\n"
+
+test "debug shows when asked for"(stdout: Stdout):
+    save(Log(out=stdout, level=.Debug), "a", 1)
+    assert stdout.captured() == "DEBUG about to save\nINFO saved file=a size=1\n"
+
+test "a log says whether an entry would be written"(stdout: Stdout):
+    log = Log(out=stdout, level=.Info)
+    assert not log.enabled(.Debug)
+    assert log.enabled(.Info)
+    assert log.enabled(.Warn)
+    assert log.enabled(.Error)
+    assert stdout.captured() == ""
+
+test "values are quoted when they need it"(stdout: Stdout):
+    log = Log(out=stdout)
+    fields = {"a": "plain", "b": "two words", "c": "x=1", "d": "say \"hi\"", "e": ""}
+    log.info("m", fields=fields)
+    assert (
+        stdout.captured()
+        == "INFO m a=plain b=\"two words\" c=\"x=1\" d=\"say \\\"hi\\\"\" e=\"\"\n"
+    )
+
+test "an entry stays on one line"(stdout: Stdout):
+    log = Log(out=stdout)
+    log.warn("one\nERROR fake\r\\", fields={"a\nb": "c\nd"})
+    assert stdout.captured() == "WARN one\\nERROR fake\\r\\\\ a\\nb=c\\nd\n"
+
+test "a log can add fields to every entry"(stdout: Stdout):
+    log = Log(out=stdout)
+    request = log.with_fields({"request": "7", "user": "ash"})
+    request.info("start")
+    request.with_fields({"user": "kit", "step": "2"}).info(
+        "next",
+        fields={"step": "3", "extra": "x"},
+    )
+    log.info("outside")
+    expected = "INFO start request=7 user=ash\nINFO next request=7 user=kit step=3 extra=x\nINFO outside\n"
+    assert stdout.captured() == expected
+
+test "with a clock, each entry says when"(stdout: Stdout, clock: Clock):
+    log = Log(out=stdout, clock=clock)
+    log.info("first")
+    clock.sleep(Duration.millis(1500))
+    log.error("second", fields={"a": "b"})
+    assert stdout.captured() == "0.000 INFO first\n1.500 ERROR second a=b\n"
+
+def main(stdout: Stdout):
+    log = Log(out=stdout, level=.Debug).with_fields({"kit": "demo"})
+    save(log, "scores.txt", 120)
+    log.warn("disk is nearly full", fields={"free": "3 MB"})

@@ -199,7 +199,9 @@ fn a_name_a_function_binds_itself_isnt_flagged() {
     let source = "def between(low: int, high: int):\n    pass\n\n\
                   def main():\n    between = other\n    between(1, 2)\n";
     assert_eq!(rules(source), NONE, "a local");
+}
 
+#[test]
 fn code_after_leaving_a_block_cant_run() {
     let source = "def f(a: int) -> int:\n    return a\n    a + 1\n";
     assert!(rules(source).contains(&"unreachable"));

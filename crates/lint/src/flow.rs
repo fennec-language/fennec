@@ -126,6 +126,10 @@ fn chained_compare(expr: &Expr, sources: &Sources) -> Option<Lint> {
     let ExprKind::Binary { op: BinOp::And, lhs, rhs } = &expr.kind else { return None };
     let ExprKind::Binary { op: first, lhs: low, rhs: middle } = &lhs.kind else { return None };
     let ExprKind::Binary { op: second, lhs: again, rhs: high } = &rhs.kind else { return None };
+    // `0 <= a < 10` is read as this too, with the two sides sharing `a`, and it's written already.
+    if rhs.span.start < lhs.span.end {
+        return None;
+    }
     let upward = |op: &BinOp| matches!(op, BinOp::Lt | BinOp::LtEq);
     let downward = |op: &BinOp| matches!(op, BinOp::Gt | BinOp::GtEq);
     let same_way = (upward(first) && upward(second)) || (downward(first) && downward(second));

@@ -17,6 +17,7 @@ const PIPELINE: &str = "default<O3>";
 pub struct Tools {
     opt: PathBuf,
     llc: PathBuf,
+    link: PathBuf,
 }
 
 impl Tools {
@@ -36,7 +37,8 @@ impl Tools {
             }
             folder
         };
-        let tools = Tools { opt: folder.join("opt"), llc: folder.join("llc") };
+        let tools =
+            Tools { opt: folder.join("opt"), llc: folder.join("llc"), link: folder.join("llvm-link") };
         if tools.opt.is_file() && tools.llc.is_file() {
             Ok(tools)
         } else {
@@ -133,6 +135,57 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, optimize: bool) -> Re
         "llc",
     )?;
     std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))
+}
+
+/// For a release: every function's module and `entry` linked into one, optimized as a whole,
+/// with nothing but `main` seen from outside, so LLVM inlines and specializes across the whole
+/// program. Nothing's cached, as any change changes the whole.
+pub fn compile_whole(tools: &Tools, units: &[Unit], entry: &str, work: &Path) -> Result<Built, String> {
+    std::fs::create_dir_all(work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
+    let mut inputs = Vec::with_capacity(units.len() + 1);
+    for (at, unit) in units.iter().enumerate() {
+        let input = work.join(format!("f{at}.ll"));
+        std::fs::write(&input, &unit.text)
+            .map_err(|err| format!("couldn't write {}: {err}", input.display()))?;
+        inputs.push(input);
+    }
+    let entry_at = work.join("entry.ll");
+    std::fs::write(&entry_at, entry)
+        .map_err(|err| format!("couldn't write {}: {err}", entry_at.display()))?;
+    inputs.push(entry_at);
+    let (whole, optimized, output) = (work.join("whole.bc"), work.join("optimized.bc"), work.join("whole.o"));
+    let run = |command: &mut Command, what: &str| {
+        let done = command.output().map_err(|err| format!("couldn't run {what}: {err}"))?;
+        if done.status.success() {
+            Ok(())
+        } else {
+            Err(format!("{what} failed on the whole program:\n{}", String::from_utf8_lossy(&done.stderr)))
+        }
+    };
+    if !tools.link.is_file() {
+        return Err(format!("LLVM's `llvm-link` isn't beside `opt` in {}", tools.link.display()));
+    }
+    run(Command::new(&tools.link).args(&inputs).arg("-o").arg(&whole), "llvm-link")?;
+    run(
+        Command::new(&tools.opt)
+            .arg(format!("-passes=internalize,{PIPELINE}"))
+            .arg("-internalize-public-api-list=main")
+            .arg(&whole)
+            .arg("-o")
+            .arg(&optimized),
+        "opt",
+    )?;
+    run(
+        Command::new(&tools.llc)
+            .args(["-O3", "-filetype=obj", "-relocation-model=pic"])
+            .arg(&optimized)
+            .arg("-o")
+            .arg(&output),
+        "llc",
+    )?;
+    let object =
+        std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))?;
+    Ok(Built { objects: vec![object], compiled: units.len() })
 }
 
 /// Compiles every function's module, using the cache's copy of any it already has, and `entry`.

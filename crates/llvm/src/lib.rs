@@ -46,7 +46,7 @@ use fennec_interp::embed::dicts::Word;
 use fennec_ir::{EnumDef, Program};
 use fennec_layout::{Layouts, ListItem, Written, generator_definition};
 
-pub use build::{Built, Tools, compile};
+pub use build::{Built, Tools, compile, compile_whole};
 pub use emit::{Unit, emit};
 pub use entry::{Image, entry};
 

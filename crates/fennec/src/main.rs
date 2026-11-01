@@ -25,7 +25,8 @@ const USAGE: &str = "usage:
   fennec run --no-test [path] [args]  run it without running the tests first
   fennec run --interp [path]  run it with the interpreter instead of compiling it
   fennec build [path] [-o out]  compile it to a standalone executable
-  fennec build --llvm [path] [-o out]  the same through LLVM, for what that backend takes so far
+  fennec build --llvm [--release] [path] [-o out]  the same through LLVM, for what that backend takes so far;
+                                     --release optimizes the whole program as one
   fennec test [path]        run a kit's tests, or a single file's, skipping unchanged ones that passed
   fennec test --all [path]  run every test
   fennec test --real [path]  run every test with real capabilities rather than fakes
@@ -58,10 +59,14 @@ fn main() -> ExitCode {
         ["run", "--jit"] => run(run::Engine::NativeNoted, ".", &[]),
         ["run", "--jit", path, arguments @ ..] => run(run::Engine::NativeNoted, path, arguments),
         ["run", path, arguments @ ..] => run(run::Engine::Native, path, arguments),
-        ["build", "--llvm"] => aot::build_llvm(".", None),
-        ["build", "--llvm", "-o", output] => aot::build_llvm(".", Some(output)),
-        ["build", "--llvm", path] => aot::build_llvm(path, None),
-        ["build", "--llvm", path, "-o", output] => aot::build_llvm(path, Some(output)),
+        ["build", "--llvm", "--release"] => aot::build_llvm(".", None, true),
+        ["build", "--llvm", "--release", "-o", output] => aot::build_llvm(".", Some(output), true),
+        ["build", "--llvm", "--release", path] => aot::build_llvm(path, None, true),
+        ["build", "--llvm", "--release", path, "-o", output] => aot::build_llvm(path, Some(output), true),
+        ["build", "--llvm"] => aot::build_llvm(".", None, false),
+        ["build", "--llvm", "-o", output] => aot::build_llvm(".", Some(output), false),
+        ["build", "--llvm", path] => aot::build_llvm(path, None, false),
+        ["build", "--llvm", path, "-o", output] => aot::build_llvm(path, Some(output), false),
         ["build"] => aot::build(".", None),
         ["build", "-o", output] => aot::build(".", Some(output)),
         ["build", path] => aot::build(path, None),

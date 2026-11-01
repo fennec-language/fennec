@@ -17,6 +17,12 @@ pub(crate) enum Kind {
     Cap,
     /// A plain struct, by its layout's number, in a slot of its own.
     Struct(u32),
+    /// A plain enum, by its layout's number: the case's number, then its fields, a word each.
+    Enum(u32),
+    /// The address of a boxed struct's or enum's block, which something owns.
+    Boxed(u32),
+    /// A block's address, or zero for `None`.
+    Optional(Box<Kind>),
     /// A tuple, laid out like a plain struct.
     Tuple(Vec<Kind>),
     /// The address of a list's block, which something owns.
@@ -36,6 +42,13 @@ impl Kind {
             }
             return Ok(Kind::Tuple(items));
         }
+        if let Type::Optional(inner) = ty {
+            let inner = Kind::of(layouts, inner)?;
+            if inner.counted() {
+                return Ok(Kind::Optional(Box::new(inner)));
+            }
+            return Err(format!("it uses a {ty:?}, which this backend doesn't take yet"));
+        }
         let held = layouts.ty(ty);
         Kind::from_ty(layouts, held)
             .ok_or_else(|| format!("it uses a {ty:?}, which this backend doesn't take yet"))
@@ -51,14 +64,9 @@ impl Kind {
             Ty::Struct(id) if layouts.get(id).is_some_and(|layout| layout.cases.is_none()) => {
                 Kind::Struct(id)
             }
-            Ty::List(item) if matches!(item, ListItem::Int | ListItem::Float | ListItem::Bool) => {
-                Kind::List(item)
-            }
-            Ty::List(ListItem::Struct(id))
-                if layouts.get(id).is_some_and(|layout| layout.cases.is_none()) =>
-            {
-                Kind::List(ListItem::Struct(id))
-            }
+            Ty::Struct(id) => Kind::Enum(id),
+            Ty::Boxed(id) => Kind::Boxed(id),
+            Ty::List(item) => Kind::List(item),
             Ty::Str => Kind::Str,
             _ => return None,
         })
@@ -66,12 +74,12 @@ impl Kind {
 
     /// Whether this is the address of a block with an owner count.
     pub(crate) fn counted(&self) -> bool {
-        matches!(self, Kind::List(_) | Kind::Str)
+        matches!(self, Kind::List(_) | Kind::Str | Kind::Boxed(_) | Kind::Optional(_))
     }
 
     /// Whether this is held in memory and passed by address.
     pub(crate) fn in_memory(&self) -> bool {
-        matches!(self, Kind::Struct(_) | Kind::Tuple(_))
+        matches!(self, Kind::Struct(_) | Kind::Tuple(_) | Kind::Enum(_))
     }
 
     /// How LLVM holds it in a local's slot.
@@ -88,7 +96,8 @@ impl Kind {
             Kind::Int | Kind::Bool => "i64".to_owned(),
             Kind::Float => "double".to_owned(),
             Kind::Unit => "void".to_owned(),
-            Kind::Cap | Kind::List(_) | Kind::Str => "ptr".to_owned(),
+            Kind::Cap | Kind::List(_) | Kind::Str | Kind::Boxed(_) | Kind::Optional(_) => "ptr".to_owned(),
+            Kind::Enum(id) => format!("[{} x i64]", layouts.get(*id).map_or(1, |layout| layout.size / WORD)),
             Kind::Struct(id) => {
                 format!("%\"s.{}\"", layouts.get(*id).map_or("?", |layout| layout.name.as_str()))
             }
@@ -103,7 +112,7 @@ impl Kind {
     pub(crate) fn size(&self, layouts: &Layouts) -> u32 {
         match self {
             Kind::Unit => 0,
-            Kind::Struct(id) => layouts.get(*id).map_or(0, |layout| layout.size),
+            Kind::Struct(id) | Kind::Enum(id) => layouts.get(*id).map_or(0, |layout| layout.size),
             Kind::Tuple(items) => items.iter().map(|item| item.size(layouts)).sum(),
             _ => WORD,
         }
@@ -127,7 +136,9 @@ pub(crate) fn struct_definitions(layouts: &Layouts, id: u32, out: &mut Vec<Strin
     let Some(layout) = layouts.get(id) else { return };
     let mut fields = Vec::with_capacity(layout.fields.len());
     for field in &layout.fields {
-        if let Ty::Struct(inner) = field.ty {
+        if let Ty::Struct(inner) = field.ty
+            && layouts.get(inner).is_some_and(|layout| layout.cases.is_none())
+        {
             struct_definitions(layouts, inner, out);
         }
         fields.push(

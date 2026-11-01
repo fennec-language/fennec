@@ -213,7 +213,7 @@ impl<'p> Module<'_, 'p> {
     fn ret_text(&self, function: &Function) -> Result<String, String> {
         let kind = self.kind(&function.returns)?;
         Ok(match kind {
-            Kind::Unit | Kind::Cap | Kind::Struct(_) | Kind::Tuple(_) => "void".to_owned(),
+            Kind::Unit | Kind::Cap | Kind::Struct(_) | Kind::Tuple(_) | Kind::Enum(_) => "void".to_owned(),
             other => other.slot(self.layouts),
         })
     }
@@ -370,6 +370,8 @@ impl Emit<'_, '_, '_> {
         self.kinds.get(local.0).is_some_and(Kind::counted)
             && !self.is_mut_param(local)
             && !self.is_lent(local)
+            && !self.known.is_borrowed(local)
+            && !self.known.is_taken(local)
     }
 
     fn body(&mut self) -> Result<(), String> {
@@ -421,6 +423,24 @@ impl Emit<'_, '_, '_> {
             self.terminator(&block.end)?;
         }
         Ok(())
+    }
+
+    /// One more owner for a value of this kind, which may be `None`.
+    pub(crate) fn retain_value(&mut self, value: &str, kind: &Kind) {
+        if value == "null" {
+            return;
+        }
+        if !matches!(kind, Kind::Optional(_)) {
+            self.retain(value);
+            return;
+        }
+        let (none, held, done) = (self.temp(), self.label("held"), self.label("done"));
+        self.line(&format!("{none} = icmp eq ptr {value}, null"));
+        self.line(&format!("br i1 {none}, label %{done}, label %{held}"));
+        self.start_block(&held);
+        self.retain(value);
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
     }
 
     /// One more owner for a block.
@@ -518,7 +538,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(value) => (float_text(*value), Kind::Float),
             Operand::Bool(value) => (value.to_string(), Kind::Bool),
             Operand::Str(text) => (self.literal(text), Kind::Str),
-            Operand::None => return Err("it holds `None`, which this backend doesn't take yet".to_owned()),
+            Operand::None => ("null".to_owned(), Kind::Unit),
         })
     }
 
@@ -614,6 +634,9 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = icmp {cc} i1 {a}, {b}"));
                 temp
             }
+            Kind::Str => self.string_binary(op, (&a, &b))?,
+            Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
+            Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b)),
             other => {
                 return Err(format!("it uses an operator on {other:?}, which this backend doesn't take yet"));
             }
@@ -659,6 +682,38 @@ impl Emit<'_, '_, '_> {
             BinOp::Sub => self.checked("ssub", a, b, span),
             BinOp::Mul => self.checked("smul", a, b, span),
             BinOp::FloorDiv | BinOp::Mod => self.division(op, (a, b), rhs, span),
+            BinOp::Div => {
+                if !matches!(rhs, Operand::Int(1..)) {
+                    let zero = self.temp();
+                    self.line(&format!("{zero} = icmp eq i64 {b}, 0"));
+                    self.fail_if(&zero, DIVISION_BY_ZERO, span);
+                }
+                let (x, y, ratio) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{x} = sitofp i64 {a} to double"));
+                self.line(&format!("{y} = sitofp i64 {b} to double"));
+                self.line(&format!("{ratio} = fdiv double {x}, {y}"));
+                ratio
+            }
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
+                let word = match op {
+                    BinOp::BitAnd => "and",
+                    BinOp::BitOr => "or",
+                    _ => "xor",
+                };
+                let temp = self.temp();
+                self.line(&format!("{temp} = {word} i64 {a}, {b}"));
+                temp
+            }
+            BinOp::Pow => {
+                self.declare("declare i64 @fennec_int_power(i64, i64, i64, i64) nounwind");
+                let (from, to) = (i64::from(span.start), i64::from(span.end));
+                let temp = self.temp();
+                self.line(&format!(
+                    "{temp} = call i64 @fennec_int_power(i64 {a}, i64 {b}, i64 {from}, i64 {to})"
+                ));
+                self.leave_if_failed();
+                temp
+            }
             other => return Err(format!("it uses {other:?} on ints, which this backend doesn't take yet")),
         })
     }
@@ -721,19 +776,43 @@ impl Emit<'_, '_, '_> {
             BinOp::Add => "fadd",
             BinOp::Sub => "fsub",
             BinOp::Mul => "fmul",
-            BinOp::Div => {
+            BinOp::Div | BinOp::FloorDiv | BinOp::Mod => {
                 if !self.known.is_nonzero(rhs) {
                     let zero = self.temp();
                     self.line(&format!("{zero} = fcmp oeq double {b}, {}", float_text(0.0)));
                     self.fail_if(&zero, DIVISION_BY_ZERO, span);
                 }
+                if op != BinOp::Div {
+                    return Ok(self.float_floor(op, (a, b)));
+                }
                 "fdiv"
+            }
+            BinOp::Pow => {
+                self.declare("declare double @fennec_float_power(double, double) nounwind");
+                let temp = self.temp();
+                self.line(&format!("{temp} = call double @fennec_float_power(double {a}, double {b})"));
+                return Ok(temp);
             }
             other => return Err(format!("it uses {other:?} on floats, which this backend doesn't take yet")),
         };
         let temp = self.temp();
         self.line(&format!("{temp} = {word} double {a}, {b}"));
         Ok(temp)
+    }
+
+    /// `a // b` or `a % b` on floats, rounding toward negative infinity.
+    fn float_floor(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+        self.declare("declare double @llvm.floor.f64(double)");
+        let (ratio, floor) = (self.temp(), self.temp());
+        self.line(&format!("{ratio} = fdiv double {a}, {b}"));
+        self.line(&format!("{floor} = call double @llvm.floor.f64(double {ratio})"));
+        if op == BinOp::FloorDiv {
+            return floor;
+        }
+        let (times, rest) = (self.temp(), self.temp());
+        self.line(&format!("{times} = fmul double {floor}, {b}"));
+        self.line(&format!("{rest} = fsub double {a}, {times}"));
+        rest
     }
 
     fn call(
@@ -831,6 +910,7 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest.ok_or("no result")?, &length)
             }
             "list.append" => self.append(args),
+            "str.len" | "str" | "str.code" | "str.join" => self.text_builtin(dest, name, args, span),
             "float" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
                 let temp = self.temp();
@@ -851,6 +931,31 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = call double @llvm.sqrt.f64(double {value})"));
                 self.assign(dest.ok_or("no result")?, &temp)
             }
+            "max" | "min" if args.len() == 2 => {
+                let (a, kind) = self.operand(first.ok_or("no argument")?)?;
+                let (b, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                if kind != Kind::Int {
+                    return Err(format!(
+                        "it calls `{name}` on a {kind:?}, which this backend doesn't take yet"
+                    ));
+                }
+                let cc = if name == "max" { "sgt" } else { "slt" };
+                let (first_wins, temp) = (self.temp(), self.temp());
+                self.line(&format!("{first_wins} = icmp {cc} i64 {a}, {b}"));
+                self.line(&format!("{temp} = select i1 {first_wins}, i64 {a}, i64 {b}"));
+                self.assign(dest.ok_or("no result")?, &temp)
+            }
+            "int.abs" => {
+                let (value, _) = self.operand(first.ok_or("no argument")?)?;
+                let lowest = self.temp();
+                self.line(&format!("{lowest} = icmp eq i64 {value}, {}", i64::MIN));
+                self.fail_if(&lowest, OVERFLOW, span);
+                let (negative, flipped, temp) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{negative} = icmp slt i64 {value}, 0"));
+                self.line(&format!("{flipped} = sub i64 0, {value}"));
+                self.line(&format!("{temp} = select i1 {negative}, i64 {flipped}, i64 {value}"));
+                self.assign(dest.ok_or("no result")?, &temp)
+            }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
     }
@@ -867,7 +972,7 @@ impl Emit<'_, '_, '_> {
                     let slot = self.slot(*from);
                     self.line(&format!("store ptr null, ptr {slot}"));
                 }
-                _ => self.retain(&held),
+                _ => self.retain_value(&held, &kind),
             }
         }
         self.assign(dest, &held)?;
@@ -886,7 +991,9 @@ impl Emit<'_, '_, '_> {
 
     fn inst(&mut self, inst: &InstKind, span: Span, block: usize) -> Result<(), String> {
         match inst {
-            InstKind::Copy { dest, value } => self.copy(*dest, value),
+            InstKind::Copy { dest, value }
+            | InstKind::MakeSome { dest, value }
+            | InstKind::GetSome { dest, value } => self.copy(*dest, value),
             InstKind::Unary { dest, op, value } => {
                 let (value, kind) = self.operand(value)?;
                 let result = match (op, kind) {
@@ -912,6 +1019,18 @@ impl Emit<'_, '_, '_> {
             }
             InstKind::Binary { dest, op, lhs, rhs } => self.binary(*dest, *op, lhs, rhs, span),
             InstKind::Make { dest, fields, .. } => self.make(*dest, fields),
+            InstKind::MakeCase { dest, case, fields, .. } => self.make_case(*dest, case, fields),
+            InstKind::IsCase { dest, value, case } => self.is_case(*dest, value, case),
+            InstKind::GetCaseField { dest, value, case, field } => {
+                self.get_case_field(*dest, value, case, field)
+            }
+
+            InstKind::IsNone { dest, value } => {
+                let (held, _) = self.operand(value)?;
+                let none = self.temp();
+                self.line(&format!("{none} = icmp eq ptr {held}, null"));
+                self.assign(*dest, &none)
+            }
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make_tuple(*dest, items),
@@ -919,12 +1038,10 @@ impl Emit<'_, '_, '_> {
             InstKind::MakeList { dest, items } => self.make_list(*dest, items, block),
             InstKind::GetIndex { dest, object, index } => self.get_index(*dest, object, index, span),
             InstKind::SetIndex { object, path, index, value } => {
-                if !path.is_empty() {
-                    return Err(
-                        "it changes a list inside a struct, which this backend doesn't take yet".to_owned()
-                    );
-                }
-                self.set_index(*object, index, value, span)
+                self.set_index(*object, path, index, value, span)
+            }
+            InstKind::Slice { dest, object, start, end } => {
+                self.slice(*dest, object, start.as_ref(), end.as_ref(), span)
             }
             InstKind::Format { dest, parts } => self.format(*dest, parts, span),
             InstKind::Builtin { dest, name, args, .. } => self.builtin(*dest, name, args, span),
@@ -970,7 +1087,7 @@ impl Emit<'_, '_, '_> {
             _ => None,
         };
         if returns.counted() && moved.is_none() {
-            self.retain(&held);
+            self.retain_value(&held, &returns);
         }
         self.release_locals(moved);
         self.line(&format!("ret {text} {held}"));
@@ -986,7 +1103,8 @@ impl Emit<'_, '_, '_> {
             }
             Terminator::Return(value) => self.give_back(value.as_ref())?,
             Terminator::Unreachable => self.line("unreachable"),
-            Terminator::NoMatch { .. } | Terminator::Stop { .. } => {
+            Terminator::NoMatch { value, span } => self.no_match(value, *span)?,
+            Terminator::Stop { .. } => {
                 return Err(format!("it ends with `{end}`, which this backend doesn't take yet"));
             }
         }

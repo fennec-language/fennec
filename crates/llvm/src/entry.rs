@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use fennec_interp::embed::Tables;
 use fennec_ir::Program;
-use fennec_layout::{Layouts, Registry};
+use fennec_layout::{Layouts, Registry, Ty};
 
 use crate::Shared;
 
@@ -27,6 +27,11 @@ impl Image {
                 registry.element(*item).ok_or_else(|| format!("a list of {item:?} has no kind of item"))?;
             elements.push((symbol.clone(), number));
         }
+        let boxed = shared.shapes.iter().filter_map(|(symbol, id)| {
+            let number = registry.shape(Ty::Boxed(*id))?;
+            Some((symbol.clone(), i64::try_from(number).ok()?))
+        });
+        elements.extend(boxed);
         let strings =
             shared.strings.iter().map(|(symbol, text)| (symbol.clone(), registry.string(text))).collect();
         Ok(Image {

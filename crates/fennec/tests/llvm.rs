@@ -4,6 +4,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// How many examples this backend takes, at least.
+const BUILDING_EXAMPLES: usize = 11;
+
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
 }
@@ -137,6 +140,48 @@ def main(stdout: Stdout):
     )
 }
 
+/// Changing an item in place is only safe once the list is alone: another copy of the list
+/// mustn't see it, however the item's own count reads.
+#[test]
+fn changing_an_item_doesnt_show_through_a_copy() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "items",
+        r"struct Packet:
+    id: int
+    data: list[int]
+
+struct Holder:
+    packets: list[Packet]
+
+def bump(mut holder: Holder, at: int):
+    holder.packets[at].id = holder.packets[at].id + 1
+    holder.packets[at].data[0] = 50
+
+def main(stdout: Stdout):
+    a = Packet(id=1, data=[1, 2])
+    mut one = [a, Packet(id=2, data=[3])]
+    two = one
+    one[0].id = 10
+    stdout.print(one[0].id, two[0].id, a.id)
+    mut holder = Holder(packets=one)
+    keep = holder
+    bump(mut holder, 1)
+    stdout.print(holder.packets[1].id, keep.packets[1].id, one[1].id, two[1].id)
+    stdout.print(holder.packets[1].data[0], keep.packets[1].data[0], two[1].data[0])
+    mut list_only = two
+    shown = list_only[0]
+    list_only[0].id = 77
+    stdout.print(shown.id, list_only[0].id, two[0].id)
+    holder.packets.append(a)
+    holder.packets[2].id = 5
+    stdout.print(holder.packets.len(), keep.packets.len(), holder.packets[2].id, a.id)
+",
+    )
+}
+
 #[test]
 fn structs_tuples_and_formats_match_the_jit() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
@@ -190,6 +235,42 @@ def main(stdout: Stdout):
     stdout.print(f"{half:.3f} and {n} at {a.x}")
 "#,
     )
+}
+
+/// Every example this backend takes prints exactly what it should. Those it doesn't take yet
+/// say so, and the count keeps that from shrinking unnoticed.
+#[test]
+fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("examples")?;
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let (mut built, mut wrong) = (0, Vec::new());
+    for entry in std::fs::read_dir(examples)? {
+        let path = entry?.path();
+        let wanted = path.with_extension("out");
+        if path.extension().is_none_or(|ext| ext != "fen") || !wanted.exists() {
+            continue;
+        }
+        let executable = dir.join("example");
+        let made =
+            fennec(&["build", "--llvm", &path.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+        if !made.status.success() {
+            let said = String::from_utf8_lossy(&made.stderr).into_owned();
+            assert!(said.contains("doesn't take yet") || said.contains("error"), "{said}");
+            continue;
+        }
+        built += 1;
+        let ran = Command::new(&executable).output()?;
+        if String::from_utf8_lossy(&ran.stdout) != std::fs::read_to_string(&wanted)? {
+            wrong.push(path);
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
+    assert!(built >= BUILDING_EXAMPLES, "only {built} examples build");
+    Ok(())
 }
 
 #[test]

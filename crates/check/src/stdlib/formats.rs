@@ -67,6 +67,12 @@ impl FnCx<'_> {
         Type::result(ty, Type::named("ParseError"))
     }
 
+    /// Whether `name` is a standard library collection written in its natural shape.
+    fn has_shape(&self, name: &str) -> bool {
+        matches!(name, "SortedMap" | "SortedSet" | "Deque" | "Grid")
+            && self.checker.program.type_info(name).is_some_and(|info| info.prelude)
+    }
+
     /// The fields of a struct, or of every case of an enum, each with its case.
     fn fields_of(&self, name: &str) -> Vec<(Option<String>, String)> {
         let Some(info) = self.checker.program.type_info(name) else { return Vec::new() };
@@ -108,6 +114,13 @@ impl FnCx<'_> {
             }
             Type::Tuple(items) => items.iter().try_for_each(|item| self.holds(format, item, span, seen)),
             Type::Result(..) => Err(unhandled_result(span)),
+            // The standard library's collections are written in their natural shape.
+            Type::Generic(name, args) if self.has_shape(name) => match (name.as_str(), args.as_slice()) {
+                ("SortedMap", [key, value]) if *key == Type::Str => self.holds(format, value, span, seen),
+                ("SortedMap", _) => Err(cannot(ty)
+                    .with_help(format!("{format} objects have text keys: use a `SortedMap[str, ...]`"))),
+                (_, args) => args.iter().try_for_each(|item| self.holds(format, item, span, seen)),
+            },
             Type::Named(name) | Type::Generic(name, _) => {
                 let kind = self.checker.program.type_info(name).map(|info| info.kind);
                 let fits = match kind {

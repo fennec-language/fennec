@@ -418,6 +418,13 @@ struct SortedMap[K: Ordered, V]:
     ## Nodes that were merged away, to be used again.
     _free: list[int] = []
 
+    ## A map of `items`, each a key and its value. A key given twice keeps its last value.
+    def of(items: list[(K, V)]) -> SortedMap[K, V]:
+        mut found = SortedMap()
+        for key, value in items:
+            found[key] = value
+        found
+
     def len(self) -> int:
         self._count
 

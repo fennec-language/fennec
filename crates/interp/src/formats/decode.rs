@@ -80,6 +80,10 @@ impl Interp<'_> {
             }
             ("Id", Value::Dict(pairs)) => id_of(&pairs, at).map(Value::Id),
             ("IdMap", Value::Dict(pairs)) => self.decode_id_map(&pairs, &arg(0)?, at, span),
+            (name, value) if self.has_shape(name) => {
+                let read = self.decode(value, &Self::shape_of(ty), at, span)?;
+                self.build_shaped(name, read, at, span)
+            }
             (name, value) if self.is_enum(name) => self.decode_case(ty, &value, at, span),
             (name, Value::Dict(pairs)) if self.is_struct(name) => self.decode_struct(ty, &pairs, at, span),
             (_, value) => Err(misfit(at, &written(ty), &value)),

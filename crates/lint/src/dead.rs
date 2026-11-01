@@ -263,7 +263,9 @@ fn changed_by_statements(stmts: &[Stmt], found: &mut HashSet<String>) {
                     found.extend(targets.into_iter().filter_map(root).map(str::to_owned));
                 }
             }
-            StmtKind::For { is_mut: true, iter, .. } => found.extend(root(iter).map(str::to_owned)),
+            StmtKind::For { is_mut: true, iter, .. } => {
+                found.extend(root(parallel_items(iter)).map(str::to_owned));
+            }
             StmtKind::Def(def) => changed_by_statements(&def.body, found),
             _ => {}
         }
@@ -313,4 +315,14 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
         needless_mut(body, &changed(body), sources, &mut found);
     }
     found
+}
+
+/// What `for mut` changes when it loops over `parallel(xs)`: `xs`.
+fn parallel_items(iter: &Expr) -> &Expr {
+    match &iter.kind {
+        ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(name) if name == "parallel") => {
+            args.first().map_or(iter, |first| &first.value)
+        }
+        _ => iter,
+    }
 }

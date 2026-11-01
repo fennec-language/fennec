@@ -421,16 +421,9 @@ fn tuple_slices_can_count_from_the_end() {
 
 /// A struct with one field, its default and its rule, and a constant for the rule to read.
 fn field_problems(default: &str, rule: &str) -> Vec<String> {
-    let source = format!(
+    problems(&format!(
         "LIMIT = 5\n\nstruct S:\n    x = {default} where {rule}\n    other = 0\n\ndef main():\n    pass\n"
-    );
-    let module = fennec_syntax::parse(&source).unwrap();
-    fennec_check::check(&module)
-        .err()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|problem| problem.message)
-        .collect()
+    ))
 }
 
 #[test]
@@ -457,7 +450,7 @@ fn a_default_is_held_to_its_rule_while_compiling() {
     for (default, rule) in broken {
         assert_eq!(
             field_problems(default, rule),
-            ["this default breaks the `where` rule on `S.x`"],
+            [format!("this default breaks the `where` rule on `S.x` @ {default}")],
             "{default} where {rule}"
         );
     }
@@ -489,5 +482,5 @@ fn a_default_is_held_to_its_rule_while_compiling() {
 fn a_rule_can_read_a_constant_but_not_another_field() {
     assert_eq!(field_problems("1", "x < LIMIT"), Vec::<String>::new());
     assert_eq!(field_problems("9", "x < LIMIT"), Vec::<String>::new(), "a constant isn't worked out here");
-    assert_eq!(field_problems("1", "x < other"), ["the `where` rule on `x` can't look at `other`"]);
+    assert_eq!(field_problems("1", "x < other"), ["the `where` rule on `x` can't look at `other` @ other"]);
 }

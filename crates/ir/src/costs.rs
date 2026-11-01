@@ -167,3 +167,5 @@ fn allocation(function: &Function, inst: &InstKind, library: &HashSet<&str>) -> 
         _ => None,
     }
 }
+
+pub(crate) use insts::{reads as inst_reads, terminator_reads};

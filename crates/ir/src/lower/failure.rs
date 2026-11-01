@@ -186,38 +186,10 @@ impl Lowering<'_> {
         Ok(Some(Operand::Local(dest)))
     }
 
-    /// Starts a generator's list of what it yields.
-    pub(super) fn generator_items(&mut self) -> Lowered<LocalId> {
-        let list = match &self.returns {
-            Type::Result(ok, _) => *ok.clone(),
-            other => other.clone(),
-        };
-        if !matches!(list, Type::List(_)) {
-            return Err(format!("it's a generator giving back {list}"));
-        }
-        let dest = self.temporary(list);
-        self.emit(InstKind::MakeList { dest, items: Vec::new() }, Span::default());
-        Ok(dest)
-    }
-
-    /// `yield value`: a generator's items are all worked out when it's called.
-    pub(super) fn yield_value(&mut self, value: &Expr, span: Span) -> Lowered<()> {
-        let items = self.yielded.ok_or("it has `yield` outside a generator")?;
-        let Type::List(item) = self.local_type(items) else {
-            return Err("a generator's items aren't a list".to_owned());
-        };
-        let lowered = self.expr(value)?;
-        let lowered = self.coerce(lowered, &item, span)?;
-        let args = vec![Operand::Local(items), lowered];
-        let name = "list.append".to_owned();
-        self.emit(InstKind::Builtin { dest: None, name, args, changes: true }, span);
-        Ok(())
-    }
-
     /// `return value`, or a function's last value. A last line that gives nothing runs, and
     /// the function gives back nothing.
     pub(super) fn return_value(&mut self, expr: &Expr) -> Lowered<()> {
-        if self.yielded.is_some() || matches!(self.type_at(expr.span), Some(Type::Unit)) {
+        if self.generating.is_some() || matches!(self.type_at(expr.span), Some(Type::Unit)) {
             self.effect(expr)?;
             return self.return_nothing(expr.span);
         }
@@ -229,11 +201,6 @@ impl Lowering<'_> {
 
     /// Leaves a function that gives back nothing, which is success if it can fail.
     pub(super) fn return_nothing(&mut self, span: Span) -> Lowered<()> {
-        if let Some(items) = self.yielded {
-            let returns = self.returns.clone();
-            let value = self.coerce(Operand::Local(items), &returns, span)?;
-            return self.leave(Some(value), span);
-        }
         if matches!(self.returns, Type::Result(..)) {
             let dest = self.temporary(self.returns.clone());
             self.emit(InstKind::MakeOk { dest, value: None }, span);
@@ -250,7 +217,6 @@ impl Lowering<'_> {
             return Ok(());
         }
         match &self.returns {
-            _ if self.yielded.is_some() => self.return_nothing(span)?,
             Type::Unit => self.finish(Terminator::Return(None)),
             Type::Result(..) => self.return_nothing(span)?,
             _ => self.finish(Terminator::Unreachable),

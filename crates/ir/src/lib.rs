@@ -46,6 +46,8 @@ pub struct Program {
     pub enums: Vec<EnumDef>,
     /// Every error type, the standard library's included, which programs get values of.
     pub errors: Vec<StructDef>,
+    /// Every generator that's passed around as a value.
+    pub generators: Vec<GeneratorDef>,
     /// The value of each constant that isn't a literal, as a function of no arguments. An
     /// engine works each out once, before anything needs it.
     pub constants: Vec<Function>,
@@ -61,6 +63,37 @@ pub struct Program {
 pub struct StructDef {
     pub name: String,
     pub fields: Vec<(String, Type)>,
+}
+
+/// A generator's block's slots, by number. Every generator's start the same way, so a loop can
+/// read one without knowing which it is. Its locals' slots are in [`GeneratorDef::slots`].
+pub mod slot {
+    /// Where it goes on from: 0 to start, a positive number from a `yield`, -1 finished, -2
+    /// running, -3 failed.
+    pub const PC: usize = 0;
+    /// Whether anything has started using it.
+    pub const STARTED: usize = 1;
+    /// What it failed with, when `PC` says it did.
+    pub const FAILURE: usize = 2;
+    /// The item it last gave.
+    pub const ITEM: usize = 3;
+    /// Where the locals it keeps start.
+    pub const LOCALS: usize = 4;
+}
+
+/// A generator: its block's contents, and the functions that run it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GeneratorDef {
+    pub name: String,
+    pub item: Type,
+    /// The types of the locals it keeps, from [`slot::LOCALS`] on.
+    pub slots: Vec<Type>,
+    /// Takes the block, and gives a bool: whether there's another item.
+    pub resume: String,
+    /// Closes what's open when it's abandoned, if it can have anything open.
+    pub abandon: Option<String>,
+    /// Whether it can fail.
+    pub fails: bool,
 }
 
 /// An enum of the program, with its cases in the order they're written.
@@ -120,7 +153,7 @@ pub struct Local {
 }
 
 /// A local of the function, by position in [`Function::locals`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LocalId(pub usize);
 
 /// A block of the function, by position in [`Function::blocks`].
@@ -323,6 +356,35 @@ pub enum InstKind {
         dest: LocalId,
         name: String,
     },
+    /// A new generator's block, with these values in these slots. Every other slot is zero.
+    MakeGenerator {
+        dest: LocalId,
+        generator: String,
+        args: Vec<(usize, Operand)>,
+    },
+    /// A slot of a generator's block (see [`slot`]). A list, string or boxed value read from
+    /// a slot gets a new owner, like [`InstKind::Copy`]. A slot nothing wrote is zero.
+    GetSlot {
+        dest: LocalId,
+        generator: Operand,
+        slot: usize,
+    },
+    /// Writes a slot, which takes an owner of the value and releases what the slot held. A
+    /// fresh block's slots are zero, so that's safe from the start.
+    SetSlot {
+        generator: Operand,
+        slot: usize,
+        value: Operand,
+    },
+    /// Runs a generator to its next item, by calling the function its block names, giving
+    /// whether there is one. The item is then in [`slot::ITEM`]. When nothing more comes,
+    /// [`slot::PC`] says whether that's because it failed. `known` names the function when
+    /// the IR can see which it is, so a backend can call it directly.
+    Resume {
+        dest: LocalId,
+        generator: Operand,
+        known: Option<String>,
+    },
     /// A direct call, by the callee's key. `dest` is `None` when nothing keeps the result.
     Call {
         dest: Option<LocalId>,
@@ -405,11 +467,14 @@ impl InstKind {
             | InstKind::IsError { dest, .. }
             | InstKind::AsError { dest, .. }
             | InstKind::MakeClosure { dest, .. }
+            | InstKind::MakeGenerator { dest, .. }
+            | InstKind::GetSlot { dest, .. }
+            | InstKind::Resume { dest, .. }
             | InstKind::Constant { dest, .. } => Some(*dest),
             InstKind::Builtin { dest, .. }
             | InstKind::Call { dest, .. }
             | InstKind::CallClosure { dest, .. } => *dest,
-            InstKind::SetField { .. } | InstKind::SetIndex { .. } => None,
+            InstKind::SetField { .. } | InstKind::SetIndex { .. } | InstKind::SetSlot { .. } => None,
         }
     }
 }

@@ -32,6 +32,9 @@ pub(super) fn dest(inst: &InstKind) -> Option<LocalId> {
         | InstKind::IsError { dest, .. }
         | InstKind::AsError { dest, .. }
         | InstKind::MakeClosure { dest, .. }
+        | InstKind::MakeGenerator { dest, .. }
+        | InstKind::GetSlot { dest, .. }
+        | InstKind::Resume { dest, .. }
         | InstKind::Constant { dest, .. } => Some(*dest),
         InstKind::Builtin { dest, .. } | InstKind::CallClosure { dest, .. } | InstKind::Call { dest, .. } => {
             *dest
@@ -84,11 +87,14 @@ pub(super) fn operands(inst: &InstKind) -> Vec<&Operand> {
         InstKind::MakeOk { value, .. } => value.iter().collect(),
         InstKind::CallClosure { closure, args, .. } => std::iter::once(closure).chain(args).collect(),
         InstKind::Constant { .. } => Vec::new(),
+        InstKind::MakeGenerator { args, .. } => args.iter().map(|(_, value)| value).collect(),
+        InstKind::GetSlot { generator, .. } | InstKind::Resume { generator, .. } => vec![generator],
+        InstKind::SetSlot { generator, value, .. } => vec![generator, value],
     }
 }
 
 /// The locals an instruction needs the value of.
-pub(super) fn reads(inst: &InstKind) -> Vec<LocalId> {
+pub(crate) fn reads(inst: &InstKind) -> Vec<LocalId> {
     let mut read: Vec<LocalId> = operands(inst).into_iter().filter_map(local).collect();
     if let InstKind::SetField { object, .. } | InstKind::SetIndex { object, .. } = inst {
         read.push(*object);
@@ -104,7 +110,7 @@ pub(super) fn local(operand: &Operand) -> Option<LocalId> {
 }
 
 /// The locals a block's end needs the value of.
-pub(super) fn terminator_reads(end: &Terminator) -> Vec<LocalId> {
+pub(crate) fn terminator_reads(end: &Terminator) -> Vec<LocalId> {
     let value = match end {
         Terminator::Branch { cond, .. } => Some(cond),
         Terminator::Return(value) => value.as_ref(),

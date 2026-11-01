@@ -456,7 +456,10 @@ impl Emit<'_, '_, '_> {
         let (byte, _) = self.operand(args.get(1).ok_or("no argument")?)?;
         let start = self.offset(&text, TEXT.unsigned_abs());
         let (one, _) = self.char_at_byte(&text, &start, &byte);
-        self.retain(&one);
+        // Each character's block lasts the whole run, so a local reading it needn't own it.
+        if !self.known.is_borrowed(dest) {
+            self.retain(&one);
+        }
         self.assign(dest, &one)
     }
 

@@ -156,10 +156,12 @@ impl Import {
     }
 }
 
-/// `test "name":`, or a property test `test "name" for items: list[int]:`.
+/// `test "name":`, a test that names its capabilities `test "name"(fs: Fs):`, or a property
+/// test `test "name" for items: list[int]:`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TestDef {
     pub name: String,
+    pub capabilities: Vec<Param>,
     pub inputs: Vec<Param>,
     pub body: Vec<Stmt>,
     /// Whether it's a `bench` block, which is checked like a test and runs only for

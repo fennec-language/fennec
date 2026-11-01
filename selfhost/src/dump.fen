@@ -144,6 +144,8 @@ struct Tree:
             case .Test(test):
                 word = "bench" if test.bench else "test"
                 self.open(f"{word} {quoted(test.name)}", test.span)
+                for capability in test.capabilities:
+                    self.write_param(capability)
                 for input in test.inputs:
                     self.write_param(input)
                 self.write_stmts(test.body)

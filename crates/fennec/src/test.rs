@@ -21,12 +21,25 @@ use fennec_build::{Cache, TestGraph, TestRecord};
 /// How `fennec test` was asked to run.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Options {
-    /// Run every test, not only what a change affects.
-    all: bool,
+    /// Which tests run, and what they get.
+    run: Run,
     /// List the tests that pass too.
     verbose: bool,
     /// Keep standard output for the program that runs next, and say nothing if all is well.
     before_a_run: bool,
+}
+
+/// Which tests run, and what they get.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Run {
+    /// The tests a change affects.
+    #[default]
+    Affected,
+    /// Every test.
+    All,
+    /// Every test, with the real capabilities rather than fakes. The world can change between
+    /// runs, so passing says nothing about the next run.
+    Real,
 }
 
 impl Options {
@@ -36,8 +49,10 @@ impl Options {
         let mut path = None;
         for arg in args {
             match *arg {
-                "--all" => options.all = true,
+                "--all" if options.run == Run::Affected => options.run = Run::All,
+                "--all" => {}
                 "--verbose" | "-v" => options.verbose = true,
+                "--real" => options.run = Run::Real,
                 flag if flag.starts_with("--") => return None,
                 written if path.is_none() => path = Some(written),
                 _ => return None,
@@ -86,7 +101,7 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
         }
     };
     let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
-    let results = Results::open(path, options.all);
+    let results = Results::open(path, options.run != Run::Affected);
     let graph = TestGraph::of(&program.module, env!("FENNEC_BUILD"));
     let unchanged: Vec<&TestRecord> = graph
         .tests()
@@ -100,7 +115,7 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
     let mut native = fennec_jit::run_tests(&program.module, &signatures, &wanted, cache);
     let mut outcomes = std::mem::take(&mut native.outcomes);
     if !native.left.is_empty() {
-        match interpreted(&program.module, &native.left) {
+        match interpreted(&program.module, &native.left, options.run == Run::Real) {
             Ok(more) => outcomes.extend(more),
             Err(diagnostic) => {
                 eprint!("{}", render(&diagnostic));
@@ -144,7 +159,9 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
             }
         }
     }
-    results.store(&passing);
+    if options.run != Run::Real {
+        results.store(&passing);
+    }
     let passed = outcomes.len() + unchanged.len() - failed;
     say_totals(options, (passed, failed), (outcomes.len(), unchanged.len()));
     if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
@@ -169,9 +186,14 @@ fn say_totals(options: Options, (passed, failed): (usize, usize), (ran, unchange
 fn interpreted(
     module: &fennec_syntax::Module,
     names: &[String],
+    real: bool,
 ) -> Result<Vec<fennec_interp::TestOutcome>, fennec_syntax::Diagnostic> {
-    let mut out = std::io::sink();
+    let mut out: Box<dyn std::io::Write> =
+        if real { Box::new(std::io::stdout()) } else { Box::new(std::io::sink()) };
     let mut interp = fennec_interp::Interp::new(&mut out)?;
+    if real {
+        interp.use_real_capabilities();
+    }
     interp.load(module)?;
     Ok(interp.run_tests_where(&|name| names.iter().any(|left| left == name)))
 }

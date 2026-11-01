@@ -36,8 +36,10 @@ pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7";
 
 /// Below this many instructions, a function that calls nothing is always inlined.
 const ALWAYS_INLINE: usize = 16;
-/// Below this many, a function that calls nothing is copied to its callers to be inlined.
+/// Below this many, a function is copied to its callers to be inlined.
 const COPIED: usize = 64;
+/// How many calls deep what's copied may call other small functions.
+const COPY_DEPTH: usize = 2;
 /// Below this many, a recursive function gets one level of itself inlined, as in the JIT.
 const SELF_INLINED: usize = 24;
 
@@ -70,6 +72,17 @@ pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared), String> {
 
 fn size(function: &Function) -> usize {
     function.blocks.iter().map(|block| block.insts.len() + 1).sum()
+}
+
+/// Whether a function is small enough to copy into its callers, with everything it calls, which
+/// must be too, `depth` calls deep. A recursive one isn't.
+fn copyable(whole: &Whole<'_>, function: &Function, depth: usize) -> bool {
+    size(function) <= COPIED
+        && callees(function).all(|name| {
+            depth > 0
+                && name != function.name
+                && whole.functions.get(name).is_some_and(|callee| copyable(whole, callee, depth - 1))
+        })
 }
 
 pub(crate) fn symbol(name: &str) -> String {
@@ -115,17 +128,25 @@ fn unit<'p>(
         helpers: BTreeMap::new(),
     };
     module.defined.insert(&function.name);
-    // Small functions that call nothing come along, to be inlined and thrown away.
+    // Small functions come along, with the small functions they call, to be inlined and thrown
+    // away.
     let made = function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
         InstKind::MakeClosure { function, .. } => Some(function.as_str()),
         _ => None,
     });
-    let copies: Vec<&Function> = callees(function)
-        .chain(made)
-        .filter(|name| *name != function.name)
-        .filter_map(|name| whole.functions.get(name).copied())
-        .filter(|callee| size(callee) <= COPIED && callees(callee).next().is_none())
-        .collect();
+    let mut copies: Vec<&Function> = Vec::new();
+    let mut waiting: Vec<&str> = callees(function).chain(made).collect();
+    while let Some(name) = waiting.pop() {
+        let Some(callee) = whole.functions.get(name).copied() else { continue };
+        if name == function.name
+            || copies.iter().any(|copy| copy.name == name)
+            || !copyable(whole, callee, COPY_DEPTH)
+        {
+            continue;
+        }
+        copies.push(callee);
+        waiting.extend(callees(callee));
+    }
     for copy in &copies {
         module.defined.insert(&copy.name);
     }

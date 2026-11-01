@@ -61,6 +61,20 @@ impl Emit<'_, '_, '_> {
 
     /// Prints one value: an optional as what it holds, or `None`.
     fn print_one(&mut self, value: &str, kind: &Kind) -> Result<(), String> {
+        if let Kind::Maybe(inner) = kind {
+            let none = self.temp();
+            self.line(&format!("{none} = icmp eq ptr {value}, null"));
+            let (holds, missing, joined) = (self.label("holds"), self.label("none"), self.label("printed"));
+            self.line(&format!("br i1 {none}, label %{missing}, label %{holds}"));
+            self.start_block(&holds);
+            self.print_one(value, inner)?;
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&missing);
+            self.print_text("None");
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&joined);
+            return Ok(());
+        }
         if self.is_optional(kind) {
             let (number, fields) = self.case_of(kind, "Some")?;
             let (_, offset, held) = fields.first().cloned().ok_or("an optional with nothing in it")?;

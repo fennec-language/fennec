@@ -21,10 +21,21 @@ use crate::{Function, InstKind, Program};
 /// What may cost something at one place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cost {
-    /// Changing `value` may copy it, since `referred_by` holds it too.
-    Copy { value: String, referred_by: String },
+    /// Changing `value` may copy it, since something else may still read it: `why` says what.
+    Copy { value: String, why: Shared },
     /// `what` may allocate.
     Allocation { what: String },
+}
+
+/// Why a value being changed may still be shared, so changing it copies it first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shared {
+    /// Another name holds it, and reads it again at `later`.
+    HeldBy { name: String, later: Option<Span> },
+    /// It was put into `container`, which is read again at `later`.
+    PutInto { container: String, later: Option<Span> },
+    /// It came from the caller, who still holds it.
+    Caller,
 }
 
 /// A place in a program that may copy or allocate.
@@ -46,11 +57,23 @@ impl Finding {
         self.loops > 0 || self.called_from_loop.is_some()
     }
 
+    /// Whether it happens each time round a loop: one it's in, or one that calls its function,
+    /// however many calls away.
+    pub fn per_iteration(&self) -> bool {
+        self.is_hot()
+    }
+
     /// What it costs, in a few words, without where it is.
     pub fn message(&self) -> String {
         match &self.cost {
-            Cost::Copy { value, referred_by } => {
-                format!("may copy `{value}`: {referred_by} still refers to it")
+            Cost::Copy { value, why: Shared::HeldBy { name, .. } } => {
+                format!("`{value}` is copied here, since `{name}` still holds it and is used again")
+            }
+            Cost::Copy { value, why: Shared::PutInto { container, .. } } => {
+                format!("`{value}` is copied here, since it was put into `{container}`, which is used again")
+            }
+            Cost::Copy { value, why: Shared::Caller } => {
+                format!("`{value}` is copied here, since the caller still holds it")
             }
             Cost::Allocation { what } => format!("{what} may allocate"),
         }

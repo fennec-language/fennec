@@ -12,7 +12,7 @@ use fennec_check::Type;
 use fennec_syntax::Span;
 
 use super::insts::{dest, local, operands, reads, terminator_reads};
-use super::{Cost, on_the_heap};
+use super::{Cost, Shared as Why, on_the_heap};
 use crate::{Function, InstKind, LocalId, Operand};
 
 /// A value, by the local it's in and the fields and items to go through to reach it.
@@ -125,38 +125,74 @@ impl Flow<'_> {
         shown
     }
 
-    /// Who may still read `place` once it's changed, by name.
-    fn referred_by(&self, held: &Held, place: &Place, live: &HashSet<usize>) -> Option<String> {
-        let name = |id: usize| {
-            if self.callers.contains(&id) {
-                "the caller".to_owned()
-            } else {
-                self.shown(&Place { local: id, path: Vec::new() })
-            }
-        };
+    /// Who may still read `place` once it's changed, and why it still holds it. `at` is the
+    /// block and instruction doing the change.
+    fn still_shared(
+        &self,
+        held: &Held,
+        place: &Place,
+        live: &HashSet<usize>,
+        at: (usize, usize),
+    ) -> Option<Why> {
         let alive = |id: usize| self.callers.contains(&id) || live.contains(&id);
-        for (holder, value) in held {
+        let holder = held.iter().find_map(|(holder, value)| {
             if value.local == place.local
                 && place.path.starts_with(&value.path)
                 && *holder != place.local
                 && alive(*holder)
             {
-                return Some(name(*holder));
+                return Some(*holder);
             }
-            if *holder == place.local && value.local != place.local && alive(value.local) {
-                return Some(name(value.local));
+            (*holder == place.local && value.local != place.local && alive(value.local))
+                .then_some(value.local)
+        })?;
+        if self.callers.contains(&holder) {
+            return Some(Why::Caller);
+        }
+        let name = self.shown(&Place { local: holder, path: Vec::new() });
+        let later = self.next_read(holder, at);
+        let ty = |id: usize| self.function.locals.get(id).map(|local| &local.ty);
+        // A holder of another type has it inside: an item of a list, or a field.
+        if ty(holder) != ty(place.local) {
+            return Some(Why::PutInto { container: name, later });
+        }
+        Some(Why::HeldBy { name, later })
+    }
+
+    /// Where `id` is next read after instruction `at`, following the blocks that come after.
+    fn next_read(&self, id: usize, (block, inst): (usize, usize)) -> Option<Span> {
+        let reads_it = |kind: &InstKind| reads(kind).iter().any(|read| read.0 == id);
+        let here = self.function.blocks.get(block)?;
+        if let Some(found) = here.insts.iter().skip(inst + 1).find(|candidate| reads_it(&candidate.kind)) {
+            return Some(found.span);
+        }
+        let mut seen = HashSet::from([block]);
+        let mut next: Vec<usize> = here.end.targets().iter().map(|target| target.0).collect();
+        while let Some(at) = next.pop() {
+            if !seen.insert(at) {
+                continue;
             }
+            let Some(found) = self.function.blocks.get(at) else { continue };
+            if let Some(found) = found.insts.iter().find(|candidate| reads_it(&candidate.kind)) {
+                return Some(found.span);
+            }
+            next.extend(found.end.targets().iter().map(|target| target.0));
         }
         None
     }
 
     /// Follows one instruction: what it changes, then what it makes shared.
-    fn step(&self, held: &mut Held, kind: &InstKind, live: &HashSet<usize>) -> Option<Cost> {
+    fn step(
+        &self,
+        held: &mut Held,
+        kind: &InstKind,
+        (live, at): (&HashSet<usize>, (usize, usize)),
+    ) -> Option<Cost> {
         let mut cost = None;
         for written in self.written(kind) {
             let place = self.place(written.0);
-            if let Some(referred_by) = self.referred_by(held, &place, live) {
-                cost = Some(Cost::Copy { value: self.shown(&place), referred_by });
+            if let Some(why) = self.still_shared(held, &place, live, at) {
+                cost = Some(Cost::Copy { value: self.shown(&place), why });
             }
             // Whichever holder changes it, the two don't share it any more. What's held from
             // elsewhere in the same value, like another field, stays shared.
@@ -280,8 +316,8 @@ pub(super) fn copies(
         for (at, block) in function.blocks.iter().enumerate() {
             let mut held = entry.get(at).cloned().unwrap_or_default();
             let live = flow.live.get(at).map_or(&[][..], Vec::as_slice);
-            for (inst, live) in block.insts.iter().zip(live) {
-                if let Some(cost) = flow.step(&mut held, &inst.kind, live) {
+            for (index, (inst, live)) in block.insts.iter().zip(live).enumerate() {
+                if let Some(cost) = flow.step(&mut held, &inst.kind, (live, (at, index))) {
                     found.push((inst.span, cost, depths.get(at).copied().unwrap_or(0)));
                 }
             }

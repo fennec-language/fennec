@@ -578,6 +578,8 @@ struct Color:
         out.str(f"#{self.r:02x}{self.g:02x}{self.b:02x}")
 ```
 
+Every field is saved, private `_` ones included, and `where` rules check a value as it loads. `@skip` leaves a field out, and it needs a default so loading still builds a whole value.
+
 `std.pack` will be the default binary format: no field names on the wire, `where` ranges shrink values, a schema hash, delta encoding and opt-in quantization, all in plain Fennec. Annotations like `@json(name="user_id")` are data read at compile time, and they never change what they're on.
 
 JSON and TOML already work today, including typed reading:

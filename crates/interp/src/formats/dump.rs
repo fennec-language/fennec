@@ -1,10 +1,14 @@
 //! Writing values as JSON or TOML text. Dicts and structs become objects or tables, lists
-//! and tuples become arrays. A value the format can't hold, like a set, stops the program.
+//! and tuples become arrays. An `Id` is its slot and generation, and an `IdMap` is every slot
+//! with its generation, so the `Id`s a program saved still find their items once it's read
+//! back. A value the format can't hold, like a set, stops the program.
 
 use std::fmt::Write;
 
+use std::rc::Rc;
+
 use crate::format;
-use crate::value::Value;
+use crate::value::{IdMap, Value};
 
 /// A dict's or struct's entries, by name; `None` for any other value.
 fn entries(value: &Value, format: &str) -> Result<Option<Vec<(String, Value)>>, String> {
@@ -21,8 +25,25 @@ fn entries(value: &Value, format: &str) -> Result<Option<Vec<(String, Value)>>, 
         Value::Instance(instance) if instance.case.is_none() && !instance.is_error => {
             Ok(Some(instance.fields.iter().map(|(name, value)| (name.to_string(), value.clone())).collect()))
         }
+        Value::Id(id) => Ok(Some(vec![
+            ("slot".to_owned(), Value::Int(i64::try_from(id.slot).unwrap_or(i64::MAX))),
+            ("generation".to_owned(), Value::Int(i64::from(id.generation))),
+        ])),
+        Value::IdMap(map) => Ok(Some(vec![("slots".to_owned(), slots(map))])),
         _ => Ok(None),
     }
+}
+
+/// An `IdMap`'s slots, each its generation and, unless it's free, its value.
+fn slots(map: &IdMap) -> Value {
+    let slots = map.slots.iter().map(|slot| {
+        let mut pairs = vec![(Value::str("generation"), Value::Int(i64::from(slot.generation)))];
+        if let Some(value) = &slot.value {
+            pairs.push((Value::str("value"), value.clone()));
+        }
+        Value::Dict(Rc::new(pairs.into()))
+    });
+    Value::list(slots.collect())
 }
 
 fn a(value: &Value) -> String {

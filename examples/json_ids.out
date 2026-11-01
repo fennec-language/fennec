@@ -1,0 +1,2 @@
+{"units": {"slots": [{"generation": 0, "value": {"name": "ash", "health": 10, "target": null}}, {"generation": 0, "value": {"name": "vex", "health": 8, "target": {"slot": 0, "generation": 0}}}]}, "selected": [{"slot": 0, "generation": 0}]}
+ash True

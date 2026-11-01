@@ -200,3 +200,68 @@ fn a_name_a_function_binds_itself_isnt_flagged() {
                   def main():\n    between = other\n    between(1, 2)\n";
     assert_eq!(rules(source), NONE, "a local");
 }
+
+#[test]
+fn code_after_leaving_a_block_cant_run() {
+    let source = "def f(a: int) -> int:\n    return a\n    a + 1\n";
+    assert!(rules(source).contains(&"unreachable"));
+    assert_eq!(rules("def f():\n    while True:\n        break\n        g()\n"), ["unreachable"]);
+    assert_eq!(
+        fixed("def f():\n    while True:\n        break\n        g()\n"),
+        "def f():\n    while True:\n        break\n        \n"
+    );
+}
+
+#[test]
+fn an_if_that_only_gives_back_its_condition_is_its_condition() {
+    for (written, plain) in [
+        ("    if a > 0: return True\n    False\n", "    a > 0\n"),
+        ("    if a > 0: return False\n    return True\n", "    not (a > 0)\n"),
+        ("    if a > 0:\n        return True\n    else:\n        return False\n", "    a > 0\n"),
+    ] {
+        let source = format!("def f(a: int) -> bool:\n{written}");
+        assert!(rules(&source).contains(&"return-bool"), "{written}");
+        assert_eq!(
+            fixed(&source).replace("\n    \n", "\n"),
+            format!("def f(a: int) -> bool:\n{plain}"),
+            "{written}"
+        );
+    }
+    assert_eq!(rules("def f(a: int) -> bool:\n    if a > 0: return True\n    True\n"), NONE);
+}
+
+#[test]
+fn a_condition_tested_twice_cant_run_the_second_time() {
+    let source = "def f(a: int):\n    if a > 0:\n        g()\n    elif a < 0:\n        h()\n    elif a > 0:\n        i()\n";
+    assert_eq!(rules(source), ["duplicate-condition"]);
+    let calls = "def f():\n    if g():\n        h()\n    elif g():\n        i()\n";
+    assert_eq!(rules(calls), NONE, "a call can give something else the second time");
+}
+
+#[test]
+fn branches_that_do_the_same_are_flagged() {
+    assert_eq!(
+        rules("def f(a: bool):\n    if a:\n        g()\n    else:\n        g()\n"),
+        ["identical-branches"]
+    );
+    assert_eq!(rules("def f(a: bool):\n    if a:\n        g()\n    else:\n        h()\n"), NONE);
+}
+
+#[test]
+fn a_range_test_is_one_chain() {
+    for (written, plain) in [("0 <= a and a <= 10", "0 <= a <= 10"), ("10 > a and a >= 0", "10 > a >= 0")] {
+        assert_eq!(rules(&in_function(written)), ["chained-compare"], "{written}");
+        assert_eq!(fixed(&in_function(written)), in_function(plain), "{written}");
+    }
+    assert_eq!(rules(&in_function("0 <= a and a >= 10")), NONE, "they point different ways");
+    assert_eq!(rules(&in_function("0 <= a and x <= 10")), NONE, "they test different things");
+}
+
+#[test]
+fn a_default_for_none_has_its_own_form() {
+    for written in ["x if x is not None else 1", "1 if x is None else x"] {
+        assert_eq!(rules(&in_function(written)), ["manual-default"], "{written}");
+        assert_eq!(fixed(&in_function(written)), in_function("x else 1"), "{written}");
+    }
+    assert_eq!(rules(&in_function("a if x is not None else 1")), NONE);
+}

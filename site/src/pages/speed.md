@@ -67,7 +67,7 @@ Fast builds come from design decisions, not just a fast compiler.
 
 ## The performance target
 
-Each benchmark has a target: idiomatic code for the same work in the fastest established systems language, fully optimized. Release builds aim for 110% of its speed, the fast compiler for development for 80% to start and then 85%, and the interpreter for 10–30%. That's a promise we intend to check, not just make:
+Each benchmark has a target: idiomatic code for the same work in the fastest established systems language, fully optimized and with overflow checks, as Fennec has. Release builds aim for 110% of its speed, the fast compiler for development for 80% to start and then 85%, and the interpreter for 10–30%. That's a promise we intend to check, not just make:
 
 - A benchmark suite of real programs, including a game update loop, a JSON parser, a hash-map-heavy workload, a numeric kernel and a server.
 - Each written idiomatically in Fennec and compared against expert hand-written native code.

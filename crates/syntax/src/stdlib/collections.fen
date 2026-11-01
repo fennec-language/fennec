@@ -688,7 +688,8 @@ struct SortedSet[T: Ordered]:
 
     ## Removes `item` if it's there.
     def discard(mut self, item: T):
-        self._items.remove(item)
+        if self._items.has(item):
+            self._items.remove(item)
 
     ## Removes `item`. One that isn't there stops the program, like a set.
     def remove(mut self, item: T):

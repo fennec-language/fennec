@@ -225,9 +225,9 @@ struct TreeNode[T]:
     parent: Id[TreeNode[T]]? = None
     children: list[Id[TreeNode[T]]] = []
 
-## Values with parents and children, kept in sync. Nodes are reached by the IDs `add` and
-## `add_child` give back, so a tree holds no references, and copying one gives an independent
-## tree. An ID of a removed node stops the program, like an index out of range.
+## Values with parents and children, kept in sync. Nodes are reached by the IDs `add` gives
+## back, so a tree holds no references, and copying one gives an independent tree. An ID of
+## a removed node stops the program, like an index out of range.
 struct Tree[T]:
     _nodes: IdMap[TreeNode[T]] = IdMap[TreeNode[T]]()
     _roots: list[Id[TreeNode[T]]] = []
@@ -236,16 +236,13 @@ struct Tree[T]:
     def len(self) -> int:
         self._nodes.len()
 
-    ## Adds a node with no parent.
-    def add(mut self, value: T) -> Id[TreeNode[T]]:
-        id = self._nodes.insert(TreeNode(value=value))
-        self._roots.append(id)
-        id
-
-    ## Adds a node as the last child of `parent`.
-    def add_child(mut self, parent: Id[TreeNode[T]], value: T) -> Id[TreeNode[T]]:
+    ## Adds a node as the last child of `parent`, or as a root when it has none.
+    def add(mut self, value: T, parent: Id[TreeNode[T]]? = None) -> Id[TreeNode[T]]:
         id = self._nodes.insert(TreeNode(value=value, parent=parent))
-        self._nodes[parent].children.append(id)
+        if parent is None:
+            self._roots.append(id)
+        else:
+            self._nodes[parent].children.append(id)
         id
 
     def [](self, id: Id[TreeNode[T]]) -> T:

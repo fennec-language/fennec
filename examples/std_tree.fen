@@ -30,9 +30,9 @@ def main(stdout: Stdout):
     mut scene = Tree[Part]()
     car = scene.add(Part(name="car", x=10.0))
     trailer = scene.add(Part(name="trailer", x=-5.0))
-    wheel = scene.add_child(car, Part(name="wheel", x=2.0))
-    hub = scene.add_child(wheel, Part(name="hub", x=0.5))
-    door = scene.add_child(car, Part(name="door", x=1.0))
+    wheel = scene.add(Part(name="wheel", x=2.0), parent=car)
+    hub = scene.add(Part(name="hub", x=0.5), parent=wheel)
+    door = scene.add(Part(name="door", x=1.0), parent=car)
     camera = Camera(follows=hub)
     stdout.print(scene.len(), names(scene, scene.roots()))
 

@@ -5,7 +5,7 @@
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, Value, types};
-use fennec_syntax::{Arg, BinOp, Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind};
+use fennec_syntax::{Arg, BinOp, Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind, fuse};
 
 use super::{Loop, Lowerer};
 use crate::helpers::Helper;
@@ -475,6 +475,15 @@ impl Lowerer<'_, '_> {
     }
 
     fn for_loop(&mut self, names: &[String], iter: &Expr, body: &[Stmt]) -> Result<(), Diagnostic> {
+        let generator = |key: &str| {
+            let copying = self.copied_generators.iter().any(|copied| copied == key);
+            if copying { None } else { self.shared.generators.get(key).cloned() }
+        };
+        let is_local = |name: &str| self.local(name).is_some();
+        let around = fuse::Surroundings { generator: &generator, is_local: &is_local };
+        if let Some(expansion) = fuse::expand(names, iter, body, &around) {
+            return self.fused_loop(expansion);
+        }
         if let (ExprKind::Call { callee, args }, [name]) = (&iter.kind, names)
             && matches!(&callee.kind, ExprKind::Name(callee) if callee == "range" && self.local(callee).is_none())
             && args.iter().all(|arg| arg.name.is_none() && !arg.is_mut)
@@ -489,6 +498,19 @@ impl Lowerer<'_, '_> {
             return Ok(());
         }
         self.for_items(names, iter, body)
+    }
+
+    /// A loop over a stage, as the plain loops it fuses into.
+    fn fused_loop(&mut self, expansion: fuse::Expansion) -> Result<(), Diagnostic> {
+        let copied = expansion.copied.is_some();
+        self.copied_generators.extend(expansion.copied);
+        self.open_scope();
+        let lowered = self.statements(&expansion.stmts);
+        if copied {
+            self.copied_generators.pop();
+        }
+        lowered?;
+        self.close_scope()
     }
 
     /// `for i, item in enumerate(xs)` and `for a, b in zip(xs, ys)` over native lists, as a

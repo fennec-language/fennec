@@ -114,6 +114,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
             }
         });
     }
+    fennec_syntax::fuse::stored_stages(module);
     checked.into_signatures()
 }
 

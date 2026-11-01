@@ -9,22 +9,19 @@
 //! value (a name, a field, a return) owns it, taking a new owner for a borrowed one, and
 //! whatever only uses an owned value releases it after.
 
-use std::rc::Rc;
-
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value, types};
-use fennec_interp::packed::Element;
 use fennec_syntax::{Arg, Diagnostic, Span};
 
 use super::expr::Lowered;
 use super::{Lowerer, Scope, internal};
 use crate::helpers::Helper;
-use crate::layout::{Field, Layouts, WORD};
+use crate::layout::{Field, WORD};
 use crate::types::Ty;
 
 /// Bytes before a block's fields: its owner count and its shape.
-const HEADER: i64 = 16;
+const HEADER: i64 = fennec_interp::embed::layout::FIELDS as i64;
 
 impl<'a> Lowerer<'a, '_> {
     /// One more owner for a block.
@@ -370,57 +367,4 @@ impl<'a> Lowerer<'a, '_> {
         self.consume(Some(b), Ty::Boxed(id))?;
         Ok(if negate { self.b.ins().bxor_imm_u(same, 1) } else { same })
     }
-}
-
-/// What the runtime needs to know about each layout's blocks, by the layout's number. A plain
-/// layout has blocks too, for a dict's keys.
-pub(crate) fn shapes(layouts: &Layouts) -> Vec<Rc<Element>> {
-    (0..layouts.len())
-        .map(|id| {
-            let id = u32::try_from(id).unwrap_or(0);
-            let described = describe(layouts, Ty::Struct(id));
-            Rc::new(described.unwrap_or(Element::Int))
-        })
-        .chain(std::iter::once(Rc::new(Element::Str)))
-        .collect()
-}
-
-/// How the runtime reads values of a kind from words.
-pub(crate) fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
-    let fields = |fields: &[Field]| -> Option<Vec<(Rc<str>, Element)>> {
-        fields
-            .iter()
-            .map(|field| Some((Rc::from(field.name.as_str()), describe(layouts, field.ty)?)))
-            .collect()
-    };
-    Some(match ty {
-        Ty::Int => Element::Int,
-        Ty::Float => Element::Float,
-        Ty::Bool => Element::Bool,
-        Ty::Boxed(id) => Element::Boxed(usize::try_from(id).ok()?),
-        Ty::Str => Element::Str,
-        Ty::Obj => Element::Object,
-        Ty::List(item) => Element::List(Rc::new(describe(layouts, item.ty())?)),
-        Ty::Dict(key, value) => {
-            let str_shape = u64::try_from(layouts.len()).ok()?;
-            let shape = fennec_interp::embed::dicts::shape(str_shape, key, value)?;
-            Element::Boxed(usize::try_from(shape).ok()?)
-        }
-        Ty::Struct(id) => {
-            let layout = layouts.get(id)?;
-            let name = Rc::from(layout.name.as_str());
-            match &layout.cases {
-                Some(cases) => {
-                    let cases: Option<Vec<_>> = cases
-                        .iter()
-                        .map(|case| Some((Rc::from(case.name.as_str()), fields(&case.fields)?)))
-                        .collect();
-                    let words = usize::try_from(layout.size / WORD).ok()?;
-                    Element::Enum { name, cases: cases?, words }
-                }
-                None => Element::Struct { name, fields: fields(&layout.fields)? },
-            }
-        }
-        _ => return None,
-    })
 }

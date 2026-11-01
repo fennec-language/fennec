@@ -105,6 +105,8 @@ pub(super) struct Shared {
     specialized: HashSet<String>,
     /// Functions something calls directly.
     called: HashSet<String>,
+    /// The yield functions, which a loop over one can take a copy of.
+    generators: HashMap<String, fennec_syntax::FnDef>,
     compiled: HashMap<String, Compiled>,
     helpers: HashMap<Helper, FuncId>,
     tables: Tables,
@@ -192,7 +194,7 @@ pub(crate) fn compile(
 impl Shared {
     pub(super) fn new(program: &Program<'_>, stack_limit: i64) -> Shared {
         let tables = Tables {
-            shapes: boxes::shapes(&program.layouts),
+            shapes: fennec_layout::shapes(&program.layouts),
             str_shape: u64::try_from(program.layouts.len()).unwrap_or(0),
             ..Tables::default()
         };
@@ -211,6 +213,7 @@ impl Shared {
             with_frames: 0,
             handed_over: 0,
             stack_limit,
+            generators: program.generators.clone(),
             modules: program.modules.clone(),
             constants: program.constants.clone(),
             notes: Vec::new(),
@@ -373,6 +376,7 @@ fn lower_with(cx: &mut Cx<'_>, function: &Function<'_>, frame: bool) -> Result<(
         signatures: cx.signatures,
         dest: None,
         inlining: Vec::new(),
+        copied_generators: Vec::new(),
         call_site: None,
         function,
         scopes: vec![Scope::default()],
@@ -483,6 +487,8 @@ pub(crate) struct Lowerer<'a, 'f> {
     /// The functions being inlined, innermost last, each with the number of scopes open
     /// outside it, which its body can't see.
     inlining: Vec<(String, usize)>,
+    /// The yield functions whose copies are being lowered, innermost last.
+    copied_generators: Vec<String>,
     /// Boxed values something else keeps alive, which aren't released when used.
     borrowed: HashSet<Value>,
     /// The variables of names holding boxed values they don't own, by index.
@@ -680,6 +686,15 @@ impl Lowerer<'_, '_> {
     }
 
     /// The key of the function whose code is being lowered: an inlined one, or this one.
+    /// What the checker says the expression at a span is, which might be in a yield function
+    /// copied here.
+    fn checked_type(&self, span: Span) -> Option<&fennec_check::Type> {
+        let signatures = self.signatures;
+        std::iter::once(self.current_key())
+            .chain(self.copied_generators.iter().rev().map(String::as_str))
+            .find_map(|key| signatures.expr_type(key, span))
+    }
+
     fn current_key(&self) -> &str {
         self.inlining.last().map_or(self.function.key.as_str(), |(key, _)| key.as_str())
     }

@@ -5,150 +5,10 @@
 use std::collections::{HashMap, HashSet};
 
 use fennec_check::Signatures;
-pub(crate) use fennec_interp::embed::dicts::Word;
+pub(crate) use fennec_layout::{Cap, ListItem, Ty, Word};
 use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Imported, Item, Module, Span, UnaryOp};
 
-use crate::layout::Layouts;
-
-/// How native code holds a value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Ty {
-    Int,
-    Float,
-    Bool,
-    /// Nothing at all: what a function without a value returns.
-    Unit,
-    /// A capability, like `stdout`, which needs nothing at run time.
-    Cap(Cap),
-    /// Anything else, held by the runtime.
-    Obj,
-    /// A plain struct, in memory native code owns, which it refers to by address. The
-    /// number picks its layout.
-    Struct(u32),
-    /// A boxed struct or enum: the address of a block the runtime owns, shared by every
-    /// copy. The number picks its layout.
-    Boxed(u32),
-    /// A string: the address of a block the runtime owns, shared by every copy.
-    Str,
-    /// A dict with these keys and values: the address of a block the runtime owns, shared
-    /// by every copy until one changes it.
-    Dict(Word, Word),
-    /// A list of numbers, bools or plain structs, packed one after another: the address of
-    /// a block the runtime owns, shared by every copy until one changes it.
-    List(ListItem),
-    /// A function known while compiling, by its number there, which needs nothing at run
-    /// time: calls to it are lowered right where they are.
-    Known(u32),
-}
-
-/// What a native list's items are.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum ListItem {
-    Int,
-    Float,
-    Bool,
-    /// A plain struct or enum, by its layout's number.
-    Struct(u32),
-    /// The address of a string's block, which the list owns.
-    Str,
-    /// The address of a boxed value's block, which the list owns, by its layout's number.
-    Boxed(u32),
-}
-
-impl ListItem {
-    /// The kind of item a list of `ty` holds natively, if it can.
-    pub(crate) fn of(ty: Ty) -> Option<ListItem> {
-        Some(match ty {
-            Ty::Int => ListItem::Int,
-            Ty::Float => ListItem::Float,
-            Ty::Bool => ListItem::Bool,
-            Ty::Struct(id) => ListItem::Struct(id),
-            Ty::Str => ListItem::Str,
-            Ty::Boxed(id) => ListItem::Boxed(id),
-            _ => return None,
-        })
-    }
-
-    /// How native code holds one item.
-    pub(crate) fn ty(self) -> Ty {
-        match self {
-            ListItem::Int => Ty::Int,
-            ListItem::Float => Ty::Float,
-            ListItem::Bool => Ty::Bool,
-            ListItem::Struct(id) => Ty::Struct(id),
-            ListItem::Str => Ty::Str,
-            ListItem::Boxed(id) => Ty::Boxed(id),
-        }
-    }
-}
-
-impl Ty {
-    /// Whether values of this kind are addresses of blocks with an owner count.
-    pub(crate) fn counted(self) -> bool {
-        matches!(self, Ty::Boxed(_) | Ty::Str | Ty::Dict(..) | Ty::List(_))
-    }
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Ty::Int => "int",
-            Ty::Float => "float",
-            Ty::Bool => "bool",
-            Ty::Unit => "nothing",
-            Ty::Cap(cap) => cap.name(),
-            Ty::Obj => "value",
-            Ty::Struct(_) => "struct",
-            Ty::Boxed(_) => "boxed value",
-            Ty::Str => "str",
-            Ty::Dict(..) => "dict",
-            Ty::List(_) => "list",
-            Ty::Known(_) => "function",
-        }
-    }
-}
-
-/// The capabilities `main` can be given.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Cap {
-    Stdout,
-    Fs,
-    Clock,
-    Args,
-    Stdin,
-}
-
-impl Cap {
-    pub(crate) fn named(name: &str) -> Option<Cap> {
-        match name {
-            "Stdout" => Some(Cap::Stdout),
-            "Fs" => Some(Cap::Fs),
-            "Clock" => Some(Cap::Clock),
-            "Args" => Some(Cap::Args),
-            "Stdin" => Some(Cap::Stdin),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Cap::Stdout => "Stdout",
-            Cap::Fs => "Fs",
-            Cap::Clock => "Clock",
-            Cap::Args => "Args",
-            Cap::Stdin => "Stdin",
-        }
-    }
-
-    /// How the runtime tells capabilities apart.
-    pub(crate) fn kind(self) -> i64 {
-        match self {
-            Cap::Stdout => 0,
-            Cap::Fs => 1,
-            Cap::Clock => 2,
-            Cap::Args => 3,
-            Cap::Stdin => 4,
-        }
-    }
-}
+use fennec_layout::Layouts;
 
 pub(crate) struct Param {
     pub(crate) name: String,
@@ -177,6 +37,8 @@ pub(crate) struct Program<'m> {
     pub(crate) layouts: Layouts,
     /// Functions and methods the JIT doesn't try to compile, like generators.
     pub(crate) excluded: Vec<String>,
+    /// The yield functions, which a loop over one can take a copy of.
+    pub(crate) generators: HashMap<String, FnDef>,
     pub(crate) main_span: Span,
     /// The standard library modules the program imports, by the name it uses them under,
     /// like `math` in `math.sqrt(x)` or `std.math` in `std.math.sqrt(x)`.
@@ -300,15 +162,20 @@ impl<'m> Program<'m> {
         }
         let mut functions = Vec::new();
         let mut excluded = Vec::new();
+        let mut generators = HashMap::new();
         let mut main_span = None;
         let mut add = |def: &'m FnDef, key: String, from_prelude: bool| {
             if signatures.get(&key).is_none() {
                 return;
             }
-            match function(def, key.clone(), signatures, &layouts) {
-                Some(function) => functions.push(Function { prelude: from_prelude, ..function }),
-                None => excluded.push(key),
+            if let Some(function) = function(def, key.clone(), signatures, &layouts) {
+                functions.push(Function { prelude: from_prelude, ..function });
+                return;
             }
+            if !from_prelude && key == def.name && fennec_syntax::fuse::has_yield(&def.body) {
+                generators.insert(key.clone(), def.clone());
+            }
+            excluded.push(key);
         };
         let modules = prelude.iter().map(|module| (module, true)).chain(std::iter::once((module, false)));
         for (item, from_prelude) in modules
@@ -356,7 +223,7 @@ impl<'m> Program<'m> {
         }
         let (modules, constants) = (std_modules(module), literal_constants(prelude, module));
         let ir = std::rc::Rc::new(typed_ir(module, signatures, &functions));
-        Ok(Program { ir, functions, layouts, excluded, main_span, modules, constants })
+        Ok(Program { ir, functions, layouts, excluded, generators, main_span, modules, constants })
     }
 }
 

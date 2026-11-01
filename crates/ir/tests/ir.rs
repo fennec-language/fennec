@@ -2201,3 +2201,33 @@ fn every_example_lowers_to_valid_ir() {
         assert!(lowered_functions.iter().any(|found| found == expected), "{expected} wasn't lowered");
     }
 }
+
+#[test]
+fn a_loop_over_a_stage_is_a_plain_loop() {
+    let source = "def upto(limit: int) -> Iterator[int]:
+    mut n = 0
+    while n < limit:
+        yield n
+        n += 1
+
+def odd(numbers: Iterator[int]) -> Iterator[int]:
+    for n in numbers:
+        if n % 2 == 1:
+            yield n
+
+def total(limit: int) -> int:
+    mut sum_so_far = 0
+    for n in odd(upto(limit)):
+        sum_so_far += n * 2
+    sum_so_far
+
+def doubled(limit: int) -> list[int]:
+    [n for n in (x * 2 for x in upto(limit)) if n > 2]
+";
+    let total = printed(source, "total").unwrap();
+    assert!(!total.contains("call "), "{total}");
+    assert!(!total.contains("list.append"), "{total}");
+    let doubled = printed(source, "doubled").unwrap();
+    assert!(!doubled.contains("call "), "{doubled}");
+    assert_eq!(doubled.matches("list.append").count(), 1, "{doubled}");
+}

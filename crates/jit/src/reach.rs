@@ -63,7 +63,7 @@ pub(crate) fn reachable(
             if function.prelude
                 && let Some((owner, _)) = function.key.rsplit_once('.')
                 && !seen_types.contains(owner)
-                && !matches!(owner, "str" | "list")
+                && !matches!(owner, "str" | "list" | "dict" | "set")
             {
                 continue;
             }

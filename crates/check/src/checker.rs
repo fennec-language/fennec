@@ -73,6 +73,7 @@ impl Checker {
             program.add(prelude, true);
         }
         program.prelude_imports = std::mem::take(&mut program.imports);
+        program.prelude_modules = std::mem::take(&mut program.modules);
         program.std_functions.clear();
         program.add(module, false);
         let mut diagnostics = std::mem::take(&mut program.problems);

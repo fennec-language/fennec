@@ -162,17 +162,13 @@ impl fmt::Display for InstKind {
             InstKind::GetSome { dest, value } => write!(f, "{dest} = {value} as some"),
             InstKind::MakeOk { dest, value: Some(value) } => write!(f, "{dest} = ok {value}"),
             InstKind::MakeOk { dest, value: None } => write!(f, "{dest} = ok"),
+            InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
+            InstKind::AsError { dest, value } => write!(f, "{dest} = {value} as error"),
             InstKind::MakeClosure { .. } | InstKind::CallClosure { .. } => closure(self, f),
             InstKind::MakeErr { .. }
             | InstKind::IsErr { .. }
             | InstKind::GetOk { .. }
             | InstKind::GetErr { .. } => result(self, f),
-            InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
-            InstKind::AsError { dest, value } => write!(f, "{dest} = {value} as error"),
-            InstKind::MakeGenerator { .. }
-            | InstKind::GetSlot { .. }
-            | InstKind::SetSlot { .. }
-            | InstKind::Resume { .. } => generator(self, f),
             InstKind::Constant { dest, name } => write!(f, "{dest} = constant {name}"),
             InstKind::Call { dest, function, args } => {
                 let args: Vec<String> = args.iter().map(ToString::to_string).collect();
@@ -181,6 +177,7 @@ impl fmt::Display for InstKind {
                 }
                 write!(f, "call {function}({})", args.join(", "))
             }
+            other => generator(other, f),
         }
     }
 }

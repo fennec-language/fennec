@@ -212,6 +212,10 @@ mod tests {
         let (pattern, whole) = (string("é(b)|(c)"), string("aéb c"));
         assert_eq!(regex::is_valid(pattern), 1);
         assert_eq!(regex::is_valid(string("(")), 0);
+        assert_eq!(
+            (regex::groups(pattern), regex::groups(string("b")), regex::groups(string("("))),
+            (2, 0, -1)
+        );
         let places = regex::find_all(pattern, whole, 0, 0, 0);
         let minus = u64::from_ne_bytes((-1_i64).to_ne_bytes());
         let read = |at: i32| word(places, LIST_ITEMS + at * 8).unwrap();

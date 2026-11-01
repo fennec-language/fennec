@@ -594,7 +594,7 @@ A big program that wants walls between its own parts splits into local kits in o
 
 ## Files and kits
 
-**A kit is a folder with a `kit.toml` and its code under `src`.** `src/main.fen` holds `main`, and the module `enemies.ai` is the file `src/enemies/ai.fen`. `kit.toml` has `name`, `version` and `fennec`, the toolchain the kit is built with (see Toolchain). Until the launcher exists, a kit asking for a newer Fennec than the one running is an error. Its `[dependencies]` table is reserved for kits from the Den. `fennec run` and `fennec test` with no file run the kit around the current folder; `fennec test` runs the tests in every file under `src`.
+**A kit is a folder with a `kit.toml` and its code under `src`.** `src/main.fen` holds `main`, and the module `enemies.ai` is the file `src/enemies/ai.fen`. `kit.toml` has `name`, `version` and `fennec`, the toolchain the kit is built with (see Toolchain). Until the launcher exists, a kit asking for a newer Fennec than the one running is an error. Its `[dependencies]` table names kits from the Den, or from git or a path (see Supply chain). `fennec run` and `fennec test` with no file run the kit around the current folder; `fennec test` runs the tests in every file under `src`.
 *Why:* One layout means no configuration, and finding a module's file needs no search.
 
 **A file uses another file's names only after importing them.** `from enemies import spawn` brings in names, and `import physics` brings in the module, used as `physics.step`. For a module in a folder, `import world.physics` is used as `world.physics.step`, and `from world import physics` as `physics.step`. A file's own names need no import.
@@ -941,12 +941,15 @@ These are default lints, and the Den requires them.
 
 **Installing a kit never runs anything.** There are no install or build scripts.
 
+**Updates are always explicit.** `kit.lock` pins every dependency by hash, and nothing changes without `fennec update`. It shows each update's semantic diff and any capability it newly asks for, and a new capability needs your approval. No version range ever resolves silently.
+*Why:* What builds today builds the same tomorrow, and every change to a dependency is one you saw.
+
 **An update that asks for more capabilities stops until you approve it.** `kit.lock` records the capabilities each dependency receives. A logging kit that starts asking for `Net` doesn't install until you say so. The same goes for an update that adds `unsafe` code.
 *Why:* A trusted package turning malicious in an update is the attack that hit event-stream and ua-parser-js.
 
 **Capabilities can be narrowed:** `fs.only("saves/")`, `net.only("api.example.com")`. A kit gets only the part it needs.
 
-**Every kit has an owner's namespace,** `owner/kit`. The Den rejects names a small edit away from popular ones. There's one public registry, and private kits live in their own namespace.
+**Every kit has an owner's namespace,** `owner/kit`. The Den rejects names a small edit away from popular ones. There's one public registry, and private code comes from git or a path rather than a private registry (below).
 *Why:* That stops typosquatting and dependency confusion.
 
 **Den accounts sign in with passkeys only.** There are no passwords and no recovery by email.
@@ -961,6 +964,18 @@ These are default lints, and the Den requires them.
 **`fennec audit` is built in.** It checks every dependency against the advisory database, and CI fails on a known vulnerability.
 
 **New versions wait a week** before `fennec update` picks them up (already decided), and versions are chosen by minimal version selection.
+
+**Private kits and work in progress come from git or a path, fenced off from the Den.** `kit.toml` can name a git URL pinned to an exact commit hash, never a branch or tag, or a local path. No private registry is needed.
+```toml
+[dependencies]
+physics = { git = "https://git.example.com/studio/physics", commit = "3f9c2a1e7b4d" }
+tools = { path = "../tools" }
+```
+- Code from a git or path dependency can't contain `extern`.
+- A kit with git or path dependencies can't be published to the Den, so they never spread into other people's trees.
+- Capabilities are enforced as for any other code.
+
+*Why:* Go's convenience for private code, while public code stays on the checked Den. Capabilities mean even unreviewed code can't touch files or the network unless it's handed `Fs` or `Net`.
 
 ## Engines
 

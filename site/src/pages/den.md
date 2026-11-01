@@ -26,6 +26,10 @@ The audit scales with what a kit can touch:
 
 Accounts use passkeys only, with no passwords and no recovery by email.
 
+## Updates and private code
+
+Nothing about a dependency changes without `fennec update`, which shows what changed and asks you before a dependency gets a new capability. Private kits come from git, pinned to an exact commit, or from a local path. They can't use C, and a kit that depends on them can't be published to the Den.
+
 ## Known gap
 
 Until a public transparency log exists, a hacked Den could swap an author's key undetected. The log should be built before the Den gets popular.

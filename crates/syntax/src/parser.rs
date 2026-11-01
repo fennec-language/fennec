@@ -495,9 +495,23 @@ impl Parser {
                 span: start.to(self.prev_span()),
             });
         }
+        // `limit=8` takes its type from the literal.
+        if self.eat_p(Punct::Assign) {
+            let default = Some(self.param_default(&name, is_mut)?);
+            return Ok(Param {
+                name,
+                ty: None,
+                is_mut,
+                is_self: false,
+                default,
+                span: start.to(self.prev_span()),
+            });
+        }
         if !self.eat_p(Punct::Colon) {
             return Err(Diagnostic::new(format!("parameter `{name}` needs a type"), self.prev_span())
-                .with_help(format!("write it with its type, like `{name}: int`")));
+                .with_help(format!(
+                    "write it with its type, like `{name}: int`, or give it a default, like `{name}=8`"
+                )));
         }
         let ty = self.type_expr()?;
         let default = if self.eat_p(Punct::Assign) { Some(self.param_default(&name, is_mut)?) } else { None };

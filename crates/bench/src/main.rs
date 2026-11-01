@@ -297,6 +297,12 @@ fn lock_problems(kernels: &[Kernel], targets: &Targets) -> std::result::Result<V
     Ok(problems)
 }
 
+/// Whether the previous `fennec` compiles a kernel as much as this one, by how many places each
+/// leaves to the interpreter.
+fn as_native(previous: Option<usize>, ours: Option<usize>) -> bool {
+    previous.unwrap_or(0) <= ours.unwrap_or(0)
+}
+
 /// Times and counts one kernel, against the previous `fennec` if there's one that can still
 /// run it. A slowdown is confirmed by counting the previous run's instructions, or, with
 /// nothing to count them, by measuring again for three times as long.
@@ -309,8 +315,10 @@ fn run_kernel(
 ) -> std::result::Result<Result, String> {
     let mut programs = vec![kernel.run(&options.fennec), kernel.startup(&options.fennec)];
     let previous = options.previous.as_deref().filter(|previous| {
-        // A previous `fennec` that can't run a new kernel just isn't compared on it.
-        time_together(&[kernel.run(previous)], 1).is_ok()
+        // A previous `fennec` that can't run a new kernel, or would interpret more of it, just
+        // isn't compared on it: counting instructions through the interpreter takes hours.
+        as_native(kernel.not_native(previous), kernel.not_native(&options.fennec))
+            && time_together(&[kernel.run(previous)], 1).is_ok()
     });
     programs.extend(previous.map(|previous| kernel.run(previous)));
     let timings = time_together(&programs, runs)?;
@@ -350,4 +358,17 @@ fn run_kernel(
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::as_native;
+
+    #[test]
+    fn a_previous_build_that_interprets_more_of_a_kernel_isnt_compared() {
+        assert!(as_native(Some(0), Some(0)));
+        assert!(as_native(Some(1), Some(1)));
+        assert!(as_native(Some(0), Some(1)));
+        assert!(!as_native(Some(1), Some(0)));
+    }
 }

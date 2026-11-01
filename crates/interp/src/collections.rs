@@ -5,6 +5,7 @@ use std::rc::Rc;
 use fennec_syntax::{Diagnostic, Span};
 
 use crate::call::CallArg;
+use crate::fakes::TestWorld;
 use crate::format;
 use crate::interp::Interp;
 use crate::methods::no_method;
@@ -131,12 +132,19 @@ impl Interp<'_> {
     }
 
     fn stdout_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
-        let ending = match method {
-            "print" => "\n",
-            "write" => "",
+        let ending = match (method, &self.world) {
+            ("print", _) => "\n",
+            ("write", _) => "",
+            ("captured", Some(world)) => return Ok(Value::str(world.printed())),
             _ => return Err(no_method(&Value::Capability(Capability::Stdout), method, span)),
         };
         let text = args.iter().map(format::display).collect::<Vec<_>>().join(" ");
+        if let Some(world) = &mut self.world {
+            world.print(&text, ending);
+            if !world.real() {
+                return Ok(Value::Unit);
+            }
+        }
         write!(self.out, "{text}{ending}")
             .map_err(|err| Diagnostic::new(format!("couldn't write output: {err}"), span))?;
         Ok(Value::Unit)
@@ -156,9 +164,11 @@ impl Interp<'_> {
 
     /// `clock.now()` reads the monotonic clock; `clock.sleep(duration)` waits.
     fn clock_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+        let fixed = self.world.as_ref().filter(|world| !world.real()).map(TestWorld::now);
         match (method, args) {
             ("now", []) => {
-                let nanos = i64::try_from(clock_start().elapsed().as_nanos()).unwrap_or(i64::MAX);
+                let nanos = fixed
+                    .unwrap_or_else(|| i64::try_from(clock_start().elapsed().as_nanos()).unwrap_or(i64::MAX));
                 self.make_value("Instant", vec![("nanos", Value::Int(nanos))], span)
             }
             ("sleep", [Value::Instance(duration)]) if duration.type_name.as_ref() == "Duration" => {
@@ -166,7 +176,10 @@ impl Interp<'_> {
                     Some(Value::Int(nanos)) => u64::try_from(*nanos).unwrap_or(0),
                     _ => 0,
                 };
-                std::thread::sleep(std::time::Duration::from_nanos(nanos));
+                match &mut self.world {
+                    Some(world) if !world.real() => world.sleep(nanos),
+                    _ => std::thread::sleep(std::time::Duration::from_nanos(nanos)),
+                }
                 Ok(Value::Unit)
             }
             ("now" | "sleep", _) => Err(wrong_args(method, span)),

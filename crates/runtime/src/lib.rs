@@ -12,6 +12,56 @@
 
 use fennec_interp::embed::{aot, checks, dicts, eval, heap, io, lists, names, objects, strings, temps};
 
+/// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
+/// address of, which stays the same for the whole run. Generated code has to check it after
+/// calling one of these, and needn't after any other.
+///
+/// Nothing exported unwinds: a panic crossing `extern "C"` aborts the program.
+pub const CAN_FAIL: &[&str] = &[
+    "fennec_binary",
+    "fennec_box_from_value",
+    "fennec_case_of",
+    "fennec_dict_missing",
+    "fennec_entries",
+    "fennec_err",
+    "fennec_expr",
+    "fennec_field",
+    "fennec_float_spec_text",
+    "fennec_index",
+    "fennec_int_power",
+    "fennec_int_spec_text",
+    "fennec_items",
+    "fennec_list_from_value",
+    "fennec_list_insert",
+    "fennec_list_remove",
+    "fennec_main_result",
+    "fennec_make_instance",
+    "fennec_make_variant",
+    "fennec_matches",
+    "fennec_next",
+    "fennec_no_match",
+    "fennec_out_of_range",
+    "fennec_path_get",
+    "fennec_pop_empty",
+    "fennec_print_spec",
+    "fennec_print_value",
+    "fennec_put",
+    "fennec_put_item",
+    "fennec_set_remove",
+    "fennec_spec_text",
+    "fennec_stmt",
+    "fennec_str_code",
+    "fennec_str_from_value",
+    "fennec_str_index",
+    "fennec_str_print",
+    "fennec_str_slice",
+    "fennec_to_bool",
+    "fennec_to_float",
+    "fennec_to_int",
+    "fennec_unary",
+    "fennec_unpack",
+];
+
 /// Exports each function under a symbol: `symbol(params) -> result => function(args);`.
 macro_rules! export {
     ($($symbol:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? => $module:ident::$function:ident($($pass:ident),*);)*) => {
@@ -111,6 +161,9 @@ export! {
     fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);
     fennec_spec_text(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::spec_text(a0, a1, a2, a3);
     fennec_str_code(a0: i64, a1: i64, a2: i64) -> i64 => strings::code(a0, a1, a2);
+    fennec_list_with_room(a0: i64, a1: i64) -> i64 => lists::with_room(a0, a1);
+    fennec_float_spec_text(a0: f64, a1: i64, a2: i64, a3: i64) -> i64 => strings::float_spec_text(a0, a1, a2, a3);
+    fennec_int_spec_text(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::int_spec_text(a0, a1, a2, a3);
     fennec_str_strip(a0: i64, a1: i64) -> i64 => strings::strip(a0, a1);
     fennec_str_join(a0: i64, a1: i64) -> i64 => strings::join(a0, a1);
     fennec_list_slice(a0: i64, a1: i64, a2: i64) -> i64 => lists::slice(a0, a1, a2);

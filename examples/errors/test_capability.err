@@ -1,0 +1,7 @@
+error: a test can't receive `count` this way
+ --> examples/errors/test_capability.fen:1:34
+  |
+1 | test "a test takes capabilities"(count: int):
+  |                                  ^^^^^^^^^^
+  |
+  = help: a test can receive `stdout: Stdout`, `fs: Fs` and `clock: Clock`

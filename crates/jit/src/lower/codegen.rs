@@ -141,14 +141,14 @@ mod tests {
     /// handles, and a match: everything the program numbers as a whole, or this run does.
     const TARGET: &str = "def target(name: str) -> int:\n    counts = {name: 1, \"fox\": 2}\n    \
         if name == \"fennec\": return counts[name]\n    match name.len():\n        case 3:\n            7\n        \
-        case _:\n            counts.get(\"fox\", 0)\n";
+        case _:\n            counts.get(\"fox\") else 0\n";
 
     #[test]
     fn a_function_compiles_the_same_in_every_run_and_program() {
         let one = format!("{TARGET}\ndef main(stdout: Stdout):\n    stdout.print(target(\"kit\"))\n");
         let other = format!(
             "def first(text: str) -> int:\n    seen = {{\"zebra\": 3, text: 4}}\n    \
-            if text == \"vixen\": return 1\n    seen.get(\"zebra\", 9)\n\n{TARGET}\n\
+            if text == \"vixen\": return 1\n    seen.get(\"zebra\") else 9\n\n{TARGET}\n\
             def main(stdout: Stdout):\n    stdout.print(first(\"x\"), target(\"kit\"), \"another literal\")\n"
         );
         let lowered_once = lowered(&one);

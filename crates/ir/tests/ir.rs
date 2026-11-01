@@ -1361,51 +1361,27 @@ def h(data: bytes, at: int) -> int:
 }
 
 #[test]
-fn a_generator_fills_a_list_as_it_runs() {
-    let source = "def countdown(n: int) -> Iterator[int]:
-    mut at = n
-    while at > 0:
-        yield at
-        if at == 5:
+fn a_loop_over_a_generator_with_a_cleanup_or_match_still_lowers() {
+    let source = "struct Door:
+    open: bool
+
+    def del(self):
+        pass
+
+def held() -> Iterator[int]:
+    with Door(open=True) as door:
+        yield 1
+    match 2:
+        case 2:
+            yield 2
+        case _:
             return
-        at -= 1
 
 def f() -> int:
-    mut total = 0
-    for at in countdown(3):
-        total += at
-    total
+    sum(n for n in held())
 ";
-    assert_eq!(
-        printed(source, "countdown").unwrap(),
-        "fn countdown(_0) -> list[int]
-  local _0 n: int
-  local _1: list[int]
-  local _2 at: int
-  local _3: bool
-  local _4: bool
-  bb0:
-    _1 = []
-    _2 = _0
-    jump bb1
-  bb1:
-    _3 = _2 > 0
-    branch _3 bb2 bb3
-  bb2:
-    builtin list.append(mut _1, _2)
-    _4 = _2 == 5
-    branch _4 bb5 bb6
-  bb3:
-    return _1
-  bb4:
-    _2 = _2 - 1
-    jump bb1
-  bb5:
-    return _1
-  bb6:
-    jump bb4
-"
-    );
+    assert!(printed(source, "held.resume").is_ok());
+    assert!(!printed(source, "f").unwrap().contains("list.append"));
 }
 
 #[test]
@@ -2271,4 +2247,30 @@ def all_small(xs: list[int]) -> bool:
         assert!(!text.contains("list.append"), "{text}");
         assert!(!text.contains("[]"), "{text}");
     }
+}
+
+#[test]
+fn a_generator_passed_around_is_a_state_machine() {
+    let source = "def upto(limit: int) -> Iterator[int]:
+    mut n = 0
+    while n < limit:
+        yield n
+        n += 1
+
+def total(numbers: Iterator[int]) -> int:
+    mut so_far = 0
+    for n in numbers:
+        so_far += n
+    so_far
+
+def main_total() -> int:
+    total(upto(3))
+";
+    let made = printed(source, "upto").unwrap();
+    assert!(made.contains("= generator upto"), "{made}");
+    let resumed = printed(source, "upto.resume").unwrap();
+    assert!(resumed.contains("[slot 0] = 1"), "{resumed}");
+    let used = printed(source, "total").unwrap();
+    assert!(used.contains("= resume"), "{used}");
+    assert!(used.contains("this generator has already been used"), "{used}");
 }

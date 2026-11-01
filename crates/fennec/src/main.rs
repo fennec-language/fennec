@@ -10,6 +10,7 @@ mod daemon;
 mod fallbacks;
 mod fix;
 mod fmt;
+mod image;
 mod lint;
 mod lsp;
 mod repl;

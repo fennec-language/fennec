@@ -25,6 +25,66 @@ fn unreachable(stmts: &[Stmt], found: &mut Vec<Lint>) {
     }
 }
 
+/// Whether a block always leaves: it ends in `return`, `fail`, `break` or `continue`, or in an
+/// `if` with an `else` whose every branch does.
+fn always_leaves(stmts: &[Stmt]) -> bool {
+    match stmts.last() {
+        Some(Stmt { kind: StmtKind::If { branches, otherwise: Some(otherwise) }, .. }) => {
+            branches.iter().all(|(_, body)| always_leaves(body)) && always_leaves(otherwise)
+        }
+        Some(last) => leaves(last),
+        None => false,
+    }
+}
+
+/// How far into its line an offset in `text` is.
+fn column(text: &str, at: usize) -> Option<usize> {
+    Some(at - text.get(..at)?.rfind('\n').map_or(0, |newline| newline + 1))
+}
+
+/// An `else` after branches that all leave, whose body can follow the `if` a level out. It's
+/// left alone when moving the body could change it: a comment beside `else:`, or a line in the
+/// body less indented than the body.
+fn needless_else(stmt: &Stmt, sources: &Sources) -> Option<Lint> {
+    let StmtKind::If { branches, otherwise: Some(otherwise) } = &stmt.kind else { return None };
+    if !branches.iter().all(|(_, body)| always_leaves(body)) {
+        return None;
+    }
+    let (_, text, base) = sources.file_at(stmt.span)?;
+    let offset = |at: u32| usize::try_from(at.checked_sub(base)?).ok();
+    let (start, body_start) = (offset(stmt.span.start)?, offset(otherwise.first()?.span.start)?);
+    let else_at = text.get(..body_start)?.rfind("else")?;
+    let indent = column(text, start)?;
+    let alone = text.get(else_at - column(text, else_at)?..else_at)?.trim().is_empty();
+    if text.get(else_at + 4..body_start)?.trim() != ":" || column(text, else_at)? != indent || !alone {
+        return None;
+    }
+    let body = text.get(body_start..offset(end_of(otherwise))?)?.trim_end();
+    let deeper = column(text, body_start)? - indent;
+    let mut lines = body.split('\n');
+    let mut moved = vec![lines.next()?.to_owned()];
+    for line in lines {
+        let out = line.strip_prefix(&" ".repeat(deeper)).or_else(|| line.trim().is_empty().then_some(""))?;
+        moved.push(out.to_owned());
+    }
+    let at = |offset: usize| u32::try_from(offset).ok().map(|offset| offset + base);
+    let span = Span { start: at(else_at)?, end: at(body_start + body.len())? };
+    let diagnostic = Diagnostic::new("every branch above leaves, so this needs no `else`", span)
+        .with_help("its body can follow the `if`, a level out")
+        .with_fix(span, moved.join("\n"));
+    Some(Lint::new("needless-else", diagnostic))
+}
+
+/// Every `else` in these statements that needn't be there.
+fn needless_elses(stmts: &[Stmt], sources: &Sources, found: &mut Vec<Lint>) {
+    for stmt in stmts {
+        found.extend(needless_else(stmt, sources));
+        for block in blocks(stmt) {
+            needless_elses(block, sources, found);
+        }
+    }
+}
+
 /// What a line gives back, if it's only a bool.
 fn gives_bool(stmt: &Stmt) -> Option<bool> {
     let (StmtKind::Expr(value) | StmtKind::Return(Some(value))) = &stmt.kind else { return None };
@@ -179,6 +239,7 @@ pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     for def in functions(module) {
         unreachable(&def.body, &mut found);
         same_branches(&def.body, sources, &mut found);
+        needless_elses(&def.body, sources, &mut found);
         found.extend(return_bool(&def.body, sources));
     }
     let mut walked = module.clone();

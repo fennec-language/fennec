@@ -19,6 +19,20 @@ pub fn exprs_mut(module: &mut Module, change: &mut dyn FnMut(&mut Expr)) {
     }
 }
 
+/// Calls `edit` on every function and method in a module.
+pub fn functions_mut(module: &mut Module, edit: &mut dyn FnMut(&mut FnDef)) {
+    for item in &mut module.items {
+        match item {
+            Item::Function(def) => edit(def),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                def.methods.iter_mut().for_each(&mut *edit)
+            }
+            Item::Extend(extension) => extension.methods.iter_mut().for_each(&mut *edit),
+            _ => {}
+        }
+    }
+}
+
 /// Calls `change` on an expression and every expression inside it.
 pub fn in_expr(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
     expr(value, change);

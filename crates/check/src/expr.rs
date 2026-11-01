@@ -182,6 +182,9 @@ impl FnCx<'_> {
         if self.checker.program.functions.contains_key(name) {
             return Type::Function(name.to_owned());
         }
+        if let Some(function) = self.std_function(name, span) {
+            return Type::Function(function);
+        }
         if let Some(ty) = self.checker.constant_type(name) {
             return ty;
         }
@@ -235,7 +238,18 @@ impl FnCx<'_> {
             return Some(Member::Missing);
         }
         let qualified = format!("{module}.{name}");
+        if self.checker.program.functions.contains_key(&qualified) {
+            self.checker.std_names.insert((span.start, span.end), qualified.clone());
+            return Some(Member::Name(qualified));
+        }
         Some(Member::Name(if builtins::is_builtin(&qualified) { qualified } else { name.to_owned() }))
+    }
+
+    /// The standard library function written in Fennec that a name was imported as.
+    pub(crate) fn std_function(&mut self, name: &str, span: Span) -> Option<String> {
+        let function = self.checker.program.std_functions.get(name)?.clone();
+        self.checker.std_names.insert((span.start, span.end), function.clone());
+        Some(function)
     }
 
     /// A name used as a type, like `Enemy` in `Enemy.at(...)` or `game.IdMap` in

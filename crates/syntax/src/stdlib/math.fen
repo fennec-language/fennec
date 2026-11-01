@@ -25,3 +25,7 @@ struct Vec3:
 
     def distance_to(self, other: Vec3) -> float:
         (self - other).length()
+
+## The value `amount` of the way from `start` to `end`: `lerp(0.0, 10.0, 0.5)` is `5.0`.
+def lerp(start: float, end: float, amount: float) -> float:
+    start + (end - start) * amount

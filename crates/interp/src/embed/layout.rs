@@ -309,4 +309,17 @@ mod tests {
         let (_, failure, _) = finish();
         assert!(failure.unwrap().message.contains("out of range"));
     }
+
+    #[test]
+    fn stripping_takes_off_what_str_trim_does() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        for text in ["  a b  ", "\t\n\x0b\x0cx\r ", "   ", "", "ok", " é ", "\x1fy\x1f", "a\u{a0}"] {
+            for (which, expected) in [(0, text.trim()), (1, text.trim_start()), (2, text.trim_end())] {
+                assert_eq!(text_of(strings::strip(string(text), which)), expected, "{text:?} {which}");
+            }
+        }
+        finish();
+    }
 }

@@ -70,8 +70,15 @@ pub struct Shared {
 /// The layouts of everything a program defines, generic types' copies included, and of the
 /// tuples, optionals and results it uses.
 pub fn layouts_of(program: &Program) -> Layouts {
+    // Which named types are blocks doesn't depend on how optionals are held, so a first layout
+    // with every optional as an enum says which optionals can be one word.
+    let first = laid_out(program, None);
+    laid_out(program, Some(&first))
+}
+
+fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
     let fields = |fields: &[(String, fennec_check::Type)]| {
-        fields.iter().map(|(name, ty)| (name.clone(), kinds::canon(ty), None)).collect::<Vec<_>>()
+        fields.iter().map(|(name, ty)| (name.clone(), kinds::canon_in(blocks, ty), None)).collect::<Vec<_>>()
     };
     let enums = |def: &EnumDef| {
         let cases = def.cases.iter().map(|case| (case.name.clone(), fields(&case.fields))).collect();
@@ -80,23 +87,23 @@ pub fn layouts_of(program: &Program) -> Layouts {
     let mut named = BTreeMap::new();
     let structs = program.structs.iter().chain(&program.errors);
     for (_, ty) in structs.clone().flat_map(|def| &def.fields) {
-        kinds::define_named(ty, &mut named);
+        kinds::define_named(ty, blocks, &mut named);
     }
     for (_, ty) in program.enums.iter().flat_map(|def| &def.cases).flat_map(|case| &case.fields) {
-        kinds::define_named(ty, &mut named);
+        kinds::define_named(ty, blocks, &mut named);
     }
     for function in program.functions.iter().chain(&program.constants) {
-        kinds::define_named(&function.returns, &mut named);
-        function.locals.iter().for_each(|local| kinds::define_named(&local.ty, &mut named));
+        kinds::define_named(&function.returns, blocks, &mut named);
+        function.locals.iter().for_each(|local| kinds::define_named(&local.ty, blocks, &mut named));
     }
     for def in &program.generators {
-        kinds::define_named(&def.item, &mut named);
-        def.slots.iter().for_each(|slot| kinds::define_named(slot, &mut named));
+        kinds::define_named(&def.item, blocks, &mut named);
+        def.slots.iter().for_each(|slot| kinds::define_named(slot, blocks, &mut named));
     }
     // A generator's block is laid out like a boxed struct's, its header first.
     let generators = program.generators.iter().map(|def| {
-        let slots: Vec<_> = def.slots.iter().map(kinds::canon).collect();
-        (def.name.clone(), generator_definition(&kinds::canon(&def.item), None, &slots))
+        let slots: Vec<_> = def.slots.iter().map(|slot| kinds::canon_in(blocks, slot)).collect();
+        (def.name.clone(), generator_definition(&kinds::canon_in(blocks, &def.item), None, &slots))
     });
     let definitions: Vec<(String, Written)> = structs
         .map(|def| (def.name.clone(), Written::Struct(fields(&def.fields))))

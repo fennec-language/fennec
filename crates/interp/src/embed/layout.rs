@@ -294,6 +294,45 @@ mod tests {
     }
 
     #[test]
+    fn a_dict_is_read_and_changed_by_a_slice_of_text_without_making_its_key() {
+        let shapes = vec![Rc::new(Element::Str)];
+        let tables = Tables { shapes, str_shape: 0, ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let shape =
+            super::super::dicts::shape(0, super::super::dicts::Word::Str, super::super::dicts::Word::Int)
+                .unwrap();
+        let mut dict = super::super::dicts::new(i64::try_from(shape).unwrap(), 4);
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let (dna, accented) = (string("ggtacgt"), string("éaéb"));
+        // A key added the usual way is found by a slice, so both hash it the same.
+        dict = super::super::dicts::set(dict, string("ta"), 7);
+        let found = super::super::dicts::find_slice(dict, dna, 2, 4);
+        assert_ne!(found, 0);
+        let before = with(|state| state.heap.counts.allocations);
+        dict = super::super::dicts::add_slice(dict, dna, 2, 4, 8);
+        assert_eq!(with(|state| state.heap.counts.allocations), before);
+        dict = super::super::dicts::add_slice(dict, dna, -3, i64::MIN, 1);
+        dict = super::super::dicts::add_slice(dict, accented, 2, 4, 2);
+        let read = |dict: i64, text: i64, from: i64, to: i64| {
+            let found = super::super::dicts::find_slice(dict, text, from, to);
+            (found != 0).then(|| {
+                with(|state| {
+                    let base = state.heap.block(u64::try_from(dict).unwrap()).unwrap().as_ptr().addr();
+                    let at = (usize::try_from(found).unwrap() - base) / 8;
+                    state.heap.block(u64::try_from(dict).unwrap()).unwrap()[at]
+                })
+            })
+        };
+        assert_eq!(read(dict, dna, 2, 4), Some(8));
+        assert_eq!(read(dict, dna, 4, 7), Some(1));
+        assert_eq!(read(dict, accented, 2, 4), Some(2));
+        assert_eq!(read(dict, string("éb"), 0, 2), Some(2));
+        assert_eq!(read(dict, dna, 0, 2), None);
+        assert_eq!(word(dict, 16), Some(3));
+        finish();
+    }
+
+    #[test]
     fn indexing_text_reads_only_what_it_needs() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
         start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();

@@ -767,19 +767,19 @@ fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     let dir = scratch("lint").unwrap();
     let program = dir.join("game.fen");
     let path = program.to_string_lossy().into_owned();
-    let hinted = "def main(stdout: Stdout):\n    mut xs = [1]\n    held = xs\n    xs.append(2)\n    \
+    let hinted = "def main(stdout: Stdout):\n    mut items = [1]\n    held = items\n    items.append(2)\n    \
                   stdout.print(held.len())\n";
     std::fs::write(&program, hinted).unwrap();
     let clean = fennec(&["lint", &path], "").unwrap();
     assert!(clean.status.success(), "{}", text(&clean.stderr));
     assert!(text(&clean.stdout).contains("hint: "), "{}", text(&clean.stdout));
     assert!(
-        text(&clean.stdout).contains("may copy `xs`: held still refers to it"),
+        text(&clean.stdout).contains("may copy `items`: held still refers to it"),
         "{}",
         text(&clean.stdout)
     );
 
-    let lints = "def f() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
+    let lints = "def one() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    stdout.print(one())\n";
     std::fs::write(&program, lints).unwrap();
     let flagged = fennec(&["lint", &path], "").unwrap();
     assert_eq!(flagged.status.code(), Some(1));

@@ -321,6 +321,24 @@ impl Emit<'_, '_, '_> {
         };
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let optional = self.kind_of(dest)?.clone();
+        if matches!(optional, Kind::Maybe(_)) {
+            let key = self.key_value(key, key_word)?;
+            let entry = self.find(&dict, key_word, &key);
+            let missing = self.temp();
+            let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
+            self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
+            self.line(&format!("br i1 {missing}, label %{absent}, label %{found}"));
+            self.start_block(&absent);
+            self.copy(dest, &Operand::None)?;
+            self.line(&format!("br label %{done}"));
+            self.start_block(&found);
+            let value_at = self.temp();
+            self.line(&format!("{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {ENTRY_VALUE}"));
+            self.read_into(dest, &value_kind, &value_at, "")?;
+            self.line(&format!("br label %{done}"));
+            self.start_block(&done);
+            return Ok(());
+        }
         if !matches!(optional, Kind::Enum(_)) {
             return Err(format!("`dict.get` gives a {optional:?}, which this backend doesn't take yet"));
         }
@@ -343,7 +361,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {ENTRY_VALUE}"));
         let value = self.load_field(&value_kind, &value_at, "");
         if value_kind.counted() {
-            self.retain_value(&value);
+            self.retain_value(&value, &value_kind);
         }
         let at = self.offset(&slot, offset);
         self.store_field(&value_kind, &value, &at, "");

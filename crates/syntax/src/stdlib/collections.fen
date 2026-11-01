@@ -72,6 +72,12 @@ struct Deque[T]:
         self.slots = slots
         self.head = 0
 
+## Deques of items that can be compared are equal when they hold equal items in the same
+## order, whatever room each has spare.
+extend Deque[T: Eq]:
+    def ==(self, other: Deque[T]) -> bool:
+        self.items() == other.items()
+
 ## A binary min-heap: `pop` gives back the smallest item. Items are compared with `<`, so
 ## they can be numbers, strings, tuples, or structs with `def <`. For the largest first,
 ## push negated numbers, or use a `PriorityQueue` with negated priorities.
@@ -666,3 +672,105 @@ struct SortedMap[K: Ordered, V]:
             found.append((node.keys[i], node.values[i]))
         if not leaf:
             self._walk_between(node.children[-1], low, high, mut found)
+
+## Sorted maps of values that can be compared are equal when they hold equal keys with equal
+## values, however their trees are shaped.
+extend SortedMap[K: Ordered, V: Eq]:
+    def ==(self, other: SortedMap[K, V]) -> bool:
+        self.len() == other.len() and self.items() == other.items()
+
+## Items kept in order, each once: a `SortedMap` with no values, so finding, adding and
+## removing an item take time that grows with the log of the size. Items are compared with
+## `<`, and copying a set gives an independent set.
+struct SortedSet[T: Ordered]:
+    _items: SortedMap[T, bool] = SortedMap[T, bool]()
+
+    ## Equal when they hold the same items.
+    def ==(self, other: SortedSet[T]) -> bool:
+        self._items == other._items
+
+    ## A set of `items`.
+    def of(items: list[T]) -> SortedSet[T]:
+        mut found = SortedSet()
+        for item in items:
+            found.add(item)
+        found
+
+    def len(self) -> int:
+        self._items.len()
+
+    def add(mut self, item: T):
+        self._items[item] = True
+
+    ## Removes `item` if it's there.
+    def discard(mut self, item: T):
+        if self._items.has(item):
+            self._items.remove(item)
+
+    ## Removes `item`. One that isn't there stops the program, like a set.
+    def remove(mut self, item: T):
+        assert self._items.remove(item) is not None
+
+    def has(self, item: T) -> bool:
+        self._items.has(item)
+
+    ## The smallest item, or None when the set is empty.
+    def first(self) -> T?:
+        found = self._items.first()
+        if found is None: return None
+        item, _ = found
+        item
+
+    ## The largest item, or None when the set is empty.
+    def last(self) -> T?:
+        found = self._items.last()
+        if found is None: return None
+        item, _ = found
+        item
+
+    ## The largest item that's at most `item`, or None when there's none.
+    def floor(self, item: T) -> T?:
+        found = self._items.floor(item)
+        if found is None: return None
+        near, _ = found
+        near
+
+    ## The smallest item that's at least `item`, or None when there's none.
+    def ceiling(self, item: T) -> T?:
+        found = self._items.ceiling(item)
+        if found is None: return None
+        near, _ = found
+        near
+
+    ## The items from `low` up to, but not including, `high`, in order.
+    def between(self, low: T, high: T) -> list[T]:
+        [item for item, _ in self._items.between(low, high)]
+
+    ## The items, smallest first.
+    def items(self) -> list[T]:
+        self._items.keys()
+
+    def iter(self) -> list[T]:
+        self.items()
+
+    def clear(mut self):
+        self._items.clear()
+
+    ## The items in either set.
+    def union(self, other: SortedSet[T]) -> SortedSet[T]:
+        mut found = self
+        for item in other.items():
+            found.add(item)
+        found
+
+    ## The items in both sets.
+    def intersection(self, other: SortedSet[T]) -> SortedSet[T]:
+        SortedSet.of([item for item in self.items() if other.has(item)])
+
+    ## The items of this set that aren't in `other`.
+    def difference(self, other: SortedSet[T]) -> SortedSet[T]:
+        SortedSet.of([item for item in self.items() if not other.has(item)])
+
+    ## Whether every item is in `other`.
+    def is_subset(self, other: SortedSet[T]) -> bool:
+        all(other.has(item) for item in self.items())

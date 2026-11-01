@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use fennec_check::Type;
 use fennec_interp::embed::dicts::Word;
-use fennec_layout::{Layouts, ListItem, Ty, Written};
+use fennec_layout::{Block, Layouts, ListItem, Ty, Written};
 
 const WORD: u32 = 8;
 
@@ -23,35 +23,47 @@ pub(crate) fn canon(ty: &Type) -> Type {
     }
 }
 
+/// As [`canon`], but an optional of a block, outside a list or dict, stays an optional: one
+/// word, the block or null for `None`. `layouts` says which named types are blocks.
+pub(crate) fn canon_in(layouts: Option<&Layouts>, ty: &Type) -> Type {
+    if let (Type::Optional(inner), Some(layouts)) = (ty, layouts) {
+        let held = canon(inner);
+        if Block::of(layouts.ty(&held)).is_some() {
+            return Type::Optional(Box::new(held));
+        }
+    }
+    canon(ty)
+}
+
 /// The definitions of the tuples, optionals and results a type mentions.
-pub(crate) fn define_named(ty: &Type, out: &mut BTreeMap<String, Written>) {
-    let field = |name: &str, ty: &Type| (name.to_owned(), canon(ty), None);
+pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTreeMap<String, Written>) {
+    let field = |name: &str, ty: &Type| (name.to_owned(), canon_in(layouts, ty), None);
     match ty {
         Type::Tuple(items) => {
             for item in items {
-                define_named(item, out);
+                define_named(item, layouts, out);
             }
             let fields = items.iter().enumerate().map(|(at, item)| field(&format!("_{at}"), item)).collect();
             out.insert(ty.to_string(), Written::Struct(fields));
         }
         Type::Optional(inner) => {
-            define_named(inner, out);
+            define_named(inner, layouts, out);
             let cases =
                 vec![("None".to_owned(), Vec::new()), ("Some".to_owned(), vec![field("value", inner)])];
             out.insert(format!("Option[{inner}]"), Written::Enum(cases));
         }
         Type::Result(value, error) => {
-            define_named(value, out);
-            define_named(error, out);
+            define_named(value, layouts, out);
+            define_named(error, layouts, out);
             // A result of nothing holds nothing when it succeeds.
             let ok = if **value == Type::Unit { Vec::new() } else { vec![field("value", value)] };
             let cases = vec![("Ok".to_owned(), ok), ("Err".to_owned(), vec![field("error", error)])];
             out.insert(format!("Result[{value}, {error}]"), Written::Enum(cases));
         }
-        Type::List(item) | Type::Set(item) => define_named(item, out),
+        Type::List(item) | Type::Set(item) => define_named(item, layouts, out),
         Type::Dict(key, value) => {
-            define_named(key, out);
-            define_named(value, out);
+            define_named(key, layouts, out);
+            define_named(value, layouts, out);
         }
         _ => {}
     }
@@ -83,6 +95,8 @@ pub(crate) enum Kind {
     /// The address of a generator's block, which something owns. Every generator's block starts
     /// the same way, so this needn't say which.
     Gen,
+    /// An optional of a block: the block's address, or null for `None`.
+    Maybe(Box<Kind>),
 }
 
 impl Kind {
@@ -95,7 +109,7 @@ impl Kind {
         if let Type::Iterator(_) = ty {
             return Ok(Kind::Gen);
         }
-        let held = layouts.ty(&canon(ty));
+        let held = layouts.ty(&canon_in(Some(layouts), ty));
         Kind::from_ty(layouts, held)
             .ok_or_else(|| format!("it uses a {ty:?}, which this backend doesn't take yet"))
     }
@@ -115,6 +129,7 @@ impl Kind {
             Ty::List(item) => Kind::List(item),
             Ty::Str => Kind::Str,
             Ty::Dict(key, value) => Kind::Dict(key, value),
+            Ty::Maybe(block) => Kind::Maybe(Box::new(Kind::from_ty(layouts, block.ty())?)),
             _ => return None,
         })
     }
@@ -123,7 +138,13 @@ impl Kind {
     pub(crate) fn counted(&self) -> bool {
         matches!(
             self,
-            Kind::List(_) | Kind::Str | Kind::Boxed(_) | Kind::Dict(..) | Kind::Closure(..) | Kind::Gen
+            Kind::List(_)
+                | Kind::Str
+                | Kind::Boxed(_)
+                | Kind::Dict(..)
+                | Kind::Closure(..)
+                | Kind::Gen
+                | Kind::Maybe(_)
         )
     }
 
@@ -152,7 +173,8 @@ impl Kind {
             | Kind::Boxed(_)
             | Kind::Dict(..)
             | Kind::Closure(..)
-            | Kind::Gen => "ptr".to_owned(),
+            | Kind::Gen
+            | Kind::Maybe(_) => "ptr".to_owned(),
             Kind::Enum(id) => format!("[{} x i64]", layouts.get(*id).map_or(1, |layout| layout.size / WORD)),
             Kind::Struct(id) => {
                 format!("%\"s.{}\"", layouts.get(*id).map_or("?", |layout| layout.name.as_str()))

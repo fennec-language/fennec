@@ -178,7 +178,7 @@ impl<'m> Program<'m> {
             if !from_prelude && key == def.name && fennec_syntax::fuse::has_yield(&def.body) {
                 generators.insert(key.clone(), def.clone());
             }
-            excluded.push(key);
+            excluded.push((key, from_prelude));
         };
         for (item, from_prelude) in
             library().map(|item| (item, true)).chain(module.items.iter().map(|item| (item, false)))
@@ -219,7 +219,7 @@ impl<'m> Program<'m> {
         };
         let (reached, mentions) = crate::reach::reachable(&functions, &modules, &roots);
         functions.retain(|function| reached.contains(&function.key));
-        excluded.retain(|key| crate::reach::is_mentioned(key, &mentions));
+        let excluded = still_mentioned(excluded, &mentions);
         if tests.is_empty() && !functions.iter().any(|function| function.def.name == "main") {
             return Err(unsupported("this `main`", main_span));
         }
@@ -276,4 +276,20 @@ fn hides(declared: &HashSet<&str>, item: &Item) -> bool {
         Item::Extend(extension) => declared.contains(extension.name.as_str()),
         _ => false,
     }
+}
+
+/// The functions and methods left to the interpreter that could still be called. A library
+/// method needs its type used too, since `x[...]` mentions every type's `[]`.
+fn still_mentioned(excluded: Vec<(String, bool)>, mentions: &crate::reach::Mentions) -> Vec<String> {
+    excluded
+        .into_iter()
+        .filter(|(key, from_prelude)| {
+            if *from_prelude {
+                crate::reach::is_library_method_mentioned(key, mentions)
+            } else {
+                crate::reach::is_mentioned(key, mentions)
+            }
+        })
+        .map(|(key, _)| key)
+        .collect()
 }

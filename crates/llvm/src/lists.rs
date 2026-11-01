@@ -26,7 +26,7 @@ impl Emit<'_, '_, '_> {
         self.module.layouts.get(id).ok_or_else(|| "no such layout".to_owned())
     }
 
-    fn field(&self, kind: &Kind, name: &str) -> Result<(u32, Kind), String> {
+    pub(crate) fn field(&self, kind: &Kind, name: &str) -> Result<(u32, Kind), String> {
         let (Kind::Struct(id) | Kind::Boxed(id)) = kind else {
             return Err(format!("it reads a field of a {kind:?}, which this backend doesn't take yet"));
         };
@@ -278,7 +278,7 @@ impl Emit<'_, '_, '_> {
         same
     }
 
-    fn item_kind(&self, item: ListItem) -> Result<Kind, String> {
+    pub(crate) fn item_kind(&self, item: ListItem) -> Result<Kind, String> {
         Kind::from_ty(self.module.layouts, item.ty())
             .ok_or_else(|| "a list item this backend doesn't take yet".to_owned())
     }
@@ -593,7 +593,7 @@ impl Emit<'_, '_, '_> {
     }
 }
 
-fn list_item(list: &Kind) -> Result<ListItem, String> {
+pub(crate) fn list_item(list: &Kind) -> Result<ListItem, String> {
     match list {
         Kind::List(item) => Ok(*item),
         other => Err(format!("it indexes a {other:?}, which this backend doesn't take yet")),

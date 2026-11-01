@@ -152,6 +152,39 @@ mod tests {
         finish();
     }
 
+    /// For measuring: `FENNEC_LOOPS` allocations and frees of a small block.
+    #[test]
+    #[ignore = "a measurement"]
+    fn measure_alloc_and_free() {
+        let boxed = Element::Boxed(0);
+        let node = Element::Struct {
+            name: "Node".into(),
+            fields: vec![("l".into(), boxed.clone()), ("r".into(), boxed)],
+        };
+        let shapes = vec![Rc::new(node), Rc::new(Element::Str)];
+        let tables = Tables { shapes, str_shape: 1, ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let loops: u64 = std::env::var("FENNEC_LOOPS").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+        let names = ["", "spare", "pop", "nothing", "table", "with", "alloc", "allocdrop"];
+        let part =
+            std::env::var("FENNEC_PART").ok().and_then(|part| names.iter().position(|name| *name == part));
+        let part = u8::try_from(part.unwrap_or(0)).unwrap();
+        for _ in 0..loops {
+            match part {
+                5 => {
+                    std::hint::black_box(with(|state| state.heap.live()));
+                }
+                6 => {
+                    std::hint::black_box(heap::alloc(0));
+                }
+                1..=4 => heap::measure_part(part, 0),
+                7 => heap::measure_part(5, usize::try_from(heap::alloc(0)).unwrap()),
+                _ => heap::free(std::hint::black_box(heap::alloc(0))),
+            }
+        }
+        finish();
+    }
+
     #[test]
     fn numbers_format_without_a_temporary() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };

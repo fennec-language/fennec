@@ -113,6 +113,27 @@ const SPARE_BLOCKS: usize = 1 << 16;
 /// The biggest block, in words, kept for reuse.
 const SPARE_WORDS: usize = 256;
 
+/// Zeroes a block, with plain stores for the small blocks most are, which costs less than
+/// calling `memset`.
+fn zero(block: &mut [u64]) {
+    let zeroed = match block.len() {
+        2 => zero_words::<2>(block),
+        3 => zero_words::<3>(block),
+        4 => zero_words::<4>(block),
+        5 => zero_words::<5>(block),
+        6 => zero_words::<6>(block),
+        _ => false,
+    };
+    if !zeroed {
+        block.fill(0);
+    }
+}
+
+/// Zeroes a block of `N` words, if it is that long.
+fn zero_words<const N: usize>(block: &mut [u64]) -> bool {
+    <&mut [u64; N]>::try_from(block).map(|words| *words = [0; N]).is_ok()
+}
+
 impl Heap {
     /// A heap holding the blocks that live for the whole run.
     /// The heap, knowing where blocks of each shape hold addresses, for freeing them.
@@ -146,7 +167,7 @@ impl Heap {
     pub(super) fn fresh(&mut self, words: usize) -> Box<[u64]> {
         match self.spare.get_mut(words).and_then(Vec::pop) {
             Some(mut block) => {
-                block.fill(0);
+                zero(&mut block);
                 block
             }
             None => vec![0; words].into_boxed_slice(),
@@ -156,6 +177,17 @@ impl Heap {
     /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
     /// rare enough to give back.
     fn recycle(&mut self, block: Box<[u64]>) {
+        match self.spare.get_mut(block.len()) {
+            Some(spare) if spare.len() < SPARE_BLOCKS => spare.push(block),
+            Some(_) => {}
+            None => self.recycle_first(block),
+        }
+    }
+
+    /// `recycle`, for the first block of its size.
+    #[cold]
+    #[inline(never)]
+    fn recycle_first(&mut self, block: Box<[u64]>) {
         let words = block.len();
         if words > SPARE_WORDS {
             return;
@@ -163,7 +195,7 @@ impl Heap {
         if self.spare.len() <= words {
             self.spare.resize_with(words + 1, Vec::new);
         }
-        if let Some(spare) = self.spare.get_mut(words).filter(|spare| spare.len() < SPARE_BLOCKS) {
+        if let Some(spare) = self.spare.get_mut(words) {
             spare.push(block);
         }
     }
@@ -447,7 +479,8 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
 /// `del` runs no program code.
 pub extern "C" fn free(address: i64) {
     let abandoning = with(|state| {
-        free_block(state, u64::try_from(address).unwrap_or(0));
+        let address = u64::try_from(address).unwrap_or(0);
+        free_block(state, address);
         !state.heap.abandoning.is_empty()
     });
     if abandoning {
@@ -523,53 +556,147 @@ fn is_abandoned(state: &State, block: &[u64]) -> bool {
 /// way down.
 fn free_block(state: &mut State, address: u64) {
     let mut pending = std::mem::take(&mut state.heap.pending);
-    let mut found = std::mem::take(&mut state.heap.found);
     pending.push(address);
     while let Some(address) = pending.pop() {
         let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove(at)) else {
             continue;
         };
+        let shape = block.get(1).copied().unwrap_or(u64::MAX);
         if is_abandoned(state, &block) {
-            // It lives until what closes it has run, which holds it as its one owner.
-            let mut block = block;
-            if let Some(count) = block.first_mut() {
-                *count = 1;
-            }
-            state.heap.blocks.insert(block);
-            state.heap.abandoning.push(address);
+            keep_abandoned(state, address, block);
             continue;
         }
-        if is_text(state, &block) {
-            let texts = state.heap.texts.get_mut();
-            if !texts.is_empty()
-                && let Ok(at) = usize::try_from(address)
-            {
-                texts.remove(&at);
+        if shape == state.tables.str_shape {
+            if !state.heap.texts.get_mut().is_empty() {
+                forget_text(state, address);
             }
-        } else if block.get(1) == Some(&CELL_SHAPE) {
-            let number = block.get(2).and_then(|number| usize::try_from(*number).ok());
-            if let Some(number) = number {
-                // Whatever the value held is let go now, not when the number's used again.
-                if let Some(cell) = state.heap.cells.get_mut(number) {
-                    *cell = Value::Unit;
-                }
-                state.heap.spare_cells.push(number);
-            }
-        } else {
-            children_into(state, &block, &mut found);
-        }
-        for child in found.drain(..) {
-            if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    pending.push(child);
-                }
-            }
+        } else if shape >= state.tables.str_shape || !release_planned(&mut state.heap, &block, &mut pending) {
+            free_unplanned(state, &block, &mut pending);
         }
         state.heap.recycle(block);
     }
     state.heap.pending = pending;
+}
+
+/// Keeps a generator let go partway until what closes it has run, which holds it as its one
+/// owner.
+#[cold]
+#[inline(never)]
+fn keep_abandoned(state: &mut State, address: u64, mut block: Box<[u64]>) {
+    if let Some(count) = block.first_mut() {
+        *count = 1;
+    }
+    state.heap.blocks.insert(block);
+    state.heap.abandoning.push(address);
+}
+
+/// Drops the interpreter's copy of a freed string's text.
+#[inline(never)]
+fn forget_text(state: &mut State, address: u64) {
+    if let Ok(at) = usize::try_from(address) {
+        state.heap.texts.get_mut().remove(&at);
+    }
+}
+
+/// Frees what a block with no plan holds: a cell's value, or the blocks a list, dict or
+/// unplanned struct refers to.
+#[inline(never)]
+fn free_unplanned(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
+    if block.get(1) == Some(&CELL_SHAPE) {
+        let number = block.get(2).and_then(|number| usize::try_from(*number).ok());
+        if let Some(number) = number {
+            // Whatever the value held is let go now, not when the number's used again.
+            if let Some(cell) = state.heap.cells.get_mut(number) {
+                *cell = Value::Unit;
+            }
+            state.heap.spare_cells.push(number);
+        }
+    } else {
+        release_children(state, block, pending);
+    }
+}
+
+/// Gives up the owner a block holds of each block it refers to, adding those it was the last
+/// owner of to `pending`.
+fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
+    let mut found = std::mem::take(&mut state.heap.found);
+    children_into(state, block, &mut found);
+    for child in found.drain(..) {
+        if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                pending.push(child);
+            }
+        }
+    }
     state.heap.found = found;
+}
+
+/// Gives up the owner a struct's or enum's block holds of each block its plan says it refers
+/// to, adding those it was the last owner of to `pending`. False, having done nothing, when
+/// its shape's plan doesn't say.
+fn release_planned(heap: &mut Heap, block: &[u64], pending: &mut Vec<u64>) -> bool {
+    let Heap { plans, blocks, .. } = heap;
+    let shape = block.get(1).and_then(|shape| usize::try_from(*shape).ok());
+    let fields = block.get(HEADER_WORDS..).unwrap_or_default();
+    let words = match shape.and_then(|shape| plans.get(shape)) {
+        Some(super::plans::Plan::Fixed(words)) => words,
+        Some(super::plans::Plan::Cases(cases)) => {
+            let case = fields.first().and_then(|case| usize::try_from(*case).ok());
+            match case.and_then(|case| cases.get(case)) {
+                Some(words) => words,
+                None => return false,
+            }
+        }
+        _ => return false,
+    };
+    for child in words.iter().filter_map(|at| fields.get(*at)).filter(|child| **child != 0) {
+        let count =
+            usize::try_from(*child).ok().and_then(|at| blocks.get_mut(at)).and_then(<[u64]>::first_mut);
+        if let Some(count) = count {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                pending.push(*child);
+            }
+        }
+    }
+    true
+}
+
+/// For measuring parts of making and freeing a block.
+#[cfg(test)]
+pub(super) fn measure_part(part: u8, address: usize) {
+    with(|state| match part {
+        1 => {
+            let block = state.heap.fresh(4);
+            state.heap.recycle(std::hint::black_box(block));
+        }
+        2 => {
+            if let Some(block) = state.heap.spare.get_mut(4).and_then(Vec::pop) {
+                state.heap.recycle(std::hint::black_box(block));
+            } else {
+                let block = state.heap.fresh(4);
+                state.heap.recycle(block);
+            }
+        }
+        3 => {
+            std::hint::black_box(&mut state.heap);
+        }
+        5 => {
+            if let Some(block) = state.heap.blocks.remove(address) {
+                state.heap.recycle(block);
+            }
+        }
+        4 => {
+            let block = state.heap.fresh(4);
+            let at = block.as_ptr().addr();
+            state.heap.blocks.insert(block);
+            if let Some(block) = state.heap.blocks.remove(std::hint::black_box(at)) {
+                state.heap.recycle(block);
+            }
+        }
+        _ => {}
+    });
 }
 
 /// Gives up one owner of a block, freeing it when that was the last.

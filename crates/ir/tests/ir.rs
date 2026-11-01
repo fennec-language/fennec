@@ -2348,6 +2348,20 @@ def first_big() -> int:
 }
 
 #[test]
+fn a_loop_over_text_makes_no_list() {
+    let source = "def spaces(text: str) -> int:
+    mut count = 0
+    for c in text:
+        if c == \" \":
+            count += 1
+    count
+";
+    let text = printed(source, "spaces").unwrap();
+    assert!(!text.contains("str.chars"), "{text}");
+    assert!(text.contains("str.char_at_byte"), "{text}");
+}
+
+#[test]
 fn equality_calls_a_types_own_def_eq() {
     let source = "\
 struct Pair:

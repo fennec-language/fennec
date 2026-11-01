@@ -33,6 +33,15 @@ pub extern "C" fn is_valid(pattern: i64) -> i8 {
     })
 }
 
+/// How many groups a pattern has, not counting the whole match: what says how many numbers
+/// `find_all` and `find` give for each match. -1 for a pattern that isn't valid.
+pub extern "C" fn groups(pattern: i64) -> i64 {
+    with(|state| {
+        let pattern = text(state, pattern);
+        state.interp.regex(&pattern).map_or(-1, |regex| i64::try_from(regex.groups()).unwrap_or(-1))
+    })
+}
+
 /// `Regex(pattern).replace(text, with)`: a new string.
 pub extern "C" fn replace(pattern: i64, whole: i64, with_text: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {

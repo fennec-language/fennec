@@ -327,7 +327,7 @@ struct Body:
 
 def moved(body: Body, by: float) -> Body:
     mut next = body
-    next.pos.x = body.pos.x + by
+    next.pos.x = next.pos.x + by
     next.mass *= 2.0
     next
 ";
@@ -344,7 +344,7 @@ def moved(body: Body, by: float) -> Body:
   local _7: float
   bb0:
     _2 = _0
-    _3 = _0.pos
+    _3 = _2.pos
     _4 = _3.x
     _5 = _4 + _1
     _2.pos.x = _5
@@ -2281,6 +2281,28 @@ def main_total() -> int:
     let used = printed(source, "total").unwrap();
     assert!(used.contains("= resume"), "{used}");
     assert!(used.contains("this generator has already been used"), "{used}");
+}
+
+#[test]
+fn a_field_known_not_to_be_none_can_be_read_and_called() {
+    let source = "\
+struct Inner:
+    count: int
+
+    def next(self) -> int:
+        self.count + 1
+
+struct Outer:
+    inner: Inner?
+
+def read(outer: Outer) -> int:
+    if outer.inner is not None:
+        return outer.inner.next() + outer.inner.count
+    0
+";
+    let text = printed(source, "read").unwrap();
+    assert!(text.contains(".inner"), "{text}");
+    assert!(text.contains("Inner.next"), "{text}");
 }
 
 /// The locals that are given `true` or `false` somewhere in a function.

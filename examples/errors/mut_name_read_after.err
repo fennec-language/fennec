@@ -1,0 +1,7 @@
+error: `hp` is read after `roster` changes it
+ --> examples/errors/mut_name_read_after.fen:5:18
+  |
+5 |     stdout.print(hp)
+  |                  ^^
+  |
+  = help: write `mut roster = copy(hp)` to change a value of its own

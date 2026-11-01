@@ -73,7 +73,7 @@ pub(crate) fn no_method(ty: &Type, method: &str, span: Span) -> Diagnostic {
         "toUpperCase" | "to_uppercase" => diagnostic.with_help("use `upper()`"),
         "toLowerCase" | "to_lowercase" => diagnostic.with_help("use `lower()`"),
         "log" | "println" => diagnostic.with_help("use `stdout.print(...)`"),
-        "copy" | "clone" => diagnostic.with_help("values are copied automatically when assigned: `b = a`"),
+        "copy" | "clone" => diagnostic.with_help("write `copy(value)`"),
         _ => diagnostic,
     }
 }

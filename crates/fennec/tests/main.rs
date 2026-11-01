@@ -5,6 +5,7 @@ mod examples;
 mod executables;
 mod hints;
 mod limits;
+mod lint_fixes;
 mod llvm;
 mod lsp;
 mod projects;

@@ -78,6 +78,8 @@ def main(stdout: Stdout):
     stdout.print(scan([1, 2, 3]), scan([1, 2, 3], limit=1))
 ```
 
+**Planned:** a literal default giving the type, so that's written `limit=8`, and writing `limit: int = 8` is an error whose fix drops the `: int`. The type stays when the default is `None`, an empty collection or any other expression.
+
 **Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, three or more positional arguments, and neighboring parameters of the same type. The first argument and `self` are exempt.
 
 ## Built-in types
@@ -180,7 +182,7 @@ def main(stdout: Stdout):
     stdout.print(units[0].stats.health)
 ```
 
-**Planned: `mut x = place`.** This is the biggest change still to come. Today `mut x = place` makes a copy. In the locked design, it names the real place, so writing through it edits the original, as you'd expect from Python:
+`mut x = place` names the real place, so writing through it edits the original, as you'd expect from Python:
 
 ```fennec planned
 mut unit = world.units[id]
@@ -188,10 +190,11 @@ unit.stats.health -= 10          # edits the unit in the table
 
 best = unit                      # replacing a name makes a new value
 mut backup = copy(unit)          # a separate value, on purpose
-mut a, b = xs.pair(i, j)         # two elements of one list, checked as it runs
 ```
 
-Writing through a name and replacing it on the same name is a compile error, and so is a copy that can quietly go stale:
+Writing through a name and replacing it on the same name is a compile error. So is reading what the name came from while the name is still in use. The name can't be stored, returned or captured, so there are no lifetimes to write.
+
+Planned: `mut a, b = xs.pair(i, j)` for two elements of one list, and a compile error for a copy that can quietly go stale:
 
 ```fennec planned
 world.selected = world.units[i]          # error: edits to one won't reach the other
@@ -267,10 +270,16 @@ def main(stdout: Stdout):
     if target is None:
         return
     stdout.print(target.health)              # the compiler knows it's an Enemy here
-
-    other = find_target([])
-    stdout.print(other?.health else 1)       # use 1 if there's no target
 ```
+
+**Planned:** reading through something that might be missing, in a chain that ends in `else`. Today the chain is written with `?.`, which is going away, so `?` only ever means a failure passes up.
+
+```fennec planned
+health = find_target(enemies).health else 1     # 1 if there's no target
+score = scores.get(team).get(player) else 0
+```
+
+Without the `else`, it'll be a compile error whose fix adds one or an `is None` check.
 
 ## Errors
 

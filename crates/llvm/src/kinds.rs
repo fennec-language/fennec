@@ -43,10 +43,9 @@ pub(crate) fn define_named(ty: &Type, out: &mut BTreeMap<String, Written>) {
         Type::Result(value, error) => {
             define_named(value, out);
             define_named(error, out);
-            let cases = vec![
-                ("Ok".to_owned(), vec![field("value", value)]),
-                ("Err".to_owned(), vec![field("error", error)]),
-            ];
+            // A result of nothing holds nothing when it succeeds.
+            let ok = if **value == Type::Unit { Vec::new() } else { vec![field("value", value)] };
+            let cases = vec![("Ok".to_owned(), ok), ("Err".to_owned(), vec![field("error", error)])];
             out.insert(format!("Result[{value}, {error}]"), Written::Enum(cases));
         }
         Type::List(item) | Type::Set(item) => define_named(item, out),
@@ -81,6 +80,9 @@ pub(crate) enum Kind {
     Dict(Word, Word),
     /// The address of a closure, which something owns: what it takes, and gives back.
     Closure(Vec<Kind>, Box<Kind>),
+    /// The address of a generator's block, which something owns. Every generator's block starts
+    /// the same way, so this needn't say which.
+    Gen,
 }
 
 impl Kind {
@@ -89,6 +91,9 @@ impl Kind {
             let params: Result<Vec<Kind>, String> =
                 params.iter().map(|param| Kind::of(layouts, param)).collect();
             return Ok(Kind::Closure(params?, Box::new(Kind::of(layouts, returns)?)));
+        }
+        if let Type::Iterator(_) = ty {
+            return Ok(Kind::Gen);
         }
         let held = layouts.ty(&canon(ty));
         Kind::from_ty(layouts, held)
@@ -116,7 +121,10 @@ impl Kind {
 
     /// Whether this is the address of a block with an owner count.
     pub(crate) fn counted(&self) -> bool {
-        matches!(self, Kind::List(_) | Kind::Str | Kind::Boxed(_) | Kind::Dict(..) | Kind::Closure(..))
+        matches!(
+            self,
+            Kind::List(_) | Kind::Str | Kind::Boxed(_) | Kind::Dict(..) | Kind::Closure(..) | Kind::Gen
+        )
     }
 
     /// Whether this is held in memory and passed by address.
@@ -138,9 +146,13 @@ impl Kind {
             Kind::Int | Kind::Bool => "i64".to_owned(),
             Kind::Float => "double".to_owned(),
             Kind::Unit => "void".to_owned(),
-            Kind::Cap | Kind::List(_) | Kind::Str | Kind::Boxed(_) | Kind::Dict(..) | Kind::Closure(..) => {
-                "ptr".to_owned()
-            }
+            Kind::Cap
+            | Kind::List(_)
+            | Kind::Str
+            | Kind::Boxed(_)
+            | Kind::Dict(..)
+            | Kind::Closure(..)
+            | Kind::Gen => "ptr".to_owned(),
             Kind::Enum(id) => format!("[{} x i64]", layouts.get(*id).map_or(1, |layout| layout.size / WORD)),
             Kind::Struct(id) => {
                 format!("%\"s.{}\"", layouts.get(*id).map_or("?", |layout| layout.name.as_str()))

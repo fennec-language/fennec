@@ -1,0 +1,7 @@
+error: `stats` edits a place and is given a new value too
+  --> examples/errors/mut_place_replaced.fen:11:5
+   |
+11 |     stats = Stats()
+   |     ^^^^^
+   |
+   = help: use one name for each, or start it with `copy(...)` to edit a value of its own

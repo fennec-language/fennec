@@ -34,6 +34,7 @@ mod closures;
 mod dicts;
 mod emit;
 mod entry;
+mod generators;
 mod kinds;
 mod lists;
 mod text;
@@ -42,7 +43,7 @@ use std::collections::BTreeMap;
 
 use fennec_interp::embed::dicts::Word;
 use fennec_ir::{EnumDef, Program};
-use fennec_layout::{Layouts, ListItem, Written};
+use fennec_layout::{Layouts, ListItem, Written, generator_definition};
 
 pub use build::{Built, Tools, compile};
 pub use emit::{Unit, emit};
@@ -87,10 +88,20 @@ pub fn layouts_of(program: &Program) -> Layouts {
         kinds::define_named(&function.returns, &mut named);
         function.locals.iter().for_each(|local| kinds::define_named(&local.ty, &mut named));
     }
+    for def in &program.generators {
+        kinds::define_named(&def.item, &mut named);
+        def.slots.iter().for_each(|slot| kinds::define_named(slot, &mut named));
+    }
+    // A generator's block is laid out like a boxed struct's, its header first.
+    let generators = program.generators.iter().map(|def| {
+        let slots: Vec<_> = def.slots.iter().map(kinds::canon).collect();
+        (def.name.clone(), generator_definition(&kinds::canon(&def.item), None, &slots))
+    });
     let definitions: Vec<(String, Written)> = structs
         .map(|def| (def.name.clone(), Written::Struct(fields(&def.fields))))
         .chain(program.enums.iter().map(enums))
         .chain(named)
+        .chain(generators)
         .collect();
     Layouts::from_definitions(&definitions)
 }

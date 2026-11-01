@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use fennec_check::Type;
 use fennec_ir::facts::{Facts, Range};
-use fennec_ir::{Function, InstKind, LocalId, Operand, Program, Terminator};
+use fennec_ir::{Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
 use fennec_syntax::{BinOp, UnaryOp};
 
 const FULL: Range = (i64::MIN, i64::MAX);
@@ -56,6 +56,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) functions: HashMap<&'p str, &'p Function>,
     pub(crate) analyses: HashMap<&'p str, Analysis>,
     pub(crate) can_fail: HashSet<&'p str>,
+    /// Each generator, by its name and by the names of its functions.
+    pub(crate) generators: HashMap<&'p str, &'p GeneratorDef>,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments.
@@ -120,8 +122,16 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
         | InstKind::GetSome { dest, value }
         | InstKind::IsNone { dest, value }
         | InstKind::IsCase { dest, value, .. }
-        | InstKind::GetCaseField { dest, value, .. } => {
+        | InstKind::GetCaseField { dest, value, .. }
+        | InstKind::MakeErr { dest, error: value }
+        | InstKind::IsErr { dest, value }
+        | InstKind::GetOk { dest, value }
+        | InstKind::GetErr { dest, value } => {
             read(value);
+            write(*dest);
+        }
+        InstKind::MakeOk { dest, value } => {
+            value.iter().for_each(&mut read);
             write(*dest);
         }
         InstKind::Binary { dest, lhs, rhs, .. } => {
@@ -166,6 +176,20 @@ pub(crate) fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: 
             }
         }
         InstKind::Constant { dest, .. } => write(*dest),
+        InstKind::MakeGenerator { dest, args, .. } => {
+            for (_, value) in args {
+                read(value);
+            }
+            write(*dest);
+        }
+        InstKind::GetSlot { dest, generator, .. } | InstKind::Resume { dest, generator, .. } => {
+            read(generator);
+            write(*dest);
+        }
+        InstKind::SetSlot { generator, value, .. } => {
+            read(generator);
+            read(value);
+        }
         InstKind::Builtin { dest, args, .. } | InstKind::Call { dest, args, .. } => {
             args.iter().for_each(&mut read);
             if let Some(dest) = dest {
@@ -782,6 +806,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "list.pop"
                     | "sorted.key"
                     | "list.remove_where"
+                    | "result.expect"
             )
         }
         InstKind::GetIndex { object: Operand::Local(list), index, .. } => !known.inside(*list, index),
@@ -791,6 +816,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         | InstKind::Format { .. }
         | InstKind::Slice { .. }
         | InstKind::CallClosure { .. }
+        | InstKind::Resume { .. }
         | InstKind::Constant { .. } => true,
         _ => false,
     };
@@ -807,11 +833,24 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
     let changes = |callee: &str| functions.get(callee).map_or_else(Vec::new, |f| f.mut_params.clone());
     let analyses: HashMap<&str, Analysis> =
         every().map(|function| (function.name.as_str(), analyze(function, &changes))).collect();
-    let can_fail = every()
+    let mut generators = HashMap::new();
+    for def in &program.generators {
+        generators.insert(def.name.as_str(), def);
+        generators.insert(def.resume.as_str(), def);
+        if let Some(abandon) = &def.abandon {
+            generators.insert(abandon.as_str(), def);
+        }
+    }
+    // A generator's functions are called through its block, so all the same way: with the flag.
+    let mut can_fail: HashSet<&str> = every()
         .filter(|function| {
             analyses.get(function.name.as_str()).is_none_or(|known| fails_itself(function, known))
         })
         .map(|function| function.name.as_str())
         .collect();
-    Whole { functions, analyses, can_fail }
+    for def in &program.generators {
+        can_fail.insert(def.resume.as_str());
+        can_fail.extend(def.abandon.as_deref());
+    }
+    Whole { functions, analyses, can_fail, generators }
 }

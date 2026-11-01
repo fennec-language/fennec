@@ -108,6 +108,17 @@ impl Emit<'_, '_, '_> {
                     self.retain(&value);
                     return Ok(value);
                 }
+                Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
+                    self.declare("declare i64 @fennec_mark() nounwind");
+                    self.declare("declare void @fennec_truncate(i64) nounwind");
+                    self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
+                    self.declare("declare ptr @fennec_value_text(i64) nounwind");
+                    let (mark, handle) = (self.temp(), self.temp());
+                    self.line(&format!("{mark} = call i64 @fennec_mark()"));
+                    self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
+                    self.line(&format!("{temp} = call ptr @fennec_value_text(i64 {handle})"));
+                    self.line(&format!("call void @fennec_truncate(i64 {mark})"));
+                }
                 other => return Err(format!("it formats a {other:?}, which this backend doesn't take yet")),
             }
             return Ok(temp);

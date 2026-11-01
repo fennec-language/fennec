@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 
 use fennec_interp::embed::layout::COUNT;
-use fennec_ir::{Function, InstKind, LocalId, Operand, Program, Terminator};
+use fennec_ir::{Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
 use fennec_layout::Layouts;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
@@ -185,6 +185,11 @@ impl<'p> Module<'_, 'p> {
             self.declare(&format!("declare swiftcc {ret} {}({params}) #0", symbol(&callee.name)));
         }
         Ok(())
+    }
+
+    /// A generator, by its name or the name of one of its functions.
+    pub(crate) fn generator(&self, name: &str) -> Option<&'p GeneratorDef> {
+        self.whole.generators.get(name).copied()
     }
 
     pub(crate) fn flagged(&self, name: &str) -> bool {
@@ -1010,6 +1015,7 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest.ok_or("no result")?, &length)
             }
             "list.append" => self.append(args),
+            "result.expect" => self.expect(dest, args, span),
             "str.len" | "str" | "str.code" | "str.join" | "str.contains" => {
                 self.text_builtin(dest, name, args, span)
             }
@@ -1165,6 +1171,11 @@ impl Emit<'_, '_, '_> {
             }
 
             InstKind::IsNone { dest, value } => self.is_case(*dest, value, "None"),
+            InstKind::MakeOk { dest, value } => self.make_case(*dest, "Ok", value.as_slice()),
+            InstKind::MakeErr { dest, error } => self.make_case(*dest, "Err", std::slice::from_ref(error)),
+            InstKind::IsErr { dest, value } => self.is_case(*dest, value, "Err"),
+            InstKind::GetOk { dest, value } => self.get_case_field(*dest, value, "Ok", "value"),
+            InstKind::GetErr { dest, value } => self.get_case_field(*dest, value, "Err", "error"),
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make(*dest, items),
@@ -1180,6 +1191,12 @@ impl Emit<'_, '_, '_> {
             InstKind::Format { dest, parts } => self.format(*dest, parts, span),
             InstKind::Builtin { dest, name, args, .. } => self.builtin(*dest, name, args, span),
             InstKind::Call { dest, function, args } => self.call(*dest, function, args, span),
+            InstKind::MakeGenerator { dest, generator, args } => self.make_generator(*dest, generator, args),
+            InstKind::GetSlot { dest, generator, slot } => self.get_slot(*dest, generator, *slot),
+            InstKind::SetSlot { generator, slot, value } => self.set_slot(generator, *slot, value),
+            InstKind::Resume { dest, generator, known } => {
+                self.resume(*dest, generator, known.as_deref(), span)
+            }
             other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
         }
     }
@@ -1273,9 +1290,7 @@ impl Emit<'_, '_, '_> {
             Terminator::Return(value) => self.give_back(value.as_ref())?,
             Terminator::Unreachable => self.line("unreachable"),
             Terminator::NoMatch { value, span } => self.no_match(value, *span)?,
-            Terminator::Stop { .. } => {
-                return Err(format!("it ends with `{end}`, which this backend doesn't take yet"));
-            }
+            Terminator::Stop { message, span } => self.stop(message, *span),
         }
         Ok(())
     }

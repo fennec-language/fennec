@@ -203,6 +203,8 @@ world.selected = world.units[i]          # error: edits to one won't reach the o
 world.selected = copy(world.units[i])    # fine: a separate copy, on purpose
 ```
 
+A copy that would happen on every iteration of a loop is planned to be a compile error too, naming the line and why the value is shared: "`state` is copied every iteration because `history` keeps it". A copy that happens once, on the first write, is only a hint.
+
 ## Mutation is visible
 
 Parameters are read-only. A function that changes its argument says `mut` in its signature, and every call to it says `mut` too.

@@ -63,6 +63,12 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 **Copies are visible.** A lint lists every place the compiler had to copy a value, and why: "copied `enemies` because it's used again on line 42".
 *Why:* A hidden copy in a game loop is a frame-time spike nobody can find.
 
+**A copy that would happen on every iteration of a loop is a compile error,** including one in a function the loop calls. The error names the line and why the value is shared: "`state` is copied every iteration because `history` keeps it". The fix is to drop the other holder, restructure, or write `copy(state)` to make it explicit.
+- A one-time copy inside a loop, where the first write copies and the value has one owner after that, is only a hint, and the compiler may move the copy before the loop.
+- `@hot` still forbids any copy at all.
+
+*Why:* In a values language every implicit copy happens at a known line, at most once per sharing. So a loop that copies on every iteration is either a bug or should say `copy` on purpose, and a frame loop can never quietly copy.
+
 **`IdMap` and `Id[T]` are the way to point at things.** An `Id[Enemy]` is an index, a generation and a tag for its map, made by an `IdMap[Enemy]`. It can't index a map of another type, and the tag means an ID from another map can't find the wrong item.
 - `map[id]` stops the program on a dead ID, like an index out of range. `map.get(id)` returns an optional, for when the item may be gone.
 - A map reports how many items are live, which makes a forgotten item visible.

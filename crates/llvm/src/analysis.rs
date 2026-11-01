@@ -14,6 +14,9 @@ const FULL: Range = (i64::MIN, i64::MAX);
 pub(crate) const MOST_ITEMS: i64 = 1 << 48;
 
 /// What's known about one function.
+/// What a slice used as a key is of: the string, and its start and end as slicing takes them.
+pub(crate) type SliceKey = (Operand, Option<Operand>, Option<Operand>);
+
 pub(crate) struct Analysis {
     /// Locals an add, subtract, multiply or negate makes that can't overflow.
     safe: HashSet<usize>,
@@ -48,6 +51,11 @@ pub(crate) struct Analysis {
     path_taken: HashMap<usize, (LocalId, String, Operand)>,
     /// Locals written once, from a field of another: which, and the field.
     field_of: HashMap<usize, (LocalId, String)>,
+    /// A slice of a string used only as a dict's key: the string and where it starts and ends.
+    /// It's never made, as the runtime looks up and adds those bytes where they are.
+    pub(crate) slice_keys: HashMap<usize, SliceKey>,
+    /// The slice and its copy, which are never made.
+    pub(crate) unmade: HashSet<usize>,
     /// Locals standing for a list that a `for` loop goes through while changing only the item
     /// it's on: a copy of the list would say the same, and cost a whole list.
     aliases: HashMap<usize, LocalId>,
@@ -362,6 +370,8 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
         items_taken: HashMap::new(),
         path_taken: HashMap::new(),
         field_of: HashMap::new(),
+        slice_keys: HashMap::new(),
+        unmade: HashSet::new(),
         aliases: HashMap::new(),
         reservations: HashMap::new(),
         zero_filled: HashSet::new(),
@@ -421,7 +431,77 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
     });
     known.below.retain(|local, _| facts.range_in(LocalId(*local), 0).is_some_and(|range| range.0 >= 0));
     find_reservations(function, &stepped, &mut known);
+    find_slice_keys(function, &mut known);
     known
+}
+
+/// `d.get(text[a:b])` and `d[text[a:b]] = v`, with the slice used for nothing else and what it
+/// was made from unchanged after: the runtime finds and adds those bytes where they are.
+fn find_slice_keys(function: &Function, known: &mut Analysis) {
+    let insts: Vec<&InstKind> =
+        function.blocks.iter().flat_map(|block| &block.insts).map(|inst| &inst.kind).collect();
+    let steady = |operand: &Operand, known: &Analysis| match operand {
+        Operand::Local(local) => known.writes.get(local.0).copied().unwrap_or(2) <= 1,
+        Operand::Int(_) => true,
+        _ => false,
+    };
+    let str_keyed = |dict: &Operand| match dict {
+        Operand::Local(local) => matches!(
+            function.locals.get(local.0).map(|local| &local.ty),
+            Some(Type::Dict(key, _)) if **key == Type::Str
+        ),
+        _ => false,
+    };
+    for inst in &insts {
+        let InstKind::Slice { dest: slice, object, start, end } = inst else { continue };
+        let Operand::Local(text) = object else { continue };
+        if function.locals.get(text.0).map(|local| &local.ty) != Some(&Type::Str)
+            || known.writes.get(slice.0) != Some(&1)
+            || !steady(object, known)
+            || !start.iter().chain(end).all(|at| steady(at, known))
+        {
+            continue;
+        }
+        // Copied once to the local the IR uses as the key, or used as it is.
+        let copied = insts.iter().find_map(|inst| match inst {
+            InstKind::Copy { dest, value: Operand::Local(from) } if from == slice => Some(*dest),
+            _ => None,
+        });
+        let key = match copied {
+            Some(key) if known.reads.get(slice.0) == Some(&1) && known.writes.get(key.0) == Some(&1) => key,
+            Some(_) => continue,
+            None => *slice,
+        };
+        let as_key = Operand::Local(key);
+        let mut uses = 0;
+        for inst in &insts {
+            match inst {
+                InstKind::Builtin { name, args, .. }
+                    if name == "dict.get"
+                        && args.len() == 2
+                        && args.get(1) == Some(&as_key)
+                        && args.first().is_some_and(str_keyed) =>
+                {
+                    uses += 1;
+                }
+                InstKind::SetIndex { object, path, index, value }
+                    if *index == as_key
+                        && path.is_empty()
+                        && *value != as_key
+                        && str_keyed(&Operand::Local(*object)) =>
+                {
+                    uses += 1;
+                }
+                _ => {}
+            }
+        }
+        if uses == 0 || known.reads.get(key.0).copied() != Some(uses) {
+            continue;
+        }
+        known.slice_keys.insert(key.0, (object.clone(), start.clone(), end.clone()));
+        known.unmade.insert(slice.0);
+        known.unmade.insert(key.0);
+    }
 }
 
 /// Whether a block can get back to itself without going through another.

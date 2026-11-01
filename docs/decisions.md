@@ -836,7 +836,7 @@ match tok:
 Every tool ships in the `fennec` binary and has no configuration unless a setting is unavoidable.
 
 - `fennec fmt`: one style, no options.
-- `fennec lint`: the glave-strict rules on by default. `fennec fix` applies every lint's automatic fix.
+- `fennec lint`: the glave-strict rules on by default. `fennec fix` applies the fixes that can't change what a program does (below).
 - `fennec check`: types, ownership and lints, without running anything.
 - `fennec test`: tests, property tests and the examples in doc comments.
 - `fennec doc`: documentation from `##` comments.
@@ -881,6 +881,12 @@ bench "collide 10k bullets":
 
 **Every breaking change ships with its own fix.** No language change that breaks code lands unless `fennec fix` rewrites old code to match.
 *Why:* Upgrading Fennec should never be a project.
+
+**`fennec fix` applies only fixes that provably can't change what a program does.** Formatting, removing a redundant type, naming arguments, writing in an inferred return type, removing a needless `else` and the like. It never prompts or asks questions, so agents and CI can run it on a whole kit.
+- A fix that would change what a program does or may do, like adding `mut`, `?`, an `else` default or `copy(...)`, is never applied by `fennec fix`. The compiler error shows it as a hint, "fix: declare it `mut people`", and the person or agent makes the edit by hand, so whoever writes it knows what they're changing. The editor may offer it as an explicit one-click action for people.
+- A check that every automatic fix leaves every example's output unchanged keeps the first group honest.
+
+*Why:* An automatic fix that changes meaning can quietly bless a bug: adding `mut` so `pop` compiles, when the real bug was calling `pop`. Interactive prompts break agents.
 
 ## For AI
 

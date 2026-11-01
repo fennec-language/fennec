@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use fennec_check::{Signatures, Type};
 use fennec_syntax::{Arg, Expr, ExprKind, Item, Module, Span};
 
+use super::places::Step;
 use super::{Context, Lowered, Lowering};
 use crate::{InstKind, LocalId, Operand, StructDef, Terminator, type_in};
 
@@ -315,8 +316,7 @@ impl Lowering<'_> {
         Ok(Operand::Local(dest))
     }
 
-    /// `replace(value, field=new)`: a copy with some fields changed. Rules aren't checked
-    /// again.
+    /// `replace(value, field=new)`: a copy with some fields changed, whose rules run.
     pub(super) fn replace(&mut self, args: &[Arg], span: Span) -> Lowered<Operand> {
         let [value, changes @ ..] = args else { return Err("`replace` has no value".to_owned()) };
         let copied = self.expr(&value.value)?;
@@ -332,7 +332,7 @@ impl Lowering<'_> {
                 found.map(|(_, ty)| ty.clone()).ok_or_else(|| format!("`{owner}` has no `{field}`"))?;
             let lowered = self.expr(&change.value)?;
             let value = self.coerce(lowered, &wanted, change.value.span)?;
-            self.emit(InstKind::SetField { object: dest, path: vec![field], value }, span);
+            self.store(dest, &[Step::Field(field)], value, span)?;
         }
         Ok(Operand::Local(dest))
     }

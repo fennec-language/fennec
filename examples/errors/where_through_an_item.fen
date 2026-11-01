@@ -1,0 +1,7 @@
+struct Stats:
+    level: int where level >= 1
+
+def main(stdout: Stdout):
+    mut party = [Stats(level=1)]
+    party[0].level = 0
+    stdout.print(party[0].level)

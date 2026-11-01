@@ -1,0 +1,7 @@
+error: the `where` rule on `high` can't look at `low`
+ --> examples/errors/where_other_field.fen:3:29
+  |
+3 |     high: int where high >= low
+  |                             ^^^
+  |
+  = help: a rule looks only at its own field: check several fields in a method or a function that builds the value

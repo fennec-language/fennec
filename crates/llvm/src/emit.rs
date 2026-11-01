@@ -484,6 +484,14 @@ impl Emit<'_, '_, '_> {
                 self.check_alone(local);
             }
         }
+        // Every caller passes the flag clear, so saying so lets a check after an inlined call
+        // that didn't fail go away. An assumption, as a store would be inlined into loops.
+        if self.module.flagged(&function.name) {
+            self.declare("declare void @llvm.assume(i1)");
+            self.line("%err_in = load ptr, ptr %err");
+            self.line("%err_clear = icmp eq ptr %err_in, null");
+            self.line("call void @llvm.assume(i1 %err_clear)");
+        }
         self.line("br label %bb0");
         // Which blocks lead to each, so a lookup can carry on into a block every way in has
         // come through, once each of those is written.
@@ -830,9 +838,8 @@ impl Emit<'_, '_, '_> {
             }
             Kind::Str if op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) => {
                 // `text += more` takes over the owner the local had, and grows in place if it can.
-                self.declare("declare ptr @fennec_str_append(ptr, ptr) nounwind");
-                let (joined, slot) = (self.temp(), self.slot(dest));
-                self.line(&format!("{joined} = call ptr @fennec_str_append(ptr {a}, ptr {b})"));
+                let joined = self.append_text(&a, &b);
+                let slot = self.slot(dest);
                 self.line(&format!("store ptr {joined}, ptr {slot}"));
                 return Ok(());
             }

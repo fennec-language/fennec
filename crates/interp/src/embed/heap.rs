@@ -62,6 +62,8 @@ pub(crate) struct Heap {
     spare_cells: Vec<usize>,
     /// What native code's run has cost so far.
     pub(super) counts: Counts,
+    /// Where each shape's blocks hold addresses, by the shape's number.
+    plans: Vec<super::plans::Plan>,
 }
 
 /// What a run of native code allocated and copied. Blocks that live for the whole run, and what
@@ -109,6 +111,12 @@ const SPARE_WORDS: usize = 256;
 
 impl Heap {
     /// A heap holding the blocks that live for the whole run.
+    /// The heap, knowing where blocks of each shape hold addresses, for freeing them.
+    pub(crate) fn planned(mut self, shapes: &[Rc<Element>]) -> Heap {
+        self.plans = shapes.iter().map(|shape| super::plans::plan(shape)).collect();
+        self
+    }
+
     pub(crate) fn new(statics: Vec<Box<[u64]>>) -> Heap {
         let mut heap = Heap { statics: statics.len(), ..Heap::default() };
         for block in statics {
@@ -390,9 +398,14 @@ fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
         }
         return;
     }
-    let shape = usize::try_from(shape).ok().and_then(|shape| state.tables.shapes.get(shape));
-    if let Some(shape) = shape {
-        boxed_addresses(shape, block.get(HEADER_WORDS..).unwrap_or_default(), &mut 0, found);
+    let fields = block.get(HEADER_WORDS..).unwrap_or_default();
+    let at = usize::try_from(shape).ok();
+    let planned = at.and_then(|at| state.heap.plans.get(at));
+    if planned.and_then(|plan| super::plans::addresses(plan, fields, found)).is_some() {
+        return;
+    }
+    if let Some(shape) = at.and_then(|at| state.tables.shapes.get(at)) {
+        boxed_addresses(shape, fields, &mut 0, found);
     }
 }
 

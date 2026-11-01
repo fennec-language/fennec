@@ -14,12 +14,7 @@ use super::expr::Lowered;
 use super::{Lowerer, internal};
 use crate::helpers::Helper;
 use crate::types::Ty;
-
-/// Where a string's length in bytes, its length in characters, its room and its bytes start.
-const BYTES: i32 = 16;
-const CHARS: i32 = 24;
-const ROOM: i32 = 32;
-const TEXT: i32 = 40;
+use fennec_interp::embed::layout::{TEXT, TEXT_BYTES as BYTES, TEXT_CHARS as CHARS, TEXT_ROOM as ROOM};
 
 /// The longest string `+=` copies natively. The runtime copies longer ones.
 const SHORT: i64 = 32;

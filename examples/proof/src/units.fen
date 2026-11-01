@@ -1,0 +1,170 @@
+## Who's on the battlefield: units in an `IdMap`, and the squads that group them. Units and
+## squads point at each other by `Id`, never by reference, so a unit that dies leaves only
+## stale `Id`s behind, which `get` reports as gone.
+
+from std.game import Id, IdMap
+
+import map
+
+enum Team:
+    Red
+    Blue
+
+    def other(self) -> Team:
+        match self:
+            case .Red:
+                Team.Blue
+            case .Blue:
+                Team.Red
+
+    def name(self) -> str:
+        match self:
+            case .Red:
+                "red"
+            case .Blue:
+                "blue"
+
+enum Kind:
+    Soldier
+    Archer
+    Medic
+
+    ## How far it can hit or heal, in steps across and down.
+    def reach(self) -> int:
+        match self:
+            case .Soldier:
+                1
+            case .Archer:
+                4
+            case .Medic:
+                1
+
+    def power(self) -> int:
+        match self:
+            case .Soldier:
+                12
+            case .Archer:
+                7
+            case .Medic:
+                9
+
+    def most_health(self) -> int:
+        match self:
+            case .Soldier:
+                60
+            case .Archer:
+                35
+            case .Medic:
+                40
+
+    def name(self) -> str:
+        match self:
+            case .Soldier:
+                "soldier"
+            case .Archer:
+                "archer"
+            case .Medic:
+                "medic"
+
+struct Item:
+    name: str
+    ## Health it gives back when used.
+    heals = 0
+    ## Extra damage while carried.
+    sharpens = 0
+
+struct Unit:
+    name: str
+    team: Team
+    kind: Kind
+    at: (int, int)
+    health: int
+    ## Who it's attacking, or for a medic, who it's healing.
+    target: Id[Unit]? = None
+    ## Who it walks behind when it has no target.
+    following: Id[Unit]? = None
+    squad: Id[Squad]? = None
+    path: list[(int, int)] = []
+    items: list[Item] = []
+    kills = 0
+
+    def alive(self) -> bool:
+        self.health > 0
+
+    def power(self) -> int:
+        self.kind.power() + sum(item.sharpens for item in self.items)
+
+    def describe(self) -> str:
+        f"{self.name} ({self.team.name()} {self.kind.name()}, {self.health} hp at {self.at})"
+
+struct Squad:
+    name: str
+    team: Team
+    leader: Id[Unit]
+    members: list[Id[Unit]] = []
+    ## Where the squad is heading when nobody has a target.
+    rally: (int, int)
+
+struct World:
+    field: map.Map
+    units: IdMap[Unit] = IdMap[Unit]()
+    squads: IdMap[Squad] = IdMap[Squad]()
+    tick = 0
+
+    ## Adds a unit, and gives back its `Id`.
+    def spawn(mut self, name: str, team: Team, kind: Kind, at: (int, int)) -> Id[Unit]:
+        assert self.field.walkable(at)
+        unit = Unit(name=name, team=team, kind=kind, at=at, health=kind.most_health())
+        self.units.insert(unit)
+
+    ## Puts `members` in a squad led by the first of them, heading for `rally`.
+    def form_squad(mut self, name: str, members: list[Id[Unit]], rally: (int, int)) -> Id[Squad]:
+        leader = members[0]
+        team = self.units[leader].team
+        squad = self.squads.insert(
+            Squad(name=name, team=team, leader=leader, members=members, rally=rally),
+        )
+        for member in members:
+            self.units[member].squad = squad
+            if member != leader:
+                self.units[member].following = leader
+        squad
+
+    ## The units still standing on `team`.
+    def team_ids(self, team: Team) -> list[Id[Unit]]:
+        [id for id, unit in self.units.items() if unit.team == team]
+
+    ## Where every unit stands, so others walk round them.
+    def occupied(self) -> set[(int, int)]:
+        {unit.at for unit in self.units.values()}
+
+    ## The unit standing at `at`, if any.
+    def unit_at(self, at: (int, int)) -> Id[Unit]?:
+        for id, unit in self.units.items():
+            if unit.at == at: return id
+        None
+
+    def alive_count(self, team: Team) -> int:
+        self.team_ids(team).len()
+
+test "a squad's members follow its leader":
+    mut world = World(field=map.Map.drawn(["....", "...."]))
+    a = world.spawn("ash", .Red, .Soldier, (0, 0))
+    b = world.spawn("kit", .Red, .Archer, (1, 0))
+    squad = world.form_squad("first", [a, b], (3, 1))
+    assert world.units[b].following == a
+    assert world.units[a].following is None
+    assert world.units[a].squad == squad and world.squads[squad].leader == a
+    assert world.unit_at((1, 0)) == b and world.unit_at((3, 1)) is None
+
+test "a removed unit's Id finds nothing":
+    mut world = World(field=map.Map.drawn(["..."]))
+    a = world.spawn("ash", .Red, .Soldier, (0, 0))
+    b = world.spawn("vex", .Blue, .Soldier, (2, 0))
+    world.units[b].target = a
+    world.units.remove(a)
+    target = world.units[b].target
+    assert target is not None
+    if target is not None:
+        assert world.units.get(target) is None
+    assert world.alive_count(.Red) == 0 and world.alive_count(.Blue) == 1

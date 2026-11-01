@@ -63,6 +63,8 @@ pub(crate) struct Program {
     pub(crate) imported_types: std::collections::BTreeSet<String>,
     /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
     pub(crate) modules: BTreeMap<String, &'static str>,
+    /// What the standard library's own code imports as modules, which only that code sees.
+    pub(crate) prelude_modules: BTreeMap<String, &'static str>,
     /// Problems found while adding declarations: imports of modules or names that don't
     /// exist, and methods that can't be added.
     pub(crate) problems: Vec<Diagnostic>,
@@ -149,6 +151,11 @@ impl Program {
         self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone(), prelude });
     }
 
+    /// The modules imported where `span` is: the standard library's own, or the program's.
+    pub(crate) fn modules_at(&self, span: Span) -> &BTreeMap<String, &'static str> {
+        if span.in_prelude() { &self.prelude_modules } else { &self.modules }
+    }
+
     /// The builtin an imported name at `span` stands for.
     pub(crate) fn imported(&self, name: &str, span: Span) -> Option<&String> {
         let prelude = span.in_prelude().then(|| self.prelude_imports.get(name)).flatten();
@@ -204,7 +211,9 @@ impl Program {
     ) -> Result<Type, Diagnostic> {
         // `std.collections.Deque` or `collections.Deque`, through an imported module.
         let name = match written.name.rsplit_once('.') {
-            Some((path, member)) if self.modules.contains_key(path) && self.types.contains_key(member) => {
+            Some((path, member))
+                if self.modules_at(written.span).contains_key(path) && self.types.contains_key(member) =>
+            {
                 member
             }
             _ => written.name.as_str(),

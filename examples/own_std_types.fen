@@ -1,0 +1,29 @@
+# A program's own type can share a name with one in the standard library, and the library's
+# code still uses its own.
+from std.time import Clock, Instant
+
+struct Duration:
+    label: str
+
+struct Path:
+    parts: list[str]
+
+struct Match:
+    found: bool
+
+struct Counter:
+    count = 0
+
+    def bump(mut self):
+        self.count += 1
+
+def main(stdout: Stdout, clock: Clock):
+    # `std.time`'s `Instant` still adds its own `Duration`.
+    start = clock.now()
+    waited = clock.now() - start
+    later = start + waited
+    stdout.print(later < start)
+    stdout.print(Duration(label="long"), Path(parts=["a", "b"]), Match(found=True))
+    mut counter = Counter()
+    counter.bump()
+    stdout.print(counter)

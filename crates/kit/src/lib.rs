@@ -65,7 +65,17 @@ pub fn kit_paths(dir: &Path) -> Option<Vec<(String, PathBuf)>> {
 
 /// Loads some of a kit's modules and everything they import, by their names.
 pub fn load_modules(dir: &Path, shown_as: &str, modules: &[String]) -> Result<Program, Problems> {
-    load::kit_modules(dir, shown_as, modules)
+    load::kit_modules(dir, shown_as, modules, &Overlay::new())
+}
+
+/// Like `load_modules`, reading the files in `overlay` from it rather than from disk.
+pub fn load_modules_with(
+    dir: &Path,
+    shown_as: &str,
+    modules: &[String],
+    overlay: &Overlay,
+) -> Result<Program, Problems> {
+    load::kit_modules(dir, shown_as, modules, overlay)
 }
 
 /// Text to read in place of files on disk, by path: an editor's unsaved changes. A path is

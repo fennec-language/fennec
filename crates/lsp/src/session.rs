@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use fennec_kit::Overlay;
 
-use crate::analysis::{Analysis, analyze, program_of};
+use crate::analysis::{Analysis, Clean, analyze, edited_bodies, program_of};
 use crate::declaration::{declarations, hover_text};
 use crate::definition::{Target, target};
 use crate::json::Json;
@@ -24,6 +24,8 @@ pub struct Session {
     changes: u64,
     /// The last program analyzed, with the change count it saw.
     cached: Option<(PathBuf, u64, Analysis)>,
+    /// The last program with no mistakes, to tell what an edit since can have changed.
+    clean: Option<Clean>,
     /// The URIs each program last published diagnostics for, to clear them when they're gone.
     published: BTreeMap<PathBuf, BTreeSet<String>>,
     shut_down: bool,
@@ -96,7 +98,7 @@ impl Session {
                     return Vec::new();
                 };
                 self.documents.insert(uri.clone(), text.to_owned());
-                self.changed(&uri)
+                self.edited(&uri)
             }
             "textDocument/didSave" => self.changed(&uri),
             "textDocument/didClose" => {
@@ -107,19 +109,37 @@ impl Session {
         }
     }
 
-    /// Checks again the program a changed document belongs to, and publishes what's in each
-    /// of its files. A file that no longer has anything gets an empty list, which clears it.
+    /// What an edit to a document means: only as much checking as it can need.
+    fn edited(&mut self, uri: &str) -> Vec<Json> {
+        self.changes += 1;
+        let Some(file) = text::path_of(uri).map(|path| canonical(&path)) else { return Vec::new() };
+        let program = program_of(&file);
+        let quick = self.clean.as_ref().and_then(|clean| edited_bodies(clean, &program, &self.overlay()));
+        match quick {
+            Some(analysis) => self.cached = Some((program.clone(), self.changes, analysis)),
+            None => self.refresh(&program),
+        }
+        self.publish(uri, &file, program)
+    }
+
+    /// Checks again the program a changed document belongs to, and publishes what it finds.
     fn changed(&mut self, uri: &str) -> Vec<Json> {
         self.changes += 1;
         let Some(file) = text::path_of(uri).map(|path| canonical(&path)) else { return Vec::new() };
         let program = program_of(&file);
         self.refresh(&program);
+        self.publish(uri, &file, program)
+    }
+
+    /// Publishes what's in each file of the analysis. A file that no longer has anything gets an
+    /// empty list, which clears it.
+    fn publish(&mut self, uri: &str, file: &Path, program: PathBuf) -> Vec<Json> {
         let Some((_, _, analysis)) = &self.cached else { return Vec::new() };
         let uri_of = |path: &str| self.uri_of(path);
-        let mut lists = analysis.diagnostics_by_file(&text::shown(&file), &uri_of);
+        let mut lists = analysis.diagnostics_by_file(&text::shown(file), &uri_of);
         // A single file that's closed is no one's concern anymore.
-        if program == file && !self.documents.contains_key(uri) {
-            lists = vec![(text::shown(&file), Vec::new())];
+        if program == *file && !self.documents.contains_key(uri) {
+            lists = vec![(text::shown(file), Vec::new())];
         }
         let mut published = BTreeSet::new();
         let mut notifications = Vec::new();
@@ -139,9 +159,16 @@ impl Session {
 
     /// Analyzes a program, unless it's analyzed already and no document has changed since.
     fn refresh(&mut self, program: &Path) {
-        let fresh = matches!(&self.cached, Some((cached, changes, _)) if cached == program && *changes == self.changes);
+        let fresh = matches!(
+            &self.cached,
+            Some((cached, changes, analysis))
+                if cached == program && *changes == self.changes && !analysis.partial
+        );
         if !fresh {
             let analysis = analyze(program, &self.overlay());
+            if let Some(clean) = Clean::of(program, &analysis) {
+                self.clean = Some(clean);
+            }
             self.cached = Some((program.to_path_buf(), self.changes, analysis));
         }
     }

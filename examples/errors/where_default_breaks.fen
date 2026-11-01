@@ -1,0 +1,5 @@
+struct Player:
+    health = -1 where health >= 0
+
+def main(stdout: Stdout):
+    stdout.print(Player().health)

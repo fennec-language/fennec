@@ -111,18 +111,16 @@ fn llvm_objects(program: &fennec_kit::Program) -> Result<(Vec<Vec<u8>>, usize, u
     }
     let (units, shared) = fennec_llvm::emit(&lowered)?;
     let tools = fennec_llvm::Tools::find()?;
-    let tables = fennec_interp::embed::Tables {
-        strings: shared.strings.values().cloned().collect(),
-        ..fennec_interp::embed::Tables::default()
-    };
-    let image = fennec_interp::embed::codec::Image {
+    let layouts = fennec_llvm::layouts_of(&lowered);
+    let mut image = fennec_llvm::Image::of(&layouts, &shared)?;
+    let bytes = fennec_interp::embed::codec::Image {
         module: program.module.clone(),
         sources: program.sources.clone(),
-        tables,
-        literals: Vec::new(),
+        tables: std::mem::take(&mut image.tables),
+        literals: image.literals.clone(),
     }
     .to_bytes();
-    let entry = fennec_llvm::entry(&lowered, &shared, &image)?;
+    let entry = fennec_llvm::entry(&lowered, &shared, &image, &bytes)?;
     let home = fennec_build::fennec_home();
     let cache = home
         .as_deref()

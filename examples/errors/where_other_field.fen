@@ -1,0 +1,6 @@
+struct Range:
+    low: int
+    high: int where high >= low
+
+def main(stdout: Stdout):
+    stdout.print(Range(low=1, high=2).high)

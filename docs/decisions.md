@@ -57,7 +57,7 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 **A value is moved, not shared, when it isn't used again.** The compiler finds each value's last use and moves it there.
 *Why:* Then nearly every collection has one owner, so copy-on-write's check before each write passes and nothing is copied. The check is a predictable branch the compiler can hoist out of loops, and deletes entirely when ownership proves the value has one owner.
 
-**Views can't escape.** A `view[T]` (a slice of a list) can be a parameter or a local, but can't be stored in a struct or returned. A function that returns a slice returns a shared slice: one reference-count bump, no copy, the way string slices already work.
+**Views can't escape.** A `view[T]` (a slice of a list) can be a parameter or a local, but can't be stored in a struct or returned. A function that returns a slice returns a shared slice: one reference-count bump, no copy, the way string slices already work. Stored views aren't added: a slice that's kept is a counted value or an inline short string.
 *Why:* Slicing without copies, and without lifetime annotations.
 
 **Copies are visible.** A lint lists every place the compiler had to copy a value, and why: "copied `enemies` because it's used again on line 42".
@@ -72,6 +72,12 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 *Why:* Game engines, compilers, graph libraries and servers use the same generational-handle pattern. IDs are small plain values, so they're cheap to copy and can be saved or sent anywhere. A cycle of them is just numbers, with nothing counted, so it can't leak. A stale ID that silently became `None` would hide bugs, so the short form is the loud one.
 
 ## Collections
+
+**A struct works as a dict key with nothing to write.** It hashes all its fields automatically. A struct with a float field, or one that defines its own `def ==`, can't be a key, and the compile error suggests keying by a field. There's no `def key`.
+*Why:* A hash can't then disagree with `==`, which is the classic bug in hand-written keys. A float makes a poor key inside a struct, since NaN never equals itself and `0.0` equals `-0.0`.
+
+**Dicts use a fast keyed hash with a random seed per process,** fixed in tests and replays. A dict whose probes get suspiciously long rehashes itself with SipHash.
+*Why:* Normal programs get the fast hash. An attacker can't work out colliding keys without the seed, and if collisions turn up anyway, that one dict pays for the stronger hash. Iteration follows insertion order, so the seed can't change what a program does.
 
 **Collections are values.** `b = a` or passing a `list`, `dict`, `set` or `str` gives a value that never changes under you, like every other value. `copy(a)` gives one that can change separately.
 
@@ -184,6 +190,27 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 ## Functions and types
 
+**Parameters can have defaults, and a parameter with a default is passed by name only.**
+```fennec
+def scan(rows: list[Row], limit: int = 8) -> list[Row]:
+    ...
+
+scan(rows)
+scan(rows, limit=100)
+```
+- A default is a plain value computed at compile time, under the same rule as a module constant. Calling without it costs the same as passing the value.
+- There are no exceptions in `std` either. `d.get(key)` returns an optional, so a fallback is written `d.get(key) else 0`, and `sum` takes `start=`.
+- Required parameters may be positional, within the limits below.
+
+*Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap.
+
+**Some positional arguments are a hard error.** These are bare `True` or `False`, three or more positional arguments, and positional arguments to neighboring parameters of the same type. The first argument and `self` are exempt. The fix names them:
+```fennec
+copy_file(src, overwrite=True)
+move(from_tile=a, to_tile=b)
+```
+*Why:* A call like `move(a, b, True)` compiles and reads fine when its arguments are swapped. Naming them makes that mistake visible to people and AI, and the first argument is almost always obvious from the function's name.
+
 **A function that can fail says so with `fails Name`, and every exit is visible.**
 ```fennec
 error LoadError:
@@ -238,7 +265,7 @@ This replaces the earlier rules that return types are inferred, and that recursi
 **Built-in types are ordinary structs in the standard library.** `int`, `float`, `str`, `list` and `dict` are structs in `std`, with methods and the interfaces they satisfy written like any other type's. Only machine-level operations, such as adding two machine integers or loading from memory, are intrinsics the compiler provides.
 *Why:* There's no second kind of type that only the compiler can make. A user type does everything a built-in one does, by the same means.
 
-**`Buffer[T]` is the one public building block for memory.** It's safe, bounds-checked, growable and reference-counted: the same block as a `list`, with public methods. `push` fills the next slot, growing if it's full, `b[i]` reads and writes a filled slot, and `reserve`, `capacity`, `pop`, `truncate` and `is_unique` do the rest, the last being what copy-on-write needs. `list`, `dict` and `str` are written in Fennec on top of it, and any program can use it the same way. A buffer tracks how many slots are filled, so reading a slot nothing wrote is an ordinary out-of-bounds failure, and freeing it knows what to release.
+**`Buffer[T]` is the one public building block for memory.** It's safe, bounds-checked, growable and reference-counted: the same block as a `list`, with public methods. `push` fills the next slot, growing if it's full, `b[i]` reads and writes a filled slot, and `reserve`, `capacity`, `pop`, `truncate` and `is_unique` do the rest, the last being what copy-on-write needs. A buffer tracks how many slots are filled, so reading a slot nothing wrote is an ordinary out-of-bounds failure, and freeing it knows what to release. It's designed with the runtime work now, and `list`, `dict` and `str` move onto it once benchmarks show no slowdown. Written in Fennec on top of it, they use it the same way any program can.
 *Why:* The built-in collections need no machinery a program can't use, so a game's own pool or ring buffer is built from the same safe piece.
 
 **A function is global only when it works on any sequence using nothing but looping and operators; anything that asks a value about itself is a method.**
@@ -255,7 +282,7 @@ distance = (a - b).abs()                  # method: a question about one value
 ```
 *Why:* A looping function belongs to no one type: it works on lists, sets, dicts and generator expressions alike. A question about a value is answered differently by each type, so it lives on the type.
 
-**`sum` needs a start for anything but numbers.** `sum(numbers)` needs nothing, and an empty `list[float]` gives `0.0`. Any other type passes a start: `sum(wallet, Money(cents=0))`. A missing start, a type with no `def +`, and a start of the wrong type are all compile errors.
+**`sum` needs a start for anything but numbers.** `sum(numbers)` needs nothing, and an empty `list[float]` gives `0.0`. Any other type passes a start, by name: `sum(wallet, start=Money(cents=0))`. A missing start, a type with no `def +`, and a start of the wrong type are all compile errors.
 *Why:* It keeps the rule that a global uses nothing but looping and operators, with no `zero()` interface.
 
 **No global function serves only one type.** A global has to follow the rule above, or be a type's constructor, like `int(...)`, `float(...)` and `str(...)`. An operation on one type is a method. So a character's code is `"A".code()`, not Python's `ord("A")`, and `ord(c)` is an error whose fix writes `c.code()`.
@@ -321,6 +348,23 @@ Type arguments are inferred at calls; `largest[int](xs)` is allowed when they ca
 *Why:* `T` lets the type flow through, so `largest(enemies)` gives back an `Enemy`, and it relates parameters to each other. There's one way to write it, and it's Python's. In Python, Java, C# and Go, `list[Shape]` means a list of mixed types dispatched at run time, so the shorthand would have misled exactly the people and models Fennec is written for.
 
 **Generic code is checked once, and errors name the missing piece.** A generic body may use only what its bounds promise, so errors never surface at an instantiation. A call with a type that doesn't fit says what's missing and the nearest match: "`Rock` isn't a `Shape`: it has no `area(self) -> f32`. Its `area` returns `int`."
+
+**A generic function can loop over a type at compile time, and that's the whole of compile-time generation.**
+```fennec
+def write[T, W: Writer](x: T, mut out: W):
+    for f in fields(T):
+        out.field(f.name)
+        write(f.get(x), mut out)
+```
+- `fields(T)` gives a struct's fields, each with its name, type and value. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time.
+- Each set of types gets its own specialized copy, whatever the build.
+- There are no macros, no `derive` and no generating code from text. There's no I/O at compile time, and no new types can be invented.
+- New declarations, like a client struct from an API schema, come from separate programs that write `.fen` files.
+
+*Why:* It covers serialization, SQL rows, CLI parsing, ECS queries and test helpers, and the checker sees ordinary code. With no I/O, builds stay deterministic and cacheable, and a kit can't run anything on your machine while it compiles, which closes a real supply-chain hole.
+
+**Annotations are data, read at compile time.** `@json(name="user_id")` on a field says something a generic function can read. An annotation never wraps or changes what it's on.
+*Why:* A few things can't be said any other way, like a field's name in someone else's format, and data can't hide behavior.
 
 **Generics compile the way Swift's do.** Development builds, including the JIT, compile a generic function once and share that code across every type it's used with, passing each type's methods alongside its values. Release builds compile a copy for each type, so every call is direct and can be inlined, then merge copies whose machine code comes out identical. What a program does is the same either way.
 *Why:* Development builds compile once per generic function instead of once per type, which keeps them fast to build. Release builds get full speed, without paying in binary size for copies that are identical anyway. This replaces the earlier rule that generics are compiled per type in every build.
@@ -388,6 +432,32 @@ with db.transaction() as mut tx:
 *Why:* Cleanup that fails with nowhere to report the error silently loses data.
 
 ## Standard library
+
+**`SortedMap`, `SortedSet`, `Heap`, `Grid` and `Packed` are in `std`,** with `SortedMap` and `SortedSet` on B-trees. All of them hide their internals.
+*Why:* These are the structures people would otherwise reach for stored references to build. Written once in `std`, no program has to rebuild them, and their layout can improve without breaking anyone.
+
+**Each serialization format implements a `Writer` and `Reader` interface,** with one method per basic value and container. One generic function breaks any type down recursively, so structs need no code.
+```fennec
+struct Color:
+    r: int
+    g: int
+    b: int
+
+    def json(self, mut out: JsonWriter):
+        out.str(f"#{self.r:02x}{self.g:02x}{self.b:02x}")
+```
+- `_name` fields are skipped.
+- A type overrides one format with a method named for it, which leaves other formats alone. `Color` above is a hex string in JSON and three small integers in `std.pack`.
+- A `shared` handle or a function value is a compile error naming the field.
+
+*Why:* Types don't know about formats and formats don't know about types, so a new format is written once and works with every struct, and a new struct works with every format.
+
+**`std.pack` is the default binary format,** written in plain Fennec.
+- There are no field names on the wire, and a schema hash says which shape the data has.
+- `where` ranges shrink values: a field that's `where hp >= 0 and hp <= 100` takes one byte.
+- Delta encoding is built in, and quantization is opt-in.
+
+*Why:* Saves and network messages are where games and servers feel size most, and the types already say most of what a compact format needs to know.
 
 **A module is in `std` if most programs need it, it's security-sensitive, or it has to be consistent everywhere.** Everything else is a kit. Only reachable code gets compiled, so unused `std` costs nothing.
 
@@ -662,16 +732,17 @@ match tok:
 
 ## Toolchain
 
-**Each Fennec version is one self-contained `fennec` binary.** It holds `run`, `build`, `fmt`, `test`, the version launcher, and Den search and install, with Cranelift and LLVM linked into it. It needs no system libraries and no separate LLVM download.
-*Why:* Installing Fennec is copying one file, the way Zig works. Nothing on the machine can be missing or the wrong version.
+**Each Fennec version is one self-contained compiler binary.** It holds `run`, `build`, `fmt`, `test`, and Den search and install, with LLVM linked into it. It needs no system libraries and no separate LLVM download.
+*Why:* Installing a version is copying one file, the way Zig works. Nothing on the machine can be missing or the wrong version.
 
-**The binary is also the version launcher.** It reads the version a kit asks for, `fennec = "0.4.2"` in `kit.toml`, with no separate version file. If that isn't the running version, it fetches exactly that version's binary into `~/.fennec/toolchains/0.4.2/` on first use, verifies its checksum and signature, records its hash in `kit.lock`, and hands off to it.
+**A tiny, stable launcher is what you install, and it needs no Homebrew.** It reads the version a kit asks for, `fennec = "0.4.2"` in `kit.toml`, with no separate version file. If that version isn't there, it fetches its binary into `~/.fennec/toolchains/0.4.2/` on first use, verifies its checksum and signature, records its hash in `kit.lock`, and hands off to it.
+- Only the launcher updates itself, and its updates are signed with two keys.
+- A pinned compiler never changes by itself, and nothing fetches "latest" without being asked.
 - `fennec toolchain list`, `install`, `remove` and `default` manage toolchains.
-- It never updates itself or fetches "latest" without being asked.
 - Single-file scripts outside a kit use the default toolchain.
-- `fennec doctor` reports how much disk the toolchains and the cache use, and offers to remove versions no kit uses anymore.
+- `fennec doctor` reports how much disk the toolchains and the store use, and offers to remove versions no kit uses anymore.
 
-*Why:* Every project gets its own Fennec version without anyone thinking about it, and teammates, CI and AI agents all build with exactly the same toolchain. It's also what makes lints pinned to a kit's Fennec version work.
+*Why:* Every project gets its own Fennec version without anyone thinking about it, and teammates, CI and AI agents all build with exactly the same toolchain. It's also what makes lints pinned to a kit's Fennec version work. Keeping the part that updates tiny means it rarely has to change, and two keys mean one stolen key can't push an update.
 
 **Building Fennec itself stays fast.** Only the release packaging of the toolchain links LLVM in, through a build feature CI turns on for each target. Everyday builds of the compiler call a pinned, prebuilt `llc` as a separate program instead.
 *Why:* Linking LLVM into every build of the compiler would make working on Fennec as slow as the builds Fennec exists to avoid.
@@ -837,40 +908,43 @@ These are default lints, and the Den requires them.
 
 ## Engines
 
-**Development runs use the Cranelift JIT, with no tiering.** Each function is compiled on its first call, so only code that runs gets compiled. There's no bytecode interpreter that promotes hot functions to the JIT.
-*Why:* Lazy compilation takes microseconds per function and the cache makes reruns instant, so a second fast engine would buy almost nothing. Tiering means two engines that must always agree, plus falling back from compiled code to the interpreter, which is the hardest part of the runtimes that do it.
+**There's one backend: LLVM, with per-function `-O3` and a function-level cache.** `fennec run` makes real binaries in the store. Whole-program work happens only in `--release`. There's no hot reload in the plan, and no tiering.
+*Why:* What people run is what ships, so a first benchmark shows real speed. The cache is what makes it fast to edit, and one backend is less to maintain and keep in agreement.
+
+**Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.** Until then, `fennec run` and `fennec build` use it.
 
 **The tree-walking interpreter stays simple and correct, not fast.** It runs the REPL, the playground, compile-time evaluation and the sandbox, and it's the reference the JIT is tested against: every example must give the same output on both.
 
-**`fennec build` makes an executable with Cranelift.** It's the fast build, and the path the self-hosted compiler bootstraps through. `fennec build --release` uses the bundled LLVM at full optimization for small, stripped, portable executables.
-
-**The JIT aims for 80% of the speed of the benchmark suite's twins to start, then 85%, and no further.** Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
+**While it remains, the JIT aims for 80% of the speed of the benchmark suite's twins to start, then 85%, and no further.** Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
 *Why:* Development builds are for changing code and seeing it run at once. The 110% target applies to release builds.
 
-The JIT, release builds and the language server all share one build engine and cache, described under Builds.
+Every build and the language server share one build engine and store, described under Builds.
 
 ## Builds
 
-**The unit of work is the function, keyed by its content.** A function's key is a hash of its own syntax tree plus the signatures of what it uses, not their bodies. A caller depends on a callee's body only if it inlined that callee. A change inside a function that leaves its signature alone recompiles nothing else.
+**The unit of work is the function, keyed by its content.** A function's key covers its typed IR, the signatures of what it calls, the bodies of anything inlined into it, and the compiler version, target and flags. A caller depends on a callee's body only if it inlined that callee. Summaries let a change that leaves a signature alone skip the callers.
 
 **Results are pure.** Cache keys never include paths, timestamps or environment variables, and every key includes the compiler version. Builds are deterministic, so each function of a kit compiles once per machine, ever.
 
-**There's one cache per machine,** `~/.fennec/cache`. It has a size cap, and old entries are cleaned up. Entries are written to a temporary file and renamed into place, so readers never see half an entry and the normal path takes no locks; a lock is taken only during cleanup.
-- There's no build folder inside each project. Development runs compile straight from the cache with the JIT, and only `fennec build --release` writes an executable.
+**There's one content store per machine,** `~/.fennec/cache`. Results are named by their hash and written by atomic rename, so readers never see half an entry and the normal path takes no locks; a lock is taken only during eviction. It has a size cap.
+- There are no `target` folders, and no build folder inside a project. `fennec run` makes its binary in the store.
 
 **Work runs in parallel on every core,** one function at a time per core.
 
-**One engine stays running.** A background daemon serves the compiler, checker, formatter and language server from the same queries. It hot-reloads changed functions into a running program.
+**A daemon is optional and purely a speedup.** It starts itself, and keeps the compiler, checker, formatter and language server's queries in memory. The plain command gives identical results without it.
 
-**Caches can be shared** between machines and CI. Results from elsewhere are used only when they're signed or verified locally.
+**A cache can be shared** between machines and CI, and only trusted builds can write to it.
 
-**Release builds use the bundled LLVM with whole-program optimization,** cached per function where possible.
+**CI does a clean rebuild and compares it with the store.** Any mismatch blocks a release.
+*Why:* A wrong cache is the worst bug a build system can have: it silently tests or ships code that doesn't match the source.
+
+**`--release` adds whole-program optimization,** cached per function where possible.
 
 *Why:* These avoid what makes builds slow elsewhere: large compilation units, build scripts and macros that run code, a build folder in every project that grows to gigabytes, and separate engines for the compiler and the editor.
 
 **Hashing works in two layers.**
-1. A BLAKE3 hash of each file's bytes. An unchanged file isn't even parsed again, and timestamps are never used, so switching branches or cloning in CI doesn't rebuild anything.
-2. A hash of each function's syntax tree that leaves out positions and comments. Reformatting, editing comments and moving code around recompile nothing. Positions are kept separately for error messages.
+1. A BLAKE3 hash of each file's bytes. An unchanged file isn't even parsed again. A timestamp may skip re-reading a file that hasn't changed, but the hash decides, so switching branches or cloning in CI doesn't rebuild anything.
+2. A hash of each function's typed IR, which leaves out positions and comments. Reformatting, editing comments and moving code around recompile nothing. Positions are kept separately for error messages.
 
 BLAKE3 is written in-house rather than taken as a dependency, and checked against the official test vectors.
 
@@ -947,6 +1021,9 @@ def main(stdout: Stdout, gpu: Gpu):
 
 *Why:* Ported code is memory-safe, bound by capabilities, and runs in wasm and the playground. A C binding is none of those.
 
+**A C callback is a plain top-level function that gets an `Id` through user data.** C never holds a closure or a place.
+*Why:* C can call back at any time, so anything it keeps has to be safe to keep. A stale `Id` finds nothing, and a top-level function captures nothing.
+
 **C is declared in an `extern "C":` block.** A file with one is an extern module, the only kind of file where pointers and `unsafe` may appear.
 ```fennec
 extern "C":
@@ -1003,7 +1080,7 @@ The JIT loads them when the program runs, and release builds link them. The C st
 
 **An app allows each native kit by name:** `sqlite = { version = "1.2", native = true }`. A native kit's API still takes the capabilities it uses, `sqlite.open(fs, path)`, so its signatures stay honest.
 
-**The interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox, compile-time evaluation and the REPL can't run native kits; the error points to `fennec run`, which uses the JIT. Native kits' differential tests compare the JIT with release builds. A REPL that switches to the JIT when a native kit is imported can come later.
+**The interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox, compile-time evaluation and the REPL can't run native kits; the error points to `fennec run`, which runs native code. Native kits' differential tests compare the JIT with release builds. A REPL that switches to the JIT when a native kit is imported can come later.
 
 ## Sandboxing
 
@@ -1015,7 +1092,7 @@ The JIT loads them when the program runs, and release builds link them. The C st
 **Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
 *Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.
 
-**The native engines are for trusted code.** The Cranelift JIT and LLVM release builds run your own programs, not untrusted ones.
+**The native engines are for trusted code.** Native builds run your own programs, not untrusted ones.
 
 **On servers, sandboxed code also runs in its own process,** under seccomp on Linux or the App Sandbox on macOS, as an outer wall.
 
@@ -1027,11 +1104,10 @@ The order:
 
 1. The tools: the formatter, the linter and the Den CLI. They can be written while the language is still changing.
 2. The front end: lexer, parser and type checker.
-3. The release backend, written to emit LLVM's text format (`.ll`) for `llc`. This needs no calls into C.
-4. The development backend, calling Cranelift through a small wrapper with a C interface, from an `extern` module.
-5. A backend of our own: only if Cranelift stops being enough.
+3. The backend, written to emit LLVM's text format (`.ll`) for `llc`. This needs no calls into C.
+4. A backend of our own: only if LLVM stops being enough.
 
-Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compiler can run on the Cranelift JIT, since the interpreter is too slow to run a compiler.
+Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compiler can run natively, since the interpreter is too slow to run a compiler.
 *Why:* Every language change after the compiler is self-hosted has to be made in two compilers.
 
 ## Recording decisions
@@ -1049,7 +1125,7 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 
 - How a type marks that its finishing method must be called.
 - How replay records the order tasks reach a `shared` value or a channel.
-- Decorators, beyond the compiler's own `@hot` and `@fast_math`. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.
+- Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.
 - SQLite: whether and how Fennec includes it. Porting it isn't realistic.
 - Whether independent writes, not just reads, should overlap automatically.
 - The exact syntax for property tests.

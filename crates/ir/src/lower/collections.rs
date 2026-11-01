@@ -1,11 +1,13 @@
 //! Sets, dicts and tuples written out, unpacking, slices, and comprehensions, which are loops
 //! that fill a collection.
 
+use std::collections::HashMap;
+
 use fennec_check::Type;
-use fennec_syntax::{CompKind, Expr, ExprKind, Span};
+use fennec_syntax::{CompKind, Expr, ExprKind, Span, Stmt, StmtKind, fuse};
 
 use super::lists::Over;
-use super::{Lowered, Lowering};
+use super::{Lowered, Lowering, Tail};
 use crate::{InstKind, LocalId, Operand, Terminator};
 
 /// The expressions of a comprehension.
@@ -13,6 +15,26 @@ pub(super) struct Parts<'a> {
     pub(super) elem: &'a Expr,
     pub(super) value: Option<&'a Expr>,
     pub(super) cond: Option<&'a Expr>,
+}
+
+/// Where a comprehension over a stage fills its collection, in the statements it fuses into.
+const FILL: &str = "\0fill";
+
+fn name_expr(name: &str, span: Span) -> Expr {
+    Expr { kind: ExprKind::Name(name.to_owned()), span }
+}
+
+/// Whether this is where a fused comprehension fills its collection.
+pub(super) fn is_fill_marker(value: &Expr) -> bool {
+    matches!(&value.kind, ExprKind::Name(name) if name == FILL)
+}
+
+/// What fills a comprehension's collection, when the statements around it are copies.
+pub(super) struct Fill {
+    dest: LocalId,
+    kind: CompKind,
+    elem: Expr,
+    value: Option<Expr>,
 }
 
 impl Lowering<'_> {
@@ -130,9 +152,88 @@ impl Lowering<'_> {
             },
             span,
         );
+        if self.fused_comprehension((dest, kind), parts, (names, iter), span)? {
+            return Ok(Operand::Local(dest));
+        }
         let over = Over { names, iter, back: None };
         self.looping(over, span, |lowering| lowering.fill(dest, kind, parts, span))?;
         Ok(Operand::Local(dest))
+    }
+
+    /// A comprehension over a stage, as the plain loops it fuses into, whose innermost part
+    /// fills the collection.
+    fn fused_comprehension(
+        &mut self,
+        (dest, kind): (LocalId, CompKind),
+        parts: &Parts<'_>,
+        (names, iter): (&[String], &Expr),
+        span: Span,
+    ) -> Lowered<bool> {
+        let marker = Stmt { kind: StmtKind::Expr(name_expr(FILL, span)), span };
+        let body = match parts.cond {
+            Some(cond) => {
+                let kind = StmtKind::If { branches: vec![(cond.clone(), vec![marker])], otherwise: None };
+                vec![Stmt { kind, span }]
+            }
+            None => vec![marker],
+        };
+        let Some(expansion) = self.expanded(names, iter, &body) else { return Ok(false) };
+        self.fills.push(Fill { dest, kind, elem: parts.elem.clone(), value: parts.value.cloned() });
+        let lowered = self.fused(expansion);
+        self.fills.pop();
+        lowered?;
+        Ok(true)
+    }
+
+    /// The type of a value a stage's copy binds. What fusing wrote itself has no type of its
+    /// own at its span.
+    pub(super) fn fused_type(&self, value: &Expr) -> Lowered<Type> {
+        match &value.kind {
+            ExprKind::Bool(_) => Ok(Type::Bool),
+            ExprKind::Int(_) => Ok(Type::Int),
+            ExprKind::Float(_) => Ok(Type::Float),
+            ExprKind::Name(name) if name.starts_with('\0') => self
+                .lookup(name)
+                .map(|local| self.local_type(local))
+                .ok_or_else(|| format!("`{name}` has no type")),
+            _ => self.ty(value),
+        }
+    }
+
+    /// Fills the collection of the fused comprehension being lowered.
+    pub(super) fn fill_marker(&mut self, span: Span) -> Lowered<()> {
+        let Fill { dest, kind, elem, value } = self.fills.pop().ok_or("a fill outside a comprehension")?;
+        let parts = Parts { elem: &elem, value: value.as_ref(), cond: None };
+        let filled = self.fill(dest, kind, &parts, span);
+        self.fills.push(Fill { dest, kind, elem, value });
+        filled
+    }
+
+    /// `for names in iter: body` with no generator, if `iter` is a stage that fuses.
+    pub(super) fn expanded(&self, names: &[String], iter: &Expr, body: &[Stmt]) -> Option<fuse::Expansion> {
+        let generator = |key: &str| {
+            let copying = self.copied.iter().any(|(copied, _)| copied == key);
+            if copying { None } else { self.context.generators.get(key).map(|def| (*def).clone()) }
+        };
+        let is_local = |name: &str| self.lookup(name).is_some();
+        fuse::expand(names, iter, body, &fuse::Surroundings { generator: &generator, is_local: &is_local })
+    }
+
+    /// Lowers the statements a stage fused into, with the types of a yield function copied.
+    pub(super) fn fused(&mut self, expansion: fuse::Expansion) -> Lowered<()> {
+        let copied = expansion.copied.and_then(|key| {
+            let body = self.context.signatures.types().body(&key)?;
+            Some((key, body))
+        });
+        let copying = copied.is_some();
+        self.copied.extend(copied);
+        self.scopes.push(HashMap::new());
+        let lowered = self.stmts(&expansion.stmts, Tail::Drop);
+        self.scopes.pop();
+        if copying {
+            self.copied.pop();
+        }
+        lowered
     }
 
     /// One time around a comprehension's loop.

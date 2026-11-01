@@ -23,7 +23,7 @@ def main(stdout: Stdout):
 
 const pillars = [
   {
-    title: 'Builds instantly',
+    title: 'Rebuilds fast',
     number: `${builds.one_function_s} s`,
     caption: 'to rebuild 2,800 lines after changing one function',
     body: `Compiled a function at a time and cached by content, so a change costs only what it touches. The first build of that code takes ${builds.first_s.toFixed(0)} s, which we still want much lower.`,
@@ -32,7 +32,7 @@ const pillars = [
     title: 'Runs fast',
     number: `${low}–${high}%`,
     caption: "of its speed target today, in the JIT",
-    body: `Native code with no garbage collector. No benchmark meets its target yet, and release builds, the fastest path, aren't built yet.`,
+    body: `Native code with no garbage collector. No benchmark meets its target yet. The goal is to beat each one, built with overflow checks as Fennec is, through one LLVM backend, which isn't finished.`,
   },
   {
     title: 'Built for agents',
@@ -41,9 +41,88 @@ const pillars = [
     body: 'It reads like typed Python, the language models know best, with one way to do each thing and errors that say how to fix them.',
   },
 ];
+
+const design = [
+  {
+    title: 'Values and tables',
+    status: 'Mostly built',
+    code: `mut units = IdMap[Unit]()
+ash = units.insert(Unit())
+units[ash].health -= 10`,
+    body: 'No object graphs and no references to manage. Things that point at each other live in tables and hold an Id. Planned: `mut x = place` naming the real place, and `copy(x)`.',
+  },
+  {
+    title: 'A lifetime is a block',
+    status: 'Mostly built',
+    code: `with Lease(name="outer") as outer:
+    with Lease(name="inner") as inner:
+        use(outer, inner)
+# inner closes first, then outer`,
+    body: 'Any way out of a block closes what it opened, so there is nothing to annotate. Planned: several in one line, and a block’s last line as its value.',
+  },
+  {
+    title: 'Lazy streams',
+    status: 'Built',
+    code: `squares = (n * n for n in naturals())
+big = (n for n in squares if n > 50)`,
+    body: 'A pipeline reads like the steps it is, and handles input too big to hold. Using one twice fails loudly instead of quietly giving you nothing.',
+  },
+  {
+    title: 'Errors you can see',
+    status: 'Mostly built',
+    code: `score = load_score(path)?
+score = load_score(path) else 0`,
+    body: 'No exceptions, and every line a function can leave from is marked. Planned: `fails Name` in the signature, and narrowing with `if x is Err(...)`.',
+  },
+  {
+    title: 'parallel and launch',
+    status: 'Planned',
+    code: `for conn in parallel(server):
+    handle(conn, app)
+
+with launch(physics_loop) as physics:
+    physics.send(cmd)`,
+    body: 'One word for more cores, one for a long-running task, and no `async`. `parallel` compiles today, but runs in order on one core.',
+  },
+  {
+    title: 'shared, rarely',
+    status: 'Planned',
+    code: `shared Cache:
+    _pages = dict[str, Page]()
+
+    def set(mut self, key: str, page: Page):
+        self._pages[key] = page`,
+    body: 'The one reference type, for the few things that really are shared. Its methods lock automatically, and a search for `shared` finds them all.',
+  },
+  {
+    title: 'pub and _name',
+    status: 'Partly built',
+    code: `pub struct Score:
+    points = 0
+    _best = 0`,
+    body: '`pub` goes on top-level things only, and a big program splits into local kits. Planned: `_name` hiding a field from everything but its type.',
+  },
+  {
+    title: 'Compile-time loops',
+    status: 'Planned',
+    code: `def write[T, W: Writer](x: T, mut out: W):
+    for f in fields(T):
+        out.field(f.name)
+        write(f.get(x), mut out)`,
+    body: 'No macros and no `derive`. One generic function serializes any struct, and `std.pack` will be the default binary format. JSON and TOML work today.',
+  },
+  {
+    title: 'One backend',
+    status: 'Planned',
+    code: `$ fennec run
+# per-function -O3 through LLVM,
+# each function cached by content`,
+    body: 'What you run is what ships. Whole-program work comes only with `--release`. Today `fennec run` compiles with Cranelift, and the LLVM backend handles part of the language.',
+  },
+];
 ---
 
-<Base title="Fennec" description="Fennec is a safe, compiled language that builds instantly, runs fast and is built for agents. In progress, with real numbers.">
+<Base title="Fennec" description="Fennec is a safe, compiled language that reads like Python and is built for agents. In progress, with real numbers.">
   <div class="glow" aria-hidden="true"></div>
   <section class="hero wrap">
     <div class="intro">
@@ -85,7 +164,7 @@ const pillars = [
           <div class="range" role="img" aria-label={`Today ${low} to ${high} percent of the speed target`}>
             <span class="range-fill" style={`left: ${Math.min(low, 100)}%; width: ${Math.min(high, 100) - Math.min(low, 100)}%`}></span>
           </div>
-          <span class="range-note">JIT today · the floor is {targets.jit}% on every benchmark</span>
+          <span class="range-note">JIT today · its goal is {targets.jit}% on every benchmark, and we aren't there yet</span>
         </div>
       </div>
     </div>
@@ -103,6 +182,24 @@ const pillars = [
       ))
     }
     <p class="more"><a href={`${base}benchmarks/`}>See every benchmark and how it's measured →</a></p>
+  </section>
+
+  <section class="wrap agents">
+    <h2>The shape of the language</h2>
+    <p class="shape-note">The design is settled, and it isn't all built. Each piece says where it stands, and the <a href={`${base}tour/`}>tour</a> goes through them one at a time.</p>
+    <div class="agent-grid">
+      {
+        design.map((piece) => (
+          <article>
+            <h3>
+              {piece.title} <span class:list={['soon', { built: piece.status === 'Built' }]}>{piece.status}</span>
+            </h3>
+            <pre><code>{piece.code}</code></pre>
+            <p set:html={piece.body.replace(/`([^`]+)`/g, '<code>$1</code>')} />
+          </article>
+        ))
+      }
+    </div>
   </section>
 
   <section class="wrap agents">
@@ -456,6 +553,16 @@ fixed area.fen</code></pre>
     margin: 0;
     color: var(--muted);
     font-size: 0.95rem;
+  }
+
+  .shape-note {
+    color: var(--muted);
+    max-width: 640px;
+    margin: 0 0 1.5rem;
+  }
+
+  .soon.built {
+    color: var(--muted);
   }
 
   .soon {

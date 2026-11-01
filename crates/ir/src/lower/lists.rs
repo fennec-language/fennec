@@ -140,6 +140,9 @@ impl Lowering<'_> {
         body: &[Stmt],
         span: Span,
     ) -> Lowered<()> {
+        if !is_mut && let Some(expansion) = self.expanded(names, iter, body) {
+            return self.fused(expansion);
+        }
         // Only the items of a list or `IdMap` are written back, and only one name holds them.
         let by_id = matches!(self.type_at(iter.span), Some(Type::IdMap(_)));
         let changes_items =

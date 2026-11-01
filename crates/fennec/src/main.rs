@@ -10,6 +10,7 @@ mod daemon;
 mod fallbacks;
 mod fix;
 mod fmt;
+mod lint;
 mod lsp;
 mod repl;
 mod run;
@@ -31,7 +32,8 @@ const USAGE: &str = "usage:
   fennec init               set up this folder: a kit if it's new, and Fennec's guidance in AGENTS.md
   fennec fmt [path...]      format files in place: a kit, a folder or a .fen file
   fennec fmt --check        list the files that aren't formatted, and fail if any aren't
-  fennec fix [path]         make the fixes the type checker suggests, in a kit or a .fen file
+  fennec lint [path]        what the linter finds, and hints about what may copy or allocate
+  fennec fix [path]         make the fixes the type checker and linter suggest, in a kit or a .fen file
   fennec lsp                the language server, for editors, over standard input and output
   fennec daemon <action>    the build daemon: `status` or `stop`; commands start it
   fennec repl               try Fennec interactively
@@ -68,6 +70,8 @@ fn main() -> ExitCode {
         ["init"] => init(),
         ["repl"] => on_big_stack(|_| repl::repl(), ""),
         ["fmt", rest @ ..] => fmt::fmt(rest),
+        ["lint"] => on_big_stack(lint::lint, "."),
+        ["lint", path] => on_big_stack(lint::lint, path),
         ["fix"] => fix::fix("."),
         ["fix", path] => fix::fix(path),
         ["dev", "bench", path, name, rest @ ..] if rest.is_empty() || *rest == ["--start-only"] => {

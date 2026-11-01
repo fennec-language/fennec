@@ -338,6 +338,10 @@ impl<'c> FnCx<'c> {
             for rule in rules {
                 cx.condition(rule, "where");
             }
+            cx.pop();
+            for field in &def.fields {
+                crate::rules::check_field(&mut cx, type_name, field, &def.fields);
+            }
         }
         cx.finish(&[]);
     }

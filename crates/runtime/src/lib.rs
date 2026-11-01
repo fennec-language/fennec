@@ -169,6 +169,8 @@ export! {
     fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);
     fennec_spec_text(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::spec_text(a0, a1, a2, a3);
     fennec_str_code(a0: i64, a1: i64, a2: i64) -> i64 => strings::code(a0, a1, a2);
+    fennec_dict_find_slice(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => dicts::find_slice(a0, a1, a2, a3);
+    fennec_dict_add_slice(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => dicts::add_slice(a0, a1, a2, a3, a4);
     fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
     fennec_list_sorted_with(a0: i64, a1: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_with(a0, a1);
     fennec_regex_is_valid(a0: i64) -> i8 => regex::is_valid(a0);

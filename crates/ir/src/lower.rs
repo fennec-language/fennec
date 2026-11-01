@@ -5,6 +5,7 @@ pub(crate) mod calls;
 mod closures;
 mod collections;
 mod constants;
+mod consumers;
 mod defaults;
 mod failure;
 mod generics;
@@ -655,6 +656,9 @@ impl<'a> Lowering<'a> {
                     && !self.context.functions.contains("replace")
                 {
                     return self.replace(args, span);
+                }
+                if let Some(value) = self.consumer(expr, callee, args)? {
+                    return Ok(value);
                 }
                 let dest = self.call(callee, args, Some(self.ty(expr)?), span)?;
                 dest.map(Operand::Local).ok_or_else(|| "a call kept nothing".to_owned())

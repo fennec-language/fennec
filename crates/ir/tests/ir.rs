@@ -2231,3 +2231,30 @@ def doubled(limit: int) -> list[int]:
     assert!(!doubled.contains("call "), "{doubled}");
     assert_eq!(doubled.matches("list.append").count(), 1, "{doubled}");
 }
+
+#[test]
+fn what_uses_a_stage_in_place_collects_nothing() {
+    let source = "def upto(limit: int) -> Iterator[int]:
+    mut n = 0
+    while n < limit:
+        yield n
+        n += 1
+
+def total(limit: int) -> int:
+    sum(n * 2 for n in upto(limit) if n > 1)
+
+def scaled(xs: list[float]) -> float:
+    sum(x * 2.0 for x in xs)
+
+def has_big(limit: int) -> bool:
+    any(n > 2 for n in upto(limit))
+
+def all_small(xs: list[int]) -> bool:
+    all(x < 2 for x in xs)
+";
+    for function in ["total", "scaled", "has_big", "all_small"] {
+        let text = printed(source, function).unwrap();
+        assert!(!text.contains("list.append"), "{text}");
+        assert!(!text.contains("[]"), "{text}");
+    }
+}

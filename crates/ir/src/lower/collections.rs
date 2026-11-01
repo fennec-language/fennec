@@ -191,6 +191,7 @@ impl Lowering<'_> {
         match &value.kind {
             ExprKind::Bool(_) => Ok(Type::Bool),
             ExprKind::Int(_) => Ok(Type::Int),
+            ExprKind::Float(_) => Ok(Type::Float),
             ExprKind::Name(name) if name.starts_with('\0') => self
                 .lookup(name)
                 .map(|local| self.local_type(local))

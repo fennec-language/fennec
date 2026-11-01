@@ -52,10 +52,10 @@ impl Table {
         self.len
     }
 
-    fn slot(&self, address: usize) -> Option<&Box<[u64]>> {
+    fn slot(&self, address: usize) -> Option<&[u64]> {
         let (region, page, place) = split(address);
         let (_, pages) = self.regions.iter().find(|(number, _)| *number == region)?;
-        pages.get(page)?.as_ref()?.get(place)?.as_ref().filter(|block| at(block) == address)
+        pages.get(page)?.as_ref()?.get(place)?.as_deref().filter(|block| at(block) == address)
     }
 
     pub(super) fn get(&self, address: usize) -> Option<&[u64]> {
@@ -83,13 +83,10 @@ impl Table {
             return;
         }
         let (region, page, place) = split(address);
-        let pages = match self.regions.iter().position(|(number, _)| *number == region) {
-            Some(found) => self.regions.get_mut(found),
-            None => {
-                self.regions.push((region, vec![None; PAGES].into_boxed_slice()));
-                self.regions.last_mut()
-            }
-        };
+        if !self.regions.iter().any(|(number, _)| *number == region) {
+            self.regions.push((region, vec![None; PAGES].into_boxed_slice()));
+        }
+        let pages = self.regions.iter_mut().find(|(number, _)| *number == region);
         let Some(page) = pages.and_then(|(_, pages)| pages.get_mut(page)) else {
             return;
         };

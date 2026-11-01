@@ -57,7 +57,7 @@ mod tests {
     use fennec_syntax::Module;
 
     use super::super::{Tables, finish, heap, lists, regex, start, strings, with};
-    use super::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM, TEXT};
+    use super::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM, TEXT, TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
     use crate::packed::Element;
 
     /// Reads a word of a block.
@@ -84,6 +84,24 @@ mod tests {
         let list = lists::with_room(0, 100);
         assert_eq!(word(list, LIST_LENGTH), Some(0));
         assert_eq!(word(list, LIST_ROOM), Some(100));
+        finish();
+    }
+
+    #[test]
+    fn a_string_with_room_is_filled_by_the_caller_and_grows_in_place() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let text = strings::with_room(13);
+        assert_eq!(word(text, 0), Some(1));
+        assert_eq!(word(text, TEXT_ROOM), Some(16));
+        assert_eq!(text_of(text), "");
+        set_word(text, TEXT, u64::from_le_bytes(*b"hello\0\0\0"));
+        set_word(text, TEXT_BYTES, 5);
+        set_word(text, TEXT_CHARS, 5);
+        let more = with(|state| heap::text_address(state, " you"));
+        assert_eq!(strings::append(text, more), text);
+        assert_eq!(text_of(text), "hello you");
+        assert_eq!(word(strings::with_room(-1), TEXT_ROOM), Some(8));
         finish();
     }
 

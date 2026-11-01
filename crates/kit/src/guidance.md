@@ -8,7 +8,9 @@ This project uses Fennec. It reads like Python, but it's statically typed, and e
 - `fennec run`: run the tests a change affects, then the kit's `main`, or `fennec run file.fen` for one file. A failing test stops it, and `--no-test` skips them.
 - `fennec test`: run the tests a change affects. It prints only failures and one line of totals, and `--verbose` lists the rest.
 - `fennec fmt`: format the code. There's one style, so don't format by hand.
-- `fennec fix`: make the fixes the type checker suggests. Every error says what to do, so read it first.
+- `fennec check --json`: type-check without running anything. It prints one JSON object: each finding's rule, place, message, help and the fixes `fennec fix` would make.
+- `fennec lint --json`: the same, with the linter's findings and hints about what may copy or allocate, and how often each runs. Hints never fail it.
+- `fennec fix`: make the fixes the type checker and linter suggest. It only makes fixes that keep what the program does, so read each error's help for the rest.
 
 ### How the code looks
 

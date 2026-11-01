@@ -41,6 +41,22 @@ pub extern "C" fn concat(a: i64, b: i64) -> i64 {
     })
 }
 
+/// An empty string owned once, with room for at least `bytes` bytes, for code generators
+/// that know a string's length before making it, like an f-string's. They copy its bytes in
+/// themselves and then set its lengths in bytes and characters.
+pub extern "C" fn with_room(bytes: i64) -> i64 {
+    with(|state| {
+        let words = usize::try_from(bytes).unwrap_or(0).div_ceil(8).max(1);
+        let mut block = state.heap.fresh(TEXT_HEADER_WORDS + words);
+        if let Some([count, shape, _, _, room]) = block.get_mut(..TEXT_HEADER_WORDS) {
+            *count = 1;
+            *shape = state.tables.str_shape;
+            *room = u64::try_from(words * 8).unwrap_or(0);
+        }
+        state.heap.insert(block)
+    })
+}
+
 /// `text += more`: takes over the owner `text` had and gives back the joined string's.
 /// When `text` has no other owner and its block has room, the bytes go on the end in
 /// place. Otherwise they're joined in a new block with room to double, so building a

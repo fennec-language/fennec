@@ -256,6 +256,7 @@ dependencies = [
  "fennec-ir",
  "fennec-jit",
  "fennec-kit",
+ "fennec-lint",
  "fennec-llvm",
  "fennec-lsp",
  "fennec-reference",
@@ -359,6 +360,13 @@ name = "fennec-kit"
 version = "0.0.1"
 dependencies = [
  "fennec-check",
+ "fennec-syntax",
+]
+
+[[package]]
+name = "fennec-lint"
+version = "0.0.1"
+dependencies = [
  "fennec-syntax",
 ]
 

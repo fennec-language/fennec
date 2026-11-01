@@ -1,3 +1,4 @@
 DEBUG about to save kit=demo
 INFO saved kit=demo file=scores.txt size=120
 WARN disk is nearly full kit=demo free="3 MB"
+{"level": "ERROR", "message": "no space", "free": "0 B"}

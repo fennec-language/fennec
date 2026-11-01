@@ -230,4 +230,16 @@ mod tests {
         assert_eq!(word(anywhere, LIST_LENGTH), Some(2));
         finish();
     }
+
+    #[test]
+    fn stopping_fails_with_the_text_at_the_span() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let message = with(|state| heap::text_address(state, "assertion failed"));
+        super::super::checks::stop(message, 3, 7);
+        let (_, failure, _) = finish();
+        let failure = failure.unwrap();
+        assert_eq!(failure.message, "assertion failed");
+        assert_eq!((failure.span.start, failure.span.end), (3, 7));
+    }
 }

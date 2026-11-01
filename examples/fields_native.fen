@@ -132,7 +132,7 @@ def main(stdout: Stdout):
     bag.numbers.sort()
     stdout.print(bag.numbers, sorted(bag.numbers), 42 in bag.numbers, "a" in bag.counts)
     bag.numbers.remove_where((n) => n > 40)
-    stdout.print(bag.numbers, bag.counts.get("zz", 0), bag.counts.get("a", 0))
+    stdout.print(bag.numbers, (bag.counts.get("zz") else 0), (bag.counts.get("a") else 0))
     for key in bag.counts:
         stdout.print(key)
     for point in bag.points:

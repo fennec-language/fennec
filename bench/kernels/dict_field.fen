@@ -5,7 +5,7 @@ struct Counter:
     counts: dict[int, int]
 
     def bump(mut self, key: int):
-        self.counts[key] = self.counts.get(key, 0) + 1
+        self.counts[key] = (self.counts.get(key) else 0) + 1
 
 def main(stdout: Stdout):
     mut counter = Counter(counts={})

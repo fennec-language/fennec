@@ -106,10 +106,14 @@ fn set_lengths(block: &mut [u64], length: usize, chars: u64) {
 /// lives for the whole run, as a literal's does.
 pub extern "C" fn char_at(text: i64, at: i64) -> i64 {
     with(|state| {
-        let (all, _) = bytes(state, text).unwrap_or_default();
-        let rest = all.get(usize::try_from(at).unwrap_or(0)..).unwrap_or_default();
-        // A character is at most four bytes.
-        let start = rest.get(..rest.len().min(4)).unwrap_or_default();
+        // A character is at most four bytes, so only the words holding those are read.
+        let at = usize::try_from(at).unwrap_or(0);
+        let block = u64::try_from(text).ok().and_then(|text| state.heap.block(text)).unwrap_or_default();
+        let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+        let words = block.get(TEXT_HEADER_WORDS + at / 8..).unwrap_or_default();
+        let near: Vec<u8> = words.iter().take(2).flat_map(|word| word.to_le_bytes()).collect();
+        let wanted = length.saturating_sub(at).min(4);
+        let start = near.get(at % 8..at % 8 + wanted).unwrap_or_default();
         let valid = match std::str::from_utf8(start) {
             Ok(text) => text,
             Err(err) => {

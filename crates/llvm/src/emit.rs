@@ -1,7 +1,7 @@
 //! Writing functions as LLVM's text. Each local is a stack slot and every read and write goes
 //! through it, which LLVM's first pass turns into proper SSA.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 
 use fennec_interp::embed::layout::COUNT;
@@ -57,7 +57,7 @@ pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared), String> {
     let layouts = crate::layouts_of(program);
     let mut shared = Shared::default();
     let mut units = Vec::with_capacity(program.functions.len());
-    for function in &program.functions {
+    for function in program.functions.iter().chain(&program.constants) {
         let text = unit(function, &everything, &layouts, &mut shared, header)
             .map_err(|why| format!("`{}`: {why}", function.name))?;
         units.push(Unit { function: function.name.clone(), text });
@@ -69,7 +69,7 @@ fn size(function: &Function) -> usize {
     function.blocks.iter().map(|block| block.insts.len() + 1).sum()
 }
 
-fn symbol(name: &str) -> String {
+pub(crate) fn symbol(name: &str) -> String {
     format!("@\"f_{name}\"")
 }
 
@@ -91,6 +91,8 @@ pub(crate) struct Module<'w, 'p> {
     declares: BTreeSet<String>,
     defined: HashSet<&'p str>,
     bodies: String,
+    /// Functions a module only needs once, however many things use them.
+    helpers: BTreeMap<String, String>,
 }
 
 fn unit<'p>(
@@ -107,10 +109,16 @@ fn unit<'p>(
         declares: BTreeSet::new(),
         defined: HashSet::new(),
         bodies: String::new(),
+        helpers: BTreeMap::new(),
     };
     module.defined.insert(&function.name);
     // Small functions that call nothing come along, to be inlined and thrown away.
+    let made = function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
+        InstKind::MakeClosure { function, .. } => Some(function.as_str()),
+        _ => None,
+    });
     let copies: Vec<&Function> = callees(function)
+        .chain(made)
         .filter(|name| *name != function.name)
         .filter_map(|name| whole.functions.get(name).copied())
         .filter(|callee| size(callee) <= COPIED && callees(callee).next().is_none())
@@ -152,12 +160,34 @@ fn unit<'p>(
     }
     out.push('\n');
     out += &module.bodies;
+    out.extend(module.helpers.values().map(String::as_str));
     out += ATTRIBUTES;
     Ok(out)
 }
 
 impl<'p> Module<'_, 'p> {
-    fn flagged(&self, name: &str) -> bool {
+    pub(crate) fn add_helper(&mut self, name: &str, text: String) {
+        self.helpers.entry(name.to_owned()).or_insert(text);
+    }
+
+    pub(crate) fn function_named(&self, name: &str) -> Result<&'p Function, String> {
+        self.whole
+            .functions
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("it uses `{name}`, which isn't lowered"))
+    }
+
+    /// Has a function declared if it isn't in this module.
+    pub(crate) fn declare_call(&mut self, callee: &Function) -> Result<(), String> {
+        if !self.defined.contains(callee.name.as_str()) {
+            let (ret, params) = (self.ret_text(callee)?, self.params(callee, false)?);
+            self.declare(&format!("declare swiftcc {ret} {}({params}) #0", symbol(&callee.name)));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn flagged(&self, name: &str) -> bool {
         self.whole.can_fail.contains(name)
     }
 
@@ -173,7 +203,6 @@ impl<'p> Module<'_, 'p> {
                 struct_definitions(self.layouts, *id, &mut lines);
                 self.declares.extend(lines);
             }
-            Kind::Tuple(items) => items.iter().for_each(|item| self.define_types(item)),
             Kind::List(item) => {
                 if let Some(kind) = Kind::from_ty(self.layouts, item.ty()) {
                     self.define_types(&kind);
@@ -183,7 +212,7 @@ impl<'p> Module<'_, 'p> {
         }
     }
 
-    fn kind(&self, ty: &fennec_check::Type) -> Result<Kind, String> {
+    pub(crate) fn kind(&self, ty: &fennec_check::Type) -> Result<Kind, String> {
         Kind::of(self.layouts, ty)
     }
 
@@ -210,10 +239,10 @@ impl<'p> Module<'_, 'p> {
         Ok(params.join(", "))
     }
 
-    fn ret_text(&self, function: &Function) -> Result<String, String> {
+    pub(crate) fn ret_text(&self, function: &Function) -> Result<String, String> {
         let kind = self.kind(&function.returns)?;
         Ok(match kind {
-            Kind::Unit | Kind::Cap | Kind::Struct(_) | Kind::Tuple(_) | Kind::Enum(_) => "void".to_owned(),
+            Kind::Unit | Kind::Cap | Kind::Struct(_) | Kind::Enum(_) => "void".to_owned(),
             other => other.slot(self.layouts),
         })
     }
@@ -427,22 +456,60 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
-    /// One more owner for a value of this kind, which may be `None`.
-    pub(crate) fn retain_value(&mut self, value: &str, kind: &Kind) {
-        if value == "null" {
-            return;
+    /// A new slot on this function's stack.
+    pub(crate) fn place_for(&mut self, kind: &Kind) -> String {
+        let (at, text) = (self.label("%place"), self.text_of(kind));
+        let _ = writeln!(self.allocas, "  {at} = alloca {text}");
+        at
+    }
+
+    /// A slot holding this block's address, for code that may replace it.
+    pub(crate) fn temp_slot(&mut self, block: &str) -> String {
+        let at = self.place_for(&Kind::Str);
+        self.line(&format!("store ptr {block}, ptr {at}"));
+        at
+    }
+
+    fn is_optional(&self, kind: &Kind) -> bool {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return false };
+        self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Option["))
+    }
+
+    /// One owner fewer for a value of this kind.
+    pub(crate) fn release_kind(&mut self, value: &str, kind: &Kind) {
+        if matches!(kind, Kind::Closure(..)) {
+            self.release_closure(value);
+        } else {
+            self.release(value);
         }
-        if !matches!(kind, Kind::Optional(_)) {
+    }
+
+    /// One more owner for a value, unless it's the one that's nothing.
+    pub(crate) fn retain_value(&mut self, value: &str) {
+        if value != "null" {
             self.retain(value);
-            return;
         }
-        let (none, held, done) = (self.temp(), self.label("held"), self.label("done"));
-        self.line(&format!("{none} = icmp eq ptr {value}, null"));
-        self.line(&format!("br i1 {none}, label %{done}, label %{held}"));
-        self.start_block(&held);
-        self.retain(value);
-        self.line(&format!("br label %{done}"));
-        self.start_block(&done);
+    }
+
+    /// A value to go where this kind goes: `None` needs telling what it's `None` of. The second
+    /// half says the value is new, and already has an owner for its new home.
+    pub(crate) fn value_for(&mut self, operand: &Operand, kind: &Kind) -> Result<(String, bool), String> {
+        if *operand != Operand::None {
+            return Ok((self.operand(operand)?.0, false));
+        }
+        match kind {
+            Kind::Enum(_) => {
+                // Word 0 is which case, and `None` comes first.
+                let (at, text) = (self.label("%none"), self.text_of(kind));
+                let _ = writeln!(
+                    self.allocas,
+                    "  {at} = alloca {text}\n  store {text} zeroinitializer, ptr {at}"
+                );
+                Ok((at, false))
+            }
+            Kind::Boxed(id) => Ok((self.new_block(*id)?, true)),
+            other => Err(format!("it uses `None` as a {other:?}, which this backend doesn't take yet")),
+        }
     }
 
     /// One more owner for a block.
@@ -476,7 +543,7 @@ impl Emit<'_, '_, '_> {
 
     /// Fails if a call here would go too deep. The limit never changes once the program's
     /// running and the frame stays put, so LLVM drops all but the first check on a path.
-    fn check_stack(&mut self, span: Span) {
+    pub(crate) fn check_stack(&mut self, span: Span) {
         self.declare("declare ptr @llvm.frameaddress.p0(i32)");
         self.declare("@fennec_stack_limit = external dso_local global i64");
         let (here, limit, number, low) = (self.temp(), self.temp(), self.temp(), self.temp());
@@ -556,7 +623,7 @@ impl Emit<'_, '_, '_> {
             let old = self.temp();
             self.line(&format!("{old} = load ptr, ptr {slot}"));
             self.line(&format!("store ptr {value}, ptr {slot}"));
-            self.release(&old);
+            self.release_kind(&old, &kind);
         } else {
             self.line(&format!("store {text} {value}, ptr {slot}"));
         }
@@ -602,6 +669,10 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    pub(crate) fn checked_add(&mut self, a: &str, b: &str, span: Span) -> String {
+        self.checked("sadd", a, b, span)
+    }
+
     fn checked(&mut self, name: &str, a: &str, b: &str, span: Span) -> String {
         let intrinsic = format!("@llvm.{name}.with.overflow.i64");
         self.declare(&format!("declare {{ i64, i1 }} {intrinsic}(i64, i64)"));
@@ -621,6 +692,12 @@ impl Emit<'_, '_, '_> {
         rhs: &Operand,
         span: Span,
     ) -> Result<(), String> {
+        if let (BinOp::In | BinOp::NotIn, Operand::Local(right)) = (op, rhs)
+            && matches!(self.kind_of(*right)?, Kind::Dict(..))
+        {
+            let found = self.dict_contains(op, lhs, rhs)?;
+            return self.assign(dest, &found);
+        }
         let (a, kind) = self.operand(lhs)?;
         let (b, _) = self.operand(rhs)?;
         let value = match kind {
@@ -635,6 +712,14 @@ impl Emit<'_, '_, '_> {
                 let temp = self.temp();
                 self.line(&format!("{temp} = icmp {cc} i1 {a}, {b}"));
                 temp
+            }
+            Kind::Str if op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) => {
+                // `text += more` takes over the owner the local had, and grows in place if it can.
+                self.declare("declare ptr @fennec_str_append(ptr, ptr) nounwind");
+                let (joined, slot) = (self.temp(), self.slot(dest));
+                self.line(&format!("{joined} = call ptr @fennec_str_append(ptr {a}, ptr {b})"));
+                self.line(&format!("store ptr {joined}, ptr {slot}"));
+                return Ok(());
             }
             Kind::Str => self.string_binary(op, (&a, &b))?,
             Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
@@ -837,6 +922,7 @@ impl Emit<'_, '_, '_> {
         }
         let returns = self.module.kind(&callee.returns)?;
         let mut shown = Vec::with_capacity(args.len() + 2);
+        let mut lent = Vec::new();
         let returned_at = if returns.in_memory() {
             let at = self.label("%ret");
             let text = self.text_of(&returns);
@@ -854,7 +940,12 @@ impl Emit<'_, '_, '_> {
                 shown.push(format!("ptr {}", self.slot(*local)));
                 continue;
             }
-            let (value, kind) = self.operand(arg)?;
+            let param = callee.locals.get(at).ok_or("too many arguments")?;
+            let kind = self.module.kind(&param.ty)?;
+            let (value, fresh) = self.value_for(arg, &kind)?;
+            if fresh {
+                lent.push(value.clone());
+            }
             if kind.in_memory() {
                 shown.push(format!("ptr {value}"));
             } else {
@@ -884,13 +975,16 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{failed} = icmp ne ptr {held}, null"));
             self.leave_if(&failed);
         }
+        for block in lent {
+            self.release(&block);
+        }
         match (dest, returned_at) {
             (Some(dest), Some(at)) => self.assign_memory(dest, &at, "")?,
             (Some(dest), None) if ret != "void" => {
                 self.assign(dest, &result)?;
                 self.alone_from_here(dest);
             }
-            (None, None) if returns.counted() => self.release(&result),
+            (None, None) if returns.counted() => self.release_kind(&result, &returns),
             _ => {}
         }
         Ok(())
@@ -903,6 +997,9 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        if let Some(done) = self.loop_builtin(dest, name, args, span) {
+            return done;
+        }
         let first = args.first();
         match name {
             "Stdout.print" => self.print(args.get(1..).unwrap_or_default()),
@@ -912,7 +1009,9 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest.ok_or("no result")?, &length)
             }
             "list.append" => self.append(args),
-            "str.len" | "str" | "str.code" | "str.join" => self.text_builtin(dest, name, args, span),
+            "str.len" | "str" | "str.code" | "str.join" | "str.contains" => {
+                self.text_builtin(dest, name, args, span)
+            }
             "float" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
                 let temp = self.temp();
@@ -963,10 +1062,36 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `dest = value`: a block gets another owner, unless nothing else ever reads `value`.
-    fn copy(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+    pub(crate) fn copy(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
         // The local is the list, so there's nothing to copy.
         if self.known.alias(dest).is_some() {
             return Ok(());
+        }
+        if *value == Operand::None {
+            let kind = self.kind_of(dest)?.clone();
+            let (held, _) = self.value_for(value, &kind)?;
+            if kind.in_memory() {
+                return self.assign_memory(dest, &held, "");
+            }
+            return self.assign(dest, &held);
+        }
+        // Between an optional and what it holds, the IR can write a plain copy.
+        let wanted = self.kind_of(dest)?.clone();
+        let from = match value {
+            Operand::Local(local) => self.kind_of(*local)?.clone(),
+            Operand::Int(_) => Kind::Int,
+            Operand::Float(_) => Kind::Float,
+            Operand::Bool(_) => Kind::Bool,
+            Operand::Str(_) => Kind::Str,
+            Operand::None => wanted.clone(),
+        };
+        if from != wanted {
+            if self.is_optional(&wanted) {
+                return self.make_case(dest, "Some", std::slice::from_ref(value));
+            }
+            if self.is_optional(&from) {
+                return self.get_case_field(dest, value, "Some", "value");
+            }
         }
         let (held, kind) = self.operand(value)?;
         if kind.in_memory() {
@@ -978,7 +1103,7 @@ impl Emit<'_, '_, '_> {
                     let slot = self.slot(*from);
                     self.line(&format!("store ptr null, ptr {slot}"));
                 }
-                _ => self.retain_value(&held, &kind),
+                _ => self.retain_value(&held),
             }
         }
         self.assign(dest, &held)?;
@@ -1025,22 +1150,24 @@ impl Emit<'_, '_, '_> {
             }
             InstKind::Binary { dest, op, lhs, rhs } => self.binary(*dest, *op, lhs, rhs, span),
             InstKind::Make { dest, fields, .. } => self.make(*dest, fields),
+            InstKind::MakeDict { dest, pairs } => self.make_dict(*dest, pairs),
+            InstKind::MakeSet { dest, items } => self.make_set(*dest, items),
+            InstKind::MakeClosure { dest, function, captures } => {
+                self.make_closure(*dest, function, captures)
+            }
+            InstKind::CallClosure { dest, closure, args } => self.call_closure(*dest, closure, args, span),
+            InstKind::Constant { dest, name } => self.call(Some(*dest), name, &[], span),
             InstKind::MakeCase { dest, case, fields, .. } => self.make_case(*dest, case, fields),
             InstKind::IsCase { dest, value, case } => self.is_case(*dest, value, case),
             InstKind::GetCaseField { dest, value, case, field } => {
                 self.get_case_field(*dest, value, case, field)
             }
 
-            InstKind::IsNone { dest, value } => {
-                let (held, _) = self.operand(value)?;
-                let none = self.temp();
-                self.line(&format!("{none} = icmp eq ptr {held}, null"));
-                self.assign(*dest, &none)
-            }
+            InstKind::IsNone { dest, value } => self.is_case(*dest, value, "None"),
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
-            InstKind::MakeTuple { dest, items } => self.make_tuple(*dest, items),
-            InstKind::GetTupleItem { dest, value, at } => self.get_tuple_item(*dest, value, *at),
+            InstKind::MakeTuple { dest, items } => self.make(*dest, items),
+            InstKind::GetTupleItem { dest, value, at } => self.get_field(*dest, value, &format!("_{at}")),
             InstKind::MakeList { dest, items } => self.make_list(*dest, items, block),
             InstKind::GetIndex { dest, object, index } => self.get_index(*dest, object, index, span),
             InstKind::SetIndex { object, path, index, value } => {
@@ -1061,9 +1188,10 @@ impl Emit<'_, '_, '_> {
         for at in 0..self.kinds.len() {
             let local = LocalId(at);
             if Some(local) != except && self.owns(local) {
+                let kind = self.kinds.get(at).cloned().unwrap_or(Kind::Unit);
                 let (held, slot) = (self.temp(), self.slot(local));
                 self.line(&format!("{held} = load ptr, ptr {slot}"));
-                self.release(&held);
+                self.release_kind(&held, &kind);
             }
         }
     }
@@ -1072,7 +1200,8 @@ impl Emit<'_, '_, '_> {
         let returns = self.returns.clone();
         let text = self.text_of(&returns);
         if returns.in_memory() {
-            let (at, _) = self.operand(value.ok_or("it returns nothing where a value is due")?)?;
+            let (at, _) =
+                self.value_for(value.ok_or("it returns nothing where a value is due")?, &returns)?;
             let held = self.temp();
             self.line(&format!("{held} = load {text}, ptr {at}"));
             self.line(&format!("store {text} {held}, ptr %ret"));
@@ -1086,14 +1215,14 @@ impl Emit<'_, '_, '_> {
             return Ok(());
         }
         let operand = value.ok_or("it returns nothing where a value is due")?;
-        let (held, _) = self.operand(operand)?;
+        let (held, fresh) = self.value_for(operand, &returns)?;
         // Leaving, a local's owner goes with its value.
         let moved = match operand {
             Operand::Local(local) if returns.counted() && self.owns(*local) => Some(*local),
             _ => None,
         };
-        if returns.counted() && moved.is_none() {
-            self.retain_value(&held, &returns);
+        if returns.counted() && moved.is_none() && !fresh {
+            self.retain_value(&held);
         }
         self.release_locals(moved);
         self.line(&format!("ret {text} {held}"));
@@ -1165,7 +1294,7 @@ mod tests {
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        let source = "def f() -> dict[int, int]:\n    {1: 2}\n\ndef main(stdout: Stdout):\n    stdout.print(f().len())\n";
+        let source = "def f() -> list[list[int]]:\n    [[1]]\n\ndef main(stdout: Stdout):\n    stdout.print(f().len())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

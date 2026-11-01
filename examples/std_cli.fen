@@ -1,0 +1,107 @@
+# `std.cli` reads command-line arguments. A `Cli` says what the program takes, reads `args`
+# and writes the help. Try `fennec run examples/std_cli.fen -l --times 2 ash vex`.
+from std.cli import Cli, CliArgs, CliError
+
+def greet() -> Cli:
+    mut cli = Cli(name="greet", about="Says hello.")
+    cli = cli.flag("loud", short="l", help="shout it")
+    cli = cli.option("times", short="t", help="how many times", default="1")
+    cli = cli.option("to", help="who it's from")
+    cli.positional("names", help="who to greet", required=False, many=True)
+
+def problem(found: Result[CliArgs, CliError]) -> str:
+    match found:
+        case Err(error):
+            error.message
+        case _:
+            "no problem"
+
+test "flags and options are read in any order":
+    given = greet().parse(["ash", "--loud", "--times", "3", "vex", "--to=kit"])?
+    assert given.flag("loud")
+    assert given.value("times") == "3"
+    assert given.value("to") == "kit"
+    assert given.many() == ["ash", "vex"]
+
+test "defaults fill what isn't given":
+    given = greet().parse([])?
+    assert not given.flag("loud")
+    assert given.value("times") == "1"
+    assert given.value("to") is None
+    assert given.many() == []
+    assert not given.wants_help
+
+test "short ones can be written together":
+    assert (greet().parse(["-lt", "4"])?).value("times") == "4"
+    assert (greet().parse(["-lt4"])?).value("times") == "4"
+    given = greet().parse(["-t", "2", "-l"])?
+    assert given.flag("loud") and given.value("times") == "2"
+
+test "everything after -- is positional":
+    given = greet().parse(["--", "--loud", "-t"])?
+    assert not given.flag("loud")
+    assert given.many() == ["--loud", "-t"]
+    assert (greet().parse(["-"])?).many() == ["-"]
+    assert (greet().parse(["--to="])?).value("to") == ""
+
+test "help is asked for, not an error":
+    assert (greet().parse(["--help"])?).wants_help
+    assert (greet().parse(["ash", "-h"])?).wants_help
+
+test "arguments that don't fit say why":
+    assert problem(greet().parse(["--quiet"])) == "there's no option `--quiet`"
+    assert problem(greet().parse(["-q"])) == "there's no option `-q`"
+    assert problem(greet().parse(["--times"])) == "`--times` needs a value"
+    assert problem(greet().parse(["-t"])) == "`-t` needs a value"
+    assert problem(greet().parse(["--loud=yes"])) == "`--loud` is a flag, so it takes no value"
+
+test "positional arguments are given in order":
+    copy = Cli(name="copy").positional("from").positional("to", required=False)
+    given = copy.parse(["a", "b"])?
+    assert given.value("from") == "a" and given.value("to") == "b"
+    assert (copy.parse(["a"])?).value("to") is None
+    assert problem(copy.parse([])) == "<from> is required"
+    assert problem(copy.parse(["a", "b", "c"])) == "`c` wasn't expected"
+    assert (copy.parse(["--help"])?).wants_help
+
+test "a required option has to be given":
+    login = Cli(name="login").option("user", short="u", required=True)
+    assert problem(login.parse([])) == "`--user` is required"
+    assert (login.parse(["-u", "ash"])?).value("user") == "ash"
+
+test "the help lists everything":
+    lines = [
+        "usage: greet [options] [names...]",
+        "",
+        "Says hello.",
+        "",
+        "arguments:",
+        "  names                who to greet",
+        "",
+        "options:",
+        "  -l, --loud           shout it",
+        "  -t, --times <value>  how many times (default: 1)",
+        "      --to <value>     who it's from",
+        "  -h, --help           show this help",
+    ]
+    assert greet().help() == "\n".join(lines) + "\n"
+
+def main(stdout: Stdout, args: Args):
+    cli = greet()
+    found = cli.parse([arg for arg in args])
+    match found:
+        case Err(error):
+            stdout.print(f"{error.message}; `--help` lists what it takes")
+        case Ok(given):
+            if given.wants_help:
+                stdout.write(cli.help())
+            else:
+                say_hello(stdout, given)
+
+def say_hello(stdout: Stdout, given: CliArgs):
+    names = given.many() if given.many().len() > 0 else ["world"]
+    times = int(given.value("times") else "1") else 1
+    for _ in range(times):
+        for name in names:
+            line = f"hello, {name}"
+            stdout.print(line.upper() if given.flag("loud") else line)

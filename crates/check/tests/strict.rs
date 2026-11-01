@@ -207,7 +207,7 @@ fn builtins_check_what_they_are_given() {
     assert_eq!(
         in_main("stdout.print(sum(['a']), 'a'.abs(), int([1]), range(1.5), round(1.5, 'a'))"),
         [
-            "`sum` of `str` needs a starting value: sum(..., \"\") @ sum([\"a\"])",
+            "`sum` of `str` needs a starting value: sum(..., start=\"\") @ sum([\"a\"])",
             "a str has no method `abs` @ \"a\".abs()",
             "`int` converts a number or text, not a list[int] @ [1]",
             "`range` takes one to three ints @ range(1.5)",

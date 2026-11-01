@@ -372,3 +372,15 @@ fn a_clock_gives_instants() {
     ";
     assert_eq!(problems(program), ["can't use `+` on an int and a str @ elapsed.nanos + \"a\""]);
 }
+
+#[test]
+fn a_std_function_written_in_fennec_has_to_be_imported() {
+    let problems = problems("def main(stdout: Stdout):\n    stdout.print(lerp(0.0, 1.0, 0.5))\n");
+    assert_eq!(problems, ["`lerp` doesn't exist @ lerp"]);
+}
+
+#[test]
+fn a_std_function_written_in_fennec_is_checked_like_any_other() {
+    let text = "from std.math import lerp\n\ndef main(stdout: Stdout):\n    stdout.print(lerp(0.0, 1.0))\n";
+    assert!(problems(text).iter().any(|problem| problem.contains("amount")), "{:?}", problems(text));
+}

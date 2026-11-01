@@ -176,7 +176,16 @@ impl Lowerer<'_, '_> {
     ) -> Result<Option<Lowered>, Diagnostic> {
         let builtin = matches!(&callee.kind, ExprKind::Name(name) if name == "sum" && self.local(name).is_none())
             && !self.shared.compiled.contains_key("sum");
-        if builtin { self.native_sum(call, args) } else { Ok(None) }
+        if !builtin {
+            return Ok(None);
+        }
+        // `sum`'s start is passed by name, and comes after its items.
+        let mut args = args.to_vec();
+        args.sort_by_key(|arg| arg.name.is_some());
+        for arg in args.iter_mut().filter(|arg| arg.name.as_deref() == Some("start")) {
+            arg.name = None;
+        }
+        self.native_sum(call, &args)
     }
 
     /// `any(...)` or `all(...)` of a generator, made by an ordinary native loop that stops at

@@ -262,6 +262,44 @@ fn code_after_leaving_a_block_cant_run() {
 }
 
 #[test]
+fn an_else_after_branches_that_leave_goes() {
+    let head = "def f(a: int, xs: list[int]) -> int:\n";
+    for (written, plain) in [
+        (
+            "    if a < 0:\n        return 0\n    else:\n        g(a)\n        a + 1\n",
+            "    if a < 0:\n        return 0\n    g(a)\n    a + 1\n",
+        ),
+        (
+            "    if a < 0:\n        fail Bad()\n    elif a == 0:\n        return 1\n    else:\n        for x in xs:\n            g(x)\n\n        a\n",
+            "    if a < 0:\n        fail Bad()\n    elif a == 0:\n        return 1\n    for x in xs:\n        g(x)\n\n    a\n",
+        ),
+        ("    if a < 0: return 0\n    else: a\n", "    if a < 0: return 0\n    a\n"),
+        (
+            "    for x in xs:\n        if x < 0:\n            continue\n        else:\n            g(x)\n    a\n",
+            "    for x in xs:\n        if x < 0:\n            continue\n        g(x)\n    a\n",
+        ),
+        (
+            "    if a < 0:\n        if a < -9:\n            return 2\n        else:\n            return 1\n    else:\n        a\n",
+            "    if a < 0:\n        if a < -9:\n            return 2\n        return 1\n    a\n",
+        ),
+    ] {
+        let source = format!("{head}{written}");
+        assert!(rules(&source).iter().all(|rule| *rule == "needless-else"), "{written}");
+        assert!(rules(&source).contains(&"needless-else"), "{written}");
+        assert_eq!(fixed(&source), format!("{head}{plain}"), "{written}");
+    }
+    for kept in [
+        "    if a < 0:\n        g(a)\n    else:\n        return 1\n    a\n",
+        "    if a < 0:\n        return 0\n    elif a == 0:\n        g(a)\n    else:\n        return 1\n    a\n",
+        "    if a < 0:\n        return 0\n    else:  # the usual case\n        a\n",
+        "    if a < 0:\n        return 0\n    a\n",
+    ] {
+        let source = format!("{head}{kept}");
+        assert!(!rules(&source).contains(&"needless-else"), "{kept}");
+    }
+}
+
+#[test]
 fn an_if_that_only_gives_back_its_condition_is_its_condition() {
     for (written, plain) in [
         ("    if a > 0: return True\n    False\n", "    a > 0\n"),

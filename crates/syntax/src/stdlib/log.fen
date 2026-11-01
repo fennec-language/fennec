@@ -1,4 +1,4 @@
-from std import json
+from std.json import dumps
 
 ## How much a log entry matters, least first.
 enum LogLevel:
@@ -101,11 +101,11 @@ struct Log:
         mut parts = []
         if seconds != "":
             parts.append(f"\"time\": {seconds}")
-        parts.append(f"\"level\": {json.dumps(level.label())}")
-        parts.append(f"\"message\": {json.dumps(message)}")
+        parts.append(f"\"level\": {dumps(level.label())}")
+        parts.append(f"\"message\": {dumps(message)}")
         for name, value in fields.items():
             if name != "time" and name != "level" and name != "message":
-                parts.append(f"{json.dumps(name)}: {json.dumps(value)}")
+                parts.append(f"{dumps(name)}: {dumps(value)}")
         "{" + ", ".join(parts) + "}"
 
     ## Text that can't start another line, so an entry can't pretend to be two.

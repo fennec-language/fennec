@@ -11,7 +11,7 @@ use fennec_interp::packed::Element;
 
 mod layouts;
 
-pub use layouts::{Case, Field, Layout, Layouts, WORD, Written, WrittenField};
+pub use layouts::{Case, Field, Layout, Layouts, WORD, Written, WrittenField, generator_definition};
 
 /// How native code holds a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

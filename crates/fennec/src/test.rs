@@ -18,6 +18,8 @@ use std::process::ExitCode;
 
 use fennec_build::{Cache, TestGraph, TestRecord};
 
+use crate::verdict::{Modules, Plan};
+
 /// How `fennec test` was asked to run.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Options {
@@ -90,26 +92,77 @@ pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
 }
 
 pub(crate) fn test(path: &str, options: Options) -> ExitCode {
+    let results = Results::open(path, options.run != Run::Affected);
+    let cached = results.cache.as_ref().map(|(cache, name)| (cache, name.as_str()));
+    let state = cached.and_then(crate::verdict::last_state);
+    let files = crate::verdict::kit_files(path, state.as_ref());
+    let planned = match (cached, &state, &files) {
+        (Some((cache, _)), Some(state), Some(files)) if options.run == Run::Affected => {
+            crate::verdict::plan(path, cache, (state, files), &results.passed)
+        }
+        _ => None,
+    };
+    let plan = match planned {
+        Some(plan) => plan,
+        None => match whole_program(path, &results) {
+            Ok(plan) => plan,
+            Err(code) => return code,
+        },
+    };
+    run_plan(path, options, &results, files.as_deref(), plan)
+}
+
+/// What to run, from all of a program: what has changed since each test last passed.
+fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Everything) else {
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     };
     let signatures = match fennec_check::check_and_resolve(&mut program.module) {
         Ok(signatures) => signatures,
         Err(diagnostics) => {
             eprint!("{}", program.sources.render_all(&diagnostics));
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
-    let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
-    let results = Results::open(path, options.run != Run::Affected);
     let graph = TestGraph::of(&program.module, env!("FENNEC_BUILD"));
-    let unchanged: Vec<&TestRecord> = graph
+    let unchanged: Vec<TestRecord> = graph
         .tests()
         .filter_map(|name| results.passed.get(name))
         .filter(|record| graph.key(&record.test, record.ran.as_deref()) == Some(record.key))
+        .cloned()
         .collect();
     let is_unchanged = |name: &str| unchanged.iter().any(|record| record.test == name);
-    let wanted: Vec<String> = graph.tests().filter(|name| !is_unchanged(name)).map(str::to_owned).collect();
+    let wanted = graph.tests().filter(|name| !is_unchanged(name)).map(str::to_owned).collect();
+    Ok(Plan { program, signatures, wanted, unchanged })
+}
+
+/// A test as it's kept once it has passed.
+fn record_of(
+    (graph, program, modules): (&TestGraph, &fennec_kit::Program, &Modules<'_>),
+    test: &str,
+    ran: Option<Vec<String>>,
+) -> Option<TestRecord> {
+    let key = graph.key(test, ran.as_deref())?;
+    let span = program.module.items.iter().find_map(|item| match item {
+        fennec_syntax::Item::Test(found) if found.name == test => Some(found.span),
+        _ => None,
+    });
+    let shown = span.and_then(|span| program.sources.file_at(span)).map(|(shown, ..)| shown);
+    let module = shown.and_then(|shown| modules.of_file(shown)).unwrap_or_default().to_owned();
+    let reach = if ran.is_some() { Vec::new() } else { graph.reach(test) };
+    Some(TestRecord { test: test.to_owned(), module, key, ran, reach })
+}
+
+fn run_plan(
+    path: &str,
+    options: Options,
+    results: &Results,
+    files: Option<&[fennec_build::KitFile]>,
+    plan: Plan,
+) -> ExitCode {
+    let Plan { program, signatures, wanted, unchanged } = plan;
+    let render = |diagnostic: &fennec_syntax::Diagnostic| program.sources.render(diagnostic);
+    let graph = TestGraph::of(&program.module, env!("FENNEC_BUILD"));
     let cache = results.machine_code();
     let cache = cache.as_ref().map(|(cache, program)| (cache, program.as_str()));
     let mut native = fennec_jit::run_tests(&program.module, &signatures, &wanted, cache);
@@ -132,8 +185,9 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
+    let modules = Modules::of(files.unwrap_or_default());
     let mut failed = 0;
-    let mut passing: Vec<TestRecord> = unchanged.iter().map(|record| (*record).clone()).collect();
+    let mut passing: Vec<TestRecord> = unchanged.clone();
     for outcome in &outcomes {
         let cases = if outcome.cases > 1 { format!(" ({} inputs)", outcome.cases) } else { String::new() };
         match &outcome.failure {
@@ -142,11 +196,7 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
                     println!("  ✓ {}{cases}", outcome.name);
                 }
                 let ran = native.ran.remove(&outcome.name);
-                passing.extend(graph.key(&outcome.name, ran.as_deref()).map(|key| TestRecord {
-                    test: outcome.name.clone(),
-                    key,
-                    ran,
-                }));
+                passing.extend(record_of((&graph, &program, &modules), &outcome.name, ran));
             }
             Some(diagnostic) => {
                 failed += 1;
@@ -159,8 +209,17 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
             }
         }
     }
+    // A run with real capabilities says nothing about the next one, so none of it is kept.
     if options.run != Run::Real {
         results.store(&passing);
+        if let (Some((cache, name)), Some(files)) = (&results.cache, files) {
+            if failed == 0 {
+                // A cache that can't be written only means looking at all of it next time.
+                let _ = crate::verdict::remember((cache, name), files, &program);
+            } else {
+                crate::verdict::forget((cache, name));
+            }
+        }
     }
     let passed = outcomes.len() + unchanged.len() - failed;
     say_totals(options, (passed, failed), (outcomes.len(), unchanged.len()));

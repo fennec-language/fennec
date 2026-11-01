@@ -48,6 +48,14 @@ fn without_positions(debug: &str) -> String {
 pub fn definitions(module: &Module) -> Vec<(String, Hash)> {
     let mut found = Vec::new();
     for item in &module.items {
+        item_definitions(item, &mut found);
+    }
+    found
+}
+
+/// What `definitions` finds in one item.
+pub(crate) fn item_definitions(item: &Item, found: &mut Vec<(String, Hash)>) {
+    {
         match item {
             Item::Function(function) => found.push((format!("def {}", function.name), tree_hash(function))),
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
@@ -89,7 +97,6 @@ pub fn definitions(module: &Module) -> Vec<(String, Hash)> {
             Item::Stmt(_) => {}
         }
     }
-    found
 }
 
 #[cfg(test)]

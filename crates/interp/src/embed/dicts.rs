@@ -86,8 +86,10 @@ pub fn hash_int(key: u64) -> u64 {
     finish(key.wrapping_mul(MIX))
 }
 
-/// A string key's hash, from its length and its words of text. Native code works it out
-/// the same way.
+/// A string key's hash, from its length in bytes and its words of text: its bytes packed
+/// little-endian eight to a word, from its first byte, the last word padded with zero bytes,
+/// as its block holds them. Native code works it out the same way, for a slice of a string too,
+/// so this mustn't change without changing them.
 pub fn hash_text(length: u64, words: &[u64]) -> u64 {
     finish(
         words

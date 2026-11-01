@@ -49,6 +49,9 @@ pub struct Finding {
     pub loops: usize,
     /// A function that calls this one from inside a loop, however many calls away, if any does.
     pub called_from_loop: Option<String>,
+    /// For a copy in a loop, whether it happens each time round, rather than once the first
+    /// time with the value its own after that.
+    pub every_time: bool,
 }
 
 impl Finding {
@@ -58,9 +61,12 @@ impl Finding {
     }
 
     /// Whether it happens each time round a loop: one it's in, or one that calls its function,
-    /// however many calls away.
+    /// however many calls away. A copy of something shared before the loop happens once.
     pub fn per_iteration(&self) -> bool {
-        self.is_hot()
+        match self.cost {
+            Cost::Copy { .. } => (self.loops > 0 && self.every_time) || self.called_from_loop.is_some(),
+            Cost::Allocation { .. } => self.is_hot(),
+        }
     }
 
     /// What it costs, in a few words, without where it is.
@@ -91,6 +97,7 @@ pub fn costs(program: &Program) -> Vec<Finding> {
     for function in program.functions.iter().filter(|function| is_own(function)) {
         let depths = loops::depths(function);
         let mut found: Vec<(Span, Cost, usize)> = flow::copies(function, &by_name, &depths);
+        let every_time = flow::every_time(function, &by_name);
         for (block, depth) in function.blocks.iter().zip(&depths) {
             for inst in &block.insts {
                 let what = allocation(function, &inst.kind, &library_allocates);
@@ -100,7 +107,8 @@ pub fn costs(program: &Program) -> Vec<Finding> {
         findings.extend(found.into_iter().filter(|(span, ..)| !span.in_prelude()).map(
             |(span, cost, loops)| {
                 let called_from_loop = callers.get(function.name.as_str()).map(|caller| (*caller).to_owned());
-                Finding { function: function.name.clone(), span, cost, loops, called_from_loop }
+                let every_time = loops > 0 && every_time.contains(&(span.start, span.end));
+                Finding { function: function.name.clone(), span, cost, loops, called_from_loop, every_time }
             },
         ));
     }

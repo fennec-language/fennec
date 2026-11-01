@@ -42,7 +42,7 @@ fn places_of_temporaries(function: &Function) -> HashMap<usize, Place> {
     let temporary = |id: usize| {
         id >= function.params
             && set_times.get(&id) == Some(&1)
-            && function.locals.get(id).is_some_and(|local| local.name.is_none())
+            && function.locals.get(id).is_some_and(|local| local.name.is_none() && !local.copied)
     };
     let mut places: HashMap<usize, Place> = HashMap::new();
     for inst in insts() {
@@ -130,7 +130,7 @@ impl Flow<'_> {
     fn still_shared(
         &self,
         held: &Held,
-        place: &Place,
+        (place, changed): (&Place, usize),
         live: &HashSet<usize>,
         at: (usize, usize),
     ) -> Option<Why> {
@@ -153,7 +153,7 @@ impl Flow<'_> {
         let later = self.next_read(holder, at);
         let ty = |id: usize| self.function.locals.get(id).map(|local| &local.ty);
         // A holder of another type has it inside: an item of a list, or a field.
-        if ty(holder) != ty(place.local) {
+        if ty(holder) != ty(changed) {
             return Some(Why::PutInto { container: name, later });
         }
         Some(Why::HeldBy { name, later })
@@ -191,7 +191,7 @@ impl Flow<'_> {
         let mut cost = None;
         for written in self.written(kind) {
             let place = self.place(written.0);
-            if let Some(why) = self.still_shared(held, &place, live, at) {
+            if let Some(why) = self.still_shared(held, (&place, written.0), live, at) {
                 cost = Some(Cost::Copy { value: self.shown(&place), why });
             }
             // Whichever holder changes it, the two don't share it any more. What's held from
@@ -238,6 +238,12 @@ impl Flow<'_> {
             items.into_iter().filter_map(local).map(|item| (dest.0, item.0)).collect()
         };
         match kind {
+            // An explicit `copy(...)` is a separate value on purpose.
+            InstKind::Copy { dest, .. }
+                if self.function.locals.get(dest.0).is_some_and(|local| local.copied) =>
+            {
+                Vec::new()
+            }
             InstKind::Copy { dest, value } if self.is_heap(dest.0) && !self.places.contains_key(&dest.0) => {
                 stores(dest, vec![value])
             }
@@ -299,6 +305,30 @@ pub(super) fn copies(
     by_name: &HashMap<&str, &Function>,
     depths: &[usize],
 ) -> Vec<(Span, Cost, usize)> {
+    walk(function, by_name, depths, None)
+}
+
+/// Where a copy in a loop happens each time round: what's still shared when the loop comes
+/// back to its start. What was shared before the loop is copied once, the first time.
+pub(super) fn every_time(function: &Function, by_name: &HashMap<&str, &Function>) -> HashSet<(u32, u32)> {
+    let depths = vec![0; function.blocks.len()];
+    let mut found = HashSet::new();
+    for (head, body) in super::loops::bodies(function) {
+        let again = walk(function, by_name, &depths, Some((head, &body)));
+        found.extend(again.into_iter().map(|(span, ..)| (span.start, span.end)));
+    }
+    found
+}
+
+/// Follows a function's blocks to where changing a value may copy it. With `fresh`, a loop's
+/// start sees only what its own body shares, coming back round, and only copies in the loop
+/// count.
+fn walk(
+    function: &Function,
+    by_name: &HashMap<&str, &Function>,
+    depths: &[usize],
+    fresh: Option<(usize, &HashSet<usize>)>,
+) -> Vec<(Span, Cost, usize)> {
     let flow = Flow {
         function,
         places: places_of_temporaries(function),
@@ -316,12 +346,19 @@ pub(super) fn copies(
         for (at, block) in function.blocks.iter().enumerate() {
             let mut held = entry.get(at).cloned().unwrap_or_default();
             let live = flow.live.get(at).map_or(&[][..], Vec::as_slice);
+            let in_loop = fresh.is_none_or(|(_, body)| body.contains(&at));
             for (index, (inst, live)) in block.insts.iter().zip(live).enumerate() {
-                if let Some(cost) = flow.step(&mut held, &inst.kind, (live, (at, index))) {
+                if let Some(cost) = flow.step(&mut held, &inst.kind, (live, (at, index)))
+                    && in_loop
+                {
                     found.push((inst.span, cost, depths.get(at).copied().unwrap_or(0)));
                 }
             }
             for target in block.end.targets() {
+                // Coming into the loop from outside, nothing is shared yet.
+                if fresh.is_some_and(|(head, body)| target.0 == head && !body.contains(&at)) {
+                    continue;
+                }
                 if let Some(slot) = entry.get_mut(target.0) {
                     let before = slot.len();
                     slot.extend(held.iter().cloned());

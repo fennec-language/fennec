@@ -23,15 +23,13 @@ struct Deque:
     def len(self) -> int:
         self.items.len()
 
-# `Duration`'s methods compile natively in the library and here, so both can't be kept.
-struct Duration:
-    ticks: int
+# `Random`'s methods compile natively in the library and here, so both can't be kept.
+struct Random:
+    seed: int
 
-    def as_millis(self) -> float:
-        float(self.ticks) * 2.0
-
-    def +(self, other: Duration) -> Duration:
-        Duration(ticks=self.ticks + other.ticks)
+    def randint(mut self, low: int, high: int) -> int:
+        self.seed = self.seed * 3 + 1
+        low + self.seed % (high - low + 1)
 
 def main(stdout: Stdout):
     grid = Grid(cells=[1, 2, 3, 4], width=2)
@@ -41,5 +39,5 @@ def main(stdout: Stdout):
     queue.append(5)
     queue.append(6)
     stdout.print(queue.len(), queue.items)
-    both = Duration(ticks=2) + Duration(ticks=3)
-    stdout.print(both.ticks, both.as_millis())
+    mut dice = Random(seed=1)
+    stdout.print(dice.randint(1, 6), dice.randint(1, 6), dice.seed)

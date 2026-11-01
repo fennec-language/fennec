@@ -44,7 +44,7 @@ pub fn run_tests(
     let tests: Vec<_> = tests.filter(|test| !test.bench && wanted.contains(&test.name)).collect();
     for test in &tests {
         let unique = tests.iter().filter(|other| other.name == test.name).count() == 1;
-        if test.inputs.is_empty() && unique {
+        if test.inputs.is_empty() && test.capabilities.is_empty() && unique {
             runnable.push((test.name.clone(), as_function(&test.name, &test.body, test.span)));
         } else {
             result.left.push(test.name.clone());

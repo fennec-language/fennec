@@ -1,0 +1,93 @@
+# A test names the capabilities it needs, like `main`. It gets fakes: an in-memory `Fs`, a
+# fixed `Clock` and captured `Stdout`, fresh for each test. `fennec test --real` gives it the
+# real ones instead.
+from std.time import Duration
+
+def save_score(fs: Fs, score: int):
+    fs.make_dir("saves/today")?
+    fs.write_text("saves/today/score.txt", f"{score}")?
+
+def report(stdout: Stdout, fs: Fs):
+    stdout.print("saved:", fs.read_text("saves/today/score.txt")?)
+    stdout.write("done")
+
+def wait_a_second(clock: Clock) -> int:
+    start = clock.now()
+    clock.sleep(Duration.seconds(1.0))
+    (clock.now() - start).nanos
+
+def failed[T](result: Result[T, IoError]) -> bool:
+    match result:
+        case Err(_):
+            True
+        case _:
+            False
+
+test "a written file reads back"(fs: Fs):
+    save_score(fs, 120)?
+    assert fs.read_text("saves/today/score.txt")? == "120"
+    assert fs.read_bytes("saves/today/score.txt")? == "120".encode()
+    fs.write_bytes("saves/today/raw", bytes([104, 105]))?
+    assert fs.read_text("./saves/x/../today/raw")? == "hi"
+
+test "each test starts with nothing"(fs: Fs):
+    assert not fs.exists("saves")
+    assert fs.exists(".")
+    assert (fs.list_dir(".")?).len() == 0
+
+test "folders list, measure and remove"(fs: Fs):
+    save_score(fs, 7)?
+    fs.write_text("saves/b.txt", "bb")?
+    listed = [path.text for path in fs.list_dir("saves")?]
+    assert listed == ["saves/b.txt", "saves/today"]
+    assert [path.text for path in fs.list_dir("")?] == ["saves"]
+    file = fs.metadata("saves/b.txt")?
+    assert file.size == 2 and file.is_file and not file.is_dir
+    folder = fs.metadata("saves")?
+    assert folder.is_dir and not folder.is_file
+    assert (fs.metadata(".")?).is_dir
+    fs.remove("saves/b.txt")?
+    assert not fs.exists("saves/b.txt")
+    fs.make_dir("saves/today")?
+
+test "the fake fails the way files do"(fs: Fs):
+    assert failed(fs.read_text("gone"))
+    assert failed(fs.metadata("gone"))
+    assert failed(fs.list_dir("gone"))
+    assert failed(fs.remove("gone"))
+    assert failed(fs.remove("."))
+    assert failed(fs.read_text("."))
+    assert failed(fs.write_text("no/folder.txt", "x"))
+    fs.make_dir("box")?
+    fs.write_text("box/lid", "x")?
+    assert failed(fs.read_text("box"))
+    assert failed(fs.write_text("box", "x"))
+    assert failed(fs.remove("box"))
+    assert failed(fs.make_dir("box/lid/deep"))
+    assert failed(fs.list_dir("box/lid"))
+    assert failed(fs.write_text("box/lid/under", "x"))
+    fs.write_bytes("box/raw", bytes([255]))?
+    assert failed(fs.read_text("box/raw"))
+
+test "the clock is fixed, and sleeping takes no time"(clock: Clock):
+    assert clock.now().nanos == 0
+    assert wait_a_second(clock) == 1_000_000_000
+    assert clock.now().nanos == 1_000_000_000
+
+test "output is captured"(stdout: Stdout, fs: Fs):
+    assert stdout.captured() == ""
+    save_score(fs, 9)?
+    report(stdout, fs)?
+    assert stdout.captured() == "saved: 9\ndone"
+
+test "any capability name will do"(out: Stdout, files: Fs, time: Clock):
+    out.print(files.exists("a"), time.now().nanos)
+    assert out.captured() == "False 0\n"
+
+test "a property gets fresh fakes for each input"(fs: Fs) for score: int:
+    assert not fs.exists("saves")
+    save_score(fs, score)?
+    assert fs.read_text("saves/today/score.txt")? == f"{score}"
+
+def main(stdout: Stdout):
+    stdout.print("run `fennec test` on this file")

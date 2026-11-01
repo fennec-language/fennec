@@ -1,0 +1,7 @@
+error: `Stdout` has no method `captured`
+ --> examples/errors/captured_outside_test.fen:2:18
+  |
+2 |     stdout.print(stdout.captured())
+  |                  ^^^^^^^^^^^^^^^^^
+  |
+  = help: only a test's own body can read what it printed, from the `Stdout` it received

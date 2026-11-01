@@ -237,6 +237,49 @@ fn test_checks_the_program_before_running_its_tests() {
 }
 
 #[test]
+fn tests_get_fakes_unless_asked_for_the_real_thing() {
+    let dir = std::env::temp_dir().join(format!("fennec-real-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let written = dir.join("written.txt");
+    let start = dir.join("start.txt");
+    std::fs::write(&start, "from disk").unwrap();
+    let source = format!(
+        "test \"files\"(fs: Fs, out: Stdout, clock: Clock):\n    fs.make_dir({dir:?})?\n    fs.write_text({written:?}, \"hi\")?\n    assert fs.exists({written:?})\n    out.print(\"printed\", fs.exists({start:?}))\n    assert clock.now().nanos >= 0\n",
+    );
+    let path = dir.join("real.fen");
+    std::fs::write(&path, source).unwrap();
+    let path = path.to_str().unwrap();
+
+    let faked = fennec(&["test", "--all", path], "").unwrap();
+    assert!(faked.status.success(), "{}", text(&faked.stderr));
+    assert!(!written.exists(), "the fake wrote to the disk");
+    assert!(!text(&faked.stdout).contains("printed"));
+
+    let real = fennec(&["test", "--real", path], "").unwrap();
+    assert!(real.status.success(), "{}", text(&real.stderr));
+    assert_eq!(std::fs::read_to_string(&written).unwrap(), "hi");
+    assert!(text(&real.stdout).contains("printed True\n"), "{}", text(&real.stdout));
+    // Nothing a real run passes counts for the next one.
+    let again = fennec(&["test", "--real", path], "").unwrap();
+    assert!(text(&again.stdout).contains("1 passed, 0 failed\n"), "{}", text(&again.stdout));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_clock_is_fixed_unless_asked_for_the_real_one() {
+    let dir = std::env::temp_dir().join(format!("fennec-clock-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("clock.fen");
+    let source = "from std.time import Duration\n\ntest \"clock\"(clock: Clock):\n    start = clock.now()\n    clock.sleep(Duration.seconds(0.01))\n    assert (clock.now() - start).nanos > 10_000_000\n";
+    std::fs::write(&path, source).unwrap();
+    let path = path.to_str().unwrap();
+    assert!(!fennec(&["test", "--all", path], "").unwrap().status.success());
+    let real = fennec(&["test", "--real", path], "").unwrap();
+    assert!(real.status.success(), "{}", text(&real.stderr));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn repl_echoes_values_and_keeps_definitions() {
     let input = "1 + 2\ndef double(x: int):\n    x * 2\n\ndouble(21)\nprint(1)\nexit\n";
     let output = fennec(&["repl"], input).unwrap();

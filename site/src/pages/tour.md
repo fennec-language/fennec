@@ -618,7 +618,16 @@ test "adding zero changes nothing" for n: int:
 
 The second test is a property test: Fennec generates inputs and shrinks a failure to the smallest example. `fennec run` runs the tests a change affects before it runs your program, and `fennec test` skips the ones whose code hasn't changed.
 
-**Planned:** a test naming the capabilities it needs, like `test "saves"(fs: Fs, clock: Clock):`, and getting fakes by default.
+A test names the capabilities it needs, like `main`, and gets fakes: an in-memory `Fs`, a fixed `Clock` and captured `Stdout`, fresh for each test.
+
+```fennec
+test "saves the score"(fs: Fs, stdout: Stdout):
+    save_score(fs, stdout, 120)?
+    assert fs.read_text("score.txt")? == "120"
+    assert stdout.captured() == "saved\n"
+```
+
+Sleeping on the fixed clock moves it on at once, and `stdout.captured()` works only in a test's own body. `fennec test --real` gives tests the real capabilities. A scripted `Net` is planned, for when `Net` exists.
 
 ## Performance controls
 

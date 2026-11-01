@@ -237,7 +237,11 @@ impl FnCx<'_> {
             .iter()
             .map(|param| ParamType {
                 name: param.name.clone(),
-                ty: param.ty.as_ref().map_or_else(|| owner.clone(), |ty| resolve(self, ty)),
+                ty: match &param.ty {
+                    Some(ty) => resolve(self, ty),
+                    None if param.is_self => owner.clone(),
+                    None => self.checker.program.default_type(param).unwrap_or(Type::Unknown),
+                },
                 is_mut: param.is_mut,
                 default: param.default.clone(),
             })

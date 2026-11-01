@@ -1,0 +1,7 @@
+error: can't tell the type of `cells` from its default
+ --> examples/errors/default_type_unknown.fen:1:18
+  |
+1 | def grid(cells = []) -> int:
+  |                  ^^
+  |
+  = help: write its type, like `cells: list[int] = []`

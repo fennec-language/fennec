@@ -2427,3 +2427,54 @@ def found(pair: Pair, pairs: list[Pair]) -> bool:
     let problem = printed(source, "found").unwrap_err();
     assert!(problem.contains("its own `==`"), "{problem}");
 }
+
+/// Every lowered function whose name starts with `name`, printed.
+fn printed_copies(source: &str, name: &str) -> Result<String, String> {
+    let program = lowered(source)?;
+    let found: Vec<String> = program
+        .functions
+        .iter()
+        .filter(|function| function.name.starts_with(name))
+        .map(ToString::to_string)
+        .collect();
+    if found.is_empty() {
+        return Err(format!("no {name}: {:?}", program.not_lowered));
+    }
+    Ok(found.join("\n"))
+}
+
+#[test]
+fn a_loop_over_what_a_yield_method_gives_is_a_plain_loop() {
+    let methods = "
+    def [](self, at: int) -> Iterator[T]:
+        for item in self.items[self.starts[at]:self.starts[at + 1]]:
+            yield item
+
+    def all(self) -> Iterator[T]:
+        for item in self.items:
+            yield item
+";
+    let total = "
+def total(packed: Packed[int], at: int) -> int:
+    mut sum_so_far = 0
+    for n in packed[at]:
+        sum_so_far += n
+    for n in packed.all():
+        sum_so_far += n
+    sum_so_far
+
+def main(stdout: Stdout):
+    stdout.print(total(Packed(items=[1, 2, 3], starts=[0, 2, 3]), 1))
+";
+    let generic = format!("struct Packed[T]:\n    items: list[T]\n    starts: list[int]\n{methods}{total}");
+    let plain = generic
+        .replace("Packed[T]", "Packed")
+        .replace("Iterator[T]", "Iterator[int]")
+        .replace("list[T]", "list[int]")
+        .replace("Packed[int]", "Packed");
+    for source in [plain, generic] {
+        let text = printed_copies(&source, "total").unwrap();
+        assert!(!text.contains("generator") && !text.contains("resume"), "{text}");
+        assert!(!text.contains("call "), "{text}");
+    }
+}

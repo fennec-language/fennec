@@ -1,0 +1,156 @@
+## Saving a battle to JSON and loading it back.
+##
+## JSON can't hold an `IdMap` or an `Id` yet, so a save writes units and squads as lists, and
+## every `Id` as its unit's place in that list, or -1 for none. Loading builds the `IdMap`s
+## again and turns the places back into the new `Id`s.
+
+from std import json
+from std.game import Id
+
+import map
+from units import Item, Kind, Squad, Team, Unit, World
+
+struct SavedUnit:
+    name: str
+    team: str
+    kind: str
+    x: int
+    y: int
+    health: int
+    target = -1
+    following = -1
+    squad = -1
+    path: list[(int, int)] = []
+    items: list[Item] = []
+    kills = 0
+
+struct SavedSquad:
+    name: str
+    team: str
+    leader: int
+    members: list[int]
+    rally: (int, int)
+
+struct Save:
+    tick: int
+    field: list[str]
+    units: list[SavedUnit]
+    squads: list[SavedSquad]
+
+def team_named(name: str) -> Team:
+    Team.Red if name == "red" else Team.Blue
+
+def kind_named(name: str) -> Kind:
+    match name:
+        case "archer":
+            Kind.Archer
+        case "medic":
+            Kind.Medic
+        case _:
+            Kind.Soldier
+
+## The world as JSON text.
+def dumps(world: World) -> str:
+    unit_ids = world.units.ids()
+    squad_ids = world.squads.ids()
+    mut unit_place: dict[Id[Unit], int] = {}
+    for at, id in enumerate(unit_ids):
+        unit_place[id] = at
+    mut squad_place: dict[Id[Squad], int] = {}
+    for at, id in enumerate(squad_ids):
+        squad_place[id] = at
+    def place(id: Id[Unit]?) -> int:
+        if id is None: return -1
+        unit_place.get(id) else -1
+
+    mut units = []
+    for id in unit_ids:
+        unit = world.units[id]
+        x, y = unit.at
+        squad = unit.squad
+        units.append(
+            SavedUnit(
+                name=unit.name,
+                team=unit.team.name(),
+                kind=unit.kind.name(),
+                x=x,
+                y=y,
+                health=unit.health,
+                target=place(unit.target),
+                following=place(unit.following),
+                squad=(squad_place.get(squad) else -1) if squad is not None else -1,
+                path=unit.path,
+                items=unit.items,
+                kills=unit.kills,
+            ),
+        )
+    mut squads = []
+    for id in squad_ids:
+        squad = world.squads[id]
+        members = [unit_place.get(member) else -1 for member in squad.members]
+        squads.append(
+            SavedSquad(
+                name=squad.name,
+                team=squad.team.name(),
+                leader=unit_place.get(squad.leader) else -1,
+                members=members,
+                rally=squad.rally,
+            ),
+        )
+    json.dumps(Save(tick=world.tick, field=world.field.drawing(), units=units, squads=squads))
+
+## A world from JSON text that `dumps` wrote.
+def loads(text: str) -> World:
+    save = json.loads[Save](text)?
+    mut world = World(field=map.Map.drawn(save.field), tick=save.tick)
+    mut unit_ids: list[Id[Unit]] = []
+    for saved in save.units:
+        unit = Unit(
+            name=saved.name,
+            team=team_named(saved.team),
+            kind=kind_named(saved.kind),
+            at=(saved.x, saved.y),
+            health=saved.health,
+            path=saved.path,
+            items=saved.items,
+            kills=saved.kills,
+        )
+        unit_ids.append(world.units.insert(unit))
+    mut squad_ids: list[Id[Squad]] = []
+    for saved in save.squads:
+        members = [unit_ids[member] for member in saved.members]
+        squad = Squad(
+            name=saved.name,
+            team=team_named(saved.team),
+            leader=unit_ids[saved.leader],
+            members=members,
+            rally=saved.rally,
+        )
+        squad_ids.append(world.squads.insert(squad))
+    for at, saved in enumerate(save.units):
+        id = unit_ids[at]
+        if saved.target >= 0:
+            world.units[id].target = unit_ids[saved.target]
+        if saved.following >= 0:
+            world.units[id].following = unit_ids[saved.following]
+        if saved.squad >= 0:
+            world.units[id].squad = squad_ids[saved.squad]
+    world
+
+test "a saved world loads back the same":
+    mut world = World(field=map.Map.drawn(["...", "^~."]))
+    a = world.spawn("ash", .Red, .Soldier, (0, 0))
+    b = world.spawn("vex", .Blue, .Archer, (2, 0))
+    c = world.spawn("kit", .Red, .Medic, (1, 0))
+    world.form_squad("first", [a, c], (0, 1))
+    world.units[a].target = b
+    world.units[b].health = 20
+    world.units[c].items = [Item(name="bandage", heals=15)]
+    text = dumps(world)
+    loaded = loads(text)?
+    assert dumps(loaded) == text
+    assert loaded.units.len() == 3 and loaded.squads.len() == 1
+    ids = loaded.units.ids()
+    assert loaded.units[ids[0]].target == ids[1]
+    assert loaded.units[ids[2]].following == ids[0]
+    assert loaded.field.drawing() == ["...", "^~."]

@@ -105,6 +105,14 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn get_field(&mut self, dest: LocalId, object: &Operand, field: &str) -> Result<(), String> {
         let (base, kind) = self.operand(object)?;
+        // A field taken out to change: its count only means something if what holds it is alone.
+        let base = match object {
+            Operand::Local(local) if self.known.is_taken(dest) && matches!(kind, Kind::Boxed(_)) => {
+                let place = self.slot(*local);
+                self.alone_at(&place, "fennec_unshare")
+            }
+            _ => base,
+        };
         let (offset, held) = self.field(&kind, field)?;
         let fields = self.fields_at(&base, &kind);
         let at = self.offset(&fields, offset);

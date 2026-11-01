@@ -81,7 +81,12 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 **Collections are values.** `b = a` or passing a `list`, `dict`, `set` or `str` gives a value that never changes under you, like every other value. `copy(a)` gives one that can change separately.
 
-**They're a small header over a shared buffer.** The header holds a pointer, a length and a capacity, 24 bytes, and lives inline wherever the collection is stored. The elements sit together in one reference-counted block on the heap. Copying bumps the count. The buffer is copied only on the first write while it's shared, which last-use moves make rare. Elements are stored inline too, so a `list[Vec3]` is one contiguous run of floats.
+**A `list`, `dict` or `Buffer` is one word: the address of a reference-counted block.** The block holds the length, the capacity and the elements together. Copying bumps the count. The block is copied only on the first write while it's shared, which last-use moves make rare. Elements are stored inline, so a `list[Vec3]` is one contiguous run of floats.
+
+**A `str` is a 24-byte header held inline.** The header points at a reference-counted block, or holds a short string itself.
+
+**This layout is hidden from programs.** No program can see it, so it can change if benchmarks ever argue for it.
+*Why:* One word keeps structs that hold collections small and copies cheap, and it's what the backends build on. Strings are worth the extra words because most are short enough to need no allocation.
 
 **Fixed-size arrays live entirely inline.** `array[float, 16]` has no heap block and no reference count. It's for math types like `Mat4` and small buffers inside structs.
 
@@ -260,7 +265,7 @@ This replaces the earlier rules that return types are inferred, and that recursi
 **Built-in types are ordinary structs in the standard library.** `int`, `float`, `str`, `list` and `dict` are structs in `std`, with methods and the interfaces they satisfy written like any other type's. Only machine-level operations, such as adding two machine integers or loading from memory, are intrinsics the compiler provides.
 *Why:* There's no second kind of type that only the compiler can make. A user type does everything a built-in one does, by the same means.
 
-**`Buffer[T]` is the one public building block for memory.** It's safe, bounds-checked, growable and reference-counted. It allocates, reads and writes a slot, grows, and says whether it's unique, which is what copy-on-write needs. It's designed with the runtime work now, and `list`, `dict` and `str` move onto it once benchmarks show no slowdown. Written in Fennec on top of it, they use it the same way any program can.
+**`Buffer[T]` is the one public building block for memory.** It's safe, bounds-checked, growable and reference-counted: the same block as a `list`, with public methods. `push` fills the next slot, growing if it's full, `b[i]` reads and writes a filled slot, and `reserve`, `capacity`, `pop`, `truncate` and `is_unique` do the rest, the last being what copy-on-write needs. A buffer tracks how many slots are filled, so reading a slot nothing wrote is an ordinary out-of-bounds failure, and freeing it knows what to release. It's designed with the runtime work now, and `list`, `dict` and `str` move onto it once benchmarks show no slowdown. Written in Fennec on top of it, they use it the same way any program can.
 *Why:* The built-in collections need no machinery a program can't use, so a game's own pool or ring buffer is built from the same safe piece.
 
 **A function is global only when it works on any sequence using nothing but looping and operators; anything that asks a value about itself is a method.**

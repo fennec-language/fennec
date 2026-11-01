@@ -32,6 +32,7 @@ modules! {
     hash,
     json,
     layout,
+    log,
     math,
     path,
     random,

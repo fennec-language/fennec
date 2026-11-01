@@ -8,6 +8,7 @@ mod constants;
 mod consumers;
 mod defaults;
 mod failure;
+mod generators;
 mod generics;
 mod imports;
 mod lists;
@@ -70,6 +71,7 @@ pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str
         library: reachable_later.keys().map(String::as_str).collect(),
         generic_types: generic_types(&modules),
         instances: generics::Instances::default(),
+        generator_defs: std::cell::RefCell::default(),
         generators: functions
             .iter()
             .filter(|(_, def)| fuse::has_yield(&def.body))
@@ -106,6 +108,7 @@ pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str
     program.external = calls::external(&program);
     let (mut defs, mut enums) = (defs.clone(), enums.iter().map(|def| (*def).clone()).collect::<Vec<_>>());
     structs::add_copies(&context, &mut defs, &mut enums);
+    program.generators = context.generator_defs.take();
     program.structs = defs;
     program.enums = enums;
     program.errors = errors;
@@ -220,6 +223,8 @@ struct Context<'a> {
     instances: generics::Instances,
     /// The yield functions of the module, which a loop over one can take a copy of.
     generators: HashMap<String, &'a FnDef>,
+    /// The generators lowered so far.
+    generator_defs: std::cell::RefCell<Vec<crate::GeneratorDef>>,
 }
 
 impl Context<'_> {
@@ -236,6 +241,7 @@ impl Context<'_> {
         match ty {
             Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::None => true,
             Type::List(item)
+            | Type::Iterator(item)
             | Type::Set(item)
             | Type::Optional(item)
             | Type::IdMap(item)
@@ -281,8 +287,8 @@ struct Lowering<'a> {
     leaving: Vec<places::Leaving>,
     /// The closures' functions lifted out of this one.
     lifted: Vec<Function>,
-    /// What a generator has yielded so far.
-    yielded: Option<LocalId>,
+    /// What a generator being lowered knows.
+    generating: Option<generators::Generating>,
     /// The `for` loops that count.
     counts: Vec<crate::Count>,
     /// What's making the collections of comprehensions over stages, innermost last.
@@ -312,7 +318,7 @@ impl<'a> Lowering<'a> {
             loops: Vec::new(),
             leaving: Vec::new(),
             lifted: Vec::new(),
-            yielded: None,
+            generating: None,
             counts: Vec::new(),
             fills: Vec::new(),
             copied: Vec::new(),
@@ -334,6 +340,12 @@ impl<'a> Lowering<'a> {
         if signature.returns != Type::Unit && !context.holds(&signature.returns) {
             return Err(format!("it gives back {}", signature.returns));
         }
+        if signature.generator {
+            if itself.is_some() {
+                return Err("a nested generator names itself".to_owned());
+            }
+            return Lowering::generator(instance, def, context, captures, &signature);
+        }
         let mut lowering = Lowering::new(instance, context, body, signature.returns.clone());
         for (name, ty) in captures {
             lowering.declare(name, ty.clone());
@@ -347,11 +359,7 @@ impl<'a> Lowering<'a> {
         if let Some(ty) = itself {
             lowering.bind_itself(key, &def.name, ty, captures.len(), def.span);
         }
-        if signature.generator {
-            let items = lowering.generator_items()?;
-            lowering.yielded = Some(items);
-        }
-        let plain = lowering.returns == Type::Unit || signature.generator;
+        let plain = lowering.returns == Type::Unit;
         lowering.stmts(&def.body, if plain { Tail::Drop } else { Tail::Return })?;
         lowering.end_function(def.span)?;
         let mut_params = signature
@@ -660,6 +668,8 @@ impl<'a> Lowering<'a> {
                 if let Some(value) = self.consumer(expr, callee, args)? {
                     return Ok(value);
                 }
+                let collected = self.collected_args(callee, args);
+                let args = collected.as_deref().unwrap_or(args);
                 let dest = self.call(callee, args, Some(self.ty(expr)?), span)?;
                 dest.map(Operand::Local).ok_or_else(|| "a call kept nothing".to_owned())
             }

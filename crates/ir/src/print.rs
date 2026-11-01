@@ -162,13 +162,13 @@ impl fmt::Display for InstKind {
             InstKind::GetSome { dest, value } => write!(f, "{dest} = {value} as some"),
             InstKind::MakeOk { dest, value: Some(value) } => write!(f, "{dest} = ok {value}"),
             InstKind::MakeOk { dest, value: None } => write!(f, "{dest} = ok"),
-            InstKind::MakeErr { dest, error } => write!(f, "{dest} = err {error}"),
-            InstKind::IsErr { dest, value } => write!(f, "{dest} = {value} is err"),
-            InstKind::GetOk { dest, value } => write!(f, "{dest} = {value} as ok"),
-            InstKind::GetErr { dest, value } => write!(f, "{dest} = {value} as err"),
             InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
             InstKind::AsError { dest, value } => write!(f, "{dest} = {value} as error"),
             InstKind::MakeClosure { .. } | InstKind::CallClosure { .. } => closure(self, f),
+            InstKind::MakeErr { .. }
+            | InstKind::IsErr { .. }
+            | InstKind::GetOk { .. }
+            | InstKind::GetErr { .. } => result(self, f),
             InstKind::Constant { dest, name } => write!(f, "{dest} = constant {name}"),
             InstKind::Call { dest, function, args } => {
                 let args: Vec<String> = args.iter().map(ToString::to_string).collect();
@@ -177,6 +177,7 @@ impl fmt::Display for InstKind {
                 }
                 write!(f, "call {function}({})", args.join(", "))
             }
+            other => generator(other, f),
         }
     }
 }
@@ -201,6 +202,34 @@ fn collection(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let bound = |bound: &Option<Operand>| bound.as_ref().map_or(String::new(), ToString::to_string);
             write!(f, "{dest} = {object}[{}:{}]", bound(start), bound(end))
         }
+        _ => Ok(()),
+    }
+}
+
+/// An instruction on a result.
+fn result(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match inst {
+        InstKind::MakeErr { dest, error } => write!(f, "{dest} = err {error}"),
+        InstKind::IsErr { dest, value } => write!(f, "{dest} = {value} is err"),
+        InstKind::GetOk { dest, value } => write!(f, "{dest} = {value} as ok"),
+        InstKind::GetErr { dest, value } => write!(f, "{dest} = {value} as err"),
+        _ => Ok(()),
+    }
+}
+
+/// An instruction on a generator's block.
+fn generator(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match inst {
+        InstKind::MakeGenerator { dest, generator, args } => {
+            write!(f, "{dest} = generator {generator}")?;
+            for (at, value) in args {
+                write!(f, " [{at}]={value}")?;
+            }
+            Ok(())
+        }
+        InstKind::GetSlot { dest, generator, slot } => write!(f, "{dest} = {generator}[slot {slot}]"),
+        InstKind::SetSlot { generator, slot, value } => write!(f, "{generator}[slot {slot}] = {value}"),
+        InstKind::Resume { dest, generator, .. } => write!(f, "{dest} = resume {generator}"),
         _ => Ok(()),
     }
 }

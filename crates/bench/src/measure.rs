@@ -137,3 +137,14 @@ pub(crate) fn build_twin(source: &Path, out_dir: &Path, checks: Overflow) -> Res
     }
     Ok(binary)
 }
+
+#[cfg(test)]
+mod overflow_tests {
+    use super::Overflow;
+
+    #[test]
+    fn targets_are_built_with_overflow_checks() {
+        assert_eq!(Overflow::Checked.flag(), "overflow-checks=on");
+        assert_eq!(Overflow::Unchecked.flag(), "overflow-checks=off");
+    }
+}

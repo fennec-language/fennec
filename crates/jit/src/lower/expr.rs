@@ -48,8 +48,7 @@ impl Lowerer<'_, '_> {
 
     /// How native code can hold what the checker says an expression gives.
     pub(super) fn checked_expr(&self, expr: &Expr) -> Option<Ty> {
-        let signatures = self.signatures;
-        let ty = signatures.expr_type(self.current_key(), expr.span)?;
+        let ty = self.checked_type(expr.span)?;
         Some(self.layouts.ty(ty))
             .filter(|ty| matches!(ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Dict(..) | Ty::List(_)))
     }

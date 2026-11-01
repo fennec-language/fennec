@@ -6,7 +6,7 @@
 
 use fennec_syntax::Diagnostic;
 
-use super::heap::{TEXT_HEADER_WORDS, block_text, release, text_address, text_from_bytes};
+use super::heap::{TEXT_HEADER_WORDS, block_text, release, retain, text_address, text_from_bytes};
 use super::{State, attempt, span, with};
 use crate::value::Value;
 
@@ -281,6 +281,55 @@ pub extern "C" fn code(address: i64, start: i64, end: i64) -> i64 {
         let count = whole.chars().count();
         Err(Diagnostic::new(format!("`code` needs one character, but this has {count}"), span(start, end))
             .with_help("use `codes()` for the code of every character"))
+    })
+}
+
+/// `strip` (0), `lstrip` (1) or `rstrip` (2). A string with nothing to take off is shared,
+/// so most lines cost nothing.
+pub extern "C" fn strip(address: i64, which: i64) -> i64 {
+    with(|state| {
+        let Some(at) = u64::try_from(address).ok() else { return 0 };
+        let settled =
+            |byte: u8| byte.is_ascii() && !byte.is_ascii_whitespace() && byte != 0x0b && byte >= 0x20;
+        let ends = state.heap.block(at).and_then(|block| {
+            let length = usize::try_from(*block.get(2)?).ok().filter(|length| *length > 0)?;
+            let word = |at: usize| block.get(TEXT_HEADER_WORDS + at / 8).map(|word| word.to_le_bytes());
+            let first = word(0)?.first().copied()?;
+            let last = word(length - 1)?.get((length - 1) % 8).copied()?;
+            Some((first, last))
+        });
+        if let Some((first, last)) = ends
+            && (which == 2 || settled(first))
+            && (which == 1 || settled(last))
+        {
+            retain(state, at);
+            return address;
+        }
+        // Short strings are read without allocating.
+        let mut short = [0_u8; 120];
+        let long;
+        let length = state.heap.block(at).and_then(|block| block.get(2)).copied().unwrap_or(0);
+        let whole: &[u8] = if let Some(room) = usize::try_from(length).ok().and_then(|n| short.get_mut(..n)) {
+            let words =
+                state.heap.block(at).and_then(|block| block.get(TEXT_HEADER_WORDS..)).unwrap_or_default();
+            for (chunk, word) in room.chunks_mut(8).zip(words) {
+                let bytes = word.to_le_bytes();
+                chunk.copy_from_slice(bytes.get(..chunk.len()).unwrap_or_default());
+            }
+            room
+        } else {
+            long = bytes(state, address).unwrap_or_default().0;
+            &long
+        };
+        let whole = std::str::from_utf8(whole).unwrap_or_default();
+        let part = match which {
+            1 => whole.trim_start(),
+            2 => whole.trim_end(),
+            _ => whole.trim(),
+        };
+        // Nothing but ASCII whitespace comes off most strings.
+        let kept = if whole.is_ascii() { part.len() } else { part.chars().count() };
+        text_from_bytes(state, part.as_bytes(), kept)
     })
 }
 

@@ -1,0 +1,59 @@
+## Generators: stages chained through names and through functions, used by what asks for items.
+
+struct Row:
+    amount: int
+    weight: int
+
+def parse(line: str) -> Row:
+    Row(amount=line.len(), weight=line.len() % 7)
+
+def make_lines(count: int) -> list[str]:
+    mut lines: list[str] = []
+    for at in range(count):
+        if at % 5 == 0:
+            lines.append("   ")
+        elif at % 4 == 0:
+            lines.append(f"  item {at} ")
+        else:
+            lines.append(f"item {at}")
+    lines
+
+def pipeline(src: list[str]) -> int:
+    lines = (l.strip() for l in src)
+    rows = (parse(l) for l in lines if l != "")
+    total = sum(r.amount + r.weight for r in rows)
+    total
+
+def count_up(limit: int) -> Iterator[int]:
+    mut at = 0
+    while at < limit:
+        yield at
+        at += 1
+
+def odd_squares(numbers: Iterator[int]) -> Iterator[int]:
+    for n in numbers:
+        if n % 2 == 1:
+            yield n * n % 1000
+
+def running(numbers: Iterator[int], size: int) -> Iterator[int]:
+    mut total = 0
+    for at, n in enumerate(numbers):
+        total += n
+        if at % size == 0:
+            total = total % 1000
+        yield total
+
+def first_over(limit: int, over: int) -> int:
+    for n in odd_squares(count_up(limit)):
+        if n > over: return n
+    0
+
+def main(stdout: Stdout):
+    src = make_lines(20_000)
+    mut result = 0
+    for round in range(40):
+        result += pipeline(src)
+        chain = running(odd_squares(count_up(200_000 + round)), 16)
+        result += sum(n % 7 for n in chain)
+        result += first_over(1_000, 990 - round)
+    stdout.print(result)

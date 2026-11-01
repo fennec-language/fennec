@@ -838,9 +838,8 @@ impl Emit<'_, '_, '_> {
             }
             Kind::Str if op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) => {
                 // `text += more` takes over the owner the local had, and grows in place if it can.
-                self.declare("declare ptr @fennec_str_append(ptr, ptr) nounwind");
-                let (joined, slot) = (self.temp(), self.slot(dest));
-                self.line(&format!("{joined} = call ptr @fennec_str_append(ptr {a}, ptr {b})"));
+                let joined = self.append_text(&a, &b);
+                let slot = self.slot(dest);
                 self.line(&format!("store ptr {joined}, ptr {slot}"));
                 return Ok(());
             }

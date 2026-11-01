@@ -135,6 +135,9 @@ impl Emit<'_, '_, '_> {
     }
 
     pub(crate) fn get_field(&mut self, dest: LocalId, object: &Operand, field: &str) -> Result<(), String> {
+        if let Some((root, list_field, index)) = self.known.path_home(dest).cloned() {
+            return self.take_from_item(dest, (root, &list_field, &index), field);
+        }
         let (base, kind) = self.operand(object)?;
         // A field taken out to change: its count only means something if what holds it is alone.
         let base = match object {
@@ -148,6 +151,38 @@ impl Emit<'_, '_, '_> {
         let fields = self.fields_at(&base, &kind);
         let at = self.offset(&fields, offset);
         self.read_into(dest, &held, &at, "")
+    }
+
+    /// `root.list[index].field`, taken out to change and put back: the root, the list and the
+    /// item are each made alone first, so the field's one owner is the item it goes back to.
+    fn take_from_item(
+        &mut self,
+        dest: LocalId,
+        (root, list_field, index): (LocalId, &str, &Operand),
+        field: &str,
+    ) -> Result<(), String> {
+        let list = self.alone_list(root, &[list_field.to_owned()])?;
+        let item_kind = self.place_kind(root, &[list_field.to_owned()])?;
+        let Kind::List(item) = item_kind else { return Err("an item of something else".to_owned()) };
+        let held = self.item_kind(item)?;
+        if !matches!(held, Kind::Boxed(_)) {
+            return Err(format!("it takes a field of a {held:?} item, which this backend doesn't take yet"));
+        }
+        // The item was read at this index just before, so it's inside the list, counting from
+        // the end if it's negative.
+        let (index, _) = self.operand(index)?;
+        let length = self.list_length(&list);
+        let (negative, from_end, position) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{negative} = icmp slt i64 {index}, 0"));
+        self.line(&format!("{from_end} = add i64 {index}, {length}"));
+        self.line(&format!("{position} = select i1 {negative}, i64 {from_end}, i64 {index}"));
+        let at = self.item_address(&list, "ptr", &position);
+        let block = self.alone_at(&at, "fennec_unshare");
+        let (offset, inner) = self.field(&held, field)?;
+        let fields = self.fields_at(&block, &held);
+        let place = self.offset(&fields, offset);
+        let value = self.load_field(&inner, &place, "");
+        self.assign(dest, &value)
     }
 
     /// A block at `place` with no other owner, so it can change.

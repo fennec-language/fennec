@@ -604,3 +604,9 @@ fn sums_error_says_what_to_add() {
     );
     assert_eq!(helps(&program), ["add `def +(self, other: Flag) -> Flag` to `Flag`"]);
 }
+
+#[test]
+fn only_sum_takes_a_start() {
+    let text = "def main(stdout: Stdout):\n    stdout.print(max([1], start=1))\n";
+    assert_eq!(problems(text), ["`max` has no parameter called `start` @ 1"]);
+}

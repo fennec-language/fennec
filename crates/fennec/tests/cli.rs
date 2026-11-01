@@ -1147,6 +1147,21 @@ fn a_dicts_length_is_native() {
 }
 
 #[test]
+fn a_dicts_get_with_a_negative_default_is_native() {
+    let dir = scratch("negative-default").unwrap();
+    let program = dir.join("table.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    mut table: dict[int, int] = {}\n    table[1] = 2\n    \
+         stdout.print(table.get(3) else -1)\n",
+    )
+    .unwrap();
+    let output = fennec(&["dev", "fallbacks", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "everything compiles to native code\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn dev_fallbacks_lists_what_isnt_native_hot_loops_first() {
     // A dict of lists isn't native yet.
     let dir = scratch("fallbacks").unwrap();

@@ -89,13 +89,17 @@ pub(crate) fn kit_paths(dir: &Path) -> Option<Vec<(String, PathBuf)>> {
 
 /// Loads some of a kit's modules and what they import, by name. What they don't import can't
 /// reach them.
-pub(crate) fn kit_modules(dir: &Path, shown_as: &str, modules: &[String]) -> Result<Program, Problems> {
+pub(crate) fn kit_modules(
+    dir: &Path,
+    shown_as: &str,
+    modules: &[String],
+    overlay: &Overlay,
+) -> Result<Program, Problems> {
     let Some((root, shown_root)) = find_root(dir, shown_as) else {
         return Err(Problems::unplaced("error: this isn't in a kit\n".to_owned()));
     };
     let manifest = read_manifest(&root, &shown_root).map_err(Problems::unplaced)?;
-    let overlay = Overlay::new();
-    let mut loader = Loader::new(root.join("src"), format!("{shown_root}src/"), &overlay);
+    let mut loader = Loader::new(root.join("src"), format!("{shown_root}src/"), overlay);
     let modules: Vec<Vec<String>> =
         modules.iter().map(|module| module.split('.').map(str::to_owned).collect()).collect();
     loader.parse_ahead(modules.clone());

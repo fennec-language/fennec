@@ -6,7 +6,7 @@ use fennec_syntax::{BinOp, Expr, ExprKind, Pattern, Span, UnaryOp};
 
 use super::{Lowered, Lowering};
 use crate::validate::fits;
-use crate::{BlockId, InstKind, LocalId, Operand, StructDef, Terminator, type_in};
+use crate::{BlockId, InstKind, Operand, StructDef, Terminator, type_in};
 
 /// Every error type the IR can hold: not ones with `where` rules, which are checked
 /// whenever a value is made.

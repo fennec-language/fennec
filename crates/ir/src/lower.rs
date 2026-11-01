@@ -108,6 +108,7 @@ pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str
     program.external = calls::external(&program);
     let (mut defs, mut enums) = (defs.clone(), enums.iter().map(|def| (*def).clone()).collect::<Vec<_>>());
     structs::add_copies(&context, &mut defs, &mut enums);
+    program.generators = context.generator_defs.take();
     program.structs = defs;
     program.enums = enums;
     program.errors = errors;
@@ -667,6 +668,8 @@ impl<'a> Lowering<'a> {
                 if let Some(value) = self.consumer(expr, callee, args)? {
                     return Ok(value);
                 }
+                let collected = self.collected_args(callee, args);
+                let args = collected.as_deref().unwrap_or(args);
                 let dest = self.call(callee, args, Some(self.ty(expr)?), span)?;
                 dest.map(Operand::Local).ok_or_else(|| "a call kept nothing".to_owned())
             }

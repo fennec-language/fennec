@@ -39,7 +39,7 @@ pub(super) fn dest(inst: &InstKind) -> Option<LocalId> {
         InstKind::Builtin { dest, .. } | InstKind::CallClosure { dest, .. } | InstKind::Call { dest, .. } => {
             *dest
         }
-        InstKind::SetField { .. } | InstKind::SetIndex { .. } => None,
+        InstKind::SetField { .. } | InstKind::SetIndex { .. } | InstKind::SetSlot { .. } => None,
     }
 }
 

@@ -29,6 +29,9 @@ pub(super) struct Generating {
     yields: Vec<Yield>,
 }
 
+/// Where a generator can go on from: its `pc`, the block, and what it kept, by slot.
+type Place = (i64, crate::BlockId, Vec<(LocalId, usize)>);
+
 /// What a generator's `pc` holds when it isn't where to go on from.
 const FINISHED: i64 = -1;
 const RUNNING: i64 = -2;
@@ -239,12 +242,11 @@ impl<'a> Lowering<'a> {
                 open.end = None;
             }
             self.current = block;
-            match value {
-                Some(result) => self.finish_with_result(result, span),
-                None => {
-                    self.set_slot(slot::PC, Operand::Int(FINISHED), span);
-                    self.finish(Terminator::Return(Some(Operand::Bool(false))));
-                }
+            if let Some(result) = value {
+                self.finish_with_result(result, span);
+            } else {
+                self.set_slot(slot::PC, Operand::Int(FINISHED), span);
+                self.finish(Terminator::Return(Some(Operand::Bool(false))));
             }
         }
     }
@@ -271,7 +273,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// The first block: reads where to go on from, and goes there, with what it kept back.
-    fn choose_where_to_go_on(&mut self, places: &[(i64, crate::BlockId, Vec<(LocalId, usize)>)], span: Span) {
+    fn choose_where_to_go_on(&mut self, places: &[Place], span: Span) {
         let this = Operand::Local(LocalId(0));
         self.current = crate::BlockId(0);
         if let Some(block) = self.blocks.get_mut(0) {
@@ -280,7 +282,8 @@ impl<'a> Lowering<'a> {
         let pc = self.temporary(Type::Int);
         self.emit(InstKind::GetSlot { dest: pc, generator: this.clone(), slot: slot::PC }, span);
         self.branch_if_pc(pc, RUNNING, span, |lowering| {
-            lowering.finish(Terminator::Stop { message: "this generator is already running".to_owned(), span });
+            lowering
+                .finish(Terminator::Stop { message: "this generator is already running".to_owned(), span });
         });
         for ended in [FINISHED, FAILED] {
             self.branch_if_pc(pc, ended, span, |lowering| {
@@ -337,7 +340,8 @@ impl<'a> Lowering<'a> {
         let own: Vec<&str> = names.iter().map(String::as_str).collect();
         let captures = self.captures(mentioned, &own);
         let key = format!("{}.generator@{}", self.name, expr.span.start);
-        let instance = FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut lifted = Lowering::new(&instance, self.context, self.body, Type::Unit);
         lifted.begin_generator((**item).clone());
         let mut params = Vec::new();
@@ -376,7 +380,8 @@ impl<'a> Lowering<'a> {
         let source_ty = self.ty(items)?;
         let source_value = self.expr(items)?;
         let key = format!("{}.enumerate@{}", self.name, span.start);
-        let instance = FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut lifted = Lowering::new(&instance, self.context, self.body, Type::Unit);
         lifted.begin_generator((**pair).clone());
         let source = lifted.declare(SOURCE, source_ty);
@@ -403,6 +408,80 @@ impl<'a> Lowering<'a> {
         Ok(Operand::Local(dest))
     }
 
+    /// `zip(first, second)` with a generator on either side, as a generator. It stops when
+    /// either runs out, asking `first` before `second`.
+    pub(super) fn zipped_generator(&mut self, expr: &Expr, first: &Expr, second: &Expr) -> Lowered<Operand> {
+        const FIRST: &str = "\0first";
+        const SECOND: &str = "\0second";
+        let ty = self.ty(expr)?;
+        let Type::Iterator(pair) = &ty else { return Err(format!("`zip` gives {ty}")) };
+        let Type::Tuple(parts) = &**pair else { return Err(format!("`zip` gives {ty}")) };
+        let [_, wanted] = parts.as_slice() else { return Err(format!("`zip` gives {ty}")) };
+        let span = expr.span;
+        let (first_ty, second_ty) = (self.ty(first)?, self.ty(second)?);
+        let args = vec![self.expr(first)?, self.expr(second)?];
+        let key = format!("{}.zip@{}", self.name, span.start);
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let mut lifted = Lowering::new(&instance, self.context, self.body, Type::Unit);
+        lifted.begin_generator((**pair).clone());
+        let params = vec![lifted.declare(FIRST, first_ty), lifted.declare(SECOND, second_ty.clone())];
+        let other = params.get(1).copied().ok_or("`zip` lost an argument")?;
+        let at = lifted.temporary(Type::Int);
+        lifted.emit(InstKind::Copy { dest: at, value: Operand::Int(0) }, span);
+        if matches!(second_ty, Type::Iterator(_)) {
+            lifted.start_generator(&Operand::Local(other), span);
+        }
+        let each = "\0each".to_owned();
+        let names = [each.clone()];
+        let read = Expr { kind: ExprKind::Name(FIRST.to_owned()), span: first.span };
+        let tuple_ty = (**pair).clone();
+        let wanted = wanted.clone();
+        lifted.looping(Over { names: &names, iter: &read, back: None }, span, |inner| {
+            let item = inner.lookup(&each).ok_or("`zip` lost its item")?;
+            let taken = inner.next_of_second(other, at, &wanted, span)?;
+            let dest = inner.temporary(tuple_ty);
+            let fields = vec![Operand::Local(item), Operand::Local(taken)];
+            inner.emit(InstKind::MakeTuple { dest, items: fields }, span);
+            inner.yield_operand(Operand::Local(dest));
+            Ok(())
+        })?;
+        lifted.end_function(span)?;
+        self.lifted.extend(lifted.finish_generator(&params, &ty, span)?);
+        let dest = self.temporary(ty);
+        self.emit(InstKind::Call { dest: Some(dest), function: key, args }, span);
+        Ok(Operand::Local(dest))
+    }
+
+    /// The next item of `zip`'s second, leaving the loop when it has run out.
+    fn next_of_second(&mut self, other: LocalId, at: LocalId, item: &Type, span: Span) -> Lowered<LocalId> {
+        let exit = self.loops.last().ok_or("`zip` outside its loop")?.exit;
+        let more = self.temporary(Type::Bool);
+        let source = Operand::Local(other);
+        if matches!(self.local_type(other), Type::Iterator(_)) {
+            self.emit(InstKind::Resume { dest: more, generator: source.clone(), known: None }, span);
+        } else {
+            let length = self.temporary(Type::Int);
+            let args = vec![source.clone()];
+            let name = "list.len".to_owned();
+            self.emit(InstKind::Builtin { dest: Some(length), name, args, changes: false }, span);
+            let (lhs, rhs) = (Operand::Local(at), Operand::Local(length));
+            self.emit(InstKind::Binary { dest: more, op: BinOp::Lt, lhs, rhs }, span);
+        }
+        let then = self.new_block();
+        self.finish(Terminator::Branch { cond: Operand::Local(more), then, otherwise: exit });
+        self.current = then;
+        let taken = self.temporary(item.clone());
+        if matches!(self.local_type(other), Type::Iterator(_)) {
+            self.emit(InstKind::GetSlot { dest: taken, generator: source, slot: slot::ITEM }, span);
+        } else {
+            self.emit(InstKind::GetIndex { dest: taken, object: source, index: Operand::Local(at) }, span);
+            let lhs = Operand::Local(at);
+            self.emit(InstKind::Binary { dest: at, op: BinOp::Add, lhs, rhs: Operand::Int(1) }, span);
+        }
+        Ok(taken)
+    }
+
     /// Runs `body` for each item a generator gives, failing if it's been used already.
     pub(super) fn through_generator<F>(
         &mut self,
@@ -426,9 +505,9 @@ impl<'a> Lowering<'a> {
         self.finish(Terminator::Branch { cond: Operand::Local(more), then, otherwise: done });
         self.current = then;
         self.scopes.push(HashMap::new());
-        let held = self.temporary(item);
-        self.emit(InstKind::GetSlot { dest: held, generator: generator.clone(), slot: slot::ITEM }, span);
-        let bound = self.bind_generated(names, held, span);
+        let given = self.temporary(item);
+        self.emit(InstKind::GetSlot { dest: given, generator: generator.clone(), slot: slot::ITEM }, span);
+        let bound = self.bind_generated(names, given, span);
         self.loops.push(Loop { next: head, exit, depth: self.leaving.len() });
         let lowered = bound.and_then(|()| body(self));
         self.loops.pop();
@@ -444,13 +523,20 @@ impl<'a> Lowering<'a> {
     /// A generator can be used once.
     fn start_generator(&mut self, generator: &Operand, span: Span) {
         let started = self.temporary(Type::Bool);
-        self.emit(InstKind::GetSlot { dest: started, generator: generator.clone(), slot: slot::STARTED }, span);
+        self.emit(
+            InstKind::GetSlot { dest: started, generator: generator.clone(), slot: slot::STARTED },
+            span,
+        );
         let (then, otherwise) = (self.new_block(), self.new_block());
         self.finish(Terminator::Branch { cond: Operand::Local(started), then, otherwise });
         self.current = then;
         self.finish(Terminator::Stop { message: "this generator has already been used".to_owned(), span });
         self.current = otherwise;
-        let kind = InstKind::SetSlot { generator: generator.clone(), slot: slot::STARTED, value: Operand::Bool(true) };
+        let kind = InstKind::SetSlot {
+            generator: generator.clone(),
+            slot: slot::STARTED,
+            value: Operand::Bool(true),
+        };
         self.emit(kind, span);
     }
 

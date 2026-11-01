@@ -169,6 +169,10 @@ impl fmt::Display for InstKind {
             InstKind::IsError { dest, value, type_name } => write!(f, "{dest} = {value} is {type_name}"),
             InstKind::AsError { dest, value } => write!(f, "{dest} = {value} as error"),
             InstKind::MakeClosure { .. } | InstKind::CallClosure { .. } => closure(self, f),
+            InstKind::MakeGenerator { .. }
+            | InstKind::GetSlot { .. }
+            | InstKind::SetSlot { .. }
+            | InstKind::Resume { .. } => generator(self, f),
             InstKind::Constant { dest, name } => write!(f, "{dest} = constant {name}"),
             InstKind::Call { dest, function, args } => {
                 let args: Vec<String> = args.iter().map(ToString::to_string).collect();
@@ -201,6 +205,23 @@ fn collection(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let bound = |bound: &Option<Operand>| bound.as_ref().map_or(String::new(), ToString::to_string);
             write!(f, "{dest} = {object}[{}:{}]", bound(start), bound(end))
         }
+        _ => Ok(()),
+    }
+}
+
+/// An instruction on a generator's block.
+fn generator(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match inst {
+        InstKind::MakeGenerator { dest, generator, args } => {
+            write!(f, "{dest} = generator {generator}")?;
+            for (at, value) in args {
+                write!(f, " [{at}]={value}")?;
+            }
+            Ok(())
+        }
+        InstKind::GetSlot { dest, generator, slot } => write!(f, "{dest} = {generator}[slot {slot}]"),
+        InstKind::SetSlot { generator, slot, value } => write!(f, "{generator}[slot {slot}] = {value}"),
+        InstKind::Resume { dest, generator, .. } => write!(f, "{dest} = resume {generator}"),
         _ => Ok(()),
     }
 }

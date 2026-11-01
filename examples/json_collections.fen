@@ -95,12 +95,8 @@ test "a key that isn't what the map holds says where":
         == "the text has the key \"x\", which isn't an int"
     )
     assert (
-        failure(
-            json.loads[Board](
-                "{\"cells\": [], \"scores\": {}, \"seen\": [], \"queue\": [], \"levels\": {\"one\": 1}}",
-            ),
-        )
-        != "loaded"
+        failure(json.loads[SortedMap[int, str]]("{\"1\": \"a\", \"one\": \"b\"}"))
+        == "the text has the key \"one\", which isn't an int"
     )
     assert (
         failure(json.loads[dict[Side, int]]("[[\"East\", 1]]"))

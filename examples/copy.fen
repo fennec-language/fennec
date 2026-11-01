@@ -1,0 +1,28 @@
+# `copy(value)` makes a separate value on purpose, so changing one doesn't reach the other.
+
+struct Point:
+    x: int
+    y: float = 0.5
+
+struct Shape:
+    at: Point
+    name: str
+    tags: list[str]
+
+def main(stdout: Stdout):
+    mut a = Point(x=1)
+    mut b = copy(a)
+    b.x = 2
+    stdout.print(a.x, b.x, b.y)
+    mut one = Shape(at=a, name="one", tags=["t"])
+    mut two = copy(one)
+    two.at.x = 9
+    two.name = "two"
+    two.tags.append("u")
+    stdout.print(one.at.x, one.name, one.tags, two.at.x, two.name, two.tags)
+    mut list_a = [1, 2]
+    mut list_b = copy(list_a)
+    list_b.append(3)
+    list_a[0] = 5
+    stdout.print(list_a, list_b, copy(7), copy("text"), copy(1.5))
+    stdout.print(copy(a) == a, copy(one).at.x)

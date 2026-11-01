@@ -185,6 +185,9 @@ impl Lowering<'_> {
             let known = known_generator(iter, &|key| self.context.generators.contains_key(key));
             return self.through_generator(names, (value, (**item).clone()), known, span, body);
         }
+        if ty == Type::Str && back.is_none() {
+            return self.through_text(names, value, span, body);
+        }
         let (held, item, conversion) = match &ty {
             // A loop goes through the list as it was, whatever the body does to the name.
             Type::List(item) => (ty.clone(), *item.clone(), None),
@@ -395,4 +398,56 @@ fn known_generator(iter: &Expr, is_generator: &dyn Fn(&str) -> bool) -> Option<S
     let ExprKind::Call { callee, .. } = &iter.kind else { return None };
     let ExprKind::Name(key) = &callee.kind else { return None };
     is_generator(key).then(|| super::generators::resume_name(key))
+}
+
+impl Lowering<'_> {
+    /// `for c in text`, a character at a time from where the last one ended, so nothing is
+    /// made but each character. `str.char_at_byte(text, at)` gives the character starting at
+    /// byte `at`, and `str.byte_len(c)` how many bytes it takes.
+    fn through_text<F>(&mut self, names: &[String], text: Operand, span: Span, body: F) -> Lowered<()>
+    where
+        F: FnOnce(&mut Self) -> Lowered<()>,
+    {
+        let [name] = names else { return Err("it unpacks a string's characters".to_owned()) };
+        let builtin = |name: &str, dest, args| InstKind::Builtin {
+            dest: Some(dest),
+            name: name.to_owned(),
+            args,
+            changes: false,
+        };
+        let whole = self.temporary(Type::Str);
+        self.emit(InstKind::Copy { dest: whole, value: text }, span);
+        let length = self.temporary(Type::Int);
+        self.emit(builtin("str.byte_len", length, vec![Operand::Local(whole)]), span);
+        let at = self.temporary(Type::Int);
+        self.emit(InstKind::Copy { dest: at, value: Operand::Int(0) }, span);
+        let step = self.temporary(Type::Int);
+        self.emit(InstKind::Copy { dest: step, value: Operand::Int(0) }, span);
+        let (head, then, next, exit) =
+            (self.new_block(), self.new_block(), self.new_block(), self.new_block());
+        self.finish(Terminator::Jump(head));
+        self.current = head;
+        let going = self.temporary(Type::Bool);
+        let (lhs, rhs) = (Operand::Local(at), Operand::Local(length));
+        self.emit(InstKind::Binary { dest: going, op: BinOp::Lt, lhs, rhs }, span);
+        self.finish(Terminator::Branch { cond: Operand::Local(going), then, otherwise: exit });
+        self.current = then;
+        self.scopes.push(HashMap::new());
+        let character = self.declare(name, Type::Str);
+        let args = vec![Operand::Local(whole), Operand::Local(at)];
+        self.emit(builtin("str.char_at_byte", character, args), span);
+        self.emit(builtin("str.byte_len", step, vec![Operand::Local(character)]), span);
+        self.loops.push(Loop { next, exit, depth: self.leaving.len() });
+        let lowered = body(self);
+        self.loops.pop();
+        self.scopes.pop();
+        lowered?;
+        self.finish(Terminator::Jump(next));
+        self.current = next;
+        let lhs = Operand::Local(at);
+        self.emit(InstKind::Binary { dest: at, op: BinOp::Add, lhs, rhs: Operand::Local(step) }, span);
+        self.finish(Terminator::Jump(head));
+        self.current = exit;
+        Ok(())
+    }
 }

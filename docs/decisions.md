@@ -73,6 +73,12 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 ## Collections
 
+**A struct works as a dict key with nothing to write.** It hashes all its fields automatically. A struct with a float field, or one that defines its own `def ==`, can't be a key, and the compile error suggests keying by a field. There's no `def key`.
+*Why:* A hash can't then disagree with `==`, which is the classic bug in hand-written keys. A float makes a poor key inside a struct, since NaN never equals itself and `0.0` equals `-0.0`.
+
+**Dicts use a fast keyed hash with a random seed per process,** fixed in tests and replays. A dict whose probes get suspiciously long rehashes itself with SipHash.
+*Why:* Normal programs get the fast hash. An attacker can't work out colliding keys without the seed, and if collisions turn up anyway, that one dict pays for the stronger hash. Iteration follows insertion order, so the seed can't change what a program does.
+
 **Collections are values.** `b = a` or passing a `list`, `dict`, `set` or `str` gives a value that never changes under you, like every other value. `copy(a)` gives one that can change separately.
 
 **They're a small header over a shared buffer.** The header holds a pointer, a length and a capacity, 24 bytes, and lives inline wherever the collection is stored. The elements sit together in one reference-counted block on the heap. Copying bumps the count. The buffer is copied only on the first write while it's shared, which last-use moves make rare. Elements are stored inline too, so a `list[Vec3]` is one contiguous run of floats.
@@ -115,7 +121,7 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 ## Determinism
 
-**Dicts and sets keep insertion order.**
+**Dicts and sets keep insertion order,** whatever the hash does.
 *Why:* The same program iterates the same way on every run and every machine. Python already does this, so it costs AI nothing.
 
 **Evaluation is always left to right.**
@@ -188,6 +194,7 @@ scan(rows)
 scan(rows, limit=100)
 ```
 - A default is a plain value computed at compile time, under the same rule as a module constant. Calling without it costs the same as passing the value.
+- There are no exceptions in `std` either. `d.get(key)` returns an optional, so a fallback is written `d.get(key) else 0`, and `sum` takes `start=`.
 - Required parameters may be positional. How far to restrict that is still open.
 
 *Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap.
@@ -263,7 +270,7 @@ distance = (a - b).abs()                  # method: a question about one value
 ```
 *Why:* A looping function belongs to no one type: it works on lists, sets, dicts and generator expressions alike. A question about a value is answered differently by each type, so it lives on the type.
 
-**`sum` needs a start for anything but numbers.** `sum(numbers)` needs nothing, and an empty `list[float]` gives `0.0`. Any other type passes a start: `sum(wallet, Money(cents=0))`. A missing start, a type with no `def +`, and a start of the wrong type are all compile errors.
+**`sum` needs a start for anything but numbers.** `sum(numbers)` needs nothing, and an empty `list[float]` gives `0.0`. Any other type passes a start, by name: `sum(wallet, start=Money(cents=0))`. A missing start, a type with no `def +`, and a start of the wrong type are all compile errors.
 *Why:* It keeps the rule that a global uses nothing but looping and operators, with no `zero()` interface.
 
 **No global function serves only one type.** A global has to follow the rule above, or be a type's constructor, like `int(...)`, `float(...)` and `str(...)`. An operation on one type is a method. So a character's code is `"A".code()`, not Python's `ord("A")`, and `ord(c)` is an error whose fix writes `c.code()`.
@@ -1055,7 +1062,7 @@ Steps 2 to 5 wait until the core semantics above are frozen and the Fennec compi
 
 ## Still open
 
-- How far to restrict positional arguments beyond parameters with defaults, with a lint the likely tool. This includes `d.get(key, 0)` and `sum(xs, start)`, which pass an optional second argument by position today.
+- How far to restrict positional arguments beyond parameters with defaults, with a lint the likely tool.
 - How a type marks that its finishing method must be called.
 - How replay records the order tasks reach a `shared` value or a channel.
 - Decorators, beyond the compiler's own `@hot` and `@fast_math`. If they come, they'd be typed annotations: data attached to a function, read by kits through reflection at compile time in the sandboxed interpreter, never wrappers that change the function. `@get("/todos/{id}")` on a plain function would let a router build its table at compile time.

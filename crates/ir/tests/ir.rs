@@ -1361,51 +1361,27 @@ def h(data: bytes, at: int) -> int:
 }
 
 #[test]
-fn a_generator_fills_a_list_as_it_runs() {
-    let source = "def countdown(n: int) -> Iterator[int]:
-    mut at = n
-    while at > 0:
-        yield at
-        if at == 5:
+fn a_loop_over_a_generator_with_a_cleanup_or_match_still_lowers() {
+    let source = "struct Door:
+    open: bool
+
+    def del(self):
+        pass
+
+def held() -> Iterator[int]:
+    with Door(open=True) as door:
+        yield 1
+    match 2:
+        case 2:
+            yield 2
+        case _:
             return
-        at -= 1
 
 def f() -> int:
-    mut total = 0
-    for at in countdown(3):
-        total += at
-    total
+    sum(n for n in held())
 ";
-    assert_eq!(
-        printed(source, "countdown").unwrap(),
-        "fn countdown(_0) -> list[int]
-  local _0 n: int
-  local _1: list[int]
-  local _2 at: int
-  local _3: bool
-  local _4: bool
-  bb0:
-    _1 = []
-    _2 = _0
-    jump bb1
-  bb1:
-    _3 = _2 > 0
-    branch _3 bb2 bb3
-  bb2:
-    builtin list.append(mut _1, _2)
-    _4 = _2 == 5
-    branch _4 bb5 bb6
-  bb3:
-    return _1
-  bb4:
-    _2 = _2 - 1
-    jump bb1
-  bb5:
-    return _1
-  bb6:
-    jump bb4
-"
-    );
+    assert!(printed(source, "held.resume").is_ok());
+    assert!(!printed(source, "f").unwrap().contains("list.append"));
 }
 
 #[test]
@@ -2214,4 +2190,87 @@ fn every_example_lowers_to_valid_ir() {
     {
         assert!(lowered_functions.iter().any(|found| found == expected), "{expected} wasn't lowered");
     }
+}
+
+#[test]
+fn a_loop_over_a_stage_is_a_plain_loop() {
+    let source = "def upto(limit: int) -> Iterator[int]:
+    mut n = 0
+    while n < limit:
+        yield n
+        n += 1
+
+def odd(numbers: Iterator[int]) -> Iterator[int]:
+    for n in numbers:
+        if n % 2 == 1:
+            yield n
+
+def total(limit: int) -> int:
+    mut sum_so_far = 0
+    for n in odd(upto(limit)):
+        sum_so_far += n * 2
+    sum_so_far
+
+def doubled(limit: int) -> list[int]:
+    [n for n in (x * 2 for x in upto(limit)) if n > 2]
+";
+    let total = printed(source, "total").unwrap();
+    assert!(!total.contains("call "), "{total}");
+    assert!(!total.contains("list.append"), "{total}");
+    let doubled = printed(source, "doubled").unwrap();
+    assert!(!doubled.contains("call "), "{doubled}");
+    assert_eq!(doubled.matches("list.append").count(), 1, "{doubled}");
+}
+
+#[test]
+fn what_uses_a_stage_in_place_collects_nothing() {
+    let source = "def upto(limit: int) -> Iterator[int]:
+    mut n = 0
+    while n < limit:
+        yield n
+        n += 1
+
+def total(limit: int) -> int:
+    sum(n * 2 for n in upto(limit) if n > 1)
+
+def scaled(xs: list[float]) -> float:
+    sum(x * 2.0 for x in xs)
+
+def has_big(limit: int) -> bool:
+    any(n > 2 for n in upto(limit))
+
+def all_small(xs: list[int]) -> bool:
+    all(x < 2 for x in xs)
+";
+    for function in ["total", "scaled", "has_big", "all_small"] {
+        let text = printed(source, function).unwrap();
+        assert!(!text.contains("list.append"), "{text}");
+        assert!(!text.contains("[]"), "{text}");
+    }
+}
+
+#[test]
+fn a_generator_passed_around_is_a_state_machine() {
+    let source = "def upto(limit: int) -> Iterator[int]:
+    mut n = 0
+    while n < limit:
+        yield n
+        n += 1
+
+def total(numbers: Iterator[int]) -> int:
+    mut so_far = 0
+    for n in numbers:
+        so_far += n
+    so_far
+
+def main_total() -> int:
+    total(upto(3))
+";
+    let made = printed(source, "upto").unwrap();
+    assert!(made.contains("= generator upto"), "{made}");
+    let resumed = printed(source, "upto.resume").unwrap();
+    assert!(resumed.contains("[slot 0] = 1"), "{resumed}");
+    let used = printed(source, "total").unwrap();
+    assert!(used.contains("= resume"), "{used}");
+    assert!(used.contains("this generator has already been used"), "{used}");
 }

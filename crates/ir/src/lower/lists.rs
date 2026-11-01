@@ -140,6 +140,9 @@ impl Lowering<'_> {
         body: &[Stmt],
         span: Span,
     ) -> Lowered<()> {
+        if !is_mut && let Some(expansion) = self.expanded(names, iter, body) {
+            return self.fused(expansion);
+        }
         // Only the items of a list or `IdMap` are written back, and only one name holds them.
         let by_id = matches!(self.type_at(iter.span), Some(Type::IdMap(_)));
         let changes_items =
@@ -173,6 +176,10 @@ impl Lowering<'_> {
         }
         let ty = self.type_at(iter.span).ok_or("what it loops over has no type")?;
         let value = self.expr(iter)?;
+        if let Type::Iterator(item) = &ty {
+            let known = known_generator(iter, &|key| self.context.generators.contains_key(key));
+            return self.through_generator(names, (value, (**item).clone()), known, span, body);
+        }
         let (held, item, conversion) = match &ty {
             // A loop goes through the list as it was, whatever the body does to the name.
             Type::List(item) => (ty.clone(), *item.clone(), None),
@@ -190,6 +197,13 @@ impl Lowering<'_> {
                 let Some((function, found)) = found else {
                     return Err(format!("it has a `for` loop over {name}"));
                 };
+                if let Type::Iterator(item) = &found.returns {
+                    let generated = self.temporary(found.returns.clone());
+                    let kind = InstKind::Call { dest: Some(generated), function, args: vec![value] };
+                    self.emit(kind, span);
+                    let source = (Operand::Local(generated), (**item).clone());
+                    return self.through_generator(names, source, None, span, body);
+                }
                 let Type::List(item) = found.returns else {
                     return Err(format!("it has a `for` loop over {name}"));
                 };
@@ -369,4 +383,11 @@ fn range_args(iter: &Expr) -> Option<(Vec<&Expr>, bool)> {
         }
         _ => Some((values, false)),
     }
+}
+
+/// The function that resumes what a loop goes over, when it can be seen from here.
+fn known_generator(iter: &Expr, is_generator: &dyn Fn(&str) -> bool) -> Option<String> {
+    let ExprKind::Call { callee, .. } = &iter.kind else { return None };
+    let ExprKind::Name(key) = &callee.kind else { return None };
+    is_generator(key).then(|| super::generators::resume_name(key))
 }

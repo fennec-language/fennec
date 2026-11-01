@@ -26,6 +26,7 @@ macro_rules! modules {
 
 modules! {
     collections,
+    csv,
     fs,
     game,
     hash,

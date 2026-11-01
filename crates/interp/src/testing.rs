@@ -6,10 +6,11 @@ use fennec_syntax::{Diagnostic, TestDef, TypeExpr};
 
 use crate::call::CallArg;
 use crate::exec::Flow;
+use crate::fakes::TestWorld;
 use crate::format;
 use crate::interp::{Interp, TypeKind};
 use crate::scope::Frame;
-use crate::value::Value;
+use crate::value::{Capability, Value};
 
 /// How many inputs a property test tries.
 const CASES: usize = 100;
@@ -70,10 +71,21 @@ impl Interp<'_> {
 
     fn run_case(&mut self, test: &TestDef, inputs: Inputs) -> Result<(), Diagnostic> {
         let caller = std::mem::replace(&mut self.frame, Frame::new());
+        for capability in &test.capabilities {
+            let given = match capability.ty.as_ref().map_or("", |ty| ty.name.as_str()) {
+                "Fs" => Capability::Fs,
+                "Clock" => Capability::Clock,
+                _ => Capability::Stdout,
+            };
+            self.frame.declare(&capability.name, Value::Capability(given), false);
+        }
         for (name, value) in inputs {
             self.frame.declare(&name, value, false);
         }
+        // Each run of a test starts with nothing left by the one before.
+        self.world = (!test.capabilities.is_empty()).then(|| TestWorld::new(self.test_capabilities));
         let flow = self.exec_stmts(&test.body);
+        self.world = None;
         self.frame = caller;
         match flow? {
             Flow::PassUp(Value::Err(error)) | Flow::Return(Value::Err(error)) => {

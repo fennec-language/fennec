@@ -109,9 +109,11 @@ struct Import:
     alias: str?
     span: Span
 
-## `test "name":`, a property test `test "name" for items: list[int]:`, or `bench "name":`.
+## `test "name":`, a test that names its capabilities `test "name"(fs: Fs):`, a property test
+## `test "name" for items: list[int]:`, or `bench "name":`.
 struct TestDef:
     name: str
+    capabilities: list[Param]
     inputs: list[Param]
     body: list[Stmt]
     bench: bool

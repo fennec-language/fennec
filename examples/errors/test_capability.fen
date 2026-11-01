@@ -1,0 +1,5 @@
+test "a test takes capabilities"(count: int):
+    assert count == 0
+
+def main(stdout: Stdout):
+    stdout.print("no")

@@ -21,6 +21,12 @@ fn hidden(what: &str, span: Span) -> String {
     format!("\0{what}{}", span.start)
 }
 
+/// A span covering nothing, for what fusing writes itself: the checker has no type for it, so
+/// nothing reads the type of what's written at the same place by mistake.
+fn written_here(span: Span) -> Span {
+    Span { start: span.start, end: span.start }
+}
+
 fn name_at(name: &str, span: Span) -> Expr {
     Expr { kind: ExprKind::Name(name.to_owned()), span }
 }
@@ -186,8 +192,8 @@ fn enumerated(names: &[String], iter: &Expr, body: &[Stmt], around: &Surrounding
     if called != "enumerate" || (around.is_local)(called) || !is_stage(stage, &generators) {
         return None;
     }
-    let span = iter.span;
-    let (count, each) = (hidden("count", span), hidden("each", span));
+    let span = written_here(iter.span);
+    let (count, each) = (hidden("count", iter.span), hidden("each", iter.span));
     let zero = Expr { kind: ExprKind::Int(0), span };
     let one = Expr { kind: ExprKind::Int(1), span };
     let target = name_at(&count, span);
@@ -320,11 +326,11 @@ fn called(names: &[String], call: &Expr, body: &[Stmt], around: &Surroundings<'_
     }
     let leaving = exits_loop(body);
     let stop = hidden("stop", call.span);
-    let run = if leaving { one_time_body(body, &stop, call.span) } else { body.to_vec() };
+    let span = written_here(call.span);
+    let run = if leaving { one_time_body(body, &stop, span) } else { body.to_vec() };
     let stopping = leaving.then_some(stop.as_str());
-    replace_yields(&mut copy, names, &run, stopping, call.span);
+    replace_yields(&mut copy, names, &run, stopping, span);
     if leaving {
-        let span = call.span;
         stmts.push(binding(&stop, Expr { kind: ExprKind::Bool(false), span }, true));
         copy.push(Stmt { kind: StmtKind::Break, span });
         let always = Expr { kind: ExprKind::Bool(true), span };

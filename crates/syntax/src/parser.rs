@@ -337,6 +337,16 @@ impl Parser {
 
     fn test(&mut self, start: Span, bench: bool) -> Result<Item, Diagnostic> {
         let Tok::Str(name) = self.advance().tok else { return Err(self.unexpected("a test name")) };
+        let mut capabilities = Vec::new();
+        if !bench && self.eat_p(Punct::LParen) {
+            while !self.at_p(Punct::RParen) {
+                capabilities.push(self.param()?);
+                if !self.eat_p(Punct::Comma) {
+                    break;
+                }
+            }
+            self.expect_p(Punct::RParen)?;
+        }
         let mut inputs = Vec::new();
         if !bench && self.eat_kw(Kw::For) {
             loop {
@@ -349,7 +359,7 @@ impl Parser {
         let span = start.to(self.prev_span());
         self.expect_p(Punct::Colon)?;
         let body = self.block()?;
-        Ok(Item::Test(TestDef { name, inputs, body, bench, span }))
+        Ok(Item::Test(TestDef { name, capabilities, inputs, body, bench, span }))
     }
 
     fn import(&mut self) -> Result<Import, Diagnostic> {

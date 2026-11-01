@@ -338,6 +338,40 @@ fn a_programs_type_replaces_a_standard_library_type_of_the_same_name() {
 }
 
 #[test]
+fn a_test_receives_capabilities_by_type() {
+    let fine = "
+        test \"all three\"(out: Stdout, files: Fs, time: Clock):
+            out.print(files.exists(\"a\"), time.now())
+            text: str = out.captured()
+            assert text == \"\"
+    ";
+    assert_eq!(problems(fine), Vec::<String>::new());
+    let fix = "a test can receive `stdout: Stdout`, `fs: Fs` and `clock: Clock`";
+    for (written, name) in
+        [("args: Args", "args"), ("n: int", "n"), ("out: Stdout = 1", "out"), ("self", "self")]
+    {
+        let program = format!("test \"one\"({written}):\n    pass\n");
+        assert_eq!(problems(&program), [format!("a test can't receive `{name}` this way @ {written}")]);
+        assert_eq!(helps(&program), [fix]);
+    }
+    assert_eq!(problems("test \"one\"(fs: Fs):\n    fs.fly()\n"), ["`Fs` has no method `fly` @ fs.fly()"]);
+    assert_eq!(problems("test \"one\":\n    fs.exists(\"a\")\n"), ["`fs` doesn't exist @ fs"]);
+}
+
+#[test]
+fn only_a_tests_own_body_reads_what_it_printed() {
+    let help = "only a test's own body can read what it printed, from the `Stdout` it received";
+    let helper = "def read(out: Stdout) -> str:\n    out.captured()\n";
+    assert_eq!(problems(helper), ["`Stdout` has no method `captured` @ out.captured()"]);
+    assert_eq!(helps(helper), [help]);
+    assert_eq!(in_main("stdout.captured()"), ["`Stdout` has no method `captured` @ stdout.captured()"]);
+    assert_eq!(
+        problems("test \"one\"(fs: Fs):\n    fs.captured()\n"),
+        ["`Fs` has no method `captured` @ fs.captured()"]
+    );
+}
+
+#[test]
 fn hashable_and_ordered_imply_eq_but_other_bounds_dont() {
     let program = "
         interface Named:

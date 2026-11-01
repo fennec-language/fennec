@@ -90,9 +90,8 @@ impl Context<'_> {
         let inner = |item: &Type| Box::new(self.concrete(item, subst));
         match ty {
             Type::Param(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
-            // The IR shows a generator as the list it fills, not one item at a time. Nothing
-            // compiles a generator from the IR yet.
-            Type::List(item) | Type::Iterator(item) => Type::List(inner(item)),
+            Type::List(item) => Type::List(inner(item)),
+            Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Set(item) => Type::Set(inner(item)),
             Type::Optional(item) => Type::Optional(inner(item)),
             Type::IdMap(item) => Type::IdMap(inner(item)),
@@ -223,7 +222,8 @@ impl Lowering<'_> {
 
     /// The type of the expression at a span, as it is in this copy.
     pub(super) fn type_at(&self, span: fennec_syntax::Span) -> Option<Type> {
-        self.body.expr(span).map(|ty| self.concrete(ty))
+        let copied = self.copied.iter().rev().map(|(_, body)| *body);
+        std::iter::once(self.body).chain(copied).find_map(|body| body.expr(span)).map(|ty| self.concrete(ty))
     }
 
     /// What a call to `key` is to, given the types of its arguments and of what's kept: the

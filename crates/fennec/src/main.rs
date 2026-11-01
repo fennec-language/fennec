@@ -10,11 +10,13 @@ mod daemon;
 mod fallbacks;
 mod fix;
 mod fmt;
+mod image;
 mod lint;
 mod lsp;
 mod repl;
 mod run;
 mod test;
+mod verdict;
 
 use std::process::ExitCode;
 
@@ -26,6 +28,7 @@ const USAGE: &str = "usage:
   fennec build --llvm [path] [-o out]  the same through LLVM, for what that backend takes so far
   fennec test [path]        run a kit's tests, or a single file's, skipping unchanged ones that passed
   fennec test --all [path]  run every test
+  fennec test --real [path]  run every test with real capabilities rather than fakes
   fennec test --verbose [path]  list the tests that pass too, not only failures and the summary
   fennec bench [path]       run its `bench` blocks: instructions and times, against the last run
   fennec new <name>         start a kit in a new folder
@@ -124,7 +127,7 @@ fn on_big_stack(command: fn(&str) -> ExitCode, path: &str) -> ExitCode {
     big_stack(move || command(&path))
 }
 
-/// `fennec test [--all] [--verbose] [path]`, on a big stack for the interpreter.
+/// `fennec test [--all] [--real] [--verbose] [path]`, on a big stack for the interpreter.
 fn test(args: &[&str]) -> ExitCode {
     let Some((path, options)) = test::Options::of(args) else {
         eprintln!("{USAGE}");

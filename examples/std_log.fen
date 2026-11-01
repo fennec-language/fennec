@@ -1,6 +1,7 @@
 # `std.log` is one way for every kit to log. Nothing is global: a function that logs takes a
 # `Log`, so its signature says so, and the program chooses where entries go and how many.
-from std.log import Log, LogLevel
+from std import json
+from std.log import Log, LogFormat, LogLevel
 from std.time import Duration
 
 def save(log: Log, name: str, size: int):
@@ -65,7 +66,23 @@ test "with a clock, each entry says when"(stdout: Stdout, clock: Clock):
     log.error("second", fields={"a": "b"})
     assert stdout.captured() == "0.000 INFO first\n1.500 ERROR second a=b\n"
 
+test "entries can be JSON, one object a line"(stdout: Stdout, clock: Clock):
+    log = Log(out=stdout, format=.Json).with_fields({"request": "7"})
+    log.info("saved \"a\"\nnow", fields={"file": "a.txt", "level": "fake"})
+    timed = Log(out=stdout, format=.Json, clock=clock)
+    clock.sleep(Duration.millis(250))
+    timed.warn("late")
+    lines = stdout.captured().split("\n")
+    assert (
+        lines[0]
+        == "{\"level\": \"INFO\", \"message\": \"saved \\\"a\\\"\\nnow\", \"request\": \"7\", \"file\": \"a.txt\"}"
+    )
+    assert lines[1] == "{\"time\": 0.250, \"level\": \"WARN\", \"message\": \"late\"}"
+    entry = json.loads[dict[str, str]](lines[0])?
+    assert entry["message"] == "saved \"a\"\nnow" and entry["level"] == "INFO"
+
 def main(stdout: Stdout):
     log = Log(out=stdout, level=.Debug).with_fields({"kit": "demo"})
     save(log, "scores.txt", 120)
     log.warn("disk is nearly full", fields={"free": "3 MB"})
+    Log(out=stdout, format=.Json).error("no space", fields={"free": "0 B"})

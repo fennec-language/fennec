@@ -160,6 +160,13 @@ impl Checked {
     fn into_signatures(self) -> Signatures {
         Signatures { types: self.types, ..self.signatures }
     }
+
+    /// The signatures with every expression's type in them, as `check` gives them back, for
+    /// lowering a program checked with `check_typed`.
+    #[must_use]
+    pub fn signatures_with_types(&self) -> Signatures {
+        Signatures { types: self.types.clone(), ..self.signatures.clone() }
+    }
 }
 
 /// Everything a check works out about a program that has no mistakes.

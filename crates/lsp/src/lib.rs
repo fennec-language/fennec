@@ -15,6 +15,7 @@
 mod analysis;
 mod declaration;
 mod definition;
+mod findings;
 mod json;
 mod session;
 mod text;

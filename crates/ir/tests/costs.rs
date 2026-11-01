@@ -215,3 +215,11 @@ fn every_example_can_be_reported_on() {
         }
     }
 }
+
+#[test]
+fn a_name_for_one_field_holds_only_that_field() {
+    let source = "struct Unit:\n    team: str\n    items: list[int]\n\nstruct World:\n    units: list[Unit]\n\n\
+                  def f(mut world: World) -> int:\n    unit = world.units[0]\n    team = unit.team\n    \
+                  world.units[0].items.pop(0)\n    team.len()\n";
+    assert_eq!(copies(source).unwrap(), Vec::<String>::new());
+}

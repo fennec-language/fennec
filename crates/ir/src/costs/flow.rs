@@ -279,10 +279,16 @@ impl Flow<'_> {
             return;
         }
         let place = self.place(value);
+        // Taking part of what another name holds holds only that part: `team = medic.team`
+        // holds the unit's `team`, not the whole unit.
         let inherited: Vec<(Place, bool)> = held
             .iter()
             .filter(|(by, ..)| *by == place.local)
-            .map(|(_, value, deeper)| (value.clone(), inside || *deeper))
+            .map(|(_, value, deeper)| {
+                let mut path = value.path.clone();
+                path.extend(place.path.iter().cloned());
+                (Place { local: value.local, path }, inside || *deeper)
+            })
             .collect();
         for (value, inside) in std::iter::once((place, inside)).chain(inherited) {
             if value.local != holder {

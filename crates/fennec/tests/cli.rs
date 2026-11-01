@@ -1306,3 +1306,27 @@ fn a_loop_changing_a_dict_in_a_struct_stays_small() {
     peak_is_under(&program, 200_000).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// A copy made each time round a loop without saying so is a compile error, which names where
+/// the other holder is used again. `copy(...)` says it's on purpose.
+#[test]
+fn a_copy_each_time_round_a_loop_has_to_be_written() {
+    let dir = scratch("copy-rule").unwrap();
+    let program = dir.join("loop.fen");
+    let source = "def main(stdout: Stdout):\n    mut h = [1, 2]\n    for _ in range(3):\n        k = h\n        \
+                  h.append(k.len())\n        stdout.print(k.len(), h.len())\n";
+    std::fs::write(&program, source).unwrap();
+    for command in ["check", "run"] {
+        let output = fennec(&[command, program.to_str().unwrap()], "").unwrap();
+        assert!(!output.status.success(), "{command}");
+        let printed = text(&output.stderr);
+        assert!(
+            printed.contains("`h` is copied each time round the loop, since `k` still holds it"),
+            "{printed}"
+        );
+    }
+    std::fs::write(&program, source.replace("k = h", "k = copy(h)")).unwrap();
+    let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "2 3\n3 4\n4 5\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}

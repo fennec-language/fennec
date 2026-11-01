@@ -73,8 +73,8 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 ## Collections
 
-**A struct works as a dict key with nothing to write.** It hashes all its fields automatically. A struct with a float field, or one that defines its own `def ==`, can't be a key, and the compile error suggests keying by a field. There's no `def key`. `==` and `!=` call a type's own `def ==` when it has one; today they don't yet, which is a bug.
-*Why:* A hash can't then disagree with `==`, which is the classic bug in hand-written keys. A float makes a poor key inside a struct, since NaN never equals itself and `0.0` equals `-0.0`.
+**A struct works as a dict key with nothing to write.** It hashes all its fields automatically. A struct that defines its own `def ==` can't be a key, and the compile error suggests keying by a field. There's no `def key`. `==` and `!=` call a type's own `def ==` when it has one; today they don't yet, which is a bug.
+*Why:* A hash can't then disagree with `==`, which is the classic bug in hand-written keys. Float fields are fine, because float equality and hashing agree.
 
 **Dicts use a fast keyed hash with a random seed per process,** fixed in tests and replays. A dict whose probes get suspiciously long rehashes itself with SipHash.
 *Why:* Normal programs get the fast hash. An attacker can't work out colliding keys without the seed, and if collisions turn up anyway, that one dict pays for the stronger hash. Iteration follows insertion order, so the seed can't change what a program does.
@@ -131,7 +131,18 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 **Evaluation is always left to right.**
 
-**Floats give the same results on every platform.** Operators follow IEEE, and `sorted`, `min` and `max` use one total order with NaN last, so a NaN's sign can't change a result. There are no fused operations and no fast-math outside an opt-in, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `@fast_math` on a function opts out. This replaces `with fast_math():`.
+**Floats have one equality, order and hash everywhere.**
+- `==` treats NaN as equal to NaN, and `0.0` as equal to `-0.0`.
+- `<`, `<=`, `>` and `>=` use the total order `sorted`, `min` and `max` use, with NaN last, so a NaN's sign can't change a result.
+- Hashing follows that equality, so floats and structs with float fields work as dict keys and in sets.
+- Arithmetic stays IEEE.
+- `a.approx(b, within=...)` compares computed values with a tolerance. It isn't used for keys, because "close to" isn't transitive.
+- `x != x` no longer finds NaN. Write `x.is_nan()`.
+
+This replaces IEEE comparison operators, and the rule that a struct with a float field can't be a dict key.
+*Why:* Floats compare, sort, hash and key consistently. Measured with LLVM, every benchmark kernel stayed within ±0.4% of IEEE's instruction count once comparisons against a constant compile to one comparison, and vectorizing was unchanged.
+
+**Floats give the same results on every platform.** There are no fused operations and no fast-math outside an opt-in, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `@fast_math` on a function opts out. This replaces `with fast_math():`.
 *Why:* It makes lockstep multiplayer and replays possible. It costs a little, and only in math-heavy code, which can opt out.
 
 **Parallel reductions combine in a fixed order.** How `sum(... for e in parallel(xs))` splits and combines its work depends on the data's size, never the thread count.

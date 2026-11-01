@@ -368,7 +368,7 @@ def main(stdout: Stdout):
     stdout.print(seen.get(Tile(x=1, y=2)) else 0, seen.get(Tile(x=0, y=0)) else 0)
 ```
 
-**Planned:** a compile error for a key struct with a float field or its own `def ==`, suggesting you key by a field instead; `SortedMap` and `SortedSet` on B-trees; `Grid` and `Packed`; and `sum(wallet, start=Money(cents=0))`, which replaces today's positional start.
+**Planned:** a compile error for a key struct with its own `def ==`, suggesting you key by a field instead; `SortedMap` and `SortedSet` on B-trees; `Grid` and `Packed`; and `sum(wallet, start=Money(cents=0))`, which replaces today's positional start.
 
 ## Strings
 
@@ -657,7 +657,7 @@ def update(mut particles: list[Particle], dt: f32):
         particle.position += particle.velocity * dt
 ```
 
-`@fast_math` opts one function out of Fennec's deterministic floats. Without it, floats follow IEEE operators, with no fused operations, and `sorted`, `min` and `max` use one order with NaN last, so results stay the same on every machine.
+`@fast_math` opts one function out of Fennec's deterministic floats. Without it, there are no fused operations, so results stay the same on every machine. Floats will also have one equality, order and hash: NaN equals itself and sorts last, `0.0` equals `-0.0`, and `a.approx(b, within=...)` compares computed values with a tolerance.
 
 ## C and unsafe code
 

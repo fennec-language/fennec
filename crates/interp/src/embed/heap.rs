@@ -443,20 +443,24 @@ pub extern "C" fn set_abandon(shape: i64, abandon: extern "C" fn(i64)) {
 /// released the generator isn't expecting one.
 pub(super) fn run_abandons() {
     while let Some((address, abandon)) = with(next_abandoned) {
+        // It reads where the generator stopped to know what's open.
         abandon(i64::try_from(address).unwrap_or(0));
         if super::failed() {
             super::aot::stop_for_failure();
         }
-        with(|state| release(state, address));
+        with(|state| {
+            if let Some(pc) = state.heap.block_mut(address).and_then(|block| block.get_mut(GENERATOR_PC)) {
+                *pc = FINISHED;
+            }
+            release(state, address);
+        });
     }
 }
 
-/// The next generator to close, marked as finished so that it's freed for good afterward.
+/// The next generator to close.
 fn next_abandoned(state: &mut State) -> Option<(u64, extern "C" fn(i64))> {
     let address = state.heap.abandoning.pop()?;
-    let block = state.heap.block_mut(address)?;
-    let shape = *block.get(1)?;
-    *block.get_mut(GENERATOR_PC)? = FINISHED;
+    let shape = *state.heap.block(address)?.get(1)?;
     Some((address, *state.tables.abandons.get(&shape)?))
 }
 

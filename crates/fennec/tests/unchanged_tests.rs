@@ -190,3 +190,94 @@ fn a_property_test_depends_on_all_it_can_reach() {
     assert_eq!(stdout(&run_tests(&dir, &[]).unwrap()), "1 passed, 0 failed\n");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A kit in a folder of its own, with a function called from a test in another file and a test
+/// that doesn't touch it.
+fn kit_with_tests(name: &str) -> std::io::Result<PathBuf> {
+    let dir = scratch(name)?;
+    std::fs::create_dir_all(dir.join("src"))?;
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(dir.join("kit.toml"), manifest)?;
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x * 2\n")?;
+    std::fs::write(
+        dir.join("src/uses.fen"),
+        "from maths import double\n\ndef twice(x: int) -> int:\n    double(x)\n\n\
+         test \"twice\":\n    assert twice(2) == 4\n",
+    )?;
+    std::fs::write(dir.join("src/other.fen"), "test \"other\":\n    assert 1 == 1\n")?;
+    Ok(dir)
+}
+
+fn test_kit(dir: &Path) -> std::io::Result<Output> {
+    Command::new(env!("CARGO_BIN_EXE_fennec"))
+        .arg("test")
+        .arg(dir)
+        .env("FENNEC_HOME", dir.join("home"))
+        .env_remove("CI")
+        .env_remove("FENNEC_NO_CACHE")
+        .output()
+}
+
+#[test]
+fn an_edit_to_a_body_runs_only_what_ran_it_across_files() {
+    let dir = kit_with_tests("kit_body").unwrap();
+    assert_eq!(stdout(&test_kit(&dir).unwrap()), "2 passed, 0 failed\n");
+    assert_eq!(stdout(&test_kit(&dir).unwrap()), "2 passed, 0 failed (0 run, 2 unchanged)\n");
+
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x + x\n").unwrap();
+    assert_eq!(stdout(&test_kit(&dir).unwrap()), "2 passed, 0 failed (1 run, 1 unchanged)\n");
+    assert_eq!(stdout(&test_kit(&dir).unwrap()), "2 passed, 0 failed (0 run, 2 unchanged)\n");
+
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x * 3\n").unwrap();
+    let broken = test_kit(&dir).unwrap();
+    assert_eq!(broken.status.code(), Some(1));
+    assert_eq!(stdout(&broken), "  ✗ twice\n1 passed, 1 failed (1 run, 1 unchanged)\n");
+
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x + x\n").unwrap();
+    assert!(test_kit(&dir).unwrap().status.success());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_edit_that_breaks_a_caller_in_another_file_is_still_found() {
+    for (edit, what) in [
+        ("def double(x: float) -> float:\n    x * 2.0\n", "a changed signature"),
+        (
+            "error Bad:\n    n: int\n\ndef double(x: int) -> int:\n    if x > 9: fail Bad(n=x)\n    x * 2\n",
+            "a body that can now fail",
+        ),
+    ] {
+        let dir = kit_with_tests("kit_caller").unwrap();
+        assert!(test_kit(&dir).unwrap().status.success());
+        std::fs::write(dir.join("src/maths.fen"), edit).unwrap();
+        let broken = test_kit(&dir).unwrap();
+        assert_eq!(broken.status.code(), Some(1), "{what}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[test]
+fn a_mistake_in_an_edited_body_is_reported() {
+    let dir = kit_with_tests("kit_mistake").unwrap();
+    assert!(test_kit(&dir).unwrap().status.success());
+    std::fs::write(dir.join("src/maths.fen"), "def double(x: int) -> int:\n    x + \"a\"\n").unwrap();
+    let broken = test_kit(&dir).unwrap();
+    assert_eq!(broken.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&broken.stderr).starts_with("error"), "{broken:?}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_new_file_and_a_new_test_are_noticed() {
+    let dir = kit_with_tests("kit_new").unwrap();
+    assert!(test_kit(&dir).unwrap().status.success());
+    std::fs::write(dir.join("src/third.fen"), "test \"third\":\n    assert 1 == 2\n").unwrap();
+    assert_eq!(test_kit(&dir).unwrap().status.code(), Some(1));
+    std::fs::remove_file(dir.join("src/third.fen")).unwrap();
+    assert!(test_kit(&dir).unwrap().status.success());
+    let added = "test \"other\":\n    assert 1 == 1\n\ntest \"new\":\n    assert 1 == 2\n";
+    std::fs::write(dir.join("src/other.fen"), added).unwrap();
+    assert_eq!(test_kit(&dir).unwrap().status.code(), Some(1));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

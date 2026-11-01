@@ -10,11 +10,13 @@ mod daemon;
 mod fallbacks;
 mod fix;
 mod fmt;
+mod image;
 mod lint;
 mod lsp;
 mod repl;
 mod run;
 mod test;
+mod verdict;
 
 use std::process::ExitCode;
 

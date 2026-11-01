@@ -12,7 +12,7 @@ def main(stdout: Stdout):
     roster["kit"] += 5
     stdout.print(hp)
     stdout.print(roster, roster.len(), "vex" in roster)
-    stdout.print(roster.get("nobody"), roster.get("nobody", 0))
+    stdout.print(roster.get("nobody"), (roster.get("nobody") else 0))
 
     for name, health in roster.items():
         stdout.print(f"{name}: {health}")

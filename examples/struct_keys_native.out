@@ -5,7 +5,7 @@
 3 Cell(x=3, y=4) b
 16 ["c", "b"]
 35 36 29 0 False True
-1 False {Tagged(at=Cell(x=1, y=1), weight=0.5, live=True): 1}
+1 False {Tagged(at=Cell(x=1, y=1), weight=5, live=True): 1}
 False
 n far3 False False 3
 {Cell(x=1, y=1)} 1 True False

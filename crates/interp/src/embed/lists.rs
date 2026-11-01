@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use fennec_syntax::Diagnostic;
 
-use super::heap::{TEXT_HEADER_WORDS, read_block, release, write};
+use super::heap::{TEXT_HEADER_WORDS, read_block, release, text_address, write};
 use super::{State, attempt, span, with};
 use crate::packed::{Element, Packed};
 use crate::value::Value;
@@ -220,6 +220,68 @@ pub extern "C" fn sorted(list: i64, kind: i64) -> i64 {
         let keys = state.heap.block(list).map(|block| items(block, 1).to_vec()).unwrap_or_default();
         in_order(state, list, &keys, kind).unwrap_or(0)
     })
+}
+
+/// A new list owned once holding these words, one an item, of a kind of item by its number.
+pub(super) fn list_of_words(state: &mut State, element: i64, words: &[u64]) -> i64 {
+    let Some((at, _)) = self::element(state, element) else { return 0 };
+    let block = build(state, at, 1, words, 0);
+    state.heap.insert(block)
+}
+
+/// A new list owned once of new strings, with the number of the kind of item it has.
+pub(super) fn list_of_strings(state: &mut State, element: i64, strings: &[&str]) -> i64 {
+    let words: Vec<u64> =
+        strings.iter().filter_map(|text| u64::try_from(text_address(state, text)).ok()).collect();
+    list_of_words(state, element, &words)
+}
+
+/// A new list owned once of a list's items in the order `compare` puts them, which stays stable.
+/// `compare` takes the addresses of two items and gives a negative, zero or positive number. It
+/// runs with nothing here borrowed, so it can call back in. Once it has failed it's not asked
+/// again, and the list comes back in whatever order it had reached.
+pub extern "C" fn sorted_with(list: i64, compare: extern "C" fn(i64, i64) -> i64) -> i64 {
+    let Some((copy, base, stride, count)) = with(|state| copied_for_sorting(state, list)) else {
+        return 0;
+    };
+    let address = |place: usize| i64::try_from(base + place * stride * 8).unwrap_or(0);
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by(|a, b| {
+        if super::FAILED.get() != 0 {
+            return std::cmp::Ordering::Equal;
+        }
+        compare(address(*a), address(*b)).cmp(&0)
+    });
+    with(|state| {
+        let Some(block) = state.heap.block_mut(copy) else { return };
+        let Some(words) = block.get_mut(LIST_HEADER_WORDS..) else { return };
+        let old: Vec<u64> = words.to_vec();
+        for (to, from) in order.iter().enumerate() {
+            let source = old.get(from * stride..(from + 1) * stride).unwrap_or_default();
+            if let Some(target) = words.get_mut(to * stride..(to + 1) * stride) {
+                target.copy_from_slice(source);
+            }
+        }
+    });
+    i64::try_from(copy).unwrap_or(0)
+}
+
+/// A new list owned once holding a list's items, with where its items start, how many words
+/// each takes, and how many there are.
+fn copied_for_sorting(state: &mut State, list: i64) -> Option<(u64, usize, usize, usize)> {
+    let list = u64::try_from(list).ok()?;
+    let block = state.heap.block(list)?;
+    let element = element_of(state, block)?;
+    let first = state.tables.str_shape + 1 + super::dicts::SHAPES;
+    let at = usize::try_from(block.get(1)?.checked_sub(first)?).ok()?;
+    let stride = element.words().max(1);
+    let words = items(block, stride).to_vec();
+    retain_items(state, &element, &words);
+    let block = build(state, at, stride, &words, 0);
+    let copy = state.heap.insert(block);
+    let copy = u64::try_from(copy).ok()?;
+    let start = state.heap.block(copy)?.get(LIST_HEADER_WORDS..)?.as_ptr().addr();
+    Some((copy, start, stride, words.len() / stride))
 }
 
 /// A new list owned once of a list's items in the order of their keys, a list as long as it.

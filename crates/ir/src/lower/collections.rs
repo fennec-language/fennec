@@ -220,18 +220,30 @@ impl Lowering<'_> {
     /// `for names in iter: body` with no generator, if `iter` is a stage that fuses.
     pub(super) fn expanded(&self, names: &[String], iter: &Expr, body: &[Stmt]) -> Option<fuse::Expansion> {
         let generator = |key: &str| {
-            let copying = self.copied.iter().any(|(copied, _)| copied == key);
-            if copying { None } else { self.context.generators.get(key).map(|def| (*def).clone()) }
+            let copying = self.copied.iter().any(|(copied, ..)| copied == key);
+            let base = self.context.base_key(key);
+            if copying { None } else { self.context.generators.get(base.as_str()).map(|def| (*def).clone()) }
         };
         let is_local = |name: &str| self.lookup(name).is_some();
-        fuse::expand(names, iter, body, &fuse::Surroundings { generator: &generator, is_local: &is_local })
+        // A method's key names the copy of its type the object is, like `Deque[int].pop`.
+        let method = |object: &Expr, name: &str| {
+            let ty = self.type_at(object.span)?;
+            Some(format!("{}.{name}", super::calls::owner_name(&ty)?))
+        };
+        let around = fuse::Surroundings { generator: &generator, is_local: &is_local, method: &method };
+        fuse::expand(names, iter, body, &around)
     }
 
     /// Lowers the statements a stage fused into, with the types of a yield function copied.
     pub(super) fn fused(&mut self, expansion: fuse::Expansion) -> Lowered<()> {
         let copied = expansion.copied.and_then(|key| {
-            let body = self.context.signatures.types().body(&key)?;
-            Some((key, body))
+            let body = self.context.signatures.types().body(&self.context.base_key(&key))?;
+            // A method of a generic type's copy reads its types with that copy's.
+            let subst = key
+                .rsplit_once('.')
+                .and_then(|(owner, _)| self.context.type_instance(owner))
+                .map(|instance| instance.subst);
+            Some((key, body, subst))
         });
         let copying = copied.is_some();
         self.copied.extend(copied);

@@ -72,7 +72,8 @@ pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str
         generic_types: generic_types(&modules),
         instances: generics::Instances::default(),
         generator_defs: std::cell::RefCell::default(),
-        generators: functions
+        // A library's yield methods too, which a loop over one can copy in.
+        generators: every
             .iter()
             .filter(|(_, def)| fuse::has_yield(&def.body))
             .map(|(key, def)| (key.clone(), *def))
@@ -294,7 +295,7 @@ struct Lowering<'a> {
     /// What's making the collections of comprehensions over stages, innermost last.
     fills: Vec<collections::Fill>,
     /// The types of the yield functions whose copies are being lowered, innermost last.
-    copied: Vec<(String, &'a Body)>,
+    copied: Vec<(String, &'a Body, Option<generics::Subst>)>,
 }
 
 impl<'a> Lowering<'a> {

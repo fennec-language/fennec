@@ -20,6 +20,8 @@ use crate::types::Function;
 pub(crate) struct Mentions {
     names: HashSet<String>,
     members: HashSet<String>,
+    /// The types whose methods a library method can be reached through.
+    types: HashSet<String>,
 }
 
 /// The keys of the functions reachable from `roots`, and everything their code mentions.
@@ -73,12 +75,22 @@ pub(crate) fn reachable(
             }
         }
         if reached.len() + seen_types.len() == before {
+            mentions.types = seen_types;
             return (reached, mentions);
         }
     }
 }
 
 /// Whether code that runs mentions a function or method by this key.
+/// Whether a library method could be called: its name is mentioned and its type is used, as
+/// for the library methods `reachable` keeps.
+pub(crate) fn is_library_method_mentioned(key: &str, mentions: &Mentions) -> bool {
+    is_mentioned(key, mentions)
+        && key.rsplit_once('.').is_none_or(|(owner, _)| {
+            mentions.types.contains(owner) || matches!(owner, "str" | "list" | "dict" | "set")
+        })
+}
+
 pub(crate) fn is_mentioned(key: &str, mentions: &Mentions) -> bool {
     match key.rsplit_once('.') {
         Some((_, method)) => mentions.members.contains(method),
@@ -250,5 +262,21 @@ fn all(items: &[Expr], mentions: &mut Mentions) {
 fn all_boxed(items: &[&Expr], mentions: &mut Mentions) {
     for item in items {
         expr(item, mentions);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Mentions, is_library_method_mentioned};
+
+    #[test]
+    fn a_library_method_needs_its_type_used_as_well_as_its_name_mentioned() {
+        let mut mentions = Mentions::default();
+        mentions.members.insert("[]".to_owned());
+        assert!(!is_library_method_mentioned("Packed.[]", &mentions));
+        assert!(is_library_method_mentioned("list.[]", &mentions));
+        mentions.types.insert("Packed".to_owned());
+        assert!(is_library_method_mentioned("Packed.[]", &mentions));
+        assert!(!is_library_method_mentioned("Packed.len", &mentions));
     }
 }

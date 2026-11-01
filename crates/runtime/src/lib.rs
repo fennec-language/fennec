@@ -212,7 +212,8 @@ pub extern "C" fn fennec_aot_run(entry: extern "C" fn(i64), length: i64) -> i32 
 /// Ends the process now, for a failure in cleanup that nothing can pass on.
 fn stop(code: i32) {
     unsafe extern "C" {
-        safe fn exit(code: i32) -> !;
+        fn exit(code: i32) -> !;
     }
-    exit(code);
+    // SAFETY: the C library's `exit` takes any code, and this is the last thing the run does.
+    unsafe { exit(code) }
 }

@@ -8,6 +8,8 @@
 //! anywhere else. `--all` runs every test, as do runs with `FENNEC_NO_CACHE` set. A test that
 //! failed always runs again, and so does every test after Fennec itself changes.
 //!
+//! `fennec run` does this first, for the tests a change affects, unless told not to.
+//!
 //! Tests run as native code on every core, reusing machine code from the cache. Property
 //! tests, and any test the JIT can't compile yet, run in the interpreter.
 
@@ -23,6 +25,8 @@ pub(crate) struct Options {
     all: bool,
     /// List the tests that pass too.
     verbose: bool,
+    /// Keep standard output for the program that runs next, and say nothing if all is well.
+    before_a_run: bool,
 }
 
 impl Options {
@@ -41,6 +45,33 @@ impl Options {
         }
         Some((path.unwrap_or(".").to_owned(), options))
     }
+}
+
+/// Runs the tests a change affects before a program runs, giving back how to stop if one fails.
+/// When no file has changed since they last passed, this only reads and hashes the files.
+pub(crate) fn before_a_run(path: &str) -> Option<ExitCode> {
+    let texts = fennec_kit::all_texts(std::path::Path::new(path))?;
+    if !texts.iter().any(|(_, text)| text.contains("test \"")) {
+        return None;
+    }
+    let files = || texts.iter().map(|(path, text)| (path.as_str(), text.as_str()));
+    let passed = crate::run::fingerprint(files());
+    let cache = crate::run::cache();
+    let name = crate::run::passed_name(path);
+    if let Some(cache) = &cache
+        && cache.read("tested", &name).is_some_and(|last| last == passed.as_bytes())
+    {
+        return None;
+    }
+    let code = test(path, Options { before_a_run: true, ..Options::default() });
+    if code != ExitCode::SUCCESS {
+        return Some(code);
+    }
+    if let Some(cache) = &cache {
+        // A cache that can't be written only means looking at the tests again next time.
+        let _ = cache.write("tested", &name, passed.as_bytes());
+    }
+    None
 }
 
 pub(crate) fn test(path: &str, options: Options) -> ExitCode {
@@ -81,7 +112,9 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
     let place = |name: &str| graph.tests().position(|test| test == name);
     outcomes.sort_by_key(|outcome| place(&outcome.name));
     if outcomes.is_empty() && unchanged.is_empty() {
-        println!("no tests in {path}");
+        if !options.before_a_run {
+            println!("no tests in {path}");
+        }
         return ExitCode::SUCCESS;
     }
     let mut failed = 0;
@@ -102,19 +135,34 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
             }
             Some(diagnostic) => {
                 failed += 1;
-                println!("  ✗ {}", outcome.name);
+                if options.before_a_run {
+                    eprintln!("  ✗ {}", outcome.name);
+                } else {
+                    println!("  ✗ {}", outcome.name);
+                }
                 eprint!("{}", render(diagnostic));
             }
         }
     }
     results.store(&passing);
     let passed = outcomes.len() + unchanged.len() - failed;
-    if unchanged.is_empty() {
-        println!("{passed} passed, {failed} failed");
-    } else {
-        println!("{passed} passed, {failed} failed ({} run, {} unchanged)", outcomes.len(), unchanged.len());
-    }
+    say_totals(options, (passed, failed), (outcomes.len(), unchanged.len()));
     if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+/// The line of totals, or when a program runs next, nothing unless a test failed.
+fn say_totals(options: Options, (passed, failed): (usize, usize), (ran, unchanged): (usize, usize)) {
+    let totals = if unchanged == 0 {
+        format!("{passed} passed, {failed} failed")
+    } else {
+        format!("{passed} passed, {failed} failed ({ran} run, {unchanged} unchanged)")
+    };
+    if !options.before_a_run {
+        println!("{totals}");
+    } else if failed > 0 {
+        eprintln!("{totals}");
+        eprintln!("the program didn't run; `fennec run --no-test` runs it anyway");
+    }
 }
 
 /// Runs the tests in `names` in the interpreter.

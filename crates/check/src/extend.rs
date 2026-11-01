@@ -127,5 +127,9 @@ fn not_own(name: &str, why: &str, extension: &Extension) -> Diagnostic {
 /// The type parameters of a generic built-in type the standard library extends, as its
 /// help suggests naming them.
 fn built_in_params(name: &str) -> Option<&'static [&'static str]> {
-    (name == "list").then_some(&["T"])
+    match name {
+        "list" | "set" => Some(&["T"]),
+        "dict" => Some(&["K", "V"]),
+        _ => None,
+    }
 }

@@ -136,6 +136,9 @@ impl Program {
     }
 
     fn add_type(&mut self, def: &TypeDef, kind: TypeKind, prelude: bool) {
+        // A program's own type replaces a standard library type of the same name, methods too.
+        let methods = format!("{}.", def.name);
+        self.functions.retain(|key, entry| !(!prelude && entry.prelude && key.starts_with(&methods)));
         for method in &def.methods {
             self.add_method(&def.name, method, prelude, &[]);
         }

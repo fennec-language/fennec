@@ -142,6 +142,9 @@ impl Tree {
             if let Some(ty) = &param.ty {
                 tree.type_expr(ty);
             }
+            if let Some(default) = &param.default {
+                tree.expr(default);
+            }
         });
     }
 
@@ -337,6 +340,7 @@ impl Tree {
                 let op = match op {
                     UnaryOp::Neg => "-",
                     UnaryOp::Not => "not",
+                    UnaryOp::BitNot => "~",
                 };
                 self.node(&format!("unary {op}"), span, |tree| tree.expr(expr));
             }

@@ -112,6 +112,18 @@ impl Lowerer<'_, '_> {
                 self.consume(Some(text), Ty::Str)?;
                 Ok(Some((Some(code), Ty::Int)))
             }
+            ("strip" | "lstrip" | "rstrip", []) => {
+                let (text, ty) = self.lent_receiver(object)?;
+                let text = self.convert(text, ty, Ty::Str, object.span)?;
+                let which = self.int(match name.as_str() {
+                    "lstrip" => 1,
+                    "rstrip" => 2,
+                    _ => 0,
+                });
+                let stripped = self.help(Helper::StrStrip, &[text, which])?;
+                self.consume(Some(text), Ty::Str)?;
+                Ok(Some((Some(stripped), Ty::Str)))
+            }
             ("join", [items]) if self.checked_expr(&items.value) == Some(Ty::List(ListItem::Str)) => {
                 let list_ty = Ty::List(ListItem::Str);
                 let (between, ty) = self.expr(object)?;

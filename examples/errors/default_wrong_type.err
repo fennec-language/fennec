@@ -1,0 +1,5 @@
+error: `width` should be an int, but this is a str
+ --> examples/errors/default_wrong_type.fen:1:23
+  |
+1 | def grid(width: int = "wide") -> int:
+  |                       ^^^^^^

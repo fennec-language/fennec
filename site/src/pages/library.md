@@ -15,7 +15,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Area | Modules |
 | --- | --- |
 | Basics | `math`, `random`, `time`, `datetime`, `string`, `re`, `unicode` |
-| Collections | `collections`: `Deque`, `Counter`, `SortedDict`, heaps, `IdMap`, ring buffers |
+| Collections | `collections`: `Deque`, `Counter`, `SortedDict`, heaps, `IdMap`, `Tree`, ring buffers |
 | Files and the OS | `fs`, `path`, `env`, `process`, `cli` |
 | Data formats | `json`, `toml`, `csv`, `base64`, `compress` |
 | Networking | `net`: TCP, UDP, TLS, an HTTP client and server, and WebSocket; `url` |

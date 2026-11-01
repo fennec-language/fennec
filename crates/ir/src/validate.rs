@@ -57,6 +57,7 @@ impl<'p> Check<'p> {
                 let allowed = match op {
                     UnaryOp::Not => matches!(wanted, Some(Type::Bool)),
                     UnaryOp::Neg => matches!(wanted, Some(Type::Int | Type::Float)),
+                    UnaryOp::BitNot => matches!(wanted, Some(Type::Int)),
                 };
                 if !allowed {
                     self.problems.push(format!("`{inst}` on the wrong type"));
@@ -351,6 +352,11 @@ impl<'p> Check<'p> {
             BinOp::Eq | BinOp::NotEq => Some(Type::Bool),
             BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq if plainly_ordered(&left) => Some(Type::Bool),
             BinOp::Div if left == Type::Int => Some(Type::Float),
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::ShiftLeft | BinOp::ShiftRight
+                if left == Type::Int =>
+            {
+                Some(Type::Int)
+            }
             BinOp::Add if matches!(left, Type::Str | Type::Bytes | Type::List(_)) => Some(left.clone()),
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::FloorDiv | BinOp::Mod | BinOp::Pow
                 if matches!(left, Type::Int | Type::Float) =>

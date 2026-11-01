@@ -5,7 +5,7 @@
 
 use fennec_check::Type;
 
-use crate::{helps, problems, returns};
+use crate::{helps, in_main, problems, returns};
 
 const SHAPES: &str = "
 interface Shape:
@@ -315,6 +315,29 @@ fn self_in_an_interface_is_the_type_that_fits_it() {
 }
 
 #[test]
+fn a_programs_type_replaces_a_standard_library_type_of_the_same_name() {
+    let program = "
+        struct Tree:
+            size: int
+
+        struct TreeNode:
+            name: str
+
+        def main(stdout: Stdout):
+            stdout.print(Tree(size=1).size, TreeNode(name='a').name)
+    ";
+    assert_eq!(problems(&program.replace('\'', "\"")), Vec::<String>::new());
+    let wrong = "
+        struct Tree:
+            size: int
+
+        def main(stdout: Stdout):
+            stdout.print(Tree(size=1).len())
+    ";
+    assert_eq!(problems(wrong), ["`Tree` has no method `len` @ Tree(size=1).len()"]);
+}
+
+#[test]
 fn hashable_and_ordered_imply_eq_but_other_bounds_dont() {
     let program = "
         interface Named:
@@ -330,4 +353,44 @@ fn hashable_and_ordered_imply_eq_but_other_bounds_dont() {
             a == b
     ";
     assert_eq!(problems(program), ["`T` could be any type, so `==` might not work on it @ a == b"]);
+}
+
+#[test]
+fn dicts_and_sets_have_methods_the_standard_library_writes() {
+    assert_eq!(
+        in_main(
+            "
+            mut scores = {'a': 1}
+            scores.update({'b': 2})
+            total: int = scores.setdefault('c', 3)
+            both: set[int] = {1}.union({2})
+            same: bool = {1}.is_subset({1, 2})
+            "
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        in_main("mut scores = {'a': 1}\nscores.update({'b': 'x'})"),
+        ["`more` should be a dict[str, int], but this is a dict[str, str] @ {\"b\": \"x\"}"]
+    );
+    assert_eq!(in_main("scores = {'a': 1}\nscores.update({})"), ["`scores` isn't mut @ scores"]);
+    assert_eq!(
+        in_main("{1}.union({'a'})"),
+        ["`other` should be a set[int], but this is a set[str] @ {\"a\"}"]
+    );
+    assert_eq!(
+        in_main("{1}.is_subset([1])"),
+        ["`other` should be a set[int], but this is a list[int] @ [1]"]
+    );
+}
+
+#[test]
+fn a_program_cant_extend_dict_or_set() {
+    for (name, params) in [("dict", "K, V"), ("set", "T")] {
+        let program = format!("extend {name}[{params}]:\n    def own(self) -> int:\n        1\n");
+        assert_eq!(
+            problems(&program),
+            [format!("`{name}` is built in, so it can't be extended @ extend {name}[{params}]")]
+        );
+    }
 }

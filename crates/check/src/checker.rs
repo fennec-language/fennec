@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fennec_syntax::{Diagnostic, FnDef, Generic, Module, Span};
+use fennec_syntax::{Diagnostic, Expr, FnDef, Generic, Module, Span};
 
 use crate::effects::{self, Effects};
 use crate::function::{Binding, FnCx};
@@ -38,6 +38,8 @@ pub(crate) struct Checker {
     pub(crate) cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.
     pub(crate) float_sums: BTreeSet<(u32, u32)>,
+    /// The defaults each call leaves out.
+    pub(crate) defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.
     pub(crate) generator_types: BTreeMap<(u32, u32), String>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
@@ -79,6 +81,7 @@ impl Checker {
             typed: BTreeMap::new(),
             cases: BTreeMap::new(),
             float_sums: BTreeSet::new(),
+            defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
@@ -150,6 +153,7 @@ impl Checker {
                 types,
                 cases: self.cases,
                 float_sums: self.float_sums,
+                defaults: self.defaults,
                 generator_types: self.generator_types,
             });
         }
@@ -281,6 +285,7 @@ impl Checker {
                     (None, None) => Type::Unknown,
                 },
                 is_mut: param.is_mut,
+                default: param.default.clone(),
             })
             .collect()
     }

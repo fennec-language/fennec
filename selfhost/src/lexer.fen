@@ -1,7 +1,7 @@
 ## Source text to tokens. Mirrors `crates/syntax/src/lexer.rs`.
 
 from span import Span, Diagnostic
-from token import FPart, Tok, Token, is_keyword, is_two_char_punct
+from token import FPart, Tok, Token, is_keyword, is_three_char_punct, is_two_char_punct
 
 def is_digit(c: str) -> bool:
     c != "" and c >= "0" and c <= "9"
@@ -207,11 +207,16 @@ struct Lexer:
     def punct(mut self, start: int):
         c = self.peek(0)
         pair = c + self.peek(1)
+        triple = pair + self.peek(2)
+        if is_three_char_punct(triple):
+            self.pos += 3
+            self.push(.Punct(triple), start)
+            return
         if is_two_char_punct(pair):
             self.pos += 2
             self.push(.Punct(pair), start)
             return
-        if c not in "()[]{},:.?+-*/%=<>&|":
+        if c not in "()[]{},:.?+-*/%=<>&|^~":
             span = Span(start=self.offset(start), end=self.offset(start) + utf8_width(c))
             fail Diagnostic(message=f"unexpected character `{c}`", span=span)
         if c in "([{":

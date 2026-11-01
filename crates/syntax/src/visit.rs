@@ -29,6 +29,11 @@ pub fn in_function(def: &mut FnDef, change: &mut dyn FnMut(&mut Expr)) {
     function(def, change);
 }
 
+/// Calls `change` on every expression in some statements.
+pub fn in_stmts(body: &mut [Stmt], change: &mut dyn FnMut(&mut Expr)) {
+    stmts(body, change);
+}
+
 /// Makes a leading-dot case name its enum: `.Int(value)` becomes `ExprKind.Int(value)`.
 /// Anything but a leading-dot case is left as it is.
 pub fn name_enum(case: &mut Expr, owner: &str) {
@@ -38,6 +43,17 @@ pub fn name_enum(case: &mut Expr, owner: &str) {
     let at = crate::Span { start: case.span.start, end: case.span.start };
     let object = Box::new(Expr { kind: ExprKind::Name(owner.to_owned()), span: at });
     case.kind = ExprKind::Attr { object, name, optional: false };
+}
+
+/// Writes the defaults a call leaves out into it, by name.
+pub fn add_defaults(call: &mut Expr, defaults: &[(String, Expr)]) {
+    if let ExprKind::Call { args, .. } = &mut call.kind {
+        for (name, default) in defaults {
+            let at = crate::Span { start: call.span.end, end: call.span.end };
+            let value = Expr { kind: default.kind.clone(), span: at };
+            args.push(crate::ast::Arg { name: Some(name.clone()), is_mut: false, value });
+        }
+    }
 }
 
 /// Gives a call to `sum` of floats its start: `sum(xs)` becomes `sum(xs, 0.0)`.

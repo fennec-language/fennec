@@ -9,8 +9,8 @@ use fennec_ir::facts::Facts;
 use fennec_ir::{Block, Function, Local, LocalId, Operand, Program, Terminator, lower, validate};
 
 fn lowered(source: &str) -> Result<Program, String> {
-    let module = fennec_syntax::parse(source).map_err(|problem| problem.message)?;
-    let checked = fennec_check::check(&module).map_err(|problems| format!("{problems:?}"))?;
+    let mut module = fennec_syntax::parse(source).map_err(|problem| problem.message)?;
+    let checked = fennec_check::check_and_resolve(&mut module).map_err(|problems| format!("{problems:?}"))?;
     let program = lower(&module, &checked);
     validate(&program).map_err(|problems| format!("{problems:?}"))?;
     Ok(program)
@@ -2154,6 +2154,20 @@ def f(n: int) -> int:
 }
 
 #[test]
+fn a_write_runs_only_the_rule_of_the_field_it_writes() {
+    let source = "struct Pair:
+    low: int where low >= 0
+    high: int where high >= 9
+
+def f(mut pair: Pair):
+    pair.low = 1
+";
+    let text = printed(source, "f").unwrap();
+    assert!(text.contains("`Pair.low`"), "{text}");
+    assert!(!text.contains("`Pair.high`"), "{text}");
+}
+
+#[test]
 fn every_example_kit_lowers_to_valid_ir() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/projects");
     let mut kits = 0;
@@ -2164,8 +2178,8 @@ fn every_example_kit_lowers_to_valid_ir() {
         }
         kits += 1;
         let shown = path.display().to_string();
-        let kit = fennec_kit::load(&path, &shown, fennec_kit::Entry::Main).unwrap();
-        let checked = fennec_check::check(&kit.module).unwrap();
+        let mut kit = fennec_kit::load(&path, &shown, fennec_kit::Entry::Main).unwrap();
+        let checked = fennec_check::check_and_resolve(&mut kit.module).unwrap();
         let program = lower(&kit.module, &checked);
         validate(&program).unwrap_or_else(|problems| panic!("{shown}: {problems:?}\n{program}"));
         assert_eq!(program.not_lowered, [], "{shown}");
@@ -2185,8 +2199,9 @@ fn every_example_lowers_to_valid_ir() {
         }
         let file = path.file_name().unwrap().to_string_lossy().into_owned();
         let source = fs::read_to_string(&path).unwrap();
-        let module = fennec_syntax::parse(&source).unwrap();
-        let checked = fennec_check::check(&module).unwrap_or_else(|problems| panic!("{file}: {problems:?}"));
+        let mut module = fennec_syntax::parse(&source).unwrap();
+        let checked = fennec_check::check_and_resolve(&mut module)
+            .unwrap_or_else(|problems| panic!("{file}: {problems:?}"));
         let program = lower(&module, &checked);
         validate(&program).unwrap_or_else(|problems| panic!("{file}: {problems:?}\n{program}"));
         assert_eq!(program.not_lowered, [], "{file}");

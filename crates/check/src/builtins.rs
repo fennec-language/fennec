@@ -95,7 +95,12 @@ impl Method {
 /// The signature of a method or operator the engines give a built-in type, for fitting it
 /// to an interface: `abs` on an int, or `+` on text.
 pub(crate) fn engine_signature(ty: &Type, name: &str) -> Option<Signature> {
-    let param = |name: &str, ty: &Type, is_mut| ParamType { name: name.to_owned(), ty: ty.clone(), is_mut };
+    let param = |name: &str, ty: &Type, is_mut| ParamType {
+        name: name.to_owned(),
+        ty: ty.clone(),
+        is_mut,
+        default: None,
+    };
     let (others, returns, is_mut) = if let Some(found) = method(ty, name) {
         (found.params, found.returns, found.changes)
     } else {

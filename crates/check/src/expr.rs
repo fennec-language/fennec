@@ -288,6 +288,9 @@ impl FnCx<'_> {
         if !self.usable_operands(&left, &right, span, spans) {
             return Type::Unknown;
         }
+        if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::ShiftLeft | BinOp::ShiftRight) {
+            return self.bits(op, &left, &right, span);
+        }
         // A type's own operator, like a struct's `def +` or `str`'s `def *` from std.
         if let (Some(name), Some(method)) = (left.method_owner(), op.method_name())
             && let Some((key, _)) = self.checker.program.method(name, method)
@@ -371,6 +374,17 @@ impl FnCx<'_> {
         });
     }
 
+    /// `&`, `|`, `^`, `<<` and `>>`, which only work on ints.
+    fn bits(&mut self, op: BinOp, left: &Type, right: &Type, span: Span) -> Type {
+        for side in [left, right] {
+            if !matches!(side, Type::Int | Type::Unknown) {
+                self.error(not_bits(op, op.symbol(), side, span));
+                return Type::Unknown;
+            }
+        }
+        Type::Int
+    }
+
     /// `x in items`: `x` has to be the kind of thing `items` holds.
     fn contains(&mut self, item: &Type, collection: &Type, span: Span) {
         let held = match collection {
@@ -445,7 +459,10 @@ impl FnCx<'_> {
     fn unary(&mut self, op: UnaryOp, inner: &Expr, span: Span) -> Type {
         let ty = self.expr(inner);
         match (op, &ty) {
-            (_, Type::Unknown) | (UnaryOp::Not, Type::Bool) | (UnaryOp::Neg, Type::Int | Type::Float) => ty,
+            (_, Type::Unknown)
+            | (UnaryOp::Not, Type::Bool)
+            | (UnaryOp::Neg, Type::Int | Type::Float)
+            | (UnaryOp::BitNot, Type::Int) => ty,
             (UnaryOp::Not, _) => {
                 self.error(
                     Diagnostic::new(format!("`not` needs a bool, but this is {}", article(&ty.kind())), span)
@@ -453,16 +470,20 @@ impl FnCx<'_> {
                 );
                 Type::Bool
             }
-            (UnaryOp::Neg, Type::Result(..)) => {
+            (UnaryOp::Neg | UnaryOp::BitNot, Type::Result(..)) => {
                 self.error(unhandled_result(inner.span));
                 Type::Unknown
             }
-            (UnaryOp::Neg, ty) if ty.maybe_none() => {
+            (UnaryOp::Neg | UnaryOp::BitNot, ty) if ty.maybe_none() => {
                 self.error(might_be_none(inner.span));
                 Type::Unknown
             }
             (UnaryOp::Neg, _) => {
                 self.error(Diagnostic::new(format!("can't negate {}", article(&ty.kind())), span));
+                Type::Unknown
+            }
+            (UnaryOp::BitNot, _) => {
+                self.error(not_bits(BinOp::BitXor, "~", &ty, span));
                 Type::Unknown
             }
         }
@@ -714,5 +735,21 @@ impl FnCx<'_> {
             self.errors.push(error);
         }
         inner
+    }
+}
+
+/// A bit operator on something other than an int, with the fix for what was probably meant.
+fn not_bits(op: BinOp, symbol: &str, ty: &Type, span: Span) -> Diagnostic {
+    let diagnostic =
+        Diagnostic::new(format!("`{symbol}` works on ints, but this is {}", article(&ty.kind())), span);
+    match (ty, op) {
+        (Type::Bool, BinOp::BitAnd) => diagnostic.with_help("for bools, write `and`"),
+        (Type::Bool, BinOp::BitOr) => diagnostic.with_help("for bools, write `or`"),
+        (Type::Bool, _) => diagnostic.with_help("for bools, write `not` or `!=`"),
+        (Type::Float, _) => diagnostic.with_help("convert it with int(...)"),
+        (Type::Set(_), _) => {
+            diagnostic.with_help("sets don't have bit operators: use a loop or a comprehension")
+        }
+        _ => diagnostic,
     }
 }

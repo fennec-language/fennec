@@ -1,0 +1,7 @@
+error: this breaks the `where` rule on `Player.level`
+  --> examples/errors/where_on_write.fen:11:5
+   |
+11 |     player.level -= 5
+   |     ^^^^^^^^^^^^
+   |
+   = help: `where` rules are checked on every write: check the value first

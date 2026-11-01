@@ -72,6 +72,8 @@ pub struct Param {
     pub ty: Option<TypeExpr>,
     pub is_mut: bool,
     pub is_self: bool,
+    /// The plain value it has when a call leaves it out, which is passed by name if at all.
+    pub default: Option<Expr>,
     pub span: Span,
 }
 
@@ -381,6 +383,8 @@ pub struct Arg {
 pub enum UnaryOp {
     Neg,
     Not,
+    /// `~x`: every bit of an int flipped.
+    BitNot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -404,6 +408,28 @@ pub enum BinOp {
     NotIn,
     Is,
     IsNot,
+    BitAnd,
+    BitOr,
+    BitXor,
+    /// `a << n`: bits shifted past the top are lost, and it can't overflow.
+    ShiftLeft,
+    /// `a >> n`: the sign is kept, so it rounds down.
+    ShiftRight,
+}
+
+impl Expr {
+    /// Whether this is a plain value written out: a number, string, bool or `None`.
+    pub fn is_plain_value(&self) -> bool {
+        match &self.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {
+                true
+            }
+            ExprKind::Unary { op: UnaryOp::Neg, expr } => {
+                matches!(expr.kind, ExprKind::Int(_) | ExprKind::Float(_))
+            }
+            _ => false,
+        }
+    }
 }
 
 impl BinOp {
@@ -428,6 +454,11 @@ impl BinOp {
             BinOp::NotIn => "not in",
             BinOp::Is => "is",
             BinOp::IsNot => "is not",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::ShiftLeft => "<<",
+            BinOp::ShiftRight => ">>",
         }
     }
 

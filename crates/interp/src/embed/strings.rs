@@ -270,6 +270,25 @@ pub extern "C" fn spec_text(value: i64, spec: i64, start: i64, end: i64) -> i64 
     })
 }
 
+/// A new string with a float's text in a format, like `{x:.9f}`, with no temporary.
+pub extern "C" fn float_spec_text(x: f64, spec: i64, start: i64, end: i64) -> i64 {
+    number_spec_text(&Value::Float(x), spec, (start, end))
+}
+
+/// A new string with an int's text in a format, with no temporary.
+pub extern "C" fn int_spec_text(n: i64, spec: i64, start: i64, end: i64) -> i64 {
+    number_spec_text(&Value::Int(n), spec, (start, end))
+}
+
+fn number_spec_text(value: &Value, spec: i64, (start, end): (i64, i64)) -> i64 {
+    attempt(|state: &mut State| {
+        let spec = text(state, spec).unwrap_or_default();
+        let piece = crate::format::with_spec(value, &spec)
+            .map_err(|message| Diagnostic::new(message, span(start, end)))?;
+        Ok(text_address(state, &piece))
+    })
+}
+
 /// `text.code()`, failing like the interpreter for anything but one character.
 pub extern "C" fn code(address: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {

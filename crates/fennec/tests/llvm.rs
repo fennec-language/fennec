@@ -754,7 +754,7 @@ fn a_method_checks_self_once_and_still_copies_a_shared_one() -> std::io::Result<
     }
     same_as_the_jit(
         "self_once",
-        r#"struct Counter:
+        r"struct Counter:
     n: int
     log: list[int]
 
@@ -777,7 +777,7 @@ def main(stdout: Stdout):
     mut kept: list[Counter] = []
     a.keep(mut kept)
     stdout.print(a.n, kept[0].n)
-"#,
+",
     )
 }
 

@@ -476,7 +476,7 @@ impl Emit<'_, '_, '_> {
         at
     }
 
-    fn is_optional(&self, kind: &Kind) -> bool {
+    pub(crate) fn is_optional(&self, kind: &Kind) -> bool {
         let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return false };
         self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Option["))
     }
@@ -1016,6 +1016,11 @@ impl Emit<'_, '_, '_> {
             }
             "list.append" => self.append(args),
             "result.expect" => self.expect(dest, args, span),
+            "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
+            "is_regex" | "re.is_regex" | "Regex.replace" | "Regex.split" | "Regex.find_all"
+            | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
+                self.regex_builtin(dest, name, args, span)
+            }
             "str.len" | "str" | "str.code" | "str.join" | "str.contains" => {
                 self.text_builtin(dest, name, args, span)
             }

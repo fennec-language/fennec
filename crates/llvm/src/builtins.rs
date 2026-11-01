@@ -1,12 +1,12 @@
 //! Builtins written out here: loops over a list that the runtime has no call for.
 
-use fennec_interp::embed::layout::TEXT;
+use fennec_interp::embed::layout::{TEXT, TEXT_BYTES};
 use fennec_interp::embed::lists::{SORT_FLOATS, SORT_INTS, SORT_STRINGS};
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::ListItem;
 use fennec_syntax::Span;
 
-use crate::emit::{Emit, ITEM_ACCESS};
+use crate::emit::{Emit, ITEM_ACCESS, LENGTH_ACCESS};
 use crate::kinds::Kind;
 
 /// A loop that's underway: the slot holding its count, and where it goes back to and out to.
@@ -410,19 +410,11 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
-    /// `text.chars()`: each character's block lasts the whole run, and comes from its byte place.
-    fn chars(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
-        let (text, _) = self.operand(text)?;
-        let (chars_at, count) = (self.offset(&text, 24), self.temp());
-        self.line(&format!("{count} = load i64, ptr {chars_at}"));
-        let list = self.new_list(ListItem::Str, &count);
-        let start = self.offset(&text, TEXT.unsigned_abs());
+    /// The block of the character starting `byte` bytes into a string whose bytes are at
+    /// `start`, and its first byte. Each lasts the whole run: an ASCII one's from the table, any
+    /// other's from the runtime.
+    pub(crate) fn char_at_byte(&mut self, text: &str, start: &str, byte: &str) -> (String, String) {
         self.declare("declare ptr @fennec_str_char_at(ptr, i64) nounwind");
-        let byte_place = self.counter();
-        let (at, end) = self.loop_begin(&count);
-        let byte = self.temp();
-        self.line(&format!("{byte} = load i64, ptr {byte_place}"));
-        // An ASCII character's block comes from the table, and any other's from the runtime.
         let (lead_at, lead) = (self.temp(), self.temp());
         self.line(&format!("{lead_at} = getelementptr inbounds i8, ptr {start}, i64 {byte}"));
         self.line(&format!("{lead} = load i8, ptr {lead_at}"));
@@ -444,6 +436,42 @@ impl Emit<'_, '_, '_> {
         self.start_block(&joined);
         let one = self.temp();
         self.line(&format!("{one} = phi ptr [ {from_table}, %{ascii} ], [ {other}, %{rest} ]"));
+        (one, lead)
+    }
+
+    /// `str.byte_len` and `str.char_at_byte`, which a loop over a string's characters uses.
+    pub(crate) fn text_by_bytes(
+        &mut self,
+        dest: Option<LocalId>,
+        name: &str,
+        args: &[Operand],
+    ) -> Result<(), String> {
+        let dest = dest.ok_or("no result")?;
+        let (text, _) = self.operand(args.first().ok_or("no argument")?)?;
+        if name == "str.byte_len" {
+            let (at, bytes) = (self.offset(&text, TEXT_BYTES.unsigned_abs()), self.temp());
+            self.line(&format!("{bytes} = load i64, ptr {at}{LENGTH_ACCESS}"));
+            return self.assign(dest, &bytes);
+        }
+        let (byte, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+        let start = self.offset(&text, TEXT.unsigned_abs());
+        let (one, _) = self.char_at_byte(&text, &start, &byte);
+        self.retain(&one);
+        self.assign(dest, &one)
+    }
+
+    /// `text.chars()`: each character's block lasts the whole run, and comes from its byte place.
+    fn chars(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
+        let (text, _) = self.operand(text)?;
+        let (chars_at, count) = (self.offset(&text, 24), self.temp());
+        self.line(&format!("{count} = load i64, ptr {chars_at}"));
+        let list = self.new_list(ListItem::Str, &count);
+        let start = self.offset(&text, TEXT.unsigned_abs());
+        let byte_place = self.counter();
+        let (at, end) = self.loop_begin(&count);
+        let byte = self.temp();
+        self.line(&format!("{byte} = load i64, ptr {byte_place}"));
+        let (one, lead) = self.char_at_byte(&text, &start, &byte);
         self.retain(&one);
         let place = self.item_address(&list, "ptr", &at);
         self.line(&format!("store ptr {one}, ptr {place}{ITEM_ACCESS}"));
@@ -472,7 +500,9 @@ impl Emit<'_, '_, '_> {
         let result = |dest: Option<LocalId>| dest.ok_or_else(|| "no result".to_owned());
         Some(match (name, args) {
             ("sum", [list]) => result(dest).and_then(|dest| self.sum(dest, list, None, span)),
-            ("sum", [list, start]) => result(dest).and_then(|dest| self.sum(dest, list, Some(start), span)),
+            ("sum" | "sum.start", [list, start]) => {
+                result(dest).and_then(|dest| self.sum(dest, list, Some(start), span))
+            }
             ("all", [list]) => result(dest).and_then(|dest| self.all_or_any(dest, list, true)),
             ("any", [list]) => result(dest).and_then(|dest| self.all_or_any(dest, list, false)),
             ("enumerate", [list]) => result(dest).and_then(|dest| self.enumerate(dest, list)),

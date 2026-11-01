@@ -2324,3 +2324,17 @@ def first_big() -> int:
     let text = printed(source, "first_big").unwrap();
     assert_eq!(given_bools(&text).len(), 1, "{text}");
 }
+
+#[test]
+fn a_loop_over_text_makes_no_list() {
+    let source = "def spaces(text: str) -> int:
+    mut count = 0
+    for c in text:
+        if c == \" \":
+            count += 1
+    count
+";
+    let text = printed(source, "spaces").unwrap();
+    assert!(!text.contains("str.chars"), "{text}");
+    assert!(text.contains("str.char_at_byte"), "{text}");
+}

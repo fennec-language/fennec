@@ -44,6 +44,8 @@ print_stdout = "deny"
 print_stderr = "deny"
 
 [workspace.dependencies]
+# The allocator the runtime gives Fennec programs: fast for many small blocks, under MIT.
+mimalloc = { version = "=0.1.52", default-features = false }
 cranelift-codegen = "=0.137.0"
 cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"

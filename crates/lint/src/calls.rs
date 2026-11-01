@@ -1,6 +1,7 @@
 //! `positional-arguments`: an argument whose meaning can't be read from the call has to be named.
-//! That's a bare `True` or `False`, any argument past the first when there are three or more,
-//! and an argument beside a parameter of the same type, which are easy to swap unnoticed. The
+//! That's a bare `True` or `False`, an argument beside a parameter of the same type, which is easy
+//! to swap unnoticed, and any argument past the first when there are three or more, unless every
+//! two neighbors have types that can't hold each other's values, so a swap wouldn't compile. The
 //! first argument and `self` are exempt. A call this can't be sure of the target of isn't flagged:
 //! a name a function binds itself might be anything, and so might a method or case with the same
 //! name but different parameters on two types, since which type isn't known here.
@@ -8,26 +9,41 @@
 use std::collections::{HashMap, HashSet};
 
 use fennec_syntax::{
-    Arg, Diagnostic, Expr, ExprKind, Field, FnDef, Item, Module, Param, Span, Stmt, StmtKind, TypeDef,
-    TypeExpr,
+    Arg, Diagnostic, Expr, ExprKind, Field, FnDef, Generic, Item, Module, Param, Span, Stmt, StmtKind,
+    TypeDef, TypeExpr,
 };
 
 use crate::Lint;
 use crate::sizes::{blocks, functions};
 
-/// What a callee takes: each parameter's name and written type, without `self`.
-type Takes<'m> = Vec<(&'m str, Option<&'m TypeExpr>)>;
+/// One parameter a callee takes.
+#[derive(PartialEq)]
+struct Taken<'m> {
+    name: &'m str,
+    ty: Option<&'m TypeExpr>,
+    /// Whether its type is one of the callee's type parameters, which could be anything.
+    generic: bool,
+}
 
-fn takes_params(params: &[Param]) -> Takes<'_> {
+/// What a callee takes, without `self`.
+type Takes<'m> = Vec<Taken<'m>>;
+
+fn taken<'m>(name: &'m str, ty: Option<&'m TypeExpr>, generics: &[&[Generic]]) -> Taken<'m> {
+    let generic =
+        ty.is_some_and(|ty| generics.iter().flat_map(|list| list.iter()).any(|g| g.name == ty.name));
+    Taken { name, ty, generic }
+}
+
+fn takes_params<'m>(params: &'m [Param], generics: &[&[Generic]]) -> Takes<'m> {
     params
         .iter()
         .filter(|param| !param.is_self)
-        .map(|param| (param.name.as_str(), param.ty.as_ref()))
+        .map(|param| taken(&param.name, param.ty.as_ref(), generics))
         .collect()
 }
 
-fn takes_fields(fields: &[Field]) -> Takes<'_> {
-    fields.iter().map(|field| (field.name.as_str(), field.ty.as_ref())).collect()
+fn takes_fields<'m>(fields: &'m [Field], generics: &[Generic]) -> Takes<'m> {
+    fields.iter().map(|field| taken(&field.name, field.ty.as_ref(), &[generics])).collect()
 }
 
 /// What the program's own functions, constructors and methods take.
@@ -41,6 +57,8 @@ struct Callees<'m> {
     enums: HashSet<&'m str>,
     /// The names some function binds for itself, which might not mean what's defined here.
     locals: HashSet<&'m str>,
+    /// Interfaces and aliases, whose values can be of other types.
+    open_types: HashSet<&'m str>,
 }
 
 /// The names a block binds, and those of the blocks inside it.
@@ -83,14 +101,20 @@ impl<'m> Callees<'m> {
         for item in &module.items {
             match item {
                 Item::Function(def) => {
-                    self.named.insert(&def.name, takes_params(&def.params));
+                    self.named.insert(&def.name, takes_params(&def.params, &[&def.generics]));
                 }
                 Item::Struct(def) | Item::Error(def) => {
-                    self.named.insert(&def.name, takes_fields(&def.fields));
-                    self.add_methods(&def.methods);
+                    self.named.insert(&def.name, takes_fields(&def.fields, &def.generics));
+                    self.add_methods(&def.methods, &def.generics);
                 }
                 Item::Enum(def) => self.add_enum(def),
-                Item::Extend(extension) => self.add_methods(&extension.methods),
+                Item::Extend(extension) => self.add_methods(&extension.methods, &extension.generics),
+                Item::Interface(interface) => {
+                    self.open_types.insert(&interface.name);
+                }
+                Item::TypeAlias { name, .. } => {
+                    self.open_types.insert(name);
+                }
                 _ => {}
             }
         }
@@ -98,16 +122,27 @@ impl<'m> Callees<'m> {
 
     fn add_enum(&mut self, def: &'m TypeDef) {
         self.enums.insert(&def.name);
-        self.add_methods(&def.methods);
+        self.add_methods(&def.methods, &def.generics);
         for case in &def.cases {
-            self.cases.entry(&case.name).or_default().push(takes_fields(&case.fields));
+            self.cases.entry(&case.name).or_default().push(takes_fields(&case.fields, &def.generics));
         }
     }
 
-    fn add_methods(&mut self, methods: &'m [FnDef]) {
+    fn add_methods(&mut self, methods: &'m [FnDef], owners: &[Generic]) {
         for method in methods {
-            self.methods.entry(&method.name).or_default().push(takes_params(&method.params));
+            let takes = takes_params(&method.params, &[owners, &method.generics]);
+            self.methods.entry(&method.name).or_default().push(takes);
         }
+    }
+
+    /// Whether no value of one parameter's type is a value of the other's, so passing them
+    /// swapped wouldn't compile. `int` and `int?` aren't: an `int` passes as either.
+    fn distinct(&self, a: &Taken<'_>, b: &Taken<'_>) -> bool {
+        let fixed = |taken: &Taken<'_>| {
+            let ty = taken.ty?;
+            (!taken.generic && !self.open_types.contains(ty.name.as_str())).then(|| ty.name.clone())
+        };
+        fixed(a).zip(fixed(b)).is_some_and(|(a, b)| a != b)
     }
 
     /// What a call's target takes, if there's only one thing it can be.
@@ -140,27 +175,31 @@ fn same_type(a: Option<&TypeExpr>, b: Option<&TypeExpr>) -> bool {
     a.zip(b).is_some_and(|(a, b)| same(a, b))
 }
 
-/// Whether the positional argument at `at`, not the first, has to be named.
-fn needs_name(args: &[&Arg], takes: &Takes<'_>, at: usize) -> bool {
-    let ty = |at: usize| takes.get(at).and_then(|(_, ty)| *ty);
+/// Whether the positional argument at `at`, not the first, has to be named, where `many` says
+/// there are three or more that a swap could go unnoticed among.
+fn needs_name(args: &[&Arg], takes: &Takes<'_>, at: usize, many: bool) -> bool {
+    let ty = |at: usize| takes.get(at).and_then(|taken| taken.ty);
     let bare = args.get(at).is_some_and(|arg| matches!(arg.value.kind, ExprKind::Bool(_)));
-    bare || args.len() >= 3 || same_type(ty(at), ty(at - 1)) || same_type(ty(at), ty(at + 1))
+    bare || many || same_type(ty(at), ty(at - 1)) || same_type(ty(at), ty(at + 1))
 }
 
-fn call(args: &[Arg], takes: &Takes<'_>) -> Option<Lint> {
+fn call(callees: &Callees<'_>, args: &[Arg], takes: &Takes<'_>) -> Option<Lint> {
     let positional: Vec<&Arg> = args.iter().take_while(|arg| arg.name.is_none()).collect();
     if positional.len() < 2 || positional.len() > takes.len() || positional.iter().any(|arg| arg.is_mut) {
         return None;
     }
-    let first = (1..positional.len()).find(|at| needs_name(&positional, takes, *at))?;
-    let (name, _) = takes.get(first)?;
+    let passed = takes.get(..positional.len())?;
+    let many = positional.len() >= 3
+        && !passed.windows(2).all(|pair| matches!(pair, [a, b] if callees.distinct(a, b)));
+    let first = (1..positional.len()).find(|at| needs_name(&positional, takes, *at, many))?;
+    let name = takes.get(first)?.name;
     let at = positional.get(first)?.value.span;
     let mut diagnostic = Diagnostic::new(format!("name this argument: `{name}=`"), at)
         .with_help("arguments that are easy to mix up or can't be read from the call have names");
     // What follows a named argument has to be named too.
-    for (arg, (name, _)) in positional.iter().zip(takes).skip(first) {
+    for (arg, taken) in positional.iter().zip(takes).skip(first) {
         let start = arg.value.span.start;
-        diagnostic = diagnostic.with_fix(Span { start, end: start }, format!("{name}="));
+        diagnostic = diagnostic.with_fix(Span { start, end: start }, format!("{}=", taken.name));
     }
     Some(Lint::new("positional-arguments", diagnostic))
 }
@@ -171,7 +210,7 @@ pub(crate) fn of(module: &Module) -> Vec<Lint> {
     let mut walked = module.clone();
     fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
         if let ExprKind::Call { callee, args } = &expr.kind {
-            found.extend(callees.of_call(callee).and_then(|takes| call(args, takes)));
+            found.extend(callees.of_call(callee).and_then(|takes| call(&callees, args, takes)));
         }
     });
     found

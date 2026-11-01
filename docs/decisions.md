@@ -219,12 +219,12 @@ scan(rows, limit=100)
 This replaces `limit: int = 8` as the written form.
 *Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap. The literal already states the type, so the signature stays complete, and the declaration reads like the call. Making the repeated type an error keeps one way to write it.
 
-**Some positional arguments are a hard error.** These are bare `True` or `False`, three or more positional arguments, and positional arguments to neighboring parameters of the same type. The first argument and `self` are exempt. The fix names them:
+**Some positional arguments are a hard error.** These are bare `True` or `False`, positional arguments to neighboring parameters of the same type, and three or more positional arguments, unless every two neighboring parameters have types that can't hold each other's values, so a swap wouldn't compile: `report(stdout, world, board)` stays as it is. The first argument and `self` are exempt. The fix names them:
 ```fennec
 copy_file(src, overwrite=True)
 move(from_tile=a, to_tile=b)
 ```
-*Why:* A call like `move(a, b, True)` compiles and reads fine when its arguments are swapped. Naming them makes that mistake visible to people and AI, and the first argument is almost always obvious from the function's name.
+*Why:* A call like `move(a, b, True)` compiles and reads fine when its arguments are swapped. Naming them makes that mistake visible to people and AI, and the first argument is almost always obvious from the function's name. Where no two neighbors could be swapped and still compile, the compiler already catches the mistake, so names would only add length.
 
 **A function that can fail says so with `fails Name`, and every exit is visible.**
 ```fennec
@@ -489,11 +489,17 @@ struct Color:
     def json(self, mut out: JsonWriter):
         out.str(f"#{self.r:02x}{self.g:02x}{self.b:02x}")
 ```
-- `_name` fields are skipped.
 - A type overrides one format with a method named for it, which leaves other formats alone. `Color` above is a hex string in JSON and three small integers in `std.pack`.
-- A `shared` handle or a function value is a compile error naming the field.
+- A `shared` handle, a function value or a `Secret[str]` is a compile error naming the field.
 
 *Why:* Types don't know about formats and formats don't know about types, so a new format is written once and works with every struct, and a new struct works with every format.
+
+**Every field is serialized by default, private `_` fields included.** This replaces the rule that `_name` fields are skipped.
+- `@skip` on a field leaves it out, and the field must have a default, so loading still builds a valid value. `@skip` on a field without a default is a compile error.
+- `where` rules run when a value is loaded, as on any write, so a bad save fails with a clear error.
+- A type that needs a different shape, or setup after loading, writes its own `def json(self, mut out: JsonWriter)` and the matching reader. There's no hidden after-load hook. Derived state is computed when it's asked for, or kept in a `@skip` field with a default.
+
+*Why:* Saving a value and loading it gives back exactly the same value, and leaving something out is visible. Private means other code can't touch a field, not that it isn't part of the value, and skipping private fields breaks round-trips silently: a `Grid` saved with no cells.
 
 **Printing is one more format.** `print`, `str(x)` and f-strings all go through it.
 - By default a value prints from its fields, through the same generic breakdown as other formats.

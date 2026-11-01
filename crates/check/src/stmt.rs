@@ -218,8 +218,16 @@ impl FnCx<'_> {
         body: &[Stmt],
         span: fennec_syntax::Span,
     ) {
+        let parallel = crate::parallel::parallel_items(iter).filter(|_| self.lookup("parallel").is_none());
         if is_mut {
-            self.mut_place(iter, "`for mut` changes each item, so loop over something held in a mut name");
+            let what = "`for mut` changes each item, so loop over something held in a mut name";
+            self.mut_place(parallel.unwrap_or(iter), what);
+            if parallel.is_some() {
+                self.checker.parallel_changes.insert((iter.span.start, iter.span.end));
+            }
+        }
+        if parallel.is_some() {
+            self.writes_only_its_own(body, names);
         }
         let iter_ty = self.expr(iter);
         let item = self.item_type(&iter_ty, iter.span);

@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fennec_syntax::{Diagnostic, Expr, FnDef, Generic, Module, Span};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Generic, Module, Span};
 
 use crate::effects::{self, Effects};
 use crate::function::{Binding, FnCx};
@@ -44,6 +44,9 @@ pub(crate) struct Checker {
     pub(crate) generator_types: BTreeMap<(u32, u32), String>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     pub(crate) not_equals: BTreeSet<(u32, u32)>,
+    /// The `parallel(xs)` that a `for mut` loops over, which becomes `xs`: running in order
+    /// is a correct way to run it, and it changes the items where they are.
+    pub(crate) parallel_changes: BTreeSet<(u32, u32)>,
     /// The fields and method calls on a value that might be missing, in a chain an `else`
     /// ends, which are written in as optional.
     pub(crate) optional_steps: BTreeSet<(u32, u32)>,
@@ -93,6 +96,7 @@ impl Checker {
             defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
             not_equals: BTreeSet::new(),
+            parallel_changes: BTreeSet::new(),
             optional_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
             const_types: BTreeMap::new(),
@@ -170,6 +174,7 @@ impl Checker {
                 defaults: self.defaults,
                 generator_types: self.generator_types,
                 not_equals: self.not_equals,
+                parallel_changes: self.parallel_changes,
                 optional_steps: self.optional_steps,
                 std_names: self.std_names,
             });
@@ -343,6 +348,26 @@ impl Checker {
         self.check_with(key, captured);
     }
 
+    /// Whether a body ends in a call made for what it changes: one that takes something `mut`,
+    /// or a method that changes what it's called on, like `board.add(score)`.
+    fn ends_in_change(&self, key: &str, body: &[fennec_syntax::Stmt]) -> bool {
+        let Some(fennec_syntax::StmtKind::Expr(last)) = body.last().map(|stmt| &stmt.kind) else {
+            return false;
+        };
+        let ExprKind::Call { callee, args } = &last.kind else { return false };
+        if args.iter().any(|arg| arg.is_mut) {
+            return true;
+        }
+        let ExprKind::Attr { object, name, .. } = &callee.kind else { return false };
+        let Some(ty) = self.typed.get(key).and_then(|body| body.expr(object.span)) else { return false };
+        if let Some(found) = crate::builtins::method(ty, name) {
+            return found.changes;
+        }
+        let Some(owner) = ty.type_name() else { return false };
+        let found = self.program.method(owner, name);
+        found.is_some_and(|(_, entry)| entry.def.params.first().is_some_and(|param| param.is_mut))
+    }
+
     fn check_with(&mut self, key: &str, captured: Vec<Binding>) {
         let Some(entry) = self.program.functions.get(key) else { return };
         let (def, prelude) = (entry.def.clone(), entry.prelude);
@@ -356,7 +381,11 @@ impl Checker {
         // write its type, and until it does, callers see the value so they aren't reported
         // as well.
         let value = self.settled(&body.value);
-        let gives_back = !matches!(value, Type::Unit | Type::Unknown);
+        // With no arrow, a call at the end made for what it changes is a statement, and what it
+        // gives back is dropped. A failure still has to be handled.
+        let dropped =
+            def.ret.is_none() && self.ends_in_change(key, &def.body) && !matches!(value, Type::Result(..));
+        let gives_back = !dropped && !matches!(value, Type::Unit | Type::Unknown);
         let value = match (written_ret(&def), &def.ret) {
             (Some(_), _) => self.written_return(key),
             (None, None) if gives_back => value,

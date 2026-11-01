@@ -3,7 +3,7 @@
 //! ```text
 //! fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--found DIR] [target...]
 //! fennec-fuzz one <target> <file>
-//! fennec-fuzz show <file>
+//! fennec-fuzz show [llvm] <file>
 //! fennec-fuzz worker <target> <seed> <first input> <input to stop at> <progress file>
 //! ```
 //!
@@ -12,11 +12,15 @@
 //! seed and its number, so whatever it was doing can be made again. What's found is cut down to
 //! the smallest input that still fails the same way, and kept in `found/<target>/`. The tests
 //! run everything kept there, so a failure stays fixed.
+//!
+//! Running with no targets named runs every one but `llvm`, which needs `fennec` beside this
+//! program and LLVM's tools, so it runs only when named.
 #![expect(clippy::print_stdout, reason = "the fuzzer reports what it finds")]
 #![expect(clippy::print_stderr, reason = "the fuzzer reports how it was misused")]
 
 mod engines;
 mod generate;
+mod llvm;
 mod minimize;
 mod mutate;
 mod supervise;
@@ -36,7 +40,8 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let code = match args.as_slice() {
         ["one", name, file] => one(name, Path::new(file)),
-        ["show", file] => show(Path::new(file)),
+        ["show", file] => show(Path::new(file), generate::program),
+        ["show", "llvm", file] => show(Path::new(file), generate::printing_plainly),
         ["worker", name, seed, first, end, progress] => worker(name, seed, (first, end), Path::new(progress)),
         ["run", rest @ ..] => run(rest),
         _ => Err("usage: fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--found DIR] [target...]"
@@ -80,10 +85,11 @@ fn one(name: &str, file: &Path) -> Result<ExitCode, String> {
     Ok(on_big_stack(move || (target.run)(&input)))
 }
 
-/// Prints the program an input to the `jit` target writes, since that input is only choices.
-fn show(file: &Path) -> Result<ExitCode, String> {
+/// Prints the program an input to the `jit` target writes, or with `llvm` that target's, since
+/// that input is only choices.
+fn show(file: &Path, written: fn(&[u8]) -> String) -> Result<ExitCode, String> {
     let input = std::fs::read(file).map_err(|err| format!("{}: {err}", file.display()))?;
-    print!("{}", generate::program(&input));
+    print!("{}", written(&input));
     Ok(ExitCode::SUCCESS)
 }
 
@@ -143,6 +149,9 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
     } else {
         options.names.iter().map(|name| target_named(name)).collect::<Result<_, _>>()?
     };
+    if chosen.iter().any(|target| target.name == targets::LLVM.name) {
+        llvm::ready()?;
+    }
     let fennec_fuzz = std::env::current_exe().map_err(|err| err.to_string())?;
     let mut found_any = false;
     for target in chosen {

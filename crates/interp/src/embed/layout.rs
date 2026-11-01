@@ -375,6 +375,46 @@ mod tests {
     }
 
     #[test]
+    fn popping_a_dict_key_hands_back_its_value() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let words = super::super::dicts::Word::Int;
+        let shape = super::super::dicts::shape(0, words, words).unwrap();
+        let mut dict = super::super::dicts::new(i64::try_from(shape).unwrap(), 4);
+        dict = super::super::dicts::set(dict, 3, 30);
+        dict = super::super::dicts::set(dict, 4, 40);
+        dict = super::super::dicts::pop(dict, 3, 0, 0);
+        assert_eq!(super::super::dicts::popped(), 30);
+        assert_eq!(word(dict, 16), Some(1));
+        super::super::dicts::pop(dict, 3, 0, 0);
+        let (_, failure, _) = finish();
+        assert_eq!(failure.unwrap().message, "the dict has no key 3");
+    }
+
+    #[test]
+    fn a_struct_named_after_a_tuple_type_reads_and_writes_as_a_tuple() {
+        let pair = Element::Struct {
+            name: Rc::from("(int, str)"),
+            fields: vec![(Rc::from("_0"), Element::Int), (Rc::from("_1"), Element::Str)],
+        };
+        let tables = Tables {
+            shapes: vec![Rc::new(pair.clone()), Rc::new(Element::Str)],
+            str_shape: 1,
+            ..Tables::default()
+        };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        with(|state| {
+            let tuple =
+                crate::value::Value::tuple(vec![crate::value::Value::Int(1), crate::value::Value::str("a")]);
+            let mut words = Vec::new();
+            heap::write(state, &pair, &tuple, &mut words).unwrap();
+            let block = heap::write_block(state, 0, &tuple).unwrap();
+            assert_eq!(heap::read_block(state, u64::try_from(block).unwrap()), tuple);
+        });
+        finish();
+    }
+
+    #[test]
     fn a_list_of_lists_owns_its_lists() {
         let ints = Rc::new(Element::Int);
         let lists = Rc::new(Element::List(Rc::clone(&ints)));

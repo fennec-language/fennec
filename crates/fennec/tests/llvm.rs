@@ -509,6 +509,23 @@ fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
 }
 
 #[test]
+fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = "def find(names: list[str], wanted: str) -> str?:\n    for name in names:\n        if name == wanted: return name\n    None\n\nstruct Seen:\n    last: str?\n\ndef main(stdout: Stdout):\n    names = [\"fox\", \"kit\", \"den\"]\n    mut seen = Seen(last=None)\n    mut hits = 0\n    for at in range(1000):\n        found = find(names, names[at % 3])\n        if found is not None:\n            hits += 1\n        seen.last = found\n    stdout.print(hits, seen.last, find(names, \"owl\"))\n";
+    same_as_the_jit("optional", source)?;
+    let counts = counts_of("optional", source)?;
+    let allocations = counts
+        .split_whitespace()
+        .skip_while(|word| *word != "allocations")
+        .nth(1)
+        .and_then(|number| number.parse::<u64>().ok());
+    assert!(allocations.is_some_and(|count| count < 100), "{counts}");
+    Ok(())
+}
+
+#[test]
 fn failures_match_the_jit() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
         return Ok(());

@@ -1,0 +1,63 @@
+# `SortedSet` keeps items in order, each once, on the same B-tree as `SortedMap`.
+from std.collections import SortedSet
+
+test "it agrees with a sorted set, whatever is added and removed" for steps: list[int]:
+    mut items = SortedSet[int]()
+    mut plain: set[int] = set()
+    for step in steps:
+        item = step % 40
+        if step % 3 == 0:
+            items.discard(item)
+            plain.discard(item)
+        else:
+            items.add(item)
+            plain.add(item)
+    assert items.items() == sorted(plain)
+    assert items.len() == plain.len()
+
+test "items come out in order, each once":
+    mut items = SortedSet.of([5, 3, 9, 3, 1, 5])
+    assert items.items() == [1, 3, 5, 9]
+    assert items.len() == 4
+    items.add(4)
+    items.discard(100)
+    items.remove(3)
+    assert items.items() == [1, 4, 5, 9]
+    assert items.has(4) and not items.has(3)
+    assert [item for item in items] == [1, 4, 5, 9]
+
+test "finding the ends, and the nearest items":
+    empty = SortedSet[str]()
+    assert empty.first() is None and empty.last() is None
+    assert empty.floor("m") is None and empty.ceiling("m") is None
+    words = SortedSet.of(["fox", "ash", "kit"])
+    assert words.first() == "ash" and words.last() == "kit"
+    assert words.floor("cat") == "ash" and words.floor("fox") == "fox"
+    assert words.floor("a") is None
+    assert words.ceiling("cat") == "fox" and words.ceiling("zebra") is None
+    assert words.between("b", "l") == ["fox", "kit"]
+
+test "sets combine":
+    small = SortedSet.of([1, 2, 3, 4])
+    evens = SortedSet.of([2, 4, 6])
+    assert small.union(evens).items() == [1, 2, 3, 4, 6]
+    assert small.intersection(evens).items() == [2, 4]
+    assert small.difference(evens).items() == [1, 3]
+    assert SortedSet.of([2, 4]).is_subset(evens) and not small.is_subset(evens)
+    assert small.items() == [1, 2, 3, 4]
+
+test "a copy is independent":
+    mut items = SortedSet.of(range(100))
+    saved = items
+    for item in range(0, 100, 2):
+        items.discard(item)
+    assert items.len() == 50 and saved.len() == 100
+    items.clear()
+    assert items.len() == 0 and saved.first() == 0
+
+def main(stdout: Stdout):
+    mut seen = SortedSet[str]()
+    for word in "the quick fox and the lazy fox".split(" "):
+        seen.add(word)
+    stdout.print(seen.items(), seen.len())
+    stdout.print(seen.floor("m"), seen.ceiling("m"), seen.between("f", "q"))

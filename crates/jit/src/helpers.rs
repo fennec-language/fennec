@@ -664,6 +664,14 @@ impl Helper {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_runtime_library_says_which_helpers_can_fail() {
+        for helper in super::ALL {
+            let symbol = helper.shape().symbol;
+            assert_eq!(fennec_runtime::CAN_FAIL.contains(&symbol), helper.can_fail(), "{symbol}");
+        }
+    }
+
+    #[test]
     fn the_runtime_library_exports_every_helper() {
         for helper in super::ALL {
             let symbol = helper.shape().symbol;

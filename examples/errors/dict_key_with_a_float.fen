@@ -1,0 +1,7 @@
+struct Point:
+    x: float
+    y: float
+
+def main(stdout: Stdout):
+    seen = {Point(x=1.0, y=2.0): 1}
+    stdout.print(seen.len())

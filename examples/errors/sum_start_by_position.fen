@@ -1,0 +1,2 @@
+def main(stdout: Stdout):
+    stdout.print(sum([1, 2], 10))

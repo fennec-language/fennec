@@ -131,6 +131,7 @@ impl<'c> FnCx<'c> {
             .iter()
             .map(|(span, name, ty)| (((span.start, span.end), name.clone()), ty.clone()))
             .collect();
+        crate::keys::check_dict_keys(&mut self, &exprs);
         let mut all: Vec<Type> = exprs.values().chain(names.values()).cloned().collect();
         all.extend(extra.iter().cloned());
         if self.reported == 0 {

@@ -6,4 +6,4 @@ struct Money:
 
 def main(stdout: Stdout):
     wallet = [Money(cents=150)]
-    stdout.print(sum(wallet, 0))
+    stdout.print(sum(wallet, start=0))

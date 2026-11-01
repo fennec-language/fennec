@@ -1,0 +1,7 @@
+error: `Point` can't be a dict key or set item, because its field `x` is a float
+ --> examples/errors/dict_key_with_a_float.fen:6:5
+  |
+6 |     seen = {Point(x=1.0, y=2.0): 1}
+  |     ^^^^
+  |
+  = help: key it by one of its fields instead

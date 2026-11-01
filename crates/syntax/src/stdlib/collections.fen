@@ -181,7 +181,7 @@ struct Counter[T: Hashable]:
 
     ## Counts one more `item`.
     def add(mut self, item: T):
-        self.counts[item] = self.counts.get(item, 0) + 1
+        self.counts[item] = (self.counts.get(item) else 0) + 1
 
     ## Counts each of `items`.
     def update(mut self, items: list[T]):
@@ -190,7 +190,7 @@ struct Counter[T: Hashable]:
 
     ## How many times `item` was counted: 0 if never.
     def [](self, item: T) -> int:
-        self.counts.get(item, 0)
+        self.counts.get(item) else 0
 
     def []=(mut self, item: T, count: int):
         self.counts[item] = count

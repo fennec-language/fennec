@@ -1,0 +1,7 @@
+error: `sum`'s start is passed by name
+ --> examples/errors/sum_start_by_position.fen:2:30
+  |
+2 |     stdout.print(sum([1, 2], 10))
+  |                              ^^
+  |
+  = help: write `start=...`

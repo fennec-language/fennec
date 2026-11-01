@@ -21,6 +21,16 @@ pub(crate) struct SumCall {
 impl FnCx<'_> {
     pub(crate) fn sum(&mut self, args: &[Arg], plain: &[(Type, Span)], span: Span) -> Type {
         let Some((items, at)) = plain.first() else { return Type::Unknown };
+        // A start is passed by name, like any parameter with a default.
+        let unnamed = args.iter().filter(|arg| arg.name.is_none()).nth(1);
+        if let Some(start) = unnamed {
+            let at = start.value.span;
+            self.error(
+                Diagnostic::new("`sum`'s start is passed by name", at)
+                    .with_help("write `start=...`")
+                    .with_fix(Span { start: at.start, end: at.start }, "start="),
+            );
+        }
         let item = self.item_type(items, *at);
         let start = plain.get(1);
         let start_fits = start.is_none_or(|(start, _)| self.checker.fits(&item, start));
@@ -64,7 +74,7 @@ impl FnCx<'_> {
             other => {
                 let start = self.start_hint(&other);
                 let message =
-                    format!("`sum` of `{other}` needs a starting value: sum({}, {start})", call.items);
+                    format!("`sum` of `{other}` needs a starting value: sum({}, start={start})", call.items);
                 self.error(Diagnostic::new(message, call.span));
             }
         }

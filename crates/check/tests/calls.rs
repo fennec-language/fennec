@@ -466,28 +466,28 @@ fn sum_needs_nothing_for_numbers_and_a_start_for_the_rest() {
     for fine in [
         "sum([1, 2])",
         "sum([1.5])",
-        "sum([1], 10)",
-        "sum([1.5], 0.5)",
-        "sum(wallet, Money(cents=0))",
-        "sum(m for m in wallet, Money(cents=0))",
-        "sum([], 0.0)",
-        "sum(['a'], '')",
-        "sum([[1]], [])",
-        "sum([], Money(cents=0))",
+        "sum([1], start=10)",
+        "sum([1.5], start=0.5)",
+        "sum(wallet, start=Money(cents=0))",
+        "sum(m for m in wallet, start=Money(cents=0))",
+        "sum([], start=0.0)",
+        "sum(['a'], start='')",
+        "sum([[1]], start=[])",
+        "sum([], start=Money(cents=0))",
     ] {
         assert_eq!(sum_problems(fine), Vec::<String>::new(), "{fine}");
     }
     assert_eq!(
         sum_problems("sum(wallet)"),
-        ["`sum` of `Money` needs a starting value: sum(wallet, Money(cents=0)) @ sum(wallet)"]
+        ["`sum` of `Money` needs a starting value: sum(wallet, start=Money(cents=0)) @ sum(wallet)"]
     );
     assert_eq!(
         sum_problems("sum(m for m in wallet)"),
-        ["`sum` of `Money` needs a starting value: sum(..., Money(cents=0)) @ sum(m for m in wallet)"]
+        ["`sum` of `Money` needs a starting value: sum(..., start=Money(cents=0)) @ sum(m for m in wallet)"]
     );
     assert_eq!(
         sum_problems("sum([[1]])"),
-        ["`sum` of `list[int]` needs a starting value: sum(..., []) @ sum([[1]])"]
+        ["`sum` of `list[int]` needs a starting value: sum(..., start=[]) @ sum([[1]])"]
     );
 }
 
@@ -503,15 +503,15 @@ def main(stdout: Stdout):
     );
     assert_eq!(
         problems(&program),
-        ["`sum` of `Money` needs a starting value: sum(wallet, Money(cents=0)) @ sum(wallet)"]
+        ["`sum` of `Money` needs a starting value: sum(wallet, start=Money(cents=0)) @ sum(wallet)"]
     );
 }
 
 #[test]
 fn sum_needs_a_plus_that_adds_two_items() {
     assert_eq!(
-        sum_problems("sum([Flag(on=True)], Flag(on=False))"),
-        ["`sum` adds with `+`, but `Flag` has no `def +` @ sum([Flag(on=True)], Flag(on=False))"]
+        sum_problems("sum([Flag(on=True)], start=Flag(on=False))"),
+        ["`sum` adds with `+`, but `Flag` has no `def +` @ sum([Flag(on=True)], start=Flag(on=False))"]
     );
     assert_eq!(
         sum_problems("sum([Flag(on=True)])"),
@@ -519,21 +519,27 @@ fn sum_needs_a_plus_that_adds_two_items() {
     );
     assert_eq!(sum_problems("sum([True])"), ["`sum` adds with `+`, but `bool` has no `+` @ sum([True])"]);
     assert_eq!(
-        sum_problems("sum([Worth(cents=1)], Worth(cents=0))"),
+        sum_problems("sum([Worth(cents=1)], start=Worth(cents=0))"),
         [
-            "`sum` needs `+` to give back `Worth`, but `Worth`'s gives a float @ sum([Worth(cents=1)], Worth(cents=0))"
+            "`sum` needs `+` to give back `Worth`, but `Worth`'s gives a float @ sum([Worth(cents=1)], start=Worth(cents=0))"
         ]
     );
     assert_eq!(
-        sum_problems("sum([Tip(cents=1)], Tip(cents=0))"),
-        ["`other` should be an int, but this is a Tip @ sum([Tip(cents=1)], Tip(cents=0))"]
+        sum_problems("sum([Tip(cents=1)], start=Tip(cents=0))"),
+        ["`other` should be an int, but this is a Tip @ sum([Tip(cents=1)], start=Tip(cents=0))"]
     );
 }
 
 #[test]
 fn sums_start_has_to_be_an_item() {
-    assert_eq!(sum_problems("sum(wallet, 0)"), ["`sum`'s start should be a Money, but this is an int @ 0"]);
-    assert_eq!(sum_problems("sum([1.5], 0)"), ["`sum`'s start should be a float, but this is an int @ 0"]);
+    assert_eq!(
+        sum_problems("sum(wallet, start=0)"),
+        ["`sum`'s start should be a Money, but this is an int @ 0"]
+    );
+    assert_eq!(
+        sum_problems("sum([1.5], start=0)"),
+        ["`sum`'s start should be a float, but this is an int @ 0"]
+    );
     assert_eq!(
         sum_problems("sum([1], 2, 3)"),
         ["`sum` was called with the wrong arguments @ sum([1], 2, 3)"]
@@ -550,19 +556,19 @@ fn sum_of_a_type_parameter_needs_a_start_and_a_bound_with_plus() {
             def name(self) -> str
 
         def total[T: Addable](items: list[T], start: T) -> T:
-            sum(items, start)
+            sum(items, start=start)
 
         def bare[T: Addable](items: list[T]) -> T:
             sum(items)
 
         def named[T: Named](items: list[T], start: T) -> T:
-            sum(items, start)
+            sum(items, start=start)
     ";
     assert_eq!(
         problems(program),
         [
-            "`sum` of `T` needs a starting value: sum(items, ...) @ sum(items)",
-            "`sum` adds with `+`, but `T` has no `def +` @ sum(items, start)",
+            "`sum` of `T` needs a starting value: sum(items, start=...) @ sum(items)",
+            "`sum` adds with `+`, but `T` has no `def +` @ sum(items, start=start)",
         ]
     );
 }
@@ -585,7 +591,7 @@ fn sum_hints_a_start_from_the_required_fields() {
     let [problem] = problems(&program.replace('\'', "\"")).try_into().unwrap();
     assert!(
         problem.starts_with(
-            "`sum` of `Bag` needs a starting value: sum(..., Bag(name=\"\", weight=0.0, flag=...)) @"
+            "`sum` of `Bag` needs a starting value: sum(..., start=Bag(name=\"\", weight=0.0, flag=...)) @"
         ),
         "{problem}"
     );
@@ -594,7 +600,7 @@ fn sum_hints_a_start_from_the_required_fields() {
 #[test]
 fn sums_error_says_what_to_add() {
     let program = format!(
-        "{MONEY}\ndef main(stdout: Stdout):\n    stdout.print(sum([Flag(on=True)], Flag(on=False)))\n"
+        "{MONEY}\ndef main(stdout: Stdout):\n    stdout.print(sum([Flag(on=True)], start=Flag(on=False)))\n"
     );
     assert_eq!(helps(&program), ["add `def +(self, other: Flag) -> Flag` to `Flag`"]);
 }

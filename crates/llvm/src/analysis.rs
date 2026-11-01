@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use fennec_check::Type;
 use fennec_ir::facts::{Facts, Range};
-use fennec_ir::{Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
+use fennec_ir::{Block, Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
 use fennec_syntax::{BinOp, UnaryOp};
 
 const FULL: Range = (i64::MIN, i64::MAX);
@@ -52,6 +52,9 @@ pub(crate) struct Analysis {
     /// A block ending in a jump to a loop that fills a list made in that block: the list, and
     /// how many items the loop adds at most.
     pub(crate) reservations: HashMap<usize, (usize, Operand)>,
+    /// Lists such a loop fills with nothing but zeros, one a turn from a count starting at 0:
+    /// made whole, already zero, with the appends left out.
+    pub(crate) zero_filled: HashSet<usize>,
 }
 
 /// What's known about every function, and which can fail.
@@ -68,8 +71,7 @@ pub(crate) struct Whole<'p> {
 pub(crate) fn callees(function: &Function) -> impl Iterator<Item = &str> {
     function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
         InstKind::Call { function, .. } => Some(function.as_str()),
-        InstKind::Constant { name, .. } => Some(name.as_str()),
-        InstKind::Resume { known: Some(name), .. } => Some(name.as_str()),
+        InstKind::Constant { name, .. } | InstKind::Resume { known: Some(name), .. } => Some(name.as_str()),
         _ => None,
     })
 }
@@ -359,6 +361,7 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
         path_taken: HashMap::new(),
         aliases: HashMap::new(),
         reservations: HashMap::new(),
+        zero_filled: HashSet::new(),
     };
     let grown = count_uses(function, changes, &mut known);
     find_reads_again(function, &mut known);
@@ -811,8 +814,58 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
             .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } if dest.0 == list && items.is_empty()));
         if made_here {
             known.reservations.insert(at, (list, limit));
+            if fills_with_zeros(function, block, (header, body), list, known) {
+                known.zero_filled.insert(list);
+            }
         }
     }
+}
+
+/// Whether a loop does nothing but append a zero to `list` each turn, counting up from 0 by 1,
+/// so that it appends exactly as many as its limit says.
+fn fills_with_zeros(
+    function: &Function,
+    before: &Block,
+    (header, body): (&Block, &Block),
+    list: usize,
+    known: &Analysis,
+) -> bool {
+    let Terminator::Branch { cond: Operand::Local(cond), .. } = &header.end else { return false };
+    let count = header.insts.iter().find_map(|inst| match &inst.kind {
+        InstKind::Binary { dest, op: BinOp::Lt, lhs: Operand::Local(count), .. } if dest == cond => {
+            Some(*count)
+        }
+        _ => None,
+    });
+    let Some(count) = count else { return false };
+    if !function.counts.iter().any(|found| found.count == count && !found.down) {
+        return false;
+    }
+    let starts_at_zero = before.insts.iter().rev().find_map(|inst| match &inst.kind {
+        InstKind::Copy { dest, value } if *dest == count => Some(*value == Operand::Int(0)),
+        _ => None,
+    });
+    if starts_at_zero != Some(true) || header.insts.len() != 1 {
+        return false;
+    }
+    let mut appends = 0;
+    for inst in &body.insts {
+        match &inst.kind {
+            InstKind::Builtin { name, args, .. }
+                if name == "list.append"
+                    && args.first() == Some(&Operand::Local(LocalId(list)))
+                    && matches!(args.get(1), Some(Operand::Int(0) | Operand::Bool(false)))
+                    && args.len() == 2 =>
+            {
+                appends += 1;
+            }
+            InstKind::Copy { dest, .. } if known.reads.get(dest.0) == Some(&0) => {}
+            _ => return false,
+        }
+    }
+    // The turn ends by stepping the count and nothing else.
+    let Terminator::Jump(latch) = body.end else { return false };
+    appends == 1 && function.blocks.get(latch.0).is_some_and(|latch| latch.insts.len() == 1)
 }
 
 impl Analysis {

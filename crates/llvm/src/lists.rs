@@ -621,7 +621,8 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &list)
     }
 
-    /// Makes an empty list with room for what the loop after this block adds.
+    /// Makes an empty list with room for what the loop after this block adds, or, for a loop
+    /// adding only zeros, the whole list, as a new one is zero.
     pub(crate) fn reserve(&mut self, dest: LocalId, limit: &Operand) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
         let item = list_item(&kind)?;
@@ -629,7 +630,12 @@ impl Emit<'_, '_, '_> {
         let (above, room) = (self.temp(), self.temp());
         self.line(&format!("{above} = icmp sgt i64 {count}, 0"));
         self.line(&format!("{room} = select i1 {above}, i64 {count}, i64 0"));
-        let list = self.new_list_with(item, &room, "fennec_list_with_room");
+        let helper = if self.known.zero_filled.contains(&dest.0) {
+            "fennec_list_new"
+        } else {
+            "fennec_list_with_room"
+        };
+        let list = self.new_list_with(item, &room, helper);
         self.assign(dest, &list)
     }
 
@@ -638,6 +644,10 @@ impl Emit<'_, '_, '_> {
         let Some(Operand::Local(local)) = args.first() else {
             return Err("it appends to a literal".to_owned());
         };
+        // Made whole already, of zeros.
+        if self.known.zero_filled.contains(&local.0) {
+            return Ok(());
+        }
         let kind = self.kind_of(*local)?.clone();
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;

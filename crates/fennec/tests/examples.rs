@@ -19,6 +19,7 @@ const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] = &[
     ("case_guards.fen", &["describe", "first_word", "size"]),
     ("functions_more.fen", &["countdown"]),
     ("generators.fen", &["checked", "countdown", "doubled", "holding", "naturals", "words"]),
+    ("generators_fused.fen", &["checked", "odd", "running", "three", "upto"]),
     ("operators.fen", &["Grid.iter"]),
 ];
 

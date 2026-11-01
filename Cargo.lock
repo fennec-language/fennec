@@ -351,6 +351,7 @@ dependencies = [
  "fennec-check",
  "fennec-interp",
  "fennec-ir",
+ "fennec-layout",
  "fennec-runtime",
  "fennec-syntax",
 ]
@@ -360,6 +361,15 @@ name = "fennec-kit"
 version = "0.0.1"
 dependencies = [
  "fennec-check",
+ "fennec-syntax",
+]
+
+[[package]]
+name = "fennec-layout"
+version = "0.0.1"
+dependencies = [
+ "fennec-check",
+ "fennec-interp",
  "fennec-syntax",
 ]
 

@@ -217,7 +217,7 @@ impl Interp<'_> {
     }
 
     /// `replace(value, field=new, ...)`: a copy with some fields changed.
-    pub(crate) fn replace(args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
+    pub(crate) fn replace(&mut self, args: Vec<CallArg>, span: Span) -> Result<Value, Diagnostic> {
         let mut args = args.into_iter();
         let Some(CallArg { value: Value::Instance(instance), name: None, .. }) = args.next() else {
             return Err(Diagnostic::new("`replace` takes a struct value, then the fields to change", span)
@@ -237,8 +237,23 @@ impl Interp<'_> {
                     arg.span,
                 )
             })?;
-            *field = arg.value;
+            *field = arg.value.clone();
+            if let Some(rule) = self.rule_of_field(&instance, &name) {
+                self.frame.push();
+                self.frame.declare(&name, arg.value, false);
+                let holds = self.truth(&rule, "where");
+                self.frame.pop();
+                if !holds? {
+                    return Err(broken_rule(&instance.type_name, &name, span));
+                }
+            }
         }
         Ok(Value::Instance(Rc::new(changed)))
     }
+}
+
+/// A write that a field's `where` rule doesn't allow.
+pub(crate) fn broken_rule(type_name: &str, field: &str, span: Span) -> Diagnostic {
+    Diagnostic::new(format!("this breaks the `where` rule on `{type_name}.{field}`"), span)
+        .with_help("`where` rules are checked on every write: check the value first")
 }

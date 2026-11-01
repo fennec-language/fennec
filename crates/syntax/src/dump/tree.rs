@@ -142,6 +142,9 @@ impl Tree {
             if let Some(ty) = &param.ty {
                 tree.type_expr(ty);
             }
+            if let Some(default) = &param.default {
+                tree.expr(default);
+            }
         });
     }
 

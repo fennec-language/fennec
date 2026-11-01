@@ -45,6 +45,17 @@ pub fn name_enum(case: &mut Expr, owner: &str) {
     case.kind = ExprKind::Attr { object, name, optional: false };
 }
 
+/// Writes the defaults a call leaves out into it, by name.
+pub fn add_defaults(call: &mut Expr, defaults: &[(String, Expr)]) {
+    if let ExprKind::Call { args, .. } = &mut call.kind {
+        for (name, default) in defaults {
+            let at = crate::Span { start: call.span.end, end: call.span.end };
+            let value = Expr { kind: default.kind.clone(), span: at };
+            args.push(crate::ast::Arg { name: Some(name.clone()), is_mut: false, value });
+        }
+    }
+}
+
 /// Gives a call to `sum` of floats its start: `sum(xs)` becomes `sum(xs, 0.0)`.
 pub fn add_float_start(call: &mut Expr) {
     let at = crate::Span { start: call.span.end, end: call.span.end };

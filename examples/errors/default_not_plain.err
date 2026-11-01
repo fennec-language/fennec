@@ -1,0 +1,7 @@
+error: a parameter's default has to be a plain value
+ --> examples/errors/default_not_plain.fen:4:23
+  |
+4 | def grid(width: int = size()) -> int:
+  |                       ^^^^^^
+  |
+  = help: write a number, string, `True`, `False` or `None`, and work anything else out in the function

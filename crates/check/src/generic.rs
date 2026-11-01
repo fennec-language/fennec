@@ -239,6 +239,7 @@ impl FnCx<'_> {
                 name: param.name.clone(),
                 ty: param.ty.as_ref().map_or_else(|| owner.clone(), |ty| resolve(self, ty)),
                 is_mut: param.is_mut,
+                default: param.default.clone(),
             })
             .collect();
         let returns = method.ret.as_ref().map_or(Type::Unit, |ret| resolve(self, ret));

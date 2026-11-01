@@ -37,12 +37,24 @@ struct Generic:
     bounds: list[TypeExpr]
     span: Span
 
+## Whether an expression is a plain value written out: a number, string, bool or `None`.
+def is_plain_value(expr: Expr) -> bool:
+    match expr.kind:
+        case .Int(_) | .Float(_) | .Str(_) | .Bool(_) | .Nothing: True
+        case .Unary(op, operand):
+            match operand.kind:
+                case .Int(_) | .Float(_): op == .Neg
+                case _: False
+        case _: False
+
 struct Param:
     name: str
     ## Missing only for `self`.
     ty: TypeExpr?
     is_mut: bool
     is_self: bool
+    ## The plain value it has when a call leaves it out, which is passed by name if at all.
+    default: Expr?
     span: Span
 
 ## A written type, like `int`, `list[str]`, `(int, int)` or `Enemy?`.

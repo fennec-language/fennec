@@ -1042,7 +1042,10 @@ impl Emit<'_, '_, '_> {
         } else {
             symbol(name)
         };
-        self.check_stack(span);
+        // A copy is inlined, and calls only other copies, so it can't go deeper.
+        if name == self.function.name || !self.module.defined.contains(name) {
+            self.check_stack(span);
+        }
         let result = self.temp();
         if ret == "void" {
             self.line(&format!("call swiftcc void {target}({shown})"));

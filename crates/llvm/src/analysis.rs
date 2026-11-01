@@ -365,10 +365,15 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
     };
     let grown = count_uses(function, changes, &mut known);
     find_reads_again(function, &mut known);
+    find_borrows(function, &mut known);
+    find_path_takes(function, &mut known);
+    find_aliases(function, &mut known);
     // A copy shares its source, unless the source is never read again, and a block put inside
     // something else is shared by that.
     for inst in function.blocks.iter().flat_map(|block| &block.insts) {
         match &inst.kind {
+            // A copy standing for the list a loop goes through owns nothing.
+            InstKind::Copy { dest, .. } if known.aliases.contains_key(&dest.0) => {}
             InstKind::Copy { value: Operand::Local(from), .. }
             | InstKind::MakeSome { value: Operand::Local(from), .. }
             | InstKind::GetSome { value: Operand::Local(from), .. }
@@ -397,9 +402,6 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
             _ => {}
         }
     }
-    find_borrows(function, &mut known);
-    find_path_takes(function, &mut known);
-    find_aliases(function, &mut known);
     let mut facts = Facts::of(function, changes);
     let stepped: HashSet<usize> = function.counts.iter().map(|count| count.count.0).collect();
     for (block, written) in function.blocks.iter().enumerate() {

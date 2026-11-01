@@ -396,8 +396,8 @@ fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
             found.extend(super::dicts::children(state, block));
             return;
         }
-        if let Some(element) = super::lists::element_of(state, block)
-            && super::lists::owns_items(&element)
+        if let Some(element) = super::lists::element_in(state, block)
+            && super::lists::owns_items(element)
         {
             found.extend(super::lists::items(block, 1).iter().copied().filter(|address| *address != 0));
         }

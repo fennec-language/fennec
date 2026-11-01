@@ -1,0 +1,43 @@
+# A program's own type takes the place of a standard library type of the same name.
+
+struct Grid:
+    cells: list[int]
+    width: int
+
+    def [](self, at: (int, int)) -> int:
+        x, y = at
+        self.cells[y * self.width + x]
+
+struct Tree:
+    label: str
+
+    def describe(self) -> str:
+        f"a tree called {self.label}"
+
+struct Deque:
+    items: list[int]
+
+    def append(mut self, item: int):
+        self.items.append(item)
+
+    def len(self) -> int:
+        self.items.len()
+
+# `Random`'s methods compile natively in the library and here, so both can't be kept.
+struct Random:
+    seed: int
+
+    def randint(mut self, low: int, high: int) -> int:
+        self.seed = self.seed * 3 + 1
+        low + self.seed % (high - low + 1)
+
+def main(stdout: Stdout):
+    grid = Grid(cells=[1, 2, 3, 4], width=2)
+    stdout.print(grid[(1, 1)])
+    stdout.print(Tree(label="oak").describe())
+    mut queue = Deque(items=[])
+    queue.append(5)
+    queue.append(6)
+    stdout.print(queue.len(), queue.items)
+    mut dice = Random(seed=1)
+    stdout.print(dice.randint(1, 6), dice.randint(1, 6), dice.seed)

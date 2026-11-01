@@ -10,7 +10,7 @@ use crate::expr::Member;
 use crate::function::FnCx;
 use crate::generic::Chosen;
 use crate::infer::Hole;
-use crate::messages::{might_be_none, mismatch, no_method, unhandled_result};
+use crate::messages::{mismatch, no_method, unhandled_result};
 use crate::program::TypeKind;
 use crate::types::{Type, a};
 
@@ -51,7 +51,7 @@ impl FnCx<'_> {
                         self.ignore_args(args);
                         Type::Unknown
                     }
-                    None => self.method_call(object, name, *optional, args, span),
+                    None => self.method_call(object, name, (*optional, callee.span), args, span),
                 };
             }
             ExprKind::Variant(name) => return self.construct_variant(None, name, args, span),
@@ -308,11 +308,21 @@ impl FnCx<'_> {
         Some(signature.returns)
     }
 
-    fn method_call(&mut self, object: &Expr, method: &str, optional: bool, args: &[Arg], span: Span) -> Type {
+    /// `object.method(...)`. `step` is where `object.method` is written, which an `else` may
+    /// make optional.
+    fn method_call(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        (optional, step): (bool, Span),
+        args: &[Arg],
+        span: Span,
+    ) -> Type {
         if let Some(type_name) = self.as_type_name(object) {
             return self.static_call(type_name, method, args, span);
         }
         let ty = self.expr(object);
+        let optional = optional || self.chained_step(&ty, step);
         self.method_on(&MethodCall { object, method, args, span }, &ty, optional)
     }
 
@@ -324,7 +334,7 @@ impl FnCx<'_> {
                 Type::None
             }
             Type::Optional(inner) if optional => Type::optional(self.method_on(call, inner, false)),
-            ty if ty.maybe_none() => self.unusable(might_be_none(object.span), args),
+            ty if ty.maybe_none() => self.unusable(crate::messages::missing_step(object.span), args),
             Type::Result(value, _) if method == "expect" => {
                 self.expect_reason(args, span);
                 value.as_ref().clone()

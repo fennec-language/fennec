@@ -5,7 +5,7 @@ use fennec_ir::{LocalId, Operand};
 use fennec_layout::ListItem;
 use fennec_syntax::{BinOp, Span};
 
-use crate::emit::{Emit, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS};
+use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 
 /// A case's field: its name, where it goes, and how it's held if this backend takes it.
@@ -123,10 +123,11 @@ impl Emit<'_, '_, '_> {
             Some(block) => self.offset(block, FIELDS_OFFSET),
             None => self.slot(dest),
         };
+        let access = if block.is_some() { FIELD_ACCESS } else { "" };
         for ((offset, held), value) in written.into_iter().zip(fields) {
             let held = held.ok_or("a field this backend doesn't take yet")?;
             let at = self.offset(&base, offset);
-            self.fill(&held, value, &at, "")?;
+            self.fill(&held, value, &at, access)?;
         }
         if let Some(block) = block {
             self.assign(dest, &block)?;
@@ -135,6 +136,9 @@ impl Emit<'_, '_, '_> {
     }
 
     pub(crate) fn get_field(&mut self, dest: LocalId, object: &Operand, field: &str) -> Result<(), String> {
+        if let Some((root, list_field, index)) = self.known.path_home(dest).cloned() {
+            return self.take_from_item(dest, (root, &list_field, &index), field);
+        }
         let (base, kind) = self.operand(object)?;
         // A field taken out to change: its count only means something if what holds it is alone.
         let base = match object {
@@ -147,7 +151,40 @@ impl Emit<'_, '_, '_> {
         let (offset, held) = self.field(&kind, field)?;
         let fields = self.fields_at(&base, &kind);
         let at = self.offset(&fields, offset);
-        self.read_into(dest, &held, &at, "")
+        let access = if matches!(kind, Kind::Boxed(_)) { FIELD_ACCESS } else { "" };
+        self.read_into(dest, &held, &at, access)
+    }
+
+    /// `root.list[index].field`, taken out to change and put back: the root, the list and the
+    /// item are each made alone first, so the field's one owner is the item it goes back to.
+    fn take_from_item(
+        &mut self,
+        dest: LocalId,
+        (root, list_field, index): (LocalId, &str, &Operand),
+        field: &str,
+    ) -> Result<(), String> {
+        let list = self.alone_list(root, &[list_field.to_owned()])?;
+        let item_kind = self.place_kind(root, &[list_field.to_owned()])?;
+        let Kind::List(item) = item_kind else { return Err("an item of something else".to_owned()) };
+        let held = self.item_kind(item)?;
+        if !matches!(held, Kind::Boxed(_)) {
+            return Err(format!("it takes a field of a {held:?} item, which this backend doesn't take yet"));
+        }
+        // The item was read at this index just before, so it's inside the list, counting from
+        // the end if it's negative.
+        let (index, _) = self.operand(index)?;
+        let length = self.list_length(&list);
+        let (negative, from_end, position) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{negative} = icmp slt i64 {index}, 0"));
+        self.line(&format!("{from_end} = add i64 {index}, {length}"));
+        self.line(&format!("{position} = select i1 {negative}, i64 {from_end}, i64 {index}"));
+        let at = self.item_address(&list, "ptr", &position);
+        let block = self.alone_at(&at, "fennec_unshare");
+        let (offset, inner) = self.field(&held, field)?;
+        let fields = self.fields_at(&block, &held);
+        let place = self.offset(&fields, offset);
+        let value = self.load_field(&inner, &place, FIELD_ACCESS);
+        self.assign(dest, &value)
     }
 
     /// A block at `place` with no other owner, so it can change.
@@ -180,8 +217,10 @@ impl Emit<'_, '_, '_> {
         let (value, fresh) = self.value_for(value, &field_kind)?;
         let mut place = self.slot(object);
         let mut kind = self.kind_of(object)?.clone();
+        let mut in_block = false;
         for name in path {
             let inside = if matches!(kind, Kind::Boxed(_)) {
+                in_block = true;
                 let block = self.alone_at(&place, "fennec_unshare");
                 self.offset(&block, FIELDS_OFFSET)
             } else {
@@ -191,19 +230,20 @@ impl Emit<'_, '_, '_> {
             place = self.offset(&inside, offset);
             kind = inner;
         }
+        let access = if in_block { FIELD_ACCESS } else { "" };
         if put_back && kind.counted() {
             // The field's old value was taken out, and this is what became of it.
-            self.line(&format!("store ptr {value}, ptr {place}"));
+            self.line(&format!("store ptr {value}, ptr {place}{access}"));
         } else if kind.counted() {
             if !fresh {
                 self.retain_value(&value, &kind);
             }
             let old = self.temp();
-            self.line(&format!("{old} = load ptr, ptr {place}"));
-            self.line(&format!("store ptr {value}, ptr {place}"));
+            self.line(&format!("{old} = load ptr, ptr {place}{access}"));
+            self.line(&format!("store ptr {value}, ptr {place}{access}"));
             self.release(&old);
         } else {
-            self.store_field(&kind, &value, &place, "");
+            self.store_field(&kind, &value, &place, access);
         }
         Ok(())
     }
@@ -374,9 +414,13 @@ impl Emit<'_, '_, '_> {
         }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
-        // An item taken out to change: its count only means something once the list is alone.
-        let list = if let Some((home, path)) = self.known.item_home(dest).filter(|_| held.counted()) {
-            self.alone_list(*home, path)?
+        // An item taken out to change: its count only means something once the list is alone,
+        // and with the list alone from here, putting it back needs no checks between.
+        // A local list's own check is made once, ahead of its loop, so that stays as it is.
+        let list = if let Some((home, path)) =
+            self.known.item_home(dest).filter(|(_, path)| held.counted() || !path.is_empty()).cloned()
+        {
+            self.alone_list(home, &path)?
         } else {
             list
         };
@@ -384,6 +428,9 @@ impl Emit<'_, '_, '_> {
         let position = if inside { index } else { self.position(&list, &index, span) };
         let memory = held.memory(self.module.layouts);
         let at = self.item_address(&list, &memory, &position);
+        if self.known.item_home(dest).is_some_and(|(_, path)| held.counted() || !path.is_empty()) {
+            self.taken_at.insert(dest.0, at.clone());
+        }
         self.read_into(dest, &held, &at, ITEM_ACCESS)
     }
 
@@ -484,12 +531,28 @@ impl Emit<'_, '_, '_> {
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
         let put_back = matches!(value, Operand::Local(local) if self.known.is_taken(*local));
+        // Taken from here, when the list was made alone, and nothing's touched it since.
+        let from_here = match value {
+            Operand::Local(local)
+                if self
+                    .known
+                    .item_home(*local)
+                    .is_some_and(|(home, at)| *home == object && at.as_slice() == path) =>
+            {
+                self.taken_at.get(&local.0).cloned()
+            }
+            _ => None,
+        };
         let (index, _) = self.operand(index)?;
         let (value, fresh) = self.value_for(value, &held)?;
-        let list = if path.is_empty() { self.unshared(object) } else { self.alone_list(object, path)? };
-        let position = if inside { index } else { self.position(&list, &index, span) };
         let memory = held.memory(self.module.layouts);
-        let at = self.item_address(&list, &memory, &position);
+        let at = if let Some(at) = from_here {
+            at
+        } else {
+            let list = if path.is_empty() { self.unshared(object) } else { self.alone_list(object, path)? };
+            let position = if inside { index } else { self.position(&list, &index, span) };
+            self.item_address(&list, &memory, &position)
+        };
         if put_back && held.counted() {
             self.line(&format!("store ptr {value}, ptr {at}{ITEM_ACCESS}"));
         } else if held.counted() {

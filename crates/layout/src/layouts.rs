@@ -52,8 +52,11 @@ pub struct Layouts {
     all: Vec<Layout>,
     /// Every enum with a case of each name, plain or not, for `.Circle` without its type.
     owners: HashMap<String, Vec<String>>,
-    /// Whether an optional of something held by a block is that block's address, or 0.
+    /// Whether an optional of something held by a block is that block's address, or 0, and a
+    /// list can hold lists, dicts and those optionals.
     one_word_optionals: bool,
+    /// The types `Ty::Block` names, by number.
+    blocks: std::cell::RefCell<Vec<Ty>>,
 }
 
 /// What laying out types needs to see: the checker's structs, and the enums as written.
@@ -347,6 +350,29 @@ impl Layouts {
         self.all.get(usize::try_from(id).ok()?)
     }
 
+    /// The type a `Ty::Block` names.
+    #[must_use]
+    pub fn block(&self, id: u32) -> Option<Ty> {
+        self.blocks.borrow().get(usize::try_from(id).ok()?).copied()
+    }
+
+    /// How a list holds an item of this type, if it can: a block a list owns is named by number
+    /// when `ListItem` can't name it itself.
+    fn list_item(&self, item: Ty) -> Option<ListItem> {
+        if let Some(item) = ListItem::of(item) {
+            return Some(item);
+        }
+        if !self.one_word_optionals || !item.counted() {
+            return None;
+        }
+        let mut blocks = self.blocks.borrow_mut();
+        let at = blocks.iter().position(|known| *known == item).unwrap_or_else(|| {
+            blocks.push(item);
+            blocks.len() - 1
+        });
+        Some(ListItem::Block(u32::try_from(at).ok()?))
+    }
+
     pub fn id(&self, name: &str) -> Option<u32> {
         self.by_name.get(name).copied()
     }
@@ -361,7 +387,7 @@ impl Layouts {
             Type::Str => Ty::Str,
             Type::Dict(key, value) => dict_ty(self, key, value),
             Type::Set(item) => set_ty(self, item),
-            Type::List(item) => ListItem::of(self.ty(item)).map_or(Ty::Obj, Ty::List),
+            Type::List(item) => self.list_item(self.ty(item)).map_or(Ty::Obj, Ty::List),
             Type::Optional(inner) if self.one_word_optionals => {
                 Block::of(self.ty(inner)).map_or(Ty::Obj, Ty::Maybe)
             }
@@ -404,7 +430,9 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
             (None, Some(id)) => Ty::Struct(id),
             (None, None) => Ty::Obj,
         },
-        Type::List(item) => ListItem::of(boxed_field_ty(layouts, reserved, item)).map_or(Ty::Obj, Ty::List),
+        Type::List(item) => {
+            layouts.list_item(boxed_field_ty(layouts, reserved, item)).map_or(Ty::Obj, Ty::List)
+        }
         Type::Dict(key, value) => dict_ty(layouts, key, value),
         Type::Set(item) => set_ty(layouts, item),
         Type::Optional(inner) if layouts.one_word_optionals => {
@@ -542,7 +570,7 @@ mod tests {
     use fennec_interp::embed::layout::{FIELDS, GEN_FAILURE, GEN_ITEM, GEN_PC, GEN_RESUME, GEN_STARTED};
 
     use super::{Layouts, Written, generator_definition};
-    use crate::{Block, Ty};
+    use crate::{Block, ListItem, Ty};
 
     fn fields(names: &[(&str, Type)]) -> Vec<super::WrittenField> {
         names.iter().map(|(name, ty)| ((*name).to_owned(), ty.clone(), None)).collect()
@@ -624,5 +652,25 @@ mod tests {
         assert_eq!(types, [Ty::Maybe(Block::Str), Ty::Maybe(Block::Boxed(id)), Ty::Obj]);
         assert_eq!(layouts.ty(&maybe(Type::Str)), Ty::Maybe(Block::Str));
         assert_eq!(layouts.ty(&maybe(Type::Int)), Ty::Obj);
+    }
+
+    #[test]
+    fn a_list_holds_lists_dicts_and_optionals_by_number() {
+        let list = |ty: Type| Type::List(Box::new(ty));
+        let layouts = Layouts::from_definitions(&[]);
+        let nested = layouts.ty(&list(list(Type::Int)));
+        let Ty::List(ListItem::Block(id)) = nested else { panic!("{nested:?}") };
+        assert_eq!(layouts.block(id), Some(Ty::List(ListItem::Int)));
+        assert_eq!(layouts.ty(&list(list(Type::Int))), nested);
+        let maybe = layouts.ty(&list(Type::Optional(Box::new(Type::Str))));
+        let Ty::List(ListItem::Block(other)) = maybe else { panic!("{maybe:?}") };
+        assert_eq!(layouts.block(other), Some(Ty::Maybe(Block::Str)));
+        assert_eq!(
+            crate::describe(&layouts, nested),
+            Some(fennec_interp::packed::Element::List(std::rc::Rc::new(
+                fennec_interp::packed::Element::List(std::rc::Rc::new(fennec_interp::packed::Element::Int))
+            )))
+        );
+        assert_eq!(Layouts::default().ty(&list(list(Type::Int))), Ty::Obj);
     }
 }

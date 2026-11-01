@@ -47,7 +47,7 @@ def main(stdout: Stdout):
     step(mut world, 2.0)
     stdout.print(world.enemies[near].position)
 
-    world.enemies.modify(far, e => e.take_damage(25))
+    world.enemies.modify(far, foe => foe.take_damage(25))
     stdout.print(world.enemies[far].health)
 
     world.enemies.remove(near)

@@ -23,16 +23,22 @@ def main(stdout: Stdout):
     numbers.add(3)
     stdout.print(numbers, sum(n for n in numbers))
 
-    copy = numbers
+    kept = numbers
     numbers.add(100)
     numbers.remove(1)
-    stdout.print(copy, numbers, copy == numbers, copy == {1, 9, 3}, {1, 2} == {2, 1})
+    stdout.print(kept, numbers, kept == numbers, kept == {1, 9, 3}, {1, 2} == {2, 1})
 
     mut words = {"a", "b"}
     words.add("c")
     words.add("a")
     words.remove("b")
-    stdout.print(words, "a" in words, "b" in words, sorted(words), [w + "!" for w in words])
+    stdout.print(
+        words,
+        "a" in words,
+        "b" in words,
+        sorted(words),
+        [each_word + "!" for each_word in words],
+    )
     words.clear()
     words.add("z")
     numbers.clear()

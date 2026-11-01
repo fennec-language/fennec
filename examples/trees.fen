@@ -11,10 +11,10 @@ enum Expr:
 
     def size(self) -> int:
         match self:
-            case .Add(a, b):
-                1 + a.size() + b.size()
-            case .Mul(a, b):
-                1 + a.size() + b.size()
+            case .Add(left_node, right_node):
+                1 + left_node.size() + right_node.size()
+            case .Mul(left_node, right_node):
+                1 + left_node.size() + right_node.size()
             case .Neg(inner):
                 1 + inner.size()
             case .Let(_, value, body):
@@ -23,32 +23,35 @@ enum Expr:
                 1
 
 struct Env:
-    a: int
-    b: int
+    left_node: int
+    right_node: int
 
 def lookup(env: Env, slot: int) -> int:
-    env.a if slot == 0 else env.b
+    env.left_node if slot == 0 else env.right_node
 
 def bind(env: Env, slot: int, value: int) -> Env:
-    Env(a=value, b=env.b) if slot == 0 else Env(a=env.a, b=value)
+    Env(left_node=value, right_node=env.right_node) if slot == 0 else Env(
+        left_node=env.left_node,
+        right_node=value,
+    )
 
-def eval(e: Expr, env: Env) -> int:
-    match e:
+def eval(expr: Expr, env: Env) -> int:
+    match expr:
         case .Num(n):
             n
         case .Var(slot):
             lookup(env, slot)
-        case .Add(a, b):
-            eval(a, env) + eval(b, env)
-        case .Mul(a, b):
-            eval(a, env) * eval(b, env)
+        case .Add(left_node, right_node):
+            eval(left_node, env) + eval(right_node, env)
+        case .Mul(left_node, right_node):
+            eval(left_node, env) * eval(right_node, env)
         case .Neg(inner):
             -eval(inner, env)
         case .Let(slot, value, body):
-            eval(body, bind(env, slot, eval(value, env)))
+            eval(body, bind(env, slot=slot, value=eval(value, env)))
 
-def simplify(e: Expr) -> Expr:
-    match e:
+def simplify(expr: Expr) -> Expr:
+    match expr:
         case .Add(.Num(0), right):
             simplify(right)
         case .Add(left, .Num(0)):
@@ -59,32 +62,32 @@ def simplify(e: Expr) -> Expr:
             .Num(0)
         case .Neg(.Neg(inner)):
             simplify(inner)
-        case .Add(a, b):
-            .Add(simplify(a), simplify(b))
-        case .Mul(a, b):
-            .Mul(simplify(a), simplify(b))
+        case .Add(left_node, right_node):
+            .Add(simplify(left_node), right=simplify(right_node))
+        case .Mul(left_node, right_node):
+            .Mul(simplify(left_node), right=simplify(right_node))
         case .Neg(inner):
             .Neg(simplify(inner))
         case .Let(slot, value, body):
-            .Let(slot, simplify(value), simplify(body))
+            .Let(slot, value=simplify(value), body=simplify(body))
         case other:
             other
 
 def build(depth: int, seed: int) -> Expr:
     if depth == 0: return Expr.Var(seed % 2) if seed % 4 == 0 else .Num(seed % 10)
-    left = build(depth - 1, seed * 3 + 1)
-    right = build(depth - 1, seed * 7 + 2)
+    left = build(depth - 1, seed=seed * 3 + 1)
+    right = build(depth - 1, seed=seed * 7 + 2)
     match seed % 5:
         case 0:
-            .Add(left, right)
+            .Add(left, right=right)
         case 1:
-            .Mul(.Num(1), .Add(left, .Num(0)))
+            .Mul(.Num(1), right=.Add(left, right=.Num(0)))
         case 2:
-            .Add(.Neg(.Neg(left)), right)
+            .Add(.Neg(.Neg(left)), right=right)
         case 3:
-            .Let(seed % 2, left, right)
+            .Let(seed % 2, value=left, body=right)
         case _:
-            .Mul(left, .Neg(right))
+            .Mul(left, right=.Neg(right))
 
 enum Chain:
     End
@@ -97,16 +100,16 @@ def count_down(n: int) -> Chain:
     chain
 
 def total(chain: Chain) -> int:
-    mut sum = 0
+    mut summed = 0
     mut at = chain
     while True:
         match at:
             case .Link(value, rest):
-                sum += value
+                summed += value
                 at = rest
             case .End:
                 break
-    sum
+    summed
 
 struct Program:
     name: str
@@ -114,21 +117,21 @@ struct Program:
     runs: int
 
 def main(stdout: Stdout):
-    env = Env(a=3, b=-2)
-    small = Expr.Let(0, .Add(.Num(2), .Var(1)), .Mul(.Var(0), .Neg(.Num(5))))
+    env = Env(left_node=3, right_node=-2)
+    small = Expr.Let(0, value=.Add(.Num(2), right=.Var(1)), body=.Mul(.Var(0), right=.Neg(.Num(5))))
     stdout.print(small)
     stdout.print(eval(small, env), small.size())
 
-    tree = build(12, 1)
+    tree = build(12, seed=1)
     simpler = simplify(tree)
     stdout.print(tree.size(), simpler.size(), eval(tree, env), eval(simpler, env))
-    stdout.print(simplify(simpler) == simpler, tree == simpler, build(12, 1) == tree)
+    stdout.print(simplify(simpler) == simpler, tree == simpler, build(12, seed=1) == tree)
 
     # A copy shares the tree; changing one changes nothing else.
     mut program = Program(name="calc", body=small, runs=0)
     saved = program
     program.runs += 1
-    program.body = .Add(program.body, .Num(1))
+    program.body = .Add(program.body, right=.Num(1))
     stdout.print(program.runs, saved.runs, eval(program.body, env), eval(saved.body, env))
     stdout.print(saved.body == small, program.body == small)
 

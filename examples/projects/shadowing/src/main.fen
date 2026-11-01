@@ -18,7 +18,7 @@ def main(stdout: Stdout):
             stdout.print(f"{value} is missing")
         case Err(error):
             stdout.print(error)
-    stdout.print(scaled(3, 4))
+    stdout.print(scaled(3, scale=4))
 
 def scaled(first: int, scale: int) -> int:
     first * scale

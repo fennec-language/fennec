@@ -70,6 +70,11 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_unpack",
 ];
 
+/// What an executable's program allocates through: its big blocks, and what the runtime
+/// allocates for itself while it works.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Exports each function under a symbol: `symbol(params) -> result => function(args);`.
 macro_rules! export {
     ($($symbol:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? => $module:ident::$function:ident($($pass:ident),*);)*) => {

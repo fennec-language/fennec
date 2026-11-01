@@ -16,10 +16,8 @@ def word(n: int) -> str:
     f"w{n}"
 
 def words(n: int) -> list[str]:
-    mut all = []
-    for i in range(n):
-        all.append(word(i)?)
-    all
+    spelled = [word(i)? for i in range(n)]
+    spelled
 
 def node(n: int) -> Node:
     if n > 3: fail TooBig(limit=3)

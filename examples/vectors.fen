@@ -19,14 +19,14 @@ def settle(mut body: Body):
     body.velocity = Vec3.zero()
     body.asleep = True
 
-def heaviest(a: Body, b: Body) -> Body:
-    a if a.mass >= b.mass else b
+def heaviest(first: Body, second: Body) -> Body:
+    first if first.mass >= second.mass else second
 
 def main(stdout: Stdout):
     mut ball = Body(mass=2.0)
-    copy = ball
+    kept = ball
     ball.kick(Vec3(y=4.0))
-    stdout.print(ball.velocity, copy.velocity)
+    stdout.print(ball.velocity, kept.velocity)
 
     later = ball.moved(0.5)
     stdout.print(later.position, ball.position)
@@ -39,7 +39,7 @@ def main(stdout: Stdout):
     stdout.print(ball.velocity, ball.asleep)
 
     rock = Body(mass=5.0)
-    stdout.print(heaviest(ball, rock).mass, ball == copy, copy == Body(mass=2.0))
+    stdout.print(heaviest(ball, second=rock).mass, ball == kept, kept == Body(mass=2.0))
 
     mut bodies = [Body(mass=float(n)) for n in range(1, 4)]
     for mut body in bodies:

@@ -21,8 +21,8 @@ def main(stdout: Stdout):
         stdout.print(describe(foe))
     first = strongest(foes)
     if first is not None:
-        stdout.print(first.name, to_json([1, 2]), motion.step(1.0, settings.speed))
+        stdout.print(first.name, to_json([1, 2]), motion.step(1.0, speed=settings.speed))
 
 test "an alias stands for what it renames":
     assert make_enemy("cat", .Walker).name == "cat"
-    assert motion.step(0.0, 2.0) == 2.0
+    assert motion.step(0.0, speed=2.0) == 2.0

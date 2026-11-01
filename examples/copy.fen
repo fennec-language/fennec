@@ -10,11 +10,11 @@ struct Shape:
     tags: list[str]
 
 def main(stdout: Stdout):
-    mut a = Point(x=1)
-    mut b = copy(a)
-    b.x = 2
-    stdout.print(a.x, b.x, b.y)
-    mut one = Shape(at=a, name="one", tags=["t"])
+    original = Point(x=1)
+    mut copied = copy(original)
+    copied.x = 2
+    stdout.print(original.x, copied.x, copied.y)
+    one = Shape(at=original, name="one", tags=["t"])
     mut two = copy(one)
     two.at.x = 9
     two.name = "two"
@@ -25,4 +25,4 @@ def main(stdout: Stdout):
     list_b.append(3)
     list_a[0] = 5
     stdout.print(list_a, list_b, copy(7), copy("text"), copy(1.5))
-    stdout.print(copy(a) == a, copy(one).at.x)
+    stdout.print(copy(original) == original, copy(one).at.x)

@@ -122,11 +122,12 @@ impl Interp<'_> {
         if self.frame.get(first).is_some() {
             return None;
         }
-        let Some(module) = self.modules.get(&alias) else {
+        let modules = self.modules_at(span);
+        let Some(module) = modules.get(&alias) else {
             // `std.toml` after `import std.json`, which binds `std` but not `std.toml`.
             let path = format!("{alias}.{name}");
-            let is_package = self.modules.keys().any(|bound| package_of(bound) == Some(alias.as_str()));
-            let module = self.modules.get(&path).copied();
+            let is_package = modules.keys().any(|bound| package_of(bound) == Some(alias.as_str()));
+            let module = modules.get(&path).copied();
             return is_package.then(|| Err(fennec_syntax::package_member(&path, module, span)));
         };
         Some(fennec_syntax::std_member(module, name, span).map(|()| {
@@ -149,13 +150,14 @@ impl Interp<'_> {
         if let Some(builtin) = self.imports.get(name).or(prelude) {
             return Ok(Value::Builtin(builtin));
         }
-        if let Some(module) = self.modules.get(name) {
+        let modules = self.modules_at(span);
+        if let Some(module) = modules.get(name) {
             return Err(fennec_syntax::module_as_value(name, module, span));
         }
-        if let Some((path, module)) = self.modules.iter().find(|(path, _)| package_of(path) == Some(name)) {
+        if let Some((path, module)) = modules.iter().find(|(path, _)| package_of(path) == Some(name)) {
             return Err(fennec_syntax::module_as_value(path, module, span));
         }
-        if self.modules.contains_key(&format!("std.{name}")) {
+        if modules.contains_key(&format!("std.{name}")) {
             return Err(fennec_syntax::short_module(name, span));
         }
         if let Some(constant) = builtins::constant(name) {

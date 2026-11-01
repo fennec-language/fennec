@@ -30,9 +30,9 @@ struct Bag:
         self.total += 1
         self.total
 
-    def link(mut self, a: int, b: int):
-        self.items[a].near.append(b)
-        self.items[b].near.append(a)
+    def link(mut self, first: int, second: int):
+        self.items[first].near.append(second)
+        self.items[second].near.append(first)
 
     def first_big(mut self) -> int:
         for mut point in self.points:
@@ -83,15 +83,13 @@ def fresh() -> Bag:
     )
 
 def total_near(bag: Bag) -> int:
-    mut sum_of = 0
-    for item in bag.items:
-        sum_of += item.near.len()
+    sum_of = sum(item.near.len() for item in bag.items)
     sum_of
 
 def main(stdout: Stdout):
     mut bag = fresh()
     stdout.print(bag.add(5, "five"), bag.add(7, "seven"), bag.total, bag.tag_of(1))
-    bag.link(0, 1)
+    bag.link(0, second=1)
     stdout.print(total_near(bag), bag.items[0].near, bag.items[1].tags)
 
     bag.points[0].x = 4
@@ -112,18 +110,18 @@ def main(stdout: Stdout):
     stdout.print(bag.points[0].x, bag.points[0].y, bag.points.len(), bag.numbers, bag.counts)
     stdout.print(bag.spot.x, bag.spot.y, bag.name, bag.items[0].id, bag.items[1].tags, bag.total)
 
-    copy = bag
+    kept = bag
     bag.items[0].near.append(100)
     bag.numbers.append(4)
     bag.counts["c"] = 1
     bag.items[1].id = -1
-    stdout.print(copy.items[0].near, bag.items[0].near, copy.numbers, bag.numbers)
+    stdout.print(kept.items[0].near, bag.items[0].near, kept.numbers, bag.numbers)
     stdout.print(
-        copy.counts.len(),
+        kept.counts.len(),
         bag.counts.len(),
-        copy.items[1].id,
+        kept.items[1].id,
         bag.items[1].id,
-        copy == bag,
+        kept == bag,
     )
 
     stdout.print(bag.numbers.pop(), bag.numbers, bag.items.pop().id, bag.items.len())

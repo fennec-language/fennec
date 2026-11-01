@@ -34,7 +34,7 @@ pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7";
 /// Below this many instructions, a function that calls nothing is always inlined.
 const ALWAYS_INLINE: usize = 16;
 /// Below this many, a function that calls nothing is copied to its callers to be inlined.
-const COPIED: usize = 40;
+const COPIED: usize = 64;
 /// Below this many, a recursive function gets one level of itself inlined, as in the JIT.
 const SELF_INLINED: usize = 24;
 
@@ -357,6 +357,7 @@ impl Emit<'_, '_, '_> {
 
     /// Where a local is held.
     pub(crate) fn slot(&self, local: LocalId) -> String {
+        let local = self.known.alias(local).unwrap_or(local);
         let in_memory = self.kinds.get(local.0).is_some_and(Kind::in_memory);
         if self.is_mut_param(local) || (self.is_lent(local) && in_memory) {
             format!("%p{}", local.0)
@@ -370,6 +371,7 @@ impl Emit<'_, '_, '_> {
         self.kinds.get(local.0).is_some_and(Kind::counted)
             && !self.is_mut_param(local)
             && !self.is_lent(local)
+            && self.known.alias(local).is_none()
             && !self.known.is_borrowed(local)
             && !self.known.is_taken(local)
     }
@@ -962,6 +964,10 @@ impl Emit<'_, '_, '_> {
 
     /// `dest = value`: a block gets another owner, unless nothing else ever reads `value`.
     fn copy(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+        // The local is the list, so there's nothing to copy.
+        if self.known.alias(dest).is_some() {
+            return Ok(());
+        }
         let (held, kind) = self.operand(value)?;
         if kind.in_memory() {
             return self.assign_memory(dest, &held, "");

@@ -38,6 +38,9 @@ pub(crate) struct Analysis {
     /// Locals taking an item out of a list to change it and put it back: the local or field
     /// the list is in, which has to be alone before the item's count says anything.
     items_taken: HashMap<usize, (LocalId, Vec<String>)>,
+    /// Locals standing for a list that a `for` loop goes through while changing only the item
+    /// it's on: a copy of the list would say the same, and cost a whole list.
+    aliases: HashMap<usize, LocalId>,
     /// A block ending in a jump to a loop that fills a list made in that block: the list, and
     /// how many items the loop adds at most.
     pub(crate) reservations: HashMap<usize, (usize, Operand)>,
@@ -299,6 +302,7 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
         borrowed: HashSet::new(),
         taken: HashSet::new(),
         items_taken: HashMap::new(),
+        aliases: HashMap::new(),
         reservations: HashMap::new(),
     };
     let grown = count_uses(function, changes, &mut known);
@@ -335,6 +339,7 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
         }
     }
     find_borrows(function, &mut known);
+    find_aliases(function, &mut known);
     let mut facts = Facts::of(function, changes);
     let stepped: HashSet<usize> = function.counts.iter().map(|count| count.count.0).collect();
     for (block, written) in function.blocks.iter().enumerate() {
@@ -426,6 +431,9 @@ fn find_borrows(function: &Function, known: &mut Analysis) {
                         InstKind::SetField { object, value, .. }
                             if *object == dest && !matches!(value, Operand::Local(held) if *held == dest) => {
                         }
+                        // Something inside it, changed directly, or taken out and changed on the way back.
+                        InstKind::SetIndex { object, .. } if *object == dest => {}
+                        InstKind::SetIndex { object, path, .. } if *object != home.0 && path.is_empty() => {}
                         other if is_quiet(other) => {}
                         _ => break,
                     }
@@ -453,6 +461,105 @@ fn find_borrows(function: &Function, known: &mut Analysis) {
                     other if is_quiet(other) => {}
                     _ => break,
                 }
+            }
+        }
+    }
+}
+
+/// The blocks of a loop: its body, and what that reaches without going back through its test.
+fn loop_blocks(function: &Function, header: usize, body: usize) -> HashSet<usize> {
+    let mut found = HashSet::new();
+    let mut waiting = vec![body];
+    while let Some(at) = waiting.pop() {
+        if at != header && found.insert(at) {
+            let Some(block) = function.blocks.get(at) else { continue };
+            waiting.extend(block.end.targets().into_iter().map(|target| target.0));
+        }
+    }
+    found
+}
+
+/// Whether anything in a loop does more to a list than change the item at the loop's count.
+fn loop_touches(body: &[&InstKind], list: LocalId, at_count: &dyn Fn(&Operand) -> bool) -> bool {
+    body.iter().any(|inst| match inst {
+        InstKind::SetIndex { object, path, index, .. } => {
+            *object == list && (!path.is_empty() || !at_count(index))
+        }
+        InstKind::Builtin { name, args, changes, .. } => {
+            (*changes || name == "list.append") && args.first() == Some(&Operand::Local(list))
+        }
+        InstKind::Call { args, .. } => args.contains(&Operand::Local(list)),
+        InstKind::Copy { dest, .. } | InstKind::GetIndex { dest, .. } | InstKind::GetField { dest, .. } => {
+            *dest == list
+        }
+        _ => false,
+    })
+}
+
+/// `for mut item in list` reads from a copy of the list and writes each item back, and a loop
+/// over a list that changes only the item it's on can't tell the copy from the list. So the copy
+/// can be the list, as long as nothing in the loop does anything else to it.
+fn find_aliases(function: &Function, known: &mut Analysis) {
+    let insts = || function.blocks.iter().flat_map(|held| &held.insts);
+    for (header, block) in function.blocks.iter().enumerate() {
+        let Terminator::Branch { cond: Operand::Local(cond), then, .. } = &block.end else { continue };
+        let test = block.insts.iter().find_map(|inst| match &inst.kind {
+            InstKind::Binary { dest, op: BinOp::Lt, lhs: Operand::Local(count), .. } if dest == cond => {
+                Some(*count)
+            }
+            _ => None,
+        });
+        let Some(count) =
+            test.filter(|count| function.counts.iter().any(|held| held.count == *count && !held.down))
+        else {
+            continue;
+        };
+        let inside = loop_blocks(function, header, then.0);
+        let body: Vec<&InstKind> = inside
+            .iter()
+            .filter_map(|at| function.blocks.get(*at))
+            .flat_map(|held| &held.insts)
+            .map(|inst| &inst.kind)
+            .collect();
+        // The count, or a local that only ever holds a copy of it.
+        let writes = known.writes.clone();
+        let at_count = |index: &Operand| match index {
+            Operand::Local(local) => {
+                *local == count
+                    || (writes.get(local.0) == Some(&1)
+                        && insts().any(|inst| {
+                            matches!(&inst.kind, InstKind::Copy { dest, value: Operand::Local(from) }
+                                if dest == local && *from == count)
+                        }))
+            }
+            _ => false,
+        };
+        for inst in insts() {
+            let InstKind::Copy { dest: copy, value: Operand::Local(list) } = &inst.kind else { continue };
+            let unnamed = function.locals.get(copy.0).is_some_and(|local| local.name.is_none());
+            if !unnamed || known.writes.get(copy.0) != Some(&1) {
+                continue;
+            }
+            // Everything that reads the copy: its length, and items at the count in the loop.
+            let mut reads = 0;
+            for read in insts() {
+                match &read.kind {
+                    InstKind::Builtin { name, args, .. }
+                        if name == "list.len" && args.first() == Some(&Operand::Local(*copy)) =>
+                    {
+                        reads += 1;
+                    }
+                    InstKind::GetIndex { object: Operand::Local(from), index, .. }
+                        if from == copy && body.contains(&&read.kind) && at_count(index) =>
+                    {
+                        reads += 1;
+                    }
+                    _ => {}
+                }
+            }
+            if reads > 0 && known.reads.get(copy.0) == Some(&reads) && !loop_touches(&body, *list, &at_count)
+            {
+                known.aliases.insert(copy.0, *list);
             }
         }
     }
@@ -532,6 +639,11 @@ impl Analysis {
     /// Whether a local took a field's value out, to put it back, so its owner moves both ways.
     pub(crate) fn is_taken(&self, local: LocalId) -> bool {
         self.taken.contains(&local.0)
+    }
+
+    /// The list a local stands for, when it needs no copy of its own.
+    pub(crate) fn alias(&self, local: LocalId) -> Option<LocalId> {
+        self.aliases.get(&local.0).copied()
     }
 
     /// Where the list is that a local took an item out of.

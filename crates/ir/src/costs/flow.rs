@@ -22,8 +22,9 @@ struct Place {
     path: Vec<String>,
 }
 
-/// One local holding a value that's also somewhere else.
-type Shared = (usize, Place);
+/// One local holding a value that's also somewhere else, and whether it holds it inside, as an
+/// item or a field, rather than as another name for the same value.
+type Shared = (usize, Place, bool);
 type Held = BTreeSet<Shared>;
 
 /// How a list's item is written in a path, whichever item it is.
@@ -130,30 +131,30 @@ impl Flow<'_> {
     fn still_shared(
         &self,
         held: &Held,
-        (place, changed): (&Place, usize),
+        place: &Place,
         live: &HashSet<usize>,
         at: (usize, usize),
     ) -> Option<Why> {
         let alive = |id: usize| self.callers.contains(&id) || live.contains(&id);
-        let holder = held.iter().find_map(|(holder, value)| {
+        // Changing what's held copies it while its holder may still read it. Changing a holder
+        // copies only what it shares as another name: changing a list doesn't copy its items.
+        let (holder, inside) = held.iter().find_map(|(holder, value, inside)| {
             if value.local == place.local
                 && place.path.starts_with(&value.path)
                 && *holder != place.local
                 && alive(*holder)
             {
-                return Some(*holder);
+                return Some((*holder, *inside));
             }
-            (*holder == place.local && value.local != place.local && alive(value.local))
-                .then_some(value.local)
+            (*holder == place.local && !inside && value.local != place.local && alive(value.local))
+                .then_some((value.local, false))
         })?;
         if self.callers.contains(&holder) {
             return Some(Why::Caller);
         }
         let name = self.shown(&Place { local: holder, path: Vec::new() });
         let later = self.next_read(holder, at);
-        let ty = |id: usize| self.function.locals.get(id).map(|local| &local.ty);
-        // A holder of another type has it inside: an item of a list, or a field.
-        if ty(holder) != ty(changed) {
+        if inside {
             return Some(Why::PutInto { container: name, later });
         }
         Some(Why::HeldBy { name, later })
@@ -191,22 +192,22 @@ impl Flow<'_> {
         let mut cost = None;
         for written in self.written(kind) {
             let place = self.place(written.0);
-            if let Some(why) = self.still_shared(held, (&place, written.0), live, at) {
+            if let Some(why) = self.still_shared(held, &place, live, at) {
                 cost = Some(Cost::Copy { value: self.shown(&place), why });
             }
             // Whichever holder changes it, the two don't share it any more. What's held from
             // elsewhere in the same value, like another field, stays shared.
-            held.retain(|(holder, value)| {
+            held.retain(|(holder, value, _)| {
                 let changed = value.local == place.local && place.path.starts_with(&value.path);
                 let holds_it = *holder == place.local && place.path.is_empty();
                 !changed && !holds_it
             });
         }
         if let Some(id) = dest(kind) {
-            held.retain(|(holder, value)| *holder != id.0 && value.local != id.0);
+            held.retain(|(holder, value, _)| *holder != id.0 && value.local != id.0);
         }
-        for (holder, value) in self.shares(kind) {
-            self.share(held, holder, value);
+        for (holder, value, inside) in self.shares(kind) {
+            self.share(held, (holder, value), inside);
         }
         cost
     }
@@ -233,9 +234,9 @@ impl Flow<'_> {
     }
 
     /// The locals that hold another value after an instruction, with that value.
-    fn shares(&self, kind: &InstKind) -> Vec<(usize, usize)> {
-        let stores = |dest: &LocalId, items: Vec<&Operand>| -> Vec<(usize, usize)> {
-            items.into_iter().filter_map(local).map(|item| (dest.0, item.0)).collect()
+    fn shares(&self, kind: &InstKind) -> Vec<(usize, usize, bool)> {
+        let stores = |dest: &LocalId, items: Vec<&Operand>, inside: bool| -> Vec<(usize, usize, bool)> {
+            items.into_iter().filter_map(local).map(|item| (dest.0, item.0, inside)).collect()
         };
         match kind {
             // An explicit `copy(...)` is a separate value on purpose.
@@ -245,7 +246,7 @@ impl Flow<'_> {
                 Vec::new()
             }
             InstKind::Copy { dest, value } if self.is_heap(dest.0) && !self.places.contains_key(&dest.0) => {
-                stores(dest, vec![value])
+                stores(dest, vec![value], false)
             }
             InstKind::Make { dest, .. }
             | InstKind::MakeCase { dest, .. }
@@ -255,16 +256,16 @@ impl Flow<'_> {
             | InstKind::MakeTuple { dest, .. }
             | InstKind::MakeClosure { dest, .. }
             | InstKind::MakeSome { dest, .. }
-            | InstKind::MakeOk { dest, .. } => stores(dest, operands(kind)),
+            | InstKind::MakeOk { dest, .. } => stores(dest, operands(kind), true),
             InstKind::Builtin { args, changes: true, .. } => {
                 let Some(holder) = args.first().and_then(local) else { return Vec::new() };
-                args.iter().skip(1).filter_map(local).map(|item| (holder.0, item.0)).collect()
+                args.iter().skip(1).filter_map(local).map(|item| (holder.0, item.0, true)).collect()
             }
             InstKind::SetField { object, value, .. } | InstKind::SetIndex { object, value, .. } => {
                 let holder = self.place(object.0).local;
                 local(value)
                     .filter(|value| !self.places.contains_key(&value.0))
-                    .map(|value| (holder, value.0))
+                    .map(|value| (holder, value.0, true))
                     .into_iter()
                     .collect()
             }
@@ -273,16 +274,19 @@ impl Flow<'_> {
     }
 
     /// Records that `holder` holds `value`, and so whatever `value` holds too.
-    fn share(&self, held: &mut Held, holder: usize, value: usize) {
+    fn share(&self, held: &mut Held, (holder, value): (usize, usize), inside: bool) {
         if !self.is_heap(value) {
             return;
         }
         let place = self.place(value);
-        let inherited: Vec<Place> =
-            held.iter().filter(|(by, _)| *by == place.local).map(|(_, value)| value.clone()).collect();
-        for value in std::iter::once(place).chain(inherited) {
+        let inherited: Vec<(Place, bool)> = held
+            .iter()
+            .filter(|(by, ..)| *by == place.local)
+            .map(|(_, value, deeper)| (value.clone(), inside || *deeper))
+            .collect();
+        for (value, inside) in std::iter::once((place, inside)).chain(inherited) {
             if value.local != holder {
-                held.insert((holder, value));
+                held.insert((holder, value, inside));
             }
         }
     }

@@ -102,12 +102,30 @@ fn a_copy_of_what_was_shared_before_a_loop_happens_once() {
 
 #[test]
 fn a_copy_in_a_function_a_loop_calls_happens_each_time() {
-    let source = "def bump(items: list[int]) -> int:\n    mut mine = items\n    mine.append(1)\n    mine.len()\n\n\
-                  def f(n: int) -> int:\n    xs = [n]\n    mut total = 0\n    for at in range(n):\n        \
-                  total += bump(xs)\n    total\n";
+    let source = "def bump(n: int) -> int:\n    mut xs = [n]\n    snapshot = xs\n    xs.append(1)\n    \
+                  snapshot.len() + xs.len()\n\n\
+                  def f(n: int) -> int:\n    mut total = 0\n    for at in range(n):\n        total += bump(at)\n    total\n";
     let found = found(source).unwrap();
     let copy = found.iter().find(|finding| matches!(finding.cost, Cost::Copy { .. })).unwrap();
     assert!(copy.per_iteration());
+}
+
+#[test]
+fn what_the_caller_may_hold_isnt_counted_each_time() {
+    // Whether `items` is still held depends on each caller, so it's only a maybe.
+    let source = "def bump(items: list[int]) -> int:\n    mut mine = items\n    mine.append(1)\n    mine.len()\n\n\
+                  def f(n: int) -> int:\n    mut total = 0\n    for at in range(n):\n        total += bump([at])\n    total\n";
+    let found = found(source).unwrap();
+    let copy = found.iter().find(|finding| matches!(finding.cost, Cost::Copy { .. })).unwrap();
+    assert!(copy.is_hot());
+    assert!(!copy.per_iteration());
+}
+
+#[test]
+fn changing_a_container_doesnt_copy_what_it_holds() {
+    let source = "struct Reader:\n    text: str\n    at = 0\n\n    def step(mut self):\n        self.at += 1\n\n\
+                  def f(text: str) -> int:\n    mut reader = Reader(text=text)\n    reader.step()\n    reader.at + text.len()\n";
+    assert_eq!(copies(source).unwrap(), Vec::<String>::new());
 }
 
 #[test]

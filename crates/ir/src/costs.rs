@@ -64,6 +64,8 @@ impl Finding {
     /// however many calls away. A copy of something shared before the loop happens once.
     pub fn per_iteration(&self) -> bool {
         match self.cost {
+            // What the caller goes on holding depends on the caller, so it's only a maybe.
+            Cost::Copy { why: Shared::Caller, .. } => self.loops > 0 && self.every_time,
             Cost::Copy { .. } => (self.loops > 0 && self.every_time) || self.called_from_loop.is_some(),
             Cost::Allocation { .. } => self.is_hot(),
         }

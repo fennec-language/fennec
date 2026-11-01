@@ -1,0 +1,96 @@
+# JSON holds `Id`s and `IdMap`s. An `Id` is written as its slot and generation, and an `IdMap`
+# as all its slots, so after loading, every `Id` that was saved finds the same item.
+from std import json
+from std.game import Id, IdMap
+
+struct Unit:
+    name: str
+    health: int
+    target: Id[Unit]? = None
+
+struct World:
+    units: IdMap[Unit] = IdMap[Unit]()
+    selected: list[Id[Unit]] = []
+
+def failure[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Err(error):
+            error.message
+        case _:
+            "loaded"
+
+test "a world with Ids loads back the same":
+    mut world = World()
+    ash = world.units.insert(Unit(name="ash", health=10))
+    gone = world.units.insert(Unit(name="gone", health=1))
+    vex = world.units.insert(Unit(name="vex", health=8, target=ash))
+    world.units.remove(gone)
+    kit = world.units.insert(Unit(name="kit", health=5, target=vex))
+    world.selected = [ash, kit]
+    text = json.dumps(world)
+    loaded = json.loads[World](text)?
+    assert json.dumps(loaded) == text
+    assert loaded.units[ash].name == "ash" and loaded.units[kit].name == "kit"
+    target = loaded.units[kit].target
+    assert target is not None
+    if target is not None:
+        assert loaded.units[target].name == "vex"
+    # The slot `gone` had was used again, so its old Id still finds nothing.
+    assert loaded.units.get(gone) is None
+    # New items go where they would have before saving.
+    mut more = loaded
+    assert (
+        more.units.insert(Unit(name="owl", health=1))
+        == world.units.insert(Unit(name="owl", health=1))
+    )
+
+test "an Id the map never handed out isn't loaded":
+    text = "{\"units\": {\"slots\": [{\"generation\": 0, \"value\": {\"name\": \"ash\", \"health\": 1}}]}, \"selected\": [{\"slot\": 0, \"generation\": 3}]}"
+    assert (
+        failure(json.loads[World](text))
+        == "`selected[0]` is an Id that `units` never handed out: slot 0, generation 3"
+    )
+    far = "{\"units\": {\"slots\": []}, \"selected\": [{\"slot\": 4, \"generation\": 0}]}"
+    assert (
+        failure(json.loads[World](far))
+        == "`selected[0]` is an Id that `units` never handed out: slot 4, generation 0"
+    )
+    inside = "{\"units\": {\"slots\": [{\"generation\": 0, \"value\": {\"name\": \"ash\", \"health\": 1, \"target\": {\"slot\": 1, \"generation\": 0}}}]}}"
+    assert (
+        failure(json.loads[World](inside))
+        == "`units.slots[0].value.target` is an Id that `units` never handed out: slot 1, generation 0"
+    )
+
+test "an Id of a removed item still loads, and finds nothing":
+    mut world = World()
+    gone = world.units.insert(Unit(name="gone", health=1))
+    world.units.remove(gone)
+    world.selected = [gone]
+    loaded = json.loads[World](json.dumps(world))?
+    assert loaded.units.get(loaded.selected[0]) is None
+
+test "an Id or a slot written wrong says where":
+    assert (
+        failure(json.loads[Id[Unit]]("{\"slot\": -1, \"generation\": 0}"))
+        == "`slot` is out of range"
+    )
+    assert failure(json.loads[Id[Unit]]("{\"slot\": 1}")) == "`generation` is missing"
+    assert (
+        failure(json.loads[Id[Unit]]("{\"slot\": 1, \"generation\": 0, \"tag\": 2}"))
+        == "an Id has only `slot` and `generation`, but the text has \"tag\""
+    )
+    assert failure(json.loads[IdMap[Unit]]("{}")) == "the text should be an IdMap, with its `slots`"
+    assert (
+        failure(json.loads[IdMap[Unit]]("{\"slots\": [1]}"))
+        == "`slots[0]` should be a slot, with its `generation`"
+    )
+
+def main(stdout: Stdout):
+    mut world = World()
+    ash = world.units.insert(Unit(name="ash", health=10))
+    world.units.insert(Unit(name="vex", health=8, target=ash))
+    world.selected = [ash]
+    text = json.dumps(world)
+    stdout.print(text)
+    loaded = json.loads[World](text) else World()
+    stdout.print(loaded.units[ash].name, json.dumps(loaded) == text)

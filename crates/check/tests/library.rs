@@ -61,7 +61,6 @@ fn reading_needs_a_type_the_format_can_hold() {
             "`json.loads` needs the type to read @ loads('1')".replace('\'', "\"").as_str(),
             "JSON can't hold a set @ set[int]",
             "JSON can't hold a dict @ dict[int, str]",
-            "JSON can't hold an Id @ Id[Player]",
             "write the type to read in brackets, like `json.loads[Settings]` @ 3",
         ]
     );

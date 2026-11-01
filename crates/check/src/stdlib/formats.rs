@@ -87,7 +87,11 @@ impl FnCx<'_> {
             Type::Unknown | Type::Unit | Type::None | Type::Bool | Type::Int | Type::Float | Type::Str => {
                 Ok(())
             }
-            Type::List(item) | Type::Optional(item) => self.holds(format, item, span, seen),
+            Type::List(item) | Type::Optional(item) | Type::IdMap(item) => {
+                self.holds(format, item, span, seen)
+            }
+            // An `Id` is written as its slot and generation, whatever it's for.
+            Type::Id(_) => Ok(()),
             Type::Dict(key, value) if **key == Type::Str => self.holds(format, value, span, seen),
             Type::Dict(..) => {
                 Err(cannot(ty).with_help(format!("{format} tables have text keys: use a `dict[str, ...]`")))

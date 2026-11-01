@@ -223,7 +223,8 @@ impl Lowering<'_> {
 
     /// The type of the expression at a span, as it is in this copy.
     pub(super) fn type_at(&self, span: fennec_syntax::Span) -> Option<Type> {
-        self.body.expr(span).map(|ty| self.concrete(ty))
+        let copied = self.copied.iter().rev().map(|(_, body)| *body);
+        std::iter::once(self.body).chain(copied).find_map(|body| body.expr(span)).map(|ty| self.concrete(ty))
     }
 
     /// What a call to `key` is to, given the types of its arguments and of what's kept: the

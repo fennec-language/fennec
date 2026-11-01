@@ -4,6 +4,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// How many examples this backend takes, at least.
+const BUILDING_EXAMPLES: usize = 11;
+
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
 }
@@ -23,18 +26,42 @@ fn folder(name: &str) -> std::io::Result<PathBuf> {
 }
 
 fn same_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
+    let (ours, jit) = both(name, source)?;
+    assert_eq!(ours, jit);
+    Ok(())
+}
+
+/// A known difference: the IR gives an index being written, and a value being formatted, the span
+/// of what they're in, where the JIT underlines the part that failed. Same message and outcome.
+fn same_message_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
+    let ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code)) = both(name, source)?;
+    assert_eq!((ours_out, ours_code), (jit_out, jit_code));
+    assert_eq!(ours_err.lines().next(), jit_err.lines().next());
+    Ok(())
+}
+
+/// What the program printed, its errors and its exit code, built with LLVM and run by the JIT.
+fn both(name: &str, source: &str) -> std::io::Result<(Outcome, Outcome)> {
     let dir = folder(name)?;
     let program = dir.join(format!("{name}.fen"));
     std::fs::write(&program, source)?;
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ours = Command::new(&executable).output()?;
-    let jit = fennec(&["run", &program], &dir)?;
-    assert_eq!(String::from_utf8_lossy(&ours.stdout), String::from_utf8_lossy(&jit.stdout));
-    assert_eq!(String::from_utf8_lossy(&ours.stderr), String::from_utf8_lossy(&jit.stderr));
-    assert_eq!(ours.status.code(), jit.status.code());
-    std::fs::remove_dir_all(&dir)
+    let ours = outcome(&Command::new(&executable).output()?);
+    let jit = outcome(&fennec(&["run", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    Ok((ours, jit))
+}
+
+type Outcome = (String, String, Option<i32>);
+
+fn outcome(output: &Output) -> Outcome {
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status.code(),
+    )
 }
 
 /// The runtime library, built as `executables.rs` builds it, every time.
@@ -59,6 +86,217 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
 }
 
 #[test]
+fn lists_keep_value_semantics_like_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "sharing",
+        r"def changed(items: list[int]) -> list[int]:
+    mut copy = items
+    copy[0] = 99
+    copy
+
+def grown(mut items: list[int]):
+    items.append(7)
+    items[0] = 5
+
+def same(items: list[int]) -> list[int]:
+    items
+
+def show(items: list[int], stdout: Stdout):
+    mut at = 0
+    while at < items.len():
+        stdout.print(items[at])
+        at += 1
+
+def main(stdout: Stdout):
+    a = [1, 2, 3]
+    b = changed(a)
+    show(a, stdout)
+    show(b, stdout)
+    mut c = [10, 20]
+    d = c
+    c[1] = 21
+    c.append(30)
+    show(c, stdout)
+    show(d, stdout)
+    mut e = [1]
+    f = e
+    grown(mut e)
+    show(e, stdout)
+    show(f, stdout)
+    mut g = same(c)
+    g[0] = -1
+    show(c, stdout)
+    show(g, stdout)
+    stdout.print(c[-1], c[-3], [i * i for i in range(4)][2])
+    mut h = [1, 2]
+    for _ in range(3):
+        k = h
+        h.append(k.len())
+        stdout.print(k.len(), h.len())
+",
+    )
+}
+
+/// Changing an item in place is only safe once the list is alone: another copy of the list
+/// mustn't see it, however the item's own count reads.
+#[test]
+fn changing_an_item_doesnt_show_through_a_copy() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "items",
+        r"struct Packet:
+    id: int
+    data: list[int]
+
+struct Holder:
+    packets: list[Packet]
+
+def bump(mut holder: Holder, at: int):
+    holder.packets[at].id = holder.packets[at].id + 1
+    holder.packets[at].data[0] = 50
+
+def main(stdout: Stdout):
+    a = Packet(id=1, data=[1, 2])
+    mut one = [a, Packet(id=2, data=[3])]
+    two = one
+    one[0].id = 10
+    stdout.print(one[0].id, two[0].id, a.id)
+    mut holder = Holder(packets=one)
+    keep = holder
+    bump(mut holder, 1)
+    stdout.print(holder.packets[1].id, keep.packets[1].id, one[1].id, two[1].id)
+    stdout.print(holder.packets[1].data[0], keep.packets[1].data[0], two[1].data[0])
+    mut list_only = two
+    shown = list_only[0]
+    list_only[0].id = 77
+    stdout.print(shown.id, list_only[0].id, two[0].id)
+    holder.packets.append(a)
+    holder.packets[2].id = 5
+    stdout.print(holder.packets.len(), keep.packets.len(), holder.packets[2].id, a.id)
+    mut kept = holder
+    copied = kept
+    kept.packets.append(a)
+    stdout.print(kept.packets.len(), copied.packets.len())
+    mut nested = kept
+    other = nested
+    nested.packets[0].data[1] = 123
+    stdout.print(nested.packets[0].data[1], other.packets[0].data[1], kept.packets[0].data[1])
+    mut walked = [1, 2, 3]
+    before = walked
+    for mut item in walked:
+        item = item * 2
+    stdout.print(walked[0], walked[2], before[0], before[2])
+    mut grows = [1, 2]
+    for item in grows:
+        grows[0] = item + 10
+        grows[1] = 40
+    stdout.print(grows[0], grows[1])
+    mut points = [Packet(id=1, data=[1]), Packet(id=2, data=[2])]
+    seen = points
+    for mut point in points:
+        point.id = point.id + 1
+    stdout.print(points[0].id, points[1].id, seen[0].id, seen[1].id)
+",
+    )
+}
+
+#[test]
+fn structs_tuples_and_formats_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "values",
+        r#"struct Point:
+    x: float
+    y: float
+    on: bool
+
+struct Line:
+    start: Point
+    end: Point
+    weight: int
+
+def moved(p: Point, by: float) -> Point:
+    mut q = p
+    q.x = q.x + by
+    q
+
+def nudge(mut p: Point):
+    p.y = p.y + 1.0
+    p.on = not p.on
+
+def pair(n: int) -> (int, float):
+    (n + 1, float(n) / 2.0)
+
+def main(stdout: Stdout):
+    a = Point(x=1.0, y=2.0, on=True)
+    b = moved(a, 0.5)
+    stdout.print(a.x, b.x, a.on)
+    mut c = b
+    nudge(mut c)
+    stdout.print(b.y, c.y, b.on, c.on)
+    mut line = Line(start=a, end=c, weight=3)
+    line.end.x = 9.5
+    stdout.print(line.start.x, line.end.x, c.x, line.weight, line.end.on)
+    mut points = [a, b]
+    points[1].x = 7.0
+    points.append(c)
+    stdout.print(points[1].x, b.x, points.len(), points[2].on)
+    shown = points[0]
+    points[0].y = -3.0
+    stdout.print(shown.y, points[0].y)
+    n, half = pair(5)
+    stdout.print(n, half)
+    flags = [True, False]
+    stdout.print(flags[0], flags[-1])
+    stdout.print(f"{half:.3f} and {n} at {a.x}")
+"#,
+    )
+}
+
+/// Every example this backend takes prints exactly what it should. Those it doesn't take yet
+/// say so, and the count keeps that from shrinking unnoticed.
+#[test]
+fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("examples")?;
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let (mut built, mut wrong) = (0, Vec::new());
+    for entry in std::fs::read_dir(examples)? {
+        let path = entry?.path();
+        let wanted = path.with_extension("out");
+        if path.extension().is_none_or(|ext| ext != "fen") || !wanted.exists() {
+            continue;
+        }
+        let executable = dir.join("example");
+        let made =
+            fennec(&["build", "--llvm", &path.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+        if !made.status.success() {
+            let said = String::from_utf8_lossy(&made.stderr).into_owned();
+            assert!(said.contains("doesn't take yet") || said.contains("error"), "{said}");
+            continue;
+        }
+        built += 1;
+        let ran = Command::new(&executable).output()?;
+        if String::from_utf8_lossy(&ran.stdout) != std::fs::read_to_string(&wanted)? {
+            wrong.push(path);
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
+    assert!(built >= BUILDING_EXAMPLES, "only {built} examples build");
+    Ok(())
+}
+
+#[test]
 fn failures_match_the_jit() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
         return Ok(());
@@ -71,6 +309,20 @@ fn failures_match_the_jit() -> std::io::Result<()> {
     same_as_the_jit(
         "zero",
         &format!("def f(n: int) -> int:\n    10 // n{print_after}    stdout.print(f(0))\n"),
+    )?;
+    same_as_the_jit(
+        "outside",
+        &format!("def f(n: int) -> int:\n    [1, 2][n]{print_after}    stdout.print(f(2))\n"),
+    )?;
+    same_message_as_the_jit(
+        "before",
+        &format!(
+            "def f(n: int) -> int:\n    mut a = [1, 2]\n    a[n] = 3\n    a[0]{print_after}    stdout.print(f(-3))\n"
+        ),
+    )?;
+    same_message_as_the_jit(
+        "spec",
+        &format!("def f(n: int) -> int:\n    n{print_after}    stdout.print(f\"{{f(1):z}}\")\n"),
     )?;
     same_as_the_jit(
         "deep",

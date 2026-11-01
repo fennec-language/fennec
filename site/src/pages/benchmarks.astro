@@ -23,7 +23,7 @@ const at = (percent: number) => `${(percent / scale) * 100}%`;
   <section class="wrap">
     <h2>Speed against target</h2>
     <p class="note">
-      Each target comes from idiomatic code for the same work in the fastest established systems language, built with overflow checks, as Fennec is. Each engine aims for its own share of the target, marked on every bar: the interpreter's {targets.interpreter[0]}–{targets.interpreter[1]}% as a band, the JIT's {targets.jit}%, going to {targets.jit_later}% later, and {targets.release}% for release builds, which don't exist yet. These numbers are the JIT's.
+      Each target comes from idiomatic code for the same work in the fastest established systems language, built with overflow checks, as Fennec is. Each engine aims for its own share of the target, marked on every bar: the interpreter's {targets.interpreter[0]}–{targets.interpreter[1]}% as a band, the JIT's {targets.jit}%, going to {targets.jit_later}% later, and {targets.release}% for release builds, which don't exist yet. These numbers are the JIT's, and we aren't at those goals yet. The goal after that is to beat the target through one LLVM backend, which isn't finished.
     </p>
     <div class="table">
       <div class="tr th">
@@ -68,7 +68,7 @@ const at = (percent: number) => `${(percent / scale) * 100}%`;
     <p>
       Each target is pinned once per architecture, from reference code built at full optimization, with overflow checks, for that architecture's baseline CPU, and each kernel must print what its reference prints. Startup is everything before <code>main</code>; only the work counts toward the target. A failure is fixed in the compiler, never by changing the benchmark. The kernels and the
       method are in <a href="https://github.com/fennec-language/fennec/tree/main/bench">the repository</a>, and you can{' '}
-      <a href={`${base}speed/`}>read how the two speeds are designed</a>.
+      <a href={`${base}speed/`}>read how Fennec plans to get fast</a>.
     </p>
   </section>
 </Base>

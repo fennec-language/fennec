@@ -11,6 +11,11 @@ pub fn shown_type_name(name: &str) -> &str {
     name.strip_suffix(RENAMED).unwrap_or(name)
 }
 
+/// A function's key as it's shown: `Grid.iter` for the method of a program's own `Grid`.
+pub fn shown_key(key: &str) -> String {
+    key.replace(RENAMED, "")
+}
+
 /// What marks a renamed type. It can't be written, so it can't clash with anything.
 pub const RENAMED: &str = "'";
 

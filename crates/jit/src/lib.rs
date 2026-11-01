@@ -189,6 +189,9 @@ fn compile_and_run(
             interpreted: {
                 let mut interpreted = compilation.interpreted;
                 interpreted.extend(program.excluded);
+                for key in &mut interpreted {
+                    *key = fennec_syntax::rename::shown_key(key);
+                }
                 interpreted.sort();
                 interpreted
             },
@@ -277,6 +280,10 @@ pub fn fallbacks(module: &Module) -> Result<Vec<Note>, Diagnostic> {
     notes.sort_by_key(|note| (note.span.start, note.span.end));
     // A loop lowered twice notes the same places twice.
     notes.dedup_by(|a, b| a.span == b.span && a.what == b.what);
+    for note in &mut notes {
+        note.function = fennec_syntax::rename::shown_key(&note.function);
+        note.compiled_in = fennec_syntax::rename::shown_key(&note.compiled_in);
+    }
     Ok(notes)
 }
 

@@ -7,9 +7,10 @@
 //! and kinds of list item have are read from symbols, all defined in one small module made fresh
 //! each build.
 //!
-//! So far this takes ints, floats, bools, plain structs, tuples, lists of those, and f-strings,
-//! laid out as `fennec_layout` says, on the same runtime as the JIT. It says which function it
-//! can't take rather than running it some other way.
+//! So far this takes ints, floats, bools, strings, structs and enums, plain and boxed, tuples,
+//! lists of those, optionals of blocks, and f-strings, laid out as `fennec_layout` says, on the
+//! same runtime as the JIT. It says which function it can't take rather than running it some
+//! other way.
 //!
 //! A function that can fail hands that back in a register kept for it, so that succeeding costs
 //! no write: LLVM's `swifterror`. One that can't fail, knowing nothing it does can, doesn't.
@@ -47,6 +48,8 @@ pub struct Shared {
     pub literals: BTreeMap<String, String>,
     /// Each kind of list item's symbol for its number, and the kind.
     pub elements: BTreeMap<String, ListItem>,
+    /// Each boxed type's symbol for its shape's number, and its layout's number.
+    pub shapes: BTreeMap<String, u32>,
 }
 
 /// The layouts of everything a program defines, generic types' copies included.
@@ -63,6 +66,7 @@ pub fn layouts_of(program: &Program) -> Layouts {
         .iter()
         .map(|def| (def.name.clone(), Written::Struct(fields(&def.fields))))
         .chain(program.enums.iter().map(enums))
+        .chain(program.errors.iter().map(|def| (def.name.clone(), Written::Struct(fields(&def.fields)))))
         .collect();
     Layouts::from_definitions(&definitions)
 }

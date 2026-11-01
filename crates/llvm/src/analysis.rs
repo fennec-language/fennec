@@ -30,6 +30,14 @@ pub(crate) struct Analysis {
     shared: HashSet<usize>,
     /// Lists changed here, by an index or an append.
     changed: HashSet<usize>,
+    /// Locals read once, right away, from something that holds on to the value meanwhile, so
+    /// they needn't own it.
+    borrowed: HashSet<usize>,
+    /// Locals taking a field's value out to change it and put it back: it never has two owners.
+    taken: HashSet<usize>,
+    /// Locals taking an item out of a list to change it and put it back: the local or field
+    /// the list is in, which has to be alone before the item's count says anything.
+    items_taken: HashMap<usize, (LocalId, Vec<String>)>,
     /// A block ending in a jump to a loop that fills a list made in that block: the list, and
     /// how many items the loop adds at most.
     pub(crate) reservations: HashMap<usize, (usize, Operand)>,
@@ -83,6 +91,12 @@ fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(
             local(*object);
             read(value);
         }
+        InstKind::Slice { dest, object, start, end } => {
+            read(object);
+            start.iter().for_each(&mut read);
+            end.iter().for_each(&mut read);
+            write(*dest);
+        }
         InstKind::SetIndex { object, index, value, .. } => {
             local(*object);
             read(index);
@@ -91,7 +105,12 @@ fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(
         InstKind::Copy { dest, value }
         | InstKind::Unary { dest, value, .. }
         | InstKind::GetField { dest, object: value, .. }
-        | InstKind::GetTupleItem { dest, value, .. } => {
+        | InstKind::GetTupleItem { dest, value, .. }
+        | InstKind::MakeSome { dest, value }
+        | InstKind::GetSome { dest, value }
+        | InstKind::IsNone { dest, value }
+        | InstKind::IsCase { dest, value, .. }
+        | InstKind::GetCaseField { dest, value, .. } => {
             read(value);
             write(*dest);
         }
@@ -100,7 +119,7 @@ fn visit(inst: &InstKind, mut read: impl FnMut(&Operand), mut write: impl FnMut(
             read(rhs);
             write(*dest);
         }
-        InstKind::Make { dest, fields, .. } => {
+        InstKind::Make { dest, fields, .. } | InstKind::MakeCase { dest, fields, .. } => {
             fields.iter().for_each(&mut read);
             write(*dest);
         }
@@ -277,17 +296,45 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
         writes: vec![0; count],
         shared: HashSet::new(),
         changed: HashSet::new(),
+        borrowed: HashSet::new(),
+        taken: HashSet::new(),
+        items_taken: HashMap::new(),
         reservations: HashMap::new(),
     };
     let grown = count_uses(function, changes, &mut known);
-    // A copy shares its source, unless the source is never read again.
+    // A copy shares its source, unless the source is never read again, and a block put inside
+    // something else is shared by that.
     for inst in function.blocks.iter().flat_map(|block| &block.insts) {
-        if let InstKind::Copy { value: Operand::Local(from), .. } = &inst.kind
-            && !known.moves(*from)
-        {
-            known.shared.insert(from.0);
+        match &inst.kind {
+            InstKind::Copy { value: Operand::Local(from), .. }
+            | InstKind::MakeSome { value: Operand::Local(from), .. }
+            | InstKind::GetSome { value: Operand::Local(from), .. }
+                if !known.moves(*from) =>
+            {
+                known.shared.insert(from.0);
+            }
+            InstKind::Make { fields: items, .. }
+            | InstKind::MakeCase { fields: items, .. }
+            | InstKind::MakeList { items, .. } => {
+                for item in items {
+                    if let Operand::Local(local) = item {
+                        known.shared.insert(local.0);
+                    }
+                }
+            }
+            InstKind::SetField { value: Operand::Local(local), .. }
+            | InstKind::SetIndex { value: Operand::Local(local), .. } => {
+                known.shared.insert(local.0);
+            }
+            InstKind::Builtin { name, args, .. } if name == "list.append" => {
+                if let Some(Operand::Local(local)) = args.get(1) {
+                    known.shared.insert(local.0);
+                }
+            }
+            _ => {}
         }
     }
+    find_borrows(function, &mut known);
     let mut facts = Facts::of(function, changes);
     let stepped: HashSet<usize> = function.counts.iter().map(|count| count.count.0).collect();
     for (block, written) in function.blocks.iter().enumerate() {
@@ -305,6 +352,110 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
     known.below.retain(|local, _| facts.range_in(LocalId(*local), 0).is_some_and(|range| range.0 >= 0));
     find_reservations(function, &stepped, &mut known);
     known
+}
+
+/// Whether nothing an instruction does can change or let go of a value something else holds.
+fn is_quiet(inst: &InstKind) -> bool {
+    matches!(
+        inst,
+        InstKind::Binary { .. }
+            | InstKind::Unary { .. }
+            | InstKind::GetField { .. }
+            | InstKind::GetIndex { .. }
+            | InstKind::GetTupleItem { .. }
+            | InstKind::GetCaseField { .. }
+            | InstKind::IsCase { .. }
+            | InstKind::IsNone { .. }
+    )
+}
+
+/// Whether an instruction only looks inside `local`, taking no owner of its own.
+fn only_looks(inst: &InstKind, local: LocalId) -> bool {
+    let held = Operand::Local(local);
+    match inst {
+        InstKind::GetIndex { object, index, .. } => *object == held && *index != held,
+        InstKind::GetField { object, .. } => *object == held,
+        InstKind::IsNone { value, .. }
+        | InstKind::IsCase { value, .. }
+        | InstKind::GetCaseField { value, .. } => *value == held,
+        InstKind::Builtin { name, args, .. } => name == "list.len" && args.first() == Some(&held),
+        _ => false,
+    }
+}
+
+/// Finds reads of a field or item whose value needs no owner of its own: read once, by something
+/// that only looks inside it, before anything could change what it came from; and a field
+/// taken out, changed and put back, with nothing able to see it in between.
+fn find_borrows(function: &Function, known: &mut Analysis) {
+    for block in &function.blocks {
+        // Where a borrowed list came from, for an item taken out of it.
+        let mut from_field: HashMap<usize, (LocalId, Vec<String>)> = HashMap::new();
+        for (at, inst) in block.insts.iter().enumerate() {
+            let (dest, source) = match &inst.kind {
+                InstKind::GetField { dest, object: Operand::Local(from), .. }
+                | InstKind::GetIndex { dest, object: Operand::Local(from), .. }
+                | InstKind::GetCaseField { dest, value: Operand::Local(from), .. } => (*dest, *from),
+                _ => continue,
+            };
+            if known.writes.get(dest.0) != Some(&1) || dest == source {
+                continue;
+            }
+            let later = block.insts.get(at + 1..).unwrap_or_default();
+            if known.reads.get(dest.0) == Some(&1) {
+                for next in later {
+                    if only_looks(&next.kind, dest) {
+                        known.borrowed.insert(dest.0);
+                        break;
+                    }
+                    if !is_quiet(&next.kind) {
+                        break;
+                    }
+                }
+            }
+            if let InstKind::GetIndex { index, .. } = &inst.kind {
+                let home = from_field.get(&source.0).cloned().unwrap_or((source, Vec::new()));
+                for next in later {
+                    match &next.kind {
+                        InstKind::SetIndex { object, path, index: put_at, value: Operand::Local(put) }
+                            if *object == home.0 && *path == home.1 && put_at == index && *put == dest =>
+                        {
+                            known.taken.insert(dest.0);
+                            known.items_taken.insert(dest.0, home);
+                            break;
+                        }
+                        InstKind::SetField { object, value, .. }
+                            if *object == dest && !matches!(value, Operand::Local(held) if *held == dest) => {
+                        }
+                        other if is_quiet(other) => {}
+                        _ => break,
+                    }
+                }
+                continue;
+            }
+            let InstKind::GetField { field, .. } = &inst.kind else { continue };
+            if known.borrowed.contains(&dest.0) {
+                from_field.insert(dest.0, (source, vec![field.clone()]));
+            }
+            for next in later {
+                match &next.kind {
+                    InstKind::SetField { object, path, value: Operand::Local(put) }
+                        if *object == source
+                            && *put == dest
+                            && path.as_slice() == std::slice::from_ref(field) =>
+                    {
+                        known.taken.insert(dest.0);
+                        break;
+                    }
+                    InstKind::Builtin { name, args, .. }
+                        if name == "list.append" && args.first() == Some(&Operand::Local(dest)) => {}
+                    InstKind::SetIndex { object, path, .. } if *object == dest && path.is_empty() => {}
+                    InstKind::Make { .. } | InstKind::Copy { .. } => {}
+                    other if is_quiet(other) => {}
+                    _ => break,
+                }
+            }
+        }
+    }
 }
 
 /// `[f(x) for x in range(n)]` is an empty list and a loop of appends.
@@ -373,6 +524,21 @@ impl Analysis {
         self.changed.contains(&local.0) && !self.shared.contains(&local.0)
     }
 
+    /// Whether a local looks at a value without owning it.
+    pub(crate) fn is_borrowed(&self, local: LocalId) -> bool {
+        self.borrowed.contains(&local.0)
+    }
+
+    /// Whether a local took a field's value out, to put it back, so its owner moves both ways.
+    pub(crate) fn is_taken(&self, local: LocalId) -> bool {
+        self.taken.contains(&local.0)
+    }
+
+    /// Where the list is that a local took an item out of.
+    pub(crate) fn item_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>)> {
+        self.items_taken.get(&local.0)
+    }
+
     /// Whether anything writes a local.
     pub(crate) fn written(&self, local: LocalId) -> bool {
         self.writes.get(local.0).is_some_and(|writes| *writes > 0)
@@ -385,17 +551,21 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
     let inst_fails = |inst: &InstKind| match inst {
         InstKind::Binary { dest, op, lhs, rhs } => match (function.type_of(lhs), op) {
             (Some(Type::Int), BinOp::Add | BinOp::Sub | BinOp::Mul) => !known.is_safe(*dest),
-            (Some(Type::Int), BinOp::FloorDiv | BinOp::Mod) => !matches!(rhs, Operand::Int(1..)),
-            (Some(Type::Float), BinOp::Div) => !known.is_nonzero(rhs),
+            (Some(Type::Int), BinOp::FloorDiv | BinOp::Mod | BinOp::Div) => !matches!(rhs, Operand::Int(1..)),
+            (Some(Type::Float), BinOp::Div | BinOp::FloorDiv | BinOp::Mod) => !known.is_nonzero(rhs),
+            (Some(Type::Int), BinOp::Pow) => true,
             _ => false,
         },
         InstKind::Unary { dest, op: UnaryOp::Neg, value } => {
             function.type_of(value) == Some(Type::Int) && !known.is_safe(*dest)
         }
-        InstKind::Builtin { name, .. } => name == "math.sqrt",
+        InstKind::Builtin { name, .. } => matches!(name.as_str(), "math.sqrt" | "str.code" | "int.abs"),
         InstKind::GetIndex { object: Operand::Local(list), index, .. } => !known.inside(*list, index),
-        InstKind::SetIndex { object, index, .. } => !known.inside(*object, index),
-        InstKind::GetIndex { .. } | InstKind::Call { .. } | InstKind::Format { .. } => true,
+        InstKind::SetIndex { object, path, index, .. } => !path.is_empty() || !known.inside(*object, index),
+        InstKind::GetIndex { .. }
+        | InstKind::Call { .. }
+        | InstKind::Format { .. }
+        | InstKind::Slice { .. } => true,
         _ => false,
     };
     function.blocks.iter().any(|block| {

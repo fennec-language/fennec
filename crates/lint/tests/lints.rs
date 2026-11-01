@@ -62,6 +62,26 @@ fn comparing_with_a_bool_or_none_has_a_plain_form() {
 }
 
 #[test]
+fn only_what_is_surely_a_bool_loses_its_comparison_with_true() {
+    let head = "def f(a: int, ready: bool, maybe: bool?, p: P, flags: list[bool]) -> bool:\n    ";
+    for (written, plain) in [("ready == True", "ready"), ("ready != True", "not ready")] {
+        let source = format!("{head}{written}\n");
+        assert_eq!(rules(&source), ["bool-compare"], "{written}");
+        assert_eq!(fixed(&source), format!("{head}{plain}\n"), "{written}");
+    }
+    // A `bool?` compared with `True` is `False` when it's `None`, which `maybe` alone isn't.
+    for kept in [
+        "maybe == True",
+        "maybe != False",
+        "p.alive == True",
+        "any(ready == True for ready in flags)",
+        "g(a) == True",
+    ] {
+        assert_eq!(rules(&format!("{head}{kept}\n")), NONE, "{kept}");
+    }
+}
+
+#[test]
 fn a_negated_comparison_says_the_opposite() {
     for (written, plain) in [
         ("not a == 1", "a != 1"),

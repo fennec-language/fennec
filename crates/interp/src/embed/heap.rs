@@ -680,6 +680,10 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             0 => Value::None,
             address => read(state, inner, &mut std::iter::once(&address)),
         },
+        // A tuple a backend lays out as a struct, named after its type, like `(int, str)`.
+        Element::Struct { name, fields } if name.starts_with('(') => {
+            Value::tuple(fields.iter().map(|(_, element)| read(state, element, words)).collect())
+        }
         Element::Struct { name, fields } => {
             let fields =
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, words)));
@@ -764,6 +768,13 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
         (Element::Maybe(inner), value) => write(state, inner, value, words)?,
         (Element::List(item), value) => {
             words.push(u64::try_from(super::lists::write_list(state, item, value)?).ok()?);
+        }
+        (Element::Struct { name, fields }, Value::Tuple(items))
+            if name.starts_with('(') && items.len() == fields.len() =>
+        {
+            for ((_, element), item) in fields.iter().zip(items.iter()) {
+                write(state, element, item, words)?;
+            }
         }
         (Element::Struct { name, fields }, Value::Instance(instance))
             if instance.type_name == *name && instance.case.is_none() && !instance.is_error =>

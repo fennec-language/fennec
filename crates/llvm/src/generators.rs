@@ -149,8 +149,9 @@ impl<'p> Emit<'_, '_, 'p> {
             symbol(name)
         } else {
             let at = self.offset(&block, header(GEN_RESUME));
+            // A generator's resume function never changes while it lives.
             let code = self.temp();
-            self.line(&format!("{code} = load ptr, ptr {at}"));
+            self.line(&format!("{code} = load ptr, ptr {at}, !invariant.load !1"));
             code
         };
         self.check_stack(span);

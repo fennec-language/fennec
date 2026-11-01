@@ -63,11 +63,13 @@ pub(crate) struct Whole<'p> {
     pub(crate) generators: HashMap<&'p str, &'p GeneratorDef>,
 }
 
-/// What a function calls by name, a constant being a call of a function of no arguments.
+/// What a function calls by name, a constant being a call of a function of no arguments, and a
+/// generator the IR knows being a call of its resume function.
 pub(crate) fn callees(function: &Function) -> impl Iterator<Item = &str> {
     function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
         InstKind::Call { function, .. } => Some(function.as_str()),
         InstKind::Constant { name, .. } => Some(name.as_str()),
+        InstKind::Resume { known: Some(name), .. } => Some(name.as_str()),
         _ => None,
     })
 }

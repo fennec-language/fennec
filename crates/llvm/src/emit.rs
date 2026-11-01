@@ -1259,6 +1259,12 @@ impl Emit<'_, '_, '_> {
 
     fn inst(&mut self, inst: &InstKind, span: Span, block: usize) -> Result<(), String> {
         match inst {
+            // Used only as a key the runtime finds where it is.
+            InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
+                if self.known.unmade.contains(&dest.0) =>
+            {
+                Ok(())
+            }
             InstKind::Copy { dest, value }
             | InstKind::MakeSome { dest, value }
             | InstKind::GetSome { dest, value } => self.copy(*dest, value),
@@ -1361,6 +1367,12 @@ impl Emit<'_, '_, '_> {
     /// A local read once lets go of its value right after that, rather than when the function
     /// returns, so it doesn't still count as an owner when the next line changes what it read.
     fn let_go_after(&mut self, inst: &InstKind) {
+        // A slice never made leaves what it's of to the lookups that read it in its place.
+        if let InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. } = inst
+            && self.known.unmade.contains(&dest.0)
+        {
+            return;
+        }
         let (mut reads, mut writes) = (Vec::new(), Vec::new());
         visit(inst, |operand| reads.push(operand.clone()), |local| writes.push(local));
         // What's made from it may only be borrowing, or may stand for it.

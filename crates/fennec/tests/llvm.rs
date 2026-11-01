@@ -602,6 +602,41 @@ def main(stdout: Stdout):
 }
 
 #[test]
+fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "slices",
+        r#"def main(stdout: Stdout):
+    text = "abcabcabd"
+    mut counts: dict[str, int] = {}
+    for at in range(text.len() - 1):
+        piece = text[at:at + 2]
+        counts[piece] = (counts.get(piece) else 0) + 1
+    for size in [1, 3]:
+        for at in range(text.len()):
+            part = text[at:at + size]
+            counts[part] = (counts.get(part) else 0) + 1
+    tail = text[-3:]
+    counts[tail] = (counts.get(tail) else 0) + 10
+    whole = text[:]
+    counts[whole] = (counts.get(whole) else 0) + 1
+    wide = "éaé"
+    w = wide[0:2]
+    counts[w] = (counts.get(w) else 0) + 1
+    long_text = "the quick brown fox jumps over the lazy dog"
+    for step in range(4):
+        at = step * 5
+        chunk = long_text[at:at + 12]
+        counts[chunk] = (counts.get(chunk) else 0) + 1
+    for key, value in sorted(counts.items()):
+        stdout.print(key, value)
+"#,
+    )
+}
+
+#[test]
 fn failures_match_the_jit() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
         return Ok(());

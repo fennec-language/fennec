@@ -691,6 +691,11 @@ impl Emit<'_, '_, '_> {
         }
         if let Kind::Dict(key, value_word) = kind {
             let place = self.place_of(object, path)?;
+            if let Operand::Local(sliced) = index
+                && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
+            {
+                return self.slice_set(&place, value_word, &slice, value);
+            }
             // A lookup on this dict, or on a local read from this field holding it.
             let same_dict = |dict: LocalId| match path {
                 [] => dict == object,

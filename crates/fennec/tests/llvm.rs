@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 17;
+const BUILDING_EXAMPLES: usize = 21;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
@@ -171,7 +171,7 @@ def main(stdout: Stdout):
     bump(mut holder, 1)
     stdout.print(holder.packets[1].id, keep.packets[1].id, one[1].id, two[1].id)
     stdout.print(holder.packets[1].data[0], keep.packets[1].data[0], two[1].data[0])
-    mut list_only = two
+    mut list_only = copy(two)
     shown = list_only[0]
     list_only[0].id = 77
     stdout.print(shown.id, list_only[0].id, two[0].id)
@@ -182,7 +182,7 @@ def main(stdout: Stdout):
     copied = kept
     kept.packets.append(a)
     stdout.print(kept.packets.len(), copied.packets.len())
-    mut nested = kept
+    mut nested = copy(kept)
     other = nested
     nested.packets[0].data[1] = 123
     stdout.print(nested.packets[0].data[1], other.packets[0].data[1], kept.packets[0].data[1])
@@ -238,7 +238,7 @@ def main(stdout: Stdout):
     a = Point(x=1.0, y=2.0, on=True)
     b = moved(a, 0.5)
     stdout.print(a.x, b.x, a.on)
-    mut c = b
+    mut c = copy(b)
     nudge(mut c)
     stdout.print(b.y, c.y, b.on, c.on)
     mut line = Line(start=a, end=c, weight=3)

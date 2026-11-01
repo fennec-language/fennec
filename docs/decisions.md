@@ -489,11 +489,17 @@ struct Color:
     def json(self, mut out: JsonWriter):
         out.str(f"#{self.r:02x}{self.g:02x}{self.b:02x}")
 ```
-- `_name` fields are skipped.
 - A type overrides one format with a method named for it, which leaves other formats alone. `Color` above is a hex string in JSON and three small integers in `std.pack`.
-- A `shared` handle or a function value is a compile error naming the field.
+- A `shared` handle, a function value or a `Secret[str]` is a compile error naming the field.
 
 *Why:* Types don't know about formats and formats don't know about types, so a new format is written once and works with every struct, and a new struct works with every format.
+
+**Every field is serialized by default, private `_` fields included.** This replaces the rule that `_name` fields are skipped.
+- `@skip` on a field leaves it out, and the field must have a default, so loading still builds a valid value. `@skip` on a field without a default is a compile error.
+- `where` rules run when a value is loaded, as on any write, so a bad save fails with a clear error.
+- A type that needs a different shape, or setup after loading, writes its own `def json(self, mut out: JsonWriter)` and the matching reader. There's no hidden after-load hook. Derived state is computed when it's asked for, or kept in a `@skip` field with a default.
+
+*Why:* Saving a value and loading it gives back exactly the same value, and leaving something out is visible. Private means other code can't touch a field, not that it isn't part of the value, and skipping private fields breaks round-trips silently: a `Grid` saved with no cells.
 
 **Printing is one more format.** `print`, `str(x)` and f-strings all go through it.
 - By default a value prints from its fields, through the same generic breakdown as other formats.

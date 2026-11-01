@@ -30,7 +30,12 @@ def describe(shape: Shape) -> str:
     f"a {kind} shape with area {area(shape):.2f}"
 
 def main(stdout: Stdout):
-    shapes = [.Circle(radius=1.0), Shape.Rect(2.0, 3.0), .Rect(width=2.0, height=2.0), .Point]
+    shapes = [
+        .Circle(radius=1.0),
+        Shape.Rect(2.0, height=3.0),
+        .Rect(width=2.0, height=2.0),
+        .Point,
+    ]
     for shape in shapes:
         stdout.print(describe(shape))
     stdout.print(sum(area(shape) for shape in shapes) > 13.0)

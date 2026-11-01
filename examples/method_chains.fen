@@ -1,44 +1,49 @@
 ## Methods called on what other calls give back, with the type known from the checker.
 
-struct V:
+struct Vector:
     x: int
 
-    def add(self, o: V) -> V:
-        V(x=self.x + o.x)
+    def add(self, other: Vector) -> Vector:
+        Vector(x=self.x + other.x)
 
     def bump(mut self) -> int:
         self.x += 1
         self.x
 
-enum E:
-    A(n: int)
-    B
+enum Kind:
+    Count(n: int)
+    Empty
 
     def n(self) -> int:
         match self:
-            case .A(n):
+            case .Count(n):
                 n
-            case .B:
+            case .Empty:
                 0
 
 struct Tree:
     left: Tree?
-    v: int
+    value: int
 
-    def me(self) -> Tree:
+    def itself(self) -> Tree:
         self
 
     def val(self) -> int:
-        self.v
+        self.value
 
-def make() -> V:
-    V(x=1)
+def make() -> Vector:
+    Vector(x=1)
 
 def tree() -> Tree:
-    Tree(left=None, v=7)
+    Tree(left=None, value=7)
 
 def main(stdout: Stdout):
-    stdout.print(make().add(make()).add(V(x=5)).x, make().x, E.A(n=3).n(), E.B.n())
-    stdout.print(tree().me().val(), tree().me().me().v)
-    mut v = make()
-    stdout.print(v.bump(), v.add(v).x, v.x, ({1: 2}.get(1) else 5), {"a": 1}.len())
+    stdout.print(
+        make().add(make()).add(Vector(x=5)).x,
+        make().x,
+        Kind.Count(n=3).n(),
+        Kind.Empty.n(),
+    )
+    stdout.print(tree().itself().val(), tree().itself().itself().value)
+    mut value = make()
+    stdout.print(value.bump(), value.add(value).x, value.x, ({1: 2}.get(1) else 5), {"a": 1}.len())

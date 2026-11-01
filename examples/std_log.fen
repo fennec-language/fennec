@@ -1,7 +1,7 @@
 # `std.log` is one way for every kit to log. Nothing is global: a function that logs takes a
 # `Log`, so its signature says so, and the program chooses where entries go and how many.
 from std import json
-from std.log import Log, LogFormat, LogLevel
+from std.log import Log
 from std.time import Duration
 
 def save(log: Log, name: str, size: int):
@@ -18,11 +18,11 @@ test "only entries at the log's level or above are written"(stdout: Stdout):
 
 test "the level starts at info"(stdout: Stdout):
     log = Log(out=stdout)
-    save(log, "a.txt", 12)
+    save(log, name="a.txt", size=12)
     assert stdout.captured() == "INFO saved file=a.txt size=12\n"
 
 test "debug shows when asked for"(stdout: Stdout):
-    save(Log(out=stdout, level=.Debug), "a", 1)
+    save(Log(out=stdout, level=.Debug), name="a", size=1)
     assert stdout.captured() == "DEBUG about to save\nINFO saved file=a size=1\n"
 
 test "a log says whether an entry would be written"(stdout: Stdout):
@@ -83,6 +83,6 @@ test "entries can be JSON, one object a line"(stdout: Stdout, clock: Clock):
 
 def main(stdout: Stdout):
     log = Log(out=stdout, level=.Debug).with_fields({"kit": "demo"})
-    save(log, "scores.txt", 120)
+    save(log, name="scores.txt", size=120)
     log.warn("disk is nearly full", fields={"free": "3 MB"})
     Log(out=stdout, format=.Json).error("no space", fields={"free": "0 B"})

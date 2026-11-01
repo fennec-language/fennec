@@ -30,6 +30,17 @@ jobs:
       - run: cargo fmt --check
       - name: Check the Fennec code is formatted
         run: cargo run --locked --quiet -p fennec -- fmt --check examples crates/syntax/src/stdlib bench
+      # The linter has no off switch, so the examples, which people and AI learn from, pass it.
+      - name: Lint the examples
+        shell: bash
+        run: |
+          cargo build --locked --quiet -p fennec
+          failed=0
+          for program in examples/*.fen examples/projects/*/; do
+            [ -f "$program" ] || [ -f "$program/kit.toml" ] || continue
+            ./target/debug/fennec lint "$program" > /dev/null || failed=1
+          done
+          exit "$failed"
       - run: cargo clippy --all-targets --locked -- -D warnings
       - name: Clippy for the playground's WebAssembly module
         run: cargo clippy --target wasm32-unknown-unknown -p fennec-wasm --locked -- -D warnings

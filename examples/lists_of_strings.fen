@@ -12,13 +12,13 @@ def depth(tree: Tree) -> int:
             1 + max(depth(left), depth(right))
 
 def join(parts: list[str]) -> str:
-    mut all = ""
+    mut joined = ""
     for part in parts:
-        all = all + part
-    return all
+        joined = joined + part
+    joined
 
 def named(n: int) -> list[str]:
-    return [f"n{i}" for i in range(n)]
+    [f"n{i}" for i in range(n)]
 
 def main(stdout: Stdout):
     mut words = ["pear", "fig", "apple"]
@@ -32,17 +32,21 @@ def main(stdout: Stdout):
     words.append("lime")
     stdout.print(same, words, same == words, same == same)
 
-    stdout.print(sorted(words), sorted(words, key=(w) => w.len()), sorted(words, key=(w) => w[-1]))
+    stdout.print(
+        sorted(words),
+        sorted(words, key=(each_word) => each_word.len()),
+        sorted(words, key=(each_word) => each_word[-1]),
+    )
     stdout.print(sorted(["b", "a", "ab", "", "aa", "abcdefghi", "abcdefgh", "abcdefgz", "é", "z"]))
     for word in sorted(words):
         stdout.print(word, word.len())
     stdout.print(sorted(words)[0], named(3)[2], named(2))
-    stdout.print([w + "!" for w in words if w.len() > 3])
+    stdout.print([each_word + "!" for each_word in words if each_word.len() > 3])
     stdout.print("kiwi" in words, words.len())
     stdout.print(["a", "b"] == ["a", "b"], ["a"] == ["b"])
 
     parts = "a,b,c".split(",")
-    stdout.print(parts, parts[1], sorted(parts, key=(p) => p == "b"))
+    stdout.print(parts, parts[1], sorted(parts, key=(each_part) => each_part == "b"))
 
     trees = [Tree.Leaf, Tree.Node(left=Tree.Leaf, value=1, right=Tree.Leaf)]
     stdout.print(depth(trees[0]), depth(trees[1]), trees.len())
@@ -51,7 +55,7 @@ def main(stdout: Stdout):
     grown[0] = grown[2]
     total = sum(depth(tree) for tree in grown)
     stdout.print(total, depth(trees[0]))
-    for tree in sorted(grown, key=(t) => -depth(t)):
+    for tree in sorted(grown, key=(candidate) => -depth(candidate)):
         stdout.print(depth(tree))
 
     mut many = [""]

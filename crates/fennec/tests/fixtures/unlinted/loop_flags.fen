@@ -1,0 +1,74 @@
+## Tests that can move out of a loop, characters, and division with nothing negative.
+
+def pick(flag: bool, n: int) -> int:
+    mut total = 0
+    for i in range(n):
+        total += i if flag else -i
+        if not flag:
+            total += 1
+        elif i == 2:
+            break
+    return total
+
+def both(flag: bool, other: bool) -> str:
+    mut out = ""
+    for i in range(3):
+        out += "y" if flag else "n"
+        if other:
+            out += "o"
+    return out
+
+def shadow(flag: bool) -> int:
+    mut n = 0
+    for i in range(3):
+        n += 1 if flag else 2
+        flag2 = i > 0
+        if flag2:
+            n += 10
+    return n
+
+def early(flag: bool) -> int:
+    for i in range(5):
+        if flag: return i
+    return -1
+
+def chars(text: str) -> int:
+    mut n = 0
+    for c in text:
+        if c == "a":
+            n += 1
+        elif c == "é":
+            n += 10
+        elif c != "b":
+            n += 100
+    return n
+
+def main(stdout: Stdout):
+    stdout.print(
+        pick(True, 5),
+        pick(False, 5),
+        both(True, False),
+        both(False, True),
+        shadow(True),
+        early(True),
+        early(False),
+    )
+    stdout.print(chars("abécé"), chars("aaa"), chars(""))
+    mut kept = ""
+    for c in "héllo wörld":
+        kept += c
+        d = c
+        e = d + "!"
+        stdout.print(d, e, d == "é", c == kept[-1])
+    for i in range(0, 12, 5):
+        stdout.print(i % 3, i // 3, i % 4, i // 4)
+    a = "x" if len0() > 0 else "y"
+    stdout.print(a, a == "y", a + "z")
+    mut b = "p" if a == "y" else "q"
+    b += "r"
+    stdout.print(b)
+    for n in range(-3, 3):
+        stdout.print(n % 3, n // 3)
+
+def len0() -> int:
+    return "".len()

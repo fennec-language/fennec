@@ -28,8 +28,8 @@ def name_str(text: str) -> str:
         case _:
             "not a fox"
 
-def name_bool(b: bool) -> str:
-    match b:
+def name_bool(flag: bool) -> str:
+    match flag:
         case True:
             "yes"
         case False:

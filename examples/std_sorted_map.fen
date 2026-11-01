@@ -26,8 +26,8 @@ test "thousands of random changes agree with a dict":
     mut map = SortedMap[int, int]()
     mut table: dict[int, int] = {}
     for step in range(1500):
-        key = random.randint(0, 150)
-        if random.randint(0, 2) == 0:
+        key = random.randint(0, high=150)
+        if random.randint(0, high=2) == 0:
             expected = table.pop(key) if key in table else -1
             assert (map.remove(key) else -1) == expected
         else:

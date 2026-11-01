@@ -176,3 +176,25 @@ fn a_kit_started_from_what_it_kept_behaves_the_same() {
     assert_eq!(stdout(&run(&home, &dir).unwrap()), "0\n1\n", "an edit is seen");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A parameter named like a constant is the parameter inside its function, in every engine. Native
+/// code writes constants out where they're used, which mustn't reach a name that only looks like
+/// one. The linter's `naming-case` keeps examples from doing this, so it's checked here.
+#[test]
+fn a_parameter_named_like_a_constant_is_the_parameter() {
+    let source = "LIMIT = 10\n\ndef shadow(LIMIT: int) -> int:\n    LIMIT + 1\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(shadow(1), LIMIT)\n";
+    let dir = scratch("shadowed_constant").unwrap();
+    let game = dir.join("game.fen");
+    std::fs::write(&game, source).unwrap();
+    for engine in ["--no-test", "--interp"] {
+        let ran = Command::new(env!("CARGO_BIN_EXE_fennec"))
+            .args(["run", engine])
+            .arg(&game)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap();
+        assert_eq!(stdout(&ran), "2 10\n", "{engine}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

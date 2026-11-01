@@ -1,26 +1,29 @@
 # A type with its own `def ==` decides when two of its values are equal, and `!=` is the
 # opposite. Without one, values are equal when every field is.
 struct Pair:
-    a: int
-    b: int
+    left: int
+    right: int
 
     ## Equal when they add up to the same, whichever order the parts are in.
     def ==(self, other: Pair) -> bool:
-        self.a + self.b == other.a + other.b
+        self.left + self.right == other.left + other.right
 
 struct Plain:
-    a: int
-    b: int
+    left: int
+    right: int
 
 def main(stdout: Stdout):
-    one = Pair(a=1, b=2)
-    two = Pair(a=2, b=1)
+    one = Pair(left=1, right=2)
+    two = Pair(left=2, right=1)
     stdout.print(one == two, one != two)
-    stdout.print(one == Pair(a=5, b=5), one != Pair(a=5, b=5))
-    stdout.print(Plain(a=1, b=2) == Plain(a=2, b=1), Plain(a=1, b=2) != Plain(a=2, b=1))
+    stdout.print(one == Pair(left=5, right=5), one != Pair(left=5, right=5))
+    stdout.print(
+        Plain(left=1, right=2) == Plain(left=2, right=1),
+        Plain(left=1, right=2) != Plain(left=2, right=1),
+    )
     mut same = 0
     for i in range(4):
-        if Pair(a=i, b=3 - i) == one:
+        if Pair(left=i, right=3 - i) == one:
             same += 1
     stdout.print(same)
     held(stdout)
@@ -31,9 +34,9 @@ struct Held:
     name: str
 
 def held(stdout: Stdout):
-    one = Pair(a=1, b=2)
-    two = Pair(a=2, b=1)
+    one = Pair(left=1, right=2)
+    two = Pair(left=2, right=1)
     stdout.print(Held(pair=one, name="x") == Held(pair=two, name="x"))
     stdout.print(Held(pair=one, name="x") != Held(pair=two, name="y"))
-    pairs = [Pair(a=0, b=0), two]
+    pairs = [Pair(left=0, right=0), two]
     stdout.print(pairs.index(one), pairs.count(one))

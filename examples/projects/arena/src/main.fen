@@ -3,7 +3,7 @@
 from std.math import Vec3
 
 import combat.damage
-from enemies import Enemy, Rank, spawn, wave
+from enemies import Enemy, Rank, wave
 import physics
 
 def main(stdout: Stdout):

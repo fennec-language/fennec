@@ -2,7 +2,7 @@
 
 def fib(n: int) -> int:
     if n < 2: return n
-    return fib(n - 1) + fib(n - 2)
+    fib(n - 1) + fib(n - 2)
 
 def collatz_steps(start: int) -> int:
     mut n = start
@@ -14,14 +14,14 @@ def collatz_steps(start: int) -> int:
 
 def is_prime(n: int) -> bool:
     if n < 2: return False
-    mut d = 2
-    while d * d <= n:
-        if n % d == 0: return False
-        d += 1
+    mut step = 2
+    while step * step <= n:
+        if n % step == 0: return False
+        step += 1
     True
 
-def lerp(a: float, b: float, t: float) -> float:
-    a + (b - a) * t
+def lerp(begin: float, end: float, amount: float) -> float:
+    begin + (end - begin) * amount
 
 def main(stdout: Stdout):
     stdout.print(fib(20), collatz_steps(27))
@@ -35,11 +35,9 @@ def main(stdout: Stdout):
     stdout.print(7 // 2, -7 // 2, 7 % 3, -7 % 3, 7 % -3)
     stdout.print(7 / 2, -7.5 // 2.0, 7.5 % 2.0, 2.0 * 3.0)
     stdout.print((-4).abs(), (-2.5).abs(), min(3, 9), max(3.5, 1.0), float(3), int(2.9))
-    stdout.print(lerp(0.0, 10.0, 0.25), 0.1 + 0.2, 1.0 / 3.0)
+    stdout.print(lerp(0.0, end=10.0, amount=0.25), 0.1 + 0.2, 1.0 / 3.0)
 
-    mut evens = 0
-    for i in range(10, 0, -2):
-        evens += i
+    evens = sum(i for i in range(10, 0, -2))
     stdout.print(evens, not True, 3 < 4 and 4 < 3, 3 < 4 or 4 < 3)
 
     mut total = 0

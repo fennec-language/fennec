@@ -64,6 +64,7 @@ fennec-llvm = { path = "crates/llvm" }
 fennec-interp = { path = "crates/interp" }
 fennec-runtime = { path = "crates/runtime" }
 fennec-kit = { path = "crates/kit" }
+fennec-lint = { path = "crates/lint" }
 fennec-lsp = { path = "crates/lsp" }
 fennec-re = { path = "crates/re" }
 fennec-reference = { path = "crates/reference" }

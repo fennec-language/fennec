@@ -707,6 +707,52 @@ fn the_reference_is_written_and_a_stale_decision_fails() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+#[test]
+fn run_no_test_with_no_path_runs_the_kit_here() {
+    let dir = scratch("no_test_here").unwrap();
+    assert!(fennec_in(&dir, &["new", "demo"], "").unwrap().status.success());
+    let kit = dir.join("demo");
+    std::fs::write(kit.join("src/other.fen"), "test \"fails\":\n    assert 1 == 2\n").unwrap();
+    let output = fennec_in(&kit, &["run", "--no-test"], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "Hello from demo!\n");
+}
+
+#[test]
+fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
+    let dir = scratch("lint").unwrap();
+    let program = dir.join("game.fen");
+    let path = program.to_string_lossy().into_owned();
+    let hinted = "def main(stdout: Stdout):\n    mut xs = [1]\n    held = xs\n    xs.append(2)\n    \
+                  stdout.print(held.len())\n";
+    std::fs::write(&program, hinted).unwrap();
+    let clean = fennec(&["lint", &path], "").unwrap();
+    assert!(clean.status.success(), "{}", text(&clean.stderr));
+    assert!(text(&clean.stdout).contains("hint: "), "{}", text(&clean.stdout));
+    assert!(
+        text(&clean.stdout).contains("may copy `xs`: held still refers to it"),
+        "{}",
+        text(&clean.stdout)
+    );
+
+    let lints = "def f() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
+    std::fs::write(&program, lints).unwrap();
+    let flagged = fennec(&["lint", &path], "").unwrap();
+    assert_eq!(flagged.status.code(), Some(1));
+    assert!(text(&flagged.stderr).contains("needless-return:"), "{}", text(&flagged.stderr));
+    assert!(text(&flagged.stderr).contains("1 lints, 1 of which"), "{}", text(&flagged.stderr));
+
+    assert!(fennec(&["fix", &path], "").unwrap().status.success());
+    let after = std::fs::read_to_string(&program).unwrap();
+    assert!(after.contains("-> int:\n    1\n"), "{after}");
+    assert!(fennec(&["lint", &path], "").unwrap().status.success());
+
+    std::fs::write(&program, "x = 1 + \"a\"\n").unwrap();
+    assert_eq!(fennec(&["lint", &path], "").unwrap().status.code(), Some(1));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Every command the guidance tells an agent to run has to exist.
 #[test]
 fn the_guidance_names_only_commands_there_are() {

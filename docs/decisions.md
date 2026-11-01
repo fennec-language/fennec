@@ -121,7 +121,7 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 
 ## Determinism
 
-**Dicts and sets keep insertion order,** whatever the hash does.
+**Dicts and sets keep insertion order.**
 *Why:* The same program iterates the same way on every run and every machine. Python already does this, so it costs AI nothing.
 
 **Evaluation is always left to right.**

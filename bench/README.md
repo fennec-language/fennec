@@ -66,7 +66,7 @@ To compare against another build of `fennec`, like the previous commit's, pass `
 
 ## Keeping it honest
 
-A twin has to do the same job as its kernel, not just print the same answer. `dicts` uses the same hash as Fennec's dicts, because Rust's default, SipHash, is the stronger hash Fennec's dicts only move to when their probes get suspiciously long, and using it would make the comparison about the hash. `dicts.std` keeps the default twin as a separate row, for what someone gets from Rust's standard library without choosing.
+A twin has to do the same job as its kernel, not just print the same answer. `dicts` uses the same hash as Fennec's dicts, because the target's default hash, SipHash, is the stronger one Fennec's dicts only move to when their probes get suspiciously long, and using it would make the comparison about the hash. `dicts.std` keeps the default twin as a separate row, for what someone gets from the target's standard library without choosing.
 
 These hold on both sides, the kernel and its twin:
 

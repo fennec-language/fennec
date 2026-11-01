@@ -1,0 +1,150 @@
+## Carrying out a tick's decisions: moving, attacking and healing, and taking the dead off the
+## field. A unit that dies is removed from the `IdMap`; anyone still holding its `Id` finds
+## nothing there next time they look, and squads choose a new leader.
+
+from std.game import Id
+
+import map
+from orders import Action, Decision, decide_all
+from score import Scoreboard
+from units import Item, Kind, Squad, Unit, World
+
+## Plays one tick: everyone decides, then each decision happens in turn, then the dead fall.
+def tick(mut world: World, mut board: Scoreboard):
+    world.tick += 1
+    decisions = decide_all(world)
+    for decision in decisions:
+        carry_out(mut world, mut board, decision)
+    bury(mut world, mut board)
+
+## One unit's decision. By its turn, its target may already be dead, or someone may have
+## stepped where it meant to go.
+def carry_out(mut world: World, mut board: Scoreboard, decision: Decision):
+    actor = decision.actor
+    if world.units.get(actor) is None: return
+    world.units[actor].target = decision.target
+    world.units[actor].path = decision.path
+    match decision.action:
+        case .Wait:
+            pass
+        case .Step(to):
+            if world.unit_at(to) is None:
+                world.units[actor].at = to
+            else:
+                # The path is out of date; work out a new one next tick.
+                world.units[actor].path = []
+        case .Attack(target):
+            attack(mut world, mut board, actor, target)
+        case .Heal(target):
+            heal(mut world, mut board, actor, target)
+
+def attack(mut world: World, mut board: Scoreboard, actor: Id[Unit], target: Id[Unit]):
+    found = world.units.get(target)
+    if found is None or found.health <= 0: return
+    attacker = world.units[actor]
+    # Forest gives cover: a third less damage.
+    damage = attacker.power() * 2 // 3 if world.field.tiles[
+        found.at
+    ] == .Forest else attacker.power()
+    dealt = damage if damage < found.health else found.health
+    world.units[target].health -= dealt
+    board.hit(attacker.team, dealt)
+    if world.units[target].health <= 0:
+        world.units[actor].kills += 1
+        board.killed(attacker.team, world.tick, f"{attacker.name} took down {found.name}")
+
+def heal(mut world: World, mut board: Scoreboard, actor: Id[Unit], target: Id[Unit]):
+    found = world.units.get(target)
+    if found is None or found.health <= 0: return
+    medic = world.units[actor]
+    room = found.kind.most_health() - found.health
+    mut amount = medic.power()
+    # A medic carrying bandages uses one for a bigger heal.
+    for at, item in enumerate(medic.items):
+        if item.heals > 0:
+            amount += item.heals
+            world.units[actor].items.pop(at)
+            break
+    given = amount if amount < room else room
+    world.units[target].health += given
+    board.healed(medic.team, given)
+
+## Takes the dead off the field, and keeps squads led by someone still standing.
+def bury(mut world: World, mut board: Scoreboard):
+    dead = [id for id, unit in world.units.items() if unit.health <= 0]
+    for id in dead:
+        unit = world.units[id]
+        world.units.remove(id)
+        squad_id = unit.squad
+        if squad_id is not None:
+            leave_squad(mut world, mut board, squad_id, id)
+
+def leave_squad(mut world: World, mut board: Scoreboard, squad_id: Id[Squad], gone: Id[Unit]):
+    squad = world.squads.get(squad_id)
+    if squad is None: return
+    members = [member for member in squad.members if member != gone]
+    world.squads[squad_id].members = members
+    if members.len() == 0:
+        world.squads.remove(squad_id)
+        board.note(world.tick, f"squad {squad.name} is gone")
+        return
+    if squad.leader != gone: return
+    # The healthiest member who isn't a medic leads; failing that, anyone.
+    mut leader = members[0]
+    mut best = -1
+    for member in members:
+        unit = world.units[member]
+        if unit.kind != Kind.Medic and unit.health > best:
+            leader = member
+            best = unit.health
+    world.squads[squad_id].leader = leader
+    for member in members:
+        world.units[member].following = None if member == leader else leader
+    board.note(world.tick, f"{world.units[leader].name} now leads {squad.name}")
+
+test "an attack takes health and can kill":
+    mut world = World(field=map.Map.drawn(["..."]))
+    mut board = Scoreboard()
+    ash = world.spawn("ash", .Red, .Soldier, (0, 0))
+    vex = world.spawn("vex", .Blue, .Archer, (1, 0))
+    world.units[vex].health = 10
+    attack(mut world, mut board, ash, vex)
+    assert world.units[vex].health == 0
+    assert world.units[ash].kills == 1
+    assert board.line(.Red) == "red: 1 kills, 10 damage, 0 healed"
+    bury(mut world, mut board)
+    assert world.units.get(vex) is None and world.units.len() == 1
+
+test "a new leader takes over when the old one falls":
+    mut world = World(field=map.Map.drawn(["...."]))
+    mut board = Scoreboard()
+    a = world.spawn("a", .Red, .Soldier, (0, 0))
+    b = world.spawn("b", .Red, .Medic, (1, 0))
+    c = world.spawn("c", .Red, .Archer, (2, 0))
+    squad = world.form_squad("first", [a, b, c], (3, 0))
+    world.units[a].health = 0
+    bury(mut world, mut board)
+    assert world.squads[squad].leader == c
+    assert world.squads[squad].members == [b, c]
+    assert world.units[b].following == c and world.units[c].following is None
+    assert board.events[-1].text == "c now leads first"
+
+test "a squad with nobody left is gone":
+    mut world = World(field=map.Map.drawn([".."]))
+    mut board = Scoreboard()
+    a = world.spawn("a", .Red, .Soldier, (0, 0))
+    squad = world.form_squad("alone", [a], (1, 0))
+    world.units[a].health = 0
+    bury(mut world, mut board)
+    assert world.squads.get(squad) is None
+
+test "a medic's bandage is used up":
+    mut world = World(field=map.Map.drawn(["..."]))
+    mut board = Scoreboard()
+    doc = world.spawn("doc", .Red, .Medic, (0, 0))
+    hurt = world.spawn("hurt", .Red, .Soldier, (1, 0))
+    world.units[doc].items = [Item(name="bandage", heals=20)]
+    world.units[hurt].health = 10
+    heal(mut world, mut board, doc, hurt)
+    assert world.units[hurt].health == 39
+    assert world.units[doc].items == []

@@ -1,4 +1,4 @@
-def repeat(text: str, times: int = 2) -> str:
+def repeat(text: str, times = 2) -> str:
     text * times
 
 def main(stdout: Stdout):

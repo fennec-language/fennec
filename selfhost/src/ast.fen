@@ -45,6 +45,13 @@ def is_plain_value(expr: Expr) -> bool:
             match operand.kind:
                 case .Int(_) | .Float(_): op == .Neg
                 case _: False
+        # An enum case, like `Mode.fast`, or an empty collection.
+        case .Attr(object, _, optional):
+            match object.kind:
+                case .Name(_): not optional
+                case _: False
+        case .List(items): items.len() == 0
+        case .Dict(pairs): pairs.len() == 0
         case _: False
 
 struct Param:

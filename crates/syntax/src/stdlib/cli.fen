@@ -50,19 +50,12 @@ struct Cli:
     takes: list[CliArg] = []
 
     ## A flag, which is either given or not.
-    def flag(self, name: str, short: str = "", help: str = "") -> Cli:
+    def flag(self, name: str, short = "", help = "") -> Cli:
         self._with(CliArg(name=name, short=short, help=help))
 
     ## An option, which takes a value. With no default and not required, it has no value
     ## unless it's given.
-    def option(
-        self,
-        name: str,
-        short: str = "",
-        help: str = "",
-        default: str = "",
-        required: bool = False,
-    ) -> Cli:
+    def option(self, name: str, short = "", help = "", default = "", required = False) -> Cli:
         self._with(
             CliArg(
                 name=name,
@@ -75,13 +68,7 @@ struct Cli:
         )
 
     ## A positional argument, given in order. `many` makes it collect all the rest.
-    def positional(
-        self,
-        name: str,
-        help: str = "",
-        required: bool = True,
-        many: bool = False,
-    ) -> Cli:
+    def positional(self, name: str, help = "", required = True, many = False) -> Cli:
         self._with(
             CliArg(
                 name=name,

@@ -492,7 +492,8 @@ impl Lowerer<'_, '_> {
             if copying { None } else { self.shared.generators.get(key).cloned() }
         };
         let is_local = |name: &str| self.local(name).is_some();
-        let around = fuse::Surroundings { generator: &generator, is_local: &is_local };
+        // The JIT's yield functions are its program's own top-level ones: no methods.
+        let around = fuse::Surroundings { generator: &generator, is_local: &is_local, method: &|_, _| None };
         if let Some(expansion) = fuse::expand(names, iter, body, &around) {
             return self.fused_loop(expansion);
         }

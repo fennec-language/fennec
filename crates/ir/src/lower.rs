@@ -512,8 +512,13 @@ impl<'a> Lowering<'a> {
         if let Some(dest) = self.lookup(name) {
             return Ok(dest);
         }
-        let ty = self.body.name(target.span, name).ok_or_else(|| format!("`{name}` has no type"))?;
-        let ty = self.concrete(ty);
+        let ty = match self.body.name(target.span, name) {
+            Some(ty) => Some(self.concrete(ty)),
+            // A hidden name, kept for a stage that moved, covers what it was given.
+            None if name.starts_with('\0') => self.type_at(target.span),
+            None => None,
+        }
+        .ok_or_else(|| format!("`{name}` has no type"))?;
         let held = self.held(&ty).ok_or_else(|| format!("`{name}` is {ty}"))?;
         Ok(self.declare(name, held))
     }

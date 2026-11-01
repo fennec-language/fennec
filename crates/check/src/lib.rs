@@ -30,6 +30,7 @@ mod messages;
 mod pattern;
 mod place;
 mod program;
+mod rules;
 mod stdlib;
 mod stmt;
 mod sum;

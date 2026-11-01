@@ -23,18 +23,42 @@ fn folder(name: &str) -> std::io::Result<PathBuf> {
 }
 
 fn same_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
+    let (ours, jit) = both(name, source)?;
+    assert_eq!(ours, jit);
+    Ok(())
+}
+
+/// A known difference: the IR gives an index being written, and a value being formatted, the span
+/// of what they're in, where the JIT underlines the part that failed. Same message and outcome.
+fn same_message_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
+    let ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code)) = both(name, source)?;
+    assert_eq!((ours_out, ours_code), (jit_out, jit_code));
+    assert_eq!(ours_err.lines().next(), jit_err.lines().next());
+    Ok(())
+}
+
+/// What the program printed, its errors and its exit code, built with LLVM and run by the JIT.
+fn both(name: &str, source: &str) -> std::io::Result<(Outcome, Outcome)> {
     let dir = folder(name)?;
     let program = dir.join(format!("{name}.fen"));
     std::fs::write(&program, source)?;
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
     let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ours = Command::new(&executable).output()?;
-    let jit = fennec(&["run", &program], &dir)?;
-    assert_eq!(String::from_utf8_lossy(&ours.stdout), String::from_utf8_lossy(&jit.stdout));
-    assert_eq!(String::from_utf8_lossy(&ours.stderr), String::from_utf8_lossy(&jit.stderr));
-    assert_eq!(ours.status.code(), jit.status.code());
-    std::fs::remove_dir_all(&dir)
+    let ours = outcome(&Command::new(&executable).output()?);
+    let jit = outcome(&fennec(&["run", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    Ok((ours, jit))
+}
+
+type Outcome = (String, String, Option<i32>);
+
+fn outcome(output: &Output) -> Outcome {
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status.code(),
+    )
 }
 
 /// The runtime library, built as `executables.rs` builds it, every time.
@@ -59,6 +83,116 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
 }
 
 #[test]
+fn lists_keep_value_semantics_like_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "sharing",
+        r"def changed(items: list[int]) -> list[int]:
+    mut copy = items
+    copy[0] = 99
+    copy
+
+def grown(mut items: list[int]):
+    items.append(7)
+    items[0] = 5
+
+def same(items: list[int]) -> list[int]:
+    items
+
+def show(items: list[int], stdout: Stdout):
+    mut at = 0
+    while at < items.len():
+        stdout.print(items[at])
+        at += 1
+
+def main(stdout: Stdout):
+    a = [1, 2, 3]
+    b = changed(a)
+    show(a, stdout)
+    show(b, stdout)
+    mut c = [10, 20]
+    d = c
+    c[1] = 21
+    c.append(30)
+    show(c, stdout)
+    show(d, stdout)
+    mut e = [1]
+    f = e
+    grown(mut e)
+    show(e, stdout)
+    show(f, stdout)
+    mut g = same(c)
+    g[0] = -1
+    show(c, stdout)
+    show(g, stdout)
+    stdout.print(c[-1], c[-3], [i * i for i in range(4)][2])
+    mut h = [1, 2]
+    for _ in range(3):
+        k = h
+        h.append(k.len())
+        stdout.print(k.len(), h.len())
+",
+    )
+}
+
+#[test]
+fn structs_tuples_and_formats_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "values",
+        r#"struct Point:
+    x: float
+    y: float
+    on: bool
+
+struct Line:
+    start: Point
+    end: Point
+    weight: int
+
+def moved(p: Point, by: float) -> Point:
+    mut q = p
+    q.x = q.x + by
+    q
+
+def nudge(mut p: Point):
+    p.y = p.y + 1.0
+    p.on = not p.on
+
+def pair(n: int) -> (int, float):
+    (n + 1, float(n) / 2.0)
+
+def main(stdout: Stdout):
+    a = Point(x=1.0, y=2.0, on=True)
+    b = moved(a, 0.5)
+    stdout.print(a.x, b.x, a.on)
+    mut c = b
+    nudge(mut c)
+    stdout.print(b.y, c.y, b.on, c.on)
+    mut line = Line(start=a, end=c, weight=3)
+    line.end.x = 9.5
+    stdout.print(line.start.x, line.end.x, c.x, line.weight, line.end.on)
+    mut points = [a, b]
+    points[1].x = 7.0
+    points.append(c)
+    stdout.print(points[1].x, b.x, points.len(), points[2].on)
+    shown = points[0]
+    points[0].y = -3.0
+    stdout.print(shown.y, points[0].y)
+    n, half = pair(5)
+    stdout.print(n, half)
+    flags = [True, False]
+    stdout.print(flags[0], flags[-1])
+    stdout.print(f"{half:.3f} and {n} at {a.x}")
+"#,
+    )
+}
+
+#[test]
 fn failures_match_the_jit() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
         return Ok(());
@@ -71,6 +205,20 @@ fn failures_match_the_jit() -> std::io::Result<()> {
     same_as_the_jit(
         "zero",
         &format!("def f(n: int) -> int:\n    10 // n{print_after}    stdout.print(f(0))\n"),
+    )?;
+    same_as_the_jit(
+        "outside",
+        &format!("def f(n: int) -> int:\n    [1, 2][n]{print_after}    stdout.print(f(2))\n"),
+    )?;
+    same_message_as_the_jit(
+        "before",
+        &format!(
+            "def f(n: int) -> int:\n    mut a = [1, 2]\n    a[n] = 3\n    a[0]{print_after}    stdout.print(f(-3))\n"
+        ),
+    )?;
+    same_message_as_the_jit(
+        "spec",
+        &format!("def f(n: int) -> int:\n    n{print_after}    stdout.print(f\"{{f(1):z}}\")\n"),
     )?;
     same_as_the_jit(
         "deep",

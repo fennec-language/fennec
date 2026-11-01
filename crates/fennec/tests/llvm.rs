@@ -496,6 +496,38 @@ fn what_a_field_or_an_items_field_holds_changes_without_being_copied() -> std::i
         "struct Var:\n    value: int\n    links: list[int]\n\nstruct Holder:\n    vars: list[Var]\n\n    def add(mut self, value: int):\n        self.vars.append(Var(value=value, links=[]))\n\n    def link(mut self, at: int, other: int):\n        self.vars[at].links.append(other)\n\ndef main(stdout: Stdout):\n    mut holder = Holder(vars=[])\n    for i in range(100):\n        holder.add(i)\n    for i in range(1000):\n        holder.link(i % 100, i)\n    stdout.print(holder.vars[5].links.len())\n",
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
+    // A method written in Fennec changing a field: `self.inner.add(x)` and std's `extend`.
+    let counts = counts_of(
+        "methods",
+        "struct Inner:\n    items: list[int]\n\n    def add(mut self, item: int):\n        self.items.append(item)\n\nstruct Outer:\n    inner: Inner\n    items: list[int]\n\n    def push(mut self, item: int):\n        self.inner.add(item)\n\n    def grow(mut self, more: list[int]):\n        self.items.extend(more)\n\ndef main(stdout: Stdout):\n    mut outer = Outer(inner=Inner(items=[]), items=[])\n    for i in range(100):\n        outer.push(i)\n    for i in range(100):\n        outer.grow([i])\n    stdout.print(outer.inner.items.len(), outer.items.len())\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    Ok(())
+}
+
+/// One number from a `counts_of` line, like `copies`.
+fn count(counts: &str, name: &str) -> Option<u64> {
+    counts.split_whitespace().skip_while(|word| *word != name).nth(1).and_then(|number| number.parse().ok())
+}
+
+#[test]
+fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = "from std.collections import Packed\n\ndef main(stdout: Stdout):\n    mut packed = Packed[int]()\n    for n in range(100):\n        packed.append([n, n + 1, n + 2])\n";
+    let building = counts_of("packed_built", &format!("{source}    stdout.print(packed.len())\n"))?;
+    let looped = counts_of(
+        "packed_looped",
+        &format!(
+            "{source}    mut total = 0\n    for _ in range(100):\n        for at in range(packed.len()):\n            for item in packed[at]:\n                total += item\n    stdout.print(total)\n"
+        ),
+    )?;
+    // Reading a list goes through its items in place, and the loop over `packed[at]` fuses
+    // into a plain loop: 10,000 reads copy and allocate nothing more than building did.
+    for what in ["copies", "copied_bytes", "allocations", "allocated_bytes"] {
+        assert_eq!(count(&looped, what), count(&building, what), "{what}: {building} / {looped}");
+    }
     Ok(())
 }
 
@@ -526,6 +558,73 @@ fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()>
     assert_eq!((ours.0, ours.2), (jit.0, jit.2));
     assert_eq!(ours.1.lines().next(), jit.1.lines().next());
     Ok(())
+}
+
+#[test]
+fn tuples_and_structs_compare_like_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "compare",
+        r#"struct Point:
+    x: int
+    y: float
+    name: str
+
+def main(stdout: Stdout):
+    a = (1, "b")
+    b = (1, "c")
+    c = (0, "z")
+    stdout.print(a < b, b < a, c < a, a <= a, a == (1, "b"), a != b, (2, 1.5) > (2, 1.25))
+    p = Point(x=1, y=2.0, name="fox")
+    q = Point(x=1, y=2.0, name="fox")
+    stdout.print(p == q, p != Point(x=1, y=2.5, name="fox"))
+    mut items = [(3, "c"), (1, "z"), (1, "a"), (2, "b")]
+    mut best = items[0]
+    for item in items:
+        if item < best:
+            best = item
+    first, second = best
+    stdout.print(first, second)
+"#,
+    )
+}
+
+#[test]
+fn id_maps_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "idmap",
+        r#"from std.game import Id, IdMap
+
+struct Unit:
+    name: str
+    health: int
+
+def main(stdout: Stdout):
+    mut units = IdMap[Unit]()
+    a = units.insert(Unit(name="fox", health=10))
+    b = units.insert(Unit(name="kit", health=5))
+    units[a].health -= 3
+    stdout.print(units[a].health, units.len(), units.get(b) is None)
+    gone = units.remove(b)
+    stdout.print(units.get(b) is None, units.len(), a == a, a == b)
+    c = units.insert(Unit(name="den", health=7))
+    ids: list[Id[Unit]] = units.ids()
+    for id, unit in units.items():
+        stdout.print(unit.name, unit.health)
+    stdout.print(ids.len(), units.values().len(), c == b)
+    if gone is not None:
+        stdout.print(gone.name)
+"#,
+    )?;
+    same_message_as_the_jit(
+        "stale",
+        "from std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut names = IdMap[str]()\n    fox = names.insert(\"fox\")\n    names.remove(fox)\n    stdout.print(names[fox])\n",
+    )
 }
 
 #[test]

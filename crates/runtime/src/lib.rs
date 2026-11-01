@@ -213,6 +213,7 @@ export! {
     fennec_str_from_value(a0: i64, a1: i64, a2: i64) -> i64 => strings::from_value(a0, a1, a2);
     fennec_str_concat(a0: i64, a1: i64) -> i64 => strings::concat(a0, a1);
     fennec_str_append(a0: i64, a1: i64) -> i64 => strings::append(a0, a1);
+    fennec_str_with_room(a0: i64) -> i64 => strings::with_room(a0);
     fennec_str_char_at(a0: i64, a1: i64) -> i64 => strings::char_at(a0, a1);
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);
     fennec_dict_set(a0: i64, a1: i64, a2: i64) -> i64 => dicts::set(a0, a1, a2);

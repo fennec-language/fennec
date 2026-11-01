@@ -242,10 +242,12 @@ struct Packed[T]:
     def len(self) -> int:
         self._starts.len() - 1
 
-    ## The list at `at`. One past the end stops the program, like a list.
-    def [](self, at: int) -> list[T]:
+    ## The items of the list at `at`, read in place, with no copy: `for x in packed[at]:`.
+    ## `list(packed[at])` makes a copy. One past the end stops the program, like a list.
+    def [](self, at: int) -> Iterator[T]:
         assert 0 <= at and at < self.len()
-        self._items[self._starts[at]:self._starts[at + 1]]
+        for spot in range(self._starts[at], self._starts[at + 1]):
+            yield self._items[spot]
 
     ## How many items the list at `at` holds, without reading them.
     def len_of(self, at: int) -> int:
@@ -278,7 +280,7 @@ struct Packed[T]:
 
     ## The lists, as a `list[list[T]]`.
     def lists(self) -> list[list[T]]:
-        [self[at] for at in range(self.len())]
+        [list(self[at]) for at in range(self.len())]
 
     def iter(self) -> list[list[T]]:
         self.lists()

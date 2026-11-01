@@ -16,6 +16,9 @@ pub(crate) fn canon(ty: &Type) -> Type {
         Type::Tuple(_) | Type::Generic(..) => Type::Named(ty.to_string()),
         Type::Optional(inner) => Type::Named(format!("Option[{inner}]")),
         Type::Result(value, error) => Type::Named(format!("Result[{value}, {error}]")),
+        // Every `Id` looks the same whatever it's of.
+        Type::Id(_) => Type::Named("Id".to_owned()),
+        Type::IdMap(item) => Type::Named(format!("IdMap[{item}]")),
         Type::List(item) => Type::List(Box::new(canon(item))),
         Type::Set(item) => Type::Set(Box::new(canon(item))),
         Type::Dict(key, value) => Type::Dict(Box::new(canon(key)), Box::new(canon(value))),
@@ -59,6 +62,21 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
             let ok = if **value == Type::Unit { Vec::new() } else { vec![field("value", value)] };
             let cases = vec![("Ok".to_owned(), ok), ("Err".to_owned(), vec![field("error", error)])];
             out.insert(format!("Result[{value}, {error}]"), Written::Enum(cases));
+        }
+        Type::Id(_) => {
+            out.insert(
+                "Id".to_owned(),
+                Written::Struct(vec![field("slot", &Type::Int), field("generation", &Type::Int)]),
+            );
+        }
+        Type::IdMap(item) => {
+            define_named(item, layouts, out);
+            let fields = vec![
+                field("items", &Type::List(item.clone())),
+                field("generations", &Type::List(Box::new(Type::Int))),
+                field("live", &Type::Int),
+            ];
+            out.insert(format!("IdMap[{item}]"), Written::Struct(fields));
         }
         Type::List(item) | Type::Set(item) => define_named(item, layouts, out),
         Type::Dict(key, value) => {
@@ -201,6 +219,8 @@ pub(crate) fn element_symbol(layouts: &Layouts, item: ListItem) -> String {
         ListItem::Struct(id) => format!("e_s_{}", layouts.get(id).map_or("?", |layout| layout.name.as_str())),
         ListItem::Str => "e_str".to_owned(),
         ListItem::Boxed(id) => format!("e_b_{}", layouts.get(id).map_or("?", |layout| layout.name.as_str())),
+        // Named by what it holds, so the name stays the same while the program's numbering moves.
+        ListItem::Block(id) => format!("e_k_{:?}", layouts.block(id)),
     }
 }
 

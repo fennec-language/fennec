@@ -331,4 +331,34 @@ mod tests {
         assert_eq!(word(dict, 16), Some(3));
         finish();
     }
+
+    #[test]
+    fn indexing_text_reads_only_what_it_needs() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let (plain, accented) = (string("abc"), string("aéb€c"));
+        let at = |text, at| text_of(strings::index(text, at, 0, 0));
+        assert_eq!([at(plain, 0), at(plain, 2), at(plain, -1)], ["a", "c", "c"]);
+        assert_eq!(
+            [at(accented, 1), at(accented, 2), at(accented, 3), at(accented, -1)],
+            ["é", "b", "€", "c"]
+        );
+        assert_eq!(strings::index(plain, 3, 0, 0), 0);
+        let (_, failure, _) = finish();
+        assert!(failure.unwrap().message.contains("out of range"));
+    }
+
+    #[test]
+    fn stripping_takes_off_what_str_trim_does() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        for text in ["  a b  ", "\t\n\x0b\x0cx\r ", "   ", "", "ok", " é ", "\x1fy\x1f", "a\u{a0}"] {
+            for (which, expected) in [(0, text.trim()), (1, text.trim_start()), (2, text.trim_end())] {
+                assert_eq!(text_of(strings::strip(string(text), which)), expected, "{text:?} {which}");
+            }
+        }
+        finish();
+    }
 }

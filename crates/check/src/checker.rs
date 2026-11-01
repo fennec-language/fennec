@@ -44,6 +44,9 @@ pub(crate) struct Checker {
     pub(crate) generator_types: BTreeMap<(u32, u32), String>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     pub(crate) not_equals: BTreeSet<(u32, u32)>,
+    /// The fields and method calls on a value that might be missing, in a chain an `else`
+    /// ends, which are written in as optional.
+    pub(crate) optional_steps: BTreeSet<(u32, u32)>,
     /// What each name for a standard library function written in Fennec means.
     pub(crate) std_names: BTreeMap<(u32, u32), String>,
     /// Each constant's type, once worked out. `None` while its value is being checked.
@@ -89,6 +92,7 @@ impl Checker {
             defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
             not_equals: BTreeSet::new(),
+            optional_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
             const_types: BTreeMap::new(),
             checking: Vec::new(),
@@ -165,6 +169,7 @@ impl Checker {
                 defaults: self.defaults,
                 generator_types: self.generator_types,
                 not_equals: self.not_equals,
+                optional_steps: self.optional_steps,
                 std_names: self.std_names,
             });
         }

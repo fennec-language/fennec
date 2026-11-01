@@ -1,0 +1,76 @@
+# `Grid` is a fixed-size table of cells reached by column and row, for boards and tile maps.
+from std.collections import Deque, Grid
+
+enum Tile:
+    Floor
+    Wall
+
+## How many steps it takes to reach each cell from `start`, going round walls. Cells it
+## can't reach are -1.
+def distances(map: Grid[Tile], start: (int, int)) -> Grid[int]:
+    mut steps = Grid.filled(width=map.width, height=map.height, value=-1)
+    steps[start] = 0
+    mut waiting = Deque.of([start])
+    while waiting.len() > 0:
+        here = waiting.popleft() else start
+        for near in map.neighbors(here):
+            if map[near] == Tile.Floor and steps[near] == -1:
+                steps[near] = steps[here] + 1
+                waiting.append(near)
+    steps
+
+## A map drawn with `#` for walls.
+def drawn(rows: list[str]) -> Grid[Tile]:
+    Grid.of([[Tile.Wall if char == "#" else Tile.Floor for char in row] for row in rows])
+
+test "cells are reached by column and row":
+    mut grid = Grid.filled(width=3, height=2, value=0)
+    assert grid.width == 3 and grid.height == 2 and grid.len() == 6
+    grid[(2, 1)] = 5
+    grid[(0, 0)] += 1
+    assert grid[(2, 1)] == 5 and grid[(0, 0)] == 1
+    assert grid.rows() == [[1, 0, 0], [0, 0, 5]]
+    assert grid.row(1) == [0, 0, 5] and grid.column(2) == [0, 5]
+    assert [cell for cell in grid] == [1, 0, 0, 0, 0, 5]
+
+test "a position outside the grid has nothing":
+    grid = Grid.of([[1, 2], [3, 4]])
+    assert grid.get((1, 1)) == 4
+    assert grid.get((2, 0)) is None and grid.get((0, -1)) is None
+    assert grid.contains((0, 0)) and not grid.contains((2, 2))
+
+test "neighbors stay inside the grid":
+    grid = Grid.filled(width=3, height=3, value=".")
+    assert grid.neighbors((1, 1)) == [(1, 0), (2, 1), (1, 2), (0, 1)]
+    assert grid.neighbors((0, 0)) == [(1, 0), (0, 1)]
+    assert grid.neighbors8((0, 0)) == [(1, 0), (1, 1), (0, 1)]
+    assert grid.neighbors8((1, 1)).len() == 8
+
+test "positions go row by row":
+    grid = Grid.filled(width=2, height=2, value=False)
+    assert grid.positions() == [(0, 0), (1, 0), (0, 1), (1, 1)]
+    assert Grid.filled(width=0, height=3, value=1).positions() == []
+    none: list[list[int]] = []
+    assert Grid.of(none).len() == 0
+
+test "a copy is independent":
+    mut grid = Grid.filled(width=2, height=2, value=0)
+    saved = grid
+    grid.fill(9)
+    grid[(0, 1)] = 3
+    assert saved.rows() == [[0, 0], [0, 0]]
+    assert grid.rows() == [[9, 9], [3, 9]]
+
+test "finding the way round walls":
+    map = drawn(["..#.", ".##.", "...."])
+    steps = distances(map, (0, 0))
+    assert steps.rows() == [[0, 1, -1, 7], [1, -1, -1, 6], [2, 3, 4, 5]]
+
+def main(stdout: Stdout):
+    map = drawn(["....#...", ".##.#.#.", ".#....#.", "...##..."])
+    steps = distances(map, (0, 0))
+    for y in range(map.height):
+        mut line = ""
+        for x in range(map.width):
+            line += "#" if map[(x, y)] == Tile.Wall else f"{steps[(x, y)] % 10}"
+        stdout.print(line)

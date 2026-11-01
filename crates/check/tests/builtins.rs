@@ -77,18 +77,15 @@ fn arrow_functions_receive_the_items() {
 }
 
 #[test]
-fn optional_chaining_calls_methods_only_when_there_is_a_value() {
+fn an_else_chain_calls_methods_only_when_there_is_a_value() {
     let program = "
         found = {'a': 'b'}.get('a')
-        stdout.print(found?.upper() + 'c')
+        stdout.print((found.upper() else '') + 'c')
         nothing = None
-        stdout.print(nothing?.upper(), nothing.upper())
+        stdout.print(nothing.upper() else '', nothing.upper())
         stdout.print(found.upper())
     ";
-    assert_eq!(
-        in_main(program),
-        ["this might be None @ found?.upper()", "this might be None @ nothing", "this might be None @ found",]
-    );
+    assert_eq!(in_main(program), ["this might be None @ nothing", "this might be None @ found"]);
 }
 
 #[test]

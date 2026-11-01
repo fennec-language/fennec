@@ -19,7 +19,7 @@ struct Holder:
         self.total
 
     def label(self) -> str:
-        self.maybe?.label else "none"
+        self.maybe.label else "none"
 
     def set_inner(mut self, label: str):
         self.maybe = Inner(label=label, note=None)
@@ -52,7 +52,7 @@ def main(stdout: Stdout):
     stdout.print(holder.count, holder.maybe, holder.pair, holder.grid, holder.words, holder.label())
     stdout.print(holder.bump(), holder.bump(), holder.total)
     holder.set_inner("kit")
-    stdout.print(holder.label(), holder.maybe?.note, holder.maybe)
+    stdout.print(holder.label(), holder.maybe.note else "none", holder.maybe)
 
     copy = holder
     holder.pair = (2, "two")
@@ -89,7 +89,7 @@ def main(stdout: Stdout):
     original.count = 77
     original.grid.append([2])
     original.words.append("later")
-    stdout.print(held?.count, held?.grid, original.count, original.grid, kept)
-    stdout.print(held is None, held is not None, held == original, held?.pair)
+    stdout.print(held.count else 0, held.grid else [], original.count, original.grid, kept)
+    stdout.print(held is None, held is not None, held == original, held.pair else (0, ""))
     missing = maybe(original, False)
-    stdout.print(missing is None, missing?.count)
+    stdout.print(missing is None, missing.count else -1)

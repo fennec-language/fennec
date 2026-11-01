@@ -26,9 +26,9 @@ def challenge(players: list[Player], name: str) -> str:
 def main(stdout: Stdout):
     players = [Player(name="Ash", level=7), Player(name="Kit")]
 
-    stdout.print(find(players, "Kit")?.level)
-    stdout.print(find(players, "Vex")?.level)
-    stdout.print(find(players, "Vex")?.level else 0)
+    # A chain ending in `else` stops at the first missing step and gives the default.
+    stdout.print(find(players, "Kit").level else 0)
+    stdout.print(find(players, "Vex").level else 0)
 
     for name in ["Ash", "Kit", "Vex"]:
         match challenge(players, name):

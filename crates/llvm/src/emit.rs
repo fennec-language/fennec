@@ -846,6 +846,10 @@ impl Emit<'_, '_, '_> {
             Kind::Str => self.string_binary(op, (&a, &b))?,
             Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
             Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b)),
+            Kind::Struct(id) => self.compare_structs(op, id, (&a, &b))?,
+            Kind::Boxed(id) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
+                self.compare_boxed(op, id, (&a, &b))?
+            }
             other => {
                 return Err(format!("it uses an operator on {other:?}, which this backend doesn't take yet"));
             }

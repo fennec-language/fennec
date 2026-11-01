@@ -535,6 +535,37 @@ fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()>
 }
 
 #[test]
+fn tuples_and_structs_compare_like_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "compare",
+        r#"struct Point:
+    x: int
+    y: float
+    name: str
+
+def main(stdout: Stdout):
+    a = (1, "b")
+    b = (1, "c")
+    c = (0, "z")
+    stdout.print(a < b, b < a, c < a, a <= a, a == (1, "b"), a != b, (2, 1.5) > (2, 1.25))
+    p = Point(x=1, y=2.0, name="fox")
+    q = Point(x=1, y=2.0, name="fox")
+    stdout.print(p == q, p != Point(x=1, y=2.5, name="fox"))
+    mut items = [(3, "c"), (1, "z"), (1, "a"), (2, "b")]
+    mut best = items[0]
+    for item in items:
+        if item < best:
+            best = item
+    first, second = best
+    stdout.print(first, second)
+"#,
+    )
+}
+
+#[test]
 fn failures_match_the_jit() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
         return Ok(());

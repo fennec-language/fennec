@@ -321,6 +321,162 @@ impl Emit<'_, '_, '_> {
         self.read_into(dest, &held, &at, "")
     }
 
+    /// An operator on two plain structs or tuples at these addresses: `==` field by field, and
+    /// an order by the first field that differs.
+    pub(crate) fn compare_structs(
+        &mut self,
+        op: BinOp,
+        id: u32,
+        (a, b): (&str, &str),
+    ) -> Result<String, String> {
+        if self.layout_of(id)?.cases.is_some() {
+            return Err("it orders an enum, which this backend doesn't take yet".to_owned());
+        }
+        if matches!(op, BinOp::Eq | BinOp::NotEq) {
+            let same = self.same_structs(id, (a, b))?;
+            if op == BinOp::Eq {
+                return Ok(same);
+            }
+            let differ = self.temp();
+            self.line(&format!("{differ} = xor i1 {same}, true"));
+            return Ok(differ);
+        }
+        let ordering = self.struct_order(id, (a, b))?;
+        let cc = match op {
+            BinOp::Lt => "slt",
+            BinOp::LtEq => "sle",
+            BinOp::Gt => "sgt",
+            BinOp::GtEq => "sge",
+            other => {
+                return Err(format!("it uses {other:?} on a struct, which this backend doesn't take yet"));
+            }
+        };
+        let result = self.temp();
+        self.line(&format!("{result} = icmp {cc} i64 {ordering}, 0"));
+        Ok(result)
+    }
+
+    /// The fields of a plain struct, with where they are and how they're held.
+    fn struct_fields(&self, id: u32) -> Result<Vec<(u32, Kind)>, String> {
+        let layout = self.layout_of(id)?;
+        layout
+            .fields
+            .iter()
+            .map(|field| {
+                Kind::from_ty(self.module.layouts, field.ty)
+                    .map(|kind| (field.offset, kind))
+                    .ok_or_else(|| "a field this backend doesn't take yet".to_owned())
+            })
+            .collect()
+    }
+
+    fn same_structs(&mut self, id: u32, (a, b): (&str, &str)) -> Result<String, String> {
+        let mut same = "true".to_owned();
+        for (offset, kind) in self.struct_fields(id)? {
+            let (x_at, y_at) = (self.offset(a, offset), self.offset(b, offset));
+            let equal = match &kind {
+                Kind::Struct(inner) => self.same_structs(*inner, (&x_at, &y_at))?,
+                Kind::Enum(inner) => self.same_enums(BinOp::Eq, *inner, (&x_at, &y_at)),
+                _ => {
+                    let (x, y) = (self.load_field(&kind, &x_at, ""), self.load_field(&kind, &y_at, ""));
+                    match &kind {
+                        Kind::Int | Kind::Bool => {
+                            let equal = self.temp();
+                            let text = if kind == Kind::Bool { "i1" } else { "i64" };
+                            self.line(&format!("{equal} = icmp eq {text} {x}, {y}"));
+                            equal
+                        }
+                        Kind::Float => {
+                            let equal = self.temp();
+                            self.line(&format!("{equal} = fcmp oeq double {x}, {y}"));
+                            equal
+                        }
+                        Kind::Str => self.string_binary(BinOp::Eq, (&x, &y))?,
+                        Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
+                            self.same_blocks(BinOp::Eq, (&x, &y))
+                        }
+                        other => {
+                            return Err(format!(
+                                "it compares a struct holding a {other:?}, which this backend doesn't take yet"
+                            ));
+                        }
+                    }
+                }
+            };
+            let both = self.temp();
+            self.line(&format!("{both} = and i1 {same}, {equal}"));
+            same = both;
+        }
+        Ok(same)
+    }
+
+    /// -1, 0 or 1, by the first field that differs.
+    fn struct_order(&mut self, id: u32, (a, b): (&str, &str)) -> Result<String, String> {
+        let mut ordering = "0".to_owned();
+        for (offset, kind) in self.struct_fields(id)? {
+            let (x_at, y_at) = (self.offset(a, offset), self.offset(b, offset));
+            let this = if let Kind::Struct(inner) = &kind {
+                self.struct_order(*inner, (&x_at, &y_at))?
+            } else if let Kind::Boxed(inner) = &kind {
+                let (x, y) = (self.temp(), self.temp());
+                self.line(&format!("{x} = load ptr, ptr {x_at}"));
+                self.line(&format!("{y} = load ptr, ptr {y_at}"));
+                let (x_fields, y_fields) = (self.offset(&x, FIELDS_OFFSET), self.offset(&y, FIELDS_OFFSET));
+                self.struct_order(*inner, (&x_fields, &y_fields))?
+            } else {
+                {
+                    let (x, y) = (self.load_field(&kind, &x_at, ""), self.load_field(&kind, &y_at, ""));
+                    let (less, more) = (self.temp(), self.temp());
+                    match &kind {
+                        Kind::Int => {
+                            self.line(&format!("{less} = icmp slt i64 {x}, {y}"));
+                            self.line(&format!("{more} = icmp sgt i64 {x}, {y}"));
+                        }
+                        Kind::Bool => {
+                            self.line(&format!("{less} = icmp ult i1 {x}, {y}"));
+                            self.line(&format!("{more} = icmp ugt i1 {x}, {y}"));
+                        }
+                        Kind::Float => {
+                            self.line(&format!("{less} = fcmp olt double {x}, {y}"));
+                            self.line(&format!("{more} = fcmp ogt double {x}, {y}"));
+                        }
+                        Kind::Str => {
+                            let order = self.text_order(&x, &y);
+                            self.line(&format!("{less} = icmp slt i64 {order}, 0"));
+                            self.line(&format!("{more} = icmp sgt i64 {order}, 0"));
+                        }
+                        other => {
+                            return Err(format!(
+                                "it orders a struct holding a {other:?}, which this backend doesn't take yet"
+                            ));
+                        }
+                    }
+                    let (low, order) = (self.temp(), self.temp());
+                    self.line(&format!("{low} = select i1 {less}, i64 -1, i64 0"));
+                    self.line(&format!("{order} = select i1 {more}, i64 1, i64 {low}"));
+                    order
+                }
+            };
+            // The first field that differs decides.
+            let (decided, next) = (self.temp(), self.temp());
+            self.line(&format!("{decided} = icmp ne i64 {ordering}, 0"));
+            self.line(&format!("{next} = select i1 {decided}, i64 {ordering}, i64 {this}"));
+            ordering = next;
+        }
+        Ok(ordering)
+    }
+
+    /// An order on two boxed structs or tuples, by their fields.
+    pub(crate) fn compare_boxed(
+        &mut self,
+        op: BinOp,
+        id: u32,
+        (a, b): (&str, &str),
+    ) -> Result<String, String> {
+        let (a_fields, b_fields) = (self.offset(a, FIELDS_OFFSET), self.offset(b, FIELDS_OFFSET));
+        self.compare_structs(op, id, (&a_fields, &b_fields))
+    }
+
     /// `==` on two plain enums: their words, one by one.
     pub(crate) fn same_enums(&mut self, op: BinOp, id: u32, (a, b): (&str, &str)) -> String {
         let words = self.module.layouts.get(id).map_or(0, |layout| layout.size / 8);

@@ -8,7 +8,7 @@ enum Tile:
 ## How many steps it takes to reach each cell from `start`, going round walls. Cells it
 ## can't reach are -1.
 def distances(map: Grid[Tile], start: (int, int)) -> Grid[int]:
-    mut steps = Grid.filled(map.width, map.height, -1)
+    mut steps = Grid.filled(width=map.width, height=map.height, value=-1)
     steps[start] = 0
     mut waiting = Deque.of([start])
     while waiting.len() > 0:
@@ -21,10 +21,10 @@ def distances(map: Grid[Tile], start: (int, int)) -> Grid[int]:
 
 ## A map drawn with `#` for walls.
 def drawn(rows: list[str]) -> Grid[Tile]:
-    Grid.of([[Tile.Wall if c == "#" else Tile.Floor for c in row] for row in rows])
+    Grid.of([[Tile.Wall if char == "#" else Tile.Floor for char in row] for row in rows])
 
 test "cells are reached by column and row":
-    mut grid = Grid.filled(3, 2, 0)
+    mut grid = Grid.filled(width=3, height=2, value=0)
     assert grid.width == 3 and grid.height == 2 and grid.len() == 6
     grid[(2, 1)] = 5
     grid[(0, 0)] += 1
@@ -40,21 +40,21 @@ test "a position outside the grid has nothing":
     assert grid.contains((0, 0)) and not grid.contains((2, 2))
 
 test "neighbors stay inside the grid":
-    grid = Grid.filled(3, 3, ".")
+    grid = Grid.filled(width=3, height=3, value=".")
     assert grid.neighbors((1, 1)) == [(1, 0), (2, 1), (1, 2), (0, 1)]
     assert grid.neighbors((0, 0)) == [(1, 0), (0, 1)]
     assert grid.neighbors8((0, 0)) == [(1, 0), (1, 1), (0, 1)]
     assert grid.neighbors8((1, 1)).len() == 8
 
 test "positions go row by row":
-    grid = Grid.filled(2, 2, False)
+    grid = Grid.filled(width=2, height=2, value=False)
     assert grid.positions() == [(0, 0), (1, 0), (0, 1), (1, 1)]
-    assert Grid.filled(0, 3, 1).positions() == []
+    assert Grid.filled(width=0, height=3, value=1).positions() == []
     none: list[list[int]] = []
     assert Grid.of(none).len() == 0
 
 test "a copy is independent":
-    mut grid = Grid.filled(2, 2, 0)
+    mut grid = Grid.filled(width=2, height=2, value=0)
     saved = grid
     grid.fill(9)
     grid[(0, 1)] = 3

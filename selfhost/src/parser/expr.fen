@@ -170,11 +170,9 @@ extend Parser:
                 args = self.call_args()?
                 span = expr.span.to(self.expect_punct(")")?)
                 expr = Expr(kind=.Call(expr, args), span=span)
-            elif self.at_punct(".") or (self.at_punct("?") and self.peek_at(1) == .Punct(".")):
-                optional = self.eat_punct("?")
-                self.advance()
+            elif self.eat_punct("."):
                 name = self.name("a name after `.`")?
-                expr = Expr(kind=.Attr(expr, name, optional), span=expr.span.to(self.prev_span()))
+                expr = Expr(kind=.Attr(expr, name, False), span=expr.span.to(self.prev_span()))
             elif self.eat_punct("["):
                 expr = self.index(expr)?
             elif self.eat_punct("?"):

@@ -237,6 +237,18 @@ impl Emit<'_, '_, '_> {
         key: &Operand,
         value: Option<&Operand>,
     ) -> Result<(), String> {
+        self.dict_store_at(place, (key_word, value_word), key, value, None)
+    }
+
+    /// As [`Self::dict_store`], with where the key's entry is when a lookup just found it.
+    pub(crate) fn dict_store_at(
+        &mut self,
+        place: &str,
+        (key_word, value_word): (Word, Word),
+        key: &Operand,
+        value: Option<&Operand>,
+        found: Option<String>,
+    ) -> Result<(), String> {
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let key = self.key_value(key, key_word)?;
         let held = match value {
@@ -252,7 +264,11 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
         self.line(&format!("br i1 {alone}, label %{quick}, label %{slow}"));
         self.start_block(&quick);
-        let entry = self.find(&dict, key_word, &key);
+        // With the dict alone, it's the same block the lookup searched, unchanged since.
+        let entry = match found {
+            Some(entry) => entry,
+            None => self.find(&dict, key_word, &key),
+        };
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
         self.line(&format!("br i1 {missing}, label %{slow}, label %{change}"));
@@ -313,8 +329,17 @@ impl Emit<'_, '_, '_> {
         self.read_into(dest, &value_kind, &value_at, "")
     }
 
+    /// Notes where a lookup found a key's entry, or null, for a store to the same key right
+    /// after.
+    fn remember_entry(&mut self, (dict, key): &(Operand, Operand), entry: &str) {
+        if let Operand::Local(dict) = dict {
+            self.found_entries.push((*dict, key.clone(), entry.to_owned()));
+        }
+    }
+
     /// `dict.get(key)`: the value as an optional, `None` when the key isn't there.
     fn dict_get_optional(&mut self, dest: LocalId, dict: &Operand, key: &Operand) -> Result<(), String> {
+        let looked_up = (dict.clone(), key.clone());
         let (dict, kind) = self.operand(dict)?;
         let Kind::Dict(key_word, value_word) = kind else {
             return Err("`dict.get` on something else".to_owned());
@@ -324,6 +349,7 @@ impl Emit<'_, '_, '_> {
         if matches!(optional, Kind::Maybe(_)) {
             let key = self.key_value(key, key_word)?;
             let entry = self.find(&dict, key_word, &key);
+            self.remember_entry(&looked_up, &entry);
             let missing = self.temp();
             let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
             self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
@@ -346,6 +372,7 @@ impl Emit<'_, '_, '_> {
         let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
         let key = self.key_value(key, key_word)?;
         let entry = self.find(&dict, key_word, &key);
+        self.remember_entry(&looked_up, &entry);
         let missing = self.temp();
         let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
@@ -376,6 +403,7 @@ impl Emit<'_, '_, '_> {
             return self.dict_get_optional(dest, dict, key);
         }
         let [dict, key, default] = args else { return Err("`dict.get` with no default".to_owned()) };
+        let looked_up = (dict.clone(), key.clone());
         let (dict, kind) = self.operand(dict)?;
         let Kind::Dict(key_word, value_word) = kind else {
             return Err("`dict.get` on something else".to_owned());
@@ -383,6 +411,7 @@ impl Emit<'_, '_, '_> {
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let key = self.key_value(key, key_word)?;
         let entry = self.find(&dict, key_word, &key);
+        self.remember_entry(&looked_up, &entry);
         let missing = self.temp();
         let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));

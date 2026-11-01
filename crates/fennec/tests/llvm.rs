@@ -348,6 +348,14 @@ def main(stdout: Stdout):
     mut text = "abc"
     text += "def"
     stdout.print(text, text.len(), text[1:3], "bc" in text, text < "b")
+    zeros = [0 for _ in range(5)]
+    mut flags = [False for _ in range(3)]
+    flags[1] = True
+    mut none = [0 for _ in range(0 - 2)]
+    none.append(7)
+    stdout.print(zeros.len(), zeros[4], flags, none)
+    first = "abc"
+    stdout.print("a" < "b", "ab" < "a", "" < "a", first <= "abc", "é" > "z", "abcdefghij" < "abcdefghik", "b" >= "abc")
     maybe: int? = None
     other: int? = 5
     stdout.print(maybe is None, other is None)

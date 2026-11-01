@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use fennec_check::Type;
 use fennec_ir::facts::{Facts, Range};
-use fennec_ir::{Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
+use fennec_ir::{Block, Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
 use fennec_syntax::{BinOp, UnaryOp};
 
 const FULL: Range = (i64::MIN, i64::MAX);
@@ -46,12 +46,17 @@ pub(crate) struct Analysis {
     /// Locals taking a field of a list's item out to change it, put back through the same place
     /// read again: `root.list[index].field`, as the root, the list's field and the index.
     path_taken: HashMap<usize, (LocalId, String, Operand)>,
+    /// Locals written once, from a field of another: which, and the field.
+    field_of: HashMap<usize, (LocalId, String)>,
     /// Locals standing for a list that a `for` loop goes through while changing only the item
     /// it's on: a copy of the list would say the same, and cost a whole list.
     aliases: HashMap<usize, LocalId>,
     /// A block ending in a jump to a loop that fills a list made in that block: the list, and
     /// how many items the loop adds at most.
     pub(crate) reservations: HashMap<usize, (usize, Operand)>,
+    /// Lists such a loop fills with nothing but zeros, one a turn from a count starting at 0:
+    /// made whole, already zero, with the appends left out.
+    pub(crate) zero_filled: HashSet<usize>,
 }
 
 /// What's known about every function, and which can fail.
@@ -63,11 +68,12 @@ pub(crate) struct Whole<'p> {
     pub(crate) generators: HashMap<&'p str, &'p GeneratorDef>,
 }
 
-/// What a function calls by name, a constant being a call of a function of no arguments.
+/// What a function calls by name, a constant being a call of a function of no arguments, and a
+/// generator the IR knows being a call of its resume function.
 pub(crate) fn callees(function: &Function) -> impl Iterator<Item = &str> {
     function.blocks.iter().flat_map(|block| &block.insts).filter_map(|inst| match &inst.kind {
         InstKind::Call { function, .. } => Some(function.as_str()),
-        InstKind::Constant { name, .. } => Some(name.as_str()),
+        InstKind::Constant { name, .. } | InstKind::Resume { known: Some(name), .. } => Some(name.as_str()),
         _ => None,
     })
 }
@@ -355,15 +361,22 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
         taken: HashSet::new(),
         items_taken: HashMap::new(),
         path_taken: HashMap::new(),
+        field_of: HashMap::new(),
         aliases: HashMap::new(),
         reservations: HashMap::new(),
+        zero_filled: HashSet::new(),
     };
     let grown = count_uses(function, changes, &mut known);
     find_reads_again(function, &mut known);
+    find_borrows(function, &mut known);
+    find_path_takes(function, &mut known);
+    find_aliases(function, &mut known);
     // A copy shares its source, unless the source is never read again, and a block put inside
     // something else is shared by that.
     for inst in function.blocks.iter().flat_map(|block| &block.insts) {
         match &inst.kind {
+            // A copy standing for the list a loop goes through owns nothing.
+            InstKind::Copy { dest, .. } if known.aliases.contains_key(&dest.0) => {}
             InstKind::Copy { value: Operand::Local(from), .. }
             | InstKind::MakeSome { value: Operand::Local(from), .. }
             | InstKind::GetSome { value: Operand::Local(from), .. }
@@ -392,9 +405,6 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
             _ => {}
         }
     }
-    find_borrows(function, &mut known);
-    find_path_takes(function, &mut known);
-    find_aliases(function, &mut known);
     let mut facts = Facts::of(function, changes);
     let stepped: HashSet<usize> = function.counts.iter().map(|count| count.count.0).collect();
     for (block, written) in function.blocks.iter().enumerate() {
@@ -514,6 +524,13 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
 /// that only looks inside it, before anything could change what it came from; and a field
 /// taken out, changed and put back, with nothing able to see it in between.
 fn find_borrows(function: &Function, known: &mut Analysis) {
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        if let InstKind::GetField { dest, object: Operand::Local(from), field } = &inst.kind
+            && known.writes.get(dest.0) == Some(&1)
+        {
+            known.field_of.insert(dest.0, (*from, field.clone()));
+        }
+    }
     for block in &function.blocks {
         // Where a borrowed list came from, for an item taken out of it.
         let mut from_field: HashMap<usize, (LocalId, Vec<String>)> = HashMap::new();
@@ -809,8 +826,58 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
             .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } if dest.0 == list && items.is_empty()));
         if made_here {
             known.reservations.insert(at, (list, limit));
+            if fills_with_zeros(function, block, (header, body), list, known) {
+                known.zero_filled.insert(list);
+            }
         }
     }
+}
+
+/// Whether a loop does nothing but append a zero to `list` each turn, counting up from 0 by 1,
+/// so that it appends exactly as many as its limit says.
+fn fills_with_zeros(
+    function: &Function,
+    before: &Block,
+    (header, body): (&Block, &Block),
+    list: usize,
+    known: &Analysis,
+) -> bool {
+    let Terminator::Branch { cond: Operand::Local(cond), .. } = &header.end else { return false };
+    let count = header.insts.iter().find_map(|inst| match &inst.kind {
+        InstKind::Binary { dest, op: BinOp::Lt, lhs: Operand::Local(count), .. } if dest == cond => {
+            Some(*count)
+        }
+        _ => None,
+    });
+    let Some(count) = count else { return false };
+    if !function.counts.iter().any(|found| found.count == count && !found.down) {
+        return false;
+    }
+    let starts_at_zero = before.insts.iter().rev().find_map(|inst| match &inst.kind {
+        InstKind::Copy { dest, value } if *dest == count => Some(*value == Operand::Int(0)),
+        _ => None,
+    });
+    if starts_at_zero != Some(true) || header.insts.len() != 1 {
+        return false;
+    }
+    let mut appends = 0;
+    for inst in &body.insts {
+        match &inst.kind {
+            InstKind::Builtin { name, args, .. }
+                if name == "list.append"
+                    && args.first() == Some(&Operand::Local(LocalId(list)))
+                    && matches!(args.get(1), Some(Operand::Int(0) | Operand::Bool(false)))
+                    && args.len() == 2 =>
+            {
+                appends += 1;
+            }
+            InstKind::Copy { dest, .. } if known.reads.get(dest.0) == Some(&0) => {}
+            _ => return false,
+        }
+    }
+    // The turn ends by stepping the count and nothing else.
+    let Terminator::Jump(latch) = body.end else { return false };
+    appends == 1 && function.blocks.get(latch.0).is_some_and(|latch| latch.insts.len() == 1)
 }
 
 impl Analysis {
@@ -872,6 +939,11 @@ impl Analysis {
     /// field, and the index.
     pub(crate) fn path_home(&self, local: LocalId) -> Option<&(LocalId, String, Operand)> {
         self.path_taken.get(&local.0)
+    }
+
+    /// The local and field a local was read from, if that's its one write.
+    pub(crate) fn field_of(&self, local: LocalId) -> Option<&(LocalId, String)> {
+        self.field_of.get(&local.0)
     }
 
     pub(crate) fn item_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>)> {

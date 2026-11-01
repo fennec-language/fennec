@@ -12,6 +12,7 @@ publish.workspace = true
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
+mimalloc.workspace = true
 fennec-interp.workspace = true
 
 [lints.rust]

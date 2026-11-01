@@ -429,6 +429,10 @@ impl Expr {
             ExprKind::Unary { op: UnaryOp::Neg, expr } => {
                 matches!(expr.kind, ExprKind::Int(_) | ExprKind::Float(_))
             }
+            // An enum case, like `Mode.fast`, or an empty collection.
+            ExprKind::Attr { object, optional: false, .. } => matches!(object.kind, ExprKind::Name(_)),
+            ExprKind::List(items) => items.is_empty(),
+            ExprKind::Dict(pairs) => pairs.is_empty(),
             _ => false,
         }
     }

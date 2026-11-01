@@ -1,0 +1,5 @@
+def grid(cells=[]) -> int:
+    cells.len()
+
+def main(stdout: Stdout):
+    stdout.print(grid())

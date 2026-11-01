@@ -149,6 +149,12 @@ impl Program {
         self.types.insert(def.name.clone(), TypeInfo { kind, def: def.clone(), prelude });
     }
 
+    /// The type a parameter with no written type takes from its default: an `int`, `float`,
+    /// `str` or `bool` literal, or an enum case like `Mode.fast`.
+    pub(crate) fn default_type(&self, param: &fennec_syntax::Param) -> Option<Type> {
+        literal_type(param.default.as_ref()?, self)
+    }
+
     /// The builtin an imported name at `span` stands for.
     pub(crate) fn imported(&self, name: &str, span: Span) -> Option<&String> {
         let prelude = span.in_prelude().then(|| self.prelude_imports.get(name)).flatten();
@@ -427,4 +433,27 @@ pub(crate) fn written(ty: &TypeExpr) -> String {
         format!("{}[{}]", ty.name, args.join(", "))
     };
     if ty.optional { format!("{base}?") } else { base }
+}
+
+/// The type a literal default gives its parameter, if it's one that gives a type.
+pub(crate) fn literal_type(default: &fennec_syntax::Expr, program: &Program) -> Option<Type> {
+    use fennec_syntax::{ExprKind, UnaryOp};
+    match &default.kind {
+        ExprKind::Int(_) => Some(Type::Int),
+        ExprKind::Float(_) => Some(Type::Float),
+        ExprKind::Str(_) => Some(Type::Str),
+        ExprKind::Bool(_) => Some(Type::Bool),
+        ExprKind::Unary { op: UnaryOp::Neg, expr }
+            if matches!(expr.kind, ExprKind::Int(_) | ExprKind::Float(_)) =>
+        {
+            literal_type(expr, program)
+        }
+        ExprKind::Attr { object, name, optional: false } => {
+            let ExprKind::Name(owner) = &object.kind else { return None };
+            let info = program.type_info(owner)?;
+            let is_case = info.kind == TypeKind::Enum && info.def.cases.iter().any(|case| case.name == *name);
+            is_case.then(|| Type::Named(owner.clone()))
+        }
+        _ => None,
+    }
 }

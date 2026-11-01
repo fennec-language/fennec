@@ -19,7 +19,7 @@ mod structs;
 use std::collections::{HashMap, HashSet};
 
 use fennec_check::{Body, Signatures, Type};
-use fennec_syntax::{BinOp, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, UnaryOp, fuse};
+use fennec_syntax::{Arg, BinOp, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, UnaryOp, fuse};
 
 use crate::{
     Block, BlockId, EnumDef, Function, Inst, InstKind, Local, LocalId, NotLowered, Operand, Program,
@@ -652,6 +652,9 @@ impl<'a> Lowering<'a> {
                 if let Some(type_name) = self.constructs(callee, span) {
                     return self.make(&type_name, args, span);
                 }
+                if let Some(copied) = self.copy_call(expr, callee, args)? {
+                    return Ok(copied);
+                }
                 if matches!(&callee.kind, ExprKind::Name(name) if name == "replace" && self.lookup(name).is_none())
                     && !self.context.functions.contains("replace")
                 {
@@ -679,6 +682,18 @@ impl<'a> Lowering<'a> {
             ExprKind::FStr(parts) => self.format(parts, span),
             other => Err(format!("it uses {}", describe(other))),
         }
+    }
+
+    /// `copy(value)`: values are copies here, so it's the value in a local of its own.
+    fn copy_call(&mut self, expr: &Expr, callee: &Expr, args: &[Arg]) -> Lowered<Option<Operand>> {
+        let (ExprKind::Name(name), [arg]) = (&callee.kind, args) else { return Ok(None) };
+        if name != "copy" || self.lookup(name).is_some() || self.context.functions.contains("copy") {
+            return Ok(None);
+        }
+        let value = self.expr(&arg.value)?;
+        let dest = self.temporary(self.ty(expr)?);
+        self.emit(InstKind::Copy { dest, value }, expr.span);
+        Ok(Some(Operand::Local(dest)))
     }
 
     fn unary(&mut self, op: UnaryOp, inner: &Expr, expr: &Expr) -> Lowered<Operand> {

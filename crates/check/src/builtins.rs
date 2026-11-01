@@ -13,7 +13,7 @@ use crate::{ParamType, Signature};
 
 /// Each builtin, and how many plain arguments it takes (at least, at most). Standard library
 /// functions, like `json.loads`, are in `stdlib`, and exist only once imported.
-const BUILTINS: [(&str, usize, usize); 22] = [
+const BUILTINS: [(&str, usize, usize); 23] = [
     ("Err", 1, 1),
     ("Ok", 0, 1),
     ("all", 1, 1),
@@ -22,6 +22,7 @@ const BUILTINS: [(&str, usize, usize); 22] = [
     ("enumerate", 1, 1),
     ("float", 1, 1),
     ("ignore", 2, 2),
+    ("copy", 1, 1),
     ("int", 1, 1),
     ("list", 1, 1),
     ("max", 1, usize::MAX),
@@ -383,6 +384,7 @@ impl FnCx<'_> {
         let types: Vec<Type> = plain.iter().map(|(ty, _)| ty.clone()).collect();
         let (first, at) = plain.first().cloned().unwrap_or((Type::Unit, span));
         match name {
+            "copy" => first,
             "Ok" => Type::result(first, self.checker.fresh(span, Hole::OkError)),
             "Err" => Type::result(self.checker.fresh(span, Hole::ErrValue), first),
             "range" => {

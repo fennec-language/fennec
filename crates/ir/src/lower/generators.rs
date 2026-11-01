@@ -12,6 +12,7 @@ use fennec_syntax::{BinOp, Expr, ExprKind, FnDef, Span, Stmt, StmtKind};
 
 use super::generics::FunctionInstance;
 use super::lists::Over;
+use super::places::Leaving;
 use super::{Context, Loop, Lowered, Lowering, Tail};
 use crate::costs::{inst_reads, terminator_reads};
 use crate::{Function, GeneratorDef, Inst, InstKind, Local, LocalId, Operand, Terminator, slot};
@@ -21,6 +22,8 @@ pub(super) struct Yield {
     block: crate::BlockId,
     value: Operand,
     next: crate::BlockId,
+    /// What `with` blocks it's inside hold, outermost first, and what closes each.
+    open: Vec<(LocalId, String)>,
 }
 
 /// What a yield function being lowered knows.
@@ -107,8 +110,16 @@ impl<'a> Lowering<'a> {
         let next = self.new_block();
         self.finish(Terminator::Jump(next));
         self.current = next;
+        let open = self
+            .leaving
+            .iter()
+            .filter_map(|entered| match entered {
+                Leaving::With { resource, cleanup } => Some((*resource, cleanup.clone())),
+                Leaving::Item { .. } => None,
+            })
+            .collect();
         if let Some(generating) = &mut self.generating {
-            generating.yields.push(Yield { block, value, next });
+            generating.yields.push(Yield { block, value, next, open });
         }
     }
 
@@ -129,6 +140,8 @@ impl<'a> Lowering<'a> {
         let mut saved: BTreeSet<LocalId> = live_at(body);
         for stop in &generating.yields {
             saved.extend(live_at(stop.next));
+            // What closes it needs what it holds, whatever the rest of the body does.
+            saved.extend(stop.open.iter().map(|(resource, _)| *resource));
         }
         saved.remove(&LocalId(0));
         let slots: HashMap<LocalId, usize> =
@@ -140,10 +153,19 @@ impl<'a> Lowering<'a> {
                 .filter_map(|local| slots.get(&local).map(|slot| (local, *slot)))
                 .collect()
         };
+        let abandon = abandon_function(&name, &generating, &slots, &self.locals, span);
         let mut places = vec![(0, body, saved_at(body))];
         for (at, stop) in generating.yields.iter().enumerate() {
             let pc = i64::try_from(at).map_err(|_| "too many yields")? + 1;
-            self.stop_here(stop, pc, &saved_at(stop.next), span);
+            let mut kept = saved_at(stop.next);
+            for (resource, _) in &stop.open {
+                if let (false, Some(at)) =
+                    (kept.iter().any(|(local, _)| local == resource), slots.get(resource))
+                {
+                    kept.push((*resource, *at));
+                }
+            }
+            self.stop_here(stop, pc, &kept, span);
             places.push((pc, stop.next, saved_at(stop.next)));
         }
         self.finish_returns(span);
@@ -162,9 +184,10 @@ impl<'a> Lowering<'a> {
             item: generating.item,
             slots: types,
             resume: resume_name(&name),
-            abandon: None,
+            abandon: abandon.as_ref().map(|function| function.name.clone()),
             fails,
         });
+        functions.extend(abandon);
         functions.insert(0, maker);
         Ok(functions)
     }
@@ -625,4 +648,61 @@ fn make_block_function(
         blocks: vec![crate::Block { insts, end: Terminator::Return(Some(Operand::Local(result))) }],
         counts: Vec::new(),
     }
+}
+
+/// The function that closes what a generator holds when it's let go partway, if it can hold
+/// anything: it reads where the generator stopped, and closes what's open there, innermost
+/// first. The runtime calls it, then marks the generator as finished.
+fn abandon_function(
+    name: &str,
+    generating: &Generating,
+    slots: &HashMap<LocalId, usize>,
+    body_locals: &[Local],
+    span: Span,
+) -> Option<Function> {
+    if generating.yields.iter().all(|stop| stop.open.is_empty()) {
+        return None;
+    }
+    let this = Operand::Local(LocalId(0));
+    let mut locals = vec![Local { name: None, ty: Type::Iterator(Box::new(generating.item.clone())) }];
+    let mut temporary = |ty: Type| {
+        locals.push(Local { name: None, ty });
+        LocalId(locals.len() - 1)
+    };
+    let pc = temporary(Type::Int);
+    let inst = |kind: InstKind| Inst { kind, span };
+    let mut blocks = vec![crate::Block {
+        insts: vec![inst(InstKind::GetSlot { dest: pc, generator: this.clone(), slot: slot::PC })],
+        end: Terminator::Unreachable,
+    }];
+    let mut current = 0;
+    for (at, stop) in generating.yields.iter().enumerate().filter(|(_, stop)| !stop.open.is_empty()) {
+        let same = temporary(Type::Bool);
+        let stopped = Operand::Int(i64::try_from(at).ok()? + 1);
+        let compare = InstKind::Binary { dest: same, op: BinOp::Eq, lhs: Operand::Local(pc), rhs: stopped };
+        let mut insts = Vec::new();
+        for (resource, cleanup) in stop.open.iter().rev() {
+            let held = temporary(body_locals.get(resource.0)?.ty.clone());
+            let slot = *slots.get(resource)?;
+            insts.push(inst(InstKind::GetSlot { dest: held, generator: this.clone(), slot }));
+            let args = vec![Operand::Local(held)];
+            insts.push(inst(InstKind::Call { dest: None, function: cleanup.clone(), args }));
+        }
+        let (then, next) = (crate::BlockId(blocks.len()), crate::BlockId(blocks.len() + 1));
+        let block = blocks.get_mut(current)?;
+        block.insts.push(inst(compare));
+        block.end = Terminator::Branch { cond: Operand::Local(same), then, otherwise: next };
+        blocks.push(crate::Block { insts, end: Terminator::Return(None) });
+        blocks.push(crate::Block { insts: Vec::new(), end: Terminator::Return(None) });
+        current = next.0;
+    }
+    Some(Function {
+        name: format!("{name}.abandon"),
+        params: 1,
+        mut_params: Vec::new(),
+        returns: Type::Unit,
+        locals,
+        blocks,
+        counts: Vec::new(),
+    })
 }

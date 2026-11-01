@@ -5,6 +5,7 @@ pub(crate) mod calls;
 mod closures;
 mod collections;
 mod constants;
+mod consumers;
 mod defaults;
 mod failure;
 mod generics;
@@ -18,7 +19,7 @@ mod structs;
 use std::collections::{HashMap, HashSet};
 
 use fennec_check::{Body, Signatures, Type};
-use fennec_syntax::{BinOp, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, UnaryOp};
+use fennec_syntax::{BinOp, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, UnaryOp, fuse};
 
 use crate::{
     Block, BlockId, EnumDef, Function, Inst, InstKind, Local, LocalId, NotLowered, Operand, Program,
@@ -69,6 +70,11 @@ pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str
         library: reachable_later.keys().map(String::as_str).collect(),
         generic_types: generic_types(&modules),
         instances: generics::Instances::default(),
+        generators: functions
+            .iter()
+            .filter(|(_, def)| fuse::has_yield(&def.body))
+            .map(|(key, def)| (key.clone(), *def))
+            .collect(),
     };
     let mut program = Program::default();
     for (key, def) in &functions {
@@ -212,6 +218,8 @@ struct Context<'a> {
     generic_types: HashMap<&'a str, &'a fennec_syntax::TypeDef>,
     /// The copies of generics a program uses.
     instances: generics::Instances,
+    /// The yield functions of the module, which a loop over one can take a copy of.
+    generators: HashMap<String, &'a FnDef>,
 }
 
 impl Context<'_> {
@@ -277,6 +285,10 @@ struct Lowering<'a> {
     yielded: Option<LocalId>,
     /// The `for` loops that count.
     counts: Vec<crate::Count>,
+    /// What's making the collections of comprehensions over stages, innermost last.
+    fills: Vec<collections::Fill>,
+    /// The types of the yield functions whose copies are being lowered, innermost last.
+    copied: Vec<(String, &'a Body)>,
 }
 
 impl<'a> Lowering<'a> {
@@ -302,6 +314,8 @@ impl<'a> Lowering<'a> {
             lifted: Vec::new(),
             yielded: None,
             counts: Vec::new(),
+            fills: Vec::new(),
+            copied: Vec::new(),
         }
     }
 
@@ -465,6 +479,9 @@ impl<'a> Lowering<'a> {
     /// An expression statement, with what becomes of its value. Each case of a `match`
     /// passes its own value on the same way.
     fn tail_expr(&mut self, expr: &Expr, tail: Tail) -> Lowered<()> {
+        if collections::is_fill_marker(expr) {
+            return self.fill_marker(expr.span);
+        }
         if let ExprKind::Match { subject, arms } = &expr.kind {
             return self.match_expr(subject, arms, tail);
         }
@@ -488,6 +505,16 @@ impl<'a> Lowering<'a> {
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_place(target, op, value, span);
         };
+        // A name made while fusing a stage is new, and holds what it's first given.
+        let binds_item = target.span == value.span && op.is_none();
+        if binds_item || (name.starts_with('\0') && self.lookup(name).is_none()) {
+            let ty = self.fused_type(value)?;
+            let value = self.expr(value)?;
+            let value = self.coerce(value, &ty, span)?;
+            let dest = self.declare(name, ty);
+            self.emit(InstKind::Copy { dest, value }, span);
+            return Ok(());
+        }
         let value = self.expr(value)?;
         let dest = self.named_target(target, name)?;
         if let Some(op) = op {
@@ -512,13 +539,8 @@ impl<'a> Lowering<'a> {
         if let Some(dest) = self.lookup(name) {
             return Ok(dest);
         }
-        let ty = match self.body.name(target.span, name) {
-            Some(ty) => Some(self.concrete(ty)),
-            // A hidden name, kept for a stage that moved, covers what it was given.
-            None if name.starts_with('\0') => self.type_at(target.span),
-            None => None,
-        }
-        .ok_or_else(|| format!("`{name}` has no type"))?;
+        let ty = self.body.name(target.span, name).ok_or_else(|| format!("`{name}` has no type"))?;
+        let ty = self.concrete(ty);
         let held = self.held(&ty).ok_or_else(|| format!("`{name}` is {ty}"))?;
         Ok(self.declare(name, held))
     }
@@ -634,6 +656,9 @@ impl<'a> Lowering<'a> {
                     && !self.context.functions.contains("replace")
                 {
                     return self.replace(args, span);
+                }
+                if let Some(value) = self.consumer(expr, callee, args)? {
+                    return Ok(value);
                 }
                 let dest = self.call(callee, args, Some(self.ty(expr)?), span)?;
                 dest.map(Operand::Local).ok_or_else(|| "a call kept nothing".to_owned())

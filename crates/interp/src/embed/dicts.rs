@@ -397,14 +397,26 @@ fn unshared(state: &mut State, at: u64) -> Option<u64> {
     u64::try_from(state.heap.insert(copy)).ok()
 }
 
-/// Takes a key out of a dict or set already owned once, giving whether it was there and, for a
-/// dict, its value, whose owner goes to the caller.
-fn take_key(state: &mut State, at: u64, key: u64) -> Option<Option<u64>> {
+/// What taking a key out of a dict or set found.
+enum Taken {
+    /// It was there, with this value, whose owner goes to the caller.
+    Removed(u64),
+    Missing,
+    /// What it was given isn't a dict or set.
+    NotOne,
+}
+
+/// Takes a key out of a dict or set already owned once.
+fn take_key(state: &mut State, at: u64, key: u64) -> Taken {
+    take(state, at, key).unwrap_or(Taken::NotOne)
+}
+
+fn take(state: &mut State, at: u64, key: u64) -> Option<Taken> {
     let block = state.heap.block(at)?;
     let (key_word, _) = kind(state, block)?;
     let hash = hash_key(state, key_word, key);
     let mask = usize::try_from(*block.get(4)?).ok()?;
-    let Probe::Found(entry) = find(state, block, key_word, key, hash) else { return Some(None) };
+    let Probe::Found(entry) = find(state, block, key_word, key, hash) else { return Some(Taken::Missing) };
     let place = DICT_HEADER_WORDS + mask + 1 + entry * ENTRY_WORDS;
     let (held, value) = (*block.get(place + 1)?, *block.get(place + 2)?);
     let block = state.heap.block_mut(at)?;
@@ -413,7 +425,7 @@ fn take_key(state: &mut State, at: u64, key: u64) -> Option<Option<u64>> {
     if key_word.owned() {
         release(state, held);
     }
-    Some(Some(value))
+    Some(Taken::Removed(value))
 }
 
 /// `set.discard(key)`, or `set.remove(key)` when `must`, failing like the interpreter for a
@@ -423,7 +435,7 @@ pub extern "C" fn set_remove(set: i64, key: i64, must: i8, start: i64, end: i64)
         let key = key.cast_unsigned();
         let at = u64::try_from(set).ok().and_then(|at| unshared(state, at)).unwrap_or(0);
         match take_key(state, at, key) {
-            Some(None) if must != 0 => {
+            Taken::Missing if must != 0 => {
                 let key_word = state
                     .heap
                     .block(at)
@@ -433,8 +445,8 @@ pub extern "C" fn set_remove(set: i64, key: i64, must: i8, start: i64, end: i64)
                 let message = format!("{} isn't in the set", crate::format::repr(&value));
                 Err(Diagnostic::new(message, span(start, end)))
             }
-            None => Ok(set),
-            Some(_) => Ok(i64::try_from(at).unwrap_or(0)),
+            Taken::NotOne => Ok(set),
+            Taken::Removed(_) | Taken::Missing => Ok(i64::try_from(at).unwrap_or(0)),
         }
     })
 }
@@ -452,11 +464,11 @@ pub extern "C" fn pop(dict: i64, key: i64, start: i64, end: i64) -> i64 {
         let key = key.cast_unsigned();
         let at = u64::try_from(dict).ok().and_then(|at| unshared(state, at)).unwrap_or(0);
         match take_key(state, at, key) {
-            Some(Some(value)) => {
+            Taken::Removed(value) => {
                 POPPED.set(value);
                 Ok(i64::try_from(at).unwrap_or(0))
             }
-            Some(None) => {
+            Taken::Missing => {
                 let key_word = state
                     .heap
                     .block(at)
@@ -468,7 +480,7 @@ pub extern "C" fn pop(dict: i64, key: i64, start: i64, end: i64) -> i64 {
                     span(start, end),
                 ))
             }
-            None => Ok(dict),
+            Taken::NotOne => Ok(dict),
         }
     })
 }

@@ -1089,6 +1089,8 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "sorted.key"
                     | "list.remove_where"
                     | "result.expect"
+                    | "dict.pop"
+                    | "random.random_int"
                     | "Regex.replace"
                     | "Regex.split"
                     | "Regex.find_all"

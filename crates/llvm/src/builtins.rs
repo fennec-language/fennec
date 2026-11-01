@@ -331,8 +331,11 @@ impl Emit<'_, '_, '_> {
 
     /// `list.pop()`: the last item's owner goes with it.
     fn pop(&mut self, dest: Option<LocalId>, args: &[Operand], span: Span) -> Result<(), String> {
+        if let [Operand::Local(local), at] = args {
+            return self.pop_at(dest, *local, at, span);
+        }
         let [Operand::Local(local)] = args else {
-            return Err("`list.pop` with a place, which this backend doesn't take yet".to_owned());
+            return Err("`list.pop` on a literal, which this backend doesn't take yet".to_owned());
         };
         let Kind::List(item) = self.kind_of(*local)?.clone() else {
             return Err("`pop` on something else".to_owned());
@@ -358,6 +361,53 @@ impl Emit<'_, '_, '_> {
         let value = self.item_value(&list, &held, &last);
         match dest {
             Some(dest) if held.in_memory() => self.assign_memory(dest, &value, ""),
+            Some(dest) => self.assign(dest, &value),
+            None if held.counted() => {
+                self.release(&value);
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// `list.pop(at)`: the item there goes with its owner, and those after it move down.
+    fn pop_at(
+        &mut self,
+        dest: Option<LocalId>,
+        local: LocalId,
+        at: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
+        let Kind::List(item) = self.kind_of(local)?.clone() else {
+            return Err("`pop` on something else".to_owned());
+        };
+        let held = self.item_kind(item)?;
+        let memory = held.memory(self.module.layouts);
+        let list = self.unshared(local);
+        let (index, _) = self.operand(at)?;
+        let position = self.position(&list, &index, span);
+        let value = self.item_value(&list, &held, &position);
+        // A struct in the list is copied out before what's after it moves over it.
+        if let Some(dest) = dest
+            && held.in_memory()
+        {
+            self.assign_memory(dest, &value, "")?;
+        }
+        let length = self.list_length(&list);
+        let (next, last, moved, size) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{next} = add i64 {position}, 1"));
+        self.line(&format!("{last} = add i64 {length}, -1"));
+        self.line(&format!("{moved} = sub i64 {last}, {position}"));
+        let item_size = held.size(self.module.layouts);
+        self.line(&format!("{size} = mul i64 {moved}, {item_size}"));
+        let (to, from) =
+            (self.item_address(&list, &memory, &position), self.item_address(&list, &memory, &next));
+        self.declare("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)");
+        self.line(&format!("call void @llvm.memmove.p0.p0.i64(ptr {to}, ptr {from}, i64 {size}, i1 false)"));
+        let length_at = self.offset(&list, 16);
+        self.line(&format!("store i64 {last}, ptr {length_at}"));
+        match dest {
+            Some(_) if held.in_memory() => Ok(()),
             Some(dest) => self.assign(dest, &value),
             None if held.counted() => {
                 self.release(&value);
@@ -518,6 +568,7 @@ impl Emit<'_, '_, '_> {
             ("list.remove_where", _) => self.remove_where(args, span),
             ("str.chars", [text]) => result(dest).and_then(|dest| self.chars(dest, text)),
             ("dict.get", _) => result(dest).and_then(|dest| self.dict_get(dest, args)),
+            ("dict.pop", [_, _]) => self.dict_pop(dest, args, span),
             ("dict.items", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "items")),
             ("dict.keys", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "keys")),
             ("dict.values", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "values")),

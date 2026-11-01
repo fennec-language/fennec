@@ -1,0 +1,5 @@
+error: this default breaks the `where` rule on `Player.health`
+ --> examples/errors/where_default_breaks.fen:2:14
+  |
+2 |     health = -1 where health >= 0
+  |              ^^

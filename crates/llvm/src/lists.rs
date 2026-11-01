@@ -526,15 +526,20 @@ impl Emit<'_, '_, '_> {
         let kind = self.place_kind(object, path)?;
         if let Kind::Dict(key, value_word) = kind {
             let place = self.place_of(object, path)?;
-            let found = if path.is_empty() {
-                self.found_entries
-                    .iter()
-                    .rev()
-                    .find(|(dict, looked_up, _)| *dict == object && looked_up == index)
-                    .map(|(_, _, entry)| entry.clone())
-            } else {
-                None
+            // A lookup on this dict, or on a local read from this field holding it.
+            let same_dict = |dict: LocalId| match path {
+                [] => dict == object,
+                [field] => {
+                    self.known.field_of(dict).is_some_and(|(from, name)| *from == object && name == field)
+                }
+                _ => false,
             };
+            let found = self
+                .found_entries
+                .iter()
+                .rev()
+                .find(|(dict, looked_up, _)| same_dict(*dict) && looked_up == index)
+                .map(|(_, _, entry)| entry.clone());
             return self.dict_store_at(&place, (key, value_word), index, Some(value), found);
         }
         let item = list_item(&kind)?;

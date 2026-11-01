@@ -46,6 +46,8 @@ pub(crate) struct Analysis {
     /// Locals taking a field of a list's item out to change it, put back through the same place
     /// read again: `root.list[index].field`, as the root, the list's field and the index.
     path_taken: HashMap<usize, (LocalId, String, Operand)>,
+    /// Locals written once, from a field of another: which, and the field.
+    field_of: HashMap<usize, (LocalId, String)>,
     /// Locals standing for a list that a `for` loop goes through while changing only the item
     /// it's on: a copy of the list would say the same, and cost a whole list.
     aliases: HashMap<usize, LocalId>,
@@ -359,6 +361,7 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
         taken: HashSet::new(),
         items_taken: HashMap::new(),
         path_taken: HashMap::new(),
+        field_of: HashMap::new(),
         aliases: HashMap::new(),
         reservations: HashMap::new(),
         zero_filled: HashSet::new(),
@@ -521,6 +524,13 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
 /// that only looks inside it, before anything could change what it came from; and a field
 /// taken out, changed and put back, with nothing able to see it in between.
 fn find_borrows(function: &Function, known: &mut Analysis) {
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        if let InstKind::GetField { dest, object: Operand::Local(from), field } = &inst.kind
+            && known.writes.get(dest.0) == Some(&1)
+        {
+            known.field_of.insert(dest.0, (*from, field.clone()));
+        }
+    }
     for block in &function.blocks {
         // Where a borrowed list came from, for an item taken out of it.
         let mut from_field: HashMap<usize, (LocalId, Vec<String>)> = HashMap::new();
@@ -929,6 +939,11 @@ impl Analysis {
     /// field, and the index.
     pub(crate) fn path_home(&self, local: LocalId) -> Option<&(LocalId, String, Operand)> {
         self.path_taken.get(&local.0)
+    }
+
+    /// The local and field a local was read from, if that's its one write.
+    pub(crate) fn field_of(&self, local: LocalId) -> Option<&(LocalId, String)> {
+        self.field_of.get(&local.0)
     }
 
     pub(crate) fn item_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>)> {

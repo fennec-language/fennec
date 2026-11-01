@@ -511,9 +511,13 @@ impl Emit<'_, '_, '_> {
             for inst in &block.insts {
                 self.forget_entries(&inst.kind);
                 self.inst(&inst.kind, inst.span, at)?;
-                // A store may have grown the dict, moving every entry.
-                if let InstKind::SetIndex { object, .. } = &inst.kind {
-                    self.found_entries.retain(|(dict, _, _)| dict != object);
+                // A store may have grown the dict, moving every entry: any dict, through a path.
+                if let InstKind::SetIndex { object, path, .. } = &inst.kind {
+                    if path.is_empty() {
+                        self.found_entries.retain(|(dict, _, _)| dict != object);
+                    } else {
+                        self.found_entries.clear();
+                    }
                 }
                 self.let_go_after(&inst.kind);
             }

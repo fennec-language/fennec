@@ -15,7 +15,7 @@ type Captures = Vec<(String, LocalId)>;
 impl Lowering<'_> {
     /// The locals an arrow function or nested function reads from here, in the order it
     /// first names them.
-    fn captures(&self, mut names: Vec<String>, own: &[&str]) -> Captures {
+    pub(super) fn captures(&self, mut names: Vec<String>, own: &[&str]) -> Captures {
         let mut found: Captures = Vec::new();
         for name in names.drain(..) {
             if own.contains(&name.as_str()) || found.iter().any(|(seen, _)| *seen == name) {

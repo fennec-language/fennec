@@ -1,0 +1,131 @@
+# `SortedMap` keeps its keys in order, on a B-tree, so finding, adding and removing take
+# time that grows with the log of its size, and its keys come out sorted.
+from std.collections import SortedMap
+from std.random import Random
+
+## A sorted map's keys and values as a plain list, the same as a sorted dict's.
+def sorted_items(table: dict[int, int]) -> list[(int, int)]:
+    [(key, table[key]) for key in sorted(table.keys())]
+
+test "it agrees with a dict, whatever is added and removed" for steps: list[(int, int)]:
+    mut map = SortedMap[int, int]()
+    mut table: dict[int, int] = {}
+    for key, value in steps:
+        # A small range of keys makes the same key come up again.
+        at = key % 50
+        if value % 3 == 0:
+            assert map.remove(at) == table.pop(at) if at in table else map.remove(at) is None
+        else:
+            map[at] = value
+            table[at] = value
+    assert map.items() == sorted_items(table)
+    assert map.len() == table.len()
+
+test "thousands of random changes agree with a dict":
+    mut random = Random(seed=7)
+    mut map = SortedMap[int, int]()
+    mut table: dict[int, int] = {}
+    for step in range(6000):
+        key = random.randint(0, 400)
+        if random.randint(0, 2) == 0:
+            expected = table.pop(key) if key in table else -1
+            assert (map.remove(key) else -1) == expected
+        else:
+            map[key] = step
+            table[key] = step
+        if step % 500 == 0:
+            assert map.items() == sorted_items(table)
+    assert map.items() == sorted_items(table)
+    assert map.len() == table.len()
+
+test "many keys split and merge nodes, and stay in order":
+    mut map = SortedMap[int, str]()
+    for n in range(2000):
+        key = (n * 7919) % 2000
+        map[key] = f"{key}"
+    assert map.len() == 2000
+    assert map.keys() == range(2000)
+    assert map[1234] == "1234"
+    for n in range(0, 2000, 2):
+        assert map.remove(n) == f"{n}"
+    assert map.len() == 1000
+    assert map.keys() == range(1, 2000, 2)
+    for n in range(1, 2000, 2):
+        assert map.remove(n) == f"{n}"
+    assert map.len() == 0
+    assert map.items() == []
+    map[5] = "five"
+    assert map.items() == [(5, "five")]
+
+test "setting a key again replaces its value":
+    mut map = SortedMap[str, int]()
+    map["b"] = 1
+    map.set("a", 2)
+    map["b"] = 3
+    assert map.items() == [("a", 2), ("b", 3)]
+    assert map.len() == 2
+
+test "finding a key, or the nearest ones":
+    mut map = SortedMap[int, str]()
+    assert map.get(1) is None
+    assert map.first() is None and map.last() is None
+    assert map.floor(5) is None and map.ceiling(5) is None
+    for key in [10, 20, 30]:
+        map[key] = f"at {key}"
+    assert map.get(20) == "at 20" and map.get(25) is None
+    assert map.has(10) and not map.has(11)
+    assert map.first() == (10, "at 10") and map.last() == (30, "at 30")
+    assert map.floor(25) == (20, "at 20") and map.floor(20) == (20, "at 20")
+    assert map.floor(5) is None
+    assert map.ceiling(25) == (30, "at 30") and map.ceiling(30) == (30, "at 30")
+    assert map.ceiling(35) is None
+
+test "a range of keys":
+    mut map = SortedMap[int, int]()
+    for key in range(0, 300, 3):
+        map[key] = key * 2
+    assert map.between(10, 20) == [(12, 24), (15, 30), (18, 36)]
+    assert map.between(9, 10) == [(9, 18)]
+    assert map.between(20, 10) == []
+    assert map.between(-5, 3) == [(0, 0)]
+    assert map.between(290, 1000) == [(291, 582), (294, 588), (297, 594)]
+    assert map.between(0, 300).len() == 100
+
+test "values can be None":
+    mut map = SortedMap[int, str?]()
+    map[1] = None
+    assert map.has(1) and map.get(1) is None
+    assert map.remove(1) is None
+    assert map.len() == 0 and not map.has(1)
+    assert map.remove(1) is None
+
+test "a copy is independent":
+    mut map = SortedMap[int, int]()
+    for key in range(100):
+        map[key] = key
+    saved = map
+    for key in range(50):
+        map.remove(key)
+    map[1000] = 1
+    assert saved.len() == 100 and saved.keys() == range(100)
+    assert map.len() == 51 and map.first() == (50, 50)
+    map.clear()
+    assert map.len() == 0 and saved.len() == 100
+
+struct Score:
+    points: int
+    name: str
+
+    def <(self, other: Score) -> bool:
+        (self.points, self.name) < (other.points, other.name)
+
+def main(stdout: Stdout):
+    mut board = SortedMap[Score, str]()
+    board[Score(points=12, name="ash")] = "first try"
+    board[Score(points=7, name="vex")] = "close"
+    board[Score(points=12, name="kit")] = "tied"
+    for score, note in board.items():
+        stdout.print(score.points, score.name, note)
+    stdout.print(board.last(), board.floor(Score(points=10, name="")))
+    for score in board:
+        stdout.print(score.name)

@@ -78,6 +78,8 @@ def main(stdout: Stdout):
     stdout.print(scan([1, 2, 3]), scan([1, 2, 3], limit=1))
 ```
 
+**Planned:** a literal default giving the type, so that's written `limit=8`, and `fennec fix` drops the `: int`. The type stays when the default is `None`, an empty collection or any other expression.
+
 **Planned:** hard errors for the positional calls that are easy to get backwards: a bare `True` or `False`, three or more positional arguments, and neighboring parameters of the same type. The first argument and `self` are exempt.
 
 ## Built-in types
@@ -267,10 +269,16 @@ def main(stdout: Stdout):
     if target is None:
         return
     stdout.print(target.health)              # the compiler knows it's an Enemy here
-
-    other = find_target([])
-    stdout.print(other?.health else 1)       # use 1 if there's no target
 ```
+
+**Planned:** reading through something that might be missing, in a chain that ends in `else`. Today the chain is written with `?.`, which is going away, so `?` only ever means a failure passes up.
+
+```fennec planned
+health = find_target(enemies).health else 1     # 1 if there's no target
+score = scores.get(team).get(player) else 0
+```
+
+Without the `else`, it'll be a compile error whose fix adds one or an `is None` check.
 
 ## Errors
 

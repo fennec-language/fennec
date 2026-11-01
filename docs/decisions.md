@@ -192,17 +192,21 @@ Where a twin's standard library choice measures something Fennec doesn't do, lik
 
 **Parameters can have defaults, and a parameter with a default is passed by name only.**
 ```fennec
-def scan(rows: list[Row], limit: int = 8) -> list[Row]:
+def scan(rows: list[Row], limit=8) -> list[Row]:
     ...
 
 scan(rows)
 scan(rows, limit=100)
 ```
+- A literal default gives the parameter its type, for `int`, `float`, `str` and `bool` literals and for enum cases: `mode=Mode.fast`.
+- The type is written when the default is `None`, an empty `[]` or `{}`, a constant's name or any other expression, or when the type isn't the literal's own: `limit: i32 = 8`.
+- `fennec fix` removes a redundant type, turning `limit: int = 8` into `limit=8`, as it removes `-> None`.
 - A default is a plain value computed at compile time, under the same rule as a module constant. Calling without it costs the same as passing the value.
 - There are no exceptions in `std` either. `d.get(key)` returns an optional, so a fallback is written `d.get(key) else 0`, and `sum` takes `start=`.
 - Required parameters may be positional, within the limits below.
 
-*Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap.
+This replaces `limit: int = 8` as the written form.
+*Why:* Options read at the call, as `parallel(xs, limit=8)` does, and adding one never moves another argument. A default is a value, so no call can change it for the next one, which is Python's shared-mutable-default trap. The literal already states the type, so the signature stays complete, and the declaration reads like the call.
 
 **Some positional arguments are a hard error.** These are bare `True` or `False`, three or more positional arguments, and positional arguments to neighboring parameters of the same type. The first argument and `self` are exempt. The fix names them:
 ```fennec
@@ -236,6 +240,23 @@ if result is Err(NotFound):
 
 This replaces the earlier rules that errors are inferred and `fails` is optional.
 *Why:* A reader sees at a glance how a function can fail and every line where it can leave. Swallowed errors are how reliable-looking programs go wrong.
+
+**`?` only ever passes a failure up, and there's no `?.`.** `rows = load(path)?.rows` passes the failure up, then reads `.rows`.
+This replaces optional chaining with `?.`.
+*Why:* Every `?` marks a place the function can leave, and a reader can see that without knowing any types.
+
+**A value that might be missing is handled where it's read:** with an `is None` check, `match`, or `else` at the end of a chain.
+```fennec
+name = units.get(id).name else "?"
+score = scores.get(team).get(player) else 0
+hp = (units.get(id).hp else 0) + 1
+```
+- Fields, calls and `[]` on an optional are allowed only in a chain that ends in `else`. The chain stops at the first missing or failing step and gives the default.
+- `else` covers only the chain right before it. A larger expression needs brackets.
+- `else` gives a value, so it doesn't cover actions. Calling a method for its effect on something that might be missing needs `if x is not None:`.
+- Without `else`, it's a compile error whose fix adds one or a check.
+
+*Why:* Each spelling says what the writer meant. `?` means this line can leave the function. `else` means missing or failed is fine here, so use this instead. `[]` means it must be there, so a missing value is a bug that stops with an error naming the step and the key.
 
 **`where` rules run on every write to a guarded field,** and on defaults at compile time: `health = 100 where health >= 0`. A rule looks only at its own field. An invariant across several fields goes in a named constructor or a method. Writes after construction aren't checked today, which is a bug.
 *Why:* A rule that only holds at construction promises something it doesn't deliver. Checking one field keeps each write's cost obvious.

@@ -77,4 +77,4 @@ Each benchmark has a target: idiomatic code for the same work in the fastest est
 
 ## What costs nothing
 
-These exist only at compile time and have no runtime cost: `mut`, type inference, `?`, `?.` and `else`, optional types, interfaces, tuples and capabilities.
+These exist only at compile time and have no runtime cost: `mut`, type inference, `?` and `else`, optional types, interfaces, tuples and capabilities.

@@ -188,7 +188,8 @@ fn a_type_the_program_cant_name_gets_no_fix() {
 
         def pool():
             mut ids = IdMap[int]()
-            ids.insert(1)
+            id = ids.insert(1)
+            id
     ";
     let source = dedent(program);
     let module = fennec_syntax::parse(&source).unwrap();
@@ -320,4 +321,24 @@ fn a_bare_return_cant_stand_for_a_value() {
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("but this gives back nothing"), "{problems:?}");
     assert_eq!(problems_as_written("def g(n: int):\n    if n > 0:\n        return\n"), Vec::<String>::new());
+}
+
+#[test]
+fn a_call_that_changes_something_at_the_end_of_a_def_with_no_arrow_is_a_statement() {
+    let text = "struct Board:\n    scores: list[int]\n\n    def add(mut self, score: int) -> int:\n        \
+        self.scores.append(score)\n        self.scores.len()\n\n\
+        def bump(mut items: list[int]) -> int:\n    items.append(1)\n    items.len()\n\n\
+        def record(mut board: Board):\n    board.add(1)\n\n\
+        def grow(mut items: list[int]):\n    bump(mut items)\n";
+    let empty: [&str; 0] = [];
+    assert_eq!(problems_as_written(text), empty);
+}
+
+#[test]
+fn a_value_at_the_end_of_a_def_with_no_arrow_still_needs_its_type() {
+    let text = "def size(items: list[int]):\n    items.len()\n\ndef main(stdout: Stdout):\n    stdout.print(size([1]))\n";
+    assert_eq!(
+        problems_as_written(text),
+        ["`size` gives back an int, so its return type has to be written @ def size(items: list[int])"]
+    );
 }

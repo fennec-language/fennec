@@ -2283,6 +2283,28 @@ def main_total() -> int:
     assert!(used.contains("this generator has already been used"), "{used}");
 }
 
+#[test]
+fn a_field_known_not_to_be_none_can_be_read_and_called() {
+    let source = "\
+struct Inner:
+    count: int
+
+    def next(self) -> int:
+        self.count + 1
+
+struct Outer:
+    inner: Inner?
+
+def read(outer: Outer) -> int:
+    if outer.inner is not None:
+        return outer.inner.next() + outer.inner.count
+    0
+";
+    let text = printed(source, "read").unwrap();
+    assert!(text.contains(".inner"), "{text}");
+    assert!(text.contains("Inner.next"), "{text}");
+}
+
 /// The locals that are given `true` or `false` somewhere in a function.
 fn given_bools(text: &str) -> std::collections::BTreeSet<&str> {
     text.lines()

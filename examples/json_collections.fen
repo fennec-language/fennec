@@ -1,8 +1,19 @@
 # The standard library's collections are written in their natural shape: a `SortedMap` is an
 # object, a `SortedSet` or a `Deque` is an array, and a `Grid` is an array of rows. They read
 # back the same way, so the JSON doesn't change when how they're stored inside does.
+#
+# A dict or a `SortedMap` with text or int keys is an object, an int key written as its digits.
+# With any other key, it's an array of `[key, value]` pairs.
 from std import json
 from std.collections import Deque, Grid, SortedMap, SortedSet
+
+enum Side:
+    North
+    South
+
+struct Spot:
+    x: int
+    y: int
 
 struct Board:
     cells: Grid[int]
@@ -52,6 +63,53 @@ test "a struct holding them round-trips":
     )
     loaded = json.loads[Board](text)?
     assert loaded == board
+
+test "int keys are written as their digits and read back as ints":
+    levels = {1: "intro", 42: "boss"}
+    assert json.dumps(levels) == "{\"1\": \"intro\", \"42\": \"boss\"}"
+    assert json.loads[dict[int, str]](json.dumps(levels))? == levels
+    mut ranks = SortedMap[int, str]()
+    ranks[10] = "ten"
+    ranks[2] = "two"
+    assert json.dumps(ranks) == "{\"2\": \"two\", \"10\": \"ten\"}"
+    loaded = json.loads[SortedMap[int, str]](json.dumps(ranks))?
+    assert loaded.items() == ranks.items()
+
+test "other keys make arrays of pairs":
+    sides = {Side.North: 3, Side.South: 1}
+    assert json.dumps(sides) == "[[\"North\", 3], [\"South\", 1]]"
+    assert json.loads[dict[Side, int]](json.dumps(sides))? == sides
+    spots = {Spot(x=1, y=2): "tree", (Spot(x=0, y=0)): "rock"}
+    assert json.loads[dict[Spot, str]](json.dumps(spots))? == spots
+    corners = {(0, 0): "start", (3, 4): "end"}
+    assert json.dumps(corners) == "[[[0, 0], \"start\"], [[3, 4], \"end\"]]"
+    assert json.loads[dict[(int, int), str]](json.dumps(corners))? == corners
+    mut by_side = SortedMap[(int, int), str]()
+    by_side[(2, 0)] = "b"
+    by_side[(1, 0)] = "a"
+    assert json.dumps(by_side) == "[[[1, 0], \"a\"], [[2, 0], \"b\"]]"
+
+test "a key that isn't what the map holds says where":
+    assert (
+        failure(json.loads[dict[int, str]]("{\"7\": \"a\", \"x\": \"b\"}"))
+        == "the text has the key \"x\", which isn't an int"
+    )
+    assert (
+        failure(
+            json.loads[Board](
+                "{\"cells\": [], \"scores\": {}, \"seen\": [], \"queue\": [], \"levels\": {\"one\": 1}}",
+            ),
+        )
+        != "loaded"
+    )
+    assert (
+        failure(json.loads[dict[Side, int]]("[[\"East\", 1]]"))
+        == "`[0][0]` is \"East\", which isn't a case of `Side`"
+    )
+    assert (
+        failure(json.loads[dict[Side, int]]("[[\"North\"]]"))
+        == "`[0]` should be a [key, value] pair"
+    )
 
 test "rows that don't line up say where":
     assert (

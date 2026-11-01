@@ -11,15 +11,22 @@ use std::rc::Rc;
 use crate::format;
 use crate::value::{IdMap, Value};
 
+/// Whether a dict is written as an object: its keys are text or ints, which are written as
+/// their digits. Otherwise JSON writes it as an array of `[key, value]` pairs.
+fn is_object(pairs: &crate::pairs::Pairs) -> bool {
+    pairs.iter().all(|(key, _)| matches!(key, Value::Str(_) | Value::Int(_)))
+}
+
 /// A dict's or struct's entries, by name; `None` for any other value.
 fn entries(value: &Value, format: &str) -> Result<Option<Vec<(String, Value)>>, String> {
     match value {
+        Value::Dict(pairs) if format == "JSON" && !is_object(pairs) => Ok(None),
         Value::Dict(pairs) => pairs
             .iter()
             .map(|(key, value)| match key {
                 Value::Str(key) => Ok((key.to_string(), value.clone())),
                 Value::Int(n) => Ok((n.to_string(), value.clone())),
-                other => Err(format!("{format} keys have to be strings, not {}", a(other))),
+                other => Err(format!("{format} keys have to be strings or ints, not {}", a(other))),
             })
             .collect::<Result<_, _>>()
             .map(Some),
@@ -110,6 +117,13 @@ fn write_json(out: &mut String, value: &Value, indent: Option<usize>, depth: usi
         Value::Str(text) => out.push_str(&quoted(text)),
         Value::List(items) | Value::Tuple(items) => {
             let entries = items.iter().map(|item| (None, item.clone())).collect();
+            json_container(out, ('[', ']'), entries, indent, depth)?;
+        }
+        Value::Dict(pairs) => {
+            let entries = pairs
+                .iter()
+                .map(|(key, value)| (None, Value::tuple(vec![key.clone(), value.clone()])))
+                .collect();
             json_container(out, ('[', ']'), entries, indent, depth)?;
         }
         Value::Instance(instance) if !instance.is_error && instance.case.is_some() => {

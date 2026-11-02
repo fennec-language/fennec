@@ -216,7 +216,9 @@ impl Checker {
         for interface in self.program.interfaces.values() {
             for def in &interface.methods {
                 let written = def.params.iter().filter_map(|param| param.ty.as_ref()).chain(def.ret.as_ref());
-                let own = ["Self".to_owned()];
+                let own: Vec<String> = std::iter::once("Self".to_owned())
+                    .chain(def.generics.iter().map(|generic| generic.name.clone()))
+                    .collect();
                 problems.extend(written.filter_map(|ty| self.program.resolve_in(ty, &own).err()));
             }
         }
@@ -329,6 +331,7 @@ impl Checker {
         for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
             let (found, named) = crate::alias::check_function(self, &entry.def, self.typed.get(key));
             problems.extend(found);
+            problems.extend(crate::loops::check_function(self, key, &entry.def));
             places.extend(named.into_iter().map(|span| (span.start, span.end)));
         }
         self.diagnostics.extend(problems);

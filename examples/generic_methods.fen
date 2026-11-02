@@ -1,0 +1,27 @@
+# A method can have type parameters of its own, after its type's, and a call can write their
+# types in brackets: `src.next[int]()`. An interface can ask for such a method, and a type fits
+# it with a method that's generic in the same way.
+
+interface Source:
+    def next[T](mut self, fallback: T) -> T
+
+struct Counter:
+    count = 0
+
+    def next[T](mut self, fallback: T) -> T:
+        self.count += 1
+        fallback
+
+struct Pair[A]:
+    first: A
+
+    def with_second[B](self, second: B) -> (A, B):
+        (self.first, second)
+
+def twice[S: Source](mut src: S) -> (int, str):
+    (src.next[int](1), src.next[str]("two"))
+
+def main(stdout: Stdout):
+    mut counter = Counter()
+    stdout.print(twice(mut counter), counter.count)
+    stdout.print(Pair(first=1).with_second[str]("two"), Pair(first="a").with_second(2.5))

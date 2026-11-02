@@ -251,7 +251,8 @@ impl Analysis {
         };
         let location =
             Json::object([("uri", Json::string(uri_of(path))), ("range", text::range(text, from, to))]);
-        vec![Json::object([("location", location), ("message", Json::string("the other one is here"))])]
+        let message = format!("{} is here", diagnostic.also_is());
+        vec![Json::object([("location", location), ("message", Json::string(message))])]
     }
 
     /// The fixes for the diagnostics in `path` that touch bytes `from..to`, as code actions.

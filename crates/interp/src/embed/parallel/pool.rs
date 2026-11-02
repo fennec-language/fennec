@@ -38,6 +38,19 @@ fn builder() -> rayon_core::ThreadPoolBuilder {
     })
 }
 
+/// Whether workers can start runtimes of their own: an executable says how when it starts.
+pub fn has_worker_setup() -> bool {
+    SETUP.get().is_some()
+}
+
+/// Starts this thread's runtime as a worker's, for a thread that isn't one of the pool's, like
+/// a server's I/O worker.
+pub fn run_worker_setup() {
+    if let Some(setup) = SETUP.get() {
+        setup();
+    }
+}
+
 fn pool() -> Option<&'static rayon_core::ThreadPool> {
     POOL.get_or_init(|| builder().build().ok()).as_ref()
 }

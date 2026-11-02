@@ -1,0 +1,42 @@
+# decision: `in` is an operator a type defines,
+
+# `item in value` calls the value's own `def in`, and `not in` is its opposite, so a type of
+# your own reads like a built-in collection. The standard library's collections define it
+# the same way.
+from std.collections import Counter, Deque, SortedMap, SortedSet
+
+struct Inventory:
+    _items: SortedMap[str, int]
+
+    ## An inventory holding `items`, each with how many there are.
+    def of(items: SortedMap[str, int]) -> Inventory:
+        Inventory(_items=items)
+
+    def in(self, name: str) -> bool:
+        name in self._items
+
+## Whole numbers from `low` up to, but not including, `high`.
+struct Span:
+    low: int
+    high: int
+
+    def in(self, n: int) -> bool:
+        self.low <= n < self.high
+
+test "a type's own in":
+    mut stock = SortedMap[str, int]()
+    stock["rope"] = 2
+    bag = Inventory.of(stock)
+    assert "rope" in bag
+    assert "lamp" not in bag
+    assert 3 in Span(low=1, high=5) and 5 not in Span(low=1, high=5)
+
+test "the standard library's collections use it too":
+    assert 2 in Deque.of([1, 2, 3]) and 4 not in Deque.of([1, 2, 3])
+    assert "b" in SortedSet.of(["a", "b"])
+    assert "x" in Counter.of(["x", "x"]) and "y" not in Counter.of(["x"])
+
+def main(stdout: Stdout):
+    hours = Span(low=9, high=17)
+    for hour in [8, 9, 16, 17]:
+        stdout.print(hour, "open" if hour in hours else "closed")

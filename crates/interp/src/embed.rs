@@ -29,6 +29,55 @@ pub mod objects;
 pub mod parallel;
 mod plans;
 pub mod regex;
+#[cfg(any(test, feature = "threads"))]
+pub mod serve;
+
+/// Without the `threads` feature, a program has no tasks, so nothing is served: the calls are
+/// here for the runtime to export, and say so.
+#[cfg(not(any(test, feature = "threads")))]
+pub mod serve {
+    use fennec_syntax::{Diagnostic, Span};
+
+    use super::{State, attempt, with};
+    use crate::stdlib::net::Failure;
+    use crate::value::Value;
+
+    /// What runs each served connection (see the `threads` version).
+    pub type ConnBody = extern "C" fn(env: i64, conn: i64, thread: i64) -> i64;
+
+    pub extern "C" fn net_serve(_server: i64, _body: ConnBody, _env: i64) -> i64 {
+        let message = "serving connections needs a program built with tasks";
+        attempt(|_: &mut State| -> Result<i64, Diagnostic> { Err(Diagnostic::new(message, Span::default())) })
+            .max(1)
+    }
+
+    /// With nothing served, every connection number is closed.
+    fn closed() -> i64 {
+        with(|state| {
+            let error = state.interp.net_error(&Failure::Closed, Span::default()).unwrap_or(Value::None);
+            state.push(error)
+        })
+    }
+
+    pub extern "C" fn conn_read(_conn: i64, _count: i64) -> i64 {
+        closed()
+    }
+
+    pub extern "C" fn conn_read_line(_conn: i64) -> i64 {
+        closed()
+    }
+
+    pub extern "C" fn conn_write(_conn: i64, data: i64) -> i64 {
+        with(|state| drop(state.take(data)));
+        closed()
+    }
+
+    pub extern "C" fn conn_peer(_conn: i64) -> i64 {
+        with(|state| state.push(Value::str("")))
+    }
+
+    pub extern "C" fn conn_close(_conn: i64) {}
+}
 pub mod strings;
 mod table;
 mod tests;
@@ -253,6 +302,22 @@ pub fn fail_with(diagnostic: Diagnostic) {
         }
     });
     FAILED.set(1);
+}
+
+/// Whether this thread's runtime state is borrowed, as it is all through a call into the
+/// runtime or the interpreter: a task mustn't park then, or the next task on the thread would
+/// find it taken.
+#[cfg(any(test, feature = "threads"))]
+fn state_is_borrowed() -> bool {
+    STATE.with(|state| state.try_borrow_mut().is_err())
+}
+
+/// Forgets the failure this thread's runtime holds, once it's been dealt with, as a server
+/// does for a connection's task that failed.
+#[cfg(any(test, feature = "threads"))]
+fn clear_failure() {
+    with(|state| state.failure = None);
+    FAILED.set(0);
 }
 
 fn with<T: Default>(f: impl FnOnce(&mut State) -> T) -> T {

@@ -546,6 +546,11 @@ impl Parser {
                 self.advance();
                 punct.text().to_owned()
             }
+            // `def in(self, item)`, which `item in value` calls.
+            Tok::Kw(Kw::In) => {
+                self.advance();
+                "in".to_owned()
+            }
             Tok::P(Punct::LBracket) if self.peek_at(1) == &Tok::P(Punct::RBracket) => {
                 self.pos += 2;
                 if self.eat_p(Punct::Assign) { "[]=".to_owned() } else { "[]".to_owned() }

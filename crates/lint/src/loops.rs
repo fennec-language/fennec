@@ -112,16 +112,15 @@ fn appended<'s>(body: &'s [Stmt], list: &str) -> Option<(&'s Expr, Option<&'s Ex
 }
 
 /// `mut out = []` then a loop that only appends, or `mut total = 0` then one that only adds.
-fn built_by_loop(declare: &Stmt, loop_stmt: &Stmt, sources: &Sources) -> Option<Lint> {
+fn built_by_loop(declare: &Stmt, loop_stmt: &Stmt, function: &FnDef, sources: &Sources) -> Option<Lint> {
     let (name, value) = declared(declare)?;
     let StmtKind::For { names, is_mut: false, iter, body } = &loop_stmt.kind else { return None };
-    if count(&names_in(body), name) > 1 {
-        return None;
-    }
+    // A sum or a list built by the loop is only added to, never read inside it.
+    let only_built = count(&names_in(body), name) <= 1;
     let names = names.join(", ");
     let iter = moved(sources, iter)?;
     let (rule, built) = match &value.kind {
-        ExprKind::List(items) if items.is_empty() => {
+        ExprKind::List(items) if items.is_empty() && only_built => {
             let (element, cond) = appended(body, name)?;
             let cond = match cond {
                 Some(cond) => format!(" if {}", moved(sources, cond)?),
@@ -129,7 +128,7 @@ fn built_by_loop(declare: &Stmt, loop_stmt: &Stmt, sources: &Sources) -> Option<
             };
             ("manual-comprehension", format!("[{} for {names} in {iter}{cond}]", moved(sources, element)?))
         }
-        ExprKind::Int(0) | ExprKind::Float(0.0) => {
+        ExprKind::Int(0) | ExprKind::Float(0.0) if only_built => {
             let [Stmt { kind: StmtKind::Assign { target, op: Some(BinOp::Add), value: added, .. }, .. }] =
                 body.as_slice()
             else {
@@ -141,12 +140,88 @@ fn built_by_loop(declare: &Stmt, loop_stmt: &Stmt, sources: &Sources) -> Option<
             }
             ("manual-builtin", format!("sum({} for {names} in {iter})", moved(sources, added)?))
         }
+        ExprKind::Bool(false) => (
+            "manual-builtin",
+            format!("any({} for {names} in {iter})", moved(sources, found_when(body, name)?)?),
+        ),
+        ExprKind::Index { object, index } if matches!(index.kind, ExprKind::Int(0)) => {
+            let ExprKind::Name(list) = &object.kind else { return None };
+            ("manual-builtin", extreme(loop_stmt, name, list, function)?)
+        }
         _ => return None,
     };
     let span = Span { start: declare.span.start, end: end_of_stmt(sources, loop_stmt) };
     let fixed = format!("mut {name} = {built}");
     let diagnostic = Diagnostic::new(format!("write this as `{fixed}`"), span).with_fix(span, fixed);
     Some(Lint::new(rule, diagnostic))
+}
+
+/// The condition a loop body sets a flag on and stops at, if that's all it does:
+/// `if cond: flag = True` then `break`. Stopping at the first is what `any` does, so the
+/// condition runs just as many times either way. Without the `break` the loop would run the
+/// condition for every item, and `any` wouldn't.
+fn found_when<'s>(body: &'s [Stmt], flag: &str) -> Option<&'s Expr> {
+    let [Stmt { kind: StmtKind::If { branches, otherwise: None }, .. }] = body else { return None };
+    let [(cond, inner)] = branches.as_slice() else { return None };
+    let [set, Stmt { kind: StmtKind::Break, .. }] = inner.as_slice() else { return None };
+    let StmtKind::Assign { target, op: None, value, declare_mut: false, ty: None } = &set.kind else {
+        return None;
+    };
+    let sets_flag = matches!(&target.kind, ExprKind::Name(target) if target == flag)
+        && matches!(value.kind, ExprKind::Bool(true));
+    // The flag is only set, never read.
+    (sets_flag && count(&names_in(body), flag) == 1).then_some(cond)
+}
+
+/// Whether a name is a parameter written as a list of ints or strings, whose items have one
+/// order that `max` and `min` share with `<` and `>`. Floats don't: `max` puts NaN above
+/// everything, and `>` says nothing is above NaN.
+fn ints_or_strs(name: &str, function: &FnDef) -> bool {
+    let written_as = |ty: &TypeExpr| {
+        ty.name == "list"
+            && !ty.optional
+            && matches!(ty.args.as_slice(), [item] if matches!(item.name.as_str(), "int" | "str") && !item.optional)
+    };
+    function.params.iter().any(|param| param.name == name && param.ty.as_ref().is_some_and(written_as))
+}
+
+/// `max(xs)` or `min(xs)` for a loop that keeps the largest or smallest of `xs` in `best`,
+/// which starts as `xs[0]`: `for x in xs` or `for x in xs[1:]`, with `if x > best: best = x`.
+/// Both fail on an empty list, as `xs[0]` does.
+fn extreme(loop_stmt: &Stmt, best: &str, list: &str, function: &FnDef) -> Option<String> {
+    let StmtKind::For { names, iter, body, .. } = &loop_stmt.kind else { return None };
+    let [item] = names.as_slice() else { return None };
+    let whole = match &iter.kind {
+        ExprKind::Name(name) => name == list,
+        ExprKind::Slice { object, start: Some(start), end: None } => {
+            matches!(&object.kind, ExprKind::Name(name) if name == list)
+                && matches!(start.kind, ExprKind::Int(1))
+        }
+        _ => false,
+    };
+    if !whole || !ints_or_strs(list, function) {
+        return None;
+    }
+    let [Stmt { kind: StmtKind::If { branches, otherwise: None }, .. }] = body.as_slice() else {
+        return None;
+    };
+    let [(cond, inner)] = branches.as_slice() else { return None };
+    let [Stmt { kind: StmtKind::Assign { target, op: None, value, declare_mut: false, ty: None }, .. }] =
+        inner.as_slice()
+    else {
+        return None;
+    };
+    let is = |expr: &Expr, name: &str| matches!(&expr.kind, ExprKind::Name(written) if written == name);
+    if !is(target, best) || !is(value, item) {
+        return None;
+    }
+    let ExprKind::Binary { op, lhs, rhs } = &cond.kind else { return None };
+    let larger = match (op, is(lhs, item) && is(rhs, best), is(lhs, best) && is(rhs, item)) {
+        (BinOp::Gt | BinOp::GtEq, true, _) | (BinOp::Lt | BinOp::LtEq, _, true) => true,
+        (BinOp::Lt | BinOp::LtEq, true, _) | (BinOp::Gt | BinOp::GtEq, _, true) => false,
+        _ => return None,
+    };
+    Some(format!("{}({list})", if larger { "max" } else { "min" }))
 }
 
 /// Whether a value stays the same while a loop runs: a number, or a name or a length of one that
@@ -329,7 +404,7 @@ fn block(stmts: &[Stmt], function: &FnDef, sources: &Sources, found: &mut Vec<Li
         found.extend(needless_enumerate(stmt, sources));
         found.extend(range_len(stmt, function, sources));
         if let Some(next) = stmts.get(at + 1) {
-            found.extend(built_by_loop(stmt, next, sources));
+            found.extend(built_by_loop(stmt, next, function, sources));
             found.extend(counted_while(stmt, next, function, sources).into_iter().flatten());
         }
         for inner in blocks(stmt) {

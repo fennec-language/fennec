@@ -33,6 +33,7 @@ mod messages;
 mod parallel;
 mod pattern;
 mod place;
+mod privacy;
 mod program;
 mod rules;
 mod shared;

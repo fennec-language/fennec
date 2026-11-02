@@ -633,6 +633,7 @@ impl FnCx<'_> {
                 self.error(Diagnostic::new("name the field to change, like `health=50`", arg.value.span));
                 continue;
             };
+            self.private_member(type_name, name, arg.value.span);
             let has_field = self
                 .checker
                 .program

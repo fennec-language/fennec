@@ -219,9 +219,11 @@ fn in_order(state: &mut State, list: u64, keys: &[u64], kind: i64) -> Option<i64
     Some(state.heap.insert(block))
 }
 
-/// A new list owned once of a list of numbers in order, sorted as words. Numbers that sort
-/// the same are the same number, so this needn't be stable, and nothing is gathered.
-fn sorted_numbers(state: &mut State, list: u64, kind: i64) -> Option<i64> {
+/// A new list owned once of a list of ints or bools in order, sorted as words. Ints that sort
+/// the same are the same int, so this needn't be stable, and nothing is gathered. Floats
+/// aren't sorted this way: floats that are equal can differ, like `0.0` and `-0.0`, so only
+/// a stable sort keeps their order from depending on how they're sorted.
+fn sorted_ints(state: &mut State, list: u64) -> Option<i64> {
     let block = state.heap.block(list)?;
     let element = element_in(state, block)?;
     if element.words() != 1 || owns_items(element) {
@@ -233,7 +235,7 @@ fn sorted_numbers(state: &mut State, list: u64, kind: i64) -> Option<i64> {
     let mut block = build(state, at, 1, &numbers, 0);
     block
         .get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + numbers.len())?
-        .sort_unstable_by_key(|word| sort_word(*word, kind));
+        .sort_unstable_by_key(|word| word.cast_signed());
     Some(state.heap.insert(block))
 }
 
@@ -241,8 +243,8 @@ fn sorted_numbers(state: &mut State, list: u64, kind: i64) -> Option<i64> {
 pub extern "C" fn sorted(list: i64, kind: i64) -> i64 {
     with(|state| {
         let list = u64::try_from(list).unwrap_or(0);
-        if kind != SORT_STRINGS
-            && let Some(sorted) = sorted_numbers(state, list, kind)
+        if kind == SORT_INTS
+            && let Some(sorted) = sorted_ints(state, list)
         {
             return sorted;
         }

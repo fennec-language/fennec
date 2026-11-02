@@ -1,6 +1,6 @@
 //! What may copy or allocate, found from lowered programs.
 
-use fennec_ir::{Cost, Finding, costs, lower};
+use fennec_ir::{Cost, Finding, Shared, costs, lower};
 
 fn found(source: &str) -> Result<Vec<Finding>, String> {
     let mut module = fennec_syntax::parse(source).map_err(|problem| problem.message)?;
@@ -34,7 +34,10 @@ fn allocations(source: &str) -> Result<Vec<(String, usize)>, String> {
 fn changing_a_value_something_else_still_reads_may_copy_it() {
     let source = "def f(n: int) -> int:\n    mut xs = [n]\n    snapshot = xs\n    xs.append(1)\n    \
                   snapshot.len() + xs.len()\n";
-    assert_eq!(copies(source).unwrap(), ["may copy `xs`: snapshot still refers to it"]);
+    assert_eq!(
+        copies(source).unwrap(),
+        ["`xs` is copied here, since `snapshot` still holds it and is used again"]
+    );
 }
 
 #[test]
@@ -55,7 +58,7 @@ fn a_value_is_copied_once_then_has_its_own_buffer() {
 fn changing_ones_own_copy_of_a_parameter_copies_what_the_caller_holds() {
     let source =
         "def f(items: list[int]) -> int:\n    mut mine = items\n    mine.append(1)\n    mine.len()\n";
-    assert_eq!(copies(source).unwrap(), ["may copy `mine`: the caller still refers to it"]);
+    assert_eq!(copies(source).unwrap(), ["`mine` is copied here, since the caller still holds it"]);
 }
 
 #[test]
@@ -63,7 +66,10 @@ fn a_field_changed_in_place_is_named_and_a_sibling_isnt_shared() {
     let source = "struct World:\n    positions: list[int]\n    names: list[str]\n\n\
                   def f(mut world: World) -> int:\n    snapshot = world.positions\n    world.names.append(\"a\")\n    \
                   world.positions.append(1)\n    snapshot.len()\n";
-    assert_eq!(copies(source).unwrap(), ["may copy `world.positions`: snapshot still refers to it"]);
+    assert_eq!(
+        copies(source).unwrap(),
+        ["`world.positions` is copied here, since `snapshot` still holds it and is used again"]
+    );
 }
 
 #[test]
@@ -81,6 +87,79 @@ fn a_loop_that_shares_and_changes_each_time_round_is_hot() {
     let copy = found.iter().find(|finding| matches!(finding.cost, Cost::Copy { .. })).unwrap();
     assert_eq!(copy.loops, 1);
     assert!(copy.is_hot());
+    assert!(copy.per_iteration(), "it's shared again each time round");
+}
+
+#[test]
+fn a_copy_of_what_was_shared_before_a_loop_happens_once() {
+    let source = "def f(n: int) -> int:\n    mut xs = [n]\n    snapshot = xs\n    for at in range(n):\n        \
+                  xs[0] = at\n    snapshot.len() + xs.len()\n";
+    let found = found(source).unwrap();
+    let copy = found.iter().find(|finding| matches!(finding.cost, Cost::Copy { .. })).unwrap();
+    assert_eq!(copy.loops, 1);
+    assert!(!copy.per_iteration(), "after the first time round, `xs` has its own buffer");
+}
+
+#[test]
+fn a_copy_in_a_function_a_loop_calls_happens_each_time() {
+    let source = "def bump(n: int) -> int:\n    mut xs = [n]\n    snapshot = xs\n    xs.append(1)\n    \
+                  snapshot.len() + xs.len()\n\n\
+                  def f(n: int) -> int:\n    mut total = 0\n    for at in range(n):\n        total += bump(at)\n    total\n";
+    let found = found(source).unwrap();
+    let copy = found.iter().find(|finding| matches!(finding.cost, Cost::Copy { .. })).unwrap();
+    assert!(copy.per_iteration());
+}
+
+#[test]
+fn what_the_caller_may_hold_isnt_counted_each_time() {
+    // Whether `items` is still held depends on each caller, so it's only a maybe.
+    let source = "def bump(items: list[int]) -> int:\n    mut mine = items\n    mine.append(1)\n    mine.len()\n\n\
+                  def f(n: int) -> int:\n    mut total = 0\n    for at in range(n):\n        total += bump([at])\n    total\n";
+    let found = found(source).unwrap();
+    let copy = found.iter().find(|finding| matches!(finding.cost, Cost::Copy { .. })).unwrap();
+    assert!(copy.is_hot());
+    assert!(!copy.per_iteration());
+}
+
+#[test]
+fn changing_a_container_doesnt_copy_what_it_holds() {
+    let source = "struct Reader:\n    text: str\n    at = 0\n\n    def step(mut self):\n        self.at += 1\n\n\
+                  def f(text: str) -> int:\n    mut reader = Reader(text=text)\n    reader.step()\n    reader.at + text.len()\n";
+    assert_eq!(copies(source).unwrap(), Vec::<String>::new());
+}
+
+#[test]
+fn a_value_put_into_a_container_is_copied_when_changed() {
+    let source = "def f(n: int) -> int:\n    mut xs = [n]\n    mut rows: list[list[int]] = []\n    rows.append(xs)\n    \
+                  xs.append(1)\n    rows.len() + xs.len()\n";
+    assert_eq!(
+        copies(source).unwrap(),
+        ["`xs` is copied here, since it was put into `rows`, which is used again"]
+    );
+    let found = found(source).unwrap();
+    let copy = found.iter().find(|finding| matches!(finding.cost, Cost::Copy { .. })).unwrap();
+    assert!(matches!(&copy.cost, Cost::Copy { why: Shared::PutInto { later: Some(_), .. }, .. }));
+}
+
+#[test]
+fn a_moved_value_is_never_copied() {
+    // `xs` isn't used after `ys` takes it, so `ys` changes the only buffer.
+    let source = "def f(n: int) -> int:\n    xs = [n]\n    mut ys = xs\n    ys.append(1)\n    ys.len()\n";
+    assert_eq!(copies(source).unwrap(), Vec::<String>::new());
+}
+
+#[test]
+fn a_name_for_a_place_changes_the_place_without_copying() {
+    let source = "struct Box:\n    items: list[int]\n\n\
+                  def f(mut box: Box) -> int:\n    mut items = box.items\n    items.append(1)\n    box.items.len()\n";
+    assert_eq!(copies(source).unwrap(), Vec::<String>::new());
+}
+
+#[test]
+fn an_explicit_copy_is_never_reported() {
+    let source = "def f(n: int) -> int:\n    xs = [n]\n    mut mine = copy(xs)\n    mine.append(1)\n    \
+                  mine.len() + xs.len()\n";
+    assert_eq!(copies(source).unwrap(), Vec::<String>::new());
 }
 
 #[test]
@@ -135,4 +214,12 @@ fn every_example_can_be_reported_on() {
             }
         }
     }
+}
+
+#[test]
+fn a_name_for_one_field_holds_only_that_field() {
+    let source = "struct Unit:\n    team: str\n    items: list[int]\n\nstruct World:\n    units: list[Unit]\n\n\
+                  def f(mut world: World) -> int:\n    unit = world.units[0]\n    team = unit.team\n    \
+                  world.units[0].items.pop(0)\n    team.len()\n";
+    assert_eq!(copies(source).unwrap(), Vec::<String>::new());
 }

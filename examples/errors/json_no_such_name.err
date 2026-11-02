@@ -4,4 +4,4 @@ error: `std.json` has nothing called `parse`
 4 |     save = json.parse("{\"level\": 3}")?
   |            ^^^^^^^^^^
   |
-  = help: `std.json` provides loads, dumps, ParseError
+  = help: `std.json` provides loads, dumps, ParseError, JsonNames, JsonExtra

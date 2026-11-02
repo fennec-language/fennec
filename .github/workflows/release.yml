@@ -41,7 +41,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           cargo rustc --release --locked -p fennec-runtime --target "$TARGET" --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
-          cp "$(ls -t target/"$TARGET"/release/deps/fennec_runtime-*.bc | head -1)" "target/$TARGET/release/libfennec_runtime.bc"
+          cp "$(find "target/$TARGET/release/deps" -name 'fennec_runtime-*.bc' -print -quit)" "target/$TARGET/release/libfennec_runtime.bc"
       - name: Package
         shell: bash
         env:

@@ -294,8 +294,9 @@ fn sorted_texts(state: &mut State, list: u64) -> Option<i64> {
         return None;
     }
     let element = element_of(state, block)?;
-    let at = usize::try_from(block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
-        .ok()?;
+    let at =
+        usize::try_from(shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
+            .ok()?;
     let headers = items(block, 3).to_vec();
     let texts = super::text::texts(state, &headers);
     let mut order: Vec<usize> = (0..texts.len()).collect();

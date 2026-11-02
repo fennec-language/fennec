@@ -196,10 +196,15 @@ fn sorted_places(state: &State, keys: &[u64], kind: i64) -> Vec<usize> {
         });
         return order.into_iter().map(|(_, _, place)| place).collect();
     }
-    let mut order: Vec<(i64, usize)> =
-        keys.iter().enumerate().map(|(place, key)| (sort_word(*key, kind), place)).collect();
+    // Each key and its place packed in one number that orders the same way, so sorting
+    // compares one number instead of a pair.
+    let packed = |place: usize, key: &u64| {
+        let key = sort_word(*key, kind).cast_unsigned() ^ (1 << 63);
+        u128::from(key) << 64 | u128::from(u64::try_from(place).unwrap_or(u64::MAX))
+    };
+    let mut order: Vec<u128> = keys.iter().enumerate().map(|(place, key)| packed(place, key)).collect();
     order.sort_unstable();
-    order.into_iter().map(|(_, place)| place).collect()
+    order.into_iter().map(|both| usize::try_from(both & u128::from(u64::MAX)).unwrap_or(0)).collect()
 }
 
 /// A new list owned once of a list's items in the order of `keys`, one for each.
@@ -219,10 +224,35 @@ fn in_order(state: &mut State, list: u64, keys: &[u64], kind: i64) -> Option<i64
     Some(state.heap.insert(block))
 }
 
+/// A new list owned once of a list of ints or bools in order, sorted as words. Ints that sort
+/// the same are the same int, so this needn't be stable, and nothing is gathered. Floats
+/// aren't sorted this way: floats that are equal can differ, like `0.0` and `-0.0`, so only
+/// a stable sort keeps their order from depending on how they're sorted.
+fn sorted_ints(state: &mut State, list: u64) -> Option<i64> {
+    let block = state.heap.block(list)?;
+    let element = element_in(state, block)?;
+    if element.words() != 1 || owns_items(element) {
+        return None;
+    }
+    let at = usize::try_from(block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
+        .ok()?;
+    let numbers = items(block, 1).to_vec();
+    let mut block = build(state, at, 1, &numbers, 0);
+    block
+        .get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + numbers.len())?
+        .sort_unstable_by_key(|word| word.cast_signed());
+    Some(state.heap.insert(block))
+}
+
 /// A new list owned once of a list of numbers' or strings' items in order.
 pub extern "C" fn sorted(list: i64, kind: i64) -> i64 {
     with(|state| {
         let list = u64::try_from(list).unwrap_or(0);
+        if kind == SORT_INTS
+            && let Some(sorted) = sorted_ints(state, list)
+        {
+            return sorted;
+        }
         let keys = state.heap.block(list).map(|block| items(block, 1).to_vec()).unwrap_or_default();
         in_order(state, list, &keys, kind).unwrap_or(0)
     })

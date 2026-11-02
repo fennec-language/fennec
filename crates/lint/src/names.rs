@@ -114,7 +114,9 @@ fn block_names<'m>(stmts: &'m [Stmt], found: &mut Vec<Named<'m>>) {
                 }
             }
             StmtKind::For { names, .. } => found.extend(names.iter().map(|name| local(name, stmt.span))),
-            StmtKind::With { name: Some(name), .. } => found.push(local(name, stmt.span)),
+            StmtKind::With { names, .. } => {
+                found.extend(names.iter().map(|held| local(&held.name, stmt.span)));
+            }
             _ => {}
         }
         for block in blocks(stmt) {

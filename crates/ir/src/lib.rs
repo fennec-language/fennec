@@ -26,7 +26,10 @@
 //! parameter, which is never `mut`, since the handle itself doesn't change. A call to one of
 //! them, or a read of a field, takes the handle's lock first and gives it back after, with
 //! [`InstKind::Lock`] and [`InstKind::Unlock`]. Inside its own methods, `self` is locked
-//! already, so what they do with `self` takes no lock.
+//! already, so what they do with `self` takes no lock. A `with` block locks the handles it
+//! names for the whole block, so what it does through those names takes no lock either: one
+//! handle with `Lock`, and several with [`InstKind::LockAll`], which takes them in an order
+//! every `with` agrees on.
 //!
 //! Generics are gone by now: a generic function or type is copied for each set of types a
 //! program uses it with, so `Deque[T]` for ints is the struct `Deque[int]`, and its `append`
@@ -415,6 +418,17 @@ pub enum InstKind {
     Unlock {
         handle: Operand,
     },
+    /// Takes the locks of several `shared` handles, each to write or to read, for a `with`
+    /// block. They're taken in the order of their cells' addresses, so two blocks that lock the
+    /// same handles never each wait for the other. Handles that reach the same cell take its lock
+    /// once, to write if any of them writes.
+    LockAll {
+        handles: Vec<(Operand, bool)>,
+    },
+    /// Gives back the locks the [`InstKind::LockAll`] of these handles took.
+    UnlockAll {
+        handles: Vec<Operand>,
+    },
 }
 
 /// One piece of an f-string.
@@ -502,7 +516,9 @@ impl InstKind {
             | InstKind::SetIndex { .. }
             | InstKind::SetSlot { .. }
             | InstKind::Lock { .. }
-            | InstKind::Unlock { .. } => None,
+            | InstKind::Unlock { .. }
+            | InstKind::LockAll { .. }
+            | InstKind::UnlockAll { .. } => None,
         }
     }
 }

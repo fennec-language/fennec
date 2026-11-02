@@ -257,10 +257,11 @@ impl Tree {
             StmtKind::Fail(value) => self.node("fail", span, |tree| tree.expr(value)),
             StmtKind::Yield(value) => self.node("yield", span, |tree| tree.expr(value)),
             StmtKind::Assert(value) => self.node("assert", span, |tree| tree.expr(value)),
-            StmtKind::With { value, name, is_mut, body } => {
+            StmtKind::With { value, names, body } => {
                 let mut label = "with".to_owned();
-                if let Some(name) = name {
-                    label = format!("{label} as{} {name}", if *is_mut { " mut" } else { "" });
+                for (at, held) in names.iter().enumerate() {
+                    let mutable = if held.is_mut { "mut " } else { "" };
+                    label = format!("{label}{} {mutable}{}", if at == 0 { " as" } else { "," }, held.name);
                 }
                 self.node(&label, span, |tree| {
                     tree.expr(value);

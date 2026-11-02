@@ -120,7 +120,7 @@ struct Checker:
                         self.check_body(otherwise, generics)
                 case .While(_, body): self.check_body(body, generics)
                 case .For(_, _, _, body): self.check_body(body, generics)
-                case .With(_, _, _, body): self.check_body(body, generics)
+                case .With(_, _, body): self.check_body(body, generics)
                 case .Def(function): self.check_function(function, generics + function.generics)
                 case _: pass
 

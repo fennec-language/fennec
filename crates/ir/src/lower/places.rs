@@ -3,7 +3,7 @@
 //! it back. A backend or the optimizer can do that in place.
 
 use fennec_check::Type;
-use fennec_syntax::{BinOp, Expr, ExprKind, Span};
+use fennec_syntax::{BinOp, Expr, ExprKind, Span, WithName};
 
 use super::{Lowered, Lowering};
 use crate::{InstKind, LocalId, Operand, Terminator};
@@ -28,6 +28,8 @@ pub(super) enum Leaving {
     Item { place: Place, item: LocalId, index: Operand },
     /// A `with` block calls the `del` of what it holds.
     With { resource: LocalId, cleanup: String },
+    /// A `with` block gives back the locks of the `shared` handles it holds.
+    Unlock { handles: Vec<LocalId> },
 }
 
 impl Lowering<'_> {
@@ -309,6 +311,16 @@ impl Lowering<'_> {
                 self.emit(InstKind::Call { dest: None, function: cleanup.clone(), args }, span);
                 Ok(())
             }
+            Leaving::Unlock { handles } => {
+                let kind = match handles.as_slice() {
+                    [handle] => InstKind::Unlock { handle: Operand::Local(*handle) },
+                    _ => {
+                        InstKind::UnlockAll { handles: handles.iter().copied().map(Operand::Local).collect() }
+                    }
+                };
+                self.emit(kind, span);
+                Ok(())
+            }
         }
     }
 
@@ -321,38 +333,65 @@ impl Lowering<'_> {
         Ok(())
     }
 
-    /// `with value as name:`. What it holds is cleaned up when the block is left.
+    /// `with value as name:`, or `with a, b as mut x, mut y:`. What it holds is cleaned up when
+    /// the block is left, the last one first. The `shared` handles it holds are locked for the
+    /// whole block, to write through a `mut` name and otherwise to read.
     pub(super) fn with_block(
         &mut self,
         value: &Expr,
-        name: Option<&str>,
+        names: &[WithName],
         body: &[fennec_syntax::Stmt],
         tail: super::Tail,
         span: Span,
     ) -> Lowered<()> {
-        let held = self.expr(value)?;
-        let ty = crate::type_in(&self.locals, &held).ok_or("a value has no type")?;
-        self.scopes.push(std::collections::HashMap::new());
-        let resource = match name {
-            Some(name) => self.declare(name, ty.clone()),
-            None => self.temporary(ty.clone()),
+        let items: Vec<&Expr> = match &value.kind {
+            ExprKind::Tuple(items) if names.len() > 1 => items.iter().collect(),
+            _ => vec![value],
         };
-        self.emit(InstKind::Copy { dest: resource, value: held }, span);
-        let cleanup = crate::lower::calls::owner_name(&ty).map(|owner| format!("{owner}.del"));
-        let cleanup =
-            cleanup.and_then(|key| self.resolve(&key, &[Some(ty.clone())], None)).map(|(name, _)| name);
-        let entry = cleanup.map(|cleanup| Leaving::With { resource, cleanup });
-        self.leaving.extend(entry.clone());
-        let lowered = self.stmts(body, tail);
-        if entry.is_some() {
-            self.leaving.pop();
+        let held = items.into_iter().map(|item| self.expr(item)).collect::<Lowered<Vec<_>>>()?;
+        self.scopes.push(std::collections::HashMap::new());
+        let mut entries = Vec::new();
+        let mut locks = Vec::new();
+        for (at, held) in held.into_iter().enumerate() {
+            let ty = crate::type_in(&self.locals, &held).ok_or("a value has no type")?;
+            let resource = match names.get(at) {
+                Some(name) => self.declare(&name.name, ty.clone()),
+                None => self.temporary(ty.clone()),
+            };
+            self.emit(InstKind::Copy { dest: resource, value: held }, span);
+            if self.context.is_handle(&ty) {
+                locks.push((resource, names.get(at).is_some_and(|name| name.is_mut)));
+                continue;
+            }
+            let cleanup = crate::lower::calls::owner_name(&ty).map(|owner| format!("{owner}.del"));
+            let cleanup =
+                cleanup.and_then(|key| self.resolve(&key, &[Some(ty.clone())], None)).map(|(name, _)| name);
+            entries.extend(cleanup.map(|cleanup| Leaving::With { resource, cleanup }));
         }
+        let kind = match locks.as_slice() {
+            [] => None,
+            [(handle, write)] => Some(InstKind::Lock { handle: Operand::Local(*handle), write: *write }),
+            _ => Some(InstKind::LockAll {
+                handles: locks.iter().map(|(handle, write)| (Operand::Local(*handle), *write)).collect(),
+            }),
+        };
+        if let Some(kind) = kind {
+            self.emit(kind, span);
+            entries.push(Leaving::Unlock { handles: locks.iter().map(|(handle, _)| *handle).collect() });
+        }
+        let locked = self.locked.len();
+        self.locked.extend(locks.iter().map(|(handle, _)| *handle));
+        let depth = self.leaving.len();
+        self.leaving.extend(entries);
+        let lowered = self.stmts(body, tail);
+        let entries = self.leaving.split_off(depth);
+        self.locked.truncate(locked);
         self.scopes.pop();
         lowered?;
-        if let Some(entry) = &entry
-            && self.is_open()
-        {
-            self.undo(entry, span)?;
+        if self.is_open() {
+            for entry in entries.iter().rev() {
+                self.undo(entry, span)?;
+            }
         }
         Ok(())
     }

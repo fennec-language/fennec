@@ -19,7 +19,7 @@ pub mod visit;
 pub use ast::{
     Annotation, Arg, BinOp, Case, CompKind, Expr, ExprKind, Extension, FStrPart, Field, FnDef, Generic,
     Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr,
-    UnaryOp,
+    UnaryOp, WithName,
 };
 pub use diagnostic::{Diagnostic, Edit, apply_fixes};
 pub use modules::{

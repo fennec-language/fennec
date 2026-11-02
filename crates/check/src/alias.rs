@@ -325,8 +325,8 @@ fn collect_changeable<'a>(stmts: &'a [Stmt], names: &mut HashSet<&'a str>) {
                 StmtKind::For { names: held, is_mut: true, .. } => {
                     names.extend(held.iter().map(String::as_str));
                 }
-                StmtKind::With { name: Some(name), is_mut: true, .. } => {
-                    names.insert(name);
+                StmtKind::With { names: held, .. } => {
+                    names.extend(held.iter().filter(|held| held.is_mut).map(|held| held.name.as_str()));
                 }
                 _ => {}
             }

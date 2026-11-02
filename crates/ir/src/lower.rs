@@ -294,6 +294,8 @@ struct Lowering<'a> {
     loops: Vec<Loop>,
     /// The `for mut` loops being lowered, innermost last.
     leaving: Vec<places::Leaving>,
+    /// The `shared` handles the `with` blocks being lowered hold the locks of.
+    locked: Vec<LocalId>,
     /// The closures' functions lifted out of this one.
     lifted: Vec<Function>,
     /// What a generator being lowered knows.
@@ -326,6 +328,7 @@ impl<'a> Lowering<'a> {
             scopes: vec![HashMap::new()],
             loops: Vec::new(),
             leaving: Vec::new(),
+            locked: Vec::new(),
             lifted: Vec::new(),
             generating: None,
             counts: Vec::new(),
@@ -465,6 +468,9 @@ impl<'a> Lowering<'a> {
     /// Whether a handle's lock is held already: it's `self`, in one of its own methods, which
     /// are only called with the lock taken.
     fn locked_already(&self, handle: &Operand) -> bool {
+        if matches!(handle, Operand::Local(local) if self.locked.contains(local)) {
+            return true;
+        }
         let itself = self.lookup("self").map(Operand::Local);
         itself.as_ref() == Some(handle)
             && type_in(&self.locals, handle).is_some_and(|ty| self.context.is_handle(&ty))
@@ -527,9 +533,7 @@ impl<'a> Lowering<'a> {
             StmtKind::Fail(error) => self.fail(error, stmt.span)?,
             StmtKind::Yield(value) => self.yield_value(value, stmt.span)?,
             StmtKind::Assert(cond) => self.assert(cond, stmt.span)?,
-            StmtKind::With { value, name, is_mut: _, body } => {
-                self.with_block(value, name.as_deref(), body, tail, stmt.span)?;
-            }
+            StmtKind::With { value, names, body } => self.with_block(value, names, body, tail, stmt.span)?,
             StmtKind::Def(def) => self.nested(def, stmt.span)?,
         }
         Ok(())

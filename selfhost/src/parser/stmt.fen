@@ -2,7 +2,7 @@
 
 from span import Span, Diagnostic
 from token import Tok, is_reserved
-from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp, WithName
 from parser import Parser, is_name
 
 extend Parser:
@@ -148,15 +148,38 @@ extend Parser:
 
     def with_stmt(mut self) -> Stmt:
         start = self.advance().span
-        value = self.expr()?
-        mut name = None
-        mut is_mut = False
+        mut value = self.expr()?
+        mut held = 1
+        if self.at_punct(","):
+            mut items = [value]
+            while self.eat_punct(","):
+                items.append(self.expr()?)
+            held = items.len()
+            mut span = self.prev_span()
+            for item in items:
+                span = span.to(item.span)
+            value = Expr(kind=ExprKind.Tuple(items), span=span)
+        mut names = list[WithName]()
         if self.eat_keyword("as"):
-            is_mut = self.eat_keyword("mut")
-            name = self.name("a name after `as`")?
+            while True:
+                at = self.span()
+                is_mut = self.eat_keyword("mut")
+                name = self.name("a name after `as`")?
+                names.append(WithName(name=name, is_mut=is_mut, span=at.to(self.prev_span())))
+                if not self.eat_punct(","):
+                    break
+        if names.len() > 0 and names.len() != held:
+            mut span = value.span
+            for name in names:
+                span = span.to(name.span)
+            fail Diagnostic(
+                message=f"this `with` holds {held} values but names {names.len()}",
+                span=span,
+                help="give one name for each value, in order: `with a, b as x, y:`",
+            )
         self.expect_punct(":")?
         body = self.block()?
-        Stmt(kind=.With(value, name, is_mut, body), span=start.to(self.prev_span()))
+        Stmt(kind=.With(value, names, body), span=start.to(self.prev_span()))
 
 def is_name_expr(expr: Expr) -> bool:
     match expr.kind:

@@ -21,10 +21,12 @@ use crate::packed::Element;
 use crate::value::{Instance, Lent, Value};
 
 mod freeing;
+mod named;
 #[cfg(test)]
 pub(super) use freeing::measure_part;
 pub use freeing::{free, free_text, set_abandon};
 pub(super) use freeing::{release, run_abandons};
+pub(super) use named::packable;
 
 /// Words before a block's fields: its owner count and its shape.
 pub const HEADER_WORDS: usize = 2;
@@ -601,6 +603,13 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     read(state, &shape, &mut words)
 }
 
+/// A list's items, laid out as `words`, as the interpreter holds them, one by one.
+pub(super) fn read_items(state: &State, element: &Element, words: &[u64]) -> Value {
+    let count = words.len() / element.words().max(1);
+    let mut words = words.iter();
+    Value::list((0..count).map(|_| read(state, element, &mut words)).collect())
+}
+
 /// A value of a word, as the interpreter holds it.
 pub(super) fn read_word(state: &State, element: &Element, word: u64) -> Value {
     read(state, element, &mut std::iter::once(&word))
@@ -637,7 +646,7 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
                     }
                     Value::Instance(made)
                 }
-                other => other,
+                other => named::interpreted(name, other),
             }
         }
         Element::Enum { name, cases, words: size } => {
@@ -646,7 +655,7 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             let (case, fields) = cases.get(at).or_else(|| cases.first()).cloned().unwrap_or_default();
             let fields =
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, &mut mine)));
-            let value = instance(name, Some(case), fields.collect());
+            let value = named::interpreted(name, instance(name, Some(case), fields.collect()));
             mine.for_each(drop);
             value
         }
@@ -705,6 +714,11 @@ pub(super) fn write_block(state: &mut State, shape: usize, value: &Value) -> Opt
 }
 
 pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: &mut Vec<u64>) -> Option<()> {
+    match named::write_named(state, element, value, words) {
+        named::Written::Done => return Some(()),
+        named::Written::Failed => return None,
+        named::Written::NotNamed => {}
+    }
     match (element, value) {
         (Element::Int, Value::Int(n)) => words.push(u64::from_ne_bytes(n.to_ne_bytes())),
         (Element::Float, Value::Float(x)) => words.push(x.to_bits()),

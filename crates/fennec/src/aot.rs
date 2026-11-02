@@ -201,10 +201,16 @@ fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
     let object_path = work.join("program.o");
     std::fs::write(&object_path, object).map_err(|err| format!("couldn't write the object file: {err}"))?;
     let started = Instant::now();
+    // The optimization experiment's step 3 has the runtime in the object too: the archive's
+    // copy of std's start-up globals then repeats the object's, and the first is kept.
+    let in_object =
+        std::env::var("FENNEC_EXP_STEP").ok().and_then(|step| step.parse::<u32>().ok()).unwrap_or(0) >= 3
+            && cfg!(target_os = "linux");
     let linked = Command::new("cc")
         .arg(&object_path)
         .arg(&runtime)
         .args(SYSTEM_LIBRARIES)
+        .args(if in_object { vec!["-Wl,--allow-multiple-definition"] } else { Vec::new() })
         .arg("-o")
         .arg(output)
         .output()

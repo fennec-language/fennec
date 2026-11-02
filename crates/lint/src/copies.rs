@@ -103,6 +103,7 @@ fn shared(value: &Expr) -> Vec<String> {
         ret: None,
         arrow: None,
         body: vec![Stmt { kind: StmtKind::Expr(value.clone()), span: value.span }],
+        annotations: Vec::new(),
         span: value.span,
     };
     fennec_syntax::visit::in_function(&mut walked, &mut |expr| {

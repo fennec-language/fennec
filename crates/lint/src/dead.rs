@@ -119,6 +119,7 @@ fn reads(body: &[Stmt]) -> HashMap<String, i64> {
         ret: None,
         arrow: None,
         body: body.to_vec(),
+        annotations: Vec::new(),
         span: Span::default(),
     };
     fennec_syntax::visit::in_function(&mut walked, &mut |expr| {
@@ -234,6 +235,7 @@ fn changed_directly(body: &[Stmt]) -> HashSet<String> {
         ret: None,
         arrow: None,
         body: body.to_vec(),
+        annotations: Vec::new(),
         span: Span::default(),
     };
     fennec_syntax::visit::in_function(&mut walked, &mut |expr| {

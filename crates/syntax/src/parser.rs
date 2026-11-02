@@ -190,6 +190,14 @@ impl Parser {
     }
 
     fn item(&mut self) -> Result<Item, Diagnostic> {
+        let annotations = self.annotations()?;
+        if let Some(first) = annotations.first() {
+            self.eat_pub();
+            if !self.at_kw(Kw::Def) {
+                return Err(Diagnostic::new("an annotation goes above a field or a `def`", first.span));
+            }
+            return Ok(Item::Function(FnDef { annotations, ..self.def()? }));
+        }
         // `pub`, `export` and `noalloc` are accepted. Inside a kit everything is visible, and
         // allocation checks come later.
         self.eat_pub();
@@ -258,14 +266,17 @@ impl Parser {
             if !is_enum || matches!(self.peek_at(1), Tok::Kw(Kw::Def)) {
                 self.eat_pub();
             }
+            let annotations = if is_enum { Vec::new() } else { self.annotations()? };
+            if !annotations.is_empty() {
+                self.eat_pub();
+            }
             if self.at_kw(Kw::Def) {
-                def.methods.push(self.def()?);
-            } else if self.eat_kw(Kw::Pass) {
+                def.methods.push(FnDef { annotations, ..self.def()? });
+            } else if annotations.is_empty() && self.eat_kw(Kw::Pass) {
                 self.end_line()?;
             } else if is_enum {
                 def.cases.push(self.case()?);
             } else {
-                let annotations = self.annotations()?;
                 let field = self.field(true)?;
                 def.fields.push(Field { annotations, ..field });
                 self.end_line()?;
@@ -274,7 +285,8 @@ impl Parser {
         Ok(def)
     }
 
-    /// The annotations above a field, each on its own line: `@skip`, `@serialize(name="uid")`.
+    /// The annotations above a field or a `def`, each on its own line: `@skip`,
+    /// `@serialize(name="uid")`, `@intrinsic`.
     fn annotations(&mut self) -> Result<Vec<crate::ast::Annotation>, Diagnostic> {
         let mut found = Vec::new();
         while self.at_p(Punct::At) {
@@ -289,11 +301,6 @@ impl Parser {
             };
             let span = start.to(self.prev_span());
             self.end_line()?;
-            if self.at_kw(Kw::Def) {
-                return Err(Diagnostic::new("an annotation goes above a field", span).with_help(
-                    "annotations are data on fields, like `@skip` or `@serialize(name=\"uid\")`",
-                ));
-            }
             found.push(crate::ast::Annotation { name, args, span });
         }
         Ok(found)
@@ -474,8 +481,19 @@ impl Parser {
         Ok(generics)
     }
 
+    /// `def name(params) -> ret:` and its body, or the signature alone, which only std's
+    /// `@intrinsic` functions may be.
     pub(crate) fn def(&mut self) -> Result<FnDef, Diagnostic> {
         let mut function = self.signature()?;
+        let bodiless = match self.peek() {
+            Tok::Newline => self.peek_at(1) != &Tok::Indent,
+            Tok::Eof | Tok::Dedent => true,
+            _ => false,
+        };
+        if bodiless {
+            self.end_line()?;
+            return Ok(function);
+        }
         self.expect_p(Punct::Colon)?;
         function.body = self.block()?;
         Ok(function)
@@ -527,7 +545,16 @@ impl Parser {
         self.expect_p(Punct::RParen)?;
         let arrow = self.eat_p(Punct::Arrow).then(|| self.prev_span());
         let ret = if arrow.is_some() { Some(self.type_expr()?) } else { None };
-        Ok(FnDef { name, generics, params, ret, arrow, body: Vec::new(), span: start.to(self.prev_span()) })
+        Ok(FnDef {
+            name,
+            generics,
+            params,
+            ret,
+            arrow,
+            body: Vec::new(),
+            annotations: Vec::new(),
+            span: start.to(self.prev_span()),
+        })
     }
 
     fn param(&mut self) -> Result<Param, Diagnostic> {

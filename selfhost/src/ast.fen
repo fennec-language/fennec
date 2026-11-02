@@ -28,7 +28,10 @@ struct FnDef:
     ret: TypeExpr?
     ## Where the `->` is, when there is one.
     arrow: Span?
+    ## Empty only for a `def` written without one, which std's `@intrinsic` functions are.
     body: list[Stmt]
+    ## What's written above it, like `@intrinsic`.
+    annotations = list[Annotation]()
     span: Span
 
 ## A type parameter, with the interfaces its types have to fit: `T`, or `T: Shape & Eq`.

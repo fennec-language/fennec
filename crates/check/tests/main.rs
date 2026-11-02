@@ -7,6 +7,7 @@ mod cases;
 mod constants;
 mod errors;
 mod generics;
+mod intrinsics;
 mod keys;
 mod leading_dot;
 mod library;

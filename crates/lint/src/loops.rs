@@ -22,6 +22,7 @@ fn names_in(stmts: &[Stmt]) -> HashMap<String, usize> {
         ret: None,
         arrow: None,
         body: stmts.to_vec(),
+        annotations: Vec::new(),
         span: Span::default(),
     };
     fennec_syntax::visit::in_function(&mut walked, &mut |expr| {
@@ -233,6 +234,7 @@ fn indexes(stmts: &[Stmt], list: &str, index: &str) -> Vec<Span> {
         ret: None,
         arrow: None,
         body: stmts.to_vec(),
+        annotations: Vec::new(),
         span: Span::default(),
     };
     fennec_syntax::visit::in_function(&mut walked, &mut |expr| {

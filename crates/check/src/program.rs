@@ -115,6 +115,13 @@ impl Program {
     }
 
     fn add_import(&mut self, import: &Import) {
+        if import.module == ["std", "intrinsics"] && !import.span.in_prelude() {
+            self.problems.push(
+                Diagnostic::new("`std.intrinsics` is for the standard library", import.span)
+                    .with_help("use the std types built on it, like `int`, `float` and `Buffer`"),
+            );
+            return;
+        }
         let imported = match fennec_syntax::std_import(import) {
             Ok(imported) => imported,
             Err(problem) => {

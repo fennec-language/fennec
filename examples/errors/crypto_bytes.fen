@@ -1,0 +1,4 @@
+from std.crypto import sha256
+
+def main(stdout: Stdout):
+    stdout.print(sha256(42))

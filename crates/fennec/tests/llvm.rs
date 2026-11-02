@@ -133,7 +133,7 @@ def main(stdout: Stdout):
     stdout.print(c[-1], c[-3], [i * i for i in range(4)][2])
     mut h = [1, 2]
     for _ in range(3):
-        k = h
+        k = copy(h)
         h.append(k.len())
         stdout.print(k.len(), h.len())
 ",
@@ -744,6 +744,40 @@ def main(stdout: Stdout):
     stdout.print(wide.randint(-9223372036854775807, 9223372036854775807))
     stdout.print(dice.randint(3, 1))
 "#,
+    )
+}
+
+#[test]
+fn a_method_checks_self_once_and_still_copies_a_shared_one() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "self_once",
+        r"struct Counter:
+    n: int
+    log: list[int]
+
+    def bump(mut self):
+        self.n += 1
+        self.log.append(self.n)
+        self.n += 1
+
+    def keep(mut self, mut into: list[Counter]):
+        self.n += 10
+        into.append(self)
+        self.n += 10
+
+def main(stdout: Stdout):
+    mut a = Counter(n=0, log=[])
+    b = a
+    a.bump()
+    a.bump()
+    stdout.print(a.n, b.n, a.log, b.log)
+    mut kept: list[Counter] = []
+    a.keep(mut kept)
+    stdout.print(a.n, kept[0].n)
+",
     )
 }
 

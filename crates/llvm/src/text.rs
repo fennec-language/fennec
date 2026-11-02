@@ -300,34 +300,75 @@ impl Emit<'_, '_, '_> {
         Ok(temp)
     }
 
+    /// An f-string: every piece worked out first, then one block with room for them all, the
+    /// pieces copied in.
     pub(crate) fn format(&mut self, dest: LocalId, parts: &[FormatPart], span: Span) -> Result<(), String> {
-        let mut built: Option<String> = None;
+        let mut pieces = Vec::with_capacity(parts.len());
         for part in parts {
-            let (piece, owned) = match part {
+            pieces.push(match part {
                 FormatPart::Text(text) => (self.literal(text), false),
                 FormatPart::Value { value, spec } => (self.piece(value, spec.as_deref(), span)?, true),
-            };
-            built = Some(match built {
-                None if owned => piece,
-                None => {
-                    self.retain(&piece);
-                    piece
-                }
-                Some(so_far) => {
-                    let joined = self.append_text(&so_far, &piece);
-                    if owned {
-                        self.release(&piece);
-                    }
-                    joined
-                }
             });
         }
-        let value = if let Some(value) = built {
-            value
-        } else {
-            let empty = self.literal("");
-            self.retain(&empty);
-            empty
+        let value = match pieces.as_slice() {
+            [] => {
+                let empty = self.literal("");
+                self.retain(&empty);
+                empty
+            }
+            [(only, owned)] => {
+                if !owned {
+                    self.retain(only);
+                }
+                only.clone()
+            }
+            _ => {
+                let header = HEADER_ACCESS;
+                let mut bytes = "0".to_owned();
+                let mut chars = "0".to_owned();
+                let mut sizes = Vec::with_capacity(pieces.len());
+                for (piece, _) in &pieces {
+                    let (bytes_at, chars_at) = (
+                        self.offset(piece, TEXT_BYTES.unsigned_abs()),
+                        self.offset(piece, TEXT_CHARS.unsigned_abs()),
+                    );
+                    let (size, count, more_bytes, more_chars) =
+                        (self.temp(), self.temp(), self.temp(), self.temp());
+                    self.line(&format!("{size} = load i64, ptr {bytes_at}{header}"));
+                    self.line(&format!("{count} = load i64, ptr {chars_at}{header}"));
+                    self.line(&format!("{more_bytes} = add i64 {bytes}, {size}"));
+                    self.line(&format!("{more_chars} = add i64 {chars}, {count}"));
+                    sizes.push(size);
+                    bytes = more_bytes;
+                    chars = more_chars;
+                }
+                self.declare("declare ptr @fennec_str_with_room(i64) nounwind");
+                self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+                let made = self.temp();
+                self.line(&format!("{made} = call ptr @fennec_str_with_room(i64 {bytes})"));
+                let start = self.offset(&made, TEXT.unsigned_abs());
+                let mut at = "0".to_owned();
+                for ((piece, owned), size) in pieces.iter().zip(&sizes) {
+                    let (to, from, after) =
+                        (self.temp(), self.offset(piece, TEXT.unsigned_abs()), self.temp());
+                    self.line(&format!("{to} = getelementptr inbounds i8, ptr {start}, i64 {at}"));
+                    self.line(&format!(
+                        "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {from}, i64 {size}, i1 false)"
+                    ));
+                    self.line(&format!("{after} = add i64 {at}, {size}"));
+                    at = after;
+                    if *owned {
+                        self.release(piece);
+                    }
+                }
+                let (bytes_at, chars_at) = (
+                    self.offset(&made, TEXT_BYTES.unsigned_abs()),
+                    self.offset(&made, TEXT_CHARS.unsigned_abs()),
+                );
+                self.line(&format!("store i64 {bytes}, ptr {bytes_at}{header}"));
+                self.line(&format!("store i64 {chars}, ptr {chars_at}{header}"));
+                made
+            }
         };
         self.assign(dest, &value)
     }
@@ -606,13 +647,35 @@ impl Emit<'_, '_, '_> {
             }
             "str" => self.text_of_value(dest.ok_or("no result")?, first.ok_or("no argument")?),
             "str.code" => {
+                // One byte of ASCII is its own code; anything else goes to the runtime, which
+                // also fails as the interpreter does for a string that isn't one character.
                 let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let bytes_at = self.offset(&text, TEXT_BYTES.unsigned_abs());
+                let (bytes, one) = (self.temp(), self.temp());
+                self.line(&format!("{bytes} = load i64, ptr {bytes_at}{LENGTH_ACCESS}"));
+                self.line(&format!("{one} = icmp eq i64 {bytes}, 1"));
+                let (quick, slow, joined) = (self.label("byte"), self.label("code"), self.label("coded"));
+                self.line(&format!("br i1 {one}, label %{quick}, label %{slow}, !prof !8"));
+                self.start_block(&quick);
+                let start = self.offset(&text, TEXT.unsigned_abs());
+                let (byte, wide) = (self.temp(), self.temp());
+                self.line(&format!("{byte} = load i8, ptr {start}"));
+                self.line(&format!("{wide} = zext i8 {byte} to i64"));
+                self.line(&format!("br label %{joined}"));
+                self.start_block(&slow);
                 self.declare("declare i64 @fennec_str_code(ptr, i64, i64) nounwind");
                 let (from, to) = (i64::from(span.start), i64::from(span.end));
-                let temp = self.temp();
-                self.line(&format!("{temp} = call i64 @fennec_str_code(ptr {text}, i64 {from}, i64 {to})"));
+                let counted = self.temp();
+                self.line(&format!(
+                    "{counted} = call i64 @fennec_str_code(ptr {text}, i64 {from}, i64 {to})"
+                ));
                 self.leave_if_failed();
-                self.assign(dest.ok_or("no result")?, &temp)
+                let slow_end = self.current.clone();
+                self.line(&format!("br label %{joined}"));
+                self.start_block(&joined);
+                let code = self.temp();
+                self.line(&format!("{code} = phi i64 [ {wide}, %{quick} ], [ {counted}, %{slow_end} ]"));
+                self.assign(dest.ok_or("no result")?, &code)
             }
             "str.contains" => {
                 let (text, _) = self.operand(first.ok_or("no argument")?)?;

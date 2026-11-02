@@ -618,7 +618,7 @@ fn make_block_function(
     let mut locals: Vec<Local> = params
         .iter()
         .filter_map(|param| resume_locals.get(param.0))
-        .map(|local| Local { name: local.name.clone(), ty: local.ty.clone() })
+        .map(|local| Local { name: local.name.clone(), ty: local.ty.clone(), copied: local.copied })
         .collect();
     let args: Vec<(usize, Operand)> = params
         .iter()
@@ -630,13 +630,13 @@ fn make_block_function(
         other => other.clone(),
     };
     let made = LocalId(locals.len());
-    locals.push(Local { name: None, ty: item });
+    locals.push(Local { name: None, ty: item, copied: false });
     let mut insts =
         vec![Inst { kind: InstKind::MakeGenerator { dest: made, generator: name.to_owned(), args }, span }];
     let mut result = made;
     if matches!(returns, Type::Result(..)) {
         result = LocalId(locals.len());
-        locals.push(Local { name: None, ty: returns.clone() });
+        locals.push(Local { name: None, ty: returns.clone(), copied: false });
         insts.push(Inst { kind: InstKind::MakeOk { dest: result, value: Some(Operand::Local(made)) }, span });
     }
     Function {
@@ -664,9 +664,10 @@ fn abandon_function(
         return None;
     }
     let this = Operand::Local(LocalId(0));
-    let mut locals = vec![Local { name: None, ty: Type::Iterator(Box::new(generating.item.clone())) }];
+    let mut locals =
+        vec![Local { copied: false, name: None, ty: Type::Iterator(Box::new(generating.item.clone())) }];
     let mut temporary = |ty: Type| {
-        locals.push(Local { name: None, ty });
+        locals.push(Local { name: None, ty, copied: false });
         LocalId(locals.len() - 1)
     };
     let pc = temporary(Type::Int);

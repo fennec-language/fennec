@@ -8,6 +8,12 @@ use crate::{BlockId, Function, InstKind, Program};
 /// path to the jump goes through, along with the blocks that can reach that jump without going
 /// through that block.
 pub(super) fn depths(function: &Function) -> Vec<usize> {
+    let loops = bodies(function);
+    (0..function.blocks.len()).map(|at| loops.values().filter(|body| body.contains(&at)).count()).collect()
+}
+
+/// Each loop of a function, by the block it jumps back to, with the blocks in it.
+pub(super) fn bodies(function: &Function) -> HashMap<usize, HashSet<usize>> {
     let count = function.blocks.len();
     let successors: Vec<Vec<usize>> = function
         .blocks
@@ -37,7 +43,7 @@ pub(super) fn depths(function: &Function) -> Vec<usize> {
             }
         }
     }
-    (0..count).map(|at| loops.values().filter(|body| body.contains(&at)).count()).collect()
+    loops
 }
 
 /// The blocks that every path from the first block to each block goes through.

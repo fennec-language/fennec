@@ -375,7 +375,7 @@ impl<'a> Lowering<'a> {
 
     fn declare(&mut self, name: &str, ty: Type) -> LocalId {
         let id = LocalId(self.locals.len());
-        self.locals.push(Local { name: Some(name.to_owned()), ty });
+        self.locals.push(Local { name: Some(name.to_owned()), ty, copied: false });
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.to_owned(), id);
         }
@@ -387,7 +387,7 @@ impl<'a> Lowering<'a> {
     }
 
     fn temporary(&mut self, ty: Type) -> LocalId {
-        self.locals.push(Local { name: None, ty });
+        self.locals.push(Local { name: None, ty, copied: false });
         LocalId(self.locals.len() - 1)
     }
 
@@ -709,6 +709,9 @@ impl<'a> Lowering<'a> {
         }
         let value = self.expr(&arg.value)?;
         let dest = self.temporary(self.ty(expr)?);
+        if let Some(local) = self.locals.get_mut(dest.0) {
+            local.copied = true;
+        }
         self.emit(InstKind::Copy { dest, value }, expr.span);
         Ok(Some(Operand::Local(dest)))
     }

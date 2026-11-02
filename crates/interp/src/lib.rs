@@ -19,6 +19,7 @@ mod formats;
 mod generators;
 mod inputs;
 mod interp;
+mod intrinsics;
 mod limits;
 mod matching;
 mod methods;

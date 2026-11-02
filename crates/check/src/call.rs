@@ -19,6 +19,8 @@ use crate::types::{Type, a};
 struct MethodCall<'a> {
     object: &'a Expr,
     method: &'a str,
+    /// The types written in brackets for the method's own type parameters.
+    types: &'a [Type],
     args: &'a [Arg],
     span: Span,
 }
@@ -59,7 +61,7 @@ impl FnCx<'_> {
                         self.ignore_args(args);
                         Type::Unknown
                     }
-                    None => self.method_call(object, name, (*optional, callee.span), args, span),
+                    None => self.method_call(object, name, (*optional, callee.span), (&[], args), span),
                 };
             }
             ExprKind::Variant(name) => return self.construct_variant(None, name, args, span),
@@ -92,6 +94,9 @@ impl FnCx<'_> {
                 }
                 if let Some(builtin) = self.loads(object) {
                     return self.typed_loads(&builtin, index, args, span);
+                }
+                if let Some(returns) = self.typed_method_call(object, index, args, span) {
+                    return returns;
                 }
             }
             ExprKind::Name(name) if self.lookup(name).is_none() => {
@@ -327,7 +332,7 @@ impl FnCx<'_> {
         object: &Expr,
         method: &str,
         (optional, step): (bool, Span),
-        args: &[Arg],
+        (types, args): (&[Type], &[Arg]),
         span: Span,
     ) -> Type {
         if let Some(type_name) = self.as_type_name(object) {
@@ -335,11 +340,11 @@ impl FnCx<'_> {
         }
         let ty = self.expr(object);
         let optional = optional || self.chained_step(&ty, step);
-        self.method_on(&MethodCall { object, method, args, span }, &ty, optional)
+        self.method_on(&MethodCall { object, method, types, args, span }, &ty, optional)
     }
 
     fn method_on(&mut self, call: &MethodCall<'_>, ty: &Type, optional: bool) -> Type {
-        let MethodCall { object, method, args, span } = *call;
+        let MethodCall { object, method, args, span, .. } = *call;
         match ty {
             Type::None if optional => {
                 self.ignore_args(args);
@@ -386,7 +391,7 @@ impl FnCx<'_> {
     /// A method called on a value of a type parameter, which has the methods of its
     /// interfaces and no others.
     fn interface_call(&mut self, call: &MethodCall<'_>, name: &str) -> Type {
-        let MethodCall { object, method, args, span } = *call;
+        let MethodCall { object, method, types, args, span } = *call;
         let owner = Type::Param(name.to_owned());
         let Some((_, def)) = self.bound_method(name, method) else {
             let help = match self.bounds_of(name).as_slice() {
@@ -398,13 +403,51 @@ impl FnCx<'_> {
             let message = no_method(&owner, method, span).message;
             return self.unusable(Diagnostic::new(message, span).with_help(help), args);
         };
-        let signature = self.interface_method(&def, &owner);
+        if !self.takes_types(method, def.generics.len(), types, span) {
+            self.ignore_args(args);
+            return Type::Unknown;
+        }
+        let signature = self.interface_method_with(&def, &owner, types, span);
         if signature.params.first().is_some_and(|param| param.is_mut) {
             let what = format!("`{method}` changes its value, so call it on something held in a mut name");
             self.mut_place(object, &what);
         }
         self.bind_args(method, signature.params.get(1..).unwrap_or_default(), args, span);
         signature.returns
+    }
+
+    /// `src.field[int](0)`: a method, with types for its own type parameters.
+    fn typed_method_call(&mut self, method: &Expr, index: &Expr, args: &[Arg], span: Span) -> Option<Type> {
+        let ExprKind::Attr { object: receiver, name, optional } = &method.kind else { return None };
+        if self.module_member(receiver, name, method.span).is_some() || self.as_type_name(receiver).is_some()
+        {
+            return None;
+        }
+        let types = self.types_in(index);
+        Some(self.method_call(receiver, name, (*optional, method.span), (&types, args), span))
+    }
+
+    /// Whether a method call writes no more types in brackets than the method has type
+    /// parameters of its own, reporting it when it writes more.
+    fn takes_types(&mut self, method: &str, own: usize, types: &[Type], span: Span) -> bool {
+        if types.len() <= own {
+            return true;
+        }
+        let takes = match own {
+            0 => "no types in brackets".to_owned(),
+            1 => "1 type in brackets".to_owned(),
+            several => format!("{several} types in brackets"),
+        };
+        let help = if own == 0 {
+            format!("remove the brackets: `{method}` has no type parameters of its own")
+        } else {
+            "write its type parameters' types in order, or leave them out to work them out".to_owned()
+        };
+        self.error(
+            Diagnostic::new(format!("`{method}` takes {takes}, but this gives {}", types.len()), span)
+                .with_help(help),
+        );
+        false
     }
 
     /// Reports why a value can't be used, still checking the arguments.
@@ -428,7 +471,7 @@ impl FnCx<'_> {
     /// Calls a method on a value of type `receiver`. A `mut self` method needs its value in
     /// a mut place.
     fn call_method(&mut self, call: &MethodCall<'_>, receiver: &Type, method_key: (&str, bool)) -> Type {
-        let MethodCall { object, method, args, span } = *call;
+        let MethodCall { object, method, types, args, span } = *call;
         let (key, takes_self) = method_key;
         self.locks_again(object, receiver, &format!("calling `{method}`"));
         if let Some(owner) = receiver.type_name() {
@@ -438,7 +481,12 @@ impl FnCx<'_> {
             self.ignore_args(args);
             return Type::Unknown;
         }
-        let Some(signature) = self.method_signature(receiver, key) else {
+        let own = self.checker.program.functions.get(key).map_or(0, |entry| entry.def.generics.len());
+        if !self.takes_types(method, own, types, span) {
+            self.ignore_args(args);
+            return Type::Unknown;
+        }
+        let Some(signature) = self.method_signature_with(receiver, key, types, span) else {
             self.ignore_args(args);
             return Type::Unknown;
         };

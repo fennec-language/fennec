@@ -164,6 +164,8 @@ pub(crate) enum Punct {
     Pipe,
     Caret,
     Tilde,
+    /// `@`, before an annotation.
+    At,
     ShiftLeft,
     ShiftRight,
     Plus,
@@ -242,6 +244,7 @@ impl Punct {
             Punct::Pipe => "|",
             Punct::Caret => "^",
             Punct::Tilde => "~",
+            Punct::At => "@",
             _ => "?",
         }
     }
@@ -262,6 +265,7 @@ impl Punct {
             '|' => Punct::Pipe,
             '^' => Punct::Caret,
             '~' => Punct::Tilde,
+            '@' => Punct::At,
             '+' => Punct::Plus,
             '-' => Punct::Minus,
             '*' => Punct::Star,

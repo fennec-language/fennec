@@ -9,8 +9,8 @@ struct Unit:
     target: Id[Unit]? = None
 
 struct World:
-    units: IdMap[Unit] = IdMap[Unit]()
-    selected: list[Id[Unit]] = []
+    units = IdMap[Unit]()
+    selected = list[Id[Unit]]()
 
 def failure[T](found: Result[T, ParseError]) -> str:
     match found:

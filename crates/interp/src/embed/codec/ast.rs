@@ -2,8 +2,9 @@
 //! the variant, then its fields.
 
 use fennec_syntax::{
-    Arg, BinOp, Case, CompKind, Expr, ExprKind, Extension, FStrPart, Field, FnDef, Generic, Import,
-    Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp,
+    Annotation, Arg, BinOp, Case, CompKind, Expr, ExprKind, Extension, FStrPart, Field, FnDef, Generic,
+    Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr,
+    UnaryOp,
 };
 
 use super::{Decode, Encode, Reader, Writer};
@@ -31,7 +32,8 @@ fields!(Generic { name, bounds, span });
 fields!(Param { name, ty, is_mut, is_self, default, span });
 fields!(TypeExpr { name, args, optional, span });
 fields!(TypeDef { name, generics, fields, cases, methods, span });
-fields!(Field { name, ty, default, rule, span });
+fields!(Field { name, ty, default, rule, annotations, span });
+fields!(Annotation { name, args, span });
 fields!(Case { name, fields, span });
 fields!(Interface { name, methods, span });
 fields!(Extension { name, generics, methods, span });

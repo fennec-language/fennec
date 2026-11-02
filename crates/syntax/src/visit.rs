@@ -50,6 +50,38 @@ pub fn in_stmts(body: &mut [Stmt], change: &mut dyn FnMut(&mut Expr)) {
     stmts(body, change);
 }
 
+/// Writes out the type of each field whose default makes a type with its type arguments, like
+/// `IdMap[Unit]()` or `list[str]()`, for what reads a field's type from what's written.
+pub fn type_fields_from_defaults(module: &mut Module) {
+    for item in &mut module.items {
+        let (Item::Struct(def) | Item::Error(def)) = item else { continue };
+        for field in def.fields.iter_mut().filter(|field| field.ty.is_none()) {
+            let Some(default) = &field.default else { continue };
+            if let ExprKind::Call { callee, .. } = &default.kind
+                && matches!(callee.kind, ExprKind::Index { .. })
+            {
+                field.ty = callee.as_type();
+            }
+        }
+    }
+}
+
+/// Makes `list[str]()`, `dict[str, int]()` or `set[int]()` the empty `[]`, `{}` or `set()`, whose
+/// type the checker has already worked out.
+pub fn empty_collection(made: &mut Expr) {
+    let ExprKind::Call { callee, .. } = &made.kind else { return };
+    let ExprKind::Index { object, .. } = &callee.kind else { return };
+    let ExprKind::Name(name) = &object.kind else { return };
+    made.kind = match name.as_str() {
+        "list" => ExprKind::List(Vec::new()),
+        "dict" => ExprKind::Dict(Vec::new()),
+        _ => ExprKind::Call {
+            callee: Box::new(Expr { kind: ExprKind::Name("set".to_owned()), span: object.span }),
+            args: Vec::new(),
+        },
+    };
+}
+
 /// Makes `a != b` into `not (a == b)`, for a type whose `def ==` decides both.
 pub fn not_of_equals(compare: &mut Expr) {
     let ExprKind::Binary { op: op @ BinOp::NotEq, .. } = &mut compare.kind else { return };

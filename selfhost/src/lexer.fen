@@ -41,7 +41,7 @@ struct Lexer:
     offsets: list[int]
     base: int
     pos = 0
-    tokens: list[Token] = []
+    tokens = list[Token]()
     indents = [0]
     ## How many brackets are open; line breaks inside brackets don't end a statement.
     depth = 0
@@ -216,7 +216,7 @@ struct Lexer:
             self.pos += 2
             self.push(.Punct(pair), start)
             return
-        if c not in "()[]{},:.?+-*/%=<>&|^~":
+        if c not in "()[]{},:.?+-*/%=<>&|^~@":
             span = Span(start=self.offset(start), end=self.offset(start) + utf8_width(c))
             fail Diagnostic(message=f"unexpected character `{c}`", span=span)
         if c in "([{":

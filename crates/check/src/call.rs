@@ -56,6 +56,9 @@ impl FnCx<'_> {
             }
             ExprKind::Variant(name) => return self.construct_variant(None, name, args, span),
             ExprKind::Index { object, index } => {
+                if self.names_a_collection(object) {
+                    return self.empty_collection(callee, args, span);
+                }
                 if let Some(type_name) = self.as_type_name(object) {
                     if self.checker.program.type_info(type_name).is_some() {
                         let types = self.types_in(index);
@@ -599,6 +602,36 @@ impl FnCx<'_> {
     }
 
     /// `IdMap[Enemy]()` and `SoaList[Particle]()`.
+    /// Whether an expression is `list`, `dict` or `set`, the built-in collections.
+    fn names_a_collection(&self, object: &Expr) -> bool {
+        matches!(&object.kind, ExprKind::Name(name) if matches!(name.as_str(), "list" | "dict" | "set") && self.lookup(name).is_none())
+    }
+
+    /// `list[str]()`, `dict[str, int]()` or `set[int]()`: an empty collection that says its type.
+    /// It's written in as `[]`, `{}` or `set()`, with the type known.
+    fn empty_collection(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
+        let Some(written) = callee.as_type() else {
+            self.error(Diagnostic::new("write the types it holds as names, like `list[str]()`", callee.span));
+            return Type::Unknown;
+        };
+        if !args.is_empty() {
+            let message =
+                format!("`{}()` makes an empty one, so it takes nothing", crate::program::written(&written));
+            self.error(
+                Diagnostic::new(message, span)
+                    .with_help("fill it in afterwards, or write the items in `[...]`"),
+            );
+            self.ignore_args(args);
+            return Type::Unknown;
+        }
+        let ty = self.resolve(&written);
+        if !ty.is_known() {
+            return ty;
+        }
+        self.checker.empty_collections.insert((span.start, span.end));
+        ty
+    }
+
     fn construct_builtin(&mut self, type_name: &str, item: Option<&Expr>, args: &[Arg], span: Span) -> Type {
         let has_item = item.is_some();
         let item = match item.map(|item| (item.as_type(), item.span)) {

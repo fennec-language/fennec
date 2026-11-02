@@ -193,7 +193,7 @@ fn generic_functions_call_each_other() {
 fn generic_types_fill_in_their_parameters() {
     let program = "
         struct Stack[T]:
-            items: list[T] = []
+            items = list[T]()
 
             def push(mut self, item: T):
                 self.items.append(item)
@@ -204,7 +204,7 @@ fn generic_types_fill_in_their_parameters() {
                 self.items[-1]
 
         struct Ranking[T: Ordered]:
-            best: list[T] = []
+            best = list[T]()
 
         def main(stdout: Stdout):
             mut names = Stack[str]()
@@ -225,7 +225,7 @@ fn generic_types_fill_in_their_parameters() {
         ]
     );
     let program =
-        "struct Stack[T]:\n    items: list[T] = []\n\ndef main(stdout: Stdout):\n    empty = Stack()\n";
+        "struct Stack[T]:\n    items = list[T]()\n\ndef main(stdout: Stdout):\n    empty = Stack()\n";
     assert_eq!(problems(program), ["can't tell what `T` is in this call @ Stack()"]);
 }
 
@@ -233,7 +233,7 @@ fn generic_types_fill_in_their_parameters() {
 fn generic_types_need_their_types_written() {
     let program = "
         struct Stack[T]:
-            items: list[T] = []
+            items = list[T]()
 
         def f(a: Stack, b: Stack[int, str], c: Stack[int]):
             pass

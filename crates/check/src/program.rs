@@ -457,6 +457,10 @@ pub(crate) fn literal_type(default: &fennec_syntax::Expr, program: &Program) -> 
         {
             literal_type(expr, program)
         }
+        // `Packed[int]()`: a type made with its type arguments is that type.
+        ExprKind::Call { callee, .. } if matches!(callee.kind, ExprKind::Index { .. }) => {
+            program.resolve_in(&callee.as_type()?, &[]).ok()
+        }
         ExprKind::Attr { object, name, optional: false } => {
             let ExprKind::Name(owner) = &object.kind else { return None };
             let info = program.type_info(owner)?;
@@ -465,4 +469,46 @@ pub(crate) fn literal_type(default: &fennec_syntax::Expr, program: &Program) -> 
         }
         _ => None,
     }
+}
+
+/// What's wrong with how a field's or a parameter's written type and default go together:
+/// writing the type its default already gives, or an empty `[]` or `{}` where the default has to
+/// say its type, like `list[str]()`. `name_end` is where the name ends, for the fix.
+pub(crate) fn default_problem(
+    program: &Program,
+    (name, name_end): (&str, u32),
+    (ty, resolved): (&TypeExpr, &Type),
+    default: &fennec_syntax::Expr,
+) -> Option<Diagnostic> {
+    use fennec_syntax::ExprKind;
+    // A type written from its default when it was checked, for what reads types from fields,
+    // sits inside the default.
+    if ty.span.start >= default.span.start {
+        return None;
+    }
+    let between = Span { start: name_end, end: default.span.start };
+    let empty = match &default.kind {
+        ExprKind::List(items) => items.is_empty(),
+        ExprKind::Dict(pairs) => pairs.is_empty(),
+        _ => false,
+    };
+    if empty {
+        let made = format!("{}()", written(ty));
+        let message = format!("`{name}`'s default is written as `{made}`");
+        let help = format!("write `{name} = {made}`, which says its type");
+        let whole = Span { start: name_end, end: default.span.end };
+        return Some(
+            Diagnostic::new(message, default.span).with_help(help).with_fix(whole, format!(" = {made}")),
+        );
+    }
+    let given = literal_type(default, program)?;
+    if given != *resolved {
+        return None;
+    }
+    let message = format!("`{name}` takes its type from its default, so `: {}` isn't needed", written(ty));
+    Some(
+        Diagnostic::new(message, ty.span)
+            .with_help(format!("remove the type, so it reads `{name} = ` and its default"))
+            .with_fix(between, " = "),
+    )
 }

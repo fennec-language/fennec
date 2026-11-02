@@ -80,7 +80,7 @@ def dump_tree(source: str) -> str:
 ## The syntax tree as indented text: one node per line, its children two spaces deeper, and
 ## its span at the end as `@start..end`.
 struct Tree:
-    lines: list[str] = []
+    lines = list[str]()
     ## Two spaces for each level of nesting.
     indent = ""
 
@@ -206,6 +206,11 @@ struct Tree:
 
     def write_field(mut self, field: Field):
         self.open(f"field {field.name}", field.span)
+        for annotation in field.annotations:
+            self.open(f"annotation {annotation.name}", annotation.span)
+            for arg in annotation.args:
+                self.write_arg(arg)
+            self.close()
         ty = field.ty
         if ty is not None:
             self.write_type_expr(ty)

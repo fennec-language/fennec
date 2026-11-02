@@ -2,7 +2,7 @@
 
 struct Point:
     x: int
-    y: float = 0.5
+    y = 0.5
 
 struct Shape:
     at: Point

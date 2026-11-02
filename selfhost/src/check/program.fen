@@ -23,10 +23,10 @@ struct FnEntry:
     owner: str?
     prelude: bool
     ## The type parameters of the functions a nested function is defined in.
-    inherited: list[Generic] = []
+    inherited = list[Generic]()
     ## For a method from an extension of a generic type, the type's parameters as the
     ## extension names them.
-    extension: list[Generic] = []
+    extension = list[Generic]()
 
 ## How deeply type aliases may refer to each other, which also stops an alias naming itself.
 def alias_depth() -> int:
@@ -65,16 +65,16 @@ def built_in_types() -> list[str]:
 ## Every declaration in a program, keyed the way the signature table is: `name` for a
 ## function, `Type.name` for a method.
 struct Program:
-    types: dict[str, TypeInfo] = {}
-    functions: dict[str, FnEntry] = {}
-    tests: list[TestDef] = []
-    interfaces: dict[str, Interface] = {}
+    types = dict[str, TypeInfo]()
+    functions = dict[str, FnEntry]()
+    tests = list[TestDef]()
+    interfaces = dict[str, Interface]()
     ## Imported standard library modules, by the name they're used under: `json` after
     ## `from std import json`, `std.json` after `import std.json`.
-    modules: list[str] = []
-    aliases: dict[str, TypeExpr] = {}
+    modules = list[str]()
+    aliases = dict[str, TypeExpr]()
     ## Problems found while adding declarations, like methods that can't be added.
-    problems: list[Diagnostic] = []
+    problems = list[Diagnostic]()
 
     def add(mut self, module: Module, prelude: bool):
         for item in module.items:

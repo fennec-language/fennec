@@ -1,0 +1,16 @@
+# A field can carry annotations, data that code reading the type uses. `@skip` leaves a field
+# out when a value is saved, and `@serialize(name=...)` gives it another name there. Neither
+# changes the field itself. A field may be named by any word, keywords included.
+struct Account:
+    @serialize(name="uid")
+    id: int
+    type: str
+    tags = list[str]()
+    @skip
+    cache = dict[str, int]()
+
+def main(stdout: Stdout):
+    mut account = Account(id=7, type="admin")
+    account.tags.append("new")
+    account.cache["seen"] = 1
+    stdout.print(account.type, account.tags, account.cache)

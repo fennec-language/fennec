@@ -342,6 +342,7 @@ impl<'p> Module<'_, 'p> {
             alone_slots: HashSet::new(),
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
+            at: (usize::MAX, usize::MAX),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -389,6 +390,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Items taken out of a list to change: the list's local and field path, and the step to
     /// the item.
     pub(crate) taken_items: HashMap<usize, (LocalId, Vec<String>, String)>,
+    /// The instruction being written: its block, and its place in it.
+    at: (usize, usize),
 }
 
 pub(crate) fn float_text(value: f64) -> String {
@@ -578,7 +581,8 @@ impl Emit<'_, '_, '_> {
                 }
                 _ => Vec::new(),
             };
-            for inst in &block.insts {
+            for (index, inst) in block.insts.iter().enumerate() {
+                self.at = (at, index);
                 self.forget_entries(&inst.kind);
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
                     for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
@@ -1319,7 +1323,10 @@ impl Emit<'_, '_, '_> {
         }
         if kind.counted() {
             match value {
-                Operand::Local(from) if self.owns(*from) && self.known.moves(*from) => {
+                Operand::Local(from)
+                    if self.owns(*from)
+                        && (self.known.moves(*from) || self.known.is_last_copy(self.at.0, self.at.1)) =>
+                {
                     let slot = self.slot(*from);
                     self.line(&format!("store ptr null, ptr {slot}"));
                 }

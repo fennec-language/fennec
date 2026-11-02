@@ -11,7 +11,7 @@
 )]
 
 use fennec_interp::embed::{
-    aot, checks, dicts, eval, heap, io, json, lists, names, objects, regex, strings, temps,
+    aot, capabilities, checks, dicts, eval, heap, io, json, lists, names, objects, regex, strings, temps,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
@@ -29,6 +29,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_regex_replace",
     "fennec_binary",
     "fennec_box_from_value",
+    "fennec_capability_from_value",
     "fennec_case_of",
     "fennec_dict_missing",
     "fennec_entries",
@@ -237,6 +238,8 @@ export! {
     fennec_str_contains(a0: i64, a1: i64) -> i8 => strings::contains(a0, a1);
     fennec_str_print(a0: i64) => strings::print(a0);
     fennec_capability(a0: i64) -> i64 => temps::capability(a0);
+    fennec_capability_block(a0: i64) -> i64 => capabilities::block(a0);
+    fennec_capability_from_value(a0: i64, a1: i64, a2: i64) -> i64 => capabilities::from_value(a0, a1, a2);
     fennec_aot_image(a0: i64) => aot::image(a0);
     fennec_aot_failed_flag() -> i64 => aot::failed_flag();
     fennec_aot_ascii() -> i64 => aot::ascii();

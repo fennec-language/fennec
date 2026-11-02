@@ -431,6 +431,9 @@ impl FnCx<'_> {
         let MethodCall { object, method, args, span } = *call;
         let (key, takes_self) = method_key;
         self.locks_again(object, receiver, &format!("calling `{method}`"));
+        if let Some(owner) = receiver.type_name() {
+            self.private_member(owner, method, object.span.to(span));
+        }
         if !self.extension_fits(receiver, key, method, span) {
             self.ignore_args(args);
             return Type::Unknown;
@@ -621,6 +624,7 @@ impl FnCx<'_> {
             [] => Type::named(type_name),
             given => Type::Generic(type_name.to_owned(), given.iter().map(|(_, ty)| ty.clone()).collect()),
         };
+        self.private_fields_given(type_name, &fields, args);
         let literal = self.build(&Target { name: type_name, case: None, given }, &fields, args, span);
         self.check_bounds(chosen, span);
         crate::stdlib::construct(self, type_name, args);

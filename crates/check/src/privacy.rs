@@ -1,0 +1,52 @@
+//! `_name` fields and methods: hidden from everything but their own type. Only the type's own
+//! methods, and the functions nested in them, can read, write or set one, or call one. Code
+//! outside can't forge a value with a `_` field set to whatever it likes, which capabilities
+//! like a network connection rely on.
+
+use fennec_syntax::{Arg, Diagnostic, Field, Span};
+
+use crate::function::FnCx;
+
+impl FnCx<'_> {
+    /// Whether the code being checked is inside `owner`: one of the methods written in its own
+    /// declaration, or a function nested in one. A method an `extend` adds is outside it, or
+    /// any program could extend a type to reach what it hides.
+    fn inside(&self, owner: &str) -> bool {
+        let Some(rest) = self.key.strip_prefix(owner).and_then(|rest| rest.strip_prefix('.')) else {
+            return false;
+        };
+        let method = rest.split('.').next().unwrap_or(rest);
+        self.checker
+            .program
+            .type_info(owner)
+            .is_some_and(|info| info.def.methods.iter().any(|def| def.name == method))
+    }
+
+    /// Reports a use of `owner`'s `_` field or method from outside it.
+    pub(crate) fn private_member(&mut self, owner: &str, member: &str, span: Span) {
+        if !member.starts_with('_') || self.inside(owner) {
+            return;
+        }
+        let what = if self.checker.program.method(owner, member).is_some() { "call" } else { "reach" };
+        self.error(Diagnostic::new(format!("`{member}` is private to `{owner}`"), span).with_help(format!(
+            "only `{owner}`'s own methods can {what} `_` names: go through one of its other methods"
+        )));
+    }
+
+    /// Reports arguments that set `owner`'s `_` fields when it's made from outside it, by name
+    /// or by position.
+    pub(crate) fn private_fields_given(&mut self, owner: &str, fields: &[Field], args: &[Arg]) {
+        let mut next = 0;
+        for arg in args {
+            let field = if let Some(name) = &arg.name {
+                fields.iter().find(|field| &field.name == name)
+            } else {
+                next += 1;
+                fields.get(next - 1)
+            };
+            if let Some(field) = field {
+                self.private_member(owner, &field.name, arg.value.span);
+            }
+        }
+    }
+}

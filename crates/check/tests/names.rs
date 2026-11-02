@@ -242,3 +242,55 @@ fn a_generic_types_extension_names_its_parameters_and_bounds_make_it_conditional
         ]
     );
 }
+
+const ACCOUNT: &str = "struct Account:
+    owner: str
+    _balance = 0
+
+    def deposit(mut self, amount: int):
+        self._balance += amount
+
+    def _audit(self) -> bool:
+        self._balance >= 0
+
+    def same(self, other: Account) -> bool:
+        other._balance == self._balance and self._audit()
+
+    def opened(owner: str, start: int) -> Account:
+        Account(owner=owner, _balance=start)
+
+";
+
+#[test]
+fn a_types_own_methods_reach_its_underscore_names() {
+    let text = format!(
+        "{ACCOUNT}def main(stdout: Stdout):\n    mut account = Account.opened(\"ash\", 5)\n    \
+         account.deposit(3)\n    stdout.print(account.same(Account(\"kit\")), Account(owner=\"vex\").owner)\n"
+    );
+    assert_eq!(problems(&text), Vec::<String>::new());
+}
+
+#[test]
+fn nothing_outside_a_type_reaches_its_underscore_names() {
+    let in_main = |body: &str| {
+        problems(&format!("{ACCOUNT}def main(stdout: Stdout):\n    mut account = Account(\"ash\")\n{body}"))
+    };
+    let private = "`_balance` is private to `Account`";
+    assert_eq!(in_main("    stdout.print(account._balance)\n"), [format!("{private} @ account._balance")]);
+    assert_eq!(in_main("    account._balance = 1\n"), [format!("{private} @ account._balance")]);
+    assert_eq!(
+        in_main("    stdout.print(account._audit())\n"),
+        ["`_audit` is private to `Account` @ account._audit()"]
+    );
+    assert_eq!(in_main("    forged = Account(owner=\"x\", _balance=100)\n"), [format!("{private} @ 100")]);
+    assert_eq!(in_main("    forged = Account(\"x\", 100)\n"), [format!("{private} @ 100")]);
+    assert_eq!(in_main("    forged = replace(account, _balance=9)\n"), [format!("{private} @ 9")]);
+    assert_eq!(
+        in_main("    match account:\n        case Account(owner, balance): stdout.print(balance)\n"),
+        [format!("{private} @ case Account(owner, balance): stdout.print(balance)\n")]
+    );
+    assert_eq!(
+        problems(&format!("{ACCOUNT}extend Account:\n    def peek(self) -> int:\n        self._balance\n")),
+        [format!("{private} @ self._balance")]
+    );
+}

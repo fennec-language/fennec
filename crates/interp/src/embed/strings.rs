@@ -4,8 +4,6 @@
 //! one owner, which may have room left after its bytes. Native code reads lengths and ASCII characters itself; everything
 //! that makes a new string, or needs to walk UTF-8, happens here.
 
-use std::rc::Rc;
-
 use fennec_syntax::{Diagnostic, Span};
 
 use super::heap::{TEXT_HEADER_WORDS, block_text, release, retain, text_address, text_from_bytes};
@@ -518,9 +516,23 @@ fn add_text(joined: &mut [u64], at: usize, part: &[u64]) -> (usize, u64) {
     (length, chars)
 }
 
+/// `separator.join(list)` for a list whose items are strings' headers.
+fn join_headers(state: &mut State, separator: i64, list: i64) -> Option<i64> {
+    let block = state.heap.block(u64::try_from(list).ok()?)?;
+    if super::lists::element_in(state, block) != Some(&Element::Text) {
+        return None;
+    }
+    let parts = super::text::texts(state, super::lists::items(block, 3));
+    let between = text(state, separator).unwrap_or_default();
+    Some(text_address(state, &parts.join(&between)))
+}
+
 /// `separator.join(list)`, for a list of strings, written straight into the joined block.
 /// Each string's block is looked up once.
 pub extern "C" fn join(separator: i64, list: i64) -> i64 {
+    if let Some(joined) = with(|state| join_headers(state, separator, list)) {
+        return joined;
+    }
     with(|state| {
         let block = |address: u64| state.heap.block(address).unwrap_or_default();
         let between = u64::try_from(separator).map_or(&[][..], block);
@@ -597,6 +609,7 @@ pub extern "C" fn split(address: i64, separator: i64, start: i64, end: i64) -> i
         let at = span(start, end);
         let separators: &[i64] = if separator == 0 { &[] } else { &[separator] };
         let parts = method(state, address, "split", separators, at)?;
-        super::lists::write_list(state, &Rc::new(Element::Str), &parts).ok_or_else(|| lost(start, end))
+        let element = super::text::string_element(state);
+        super::lists::write_list(state, &element, &parts).ok_or_else(|| lost(start, end))
     })
 }

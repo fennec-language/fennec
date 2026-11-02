@@ -12,6 +12,7 @@
 
 use fennec_interp::embed::{
     aot, capabilities, checks, dicts, eval, heap, io, json, lists, names, objects, regex, strings, temps,
+    text,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
@@ -236,6 +237,8 @@ export! {
     fennec_json_dumps(a0: i64, a1: i64, a2: i64) -> i64 => json::dumps(a0, a1, a2);
     fennec_json_loads(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => json::loads(a0, a1, a2, a3);
     fennec_str_with_room(a0: i64) -> i64 => strings::with_room(a0);
+    fennec_text_block(a0: u64, a1: u64, a2: u64) -> i64 => text::block(a0, a1, a2);
+    fennec_text_of(a0: i64) -> text::Text => text::of(a0);
     fennec_str_char_at(a0: i64, a1: i64) -> i64 => strings::char_at(a0, a1);
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);
     fennec_dict_set(a0: i64, a1: i64, a2: i64) -> i64 => dicts::set(a0, a1, a2);

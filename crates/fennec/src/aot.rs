@@ -150,6 +150,31 @@ fn llvm_objects(
     Ok((built.objects, units.len(), built.compiled))
 }
 
+/// A copy of the runtime library with only its C objects, the Rust ones taken out.
+fn c_parts(runtime: &Path, work: &Path) -> Result<PathBuf, String> {
+    let copy = work.join("runtime-c.a");
+    std::fs::copy(runtime, &copy).map_err(|err| format!("couldn't copy the runtime library: {err}"))?;
+    let listed =
+        Command::new("ar").arg("t").arg(&copy).output().map_err(|err| format!("couldn't run ar: {err}"))?;
+    let rust: Vec<String> = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter(|name| name.ends_with(".rcgu.o"))
+        .map(str::to_owned)
+        .collect();
+    for names in rust.chunks(200) {
+        let done = Command::new("ar")
+            .arg("d")
+            .arg(&copy)
+            .args(names)
+            .output()
+            .map_err(|err| format!("couldn't run ar: {err}"))?;
+        if !done.status.success() {
+            return Err(format!("ar d failed: {}", String::from_utf8_lossy(&done.stderr)));
+        }
+    }
+    Ok(copy)
+}
+
 /// Links object files with the runtime library, giving back how long linking took.
 fn link_objects(objects: &[Vec<u8>], output: &Path) -> Result<std::time::Duration, String> {
     let runtime = runtime_library()?;
@@ -162,16 +187,15 @@ fn link_objects(objects: &[Vec<u8>], output: &Path) -> Result<std::time::Duratio
         paths.push(path);
     }
     let started = Instant::now();
-    // The optimization experiment's step 3 has the runtime in the object too: the archive's
-    // copy of std's start-up globals then repeats the object's, and the first is kept.
+    // The optimization experiment's step 3 has the runtime's Rust in the object, so only the
+    // archive's C parts are linked: mimalloc and the compiler's helpers.
     let in_object =
-        std::env::var("FENNEC_EXP_STEP").ok().and_then(|step| step.parse::<u32>().ok()).unwrap_or(0) >= 3
-            && cfg!(target_os = "linux");
+        std::env::var("FENNEC_EXP_STEP").ok().and_then(|step| step.parse::<u32>().ok()).unwrap_or(0) >= 3;
+    let runtime = if in_object { c_parts(&runtime, &work)? } else { runtime };
     let linked = Command::new("cc")
         .args(&paths)
         .arg(&runtime)
         .args(SYSTEM_LIBRARIES)
-        .args(if in_object { vec!["-Wl,--allow-multiple-definition"] } else { Vec::new() })
         // `FENNEC_SANITIZE=address` links in AddressSanitizer's runtime.
         .args(fennec_llvm::sanitizing().then_some("-fsanitize=address"))
         .arg("-o")

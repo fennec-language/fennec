@@ -52,7 +52,11 @@ jobs:
           CARGO_TARGET_DIR=target-bc cargo rustc --release --locked -p fennec-runtime --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
           echo "FENNEC_EXP_RUNTIME_BC=$(ls "$PWD"/target-bc/release/deps/fennec_runtime-*.bc | head -1)" >> "$GITHUB_ENV"
       - name: Show step 3's link on one kernel
-        run: FENNEC_EXP_STEP=3 ./target/release/fennec build --llvm --release bench/kernels/fib.fen -o /tmp/fib 2>&1 | head -40
+        run: |
+          FENNEC_EXP_STEP=3 ./target/release/fennec build --llvm --release bench/kernels/fib.fen -o /tmp/fib 2>&1 | head -40
+          /tmp/fib
+          FENNEC_EXP_STEP=3 ./target/release/fennec build --llvm --release bench/kernels/json.fen -o /tmp/json 2>&1 | head -40
+          /tmp/json | head -3
       - name: Measure every kernel against its twin, at each step of the experiment
         run: |
           for step in 3 4; do

@@ -118,7 +118,7 @@ impl Emit<'_, '_, '_> {
         // `Some` holds, and as `None` never writes that word, it's null for `None`.
         let (kind, at, access) = if matches!(wanted, Kind::Maybe(_)) && self.is_optional(kind) {
             let (_, fields) = self.case_of(kind, "Some")?;
-            let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+            let (_, offset, field) = fields.first().cloned().ok_or("an optional with nothing in it")?;
             let (base, inner) = if matches!(kind, Kind::Boxed(_)) {
                 let block = self.temp();
                 self.line(&format!("{block} = load ptr, ptr {at}{access}"));
@@ -126,6 +126,13 @@ impl Emit<'_, '_, '_> {
             } else {
                 (at.to_owned(), access)
             };
+            // A header in the enum, a block in the local: `None`'s zero header gives null.
+            if field == Some(Kind::Str) && self.headers() {
+                let place = self.offset(&base, offset);
+                let header = self.load_field(&Kind::Str, &place, inner);
+                let block = self.owned_text_block(&header);
+                return self.assign(dest, &block);
+            }
             (wanted.clone(), self.offset(&base, offset), inner)
         } else {
             (kind.clone(), at.to_owned(), access)
@@ -133,6 +140,12 @@ impl Emit<'_, '_, '_> {
         let (kind, at) = (&kind, at.as_str());
         if kind.in_memory() {
             return self.assign_memory(dest, at, access);
+        }
+        // A string a dict holds as a block, read into a local that holds a header.
+        if *kind == Kind::TextBlock && wanted == Kind::Str {
+            let block = self.load_field(kind, at, access);
+            let header = self.text_from_borrowed_block(&block);
+            return self.assign(dest, &header);
         }
         let value = self.load_field(kind, at, access);
         if kind.counted() && !self.known.is_borrowed(dest) && !self.known.is_taken(dest) {
@@ -164,8 +177,8 @@ impl Emit<'_, '_, '_> {
     /// One more owner for each block an inline struct at `at` holds.
     pub(crate) fn retain_inline(&mut self, kind: &Kind, at: &str) {
         for (offset, held) in self.inline_blocks(kind) {
-            let (place, block) = (self.offset(at, offset), self.temp());
-            self.line(&format!("{block} = load ptr, ptr {place}"));
+            let (place, block, text) = (self.offset(at, offset), self.temp(), self.text_of(&held));
+            self.line(&format!("{block} = load {text}, ptr {place}"));
             self.retain_value(&block, &held);
         }
     }
@@ -173,8 +186,8 @@ impl Emit<'_, '_, '_> {
     /// One owner fewer for each block an inline struct at `at` holds.
     pub(crate) fn release_inline(&mut self, kind: &Kind, at: &str) {
         for (offset, held) in self.inline_blocks(kind) {
-            let (place, block) = (self.offset(at, offset), self.temp());
-            self.line(&format!("{block} = load ptr, ptr {place}"));
+            let (place, block, text) = (self.offset(at, offset), self.temp(), self.text_of(&held));
+            self.line(&format!("{block} = load {text}, ptr {place}"));
             self.release_kind(&block, &held);
         }
     }
@@ -340,15 +353,16 @@ impl Emit<'_, '_, '_> {
         let access = if in_block { FIELD_ACCESS } else { "" };
         if put_back && kind.counted() {
             // The field's old value was taken out, and this is what became of it.
-            self.line(&format!("store ptr {value}, ptr {place}{access}"));
+            let text = self.text_of(&kind);
+            self.line(&format!("store {text} {value}, ptr {place}{access}"));
         } else if kind.counted() {
             if !fresh {
                 self.retain_value(&value, &kind);
             }
-            let old = self.temp();
-            self.line(&format!("{old} = load ptr, ptr {place}{access}"));
-            self.line(&format!("store ptr {value}, ptr {place}{access}"));
-            self.release(&old);
+            let (old, text) = (self.temp(), self.text_of(&kind));
+            self.line(&format!("{old} = load {text}, ptr {place}{access}"));
+            self.line(&format!("store {text} {value}, ptr {place}{access}"));
+            self.release_kind(&old, &kind);
         } else {
             if !put_back {
                 self.release_inline(&kind, &place);
@@ -504,6 +518,7 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{equal} = fcmp oeq double {x}, {y}"));
                             equal
                         }
+                        Kind::Str if self.headers() => self.same_headers(&x, &y),
                         Kind::Str => self.string_binary(BinOp::Eq, (&x, &y))?,
                         Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
                             self.same_blocks(BinOp::Eq, (&x, &y))
@@ -554,7 +569,7 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{more} = fcmp ogt double {x}, {y}"));
                         }
                         Kind::Str => {
-                            let order = self.text_order(&x, &y);
+                            let order = self.on_blocks([&x, &y], |emit, [a, b]| emit.text_order(&a, &b));
                             self.line(&format!("{less} = icmp slt i64 {order}, 0"));
                             self.line(&format!("{more} = icmp sgt i64 {order}, 0"));
                         }
@@ -731,10 +746,8 @@ impl Emit<'_, '_, '_> {
             // Holding nothing, letting go of it lets go of nothing.
             let kind = self.kind_of(dest)?.clone();
             let (held, text) = (self.slot(dest), self.text_of(&kind));
-            if kind.in_memory() {
+            if kind.in_memory() || kind.counted() {
                 self.line(&format!("store {text} zeroinitializer, ptr {held}"));
-            } else if kind.counted() {
-                self.line(&format!("store ptr null, ptr {held}"));
             }
             return Ok(());
         }
@@ -749,7 +762,7 @@ impl Emit<'_, '_, '_> {
             return self.dict_read(dest, &list, (key, value), index, span);
         }
         if kind == Kind::Str {
-            return self.string_index(dest, &list, index, span);
+            return self.on_blocks([&list], |emit, [block]| emit.string_index(dest, &block, index, span));
         }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
@@ -978,6 +991,7 @@ impl Emit<'_, '_, '_> {
                 .find(|(dict, looked_up, _)| same_dict(*dict) && looked_up == index)
                 .map(|(_, _, entry)| entry.clone());
             if let Operand::Local(sliced) = index
+                && !self.headers()
                 && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
             {
                 return self.slice_set(&place, value_word, (&slice, found), value);
@@ -1016,15 +1030,16 @@ impl Emit<'_, '_, '_> {
             self.item_address(&list, &memory, &position)
         };
         if put_back && held.counted() {
-            self.line(&format!("store ptr {value}, ptr {at}{ITEM_ACCESS}"));
+            let text = self.text_of(&held);
+            self.line(&format!("store {text} {value}, ptr {at}{ITEM_ACCESS}"));
         } else if held.counted() {
             if !fresh {
                 self.retain_value(&value, &held);
             }
-            let old = self.temp();
-            self.line(&format!("{old} = load ptr, ptr {at}{ITEM_ACCESS}"));
-            self.line(&format!("store ptr {value}, ptr {at}{ITEM_ACCESS}"));
-            self.release(&old);
+            let (old, text) = (self.temp(), self.text_of(&held));
+            self.line(&format!("{old} = load {text}, ptr {at}{ITEM_ACCESS}"));
+            self.line(&format!("store {text} {value}, ptr {at}{ITEM_ACCESS}"));
+            self.release_kind(&old, &held);
         } else {
             // An inline struct's blocks: the old item's let go of, the new one's owned, unless
             // it's the item that was taken out coming back.
@@ -1058,10 +1073,12 @@ impl Emit<'_, '_, '_> {
             Kind::Str => {
                 self.declare("declare ptr @fennec_str_slice(ptr, i64, i64, i64, i64) nounwind");
                 let (from, to) = (i64::from(span.start), i64::from(span.end));
-                self.line(&format!(
-                    "{part} = call ptr @fennec_str_slice(ptr {object}, i64 {start}, i64 {end}, i64 {from}, i64 {to})"
-                ));
+                self.on_blocks([&object], |emit, [block]| {
+                    emit.line(&format!("{part} = call ptr @fennec_str_slice(ptr {block}, i64 {start}, i64 {end}, i64 {from}, i64 {to})"));
+                });
                 self.leave_if_failed();
+                let part = self.text_value(&part);
+                return self.assign(dest, &part);
             }
             Kind::List(_) => {
                 self.declare("declare ptr @fennec_list_slice(ptr, i64, i64) nounwind");

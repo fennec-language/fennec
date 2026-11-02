@@ -46,7 +46,7 @@ pub fn lex_source(source: &str) -> Result<Lexed, Diagnostic> {
 fn kind(tok: &Tok) -> TokenKind {
     match tok {
         Tok::Name(_) => TokenKind::Name,
-        Tok::Int(_) | Tok::Float(_) => TokenKind::Number,
+        Tok::Int(_) | Tok::Float(_) | Tok::Duration(_) => TokenKind::Number,
         Tok::Str(_) => TokenKind::Str,
         Tok::FStr(_) => TokenKind::FStr,
         Tok::Kw(_) => TokenKind::Keyword,

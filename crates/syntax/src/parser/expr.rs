@@ -345,6 +345,7 @@ impl Parser {
         let kind = match token.tok {
             Tok::Int(value) => ExprKind::Int(value),
             Tok::Float(value) => ExprKind::Float(value),
+            Tok::Duration(nanos) => ExprKind::Duration(nanos),
             Tok::Str(text) => ExprKind::Str(text),
             Tok::FStr(parts) => ExprKind::FStr(fstring_parts(parts)?),
             Tok::Kw(Kw::True) => ExprKind::Bool(true),

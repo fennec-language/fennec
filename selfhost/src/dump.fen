@@ -37,6 +37,7 @@ def describe_tok(tok: Tok) -> str:
         case .Name(text): f"name {text}"
         case .Int(value): f"int {value}"
         case .Float(value): f"float {value}"
+        case .Duration(nanos): f"duration {nanos}"
         case .Str(text): f"str {quoted(text)}"
         case .FStr(parts): "fstr " + " | ".join([describe_fpart(part) for part in parts])
         case .Keyword(word): f"keyword {word}"
@@ -319,6 +320,7 @@ struct Tree:
         match expr.kind:
             case .Int(value): self.spanned(f"int {value}", span)
             case .Float(value): self.spanned(f"float {value}", span)
+            case .Duration(nanos): self.spanned(f"duration {nanos}", span)
             case .Str(text): self.spanned(f"str {quoted(text)}", span)
             case .Bool(value): self.spanned(f"bool {value}", span)
             case .Nothing: self.spanned("none", span)

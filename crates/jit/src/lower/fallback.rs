@@ -405,6 +405,7 @@ pub(super) fn expr_names(expr: &Expr, names: &mut Vec<String>) {
     match &expr.kind {
         ExprKind::Name(name) => names.push(name.clone()),
         ExprKind::Int(_)
+        | ExprKind::Duration(_)
         | ExprKind::Float(_)
         | ExprKind::Str(_)
         | ExprKind::Bool(_)
@@ -626,6 +627,7 @@ fn visit(expr: &Expr, f: &mut impl FnMut(&Expr)) {
         ExprKind::Lambda { .. }
         | ExprKind::Name(_)
         | ExprKind::Int(_)
+        | ExprKind::Duration(_)
         | ExprKind::Float(_)
         | ExprKind::Str(_)
         | ExprKind::Bool(_)

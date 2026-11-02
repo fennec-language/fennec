@@ -396,6 +396,10 @@ impl Uses {
                     self.stmts(&arm.body);
                 }
             }
+            // A duration literal makes a `Duration`, whose methods it can then reach.
+            ExprKind::Duration(_) => {
+                self.names.insert("Duration".to_owned());
+            }
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {
             }
         }

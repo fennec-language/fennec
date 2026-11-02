@@ -183,6 +183,21 @@ struct Lexer:
                 self.pos += 1
             self.digits()
         text = self.text(start, self.pos).replace("_", "")
+        if is_letter(self.peek(0)):
+            # A duration, in one part or several from the largest unit down: `1h30min`.
+            mut numbers = [text]
+            mut units = [self.unit()]
+            while is_digit(self.peek(0)):
+                part_start = self.pos
+                self.digits()
+                if self.peek(0) == "." and is_digit(self.peek(1)):
+                    self.pos += 1
+                    self.digits()
+                numbers.append(self.text(part_start, self.pos).replace("_", ""))
+                units.append(self.unit())
+            nanos = duration(self.text(start, self.pos), numbers, units, self.span(start))?
+            self.push(Tok.Duration(nanos), start)
+            return
         if is_float:
             match float(text):
                 case Ok(value):
@@ -199,6 +214,13 @@ struct Lexer:
                         span=self.span(start),
                         help="ints are 64-bit: the largest is 9_223_372_036_854_775_807",
                     )
+
+    ## The letters of a duration's unit, like `ms`.
+    def unit(mut self) -> str:
+        start = self.pos
+        while is_letter(self.peek(0)):
+            self.pos += 1
+        self.text(start, self.pos)
 
     def digits(mut self):
         while is_digit(self.peek(0)) or self.peek(0) == "_":
@@ -371,3 +393,85 @@ struct Lexer:
         code_end = spec_start else end
         spec = self.text(spec_start + 1, end) if spec_start is not None else None
         FPart.Code(self.text(code_start, code_end), self.offset(code_start), spec)
+
+## How many nanoseconds a unit of time is, or 0 when it isn't one. Minutes are `min`, so `m`
+## is never a unit.
+def unit_nanos(unit: str) -> int:
+    match unit:
+        case "ns": 1
+        case "us": 1_000
+        case "ms": 1_000_000
+        case "s": 1_000_000_000
+        case "min": 60_000_000_000
+        case "h": 3_600_000_000_000
+        case _: 0
+
+## The nanoseconds a duration literal stands for, from its parts: each a number and a unit,
+## the largest unit first, worked out from the digits as written.
+def duration(written: str, numbers: list[str], units: list[str], span: Span) -> int:
+    help = "a duration ends in `ns`, `us`, `ms`, `s`, `min` or `h`, like `30s`, `1.5s`, `200ms` or `1h30min`"
+    mut total = 0
+    mut previous = 0
+    for at, number in enumerate(numbers):
+        unit = units[at]
+        if unit == "":
+            fail Diagnostic(message=f"`{written}` ends without a unit", span=span, help=help)
+        per = unit_nanos(unit)
+        if per == 0:
+            mut why = help
+            if unit == "m":
+                why = "minutes are `min`, like `5min`"
+            fail Diagnostic(message=f"`{written}` uses `{unit}`, which isn't a unit of time", span=span, help=why)
+        if at > 0 and per >= previous:
+            fail Diagnostic(
+                message=f"`{written}` has its units out of order",
+                span=span,
+                help="write each unit once, the largest first, like `1h30min`",
+            )
+        previous = per
+        total += part_nanos(written, number, per, span)?
+    total
+
+## The nanoseconds in `number` of a unit `per` nanoseconds long.
+def part_nanos(written: str, number: str, per: int, span: Span) -> int:
+    mut digits = 0
+    mut places = 0
+    mut exponent = ""
+    mut in_fraction = False
+    mut in_exponent = False
+    for c in number:
+        if in_exponent:
+            exponent += c
+        elif c == "e" or c == "E":
+            in_exponent = True
+        elif c == ".":
+            in_fraction = True
+        else:
+            digits = digits * 10 + c.code() - "0".code()
+            if in_fraction:
+                places += 1
+    mut shift = 0 - places
+    if exponent != "":
+        match int(exponent):
+            case Ok(value): shift += value
+            case Err(_):
+                fail Diagnostic(
+                    message=f"`{written}` is too long for a duration",
+                    span=span,
+                    help="a duration holds up to about 292 years of nanoseconds",
+                )
+    mut nanos = digits * per
+    while shift > 0:
+        nanos *= 10
+        shift -= 1
+    mut ten = 1
+    while shift < 0:
+        ten *= 10
+        shift += 1
+    if nanos % ten != 0:
+        fail Diagnostic(
+            message=f"`{written}` isn't a whole number of nanoseconds",
+            span=span,
+            help="a duration counts whole nanoseconds: write fewer decimal places",
+        )
+    nanos // ten

@@ -271,6 +271,8 @@ pub struct Expr {
 pub enum ExprKind {
     Int(i64),
     Float(f64),
+    /// A duration literal, like `30s`, in nanoseconds: a `Duration` from `std.time`.
+    Duration(i64),
     Str(String),
     FStr(Vec<FStrPart>),
     Bool(bool),
@@ -472,9 +474,12 @@ impl Expr {
     /// Whether this is a plain value written out: a number, string, bool or `None`.
     pub fn is_plain_value(&self) -> bool {
         match &self.kind {
-            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {
-                true
-            }
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Duration(_)
+            | ExprKind::Str(_)
+            | ExprKind::Bool(_)
+            | ExprKind::None => true,
             ExprKind::Unary { op: UnaryOp::Neg, expr } => {
                 matches!(expr.kind, ExprKind::Int(_) | ExprKind::Float(_))
             }

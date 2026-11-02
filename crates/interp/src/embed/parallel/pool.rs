@@ -56,6 +56,22 @@ pub(super) fn install<R: Send>(words: usize, run: impl FnOnce() -> R + Send) -> 
     pool.install(run)
 }
 
+/// How many chunks a stream over this many words of items runs ahead of its reader, on the
+/// pool: twice its threads. 0 when it isn't worth threads, and the reader runs each chunk
+/// itself.
+pub(super) fn window(words: usize) -> usize {
+    let pool = (words >= SEQUENTIAL_WORDS && SETUP.get().is_some()).then(pool).flatten();
+    pool.map_or(0, |pool| 2 * pool.current_num_threads())
+}
+
+/// Runs a task on the pool's workers, when they get to it.
+pub(super) fn spawn(task: impl FnOnce() + Send + 'static) {
+    match pool() {
+        Some(pool) => pool.spawn(task),
+        None => task(),
+    }
+}
+
 /// Runs both, in parallel on the pool, or one after the other off it.
 pub(super) fn join<A: Send, B: Send>(
     first: impl FnOnce() -> A + Send,

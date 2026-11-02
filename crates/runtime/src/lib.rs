@@ -76,6 +76,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_str_print",
     "fennec_str_slice",
     "fennec_str_split",
+    "fennec_stream_next",
     "fennec_to_bool",
     "fennec_to_float",
     "fennec_to_int",
@@ -232,6 +233,9 @@ export! {
     fennec_parallel_for(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for(a0, a1, a2);
     fennec_parallel_map(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_map(a0, a1, a2, a3);
     fennec_parallel_reduce(a0: i64, a1: parallel::ReduceBody, a2: parallel::Combine, a3: i64, a4: &mut i64) -> i64 => parallel::parallel_reduce(a0, a1, a2, a3, a4);
+    fennec_parallel_stream(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_stream(a0, a1, a2, a3);
+    fennec_stream_next(a0: i64, a1: &mut i64) -> i64 => parallel::stream_next(a0, a1);
+    fennec_stream_end(a0: i64) => parallel::stream_end(a0);
     fennec_free_text(a0: i64) => heap::free_text(a0);
     fennec_set_abandon(a0: i64, a1: extern "C" fn(i64)) => heap::set_abandon(a0, a1);
     fennec_unshare(a0: i64) -> i64 => heap::unshare(a0);

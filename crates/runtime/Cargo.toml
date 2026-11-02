@@ -46,3 +46,7 @@ allow_attributes_without_reason = "deny"
 mem_forget = "forbid"
 print_stdout = "deny"
 print_stderr = "deny"
+
+[features]
+# The runtime for programs with tasks (see `fennec-interp`'s feature of the same name).
+threads = ["fennec-interp/threads"]

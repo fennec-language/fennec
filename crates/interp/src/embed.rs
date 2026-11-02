@@ -32,6 +32,7 @@ pub mod strings;
 mod table;
 mod tests;
 pub mod text;
+pub mod threads;
 
 use std::collections::HashMap;
 

@@ -72,6 +72,9 @@ pub(crate) struct Heap {
     pub(super) counts: Counts,
     /// Where each shape's blocks hold addresses, by the shape's number.
     plans: Vec<super::plans::Plan>,
+    /// The number of the thread this heap is, in a shape word's owner bits: 0 on the main
+    /// thread, so its blocks' shape words are just their shapes.
+    owner_bits: u64,
     /// How many words each shape's blocks take, by the shape's number.
     sizes: Vec<usize>,
     /// Words copied out of one block on the way to another, kept to save making them anew.
@@ -102,10 +105,30 @@ impl Counts {
 }
 
 /// The shape of a cell: a block holding an interpreter value for a boxed value's field.
-const CELL_SHAPE: u64 = u64::MAX - 1;
+const CELL_SHAPE: u64 = SHAPE_BITS - 1;
+
+/// Where a block's shape word holds the number of the thread that made it: its top 16 bits,
+/// which are 0 for the main thread's blocks. Native code counts a block it didn't make
+/// through the runtime (see `threads`).
+pub const OWNER_SHIFT: u32 = 48;
+
+/// The bits of a shape word that say the shape.
+pub const SHAPE_BITS: u64 = (1 << OWNER_SHIFT) - 1;
+
+/// A block's shape, without the thread that made it.
+pub(crate) fn shape_word(block: &[u64]) -> Option<u64> {
+    block.get(1).map(|word| word & SHAPE_BITS)
+}
+
+/// Sets the thread a block was made by, in its shape word.
+fn mark_owner(block: &mut [u64], owner_bits: u64) {
+    if let Some(word) = block.get_mut(1) {
+        *word = (*word & SHAPE_BITS) | owner_bits;
+    }
+}
 
 /// The shape of a capability's block (see `super::capabilities`).
-pub const CAPABILITY_SHAPE: u64 = u64::MAX - 2;
+pub const CAPABILITY_SHAPE: u64 = SHAPE_BITS - 2;
 
 /// Words a cell takes: owner count, shape and the number of its value.
 const CELL_WORDS: usize = 3;
@@ -155,7 +178,8 @@ impl Heap {
     }
 
     pub(crate) fn new(statics: Vec<Box<[u64]>>) -> Heap {
-        let mut heap = Heap { statics: statics.len(), ..Heap::default() };
+        let owner_bits = u64::from(super::threads::index()) << OWNER_SHIFT;
+        let mut heap = Heap { statics: statics.len(), owner_bits, ..Heap::default() };
         for block in statics {
             heap.insert(block);
         }
@@ -215,12 +239,29 @@ impl Heap {
         self.blocks.len().saturating_sub(self.statics)
     }
 
-    pub(crate) fn insert(&mut self, block: Box<[u64]>) -> i64 {
+    pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
         self.counts.allocations += 1;
         self.counts.allocated_bytes += u64::try_from(block.len()).unwrap_or(0) * 8;
+        if super::threads::ON && self.owner_bits != 0 {
+            mark_owner(&mut block, self.owner_bits);
+        }
         let address = block.as_ptr().addr();
         self.blocks.insert(block);
         i64::try_from(address).unwrap_or(0)
+    }
+
+    /// Takes every block this heap made that doesn't live for the whole run, for another
+    /// thread's heap to adopt: what a task made that outlives it.
+    pub(crate) fn hand_over(&mut self) -> Vec<Box<[u64]>> {
+        self.blocks.take_where(|block| block.first().is_some_and(|count| *count < IMMORTAL))
+    }
+
+    /// Takes over blocks another thread's heap handed over, as this thread's own.
+    pub(crate) fn adopt_blocks(&mut self, blocks: Vec<Box<[u64]>>) {
+        for mut block in blocks {
+            mark_owner(&mut block, self.owner_bits);
+            self.blocks.insert(block);
+        }
     }
 
     /// Takes a block out of the heap for reuse, leaving the blocks it refers to as they are:
@@ -241,13 +282,13 @@ impl Heap {
 }
 
 fn shape_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
-    let shape = usize::try_from(*block.get(1)?).ok()?;
+    let shape = usize::try_from(shape_word(block)?).ok()?;
     state.tables.shapes.get(shape).cloned()
 }
 
 /// Whether a block is a string's.
 pub(super) fn is_text(state: &State, block: &[u64]) -> bool {
-    block.get(1) == Some(&state.tables.str_shape)
+    shape_word(block) == Some(state.tables.str_shape)
 }
 
 /// Words a string's block starts with: its owner count, shape, length in bytes, length in
@@ -391,7 +432,7 @@ fn new_cell(state: &mut State, value: Value) -> i64 {
 
 /// The value a cell's block holds.
 fn cell_value(state: &State, block: &[u64]) -> Option<Value> {
-    if block.get(1) != Some(&CELL_SHAPE) {
+    if shape_word(block) != Some(CELL_SHAPE) {
         return None;
     }
     let number = usize::try_from(*block.get(2)?).ok()?;
@@ -469,7 +510,7 @@ pub(super) fn held_addresses(element: &Element, words: &[u64], found: &mut Vec<u
 
 /// Adds the addresses of a block's boxed fields to `found`.
 fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
-    let Some(shape) = block.get(1).copied() else { return };
+    let Some(shape) = shape_word(block) else { return };
     if shape == CAPABILITY_SHAPE {
         found.extend(block.get(3).copied().filter(|list| *list != 0));
         return;
@@ -596,7 +637,7 @@ pub(super) fn lent_field(state: &mut State, value: &Value, name: i64) -> Option<
     let Value::Lent(lent) = value else { return None };
     let name = State::name_ref(&state.tables, name);
     let block = state.heap.block(lent.address)?;
-    let shape = Rc::clone(state.tables.shapes.get(usize::try_from(*block.get(1)?).ok()?)?);
+    let shape = Rc::clone(state.tables.shapes.get(usize::try_from(shape_word(block)?).ok()?)?);
     let Element::Struct { fields, .. } = shape.as_ref() else { return None };
     let mut at = HEADER_WORDS;
     let (element, word) = fields.iter().find_map(|(field, element)| {
@@ -619,7 +660,7 @@ pub(super) fn lent_field(state: &mut State, value: &Value, name: i64) -> Option<
 /// The name of the type of a struct or enum a temporary is lent.
 pub(super) fn lent_type(state: &State, value: &Value) -> Option<Rc<str>> {
     let Value::Lent(lent) = value else { return None };
-    let shape = usize::try_from(*state.heap.block(lent.address)?.get(1)?).ok()?;
+    let shape = usize::try_from(shape_word(state.heap.block(lent.address)?)?).ok()?;
     match state.tables.shapes.get(shape)?.as_ref() {
         Element::Struct { name, .. } | Element::Enum { name, .. } => Some(Rc::clone(name)),
         _ => None,
@@ -639,7 +680,7 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     if let Some(value) = cell_value(state, &block) {
         return state.expanded(value);
     }
-    if block.get(1) == Some(&CAPABILITY_SHAPE) {
+    if shape_word(&block) == Some(CAPABILITY_SHAPE) {
         return super::capabilities::read(state, &block);
     }
     if is_text(state, &block) {
@@ -739,7 +780,7 @@ fn instance(name: &Rc<str>, case: Option<Rc<str>>, fields: Vec<(Rc<str>, Value)>
 pub extern "C" fn from_value(value: i64, shape: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let wanted = u64::try_from(shape).unwrap_or(u64::MAX);
-        if let Some(address) = lent_block(state, value, |_, block| block.get(1) == Some(&wanted)) {
+        if let Some(address) = lent_block(state, value, |_, block| shape_word(block) == Some(wanted)) {
             return Ok(address);
         }
         let value = state.temp(value);
@@ -840,7 +881,7 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
         return true;
     }
     let (Some(left), Some(right)) = (state.heap.block(a), state.heap.block(b)) else { return false };
-    if left.get(1) != right.get(1) {
+    if shape_word(left) != shape_word(right) {
         return false;
     }
     if let (Some(mine), Some(theirs)) = (cell_value(state, left), cell_value(state, right)) {

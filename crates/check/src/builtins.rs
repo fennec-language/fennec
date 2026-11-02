@@ -166,8 +166,11 @@ fn list_method(item: &Type, name: &str) -> Option<Method> {
 fn buffer_method(item: &Type, name: &str) -> Option<Method> {
     let item = item.clone();
     Some(match name {
-        "push" => changes(&[item], Type::Unit),
+        "push" => changes(std::slice::from_ref(&item), Type::Unit),
         "pop" => changes(&[], item),
+        "extend" => changes(&[Type::Buffer(Box::new(item.clone()))], Type::Unit),
+        "insert" => changes(&[Type::Int, item], Type::Unit),
+        "remove" => changes(&[Type::Int], item),
         "reserve" | "truncate" => changes(&[Type::Int], Type::Unit),
         "capacity" => reads(&[], Type::Int),
         "is_unique" => reads(&[], Type::Bool),

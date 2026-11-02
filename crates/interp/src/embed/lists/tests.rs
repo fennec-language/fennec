@@ -169,3 +169,21 @@ fn a_buffer_reserves_room_and_truncates_letting_go_of_what_it_drops() {
     assert_eq!(live(), before);
     finish();
 }
+
+#[test]
+fn extending_a_buffer_holds_what_the_other_one_holds_too() {
+    begin();
+    let before = live();
+    let first = list(&["archer"]);
+    let second = numbered(&["medic", "soldier"], 2);
+    let both = super::extend(first, second);
+    heap::free(second);
+    assert_eq!(read(both), Value::list(vec![unit("archer", 1), unit("medic", 2), unit("soldier", 3)]));
+    assert_eq!(with(|state| state.heap.block(u64::try_from(both).ok()?)?.get(3).copied()), Some(4));
+    let inserted = super::insert_buffer(both, 9, 0, 0);
+    assert_eq!(inserted, 0);
+    heap::free(both);
+    assert_eq!(live(), before);
+    let (_, failure, _) = finish();
+    assert!(failure.is_some_and(|failure| failure.message == "can't insert at 9 in a Buffer of length 3"));
+}

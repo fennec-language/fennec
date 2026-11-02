@@ -120,6 +120,56 @@ mod tests {
     }
 
     #[test]
+    fn an_id_map_of_optional_ids_crosses_as_the_interpreter_holds_it() {
+        use crate::value::{Id, IdMap, Instance, Slot};
+        let named = |name: &str, fields: Vec<(&str, Element)>| {
+            let fields = fields.into_iter().map(|(field, element)| (Rc::from(field), element)).collect();
+            Element::Struct { name: Rc::from(name), fields }
+        };
+        let id = named("Id", vec![("slot", Element::Int), ("generation", Element::Int)]);
+        let none: Vec<(Rc<str>, Element)> = Vec::new();
+        let some = vec![(Rc::from("value"), id.clone())];
+        let option = Element::Enum {
+            name: Rc::from("Option[Id]"),
+            cases: vec![(Rc::from("None"), none), (Rc::from("Some"), some)],
+            words: 3,
+        };
+        let unit = named("Unit", vec![("name", Element::Str), ("target", option)]);
+        let items = Element::List(Rc::new(unit));
+        let generations = Element::List(Rc::new(Element::Int));
+        let map = named(
+            "IdMap[Unit]",
+            vec![("items", items), ("generations", generations), ("live", Element::Int)],
+        );
+        let tables =
+            Tables { shapes: vec![Rc::new(map), Rc::new(Element::Str)], str_shape: 1, ..Tables::default() };
+        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let unit = |name: &str, target: Value| {
+            let fields = vec![(Rc::from("name"), Value::str(name)), (Rc::from("target"), target)];
+            Value::Instance(Rc::new(Instance {
+                type_name: Rc::from("Unit"),
+                case: None,
+                fields,
+                is_error: false,
+                cause: None,
+            }))
+        };
+        let slots = vec![
+            Slot { generation: 0, value: Some(unit("a", Value::None)) },
+            Slot { generation: 3, value: None },
+            Slot { generation: 1, value: Some(unit("b", Value::Id(Id { slot: 0, generation: 0 }))) },
+        ];
+        let original = Value::IdMap(Rc::new(IdMap { slots }));
+        let value = with(|state| Some(state.push(original.clone()))).unwrap();
+        let block = heap::from_value(value, 0, 0, 0);
+        assert_ne!(block, 0);
+        assert_eq!(temp(heap::to_value(block)), original);
+        let dumped = text_of(super::dumps(heap::to_value(block), 0, 0));
+        assert_eq!(dumped, text_of(super::dumps(value, 0, 0)));
+        finish();
+    }
+
+    #[test]
     fn strings_have_the_interpreter_s_methods() {
         let str = Rc::new(Element::Str);
         let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };

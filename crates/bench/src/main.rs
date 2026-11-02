@@ -14,14 +14,17 @@
 //! fennec-bench [--fennec PATH] [--previous PATH] [--runs N] [--kernels DIR] [--targets DIR] [--report-only]
 //! fennec-bench pin [--fennec PATH] [--kernels DIR] [--targets DIR]
 //! fennec-bench budgets [--fennec PATH] [--runs N] [--files N]
+//! fennec-bench llvm-suite [--fennec PATH] [--runs N] [--kernels DIR] [--json PATH]
 //! ```
 //!
-//! `budgets` measures something else: see the `budgets` module.
+//! `budgets` measures something else: see the `budgets` module. `llvm-suite` compares what
+//! `fennec build --llvm --release` makes with the Rust twins: see the `llvm_suite` module.
 #![expect(clippy::print_stdout, reason = "the suite prints its table")]
 #![expect(clippy::print_stderr, reason = "the suite reports failures")]
 
 mod budgets;
 mod kernels;
+mod llvm_suite;
 mod measure;
 mod report;
 mod targets;
@@ -74,8 +77,36 @@ fn budgets(mut args: impl Iterator<Item = String>) -> std::result::Result<bool, 
     budgets::run(&fennec, runs, files)
 }
 
+fn llvm_suite(mut args: impl Iterator<Item = String>) -> std::result::Result<bool, String> {
+    let (mut fennec, mut runs, mut kernels) =
+        (PathBuf::from("target/release/fennec"), 10, PathBuf::from("bench/kernels"));
+    let mut json = None;
+    while let Some(flag) = args.next() {
+        let value = args.next().ok_or_else(|| format!("`{flag}` needs a value"))?;
+        let number = || value.parse().map_err(|_| format!("`{flag}` needs a number, not `{value}`"));
+        match flag.as_str() {
+            "--fennec" => fennec = PathBuf::from(&value),
+            "--runs" => runs = number()?,
+            "--kernels" => kernels = PathBuf::from(&value),
+            "--json" => json = Some(PathBuf::from(&value)),
+            _ => return Err(format!("unknown option `{flag}`")),
+        }
+    }
+    llvm_suite::run(&fennec, &kernels, runs, json.as_deref())
+}
+
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|first| first == "llvm-suite") {
+        return match llvm_suite(args.into_iter().skip(1)) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.first().is_some_and(|first| first == "budgets") {
         return match budgets(args.into_iter().skip(1)) {
             Ok(true) => ExitCode::SUCCESS,

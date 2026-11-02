@@ -12,6 +12,7 @@ publish.workspace = true
 fennec-blake3.workspace = true
 fennec-re.workspace = true
 fennec-syntax.workspace = true
+getrandom.workspace = true
 
 [lints]
 workspace = true

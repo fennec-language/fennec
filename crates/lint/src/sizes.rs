@@ -10,7 +10,7 @@ const MOST_PARAMS: usize = 6;
 const MOST_NESTING: usize = 4;
 
 /// What programs are handed rather than what they work on, so they don't count as parameters.
-const CAPABILITIES: [&str; 6] = ["Stdout", "Fs", "Clock", "Args", "Stdin", "Process"];
+const CAPABILITIES: [&str; 7] = ["Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy"];
 
 /// Every function of a module, with methods and those nested inside others.
 pub(crate) fn functions(module: &Module) -> Vec<&FnDef> {

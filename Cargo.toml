@@ -46,6 +46,9 @@ print_stderr = "deny"
 [workspace.dependencies]
 # The allocator the runtime gives Fennec programs: fast for many small blocks, under MIT.
 mimalloc = { version = "=0.1.52", default-features = false }
+# Secure random bytes from the operating system, for `Entropy`, on every platform Fennec runs on.
+# Reading them on Windows takes FFI, which Fennec's own crates forbid. Under MIT or Apache-2.0.
+getrandom = { version = "=0.4.3", default-features = false }
 cranelift-codegen = "=0.137.0"
 cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"

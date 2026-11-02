@@ -137,6 +137,13 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("call void @fennec_print_value(i64 {handle})"));
                 self.line(&format!("call void @fennec_truncate(i64 {mark})"));
             }
+            // A plain struct or enum, in place: its text, as an f-string writes it.
+            Kind::Struct(_) | Kind::Enum(_) => {
+                let text = self.plain_text(value, kind)?;
+                self.declare("declare void @fennec_str_print(ptr) nounwind");
+                self.line(&format!("call void @fennec_str_print(ptr {text})"));
+                self.release(&text);
+            }
             other => {
                 return Err(format!("it prints a {other:?}, which this backend doesn't take yet"));
             }
@@ -167,6 +174,24 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{text} = call ptr @fennec_float_text(double {value})"));
                 Ok(text)
             }
+            // Holding strings or lists, it's written by the runtime, from a block made of it.
+            Kind::Struct(id) if !self.inline_blocks(kind).is_empty() => {
+                let block = self.new_block(*id)?;
+                let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+                self.store_field(kind, value, &fields, "");
+                self.retain_inline(kind, &fields);
+                self.declare("declare i64 @fennec_mark() nounwind");
+                self.declare("declare void @fennec_truncate(i64) nounwind");
+                self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
+                self.declare("declare ptr @fennec_value_text(i64) nounwind");
+                let (mark, handle, text) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{mark} = call i64 @fennec_mark()"));
+                self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
+                self.line(&format!("{text} = call ptr @fennec_value_text(i64 {handle})"));
+                self.line(&format!("call void @fennec_truncate(i64 {mark})"));
+                self.release(&block);
+                Ok(text)
+            }
             Kind::Struct(id) => {
                 let layouts = self.module.layouts;
                 let layout = layouts.get(*id).ok_or("no such layout")?;
@@ -174,7 +199,8 @@ impl Emit<'_, '_, '_> {
                 let mut text = self.literal(if tuple { "(" } else { "" });
                 self.retain(&text);
                 if !tuple {
-                    let name = self.literal(&format!("{}(", layout.name));
+                    // A program's own type named like one of std's is marked apart inside, not when shown.
+                    let name = self.literal(&format!("{}(", layout.name.trim_end_matches('\'')));
                     text = self.joined(&text, &name, false);
                 }
                 for (at, field) in layout.fields.iter().enumerate() {

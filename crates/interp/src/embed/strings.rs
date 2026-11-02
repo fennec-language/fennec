@@ -4,10 +4,13 @@
 //! one owner, which may have room left after its bytes. Native code reads lengths and ASCII characters itself; everything
 //! that makes a new string, or needs to walk UTF-8, happens here.
 
-use fennec_syntax::Diagnostic;
+use std::rc::Rc;
+
+use fennec_syntax::{Diagnostic, Span};
 
 use super::heap::{TEXT_HEADER_WORDS, block_text, release, retain, text_address, text_from_bytes};
 use super::{State, attempt, span, with};
+use crate::packed::Element;
 use crate::value::Value;
 
 /// A string's text, when the address is a string's block.
@@ -480,5 +483,57 @@ pub extern "C" fn join(separator: i64, list: i64) -> i64 {
         }
         set_lengths(&mut joined, at, chars);
         state.heap.insert(joined)
+    })
+}
+
+/// One of the interpreter's string methods, run on a string block with string blocks as its
+/// arguments, as the interpreter runs it.
+fn method(state: &State, address: i64, name: &str, args: &[i64], at: Span) -> Result<Value, Diagnostic> {
+    let lost = || Diagnostic::new("the native code lost a string", at);
+    let whole = text(state, address).ok_or_else(lost)?;
+    let args =
+        args.iter().map(|arg| text(state, *arg).map(|text| Value::str(&text))).collect::<Option<Vec<_>>>();
+    crate::collections::str_method(&whole, name, &args.ok_or_else(lost)?, at)
+}
+
+/// A string method that gives a string, as a block owned once.
+fn text_method(address: i64, name: &str, args: &[i64]) -> i64 {
+    with(|state| match method(state, address, name, args, Span::default()) {
+        Ok(Value::Str(text)) => text_address(state, &text),
+        _ => 0,
+    })
+}
+
+/// `text.upper()`.
+pub extern "C" fn upper(address: i64) -> i64 {
+    text_method(address, "upper", &[])
+}
+
+/// `text.lower()`.
+pub extern "C" fn lower(address: i64) -> i64 {
+    text_method(address, "lower", &[])
+}
+
+/// `text.replace(old, new)`.
+pub extern "C" fn replace(address: i64, old: i64, new: i64) -> i64 {
+    text_method(address, "replace", &[old, new])
+}
+
+/// `text.find(part)`: which character `part` first starts at, or -1 when it isn't there.
+pub extern "C" fn find(address: i64, part: i64) -> i64 {
+    with(|state| match method(state, address, "find", &[part], Span::default()) {
+        Ok(Value::Int(at)) => at,
+        _ => -1,
+    })
+}
+
+/// `text.split(separator)`, or `text.split()` when `separator` is 0: a list of str owned
+/// once. An empty separator fails, as in the interpreter.
+pub extern "C" fn split(address: i64, separator: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let at = span(start, end);
+        let separators: &[i64] = if separator == 0 { &[] } else { &[separator] };
+        let parts = method(state, address, "split", separators, at)?;
+        super::lists::write_list(state, &Rc::new(Element::Str), &parts).ok_or_else(|| lost(start, end))
     })
 }

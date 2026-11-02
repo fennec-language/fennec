@@ -612,6 +612,18 @@ fn is_quiet(inst: &InstKind) -> bool {
     )
 }
 
+/// Whether a call leaves these locals as they are: only what's given `mut` can change, and
+/// nothing else holds a local's value.
+fn leaves_alone(inst: &InstKind, lenders: &[LocalId], changes: &dyn Fn(&str) -> Vec<usize>) -> bool {
+    let InstKind::Call { dest, function, args } = inst else { return false };
+    if dest.is_some_and(|dest| lenders.contains(&dest)) {
+        return false;
+    }
+    changes(function)
+        .iter()
+        .all(|at| !matches!(args.get(*at), Some(Operand::Local(held)) if lenders.contains(held)))
+}
+
 /// Whether an instruction only looks inside `local`, taking no owner of its own.
 fn only_looks(inst: &InstKind, local: LocalId) -> bool {
     let held = Operand::Local(local);
@@ -671,13 +683,18 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
             }
             let later = block.insts.get(at + 1..).unwrap_or_default();
             if known.reads.get(dest.0) == Some(&1) {
+                // What it came from, and what that borrows from, which nothing may change first.
+                let mut lenders = vec![source];
+                while let Some(lender) = lenders.last().and_then(|held| known.borrowed_from.get(&held.0)) {
+                    lenders.push(*lender);
+                }
                 for next in later {
                     if only_looks(&next.kind, dest) {
                         known.borrowed.insert(dest.0);
                         known.borrowed_from.insert(dest.0, source);
                         break;
                     }
-                    if !is_quiet(&next.kind) {
+                    if !is_quiet(&next.kind) && !leaves_alone(&next.kind, &lenders, changes) {
                         break;
                     }
                 }

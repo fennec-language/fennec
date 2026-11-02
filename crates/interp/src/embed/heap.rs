@@ -637,8 +637,10 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, words)));
             let value = instance(name, None, fields.collect());
             // An error's block is laid out like a struct's, so its type says which it is.
-            let error =
-                state.interp.type_info(name).is_some_and(|info| info.kind == crate::interp::TypeKind::Error);
+            let error = state
+                .interp
+                .type_info(type_name(name))
+                .is_some_and(|info| info.kind == crate::interp::TypeKind::Error);
             match value {
                 Value::Instance(mut made) if error => {
                     if let Some(made) = Rc::get_mut(&mut made) {
@@ -662,14 +664,15 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
     }
 }
 
+/// The name the interpreter gives instances of a layout: a generic type's layout is named
+/// with its type's arguments, like `Grid[Tile]`, and its instances just `Grid`.
+fn type_name(layout: &str) -> &str {
+    layout.split_once('[').map_or(layout, |(name, _)| name)
+}
+
 fn instance(name: &Rc<str>, case: Option<Rc<str>>, fields: Vec<(Rc<str>, Value)>) -> Value {
-    Value::Instance(Rc::new(Instance {
-        type_name: Rc::clone(name),
-        case,
-        fields,
-        is_error: false,
-        cause: None,
-    }))
+    let type_name = if name.contains('[') { Rc::from(type_name(name)) } else { Rc::clone(name) };
+    Value::Instance(Rc::new(Instance { type_name, case, fields, is_error: false, cause: None }))
 }
 
 /// A new block owned once, with a temporary's value, failing like the interpreter when the
@@ -742,7 +745,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             }
         }
         (Element::Struct { name, fields }, Value::Instance(instance))
-            if instance.type_name == *name && instance.case.is_none() =>
+            if *instance.type_name == *type_name(name) && instance.case.is_none() =>
         {
             // An error is written like a struct: native code holds it as a block of its layout.
             for (field, element) in fields {
@@ -750,7 +753,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             }
         }
         (Element::Enum { name, cases, words: size }, Value::Instance(instance))
-            if instance.type_name == *name && !instance.is_error =>
+            if *instance.type_name == *type_name(name) && !instance.is_error =>
         {
             let case = instance.case.as_ref()?;
             let at = cases.iter().position(|(written, _)| written == case)?;

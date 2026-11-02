@@ -431,6 +431,17 @@ impl FnCx<'_> {
 
     /// `x in items`: `x` has to be the kind of thing `items` holds.
     fn contains(&mut self, item: &Type, collection: &Type, span: Span) {
+        // A type's own `def in`, which `item in value` calls, as `def <` is called for `<`.
+        if let Some(name) = collection.type_name()
+            && let Some((key, _)) = self.checker.program.method(name, "in")
+        {
+            let found = self.call_operator(collection, &key, item, span);
+            if !matches!(found, Type::Bool | Type::Unknown) {
+                let message = format!("`{name}.in` gives back {}, but `in` needs a bool", a(&found));
+                self.error(Diagnostic::new(message, span).with_help("make `def in` return `bool`"));
+            }
+            return;
+        }
         let held = match collection {
             Type::List(held) | Type::Buffer(held) | Type::Set(held) | Type::Dict(held, _) => {
                 held.as_ref().clone()

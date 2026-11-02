@@ -205,7 +205,7 @@ def main(stdout: Stdout):
         item = item * 2
     stdout.print(walked[0], walked[2], before[0], before[2])
     mut grows = [1, 2]
-    for item in grows:
+    for item in copy(grows):
         grows[0] = item + 10
         grows[1] = 40
     stdout.print(grows[0], grows[1])
@@ -705,7 +705,7 @@ def main(stdout: Stdout):
     pairs = enumerate(names)
     stdout.print(pairs.len(), pairs[1])
     mut grow = [1, 2, 3]
-    for at, n in enumerate(grow):
+    for at, n in enumerate(copy(grow)):
         grow.append(n + at)
     stdout.print(grow)
     for at, word in enumerate(["a", "b"]):

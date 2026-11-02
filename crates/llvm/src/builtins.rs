@@ -569,6 +569,7 @@ impl Emit<'_, '_, '_> {
                 result(dest).and_then(|dest| self.sorted_by(dest, list, key, span))
             }
             ("list.pop", _) => self.pop(dest, args, span),
+            ("list.insert", _) => self.insert(args, "fennec_list_insert", span),
             ("list.remove_where", _) => self.remove_where(args, span),
             ("str.chars", [text]) => result(dest).and_then(|dest| self.chars(dest, text)),
             ("dict.get", _) => result(dest).and_then(|dest| self.dict_get(dest, args)),

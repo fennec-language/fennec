@@ -1357,6 +1357,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "sum"
                     | "sum.start"
                     | "list.pop"
+                    | "list.insert"
                     | "sorted.key"
                     | "list.remove_where"
                     | "result.expect"

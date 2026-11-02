@@ -24,5 +24,4 @@ def main(stdout: Stdout):
     mut list_b = copy(list_a)
     list_b.append(3)
     list_a[0] = 5
-    stdout.print(list_a, list_b, copy(7), copy("text"), copy(1.5))
-    stdout.print(copy(original) == original, copy(one).at.x)
+    stdout.print(list_a, list_b)

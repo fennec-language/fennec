@@ -11,7 +11,7 @@
 )]
 
 use fennec_interp::embed::{
-    aot, checks, dicts, eval, heap, io, lists, names, objects, regex, strings, temps,
+    aot, checks, dicts, eval, heap, io, json, lists, names, objects, regex, strings, temps,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
@@ -40,6 +40,8 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_int_power",
     "fennec_int_spec_text",
     "fennec_items",
+    "fennec_json_dumps",
+    "fennec_json_loads",
     "fennec_list_from_value",
     "fennec_list_insert",
     "fennec_list_remove",
@@ -64,6 +66,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_str_index",
     "fennec_str_print",
     "fennec_str_slice",
+    "fennec_str_split",
     "fennec_to_bool",
     "fennec_to_float",
     "fennec_to_int",
@@ -205,6 +208,7 @@ export! {
     fennec_case_of(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => objects::case_of(a0, a1, a2, a3);
     fennec_alloc(a0: i64) -> i64 => heap::alloc(a0);
     fennec_free(a0: i64) => heap::free(a0);
+    fennec_free_text(a0: i64) => heap::free_text(a0);
     fennec_set_abandon(a0: i64, a1: extern "C" fn(i64)) => heap::set_abandon(a0, a1);
     fennec_unshare(a0: i64) -> i64 => heap::unshare(a0);
     fennec_box_to_value(a0: i64) -> i64 => heap::to_value(a0);
@@ -213,6 +217,13 @@ export! {
     fennec_str_from_value(a0: i64, a1: i64, a2: i64) -> i64 => strings::from_value(a0, a1, a2);
     fennec_str_concat(a0: i64, a1: i64) -> i64 => strings::concat(a0, a1);
     fennec_str_append(a0: i64, a1: i64) -> i64 => strings::append(a0, a1);
+    fennec_str_upper(a0: i64) -> i64 => strings::upper(a0);
+    fennec_str_lower(a0: i64) -> i64 => strings::lower(a0);
+    fennec_str_replace(a0: i64, a1: i64, a2: i64) -> i64 => strings::replace(a0, a1, a2);
+    fennec_str_find(a0: i64, a1: i64) -> i64 => strings::find(a0, a1);
+    fennec_str_split(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::split(a0, a1, a2, a3);
+    fennec_json_dumps(a0: i64, a1: i64, a2: i64) -> i64 => json::dumps(a0, a1, a2);
+    fennec_json_loads(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => json::loads(a0, a1, a2, a3);
     fennec_str_with_room(a0: i64) -> i64 => strings::with_room(a0);
     fennec_str_char_at(a0: i64, a1: i64) -> i64 => strings::char_at(a0, a1);
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);

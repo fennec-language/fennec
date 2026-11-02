@@ -378,7 +378,7 @@ fn lookup(pairs: &crate::pairs::Pairs, key: &Value) -> Option<Value> {
     pairs.get(key).cloned()
 }
 
-fn str_method(text: &str, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+pub(crate) fn str_method(text: &str, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let words = |parts: Vec<&str>| Value::list(parts.into_iter().map(Value::str).collect());
     Ok(match (method, args) {
         ("code", []) => {

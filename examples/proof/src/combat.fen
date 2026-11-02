@@ -60,14 +60,19 @@ def heal(mut world: World, mut board: Scoreboard, actor: Id[Unit], target: Id[Un
     room = found.kind.most_health() - found.health
     mut amount = medic.power()
     # A medic carrying bandages uses one for a bigger heal.
+    mut used = -1
     for at, item in enumerate(medic.items):
         if item.heals > 0:
             amount += item.heals
-            world.units[actor].items.pop(at)
+            used = at
             break
+    team = medic.team
+    # Taken out once `medic` is done with, so the medic's items aren't copied.
+    if used >= 0:
+        world.units[actor].items.pop(used)
     given = amount if amount < room else room
     world.units[target].health += given
-    board.healed(medic.team, given)
+    board.healed(team, given)
 
 ## Takes the dead off the field, and keeps squads led by someone still standing.
 def bury(mut world: World, mut board: Scoreboard):

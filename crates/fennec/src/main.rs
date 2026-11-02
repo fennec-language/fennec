@@ -10,6 +10,7 @@ mod aot;
 mod bench;
 mod changes;
 mod copies;
+mod copy_rule;
 mod daemon;
 mod fallbacks;
 mod fix;

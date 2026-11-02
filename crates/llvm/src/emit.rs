@@ -338,6 +338,7 @@ impl<'p> Module<'_, 'p> {
             self_target,
             taken_at: BTreeMap::new(),
             found_entries: Vec::new(),
+            alone_slots: HashSet::new(),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -378,6 +379,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Where lookups since the last change found their keys: the dict's local, the key, and the
     /// entry or null.
     pub(crate) found_entries: Vec<(LocalId, Operand, String)>,
+    /// Slots of `mut` parameters made alone on the way in, that nothing here can share since.
+    alone_slots: HashSet<String>,
 }
 
 pub(crate) fn float_text(value: f64) -> String {
@@ -411,6 +414,11 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn declare(&mut self, line: &str) {
         self.module.declare(line);
+    }
+
+    /// Whether a slot's block was made alone on the way in and can't have been shared since.
+    pub(crate) fn alone_slots_contains(&self, place: &str) -> bool {
+        self.alone_slots.contains(place)
     }
 
     pub(crate) fn kind_of(&self, local: LocalId) -> Result<&Kind, String> {
@@ -490,6 +498,31 @@ impl Emit<'_, '_, '_> {
             let local = LocalId(at);
             if matches!(kind, Kind::List(_)) && self.known.alone_once_checked(local) {
                 self.check_alone(local);
+            }
+        }
+        // A `mut` parameter changed through more than once, which nothing here can share, is
+        // made alone once, on the way in, rather than at every change.
+        for at in 0..function.params {
+            let local = LocalId(at);
+            let changes = function
+                .blocks
+                .iter()
+                .flat_map(|block| &block.insts)
+                .filter(|inst| match &inst.kind {
+                    InstKind::SetField { object, .. } => *object == local,
+                    InstKind::SetIndex { object, path, .. } => *object == local && !path.is_empty(),
+                    _ => false,
+                })
+                .count();
+            if self.is_mut_param(local)
+                && matches!(kinds.get(at), Some(Kind::Boxed(_)))
+                && !self.known.is_shared(local)
+                && !self.known.written(local)
+                && changes > 1
+            {
+                let slot = self.slot(local);
+                self.alone_at(&slot, "fennec_unshare");
+                self.alone_slots.insert(slot);
             }
         }
         // Every caller passes the flag clear, so saying so lets a check after an inlined call

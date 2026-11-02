@@ -1,0 +1,4 @@
+from std import json
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps([1], names="camel"))

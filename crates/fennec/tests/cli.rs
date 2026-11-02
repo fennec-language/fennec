@@ -657,7 +657,10 @@ fn dev_copies_lists_what_may_cost_hot_code_first() {
     let printed = text(&output.stdout);
     let lines: Vec<&str> = printed.lines().filter(|line| line.contains(" in `")).collect();
     assert!(lines[0].contains("(in a loop): this f-string may allocate"), "{printed}");
-    assert!(printed.contains("may copy `xs`: snapshot still refers to it"), "{printed}");
+    assert!(
+        printed.contains("`xs` is copied here, since `snapshot` still holds it and is used again"),
+        "{printed}"
+    );
     assert!(!printed.contains("unused"), "only what `main` reaches: {printed}");
     assert!(printed.ends_with("of them in loops\n"), "{printed}");
 }
@@ -817,7 +820,7 @@ fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     assert!(clean.status.success(), "{}", text(&clean.stderr));
     assert!(text(&clean.stdout).contains("hint: "), "{}", text(&clean.stdout));
     assert!(
-        text(&clean.stdout).contains("may copy `items`: held still refers to it"),
+        text(&clean.stdout).contains("`items` is copied here, since `held` still holds it and is used again"),
         "{}",
         text(&clean.stdout)
     );
@@ -1301,5 +1304,29 @@ fn a_loop_changing_a_dict_in_a_struct_stays_small() {
     )
     .unwrap();
     peak_is_under(&program, 200_000).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A copy made each time round a loop without saying so is a compile error, which names where
+/// the other holder is used again. `copy(...)` says it's on purpose.
+#[test]
+fn a_copy_each_time_round_a_loop_has_to_be_written() {
+    let dir = scratch("copy-rule").unwrap();
+    let program = dir.join("loop.fen");
+    let source = "def main(stdout: Stdout):\n    mut h = [1, 2]\n    for _ in range(3):\n        k = h\n        \
+                  h.append(k.len())\n        stdout.print(k.len(), h.len())\n";
+    std::fs::write(&program, source).unwrap();
+    for command in ["check", "run"] {
+        let output = fennec(&[command, program.to_str().unwrap()], "").unwrap();
+        assert!(!output.status.success(), "{command}");
+        let printed = text(&output.stderr);
+        assert!(
+            printed.contains("`h` is copied each time round the loop, since `k` still holds it"),
+            "{printed}"
+        );
+    }
+    std::fs::write(&program, source.replace("k = h", "k = copy(h)")).unwrap();
+    let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
+    assert_eq!(text(&output.stdout), "2 3\n3 4\n4 5\n");
     std::fs::remove_dir_all(dir).unwrap();
 }

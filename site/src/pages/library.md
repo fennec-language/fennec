@@ -19,7 +19,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Files and the OS | `fs`, `path`, `env`, `process`, `cli` |
 | Data formats | `json`, `toml`, `pack`, `csv`, `base64`, `compress` |
 | Networking | `net`: TCP, UDP, TLS, an HTTP client and server, and WebSocket; `url` |
-| Security | `crypto`: hashes and HMAC; `uuid`. Secure random bytes come from the `Entropy` capability |
+| Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC and comparing secrets; `uuid`. Secure random bytes come from the `Entropy` capability (planned) |
 | Storage | `sql`: one interface, with drivers as first-party kits |
 | Diagnostics | `log`, `profile`, `test` |
 | Games | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat4`, `IdMap`, `simd`, `layout`; later `audio` and `gpu` |

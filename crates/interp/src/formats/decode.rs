@@ -201,9 +201,11 @@ impl Interp<'_> {
         (owner, at): (&str, &str),
         span: Span,
     ) -> Result<Vec<CallArg>, Misfit> {
+        let names = self.reading.names;
+        let ignore_extra = self.reading.extra == super::Extra::Ignore;
         for (key, _) in pairs {
-            let known = matches!(key, Value::Str(key) if fields.iter().any(|field| *field.name == **key));
-            if !known {
+            let known = matches!(key, Value::Str(key) if fields.iter().any(|field| names.spell(&field.name) == **key));
+            if !known && !ignore_extra {
                 return Err(format!(
                     "{owner} has no field {}, but {} has one",
                     crate::format::repr(key),
@@ -213,8 +215,9 @@ impl Interp<'_> {
         }
         let mut args = Vec::new();
         for field in fields {
-            let found = pairs.iter().find(|(key, _)| matches!(key, Value::Str(key) if **key == *field.name));
-            let place = inside(at, &field.name);
+            let wire = names.spell(&field.name);
+            let found = pairs.iter().find(|(key, _)| matches!(key, Value::Str(key) if **key == *wire));
+            let place = inside(at, &wire);
             let value = match (found, &field.ty, &field.default) {
                 (Some((_, value)), Some(ty), _) => {
                     self.decode(value.clone(), &substituted(ty, given), &place, span)?

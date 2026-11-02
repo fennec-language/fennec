@@ -1,0 +1,9 @@
+shared Counter:
+    count = 0
+
+    def show(self, out: Stdout):
+        out.print(self.count)
+
+def main(stdout: Stdout):
+    counter = Counter()
+    counter.show(stdout)

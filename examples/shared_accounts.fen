@@ -30,5 +30,7 @@ def main(stdout: Stdout):
         transfer(checking, target=savings, amount=50),
     )
     same.add(5)
+    mut summary = ""
     with savings, checking as seen, other:
-        stdout.print(f"{seen.total} and {other.balance()}")
+        summary = f"{seen.total} and {other.balance()}"
+    stdout.print(summary)

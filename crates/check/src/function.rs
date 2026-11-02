@@ -92,6 +92,9 @@ pub(crate) struct FnCx<'c> {
     /// The fields and method calls in the chain before an `else`, which may be on a value
     /// that might be missing.
     pub(crate) else_chain: std::collections::HashSet<(u32, u32)>,
+    /// Which locks are held while checking a lock body, a `shared` type's method or a `with`
+    /// block that locks handles, for messages: "while `x` is locked".
+    pub(crate) lock: Option<String>,
 }
 
 impl<'c> FnCx<'c> {
@@ -119,6 +122,7 @@ impl<'c> FnCx<'c> {
             expecting: None,
             tail: None,
             else_chain: std::collections::HashSet::new(),
+            lock: None,
         }
     }
 
@@ -158,6 +162,11 @@ impl<'c> FnCx<'c> {
         }
     }
 
+    /// The type found for the expression written at a span, if it's been checked.
+    pub(crate) fn recorded(&self, span: Span) -> Option<Type> {
+        self.exprs.iter().rev().find(|(at, _)| *at == span).map(|(_, ty)| ty.clone())
+    }
+
     /// Records an expression's type for the typed tree.
     pub(crate) fn record(&mut self, span: Span, ty: &Type) {
         self.exprs.push((span, ty.clone()));
@@ -188,6 +197,12 @@ impl<'c> FnCx<'c> {
                 cx.check_arg(param, &actual, default.span);
             }
             cx.declare_as(&param.name, param.ty.clone(), param.is_mut, Origin::Param, written.span);
+        }
+        // A `shared` type's method holds its lock for the whole call.
+        if def.params.first().is_some_and(|param| param.is_self)
+            && params.first().is_some_and(|param| cx.checker.program.is_shared(&param.ty))
+        {
+            cx.lock = Some("while `self` is locked".to_owned());
         }
         cx.tail = if cx.generator { None } else { cx.declared.clone() };
         let flow = cx.stmts(&def.body, true);

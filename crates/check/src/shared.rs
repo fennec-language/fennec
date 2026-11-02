@@ -12,6 +12,11 @@ use crate::program::Program;
 use crate::stmt::Flow;
 use crate::types::{Type, a};
 
+/// Whether a type is a capability, through which all I/O goes.
+fn is_capability(name: &str) -> bool {
+    matches!(name, "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" | "Entropy")
+}
+
 impl Program {
     /// Whether a type is `shared`.
     pub(crate) fn is_shared(&self, ty: &Type) -> bool {
@@ -115,6 +120,35 @@ impl FnCx<'_> {
                 );
             }
         }
+        let locked: Vec<&WithName> = names
+            .iter()
+            .zip(&types)
+            .filter(|(_, ty)| self.checker.program.is_shared(ty))
+            .map(|(held, _)| held)
+            .collect();
+        if let (Some(held), Some(first)) = (
+            self.lock.clone(),
+            items
+                .iter()
+                .find(|item| self.recorded(item.span).is_some_and(|ty| self.checker.program.is_shared(&ty))),
+        ) {
+            self.error(
+                Diagnostic::new(format!("this `with` takes another lock {held}"), first.span).with_help(
+                    "locks never nest: lock them together in one `with`, like `with a, b as mut x, mut y:`",
+                ),
+            );
+        }
+        let outer = if locked.is_empty() {
+            self.lock.clone()
+        } else {
+            let names: Vec<String> = locked.iter().map(|held| format!("`{}`", held.name)).collect();
+            let (names, verb) = match names.as_slice() {
+                [one] => (one.clone(), "is"),
+                [rest @ .., last] => (format!("{} and {last}", rest.join(", ")), "are"),
+                [] => (String::new(), "is"),
+            };
+            self.lock.replace(format!("while {names} {verb} locked"))
+        };
         self.push(false);
         for (held, ty) in names.iter().zip(types) {
             let origin = if self.checker.program.is_shared(&ty) { Origin::Locked } else { Origin::Local };
@@ -122,7 +156,59 @@ impl FnCx<'_> {
         }
         let flow = self.stmts(body, used);
         self.pop();
+        self.lock = outer;
         flow
+    }
+
+    /// Whether an expression is a name that holds its handle's lock already: `self` in a
+    /// `shared` type's method, or a name a `with` block gave a handle it locked.
+    fn holds_lock(&self, expr: &Expr) -> bool {
+        matches!(&expr.kind, ExprKind::Name(name) if name == "self" || self.origin(name) == Some(Origin::Locked))
+    }
+
+    /// Reports taking a `shared` handle's lock inside a lock body, which could wait forever on a
+    /// lock another task holds while it waits for this one. `what` takes it: "calling `add`".
+    pub(crate) fn locks_again(&mut self, object: &Expr, ty: &Type, what: &str) {
+        let Some(held) = self.lock.clone() else { return };
+        if !self.checker.program.is_shared(ty) || self.holds_lock(object) {
+            return;
+        }
+        let handle = fennec_syntax::dotted(object).unwrap_or_else(|| "a handle".to_owned());
+        self.error(Diagnostic::new(format!("{what} locks `{handle}` {held}"), object.span).with_help(
+            "locks never nest: lock them together in one `with`, like `with a, b as mut x, mut y:`, and use the names it gives",
+        ));
+    }
+
+    /// Reports a `shared` handle passed to a call inside a lock body, which could lock it again.
+    pub(crate) fn handle_passed(&mut self, arg: &Expr, ty: &Type) {
+        let Some(held) = self.lock.clone() else { return };
+        if !self.checker.program.is_shared(ty) {
+            return;
+        }
+        self.error(
+            Diagnostic::new(format!("a `shared` handle can't be passed to a call {held}"), arg.span)
+                .with_help("the call could lock it again: do that work here, through the locked name, or after the block"),
+        );
+    }
+
+    /// Reports what a lock body can't do: I/O, `?`, `fail` and `yield`. Each could leave the lock
+    /// held for long, or leave what it guards half changed.
+    pub(crate) fn not_under_lock(&mut self, what: &str, span: fennec_syntax::Span, help: &str) {
+        if let Some(held) = self.lock.clone() {
+            self.error(Diagnostic::new(format!("{what} {held}"), span).with_help(help));
+        }
+    }
+
+    /// Reports a capability used inside a lock body: everything it does is I/O.
+    pub(crate) fn io_under_lock(&mut self, expr: &Expr, ty: &Type) {
+        let (ExprKind::Name(name), Type::Named(capability)) = (&expr.kind, ty) else { return };
+        if is_capability(capability) {
+            self.not_under_lock(
+                &format!("`{name}` does I/O, which can't happen"),
+                expr.span,
+                "do the I/O before or after the lock, with what the block works out",
+            );
+        }
     }
 
     /// The `shared` value a place changes through without one of its methods, which would skip

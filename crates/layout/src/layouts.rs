@@ -120,7 +120,8 @@ impl Layouts {
             one_word_optionals: true,
             native_buffers: true,
             text_headers,
-            inline_counted: true,
+            // `FENNEC_INLINE_STRUCTS=0` boxes them again, in case one shows a problem.
+            inline_counted: std::env::var_os("FENNEC_INLINE_STRUCTS").is_none_or(|set| set != "0"),
             ..Layouts::default()
         };
         for (name, def) in definitions {

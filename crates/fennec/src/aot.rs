@@ -162,10 +162,16 @@ fn link_objects(objects: &[Vec<u8>], output: &Path) -> Result<std::time::Duratio
         paths.push(path);
     }
     let started = Instant::now();
+    // The optimization experiment's step 3 has the runtime in the object too: the archive's
+    // copy of std's start-up globals then repeats the object's, and the first is kept.
+    let in_object =
+        std::env::var("FENNEC_EXP_STEP").ok().and_then(|step| step.parse::<u32>().ok()).unwrap_or(0) >= 3
+            && cfg!(target_os = "linux");
     let linked = Command::new("cc")
         .args(&paths)
         .arg(&runtime)
         .args(SYSTEM_LIBRARIES)
+        .args(if in_object { vec!["-Wl,--allow-multiple-definition"] } else { Vec::new() })
         // `FENNEC_SANITIZE=address` links in AddressSanitizer's runtime.
         .args(fennec_llvm::sanitizing().then_some("-fsanitize=address"))
         .arg("-o")

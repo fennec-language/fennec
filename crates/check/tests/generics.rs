@@ -428,3 +428,53 @@ fn a_program_cant_extend_dict_or_set() {
         );
     }
 }
+
+const SOURCE: &str = "interface Source:
+    def field[T](mut self, at: int) -> T?
+
+struct Fake:
+    n = 0
+
+    def field[T](mut self, at: int) -> T?:
+        self.n += at
+        None
+
+def read[S: Source](mut src: S) -> int:
+    src.field[int](0) else 7
+
+";
+
+#[test]
+fn a_method_takes_its_own_types_in_brackets() {
+    let text = format!(
+        "{SOURCE}struct Pair[A]:\n    first: A\n\n    def with_second[B](self, second: B) -> (A, B):\n        \
+         (self.first, second)\n\ndef main(stdout: Stdout):\n    mut fake = Fake()\n    \
+         stdout.print(read(mut fake), fake.field[str](2) else \"none\", Pair(first=1).with_second[str](\"two\"))\n"
+    );
+    assert_eq!(problems(&text), Vec::<String>::new());
+    let text = format!(
+        "{SOURCE}def main(stdout: Stdout):\n    mut fake = Fake()\n    stdout.print(fake.field[int, str](1))\n"
+    );
+    assert_eq!(
+        problems(&text),
+        ["`field` takes 1 type in brackets, but this gives 2 @ fake.field[int, str](1)"]
+    );
+    let text = format!(
+        "{SOURCE}def main(stdout: Stdout):\n    mut fake = Fake()\n    x: str = fake.field[int](1) else 0\n"
+    );
+    assert_eq!(problems(&text).len(), 1);
+}
+
+#[test]
+fn an_interfaces_generic_method_needs_a_generic_method_to_fit() {
+    let text = format!(
+        "{SOURCE}struct Plain:\n    n = 0\n\n    def field(mut self, at: int) -> int?:\n        None\n\n\
+         def main(stdout: Stdout):\n    mut plain = Plain()\n    stdout.print(read(mut plain))\n"
+    );
+    assert_eq!(
+        problems(&text),
+        [
+            "`Plain` isn't a `Source`: it has no `field[T](mut self, at: int) -> T?`. Its `field` returns an int? @ read(mut plain)"
+        ]
+    );
+}

@@ -239,6 +239,32 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_struct_copied_into_a_block_crosses_as_a_value() {
+        let point = Element::Struct {
+            name: "Point".into(),
+            fields: vec![("x".into(), Element::Int), ("name".into(), Element::Str)],
+        };
+        let tables =
+            Tables { shapes: vec![Rc::new(point), Rc::new(Element::Str)], str_shape: 1, ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let block = heap::alloc(0);
+        set_word(block, FIELDS, 7);
+        set_word(block, FIELDS + 8, u64::try_from(with(|state| heap::text_address(state, "fox"))).unwrap());
+        let lent = heap::to_value(block);
+        // As the interpreter holds it, as `json.loads` would give it.
+        let value = with(|state| {
+            let plain = state.temp(lent);
+            Some(state.push(plain))
+        })
+        .unwrap();
+        let back = heap::from_value(value, 0, 0, 0);
+        assert_ne!(back, block);
+        assert_eq!(word(back, FIELDS), Some(7));
+        assert_eq!(text_of(i64::try_from(word(back, FIELDS + 8).unwrap()).unwrap()), "fox");
+        finish();
+    }
+
+    #[test]
     fn numbers_format_without_a_temporary() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
         start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();

@@ -289,11 +289,14 @@ impl<'l> Registry<'l> {
         Some(number)
     }
 
-    /// The shape number of a boxed value's or a string's block.
+    /// The shape number of a boxed value's or a string's block, or of a block holding a
+    /// plain struct, enum or tuple laid out as it is inline: a backend copies one into such a
+    /// block to hand it to `fennec_box_to_value`, and out of what `fennec_box_from_value`
+    /// gives back.
     #[must_use]
     pub fn shape(&self, ty: Ty) -> Option<u64> {
         match ty {
-            Ty::Boxed(id) => Some(u64::from(id)),
+            Ty::Boxed(id) | Ty::Struct(id) => Some(u64::from(id)),
             Ty::Str => Some(self.tables.str_shape),
             _ => None,
         }

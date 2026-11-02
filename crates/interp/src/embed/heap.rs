@@ -104,6 +104,9 @@ impl Counts {
 /// The shape of a cell: a block holding an interpreter value for a boxed value's field.
 const CELL_SHAPE: u64 = u64::MAX - 1;
 
+/// The shape of a capability's block (see `super::capabilities`).
+pub const CAPABILITY_SHAPE: u64 = u64::MAX - 2;
+
 /// Words a cell takes: owner count, shape and the number of its value.
 const CELL_WORDS: usize = 3;
 
@@ -428,6 +431,10 @@ fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut
 /// Adds the addresses of a block's boxed fields to `found`.
 fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
     let Some(shape) = block.get(1).copied() else { return };
+    if shape == CAPABILITY_SHAPE {
+        found.extend(block.get(3).copied().filter(|list| *list != 0));
+        return;
+    }
     if shape >= state.tables.str_shape {
         if is_text(state, block) {
             return;
@@ -586,6 +593,9 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     let Some(block) = state.heap.block(address).map(<[u64]>::to_vec) else { return Value::None };
     if let Some(value) = cell_value(state, &block) {
         return state.expanded(value);
+    }
+    if block.get(1) == Some(&CAPABILITY_SHAPE) {
+        return super::capabilities::read(state, &block);
     }
     if is_text(state, &block) {
         let text: Rc<str> = Rc::from(block_text(&block));

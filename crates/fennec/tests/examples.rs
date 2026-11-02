@@ -221,9 +221,8 @@ fn a_run_checking_only_what_it_reaches_compiles_the_same() {
             .unwrap();
             // A std iter the reached run fused away, and only that, is left out of the whole one.
             let mut whole_interpreted = whole.interpreted.clone();
-            whole_interpreted.retain(|key| {
-                !(FUSED_STD_ITERS.contains(&key.as_str()) && !reached.interpreted.contains(key))
-            });
+            whole_interpreted
+                .retain(|key| !FUSED_STD_ITERS.contains(&key.as_str()) || reached.interpreted.contains(key));
             assert_eq!(
                 (reached.interpreted, reached.handed_over, reached.with_frames),
                 (whole_interpreted, whole.handed_over, whole.with_frames),

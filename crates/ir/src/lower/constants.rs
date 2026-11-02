@@ -19,7 +19,7 @@ pub(super) struct Written<'a> {
 /// The constants a module can read: its own, and the standard library's where it doesn't
 /// have one of that name.
 pub(super) fn written(module: &Module) -> HashMap<&str, Written<'_>> {
-    let library = fennec_syntax::prelude_modules().unwrap_or_default();
+    let library = fennec_syntax::prelude_to_run().unwrap_or_default();
     let mut found = HashMap::new();
     for (items, prelude) in library.iter().map(|module| (&module.items, true)).chain([(&module.items, false)])
     {

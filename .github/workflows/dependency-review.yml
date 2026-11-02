@@ -6,6 +6,13 @@ on: pull_request
 permissions:
   contents: read
 
+# A newer push to the same pull request cancels its older run. Anything else, like a push to
+# main or a merge group, gets a group of its own: a group keeps only its newest waiting run, so
+# sharing one would drop some.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   review:
     name: Review new dependencies

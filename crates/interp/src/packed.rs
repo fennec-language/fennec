@@ -29,6 +29,9 @@ pub enum Element {
     /// A string inside a boxed value, by the address of its block. Packed lists never hold
     /// these either.
     Str,
+    /// A string held in place as its 24-byte header: up to 23 bytes of text, or a block's
+    /// address (see `embed::text`). Packed lists never hold these.
+    Text,
     /// An interpreter value inside a boxed value, by the address of a cell holding it. Packed
     /// lists never hold these either.
     Object,
@@ -53,6 +56,7 @@ impl Element {
         match self {
             Element::Struct { fields, .. } => fields.iter().map(|(_, field)| field.words()).sum(),
             Element::Enum { words, .. } => *words,
+            Element::Text => 3,
             _ => 1,
         }
     }
@@ -129,6 +133,10 @@ fn unpack_item<'w>(element: &Element, words: &mut dyn Iterator<Item = &'w u64>) 
         Element::Bool => Value::Bool(word(words) != 0),
         Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
             word(words);
+            Value::None
+        }
+        Element::Text => {
+            words.take(3).for_each(drop);
             Value::None
         }
         Element::Struct { name, fields } => {

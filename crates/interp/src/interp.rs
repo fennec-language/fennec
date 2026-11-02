@@ -125,7 +125,7 @@ impl<'out> Interp<'out> {
             reading: crate::formats::Reading::default(),
             built_in_methods: HashMap::new(),
         };
-        for module in fennec_syntax::prelude_modules()? {
+        for module in fennec_syntax::prelude_to_run()? {
             interp.load(module)?;
         }
         interp.prelude_imports = std::mem::take(&mut interp.imports);

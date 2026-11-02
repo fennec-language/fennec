@@ -26,7 +26,8 @@ fn fixed_words(element: &Element, at: &mut usize, found: &mut Vec<usize>) -> Opt
                 fixed_words(field, at, found)?;
             }
         }
-        Element::Enum { .. } => return None,
+        // Whether a string's header holds a block depends on the string, as an enum's case does.
+        Element::Enum { .. } | Element::Text => return None,
         Element::Int | Element::Float | Element::Bool => *at += 1,
     }
     Some(())

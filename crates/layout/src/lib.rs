@@ -236,8 +236,11 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Float => Element::Float,
         Ty::Bool => Element::Bool,
         Ty::Boxed(id) => Element::Boxed(usize::try_from(id).ok()?),
+        Ty::Str if layouts.text_headers() => Element::Text,
         Ty::Str => Element::Str,
         Ty::Obj => Element::Object,
+        // An optional's one word is a block's address, a string's too.
+        Ty::Maybe(Block::Str) => Element::Maybe(Rc::new(Element::Str)),
         Ty::Maybe(block) => Element::Maybe(Rc::new(describe(layouts, block.ty())?)),
         Ty::Block(id) => describe(layouts, layouts.block(id)?)?,
         Ty::List(item) => Element::List(Rc::new(describe(layouts, item.ty())?)),
@@ -280,6 +283,7 @@ impl<'l> Registry<'l> {
         let tables = Tables {
             shapes: shapes(layouts),
             str_shape: u64::try_from(layouts.len()).unwrap_or(0),
+            text_headers: layouts.text_headers(),
             ..Tables::default()
         };
         Self { layouts, tables, elements: HashMap::new(), strings: HashMap::new() }

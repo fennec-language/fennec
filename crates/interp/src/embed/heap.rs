@@ -376,12 +376,24 @@ pub fn ascii_table(tables: &mut Tables) -> i64 {
     i64::try_from(tables.ascii.as_ptr().addr()).unwrap_or(0)
 }
 
+/// The three words of a string's header, starting at `at`.
+fn header_at(words: &[u64], at: usize) -> Option<[u64; 3]> {
+    let [a, b, c] = *words.get(at..at + 3)? else { return None };
+    Some([a, b, c])
+}
+
 /// Where each boxed field of a value sits among its words, from `at`.
 fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<usize>) {
     match element {
         Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
             found.push(*at);
             *at += 1;
+        }
+        Element::Text => {
+            if header_at(words, *at).and_then(|header| super::text::block_of(&header)).is_some() {
+                found.push(*at);
+            }
+            *at += 3;
         }
         Element::Struct { fields, .. } => {
             for (_, field) in fields {
@@ -451,6 +463,11 @@ fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut
             found.extend(words.get(*at).copied().filter(|address| *address != 0));
             *at += 1;
         }
+        Element::Text => {
+            let held = header_at(words, *at).and_then(|header| super::text::block_of(&header));
+            found.extend(held.filter(|address| *address != 0));
+            *at += 3;
+        }
         Element::Struct { fields, .. } => {
             for (_, field) in fields {
                 boxed_addresses(field, words, at, found);
@@ -472,7 +489,12 @@ fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut
 /// Whether values of a kind, laid out in place, hold blocks.
 pub(super) fn holds_blocks(element: &Element) -> bool {
     match element {
-        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => true,
+        Element::Boxed(_)
+        | Element::Str
+        | Element::Text
+        | Element::List(_)
+        | Element::Object
+        | Element::Maybe(_) => true,
         Element::Struct { fields, .. } => fields.iter().any(|(_, field)| holds_blocks(field)),
         Element::Enum { cases, .. } => {
             cases.iter().any(|(_, fields)| fields.iter().any(|(_, field)| holds_blocks(field)))
@@ -696,6 +718,10 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
         Element::Float => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
         Element::Boxed(_) | Element::Str | Element::Object => read_block(state, word(words)),
+        Element::Text => {
+            let header = [word(words), word(words), word(words)];
+            Value::str(&super::text::text_of(state, &header))
+        }
         // Only the top of a value the interpreter is handed may be a packed list.
         Element::List(_) => read_block(state, word(words)).unpacked(),
         Element::Maybe(inner) => match word(words) {
@@ -805,6 +831,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             words.push(u64::try_from(address).ok()?);
         }
         (Element::Str, Value::Str(text)) => words.push(u64::try_from(text_address(state, text)).ok()?),
+        (Element::Text, Value::Str(text)) => words.extend(super::text::header(state, text)),
         (Element::Object, value) => words.push(u64::try_from(new_cell(state, value.clone())).ok()?),
         (Element::Maybe(_), Value::None) => words.push(0),
         (Element::Maybe(inner), value) => write(state, inner, value, words)?,

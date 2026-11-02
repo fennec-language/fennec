@@ -6,6 +6,8 @@ name: Mutation tests
 # demand, the whole compiler is checked across shards.
 on:
   pull_request:
+    # A draft is skipped, so it runs once the pull request is ready for review.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths: ["crates/**", "examples/**", "Cargo.*"]
   schedule:
     - cron: "17 6 * * 3"
@@ -13,6 +15,13 @@ on:
 
 permissions:
   contents: read
+
+# A newer push to the same pull request cancels its older run. Anything else, like a push to
+# main or a merge group, gets a group of its own: a group keeps only its newest waiting run, so
+# sharing one would drop some.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,7 +31,7 @@ env:
 jobs:
   changed-code:
     name: Mutate the changed code
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

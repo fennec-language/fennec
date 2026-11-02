@@ -58,6 +58,9 @@ pub struct Layouts {
     /// Whether a `Buffer[T]` is laid out as a list's block, for a backend that does its
     /// methods. Otherwise it's an object the interpreter holds.
     native_buffers: bool,
+    /// Whether a `str` is held in place as its 24-byte header (see the runtime's `text`),
+    /// rather than as its block's address.
+    text_headers: bool,
     /// The types `Ty::Block` names, by number.
     blocks: std::cell::RefCell<Vec<Ty>>,
 }
@@ -108,7 +111,10 @@ impl Layouts {
             enums: HashMap::new(),
             definitions: definitions.iter().map(|(name, def)| (name.as_str(), def)).collect(),
         };
-        let mut layouts = Layouts { one_word_optionals: true, native_buffers: true, ..Layouts::default() };
+        // Strings are held as headers only once the backend that reads them does.
+        let text_headers = std::env::var_os("FENNEC_INLINE_TEXT").is_some();
+        let mut layouts =
+            Layouts { one_word_optionals: true, native_buffers: true, text_headers, ..Layouts::default() };
         for (name, def) in definitions {
             if let Written::Enum(cases) = def {
                 for (case, _) in cases {
@@ -306,6 +312,7 @@ impl Layouts {
         for (name, ty, default) in fields {
             let size = match ty {
                 Ty::Struct(id) => self.get(id)?.size,
+                Ty::Str if self.text_headers => 3 * WORD,
                 _ => WORD,
             };
             placed.push(Field { name, ty, offset, default });
@@ -351,6 +358,12 @@ impl Layouts {
 
     pub fn get(&self, id: u32) -> Option<&Layout> {
         self.all.get(usize::try_from(id).ok()?)
+    }
+
+    /// Whether a `str` is held in place as its 24-byte header.
+    #[must_use]
+    pub fn text_headers(&self) -> bool {
+        self.text_headers
     }
 
     /// The type a `Ty::Block` names.

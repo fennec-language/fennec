@@ -293,6 +293,7 @@ impl Encode for Element {
                 shape.encode(to);
             }
             Element::Str => to.tag(5),
+            Element::Text => to.tag(10),
             Element::Object => to.tag(8),
             Element::Maybe(inner) => {
                 to.tag(9);
@@ -321,6 +322,7 @@ impl Decode for Element {
             3 => Element::Struct { name: Decode::decode(from)?, fields: Decode::decode(from)? },
             4 => Element::Boxed(Decode::decode(from)?),
             5 => Element::Str,
+            10 => Element::Text,
             8 => Element::Object,
             9 => Element::Maybe(Decode::decode(from)?),
             7 => Element::List(Decode::decode(from)?),
@@ -360,6 +362,7 @@ impl Image {
         tables.elements.encode(&mut to);
         tables.shapes.encode(&mut to);
         tables.str_shape.encode(&mut to);
+        tables.text_headers.encode(&mut to);
         self.literals.encode(&mut to);
         to.into_bytes()
     }
@@ -380,6 +383,7 @@ impl Image {
             elements: Decode::decode(from)?,
             shapes: Decode::decode(from)?,
             str_shape: Decode::decode(from)?,
+            text_headers: Decode::decode(from)?,
             ..Tables::default()
         };
         let literals = Decode::decode(from)?;

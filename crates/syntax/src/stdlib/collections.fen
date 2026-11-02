@@ -59,8 +59,9 @@ struct Deque[T]:
     def items(self) -> list[T]:
         [self.slots[(self.head + at) % self.slots.len()] for at in range(self.count)]
 
-    def iter(self) -> list[T]:
-        self.items()
+    def iter(self) -> Iterator[T]:
+        for at in range(self.count):
+            yield self.slots[(self.head + at) % self.slots.len()]
 
     ## Makes room for one more item, doubling the slots when they're full. `filler` fills
     ## the new slots.
@@ -217,8 +218,9 @@ struct Counter[T: Hashable]:
     def items(self) -> list[(T, int)]:
         self.counts.items()
 
-    def iter(self) -> list[T]:
-        self.counts.keys()
+    def iter(self) -> Iterator[T]:
+        for item in self.counts:
+            yield item
 
 ## Many small lists stored as one: every item in a single list, and a table of where each
 ## inner list starts. However many lists it holds, that's two blocks of memory, where a
@@ -282,8 +284,9 @@ struct Packed[T]:
     def lists(self) -> list[list[T]]:
         [list(self[at]) for at in range(self.len())]
 
-    def iter(self) -> list[list[T]]:
-        self.lists()
+    def iter(self) -> Iterator[list[T]]:
+        for at in range(self.len()):
+            yield list(self[at])
 
 ## Moving a node under itself or one of its descendants.
 error TreeCycle:
@@ -586,8 +589,21 @@ struct SortedMap[K: Ordered, V]:
     def values(self) -> list[V]:
         [value for _, value in self.items()]
 
-    def iter(self) -> list[K]:
-        self.keys()
+    ## The keys from the smallest, walking down the tree with a trail of where each node on
+    ## the way got to.
+    def iter(self) -> Iterator[K]:
+        mut trail: list[(int, int)] = []
+        self._descend(self._root, mut trail)
+        while trail.len() > 0:
+            at, spot = trail[-1]
+            node = self._nodes[at]
+            if spot == node.keys.len():
+                trail.pop()
+                continue
+            trail[-1] = (at, spot + 1)
+            yield node.keys[spot]
+            if node.children.len() > 0:
+                self._descend(node.children[spot + 1], mut trail)
 
     def clear(mut self):
         self._nodes = []
@@ -723,6 +739,15 @@ struct SortedMap[K: Ordered, V]:
             node = self._nodes[node.children[-1]]
         (node.keys[-1], node.values[-1])
 
+    ## Goes down the first children from `at` to a leaf, adding each node to `trail`.
+    def _descend(self, start: int, mut trail: list[(int, int)]):
+        mut at = start
+        while at >= 0:
+            trail.append((at, 0))
+            children = self._nodes[at].children
+            if children.len() == 0: return
+            at = children[0]
+
     def _walk(self, at: int, mut found: list[(K, V)]):
         node = self._nodes[at]
         for i in range(node.keys.len()):
@@ -822,8 +847,9 @@ struct SortedSet[T: Ordered]:
     def items(self) -> list[T]:
         self._items.keys()
 
-    def iter(self) -> list[T]:
-        self.items()
+    def iter(self) -> Iterator[T]:
+        for item in self._items:
+            yield item
 
     def clear(mut self):
         self._items.clear()
@@ -936,8 +962,9 @@ struct Grid[T]:
         [self.row(y) for y in range(self.height)]
 
     ## Every cell, row by row from the top left.
-    def iter(self) -> list[T]:
-        self._cells
+    def iter(self) -> Iterator[T]:
+        for cell in self._cells:
+            yield cell
 
     def _spot(self, at: (int, int)) -> int:
         assert self.contains(at)

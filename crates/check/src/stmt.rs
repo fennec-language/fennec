@@ -211,6 +211,21 @@ impl FnCx<'_> {
         if forever { Flow::exit() } else { Flow::unit() }
     }
 
+    /// `for mut` over a type looped through its own `def iter`, which makes its items one at a
+    /// time and has nowhere to write a change back, so the change would be lost.
+    fn mut_through_iter(&mut self, ty: &Type, span: fennec_syntax::Span) {
+        let ty = self.checker.settled(ty);
+        let (Type::Named(name) | Type::Generic(name, _)) = &ty else { return };
+        if self.checker.program.method(name, "iter").is_none() {
+            return;
+        }
+        let message =
+            format!("`for mut` can't change the items of a `{name}`, since its `iter` makes copies of them");
+        let help =
+            format!("change them through a method of `{name}`, or loop with `for mut` over what it holds");
+        self.error(Diagnostic::new(message, span).with_help(help));
+    }
+
     fn for_stmt(
         &mut self,
         names: &[String],
@@ -231,6 +246,9 @@ impl FnCx<'_> {
             self.writes_only_its_own(body, names);
         }
         let iter_ty = self.expr(iter);
+        if is_mut {
+            self.mut_through_iter(&iter_ty, iter.span);
+        }
         let item = self.item_type(&iter_ty, iter.span);
         let before = self.snapshot();
         self.push(false);

@@ -77,6 +77,39 @@ pub fn prelude_modules() -> Result<&'static [crate::Module], crate::Diagnostic> 
     }
 }
 
+/// The standard library as the engines run it: like [`prelude_modules`], with what the checker
+/// rewrites in a program's own code rewritten here too. `list[T]()`, `dict[K, V]()` and
+/// `set[T]()` say what an empty collection holds, for the checker; to run, each is just an empty
+/// one. Only the standard library is here, so `list`, `dict` and `set` are always the built-in
+/// ones.
+pub fn prelude_to_run() -> Result<&'static [crate::Module], crate::Diagnostic> {
+    static RUN: std::sync::OnceLock<Result<Vec<crate::Module>, crate::Diagnostic>> =
+        std::sync::OnceLock::new();
+    let made = RUN.get_or_init(|| {
+        let mut modules = prelude_modules()?.to_vec();
+        for module in &mut modules {
+            crate::visit::exprs_mut(module, &mut |expr| {
+                if is_typed_empty(expr) {
+                    crate::visit::empty_collection(expr);
+                }
+            });
+        }
+        Ok(modules)
+    });
+    match made {
+        Ok(modules) => Ok(modules),
+        Err(diagnostic) => Err(diagnostic.clone()),
+    }
+}
+
+/// Whether an expression makes an empty collection with its types written: `list[int]()`.
+fn is_typed_empty(expr: &crate::Expr) -> bool {
+    let ExprKind::Call { callee, args } = &expr.kind else { return false };
+    let ExprKind::Index { object, .. } = &callee.kind else { return false };
+    args.is_empty()
+        && matches!(&object.kind, ExprKind::Name(name) if matches!(name.as_str(), "list" | "dict" | "set"))
+}
+
 fn parse_prelude() -> Result<Vec<crate::Module>, crate::Diagnostic> {
     let mut parsed = Vec::new();
     for (name, source) in CORE {
@@ -164,6 +197,30 @@ pub fn given() -> impl Iterator<Item = (&'static str, &'static str)> {
 
 #[cfg(test)]
 mod tests {
+    /// How many typed empty collections, like `list[int]()`, a set of modules makes.
+    fn typed_empties(modules: &[crate::Module]) -> usize {
+        let mut found = 0;
+        for module in modules {
+            crate::visit::exprs_mut(&mut module.clone(), &mut |expr| {
+                found += usize::from(super::is_typed_empty(expr));
+            });
+        }
+        found
+    }
+
+    #[test]
+    fn the_library_runs_its_typed_empty_collections_as_empty_ones() {
+        assert!(typed_empties(super::prelude_modules().unwrap()) > 0, "the library writes some, like csv's");
+        assert_eq!(typed_empties(super::prelude_to_run().unwrap()), 0);
+        let mut module = crate::parse("def f():\n    a = dict[str, int]()\n    b = set[int]()\n").unwrap();
+        crate::visit::exprs_mut(&mut module, &mut |expr| {
+            if super::is_typed_empty(expr) {
+                crate::visit::empty_collection(expr);
+            }
+        });
+        assert_eq!(typed_empties(std::slice::from_ref(&module)), 0);
+    }
+
     #[test]
     fn a_mistake_in_a_module_says_where() {
         let problem = super::parse_module("csv", "struct A:\n    x = 1\n\ndef (\n").err().unwrap();

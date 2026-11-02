@@ -774,6 +774,9 @@ impl Emit<'_, '_, '_> {
             return self.dict_read(dest, &list, (key, value), index, span);
         }
         if kind == Kind::Str {
+            if self.headers() {
+                return self.header_index(dest, &list, index, span);
+            }
             return self.on_blocks([&list], |emit, [block]| emit.string_index(dest, &block, index, span));
         }
         let item = list_item(&kind)?;
@@ -1082,6 +1085,10 @@ impl Emit<'_, '_, '_> {
         let end = end.map(|end| self.operand(end)).transpose()?.map_or(lowest, |held| held.0);
         let part = self.temp();
         match kind {
+            Kind::Str if self.headers() => {
+                let part = self.header_slice(&object, (&start, &end), span);
+                return self.assign(dest, &part);
+            }
             Kind::Str => {
                 self.declare("declare ptr @fennec_str_slice(ptr, i64, i64, i64, i64) nounwind");
                 let (from, to) = (i64::from(span.start), i64::from(span.end));

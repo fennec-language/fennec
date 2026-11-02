@@ -106,8 +106,21 @@ impl Emit<'_, '_, '_> {
 
     /// The address of a key's entry, or zero.
     fn find(&mut self, dict: &str, word: Word, key: &str) -> String {
+        // A key held as a header is found by its bytes here, as a slice's are: its inline bytes
+        // are zero after its length, as a block's text is, so they hash the same.
         if word == Word::Str && self.headers() {
-            return self.find_header(dict, key, i64::from(ENTRY_VALUE));
+            self.string_slice_helpers();
+            let (bytes, length) = (self.header_bytes(key), self.header_byte_length(key));
+            let (mixed, high, folded, hash, entry) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{mixed} = call i64 @fen_slice_hash(ptr {bytes}, i64 {length})"));
+            self.line(&format!("{high} = lshr i64 {mixed}, 29"));
+            self.line(&format!("{folded} = xor i64 {mixed}, {high}"));
+            self.line(&format!("{hash} = lshr i64 {folded}, 1"));
+            self.line(&format!(
+                "{entry} = call ptr @fen_find_slice(ptr {dict}, ptr {bytes}, i64 {length}, i64 {hash})"
+            ));
+            return entry;
         }
         let hash = self.hash(word, key);
         let (name, key_type) = match word {

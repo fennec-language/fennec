@@ -19,7 +19,7 @@ impl Program {
     fn write(&self, f: &mut String) -> fmt::Result {
         use fmt::Write as _;
         for def in &self.structs {
-            writeln!(f, "struct {}", def.name)?;
+            writeln!(f, "{} {}", if def.shared { "shared" } else { "struct" }, def.name)?;
             for (name, ty) in &def.fields {
                 writeln!(f, "  {name}: {ty}")?;
             }
@@ -269,6 +269,9 @@ fn generator(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         InstKind::GetSlot { dest, generator, slot } => write!(f, "{dest} = {generator}[slot {slot}]"),
         InstKind::SetSlot { generator, slot, value } => write!(f, "{generator}[slot {slot}] = {value}"),
         InstKind::Resume { dest, generator, .. } => write!(f, "{dest} = resume {generator}"),
+        InstKind::Lock { handle, write: true } => write!(f, "lock {handle} to write"),
+        InstKind::Lock { handle, write: false } => write!(f, "lock {handle} to read"),
+        InstKind::Unlock { handle } => write!(f, "unlock {handle}"),
         _ => Ok(()),
     }
 }

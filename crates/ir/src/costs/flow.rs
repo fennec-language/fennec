@@ -27,6 +27,9 @@ struct Place {
 type Shared = (usize, Place, bool);
 type Held = BTreeSet<Shared>;
 
+/// The program's functions by name, and its `shared` types.
+pub(super) type Known<'k> = (&'k HashMap<&'k str, &'k Function>, &'k HashSet<&'k str>);
+
 /// How a list's item is written in a path, whichever item it is.
 const ITEM: &str = "[]";
 
@@ -310,21 +313,17 @@ fn holds_heap(ty: &Type) -> bool {
 
 /// The places in a function where changing a value may copy it, with how many loops each is
 /// in: `depths` has a count for each block.
-pub(super) fn copies(
-    function: &Function,
-    by_name: &HashMap<&str, &Function>,
-    depths: &[usize],
-) -> Vec<(Span, Cost, usize)> {
-    walk(function, by_name, depths, None)
+pub(super) fn copies(function: &Function, known: Known<'_>, depths: &[usize]) -> Vec<(Span, Cost, usize)> {
+    walk(function, known, depths, None)
 }
 
 /// Where a copy in a loop happens each time round: what's still shared when the loop comes
 /// back to its start. What was shared before the loop is copied once, the first time.
-pub(super) fn every_time(function: &Function, by_name: &HashMap<&str, &Function>) -> HashSet<(u32, u32)> {
+pub(super) fn every_time(function: &Function, known: Known<'_>) -> HashSet<(u32, u32)> {
     let depths = vec![0; function.blocks.len()];
     let mut found = HashSet::new();
     for (head, body) in super::loops::bodies(function) {
-        let again = walk(function, by_name, &depths, Some((head, &body)));
+        let again = walk(function, known, &depths, Some((head, &body)));
         found.extend(again.into_iter().map(|(span, ..)| (span.start, span.end)));
     }
     found
@@ -335,15 +334,20 @@ pub(super) fn every_time(function: &Function, by_name: &HashMap<&str, &Function>
 /// count.
 fn walk(
     function: &Function,
-    by_name: &HashMap<&str, &Function>,
+    (by_name, handles): Known<'_>,
     depths: &[usize],
     fresh: Option<(usize, &HashSet<usize>)>,
 ) -> Vec<(Span, Cost, usize)> {
+    // A `shared` handle passed in is the caller's cell itself, not a copy the caller still holds.
+    let handle = |at: &usize| {
+        let ty = function.locals.get(*at).map(|local| &local.ty);
+        matches!(ty, Some(Type::Named(name)) if handles.contains(name.as_str()))
+    };
     let flow = Flow {
         function,
         places: places_of_temporaries(function),
         live: live_after(function),
-        callers: (0..function.params).filter(|at| !function.mut_params.contains(at)).collect(),
+        callers: (0..function.params).filter(|at| !function.mut_params.contains(at) && !handle(at)).collect(),
         by_name,
     };
     let count = function.blocks.len();

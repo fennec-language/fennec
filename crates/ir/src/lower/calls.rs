@@ -15,6 +15,9 @@ const OPTIONAL_OBJECT: &str = "?.";
 /// A place to write back after a call, and what holds its value for the call.
 type WriteBack = (Place, LocalId);
 
+/// A `shared` handle whose lock a call takes, and whether it takes it to write.
+type Lock = (Operand, bool);
+
 /// The standard library's functions a program's calls reach, which aren't lowered yet.
 pub(super) fn external(program: &Program) -> Vec<String> {
     let mut found: Vec<String> = program
@@ -120,9 +123,16 @@ impl Lowering<'_> {
             dest = keep.map(|ty| self.temporary(ty));
             self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);
         } else {
-            let (function, values) = self.direct((callee, args), keep.as_ref(), &mut write_backs, span)?;
+            let (function, values, lock) =
+                self.direct((callee, args), keep.as_ref(), &mut write_backs, span)?;
             dest = keep.map(|ty| self.temporary(ty));
+            if let Some((handle, write)) = &lock {
+                self.emit(InstKind::Lock { handle: handle.clone(), write: *write }, span);
+            }
             self.emit(InstKind::Call { dest, function, args: values }, span);
+            if let Some((handle, _)) = lock {
+                self.emit(InstKind::Unlock { handle }, span);
+            }
         }
         for (place, held) in write_backs {
             let ty = self.steps_type(&place)?;
@@ -250,14 +260,15 @@ impl Lowering<'_> {
     }
 
     /// The key and arguments of a direct call, with one value given for each parameter. A
-    /// method's object comes first.
+    /// method's object comes first. A method of a `shared` type also gives the handle whose
+    /// lock the call needs, and whether it writes, unless the lock is held already.
     fn direct(
         &mut self,
         (callee, args): (&Expr, &[Arg]),
         keep: Option<&Type>,
         write_backs: &mut Vec<WriteBack>,
         span: Span,
-    ) -> Lowered<(String, Vec<Operand>)> {
+    ) -> Lowered<(String, Vec<Operand>, Option<Lock>)> {
         let (key, object) = match &callee.kind {
             _ if self.std_member(callee).is_some() => (self.std_member(callee).unwrap_or_default(), None),
             ExprKind::Name(name) if self.lookup(name).is_none() => (name.clone(), None),
@@ -302,9 +313,15 @@ impl Lowering<'_> {
             return Err(format!("`{key}` takes something the IR doesn't hold yet"));
         }
         let mut values: Vec<Option<Operand>> = vec![None; given];
+        let mut lock = None;
         if let Some(object) = object {
+            let handle = self.object_type(object).is_some_and(|ty| self.context.is_handle(&ty));
             let changed = signature.params.first().is_some_and(|param| param.is_mut);
-            let value = if changed { self.place(object, write_backs, span)? } else { self.expr(object)? };
+            let value =
+                if changed && !handle { self.place(object, write_backs, span)? } else { self.expr(object)? };
+            if handle && !self.locked_already(&value) {
+                lock = Some((value.clone(), changed));
+            }
             if let Some(slot) = values.first_mut() {
                 *slot = Some(value);
             }
@@ -317,7 +334,7 @@ impl Lowering<'_> {
             };
             let param = at.and_then(|at| signature.params.get(at));
             let param = param.ok_or_else(|| format!("an argument to `{key}` matches no parameter"))?;
-            let value = if param.is_mut {
+            let value = if param.is_mut && !self.context.is_handle(&param.ty) {
                 self.place(&arg.value, write_backs, span)?
             } else {
                 let lowered = self.expr(&arg.value)?;
@@ -328,7 +345,7 @@ impl Lowering<'_> {
             }
         }
         let values: Option<Vec<Operand>> = values.into_iter().collect();
-        Ok((function, values.ok_or("a parameter has no argument")?))
+        Ok((function, values.ok_or("a parameter has no argument")?, lock))
     }
 
     /// Something a call changes: a local itself, or a temporary holding a field or item

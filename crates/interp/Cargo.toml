@@ -13,5 +13,9 @@ fennec-blake3.workspace = true
 fennec-re.workspace = true
 fennec-syntax.workspace = true
 
+# The playground runs in a browser, where there's no operating system to ask.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+getrandom.workspace = true
+
 [lints]
 workspace = true

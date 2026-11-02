@@ -8,6 +8,7 @@ mod call;
 mod collections;
 mod constants;
 pub mod embed;
+mod entropy;
 mod equality;
 mod eval;
 mod exec;

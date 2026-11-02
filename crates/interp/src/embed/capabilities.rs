@@ -33,6 +33,7 @@ fn kind_of(capability: Capability) -> i64 {
         Capability::Args => 3,
         Capability::Stdin => 4,
         Capability::Process => 5,
+        Capability::Entropy => 6,
     }
 }
 

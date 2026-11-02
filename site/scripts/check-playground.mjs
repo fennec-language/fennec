@@ -1,6 +1,7 @@
 // Runs every program in examples/ through the playground's WebAssembly module, the way the
 // page's worker does, and checks it prints its .out file and passes its tests. Programs that
-// use files or the clock are skipped: the playground has neither.
+// use files, the clock or the operating system's randomness are skipped: the playground has
+// none of them.
 import { readFileSync, readdirSync } from 'node:fs';
 
 const examples = new URL('../../examples/', import.meta.url);
@@ -24,6 +25,10 @@ for (const name of readdirSync(examples).filter((file) => file.endsWith('.fen'))
   }
   if (/\bclock: Clock\b/.test(source)) {
     console.log(`  - ${name} (uses the clock)`);
+    continue;
+  }
+  if (/\bentropy: Entropy\b/.test(source)) {
+    console.log(`  - ${name} (uses entropy)`);
     continue;
   }
   const expected = readFileSync(new URL(name.replace(/\.fen$/, '.out'), examples), 'utf8');

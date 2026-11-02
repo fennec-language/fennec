@@ -531,6 +531,90 @@ fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Resul
     Ok(())
 }
 
+/// A copy that's the last thing done with its source takes the source's owner over, so a
+/// list made by a comprehension and then changed isn't copied. A source read again still
+/// keeps its own value.
+#[test]
+fn the_last_copy_of_a_list_takes_it_over() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "last_copy",
+        "def main(stdout: Stdout):\n    mut marks = [0 for _ in range(1000)]\n    for i in range(1000):\n        marks[i] = i\n    stdout.print(marks[999])\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    same_as_the_jit(
+        "copies_kept",
+        "def main(stdout: Stdout):\n    mut a = [1, 2, 3]\n    mut b = copy(a)\n    b[0] = 9\n    stdout.print(a, b)\n    mut c = [0 for _ in range(3)]\n    d = c\n    c[1] = 5\n    stdout.print(c, d)\n    mut keep: list[list[int]] = []\n    for i in range(3):\n        row = [i, i]\n        mut held = copy(row)\n        held[0] = 7\n        keep.append(held)\n        keep.append(row)\n    stdout.print(keep)\n",
+    )
+}
+
+/// `==` with a literal of up to eight bytes reads the length and one word: empty, eight
+/// bytes, nine, a zero byte and two-byte characters all compare as in the interpreter.
+#[test]
+fn strings_compare_with_short_literals_like_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "short_literals",
+        r#"def main(stdout: Stdout):
+    words = ["", "a", " ", "fox", "fennec ", "eightchr", "eightchrs", "é", "ab\x00", "ab"]
+    for w in words:
+        stdout.print(w == "", w == " ", w != "fox", "eightchr" == w, w == "é", w == "ab", w == "eightchrs")
+    mut spaces = 0
+    for c in "a b  c":
+        if c == " ":
+            spaces += 1
+    stdout.print(spaces)
+"#,
+    )
+}
+
+/// An index checked once stays inside its list until something shortens or replaces the
+/// list, or writes the index: a pop, a method popping or replacing a field, a new list, and
+/// negative indexes are each checked again, and the last read fails as in the interpreter.
+#[test]
+fn an_index_is_checked_again_once_its_list_changes() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = r"struct Bag:
+    items: list[int]
+
+    def drop_last(mut self):
+        self.items.pop()
+
+    def swap_in(mut self):
+        self.items = [7]
+
+def main(stdout: Stdout):
+    mut xs = [1, 2, 3]
+    mut at = -1
+    stdout.print(xs[at], xs[at])
+    xs.pop()
+    stdout.print(xs[at])
+    mut bag = Bag(items=[1, 2, 3])
+    at = 2
+    stdout.print(bag.items[at])
+    bag.items[at] = 9
+    bag.swap_in()
+    at = 0
+    stdout.print(bag.items[at])
+    bag.items = [4, 5, 6]
+    at = 2
+    stdout.print(bag.items[at])
+    bag.drop_last()
+    stdout.print(bag.items[at])
+";
+    for (name, how) in [("range", &["--llvm"][..]), ("range_release", &["--llvm", "--release"][..])] {
+        let (ours, jit) = both_built(name, source, how)?;
+        assert_eq!(ours, jit);
+    }
+    Ok(())
+}
+
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

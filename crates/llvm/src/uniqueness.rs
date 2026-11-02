@@ -149,6 +149,11 @@ fn reaches(known: &Analysis, local: LocalId, depth: usize) -> Option<FieldPath> 
     reaches(known, whole, deeper)
 }
 
+/// The field path from a local that owns it to the list a local holds, when it names one list.
+pub(crate) fn list_place(known: &Analysis, local: LocalId) -> Option<FieldPath> {
+    reaches(known, local, 8).filter(|(_, path)| !path.iter().any(|step| step == ANY_ITEM))
+}
+
 /// What a read that owns what it reads leaves with another owner.
 fn owned(function: &Function, known: &Analysis, operand: &Operand, out: &mut Vec<Unsettled>) {
     if let Operand::Local(local) = operand
@@ -161,15 +166,28 @@ fn owned(function: &Function, known: &Analysis, operand: &Operand, out: &mut Vec
     }
 }
 
+/// Which facts: that a block has no other owner, or that an index is inside a list, which only
+/// changing the list's length, replacing it, or writing the index ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tracked {
+    Owners,
+    Lengths,
+}
+
 /// What an instruction may give another owner, or replace, given what each function it calls
-/// may do so to under its parameters.
+/// may do so to under its parameters. For lengths, an owner more changes nothing.
 pub(crate) fn unsettled(
     function: &Function,
     known: &Analysis,
     inst: &InstKind,
-    summaries: &Summaries<'_>,
+    (summaries, facts): (&Summaries<'_>, Tracked),
 ) -> Vec<Unsettled> {
     let mut out = Vec::new();
+    let owned = |function: &Function, known: &Analysis, operand: &Operand, out: &mut Vec<Unsettled>| {
+        if facts == Tracked::Owners {
+            owned(function, known, operand, out);
+        }
+    };
     let put_back = |value: &Operand| matches!(value, Operand::Local(local) if known.is_taken(*local));
     match inst {
         InstKind::SetField { object, path, value } => {
@@ -190,10 +208,11 @@ pub(crate) fn unsettled(
                 }
             }
         }
-        // An item put back where it was taken from is what was there.
+        // An item put back where it was taken from is what was there. Another in its place
+        // leaves the list as long as it was.
         InstKind::SetIndex { object, path, value, .. } => {
             let item_back = matches!(value, Operand::Local(local) if known.item_home(*local).is_some());
-            if counted_operand(function, value) && !item_back {
+            if counted_operand(function, value) && !item_back && facts == Tracked::Owners {
                 owned(function, known, value, &mut out);
                 match reaches(known, *object, 8) {
                     Some((root, mut under)) => {
@@ -207,6 +226,7 @@ pub(crate) fn unsettled(
         }
         InstKind::GetIndex { dest, object, .. } => {
             if let Operand::Local(object) = object
+                && facts == Tracked::Owners
                 && counted(function, *dest)
                 && !leans(known, *dest)
             {
@@ -221,6 +241,7 @@ pub(crate) fn unsettled(
         }
         InstKind::GetField { dest, object, field } => {
             if let Operand::Local(object) = object
+                && facts == Tracked::Owners
                 && counted(function, *dest)
                 && !leans(known, *dest)
             {
@@ -253,6 +274,12 @@ pub(crate) fn unsettled(
                         out.extend(hits.iter().map(|hit| hit.given(known, *local)));
                     }
                     (Some(_), _) => {}
+                    (None, Operand::Local(local)) if facts == Tracked::Lengths => {
+                        out.push(
+                            reaches(known, *local, 8)
+                                .map_or(Unsettled::Everything, |(root, path)| Unsettled::Below(root, path)),
+                        );
+                    }
                     (None, _) => owned(function, known, arg, &mut out),
                 }
             }
@@ -287,9 +314,16 @@ pub(crate) fn unsettled(
 }
 
 /// What a block's end may give another owner: what it hands back.
-pub(crate) fn unsettled_by_end(function: &Function, known: &Analysis, end: &Terminator) -> Vec<Unsettled> {
+pub(crate) fn unsettled_by_end(
+    function: &Function,
+    known: &Analysis,
+    end: &Terminator,
+    facts: Tracked,
+) -> Vec<Unsettled> {
     let mut out = Vec::new();
-    if let Terminator::Return(Some(value)) = end {
+    if let Terminator::Return(Some(value)) = end
+        && facts == Tracked::Owners
+    {
         owned(function, known, value, &mut out);
     }
     out
@@ -300,6 +334,7 @@ pub(crate) fn unsettled_by_end(function: &Function, known: &Analysis, end: &Term
 pub(crate) fn summarized<'p>(
     functions: &HashMap<&'p str, &'p Function>,
     analyses: &HashMap<&'p str, Analysis>,
+    facts: Tracked,
 ) -> Summaries<'p> {
     let mut summaries: Summaries<'p> =
         functions.iter().map(|(name, function)| (*name, vec![Vec::new(); function.params])).collect();
@@ -310,9 +345,9 @@ pub(crate) fn summarized<'p>(
             let mut hit = Vec::new();
             for block in &function.blocks {
                 for inst in &block.insts {
-                    hit.extend(unsettled(function, known, &inst.kind, &summaries));
+                    hit.extend(unsettled(function, known, &inst.kind, (&summaries, facts)));
                 }
-                hit.extend(unsettled_by_end(function, known, &block.end));
+                hit.extend(unsettled_by_end(function, known, &block.end, facts));
             }
             for unsettled in hit {
                 let params: Vec<usize> = match &unsettled {
@@ -508,7 +543,7 @@ pub(crate) fn written_order(function: &Function) -> Vec<usize> {
 pub(crate) fn coming_in(
     function: &Function,
     known: &Analysis,
-    summaries: &Summaries<'_>,
+    summaries: (&Summaries<'_>, Tracked),
     (at, before, done): (usize, &HashMap<usize, Vec<usize>>, &HashSet<usize>),
     (on_entry, left): (&[FieldPath], &HashMap<usize, Vec<FieldPath>>),
 ) -> Vec<FieldPath> {

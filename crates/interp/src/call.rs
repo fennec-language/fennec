@@ -71,6 +71,10 @@ impl Interp<'_> {
         let args = match (&function, args) {
             (Value::Builtin(name), [first, rest @ ..]) if pulls_it_all(name, first) => {
                 let items = self.items_in_place(&first.value)?;
+                if *name == "sum" && over_parallel(&first.value) {
+                    let rest = self.eval_args(rest)?;
+                    return self.sum_in_tree_order(items, rest, span);
+                }
                 let mut args = vec![CallArg {
                     name: None,
                     value: items,
@@ -484,6 +488,14 @@ fn check_mut(function: &str, param: &Param, arg: &CallArg) -> Result<(), Diagnos
         )),
         _ => Ok(()),
     }
+}
+
+/// Whether a generator goes over `parallel(xs)`, so a reduction of it combines in the order
+/// native code combines its ranges.
+fn over_parallel(expr: &Expr) -> bool {
+    let ExprKind::Comprehension { iter, .. } = &expr.kind else { return false };
+    let ExprKind::Call { callee, .. } = &iter.kind else { return false };
+    matches!(&callee.kind, ExprKind::Name(name) if name == "parallel")
 }
 
 fn is_generator(expr: &Expr) -> bool {

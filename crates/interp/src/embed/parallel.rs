@@ -202,7 +202,9 @@ pub extern "C" fn parallel_reduce(
     if length == 0 {
         return 0;
     }
-    let run = Run::new(chunk(words));
+    // A reduction's leaves depend on the length alone, so the interpreter, which doesn't know
+    // native items' sizes, combines in the same order.
+    let run = Run::new(crate::builtins::REDUCE_LEAF);
     let reduced = pool::install(length * words, || run.reduce((0, length), (body, combine, env)));
     if let Some(reduced) = reduced {
         *result = reduced;
@@ -279,10 +281,38 @@ mod tests {
         let mut on_the_pool = 0;
         assert_eq!(super::parallel_reduce(list, harmonic, add, 0, &mut on_the_pool), 0);
         // The same ranges, combined the same way on this thread alone.
-        let run = super::Run::new(super::chunk(1));
+        let run = super::Run::new(crate::builtins::REDUCE_LEAF);
         let alone = run.reduce((0, usize::try_from(ITEMS).unwrap()), (harmonic, add, 0));
         assert_eq!(Some(on_the_pool), alone);
         heap::free(list);
+        finish();
+    }
+
+    /// `sum(1.0 / float(n + 1) for n in parallel(range(ITEMS)))`'s bits, on a pool of `threads`.
+    fn harmonic_on(threads: usize) -> u64 {
+        let reduced = super::pool::on_threads(threads, || {
+            let run = super::Run::new(crate::builtins::REDUCE_LEAF);
+            run.reduce((0, usize::try_from(ITEMS).unwrap()), (harmonic, add, 0))
+        });
+        reduced.unwrap().cast_unsigned()
+    }
+
+    #[test]
+    fn a_float_sum_has_the_same_bits_on_any_number_of_threads_and_in_the_interpreter() {
+        begin();
+        let bits = harmonic_on(1);
+        assert_eq!(harmonic_on(2), bits);
+        assert_eq!(harmonic_on(8), bits);
+        let source = format!(
+            "def main(stdout: Stdout):\n    stdout.print(sum(1.0 / float(n + 1) for n in parallel(range({ITEMS}))))\n"
+        );
+        let mut out = Vec::new();
+        crate::run(&fennec_syntax::parse(&source).unwrap(), &mut out).unwrap();
+        let interpreted: f64 = String::from_utf8(out).unwrap().trim().parse().unwrap();
+        assert_eq!(interpreted.to_bits(), bits);
+        // Summed left to right, it rounds differently: the tree is what makes them agree.
+        let in_order: f64 = (0..ITEMS).map(|n| 1.0 / crate::ops::to_float(n + 1)).sum();
+        assert_ne!(in_order.to_bits(), bits);
         finish();
     }
 

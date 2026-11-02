@@ -28,21 +28,24 @@ pub fn set_worker_setup(setup: Box<dyn Fn() + Send + Sync>) {
     let _ = SETUP.set(setup);
 }
 
-fn pool() -> Option<&'static rayon_core::ThreadPool> {
-    POOL.get_or_init(|| {
-        rayon_core::ThreadPoolBuilder::new()
-            .thread_name(|at| format!("fennec-worker-{at}"))
-            .start_handler(|_| {
-                super::super::threads::take_index();
-                WORKER.set(true);
-                if let Some(setup) = SETUP.get() {
-                    setup();
-                }
-            })
-            .build()
-            .ok()
+fn builder() -> rayon_core::ThreadPoolBuilder {
+    rayon_core::ThreadPoolBuilder::new().thread_name(|at| format!("fennec-worker-{at}")).start_handler(|_| {
+        super::super::threads::take_index();
+        WORKER.set(true);
+        if let Some(setup) = SETUP.get() {
+            setup();
+        }
     })
-    .as_ref()
+}
+
+fn pool() -> Option<&'static rayon_core::ThreadPool> {
+    POOL.get_or_init(|| builder().build().ok()).as_ref()
+}
+
+/// Runs `run` on a pool of its own with `threads` workers, set up as the shared pool's are.
+#[cfg(test)]
+pub(super) fn on_threads<R: Send>(threads: usize, run: impl FnOnce() -> R + Send) -> R {
+    builder().num_threads(threads).build().unwrap().install(run)
 }
 
 /// Runs a call's ranges: on the pool when there are enough words of items to be worth it and

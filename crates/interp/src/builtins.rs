@@ -284,6 +284,48 @@ pub(crate) fn length(value: &Value, span: Span) -> Result<Value, Diagnostic> {
     i64::try_from(len).map(Value::Int).map_err(|_| Diagnostic::new("this is too long to measure", span))
 }
 
+/// The most positions a leaf of a `parallel` reduction's tree holds, by the length alone, so
+/// the interpreter and native code combine in the same order (see `embed::parallel`).
+pub(crate) const REDUCE_LEAF: usize = 1024;
+
+impl Interp<'_> {
+    /// `sum(f(x) for x in parallel(xs))`: each leaf of the tree summed left to right from its
+    /// first item, the leaves combined in the tree's order, then the start added, exactly as
+    /// native code combines a `parallel` reduction's ranges. Floats round the same either way.
+    pub(crate) fn sum_in_tree_order(
+        &mut self,
+        items: Value,
+        rest: Vec<CallArg>,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        let items = self.iterate(items, span)?;
+        let start = rest.into_iter().next().map(|arg| arg.value);
+        let start = start.unwrap_or_else(|| {
+            if matches!(items.first(), Some(Value::Float(_))) { Value::Float(0.0) } else { Value::Int(0) }
+        });
+        if items.is_empty() {
+            return Ok(start);
+        }
+        let total = self.tree_sum(&items, span)?;
+        self.binary(BinOp::Add, start, total, span)
+    }
+
+    fn tree_sum(&mut self, items: &[Value], span: Span) -> Result<Value, Diagnostic> {
+        if items.len() <= REDUCE_LEAF {
+            let mut parts = items.iter().cloned();
+            let mut total = parts.next().unwrap_or(Value::Int(0));
+            for item in parts {
+                total = self.binary(BinOp::Add, total, item, span)?;
+            }
+            return Ok(total);
+        }
+        let (left, right) = items.split_at(items.len() / 2);
+        let left = self.tree_sum(left, span)?;
+        let right = self.tree_sum(right, span)?;
+        self.binary(BinOp::Add, left, right, span)
+    }
+}
+
 fn range(values: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let (first, end, stride) = match values {
         [Value::Int(end)] => (0, *end, 1),

@@ -36,7 +36,7 @@ jobs:
         with:
           persist-credentials: false
       - id: changes
-        uses: ./.github/actions/docs-only
+        uses: $/.github/actions/docs-only
 
   lint:
     name: Format, lints and docs

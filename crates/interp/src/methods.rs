@@ -30,6 +30,10 @@ impl Interp<'_> {
                 let args = crate::collections::plain(self.eval_args(args)?, method, span)?;
                 return self.char_from_code(&args, span);
             }
+            Value::Builtin("bytes") if method == "fromhex" => {
+                let args = crate::collections::plain(self.eval_args(args)?, method, span)?;
+                return self.bytes_from_hex(&args, span);
+            }
             Value::Ok(_) | Value::Err(_) if method == "expect" => {
                 let args = self.eval_args(args)?;
                 return expect(receiver, &args, span);

@@ -130,9 +130,11 @@ fn is_type_name(expr: &Expr) -> bool {
         "data",
     ];
     match &expr.kind {
-        // `str` in `str.from_code(65)` is the type, not a value.
+        // `str` in `str.from_code(65)` and `bytes` in `bytes.fromhex(text)` are the type, not a value.
         ExprKind::Name(name) => {
-            name.starts_with(char::is_uppercase) || name == "str" || MODULES.contains(&name.as_str())
+            name.starts_with(char::is_uppercase)
+                || matches!(name.as_str(), "str" | "bytes")
+                || MODULES.contains(&name.as_str())
         }
         ExprKind::Attr { object, .. } => is_type_name(object),
         _ => false,

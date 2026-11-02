@@ -1,5 +1,6 @@
 //! Methods on built-in values: `stdout`, `fs`, strings, lists, dicts, sets and `IdMap`.
 
+use std::fmt::Write;
 use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
@@ -104,6 +105,7 @@ impl Interp<'_> {
                 }
                 str_method(text, method, &args, span)
             }
+            Value::Bytes(data) if method == "hex" => bytes_hex(data, &args, span),
             Value::Bytes(data) if method == "decode" && args.is_empty() => match std::str::from_utf8(data) {
                 Ok(text) => Ok(Value::Ok(Rc::new(Value::str(text)))),
                 Err(error) => {
@@ -152,6 +154,25 @@ impl Interp<'_> {
         write!(self.out, "{text}{ending}")
             .map_err(|err| Diagnostic::new(format!("couldn't write output: {err}"), span))?;
         Ok(Value::Unit)
+    }
+
+    /// `bytes.fromhex(text)`: the bytes two hex digits each, in either case, with spaces
+    /// allowed between bytes, as in Python. Anything else fails with an `InvalidValue`.
+    pub(crate) fn bytes_from_hex(&mut self, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+        let [Value::Str(text)] = args else { return Err(wrong_args("fromhex", span)) };
+        let message = match from_hex(text) {
+            Ok(bytes) => return Ok(Value::Ok(Rc::new(Value::Bytes(Rc::from(bytes))))),
+            Err(at) => match text.chars().nth(at) {
+                Some(c) => format!(
+                    "`fromhex` needs two hex digits for each byte, but found {} at {at}",
+                    format::repr(&Value::str(c.encode_utf8(&mut [0; 4])))
+                ),
+                None => "`fromhex` needs two hex digits for each byte, but the text ends halfway through one"
+                    .to_owned(),
+            },
+        };
+        let error = self.make_value("InvalidValue", vec![("message", Value::str(&message))], span)?;
+        Ok(Value::Err(Rc::new(error)))
     }
 
     /// `str.from_code(n)`: the character with a code. A number that isn't one fails with
@@ -439,4 +460,42 @@ pub(crate) fn str_method(text: &str, method: &str, args: &[Value], span: Span) -
         }
         _ => return Err(no_method(&Value::str(text), method, span)),
     })
+}
+
+/// `data.hex()` and `data.hex(sep)`.
+fn bytes_hex(data: &[u8], args: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    match args {
+        [] => Ok(Value::str(&hex(data, ""))),
+        [Value::Str(sep)] => Ok(Value::str(&hex(data, sep))),
+        _ => Err(wrong_args("hex", span)),
+    }
+}
+
+/// Each byte as two lowercase hex digits, with `sep` between bytes.
+fn hex(data: &[u8], sep: &str) -> String {
+    let mut out = String::with_capacity(data.len() * (2 + sep.len()));
+    for (at, byte) in data.iter().enumerate() {
+        if at > 0 {
+            out.push_str(sep);
+        }
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+/// The bytes that pairs of hex digits spell, with ASCII whitespace allowed between pairs. A
+/// failure gives the position, in characters, of what doesn't fit.
+fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
+    let mut bytes = Vec::new();
+    let mut chars = text.chars().enumerate();
+    while let Some((at, c)) = chars.next() {
+        if c.is_ascii_whitespace() {
+            continue;
+        }
+        let high = c.to_digit(16).ok_or(at)?;
+        let Some((next, low)) = chars.next() else { return Err(at + 1) };
+        let low = low.to_digit(16).ok_or(next)?;
+        bytes.push(u8::try_from(high * 16 + low).map_err(|_| at)?);
+    }
+    Ok(bytes)
 }

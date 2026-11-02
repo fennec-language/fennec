@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 35;
+const BUILDING_EXAMPLES: usize = 36;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
@@ -633,6 +633,17 @@ fn pieces_joined_once_match_the_jit() -> std::io::Result<()> {
 def shown(items: list[str]) -> str:
     "-".join(items)
 
+def put(mut out: list[str], more: list[str]):
+    for item in more:
+        out.append(item)
+
+# Its list is given back, not joined, so `put` gets a list from here too.
+def gathered(rows: list[list[str]]) -> list[str]:
+    mut cells: list[str] = []
+    for row in rows:
+        put(mut cells, row)
+    cells
+
 def main(stdout: Stdout):
     mut out = ["start "]
     add(3, mut out)
@@ -650,6 +661,7 @@ def main(stdout: Stdout):
     for i in range(5):
         words.append(f"w{i}")
     stdout.print(", ".join(words))
+    stdout.print(gathered([["x", "."], [".", "o"]]))
 "#;
     for (name, how) in [("pieces", &["--llvm"][..]), ("pieces_release", &["--llvm", "--release"][..])] {
         let (ours, jit) = both_built(name, source, how)?;
@@ -810,6 +822,23 @@ fn an_empty_buffer_fails_to_pop_like_the_jit() -> std::io::Result<()> {
     same_message_as_the_jit(
         "buffer_insert",
         "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.insert(0, \"fox\")\n    kept.insert(1, \"kit\")\n    stdout.print(kept[0], kept[1])\n    kept.insert(5, \"den\")\n",
+    )
+}
+
+/// `list.insert` at the front, the middle and the end, of numbers and of strings, then past the
+/// end, which fails as the interpreter says.
+#[test]
+fn a_list_insert_matches_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "list_insert",
+        "def main(stdout: Stdout):\n    mut ns = [2, 4]\n    ns.insert(0, 1)\n    ns.insert(2, 3)\n    ns.insert(4, 5)\n    mut words = [\"b\"]\n    words.insert(0, \"a\")\n    words.insert(2, \"c\")\n    stdout.print(ns, words)\n",
+    )?;
+    same_message_as_the_jit(
+        "list_insert_past",
+        "def main(stdout: Stdout):\n    mut ns = [1]\n    ns.insert(3, 2)\n    stdout.print(ns)\n",
     )
 }
 

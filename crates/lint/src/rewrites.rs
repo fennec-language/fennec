@@ -1,6 +1,7 @@
 //! Lints with one plain way to say a thing, which `fennec fix` writes.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use fennec_syntax::{
     BinOp, Diagnostic, Expr, ExprKind, FStrPart, FnDef, Module, Pattern, Sources, Span, Stmt, StmtKind,
@@ -209,6 +210,88 @@ fn plain_fstring(expr: &Expr, sources: &Sources) -> Option<Lint> {
     Some(Lint::new("plain-fstring", diagnostic))
 }
 
+/// The operands of a chain of `+`, left to right. `a + b + c` is `(a + b) + c`, so the chain
+/// runs down the left.
+fn added(expr: &Expr) -> Vec<&Expr> {
+    match &expr.kind {
+        ExprKind::Binary { op: BinOp::Add, lhs, rhs } => {
+            let mut operands = added(lhs);
+            operands.push(rhs);
+            operands
+        }
+        _ => vec![expr],
+    }
+}
+
+/// Text as it's written inside an f-string's quotes.
+fn fstring_text(text: &str) -> String {
+    let mut written = String::new();
+    for ch in text.chars() {
+        match ch {
+            '\\' => written.push_str("\\\\"),
+            '"' => written.push_str("\\\""),
+            '{' => written.push_str("{{"),
+            '}' => written.push_str("}}"),
+            '\n' => written.push_str("\\n"),
+            '\t' => written.push_str("\\t"),
+            '\r' => written.push_str("\\r"),
+            ch if ch.is_control() => {
+                let _ = write!(written, "\\u{:04x}", u32::from(ch));
+            }
+            ch => written.push(ch),
+        }
+    }
+    written
+}
+
+/// What goes in an f-string's braces for one operand: what `str(...)` holds, or the operand
+/// itself, which is text already. None when its source can't sit inside the quotes as it is:
+/// a quote, a backslash, or a `:`, which would start a format.
+fn filling(sources: &Sources, operand: &Expr) -> Option<String> {
+    let inner = match &operand.kind {
+        ExprKind::Call { callee, args }
+            if matches!(&callee.kind, ExprKind::Name(name) if name == "str")
+                && args.len() == 1
+                && args.iter().all(|arg| arg.name.is_none() && !arg.is_mut) =>
+        {
+            &args.first()?.value
+        }
+        _ => operand,
+    };
+    let text = written(sources, inner.span)?;
+    let fits = replaceable(sources, inner) && !text.contains(['"', '\'', '\\', ':', '\n', '#', '{', '}']);
+    fits.then_some(text)
+}
+
+/// Text built with `+` and `str(...)`, as one f-string. A string literal in the chain makes
+/// every `+` in it join text, since text only adds to text, so each other operand is text or
+/// `str(...)` of something, and `f"{x}"` shows `x` just as `str(x)` does.
+fn concat_to_fstring(expr: &Expr, sources: &Sources) -> Option<Lint> {
+    let operands = added(expr);
+    let literal = |operand: &&Expr| matches!(operand.kind, ExprKind::Str(_));
+    let converted = |operand: &&Expr| matches!(&operand.kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Name(name) if name == "str"));
+    if operands.len() < 2 || !operands.iter().any(literal) || !operands.iter().any(converted) {
+        return None;
+    }
+    if !replaceable(sources, expr) || !written(sources, expr.span)?.starts_with(|ch: char| ch != '(') {
+        return None;
+    }
+    let mut fixed = String::from("f\"");
+    for operand in operands {
+        match &operand.kind {
+            // A raw string's source isn't what it holds, but its value is.
+            ExprKind::Str(text) => fixed.push_str(&fstring_text(text)),
+            _ => {
+                let _ = write!(fixed, "{{{}}}", filling(sources, operand)?);
+            }
+        }
+    }
+    fixed.push('"');
+    let diagnostic = Diagnostic::new(format!("build this text as one f-string: `{fixed}`"), expr.span)
+        .with_fix(expr.span, fixed);
+    Some(Lint::new("concat-to-fstring", diagnostic))
+}
+
 /// Every lint here that looks at one expression.
 fn expressions(module: &Module, sources: &Sources) -> Vec<Lint> {
     let mut found = Vec::new();
@@ -219,7 +302,18 @@ fn expressions(module: &Module, sources: &Sources) -> Vec<Lint> {
         found.extend(plain_compare(expr, sources, &bools));
         found.extend(negated_compare(expr, sources));
         found.extend(plain_fstring(expr, sources));
+        found.extend(concat_to_fstring(expr, sources));
     });
+    // A chain of `+` holds shorter chains, which the whole one's fix covers.
+    let chains: Vec<Span> = found
+        .iter()
+        .filter(|lint| lint.rule == "concat-to-fstring")
+        .map(|lint| lint.diagnostic.span)
+        .collect();
+    let inside = |span: Span| {
+        chains.iter().any(|chain| *chain != span && chain.start <= span.start && span.end <= chain.end)
+    };
+    found.retain(|lint| lint.rule != "concat-to-fstring" || !inside(lint.diagnostic.span));
     found
 }
 

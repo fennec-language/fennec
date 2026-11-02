@@ -16,4 +16,4 @@ def describe(enemy: Enemy) -> str:
         case .Walker:
             enemy.name + " walks"
         case .Flyer(height):
-            enemy.name + " flies at " + str(height)
+            f"{enemy.name} flies at {height}"

@@ -51,7 +51,7 @@ def describe(token: Token) -> str:
         case .Symbol(text):
             "op " + text
         case .Text(body):
-            "text " + body + " (" + str(body.len()) + " chars)"
+            f"text {body} ({body.len()} chars)"
 
 def tokenize(source: str) -> list[Token]:
     mut tokens = []

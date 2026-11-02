@@ -2,7 +2,7 @@
 
 from words import KEYWORDS, LENGTHS, LONGEST, is_keyword
 
-GREETING = "names: " + str(LONGEST) + " letters at most"
+GREETING = f"names: {LONGEST} letters at most"
 
 def main(stdout: Stdout):
     stdout.print(GREETING)

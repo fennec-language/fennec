@@ -177,7 +177,7 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 **Floats give the same results on every platform.** There are no fused operations and no fast-math outside an opt-in, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `@fast_math` on a function opts out. This replaces `with fast_math():`.
 *Why:* It makes lockstep multiplayer and replays possible. It costs a little, and only in math-heavy code, which can opt out.
 
-**Parallel reductions combine in a fixed order.** How `sum(... for e in parallel(xs))` splits and combines its work depends on the data's size, never the thread count.
+**Parallel reductions combine in a fixed order.** `sum(... for e in parallel(xs))` combines its parts in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, never by element size or thread count. So the interpreter and native code give identical bits for a float sum.
 *Why:* Float results don't drift between runs or machines.
 
 **`Clock` is a capability,** passed to `main` like `Stdout` and `Fs`. `clock.now()` reads a monotonic clock, for measuring. `clock.time()` reads the wall clock as a `Time`, a moment in UTC, for saving and showing. Tests get a fixed clock by default, as under Tooling.
@@ -861,7 +861,7 @@ def step(mut units: IdMap[Unit], dt: float):
         unit.pos += unit.vel * dt
     alive = sum(1 for unit in parallel(units) if unit.health > 0)
 ```
-- The work-stealing pool halves a range of positions when a thread runs out of work, down to a smallest chunk the runtime picks from the element size. Where a reduction's parts combine depends on the length alone.
+- A reduction combines in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, as under Determinism. How work is scheduled for a `for` loop or a comprehension may still use the element size, since their order doesn't show in results: the work-stealing pool halves a range when a thread runs out of work, down to a smallest chunk the runtime picks.
 - `for mut x in parallel(xs)` gives each task a disjoint range. That's safe only if writing position `i` touches nothing but element `i`, so the compiler checks that the `mut` form of `def []` returns a place rooted in one field of `self` and indexed by `i` itself, like `return self._items[i]`. If it doesn't, `for mut` over `parallel(...)` is a compile error naming that method, and a plain `for mut` still works.
 - `list` and `Buffer` split into contiguous ranges, which also vectorize. `IdMap` is cut at its chunk boundaries, so a task's writes touch only its own chunks. `Grid` is cut at rows. `Packed` gives each task whole lists to read. `dict`, `set`, `SortedMap` and `SortedSet` are read-only in parallel, split by their own internal ranges.
 - A type with only `def iter(self)` and `yield` can't be split, since each item depends on the last. It works as a source, as below, and `for mut` over it in parallel is a compile error that says to add positions.

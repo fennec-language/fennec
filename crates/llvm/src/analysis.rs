@@ -9,7 +9,7 @@ use fennec_ir::facts::{Facts, Range};
 use fennec_ir::{Block, Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
 use fennec_syntax::{BinOp, UnaryOp};
 
-use crate::uniqueness::{FieldPath, Summaries, needed, summarized};
+use crate::uniqueness::{FieldPath, Summaries, Tracked, needed, summarized};
 
 const FULL: Range = (i64::MIN, i64::MAX);
 /// The most items anything in memory can have.
@@ -86,6 +86,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) generators: HashMap<&'p str, &'p GeneratorDef>,
     /// What each function may give another owner, or replace, under each parameter.
     pub(crate) settles: Summaries<'p>,
+    /// What each function may shorten, or replace, under each parameter.
+    pub(crate) lengths: Summaries<'p>,
     /// The field paths of `mut` parameters each function's callers make alone before calling.
     pub(crate) needs: HashMap<&'p str, Vec<FieldPath>>,
 }
@@ -1367,7 +1369,8 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         can_fail.insert(def.resume.as_str());
         can_fail.extend(def.abandon.as_deref());
     }
-    let settles = summarized(&functions, &analyses);
+    let settles = summarized(&functions, &analyses, Tracked::Owners);
+    let lengths = summarized(&functions, &analyses, Tracked::Lengths);
     let needs = needed(program, &functions, &analyses);
-    Whole { functions, analyses, can_fail, generators, settles, needs }
+    Whole { functions, analyses, can_fail, generators, settles, lengths, needs }
 }

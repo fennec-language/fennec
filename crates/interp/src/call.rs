@@ -210,12 +210,12 @@ impl Interp<'_> {
             }
             self.frame.declare(&param.name, arg.value, param.is_mut);
         }
-        if function.generator {
+        if function.generator() {
             // Nothing runs until an item is asked for.
             let frame = std::mem::replace(&mut self.frame, Frame::new());
             self.leave(caller);
-            let generator = crate::generators::of_function(Rc::clone(def), frame);
-            return Ok(if function.fallible { Value::Ok(Rc::new(generator)) } else { generator });
+            let generator = crate::generators::of_function(def.clone(), frame);
+            return Ok(if function.fallible() { Value::Ok(Rc::new(generator)) } else { generator });
         }
         let flow = self.exec_stmts(&def.body).map_err(|diagnostic| at_call(diagnostic, span));
         let changed: Vec<(Place, Value)> = mut_places
@@ -231,7 +231,7 @@ impl Interp<'_> {
             self.put(&place, value)?;
         }
         let value = match flow? {
-            Flow::PassUp(value) if function.fallible => return Ok(value),
+            Flow::PassUp(value) if function.fallible() => return Ok(value),
             Flow::PassUp(value) => {
                 // Only a generator it was handed can get a failure into a function like this.
                 return Err(crate::generators::nowhere_to_pass(&value, span));
@@ -241,7 +241,7 @@ impl Interp<'_> {
                 return Err(Diagnostic::new("`break` or `continue` outside a loop", def.span));
             }
         };
-        Ok(if function.fallible && !matches!(value, Value::Ok(_) | Value::Err(_)) {
+        Ok(if function.fallible() && !matches!(value, Value::Ok(_) | Value::Err(_)) {
             Value::Ok(Rc::new(value))
         } else {
             value

@@ -9,7 +9,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind, TypeExpr};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind, TypeExpr};
 
 use crate::exec::Flow;
 use crate::interp::{Interp, PASSING_UP};
@@ -38,7 +38,7 @@ pub(crate) enum Items {
 }
 
 enum Body {
-    Function(Rc<FnDef>),
+    Function(crate::value::Def),
     Statements(Vec<Stmt>),
     /// `enumerate` of a generator, with the next number.
     Enumerate(RefCell<(Items, i64)>),
@@ -295,7 +295,7 @@ impl Interp<'_> {
 }
 
 /// A generator for a function's body, with its frame ready and nothing run.
-pub(crate) fn of_function(def: Rc<FnDef>, frame: Frame) -> Value {
+pub(crate) fn of_function(def: crate::value::Def, frame: Frame) -> Value {
     let label = def.ret.as_ref().map_or_else(|| "Iterator".to_owned(), type_text);
     new_generator(Body::Function(def), frame, label)
 }

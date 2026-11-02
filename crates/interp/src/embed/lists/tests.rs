@@ -93,3 +93,36 @@ fn a_shared_list_of_structs_holding_strings_is_copied_with_its_names() {
     assert_eq!(live(), before);
     finish();
 }
+
+#[test]
+fn items_holding_a_string_in_an_enum_case_own_it_only_in_that_case() {
+    // `Tag { label: Option[str] }`, the optional laid out as an enum: only `Some` holds a block.
+    let cases =
+        vec![(Rc::from("None"), Vec::new()), (Rc::from("Some"), vec![(Rc::from("value"), Element::Str)])];
+    let option = Element::Enum { name: Rc::from("Option[str]"), cases, words: 2 };
+    let tag = Rc::new(Element::Struct { name: Rc::from("Tag"), fields: vec![(Rc::from("label"), option)] });
+    let tables = Tables { shapes: vec![Rc::new(Element::Str)], elements: vec![tag], ..Tables::default() };
+    start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+    let tagged = |label: Value| {
+        let fields = vec![(Rc::from("label"), label)];
+        Value::Instance(Rc::new(Instance {
+            type_name: Rc::from("Tag"),
+            case: None,
+            fields,
+            is_error: false,
+            cause: None,
+        }))
+    };
+    let before = live();
+    let items =
+        vec![tagged(Value::str("a label longer than a word")), tagged(Value::None), tagged(Value::str("b"))];
+    let value = with(|state| Some(state.push(Value::list(items.clone())))).unwrap();
+    let all = super::from_value(value, 0, 0, 0);
+    assert_eq!(read(all), Value::list(items.clone()));
+    let tail = super::slice(all, 1, i64::MIN);
+    heap::free(all);
+    assert_eq!(read(tail), Value::list(items.get(1..).unwrap().to_vec()));
+    heap::free(tail);
+    assert_eq!(live(), before);
+    finish();
+}

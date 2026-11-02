@@ -510,7 +510,7 @@ impl Emit<'_, '_, '_> {
         let dest = dest.ok_or("no result")?;
         let (text, _) = self.operand(args.first().ok_or("no argument")?)?;
         if self.headers() {
-            return self.on_blocks([&text], |emit, [block]| emit.text_by_bytes_of(dest, name, args, &block));
+            return self.header_by_bytes(dest, name, args, &text);
         }
         self.text_by_bytes_of(dest, name, args, &text)
     }

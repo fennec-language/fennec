@@ -1030,6 +1030,11 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = icmp {cc} i1 {a}, {b}"));
                 temp
             }
+            Kind::Str
+                if self.headers() && op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) =>
+            {
+                return self.header_append(dest, &a, &b);
+            }
             Kind::Str if self.headers() => self.header_binary(op, (&a, &b))?,
             Kind::Str if op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) => {
                 // `text += more` takes over the owner the local had, and grows in place if it can.

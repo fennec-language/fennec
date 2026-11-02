@@ -204,6 +204,18 @@ impl Emit<'_, '_, '_> {
     /// Whether two headers hold the same text. Equal strings always have the same form, so two
     /// inline ones are equal exactly when their words are, and only two blocks need comparing.
     pub(crate) fn same_headers(&mut self, a: &str, b: &str) -> String {
+        // A literal that fits is inline, so only an inline string with the same words equals it.
+        if a.starts_with("[i64") || b.starts_with("[i64") {
+            let mut same = "true".to_owned();
+            for at in 0..3 {
+                let (x, y) = (self.header_word(a, at), self.header_word(b, at));
+                let (equal, all) = (self.temp(), self.temp());
+                self.line(&format!("{equal} = icmp eq i64 {x}, {y}"));
+                self.line(&format!("{all} = and i1 {same}, {equal}"));
+                same = all;
+            }
+            return same;
+        }
         let (a_block, b_block) = (self.header_in_block(a), self.header_in_block(b));
         let both = self.temp();
         self.line(&format!("{both} = and i1 {a_block}, {b_block}"));
@@ -247,10 +259,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{differs} = xor i1 {same}, true"));
                 Ok(differs)
             }
-            BinOp::Add => {
-                let joined = self.on_blocks([a, b], |emit, [x, y]| emit.string_binary(op, (&x, &y)))?;
-                Ok(self.text_from_block(&joined))
-            }
+            BinOp::Add => Ok(self.header_concat(a, b)),
             _ => self.on_blocks([a, b], |emit, [x, y]| emit.string_binary(op, (&x, &y))),
         }
     }
@@ -314,5 +323,251 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{both} = or i64 {first}, {last}"));
         self.line(&format!("{none} = icmp eq i64 {both}, 0"));
         none
+    }
+
+    /// An inline header's length in bytes: what byte 23 holds below its top bit.
+    fn inline_length(&mut self, header: &str) -> String {
+        let last = self.header_word(header, 2);
+        let (shifted, length) = (self.temp(), self.temp());
+        self.line(&format!("{shifted} = lshr i64 {last}, 56"));
+        self.line(&format!("{length} = and i64 {shifted}, 127"));
+        length
+    }
+
+    /// `a + b`: done in place in the words when both are inline and the result fits, and by
+    /// the runtime otherwise.
+    fn header_concat(&mut self, a: &str, b: &str) -> String {
+        let (a_block, b_block) = (self.header_in_block(a), self.header_in_block(b));
+        let (a_length, b_length) = (self.inline_length(a), self.inline_length(b));
+        let (either, total, fits, quick) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{either} = or i1 {a_block}, {b_block}"));
+        self.line(&format!("{total} = add i64 {a_length}, {b_length}"));
+        self.line(&format!("{fits} = icmp ule i64 {total}, 23"));
+        let inline = self.temp();
+        self.line(&format!("{inline} = xor i1 {either}, true"));
+        self.line(&format!("{quick} = and i1 {inline}, {fits}"));
+        let (words, runtime, done) =
+            (self.label("concat_words"), self.label("concat_runtime"), self.label("concat_done"));
+        self.line(&format!("br i1 {quick}, label %{words}, label %{runtime}"));
+        self.start_block(&words);
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        let (from_a, from_b, out) = (self.place_for_text(), self.place_for_text(), self.place_for_text());
+        self.line(&format!("store {HEADER} {a}, ptr {from_a}"));
+        self.line(&format!("store {HEADER} {b}, ptr {from_b}"));
+        self.line(&format!("store {HEADER} zeroinitializer, ptr {out}"));
+        self.line(&format!(
+            "call void @llvm.memcpy.p0.p0.i64(ptr {out}, ptr {from_a}, i64 {a_length}, i1 false)"
+        ));
+        let after = self.temp();
+        self.line(&format!("{after} = getelementptr inbounds i8, ptr {out}, i64 {a_length}"));
+        self.line(&format!(
+            "call void @llvm.memcpy.p0.p0.i64(ptr {after}, ptr {from_b}, i64 {b_length}, i1 false)"
+        ));
+        let (tag, tag_at) = (self.temp(), self.temp());
+        self.line(&format!("{tag} = or i64 {total}, 128"));
+        self.line(&format!("{tag_at} = getelementptr inbounds i8, ptr {out}, i64 23"));
+        let byte = self.temp();
+        self.line(&format!("{byte} = trunc i64 {tag} to i8"));
+        self.line(&format!("store i8 {byte}, ptr {tag_at}"));
+        let joined_words = self.temp();
+        self.line(&format!("{joined_words} = load {HEADER}, ptr {out}"));
+        let words_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&runtime);
+        let joined = self.on_blocks([a, b], |emit, [x, y]| {
+            emit.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
+            let joined = emit.temp();
+            emit.line(&format!("{joined} = call ptr @fennec_str_concat(ptr {x}, ptr {y})"));
+            joined
+        });
+        let joined = self.text_from_block(&joined);
+        let runtime_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let result = self.temp();
+        self.line(&format!(
+            "{result} = phi {HEADER} [ {joined_words}, %{words_end} ], [ {joined}, %{runtime_end} ]"
+        ));
+        result
+    }
+
+    /// `text += more` on a local that owns its string: a string in a block grows in place when
+    /// nothing else holds it and it has room, as without headers; anything else is joined.
+    pub(crate) fn header_append(&mut self, dest: fennec_ir::LocalId, a: &str, b: &str) -> Result<(), String> {
+        let in_block = self.header_in_block(a);
+        let (grow, join, done) =
+            (self.label("append_grow"), self.label("append_join"), self.label("append_done"));
+        self.line(&format!("br i1 {in_block}, label %{grow}, label %{join}"));
+        self.start_block(&grow);
+        let first = self.header_word(a, 0);
+        let block = self.temp();
+        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+        let grown = self.append_header(&block, b);
+        let (length_at, length, address) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!(
+            "{length_at} = getelementptr inbounds i8, ptr {grown}, i64 {}",
+            fennec_interp::embed::layout::TEXT_BYTES
+        ));
+        self.line(&format!("{length} = load i64, ptr {length_at}"));
+        self.line(&format!("{address} = ptrtoint ptr {grown} to i64"));
+        let header = self.header_of([&address, &length, "0"]);
+        let slot = self.slot(dest);
+        self.line(&format!("store {HEADER} {header}, ptr {slot}"));
+        self.line(&format!("br label %{done}"));
+        self.start_block(&join);
+        let joined = self.header_concat(a, b);
+        self.assign(dest, &joined)?;
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(())
+    }
+
+    /// Where a header's text starts: in its block, or in a copy of the header on the stack.
+    pub(crate) fn header_bytes(&mut self, header: &str) -> String {
+        let in_block = self.header_in_block(header);
+        let place = self.place_for_text();
+        self.line(&format!("store {HEADER} {header}, ptr {place}"));
+        let first = self.header_word(header, 0);
+        let (block, text, bytes) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+        self.line(&format!(
+            "{text} = getelementptr inbounds i8, ptr {block}, i64 {}",
+            crate::emit::TEXT_START
+        ));
+        self.line(&format!("{bytes} = select i1 {in_block}, ptr {text}, ptr {place}"));
+        bytes
+    }
+
+    /// A header's length in bytes, from its block or from byte 23.
+    pub(crate) fn header_byte_length(&mut self, header: &str) -> String {
+        let in_block = self.header_in_block(header);
+        let (inline, held) = (self.inline_length(header), self.header_word(header, 1));
+        let length = self.temp();
+        self.line(&format!("{length} = select i1 {in_block}, i64 {held}, i64 {inline}"));
+        length
+    }
+
+    /// `str.byte_len` and `str.char_at_byte` on a header: a character is made inline from its
+    /// bytes, with no block and nothing to count.
+    pub(crate) fn header_by_bytes(
+        &mut self,
+        dest: fennec_ir::LocalId,
+        name: &str,
+        args: &[fennec_ir::Operand],
+        text: &str,
+    ) -> Result<(), String> {
+        if name == "str.byte_len" {
+            let length = self.header_byte_length(text);
+            return self.assign(dest, &length);
+        }
+        let (byte, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+        let start = self.header_bytes(text);
+        let (lead_at, lead) = (self.temp(), self.temp());
+        self.line(&format!("{lead_at} = getelementptr inbounds i8, ptr {start}, i64 {byte}"));
+        self.line(&format!("{lead} = load i8, ptr {lead_at}"));
+        // 1 byte below 0xC0, 2 below 0xE0, 3 below 0xF0, else 4.
+        let (two, three, four, size_four, size_three, size) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{two} = icmp ult i8 {lead}, -64"));
+        self.line(&format!("{three} = icmp ult i8 {lead}, -32"));
+        self.line(&format!("{four} = icmp ult i8 {lead}, -16"));
+        self.line(&format!("{size_four} = select i1 {four}, i64 3, i64 4"));
+        self.line(&format!("{size_three} = select i1 {three}, i64 2, i64 {size_four}"));
+        self.line(&format!("{size} = select i1 {two}, i64 1, i64 {size_three}"));
+        // An ASCII character is its byte, with byte 23 saying one byte.
+        let (plain, wide) = (self.temp(), self.temp());
+        self.line(&format!("{plain} = icmp sge i8 {lead}, 0"));
+        self.line(&format!("{wide} = zext i8 {lead} to i64"));
+        let ascii_header = self.header_of([&wide, "0", "-9151314442816847872"]);
+        let ascii_end = self.current.clone();
+        let (other, done) = (self.label("char_other"), self.label("char_done"));
+        self.line(&format!("br i1 {plain}, label %{done}, label %{other}"));
+        self.start_block(&other);
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        let out = self.place_for_text();
+        self.line(&format!("store {HEADER} zeroinitializer, ptr {out}"));
+        self.line(&format!(
+            "call void @llvm.memcpy.p0.p0.i64(ptr {out}, ptr {lead_at}, i64 {size}, i1 false)"
+        ));
+        let (tag, byte_tag, tag_at) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{tag} = or i64 {size}, 128"));
+        self.line(&format!("{byte_tag} = trunc i64 {tag} to i8"));
+        self.line(&format!("{tag_at} = getelementptr inbounds i8, ptr {out}, i64 23"));
+        self.line(&format!("store i8 {byte_tag}, ptr {tag_at}"));
+        let wider = self.temp();
+        self.line(&format!("{wider} = load {HEADER}, ptr {out}"));
+        let other_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let header = self.temp();
+        self.line(&format!(
+            "{header} = phi {HEADER} [ {ascii_header}, %{ascii_end} ], [ {wider}, %{other_end} ]"
+        ));
+        self.assign(dest, &header)
+    }
+
+    /// Whether an inline header's text is all ASCII, so its length counts its characters.
+    fn inline_ascii(&mut self, header: &str) -> String {
+        let [a, b, c] = [0, 1, 2].map(|at| self.header_word(header, at));
+        let (low, both, all, high, plain) = (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{low} = and i64 {c}, 72057594037927935"));
+        self.line(&format!("{both} = or i64 {a}, {b}"));
+        self.line(&format!("{all} = or i64 {both}, {low}"));
+        self.line(&format!("{high} = and i64 {all}, -9187201950435737472"));
+        self.line(&format!("{plain} = icmp eq i64 {high}, 0"));
+        plain
+    }
+
+    /// `block += more`, taking over the block's owner: an inline ASCII `more` is copied straight
+    /// in when the block is alone and has room, and anything else goes as [`Self::append_text`]
+    /// does.
+    fn append_header(&mut self, block: &str, more: &str) -> String {
+        use fennec_interp::embed::layout::{TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
+        let in_block = self.header_in_block(more);
+        let ascii = self.inline_ascii(more);
+        let more_length = self.inline_length(more);
+        let at = |emit: &mut Self, offset: i32| emit.offset(block, offset.unsigned_abs());
+        let (count, alone, inline, simple) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{count} = load i64, ptr {block}{}", crate::emit::HEADER_ACCESS));
+        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        self.line(&format!("{inline} = xor i1 {in_block}, true"));
+        self.line(&format!("{simple} = and i1 {inline}, {ascii}"));
+        let (length_at, room_at) = (at(self, TEXT_BYTES), at(self, TEXT_ROOM));
+        let (length, room, total, fits, ok, quick) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{length} = load i64, ptr {length_at}"));
+        self.line(&format!("{room} = load i64, ptr {room_at}"));
+        self.line(&format!("{total} = add i64 {length}, {more_length}"));
+        self.line(&format!("{fits} = icmp ule i64 {total}, {room}"));
+        self.line(&format!("{ok} = and i1 {alone}, {fits}"));
+        self.line(&format!("{quick} = and i1 {ok}, {simple}"));
+        let (copy, slow, done) =
+            (self.label("append_copy"), self.label("append_slow"), self.label("append_done"));
+        self.line(&format!("br i1 {quick}, label %{copy}, label %{slow}, !prof !8"));
+        self.start_block(&copy);
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        let place = self.place_for_text();
+        self.line(&format!("store {HEADER} {more}, ptr {place}"));
+        let (start, to) = (self.offset(block, crate::emit::TEXT_START), self.temp());
+        self.line(&format!("{to} = getelementptr inbounds i8, ptr {start}, i64 {length}"));
+        self.line(&format!(
+            "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {place}, i64 {more_length}, i1 false)"
+        ));
+        self.line(&format!("store i64 {total}, ptr {length_at}"));
+        let chars_at = at(self, TEXT_CHARS);
+        let (chars, more_chars) = (self.temp(), self.temp());
+        self.line(&format!("{chars} = load i64, ptr {chars_at}"));
+        self.line(&format!("{more_chars} = add i64 {chars}, {more_length}"));
+        self.line(&format!("store i64 {more_chars}, ptr {chars_at}"));
+        let copy_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&slow);
+        let grown = self.on_blocks([more], |emit, [more]| emit.append_text(block, &more));
+        let slow_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let result = self.temp();
+        self.line(&format!("{result} = phi ptr [ {block}, %{copy_end} ], [ {grown}, %{slow_end} ]"));
+        result
     }
 }

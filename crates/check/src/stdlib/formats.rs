@@ -31,7 +31,7 @@ impl FnCx<'_> {
                 ),
                 at,
             ));
-        } else if let Err(problem) = self.holds(&format, first, call, &mut Vec::new()) {
+        } else if let Err(problem) = self.holds(&format, first, (call, None), &mut Vec::new()) {
             self.error(problem);
         } else if format == "TOML" && mentions_none(first, &self.checker.program) {
             self.error(Diagnostic::new("TOML has no None, so leave the key out instead", call));
@@ -75,7 +75,7 @@ impl FnCx<'_> {
             let message =
                 format!("a TOML document is a table, so it's read as a dict or a struct, not {}", a(&ty));
             self.error(Diagnostic::new(message, index.span));
-        } else if let Err(problem) = self.holds(&format, &ty, index.span, &mut Vec::new()) {
+        } else if let Err(problem) = self.holds(&format, &ty, (index.span, None), &mut Vec::new()) {
             self.error(problem);
         }
         Type::result(ty, Type::named("ParseError"))
@@ -88,18 +88,18 @@ impl FnCx<'_> {
         format: &str,
         map: &Type,
         (key, value): (&Type, &Type),
-        span: Span,
+        (span, field): (Span, Option<&str>),
         seen: &mut Vec<String>,
     ) -> Result<(), Diagnostic> {
         let as_object = matches!(key, Type::Str | Type::Int | Type::Unknown);
         if !as_object && format != "JSON" {
-            return Err(Diagnostic::new(format!("{format} can't hold {}", article(&map.kind())), span)
+            return Err(Diagnostic::new(cant_hold(format, field, &article(&map.kind())), span)
                 .with_help(format!("{format} tables have text keys: use `str` or `int` keys")));
         }
         if !as_object {
-            self.holds(format, key, span, seen)?;
+            self.holds(format, key, (span, field), seen)?;
         }
-        self.holds(format, value, span, seen)
+        self.holds(format, value, (span, field), seen)
     }
 
     /// Whether `name` is a standard library collection written in its natural shape.
@@ -130,33 +130,41 @@ impl FnCx<'_> {
             || self.checker.program.kind_of(ty) == Some(TypeKind::Struct)
     }
 
-    /// Whether a format can hold values of a type. `seen` are the structs being looked
+    /// Whether a format can hold values of a type. `field` is the struct field the value is
+    /// in, if any, as `Type.field`, which a message names. `seen` are the structs being looked
     /// at, so a struct that holds itself is looked at once.
     fn holds(
         &mut self,
         format: &str,
         ty: &Type,
-        span: Span,
+        (span, field): (Span, Option<&str>),
         seen: &mut Vec<String>,
     ) -> Result<(), Diagnostic> {
-        let cannot =
-            |what: &Type| Diagnostic::new(format!("{format} can't hold {}", article(&what.kind())), span);
+        let cannot = |what: &Type| Diagnostic::new(cant_hold(format, field, &article(&what.kind())), span);
+        if self.checker.program.is_shared(ty) {
+            let what = format!("the `shared` handle `{}`", ty.kind());
+            return Err(Diagnostic::new(cant_hold(format, field, &what), span).with_help(
+                "a `shared` value is a handle to one cell, not data: save what it holds in a plain struct",
+            ));
+        }
         match ty {
             Type::Unknown | Type::Unit | Type::None | Type::Bool | Type::Int | Type::Float | Type::Str => {
                 Ok(())
             }
             Type::List(item) | Type::Optional(item) | Type::IdMap(item) => {
-                self.holds(format, item, span, seen)
+                self.holds(format, item, (span, field), seen)
             }
             // An `Id` is written as its slot and generation, whatever it's for.
             Type::Id(_) => Ok(()),
-            Type::Dict(key, value) => self.holds_map(format, ty, (key, value), span, seen),
-            Type::Tuple(items) => items.iter().try_for_each(|item| self.holds(format, item, span, seen)),
+            Type::Dict(key, value) => self.holds_map(format, ty, (key, value), (span, field), seen),
+            Type::Tuple(items) => {
+                items.iter().try_for_each(|item| self.holds(format, item, (span, field), seen))
+            }
             Type::Result(..) => Err(unhandled_result(span)),
             // The standard library's collections are written in their natural shape.
             Type::Generic(name, args) if self.has_shape(name) => match (name.as_str(), args.as_slice()) {
-                ("SortedMap", [key, value]) => self.holds_map(format, ty, (key, value), span, seen),
-                (_, args) => args.iter().try_for_each(|item| self.holds(format, item, span, seen)),
+                ("SortedMap", [key, value]) => self.holds_map(format, ty, (key, value), (span, field), seen),
+                (_, args) => args.iter().try_for_each(|item| self.holds(format, item, (span, field), seen)),
             },
             Type::Named(name) | Type::Generic(name, _) => {
                 let kind = self.checker.program.type_info(name).map(|info| info.kind);
@@ -175,16 +183,27 @@ impl FnCx<'_> {
                     return Ok(());
                 }
                 seen.push(key);
-                for (case, field) in self.fields_of(name) {
+                for (case, own) in self.fields_of(name) {
                     let given = self.checker.program.type_args(ty);
-                    let field_type =
-                        self.checker.field_type(name, case.as_deref(), &field).substitute(&given);
-                    self.holds(format, &field_type, span, seen)?;
+                    let field_type = self.checker.field_type(name, case.as_deref(), &own).substitute(&given);
+                    let named = match &case {
+                        Some(case) => format!("{name}.{case}.{own}"),
+                        None => format!("{name}.{own}"),
+                    };
+                    self.holds(format, &field_type, (span, Some(&named)), seen)?;
                 }
                 Ok(())
             }
             other => Err(cannot(other)),
         }
+    }
+}
+
+/// That a format can't hold `what`, naming the field it's in, if there is one.
+fn cant_hold(format: &str, field: Option<&str>, what: &str) -> String {
+    match field {
+        Some(field) => format!("{format} can't hold `{field}`, which is {what}"),
+        None => format!("{format} can't hold {what}"),
     }
 }
 

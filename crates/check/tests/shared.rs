@@ -52,7 +52,8 @@ fn a_with_block_changes_handles_through_the_names_it_locks() {
     let text = format!(
         "{ACCOUNT}def transfer(a: Account, b: Account, amount: int):\n    with a, b as mut x, mut y:\n        \
          x.total -= amount\n        y.add(amount)\n\ndef main(stdout: Stdout):\n    a = Account(total=10)\n    \
-         b = Account()\n    transfer(a, b, 3)\n    with a as seen:\n        stdout.print(seen.total)\n"
+         b = Account()\n    transfer(a, b, 3)\n    mut total = 0\n    with a as seen:\n        \
+         total = seen.total\n    stdout.print(total)\n"
     );
     let empty: [&str; 0] = [];
     assert_eq!(problems(&text), empty);
@@ -83,4 +84,68 @@ fn a_with_block_locks_only_handles_and_names_each_one() {
         ["`x` holds a lock for this `with` block, so it can't name anything else @ x"]
     );
     assert_eq!(problems(&with("    with a, b as x:\n")), ["parse: this `with` holds 2 values but names 1"]);
+}
+
+/// A program with `Account`, an error, and a fallible function, then `rest`.
+fn locking(rest: &str) -> Vec<String> {
+    let text = format!(
+        "{ACCOUNT}error TooLow:\n    total: int\n\ndef checked(n: int) -> int:\n    if n < 0:\n        \
+         fail TooLow(total=n)\n    n\n\n{rest}"
+    );
+    problems(&text)
+}
+
+#[test]
+fn a_lock_body_does_no_io_and_cant_leave_early() {
+    assert_eq!(
+        locking(
+            "def main(stdout: Stdout):\n    a = Account()\n    with a as x:\n        stdout.print(x.total)\n"
+        ),
+        ["`stdout` does I/O, which can't happen while `x` is locked @ stdout"]
+    );
+    assert_eq!(
+        locking(
+            "shared Log:\n    count = 0\n\n    def show(self, out: Stdout):\n        out.print(self.count)\n"
+        ),
+        ["`out` does I/O, which can't happen while `self` is locked @ out"]
+    );
+    assert_eq!(
+        locking(
+            "shared Log:\n    count = 0\n\n    def set(mut self, n: int):\n        self.count = checked(n)?\n"
+        ),
+        ["`?` can't leave while `self` is locked @ checked(n)?"]
+    );
+    assert_eq!(
+        locking(
+            "def drain(a: Account):\n    with a as mut x:\n        if x.total < 0:\n            \
+             fail TooLow(total=x.total)\n        x.total = 0\n"
+        ),
+        ["`fail` can't leave while `x` is locked @ TooLow(total=x.total)"]
+    );
+}
+
+#[test]
+fn locks_never_nest() {
+    assert_eq!(
+        locking(
+            "def pay(a: Account, b: Account):\n    with a as mut x:\n        b.add(1)\n        \
+             x.total = b.total\n        with b as y:\n            pass\n"
+        ),
+        [
+            "calling `add` locks `b` while `x` is locked @ b",
+            "reading `total` locks `b` while `x` is locked @ b",
+            "this `with` takes another lock while `x` is locked @ b",
+        ]
+    );
+    assert_eq!(
+        locking(
+            "def pay(account: Account):\n    account.add(1)\n\nshared Bank:\n    total = 0\n\n    \
+             def take(mut self, source: Account):\n        source.add(-1)\n\n    def give(self, to: Account):\n        \
+             pay(to)\n"
+        ),
+        [
+            "calling `add` locks `source` while `self` is locked @ source",
+            "a `shared` handle can't be passed to a call while `self` is locked @ to",
+        ]
+    );
 }

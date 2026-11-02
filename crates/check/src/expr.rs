@@ -28,6 +28,7 @@ impl FnCx<'_> {
         };
         let ty = self.checker.settled(&ty);
         self.record(expr.span, &ty);
+        self.io_under_lock(expr, &ty);
         ty
     }
 
@@ -94,9 +95,9 @@ impl FnCx<'_> {
                     other => other,
                 }
             }
-            ExprKind::Try { value, context } => self.try_value(value, context.as_deref()),
+            ExprKind::Try { value, context } => self.try_value(value, context.as_deref(), span),
             ExprKind::Call { callee, args } => self.call(callee, args, span),
-            ExprKind::Attr { object, name, optional } => self.attr(object, name, *optional, span),
+            ExprKind::Attr { object, name, optional } => self.read_attr(object, name, *optional, span),
             ExprKind::Index { object, index } => self.index(object, index, span),
             ExprKind::Slice { object, start, end } => {
                 self.slice(object, start.as_deref(), end.as_deref(), span)
@@ -533,6 +534,15 @@ impl FnCx<'_> {
         }
     }
 
+    /// `object.name`, which takes a `shared` handle's lock to read it.
+    fn read_attr(&mut self, object: &Expr, name: &str, optional: bool, span: Span) -> Type {
+        let ty = self.attr(object, name, optional, span);
+        if let Some(held) = self.recorded(object.span) {
+            self.locks_again(object, &held, &format!("reading `{name}`"));
+        }
+        ty
+    }
+
     fn attr(&mut self, object: &Expr, name: &str, optional: bool, span: Span) -> Type {
         match self.module_member(object, name, span) {
             Some(Member::Name(member)) => return self.name(&member, span),
@@ -764,7 +774,12 @@ impl FnCx<'_> {
     }
 
     /// `value?`: the value inside a result, passing its error up.
-    fn try_value(&mut self, value: &Expr, context: Option<&Expr>) -> Type {
+    fn try_value(&mut self, value: &Expr, context: Option<&Expr>, span: Span) -> Type {
+        self.not_under_lock(
+            "`?` can't leave",
+            span,
+            "handle the failure here with `match` or `else`, so what the lock guards isn't left half changed",
+        );
         let ty = self.expr(value);
         let inner = match &ty {
             Type::Result(inner, error) => {

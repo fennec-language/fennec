@@ -227,6 +227,7 @@ impl FnCx<'_> {
                 _ => Vec::new(),
             };
             let ty = self.arg_as(arg, &receives, found.map(|(_, param)| &param.ty));
+            self.handle_passed(&arg.value, &ty);
             let Some((at, param)) = found else {
                 let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();
                 self.error(unmatched(function, ("parameter", "argument"), &names, arg));
@@ -421,6 +422,7 @@ impl FnCx<'_> {
     fn call_method(&mut self, call: &MethodCall<'_>, receiver: &Type, method_key: (&str, bool)) -> Type {
         let MethodCall { object, method, args, span } = *call;
         let (key, takes_self) = method_key;
+        self.locks_again(object, receiver, &format!("calling `{method}`"));
         if !self.extension_fits(receiver, key, method, span) {
             self.ignore_args(args);
             return Type::Unknown;

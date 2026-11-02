@@ -225,20 +225,20 @@ impl Offered {
 /// Where a declaration is written: in one of the program's files, or in the standard library's
 /// file with this text, whose spans the program's sources don't hold.
 #[derive(Clone, Copy)]
-enum Written {
+pub(crate) enum Written {
     Program,
     Library(&'static str),
 }
 
 /// What's declared: the program's own items, and the standard library's, which loading leaves
 /// for the checker to add.
-struct Known<'a> {
-    module: &'a Module,
-    sources: &'a Sources,
+pub(crate) struct Known<'a> {
+    pub(crate) module: &'a Module,
+    pub(crate) sources: &'a Sources,
 }
 
 impl<'a> Known<'a> {
-    fn items(&self) -> impl Iterator<Item = (&'a Item, Written)> + use<'a> {
+    pub(crate) fn items(&self) -> impl Iterator<Item = (&'a Item, Written)> + use<'a> {
         let library =
             fennec_syntax::prelude_modules().unwrap_or_default().iter().zip(fennec_syntax::prelude());
         let library = library
@@ -247,7 +247,7 @@ impl<'a> Known<'a> {
     }
 
     /// The struct, enum and error types.
-    fn types(&self) -> impl Iterator<Item = (&'a TypeDef, Written)> + use<'a> {
+    pub(crate) fn types(&self) -> impl Iterator<Item = (&'a TypeDef, Written)> + use<'a> {
         self.items().filter_map(|(item, written)| match item {
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => Some((def, written)),
             _ => None,
@@ -255,7 +255,7 @@ impl<'a> Known<'a> {
     }
 
     /// The methods declared on `owner`, in its own declaration or an `extend`.
-    fn methods(&self, owner: &str) -> Vec<(&'a FnDef, Written)> {
+    pub(crate) fn methods(&self, owner: &str) -> Vec<(&'a FnDef, Written)> {
         let mut found = Vec::new();
         for (item, written) in self.items() {
             let methods = match item {
@@ -268,16 +268,22 @@ impl<'a> Known<'a> {
         found
     }
 
-    /// A declaration's first line as written, and its doc comment, when it has one.
-    fn described(&self, span: Span, written: Written) -> (Option<String>, Option<String>) {
-        let (text, start) = match written {
-            Written::Library(text) => (text, span.start.saturating_sub(Span::PRELUDE)),
-            Written::Program => match self.sources.file_at(span) {
-                Some((_, text, base)) => (text, span.start.saturating_sub(base)),
-                None => return (None, None),
-            },
+    /// The text a declaration is written in, with the span's bytes in it.
+    pub(crate) fn place(&self, span: Span, written: Written) -> Option<(&'a str, usize, usize)> {
+        let (text, base) = match written {
+            Written::Library(text) => (text, Span::PRELUDE),
+            Written::Program => {
+                let (_, text, base) = self.sources.file_at(span)?;
+                (text, base)
+            }
         };
-        let start = usize::try_from(start).unwrap_or(0);
+        let local = |at: u32| usize::try_from(at.saturating_sub(base)).ok();
+        Some((text, local(span.start)?, local(span.end)?))
+    }
+
+    /// A declaration's first line as written, and its doc comment, when it has one.
+    pub(crate) fn described(&self, span: Span, written: Written) -> (Option<String>, Option<String>) {
+        let Some((text, start, _)) = self.place(span, written) else { return (None, None) };
         let line_start =
             text.get(..start).and_then(|before| before.rfind('\n')).map_or(0, |newline| newline + 1);
         let first = text.get(start..).and_then(|rest| rest.lines().next());
@@ -334,13 +340,8 @@ pub(crate) fn complete(
     offered.items()
 }
 
-/// Whether a method takes `self`, so a value has it, rather than the type.
-fn takes_self(method: &FnDef) -> bool {
-    method.params.first().is_some_and(|param| param.is_self)
-}
-
 /// The name a type's members are declared under: a struct's own, or `str` for text.
-fn owner(ty: &Type) -> Option<&str> {
+pub(crate) fn owner(ty: &Type) -> Option<&str> {
     Some(match ty {
         Type::Named(name) | Type::Generic(name, _) => name,
         Type::Str => "str",
@@ -354,40 +355,57 @@ fn owner(ty: &Type) -> Option<&str> {
     })
 }
 
-/// The members of the object that ends at `at`: what its type has, or for `Type.` what the
-/// type itself has.
-fn members(offered: &mut Offered, known: &Known<'_>, at: u32) {
+/// What the object that ends at a place is.
+pub(crate) enum Object<'a> {
+    /// A value of this type.
+    Value(Type),
+    /// The type with this name itself, as in `Type.`.
+    Type(&'a str),
+    /// A value whose type isn't known, since the program doesn't check.
+    Unknown,
+}
+
+/// What the expression that ends at `at` is, if one does.
+pub(crate) fn object<'a>(known: &Known<'a>, at: u32) -> Option<Object<'a>> {
     let found = around(known.module, known.sources, at);
-    let Some((object, function)) = found.ending else { return };
-    let written = known.sources.file_at(object).and_then(|(_, text, base)| {
-        let local = |at: u32| usize::try_from(at.saturating_sub(base)).ok();
-        text.get(local(object.start)?..local(object.end)?)
-    });
+    let (object, function) = found.ending?;
+    let written = known.place(object, Written::Program).and_then(|(text, start, end)| text.get(start..end));
     let local = |name: &str| found.names.iter().any(|(declared, _)| declared == name);
     let is_type = |name: &str| known.types().any(|(def, _)| def.name == name);
     if let Some(name) = written.filter(|name| !local(name) && is_type(name)) {
-        return type_members(offered, known, name);
+        return Some(Object::Type(name));
     }
     let ty = fennec_check::check_typed(known.module)
         .ok()
         .and_then(|checked| checked.types.body(&function)?.expr(object).cloned());
-    // Without types, every member of the program's own types might be meant.
-    let Some(ty) = ty else {
-        let own: Vec<&str> = known
-            .types()
-            .filter(|(_, written)| matches!(written, Written::Program))
-            .map(|(def, _)| def.name.as_str())
-            .collect();
-        for name in own {
-            value_members(offered, known, name);
+    Some(ty.map_or(Object::Unknown, Object::Value))
+}
+
+/// The members of the object that ends at `at`: what its type has, or for `Type.` what the
+/// type itself has.
+fn members(offered: &mut Offered, known: &Known<'_>, at: u32) {
+    match object(known, at) {
+        Some(Object::Type(name)) => type_members(offered, known, name),
+        Some(Object::Value(ty)) => {
+            if let Some(owner) = owner(&ty) {
+                value_members(offered, known, owner);
+            }
+            for name in engine_methods(&ty) {
+                offered.add(name, METHOD, Some("built-in".to_owned()), None);
+            }
         }
-        return;
-    };
-    if let Some(owner) = owner(&ty) {
-        value_members(offered, known, owner);
-    }
-    for name in engine_methods(&ty) {
-        offered.add(name, METHOD, Some("built-in".to_owned()), None);
+        // Without types, every member of the program's own types might be meant.
+        Some(Object::Unknown) => {
+            let own: Vec<&str> = known
+                .types()
+                .filter(|(_, written)| matches!(written, Written::Program))
+                .map(|(def, _)| def.name.as_str())
+                .collect();
+            for name in own {
+                value_members(offered, known, name);
+            }
+        }
+        None => {}
     }
 }
 
@@ -401,7 +419,7 @@ fn value_members(offered: &mut Offered, known: &Known<'_>, owner: &str) {
         }
     }
     for (method, written) in known.methods(owner) {
-        if takes_self(method) && shown(&method.name, written) {
+        if method.takes_self() && shown(&method.name, written) {
             known.offer(offered, &method.name, METHOD, method.span, written);
         }
     }
@@ -415,7 +433,7 @@ fn type_members(offered: &mut Offered, known: &Known<'_>, owner: &str) {
         }
     }
     for (method, written) in known.methods(owner) {
-        if !takes_self(method) {
+        if !method.takes_self() {
             known.offer(offered, &method.name, FUNCTION, method.span, written);
         }
     }

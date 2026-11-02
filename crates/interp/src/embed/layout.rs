@@ -215,6 +215,30 @@ mod tests {
     }
 
     #[test]
+    fn floats_sort_as_the_interpreter_sorts_them_whatever_their_order() {
+        let tables = Tables { elements: vec![Rc::new(Element::Float)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let nans = [f64::NAN, -f64::NAN, f64::from_bits(f64::NAN.to_bits() | 1)];
+        let floats = [0.0, -0.0, 1.5, -0.0, 0.0, f64::INFINITY, -1.0, f64::NEG_INFINITY];
+        let floats: Vec<f64> = floats.into_iter().chain(nans).chain([0.0, -0.0]).collect();
+        let mut expected = floats.clone();
+        expected.sort_by(f64::total_cmp);
+        for turn in 0..floats.len() {
+            let mut input = floats.clone();
+            input.rotate_left(turn);
+            let list = lists::new(0, i64::try_from(input.len()).unwrap());
+            for (at, float) in (LIST_ITEMS..).step_by(8).zip(&input) {
+                set_word(list, at, float.to_bits());
+            }
+            let sorted = lists::sorted(list, lists::SORT_FLOATS);
+            let bits: Vec<u64> =
+                (LIST_ITEMS..).step_by(8).take(input.len()).map(|at| word(sorted, at).unwrap()).collect();
+            assert_eq!(bits, expected.iter().map(|float| float.to_bits()).collect::<Vec<_>>());
+        }
+        finish();
+    }
+
+    #[test]
     fn numbers_format_without_a_temporary() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
         start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();

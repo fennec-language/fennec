@@ -106,3 +106,4 @@ check fails, the file is left alone and the command reports a bug.
   any. CI runs `fennec fmt --check examples crates/syntax/src/stdlib`.
 - A file that doesn't parse is skipped with a note, and doesn't fail the command: the compiler
   reports syntax errors.
+

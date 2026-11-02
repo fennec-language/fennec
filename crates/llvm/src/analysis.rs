@@ -1346,6 +1346,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
             matches!(
                 name.as_str(),
                 "math.sqrt"
+                    | "Buffer.pop"
                     | "json.dumps"
                     | "json.loads"
                     | "str.code"

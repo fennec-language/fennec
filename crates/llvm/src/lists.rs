@@ -1108,3 +1108,84 @@ pub(crate) fn list_item(list: &Kind) -> Result<ListItem, String> {
         other => Err(format!("it indexes a {other:?}, which this backend doesn't take yet")),
     }
 }
+
+impl Emit<'_, '_, '_> {
+    /// `Buffer[T]`'s methods: a buffer is a list's block, with its room for all to see.
+    pub(crate) fn buffer_builtin(
+        &mut self,
+        dest: Option<LocalId>,
+        name: &str,
+        args: &[Operand],
+        span: Span,
+    ) -> Result<(), String> {
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        match (name, args) {
+            ("Buffer.new" | "Buffer.new.capacity", _) => {
+                let dest = dest.ok_or("no result")?;
+                let item = list_item(&self.kind_of(dest)?.clone())?;
+                let room = match args.first() {
+                    Some(asked) => {
+                        let (asked, _) = self.operand(asked)?;
+                        let (more, room) = (self.temp(), self.temp());
+                        self.line(&format!("{more} = icmp sgt i64 {asked}, 4"));
+                        self.line(&format!("{room} = select i1 {more}, i64 {asked}, i64 4"));
+                        room
+                    }
+                    None => "4".to_owned(),
+                };
+                let list = self.new_list_with(item, &room, "fennec_list_with_room");
+                self.assign(dest, &list)
+            }
+            ("Buffer.push", _) => self.append(args),
+            ("Buffer.pop", [Operand::Local(buffer)]) => {
+                // Empty, it fails as the interpreter says, rather than as a list's pop does.
+                let slot = self.slot(*buffer);
+                let list = self.temp();
+                self.line(&format!("{list} = load ptr, ptr {slot}"));
+                let length = self.list_length(&list);
+                let (empty, bad, ok) = (self.temp(), self.label("empty"), self.label("popped"));
+                self.line(&format!("{empty} = icmp eq i64 {length}, 0"));
+                self.line(&format!("br i1 {empty}, label %{bad}, label %{ok}, !prof !0"));
+                self.start_block(&bad);
+                self.declare("declare void @fennec_buffer_pop_empty(i64, i64) nounwind");
+                self.line(&format!("call void @fennec_buffer_pop_empty(i64 {from}, i64 {to})"));
+                let failed = self.failed_exit();
+                self.line(&failed);
+                self.start_block(&ok);
+                self.pop(dest, args, span)
+            }
+            ("Buffer.len", [buffer]) => {
+                let (list, _) = self.operand(buffer)?;
+                let length = self.list_length(&list);
+                self.assign(dest.ok_or("no result")?, &length)
+            }
+            ("Buffer.capacity", [buffer]) => {
+                let (list, _) = self.operand(buffer)?;
+                let (at, room) = (self.temp(), self.temp());
+                self.line(&format!("{at} = getelementptr inbounds i8, ptr {list}, i64 {LIST_ROOM}"));
+                self.line(&format!("{room} = load i64, ptr {at}{HEADER_ACCESS}"));
+                self.assign(dest.ok_or("no result")?, &room)
+            }
+            ("Buffer.is_unique", [buffer]) => {
+                let (list, _) = self.operand(buffer)?;
+                let (count, alone) = (self.temp(), self.temp());
+                self.line(&format!("{count} = load i64, ptr {list}{HEADER_ACCESS}"));
+                self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+                self.assign(dest.ok_or("no result")?, &alone)
+            }
+            // The runtime takes the owner over and gives back the list to keep.
+            ("Buffer.reserve" | "Buffer.truncate", [Operand::Local(buffer), count]) => {
+                let call =
+                    if name == "Buffer.reserve" { "fennec_list_reserve" } else { "fennec_list_truncate" };
+                let (count, _) = self.operand(count)?;
+                self.declare(&format!("declare ptr @{call}(ptr, i64) nounwind"));
+                let (slot, list, changed) = (self.slot(*buffer), self.temp(), self.temp());
+                self.line(&format!("{list} = load ptr, ptr {slot}"));
+                self.line(&format!("{changed} = call ptr @{call}(ptr {list}, i64 {count})"));
+                self.line(&format!("store ptr {changed}, ptr {slot}"));
+                Ok(())
+            }
+            _ => Err(format!("it calls `{name}`, which this backend doesn't take yet")),
+        }
+    }
+}

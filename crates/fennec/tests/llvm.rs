@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 34;
+const BUILDING_EXAMPLES: usize = 35;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
@@ -794,6 +794,18 @@ def main(stdout: Stdout, process: Process):
         assert_eq!(ours, jit);
     }
     Ok(())
+}
+
+/// A `Buffer` popped empty fails as the interpreter says, not as a list's `pop` does.
+#[test]
+fn an_empty_buffer_fails_to_pop_like_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "empty_buffer",
+        "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.push(\"fox\")\n    stdout.print(kept.pop())\n    stdout.print(kept.pop())\n",
+    )
 }
 
 #[test]

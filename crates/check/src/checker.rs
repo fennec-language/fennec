@@ -74,16 +74,25 @@ pub(crate) struct Checker {
 /// can fail with stop growing.
 const REVISITS: usize = 16;
 
+/// The program's declarations, with the standard library's modules added first.
+fn with_library<'m>(library: impl IntoIterator<Item = &'m Module>, module: &Module) -> Program {
+    let mut program = Program::default();
+    for prelude in library {
+        program.add(prelude, true);
+    }
+    program.prelude_imports = std::mem::take(&mut program.imports);
+    program.prelude_modules = std::mem::take(&mut program.modules);
+    // What a standard library module imports is its own: a program names it only by importing
+    // it too.
+    program.std_functions.clear();
+    program.imported_types.clear();
+    program.add(module, false);
+    program
+}
+
 impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
-        let mut program = Program::default();
-        for prelude in fennec_syntax::prelude_modules().unwrap_or_default() {
-            program.add(prelude, true);
-        }
-        program.prelude_imports = std::mem::take(&mut program.imports);
-        program.prelude_modules = std::mem::take(&mut program.modules);
-        program.std_functions.clear();
-        program.add(module, false);
+        let mut program = with_library(fennec_syntax::prelude_modules().unwrap_or_default(), module);
         let mut diagnostics = std::mem::take(&mut program.problems);
         diagnostics.extend(crate::imports::unimported(module, &program));
         Checker {
@@ -827,4 +836,20 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
     Diagnostic::new(message, def.span)
         .with_help(format!("write it after the parameters: `{signature} -> {written}:`"))
         .with_fix(end, format!(" -> {written}"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_type_a_library_module_imports_isnt_the_programs() {
+        let library = fennec_syntax::prelude_modules().unwrap_or_default();
+        let importer = fennec_syntax::parse("from std.time import Duration\n").unwrap();
+        let program = fennec_syntax::parse("def wait(pause: Duration) -> int:\n    1\n").unwrap();
+        let declared = super::with_library(library.iter().chain([&importer]), &program);
+        let problems: Vec<String> = crate::imports::unimported(&program, &declared)
+            .into_iter()
+            .map(|problem| problem.message)
+            .collect();
+        assert_eq!(problems, ["`Duration` doesn't exist"]);
+    }
 }

@@ -17,6 +17,7 @@ use std::rc::Rc;
 use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
 
 pub mod aot;
+pub mod capabilities;
 pub mod checks;
 pub mod codec;
 pub mod dicts;
@@ -138,6 +139,8 @@ struct State {
     /// Names' text by their number, shared by every frame that declares them.
     shared_names: Vec<Option<Rc<str>>>,
     heap: heap::Heap,
+    /// The block of each plain capability, by its kind, once it's been asked for.
+    capabilities: Vec<i64>,
     failure: Option<Diagnostic>,
 }
 
@@ -195,6 +198,7 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
         spare_frames: Vec::new(),
         shared_names: Vec::new(),
         heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes),
+        capabilities: Vec::new(),
         tables,
         failure: None,
     }));
@@ -455,12 +459,14 @@ pub mod names {
         });
     }
 
-    /// Declares a capability `main` was given, so interpreted code can use it: 0 for
-    /// `Stdout`, 1 for `Fs`, 2 for `Clock`, 3 for `Args`, 4 for `Stdin`, 5 for `Process` and 6 for `Entropy`.
+    /// Declares a capability `main` was given, so interpreted code can use it: a capability's
+    /// block, or a kind, 0 for `Stdout`, 1 for `Fs`, 2 for `Clock`, 3 for `Args`, 4 for
+    /// `Stdin`, 5 for `Process` and 6 for `Entropy`.
     pub extern "C" fn declare_capability(name: i64, kind: i64) {
         with(|state| {
             let name = state.name(name);
-            state.interp.frame.declare(&name, Value::Capability(super::capability(kind)), false);
+            let capability = super::capabilities::value_of(state, kind);
+            state.interp.frame.declare(&name, capability, false);
         });
     }
 }
@@ -504,10 +510,13 @@ pub mod temps {
         with(|state| state.push(Value::Bool(b != 0)))
     }
 
-    /// A capability as a value, for code that passes one on, like `args.len()`. `kind` is
-    /// as for `declare_capability`.
+    /// A capability as a value, for code that passes one on, like `args.len()`: a block or a
+    /// kind, as for `declare_capability`.
     pub extern "C" fn capability(kind: i64) -> i64 {
-        with(|state| state.push(Value::Capability(super::capability(kind))))
+        with(|state| {
+            let capability = super::capabilities::value_of(state, kind);
+            state.push(capability)
+        })
     }
 
     /// Nothing: what a function without a value gives back.

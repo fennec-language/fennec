@@ -29,6 +29,8 @@ pub(crate) struct Analysis {
     pub(crate) checked: Option<Checked>,
     /// What the linter finds and what may copy or allocate, when the program has no mistakes.
     pub(crate) findings: Vec<Located>,
+    /// What may copy or allocate, as the IR finds it, when the program checks.
+    pub(crate) costs: Vec<fennec_ir::Finding>,
     /// Whether this looked at only part of the program. See `edited_bodies`.
     pub(crate) partial: bool,
 }
@@ -113,7 +115,14 @@ pub(crate) fn edited_bodies(clean: &Clean, program: &Path, overlay: &Overlay) ->
     }
     drop(items);
     let linted = findings::located(&loaded.sources, &fennec_lint::lint(&loaded.module, &loaded.sources));
-    let diagnostics = fennec_check::check_to_run(&mut loaded.module).err().unwrap_or_default();
+    // A copy each time round a loop is a mistake too, as `fennec run` finds it.
+    let diagnostics = match fennec_check::check_to_run(&mut loaded.module) {
+        Ok(signatures) => {
+            let lowered = fennec_ir::lower(&loaded.module, &signatures);
+            fennec_lint::implicit_copies(&fennec_ir::costs(&lowered))
+        }
+        Err(diagnostics) => diagnostics,
+    };
     // A file that hasn't changed keeps what it had. One that has gets the linter's findings
     // afresh, and what may copy waits for the whole program to be checked again.
     let findings = if diagnostics.is_empty() {
@@ -131,6 +140,7 @@ pub(crate) fn edited_bodies(clean: &Clean, program: &Path, overlay: &Overlay) ->
         module: None,
         checked: None,
         findings,
+        costs: Vec::new(),
         partial: true,
     })
 }
@@ -146,17 +156,23 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
             module: None,
             checked: None,
             findings: Vec::new(),
+            costs: Vec::new(),
             partial: false,
         },
         Ok(loaded) => {
-            let (diagnostics, checked) = match fennec_check::check_typed(&loaded.module) {
+            let (mut diagnostics, checked) = match fennec_check::check_typed(&loaded.module) {
                 Ok(checked) => (Vec::new(), Some(checked)),
                 Err(diagnostics) => (diagnostics, None),
             };
-            let findings = checked
-                .as_ref()
-                .map(|checked| findings::of_clean(&loaded.module, &loaded.sources, checked))
-                .unwrap_or_default();
+            let costs =
+                checked.as_ref().map(|checked| findings::costs(&loaded.module, checked)).unwrap_or_default();
+            // A copy each time round a loop is a mistake, as `fennec check` finds it.
+            diagnostics.extend(fennec_lint::implicit_copies(&costs));
+            let findings = if diagnostics.is_empty() {
+                findings::of_clean(&loaded.module, &loaded.sources, &costs)
+            } else {
+                Vec::new()
+            };
             Analysis {
                 sources: loaded.sources,
                 diagnostics,
@@ -164,6 +180,7 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
                 module: Some(loaded.module),
                 checked,
                 findings,
+                costs,
                 partial: false,
             }
         }

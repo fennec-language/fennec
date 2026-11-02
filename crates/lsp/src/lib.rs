@@ -12,6 +12,7 @@
 //! - a document's outline;
 //! - completion of names in scope, members after a dot and enum cases;
 //! - signature help inside a call's parentheses;
+//! - inlay hints: inferred types of local names, parameter names at calls, and copies in loops;
 //! - formatting, with `fennec fmt`'s one style.
 //!
 //! `fennec lsp` runs it, in the build daemon when there is one, so every editor shares the
@@ -22,6 +23,7 @@ mod completion;
 mod declaration;
 mod definition;
 mod findings;
+mod inlay;
 mod json;
 mod references;
 mod session;

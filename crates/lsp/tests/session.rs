@@ -599,3 +599,65 @@ fn signature_help_for_a_method_comes_from_the_objects_type() {
     let help = editor.at("textDocument/signatureHelp", "src/main.fen", &typing, "describe(", 9);
     assert_eq!(signatures(&help).0, ["describe() -> str"]);
 }
+
+/// Each inlay hint's label, with the line and column it's at.
+fn inlays(editor: &mut Editor, file: &str) -> Vec<(String, usize, usize)> {
+    let params = Json::object([("textDocument", Json::object([("uri", Json::string(editor.uri(file)))]))]);
+    let hints = editor.request("textDocument/inlayHint", params);
+    let place =
+        |hint: &Json, key: &str| hint.at(&["position", key]).and_then(Json::as_usize).unwrap_or(usize::MAX);
+    let all = hints.as_array().unwrap_or(&[]);
+    all.iter()
+        .filter_map(|hint| {
+            let label = hint.get("label")?.as_str()?.to_owned();
+            Some((label, place(hint, "line"), place(hint, "character")))
+        })
+        .collect()
+}
+
+#[test]
+fn inlay_hints_show_inferred_types_and_parameter_names() {
+    let mut editor = Editor::new("inlay").unwrap();
+    editor.open("src/main.fen", MAIN);
+    let hints = inlays(&mut editor, "src/main.fen");
+    assert!(hints.contains(&(": Fighter".to_owned(), 6, 11)), "{hints:?}");
+    assert!(hints.contains(&(": int".to_owned(), 7, 10)), "{hints:?}");
+    assert!(hints.contains(&("power:".to_owned(), 7, 26)), "{hints:?}");
+    assert!(!hints.iter().any(|(label, ..)| label == "fighter:"), "an argument that says it: {hints:?}");
+    assert!(
+        !hints.iter().any(|(label, line, _)| label.starts_with(": ") && *line == 5),
+        "given types: {hints:?}"
+    );
+}
+
+#[test]
+fn a_copy_each_time_round_a_loop_is_a_mistake_and_copies_in_loops_are_marked() {
+    let mut editor = Editor::new("inlay-copies").unwrap();
+    let once = format!(
+        "{MAIN}\ndef once(n: int) -> int:\n    mut xs = [n]\n    snapshot = xs\n    for at in range(n):\n        \
+         xs[0] = at\n    snapshot.len() + xs.len()\n"
+    );
+    let published = editor.open("src/main.fen", &once);
+    assert!(
+        !for_file(&published, "main.fen")
+            .map(messages)
+            .unwrap_or_default()
+            .iter()
+            .any(|message| message.contains("each time")),
+        "{published:?}"
+    );
+    let hints = inlays(&mut editor, "src/main.fen");
+    assert!(hints.iter().any(|(label, line, _)| label == "copies once" && *line == 14), "{hints:?}");
+    let each = format!(
+        "{MAIN}\ndef each(n: int) -> int:\n    mut xs = [n]\n    mut total = 0\n    for at in range(n):\n        \
+         snapshot = xs\n        xs[0] = at\n        total += snapshot.len()\n    total\n"
+    );
+    let published = editor.change("src/main.fen", &each);
+    let found = for_file(&published, "main.fen").unwrap();
+    let mistakes: Vec<&Json> =
+        found.iter().filter(|diagnostic| diagnostic.get("severity") == Some(&Json::number(1))).collect();
+    assert_eq!(mistakes.len(), 1, "{:?}", messages(found));
+    assert!(messages(found)[0].contains("`xs` is copied each time round the loop"), "{:?}", messages(found));
+    let hints = inlays(&mut editor, "src/main.fen");
+    assert!(hints.iter().any(|(label, ..)| label == "copies each pass"), "{hints:?}");
+}

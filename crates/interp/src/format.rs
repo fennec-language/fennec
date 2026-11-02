@@ -15,6 +15,7 @@ pub(crate) fn display(value: &Value) -> String {
 pub(crate) fn repr(value: &Value) -> String {
     match value {
         Value::Unit | Value::Lent(_) => String::new(),
+        Value::Shared(cell) => repr(&cell.borrow()),
         Value::Generator(generator) => format!("<{}>", generator.label()),
         Value::None => "None".to_owned(),
         Value::Bool(true) => "True".to_owned(),

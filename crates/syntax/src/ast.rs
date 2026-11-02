@@ -96,6 +96,8 @@ pub struct TypeDef {
     pub fields: Vec<Field>,
     pub cases: Vec<Case>,
     pub methods: Vec<FnDef>,
+    /// Whether it's a `shared` type: a counted handle to one cell, whose methods lock it.
+    pub shared: bool,
     pub span: Span,
 }
 

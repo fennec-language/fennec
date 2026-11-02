@@ -47,7 +47,7 @@ impl Tree {
     fn item(&mut self, item: &Item) {
         match item {
             Item::Function(function) => self.function(function),
-            Item::Struct(def) => self.type_def("struct", def),
+            Item::Struct(def) => self.type_def(if def.shared { "shared" } else { "struct" }, def),
             Item::Enum(def) => self.type_def("enum", def),
             Item::Error(def) => self.type_def("error", def),
             Item::Interface(interface) => {

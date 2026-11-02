@@ -469,6 +469,15 @@ impl Emit<'_, '_, '_> {
         let (slot, mut text) = (self.slot(joined), self.temp());
         self.line(&format!("{text} = load ptr, ptr {slot}"));
         for part in parts {
+            // A string's header goes straight on, with no block made for it.
+            if let FormatPart::Value { value, spec: None } = part
+                && self.headers()
+                && self.operand_kind(value)? == Kind::Str
+            {
+                let (header, _) = self.operand(value)?;
+                text = self.append_piece(&text, &header);
+                continue;
+            }
             let (piece, owned) = match part {
                 FormatPart::Text(literal) => (self.literal(literal), false),
                 FormatPart::Value { value, spec } => (self.piece(value, spec.as_deref(), span)?, true),
@@ -880,6 +889,10 @@ impl Emit<'_, '_, '_> {
                 if kind == Kind::Str {
                     self.retain(&list);
                     return self.assign(dest.ok_or("no result")?, &list);
+                }
+                if kind == Kind::TextBlock {
+                    let header = self.text_from_borrowed_block(&list);
+                    return self.assign(dest.ok_or("no result")?, &header);
                 }
                 self.declare("declare ptr @fennec_str_join(ptr, ptr) nounwind");
                 let temp = self.temp();

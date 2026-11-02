@@ -341,12 +341,12 @@ impl<'p> Module<'_, 'p> {
         };
         let known = self.whole.analyses.get(function.name.as_str()).ok_or("no analysis")?;
         let mut kinds = Vec::with_capacity(function.locals.len());
-        // Held as headers, strings aren't grown in place yet, so pieces stay a list.
-        let joined = self.whole.builders.get(function.name.as_str()).filter(|_| !self.layouts.text_headers());
+        let joined = self.whole.builders.get(function.name.as_str());
+        let builder = if self.layouts.text_headers() { Kind::TextBlock } else { Kind::Str };
         for (at, local) in function.locals.iter().enumerate() {
-            // Pieces only ever joined are the string they're joined into.
+            // Pieces only ever joined are the string they're joined into, a block that grows.
             let kind = if joined.is_some_and(|locals| locals.contains(&at)) {
-                Kind::Str
+                builder.clone()
             } else {
                 self.kind(&local.ty)?
             };
@@ -1630,7 +1630,7 @@ impl Emit<'_, '_, '_> {
         (name == "list.append"
             && *piece == made
             && self.known.used_once(made)
-            && self.kinds.get(joined.0) == Some(&Kind::Str))
+            && matches!(self.kinds.get(joined.0), Some(Kind::Str | Kind::TextBlock)))
         .then_some((*joined, parts))
     }
 

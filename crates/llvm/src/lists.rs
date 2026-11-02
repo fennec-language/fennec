@@ -1112,13 +1112,13 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn make_list(&mut self, dest: LocalId, items: &[Operand], block: usize) -> Result<(), String> {
         // Pieces kept as the string they're joined into start as their own text.
-        if *self.kind_of(dest)? == Kind::Str {
+        if matches!(self.kind_of(dest)?, Kind::Str | Kind::TextBlock) {
             self.declare("declare ptr @fennec_str_with_room(i64) nounwind");
             let mut text = self.temp();
             self.line(&format!("{text} = call ptr @fennec_str_with_room(i64 {PIECES_ROOM})"));
             for item in items {
                 let (piece, _) = self.operand(item)?;
-                text = self.append_text(&text, &piece);
+                text = self.append_piece(&text, &piece);
             }
             return self.assign(dest, &text);
         }
@@ -1162,11 +1162,11 @@ impl Emit<'_, '_, '_> {
             return Err("it appends to a literal".to_owned());
         };
         // A piece goes on the end of the string it'll be joined into.
-        if *self.kind_of(*local)? == Kind::Str {
+        if matches!(self.kind_of(*local)?, Kind::Str | Kind::TextBlock) {
             let (piece, _) = self.operand(args.get(1).ok_or("no argument")?)?;
             let (slot, text) = (self.slot(*local), self.temp());
             self.line(&format!("{text} = load ptr, ptr {slot}"));
-            let joined = self.append_text(&text, &piece);
+            let joined = self.append_piece(&text, &piece);
             self.line(&format!("store ptr {joined}, ptr {slot}"));
             return Ok(());
         }

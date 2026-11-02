@@ -501,7 +501,7 @@ impl Emit<'_, '_, '_> {
     /// `block += more`, taking over the block's owner: an inline ASCII `more` is copied straight
     /// in when the block is alone and has room, and anything else goes as [`Self::append_text`]
     /// does.
-    fn append_header(&mut self, block: &str, more: &str) -> String {
+    pub(crate) fn append_header(&mut self, block: &str, more: &str) -> String {
         use fennec_interp::embed::layout::{TEXT_BYTES, TEXT_CHARS, TEXT_ROOM};
         let in_block = self.header_in_block(more);
         let ascii = self.inline_ascii(more);
@@ -764,5 +764,24 @@ impl Emit<'_, '_, '_> {
         let result = self.temp();
         self.line(&format!("{result} = phi i64 [ {word}, %{read_end} ], [ 0, %{before} ]"));
         result
+    }
+
+    /// A piece put on the end of the block pieces are joined into: a header, with headers, and
+    /// otherwise a string's block.
+    pub(crate) fn append_piece(&mut self, block: &str, piece: &str) -> String {
+        if self.headers() { self.append_header(block, piece) } else { self.append_text(block, piece) }
+    }
+
+    /// What kind of value an operand is, without making it.
+    pub(crate) fn operand_kind(&self, operand: &fennec_ir::Operand) -> Result<Kind, String> {
+        use fennec_ir::Operand;
+        Ok(match operand {
+            Operand::Local(local) => self.kind_of(*local)?.clone(),
+            Operand::Int(_) => Kind::Int,
+            Operand::Float(_) => Kind::Float,
+            Operand::Bool(_) => Kind::Bool,
+            Operand::Str(_) => Kind::Str,
+            Operand::None => Kind::Unit,
+        })
     }
 }

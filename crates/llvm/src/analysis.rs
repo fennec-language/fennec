@@ -9,7 +9,7 @@ use fennec_ir::facts::{Facts, Range};
 use fennec_ir::{Block, Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
 use fennec_syntax::{BinOp, UnaryOp};
 
-use crate::uniqueness::{FieldPath, Summaries, needed, summarized};
+use crate::uniqueness::{FieldPath, Summaries, Tracked, needed, summarized};
 
 const FULL: Range = (i64::MIN, i64::MAX);
 /// The most items anything in memory can have.
@@ -72,6 +72,9 @@ pub(crate) struct Analysis {
     /// Lists such a loop fills with nothing but zeros, one a turn from a count starting at 0:
     /// made whole, already zero, with the appends left out.
     pub(crate) zero_filled: HashSet<usize>,
+    /// Copies, by block and place in it, whose source nothing reads again or leans on: the
+    /// copy takes over its owner.
+    last_copies: HashSet<(usize, usize)>,
 }
 
 /// What's known about every function, and which can fail.
@@ -83,6 +86,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) generators: HashMap<&'p str, &'p GeneratorDef>,
     /// What each function may give another owner, or replace, under each parameter.
     pub(crate) settles: Summaries<'p>,
+    /// What each function may shorten, or replace, under each parameter.
+    pub(crate) lengths: Summaries<'p>,
     /// The field paths of `mut` parameters each function's callers make alone before calling.
     pub(crate) needs: HashMap<&'p str, Vec<FieldPath>>,
 }
@@ -393,18 +398,25 @@ fn analyze(
         aliases: HashMap::new(),
         reservations: HashMap::new(),
         zero_filled: HashSet::new(),
+        last_copies: HashSet::new(),
     };
     let grown = count_uses(function, (changes, keeps), &mut known);
     find_reads_again(function, &mut known);
     find_borrows(function, changes, &mut known);
     find_path_takes(function, &mut known);
     find_aliases(function, &mut known);
+    find_last_copies(function, &mut known);
     // A copy shares its source, unless the source is never read again, and a block put inside
     // something else is shared by that.
-    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+    let placed =
+        function.blocks.iter().enumerate().flat_map(|(at, block)| {
+            block.insts.iter().enumerate().map(move |(index, inst)| ((at, index), inst))
+        });
+    for (place, inst) in placed {
         match &inst.kind {
             // A copy standing for the list a loop goes through owns nothing.
             InstKind::Copy { dest, .. } if known.aliases.contains_key(&dest.0) => {}
+            InstKind::Copy { .. } if known.last_copies.contains(&place) => {}
             InstKind::Copy { value: Operand::Local(from), .. }
             | InstKind::MakeSome { value: Operand::Local(from), .. }
             | InstKind::GetSome { value: Operand::Local(from), .. }
@@ -1033,6 +1045,11 @@ impl Analysis {
             && !self.read_again.contains(&from.0)
     }
 
+    /// Whether the copy at this place in this block is the last anything does with its source.
+    pub(crate) fn is_last_copy(&self, block: usize, index: usize) -> bool {
+        self.last_copies.contains(&(block, index))
+    }
+
     /// Whether this function changes a list in a local nothing else here comes to hold, so
     /// it's enough to see that it has one owner when the local gets it.
     pub(crate) fn alone_once_checked(&self, local: LocalId) -> bool {
@@ -1083,6 +1100,100 @@ impl Analysis {
     /// Whether anything writes a local.
     pub(crate) fn written(&self, local: LocalId) -> bool {
         self.writes.get(local.0).is_some_and(|writes| *writes > 0)
+    }
+}
+
+/// Which locals each block's end, and each block's start, may still read before writing:
+/// worked out back from where they're read, round loops until nothing changes.
+fn live_after_blocks(function: &Function) -> Vec<HashSet<usize>> {
+    let reads_of_end = |end: &Terminator| -> Vec<usize> {
+        match end {
+            Terminator::Return(Some(Operand::Local(local)))
+            | Terminator::Branch { cond: Operand::Local(local), .. }
+            | Terminator::NoMatch { value: Operand::Local(local), .. } => vec![local.0],
+            _ => Vec::new(),
+        }
+    };
+    let count = function.blocks.len();
+    let mut live_in: Vec<HashSet<usize>> = vec![HashSet::new(); count];
+    let mut live_out: Vec<HashSet<usize>> = vec![HashSet::new(); count];
+    loop {
+        let mut changed = false;
+        for (at, block) in function.blocks.iter().enumerate().rev() {
+            let mut out = HashSet::new();
+            for next in block.end.targets() {
+                out.extend(live_in.get(next.0).into_iter().flatten().copied());
+            }
+            let mut live = out.clone();
+            live.extend(reads_of_end(&block.end));
+            for inst in block.insts.iter().rev() {
+                let (mut reads, mut writes) = (Vec::new(), Vec::new());
+                visit(&inst.kind, |operand| reads.extend(local_of(operand)), |local| writes.push(local.0));
+                for write in writes {
+                    live.remove(&write);
+                }
+                live.extend(reads);
+            }
+            if live_out.get(at) != Some(&out) || live_in.get(at) != Some(&live) {
+                changed = true;
+                if let Some(slot) = live_out.get_mut(at) {
+                    *slot = out;
+                }
+                if let Some(slot) = live_in.get_mut(at) {
+                    *slot = live;
+                }
+            }
+        }
+        if !changed {
+            return live_out;
+        }
+    }
+}
+
+fn local_of(operand: &Operand) -> Option<usize> {
+    match operand {
+        Operand::Local(local) => Some(local.0),
+        _ => None,
+    }
+}
+
+/// Copies whose source nothing reads after them, before writing it again, and that nothing
+/// leans on: borrows, aliases, or what's taken out of it.
+fn find_last_copies(function: &Function, known: &mut Analysis) {
+    let mut leaned_on = HashSet::new();
+    for local in 0..function.locals.len() {
+        let id = LocalId(local);
+        leaned_on.extend(known.lender(id).map(|from| from.0));
+        leaned_on.extend(known.alias(id).map(|from| from.0));
+        leaned_on.extend(known.field_of(id).map(|(from, _)| from.0));
+        leaned_on.extend(known.item_home(id).map(|(from, _)| from.0));
+        leaned_on.extend(known.path_home(id).map(|(from, _, _)| from.0));
+    }
+    let live_out = live_after_blocks(function);
+    for (at, block) in function.blocks.iter().enumerate() {
+        let mut live = live_out.get(at).cloned().unwrap_or_default();
+        if let Terminator::Return(Some(Operand::Local(local)))
+        | Terminator::Branch { cond: Operand::Local(local), .. }
+        | Terminator::NoMatch { value: Operand::Local(local), .. } = &block.end
+        {
+            live.insert(local.0);
+        }
+        for (index, inst) in block.insts.iter().enumerate().rev() {
+            if let InstKind::Copy { dest, value: Operand::Local(from) } = &inst.kind
+                && dest != from
+                && !live.contains(&from.0)
+                && !leaned_on.contains(&from.0)
+                && from.0 >= function.params
+            {
+                known.last_copies.insert((at, index));
+            }
+            let (mut reads, mut writes) = (Vec::new(), Vec::new());
+            visit(&inst.kind, |operand| reads.extend(local_of(operand)), |local| writes.push(local.0));
+            for write in writes {
+                live.remove(&write);
+            }
+            live.extend(reads);
+        }
     }
 }
 
@@ -1258,7 +1369,8 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         can_fail.insert(def.resume.as_str());
         can_fail.extend(def.abandon.as_deref());
     }
-    let settles = summarized(&functions, &analyses);
+    let settles = summarized(&functions, &analyses, Tracked::Owners);
+    let lengths = summarized(&functions, &analyses, Tracked::Lengths);
     let needs = needed(program, &functions, &analyses);
-    Whole { functions, analyses, can_fail, generators, settles, needs }
+    Whole { functions, analyses, can_fail, generators, settles, lengths, needs }
 }

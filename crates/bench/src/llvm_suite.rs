@@ -6,8 +6,8 @@
 //! shows. Speeds are a percentage of the twin's: 100 matches Rust, and higher is faster.
 //!
 //! It prints one Markdown table, and with `--json PATH` writes the same as one JSON object for a
-//! history of runs. Each kernel's spread is shown too, and one whose times wander too far is
-//! called noisy. Nothing here fails for being slow: only a kernel that
+//! history of runs. Each kernel's spread is shown too: how far a median run is from the best,
+//! which is the noise the best run hides. One with a wide spread is called noisy. Nothing here fails for being slow: only a kernel that
 //! prints something other than its twin does.
 
 use std::fmt::Write as _;
@@ -20,8 +20,9 @@ use fennec_lsp::Json;
 use crate::kernels::Kernel;
 use crate::measure::{Counter, Overflow, Program};
 
-/// How far a kernel's times may spread, as a share of the median, before it's called noisy.
-const NOISY: f64 = 0.10;
+/// How far a side's median run may be from its best, as a share of the best, before the kernel
+/// is called noisy.
+const NOISY: f64 = 0.05;
 
 /// What one kernel came to.
 struct Row {
@@ -31,7 +32,8 @@ struct Row {
     instructions: Option<f64>,
     time: Option<f64>,
     median: Option<f64>,
-    /// The spread of the slower of the two's middle runs, as a share of its median.
+    /// How far the median run is from the best on whichever side it's farther, as a share of the
+    /// best.
     spread: f64,
     /// Why it has no numbers: it doesn't build, or it prints the wrong thing.
     problem: Option<String>,
@@ -44,16 +46,13 @@ fn sorted(times: &[Duration]) -> Vec<f64> {
     seconds
 }
 
-/// The best of some times, their median, and their spread: the range of all but the fastest and
-/// slowest run, once there are five or more, over the median.
+/// The best of some times, their median, and their spread: how far the median is from the best,
+/// as a share of the best.
 fn summary(times: &[Duration]) -> (f64, f64, f64) {
     let seconds = sorted(times);
     let best = seconds.first().copied().unwrap_or(0.0);
     let middle = seconds.get(seconds.len() / 2).copied().unwrap_or(0.0);
-    let kept =
-        if seconds.len() >= 5 { seconds.get(1..seconds.len() - 1).unwrap_or(&seconds) } else { &seconds };
-    let range = kept.last().copied().unwrap_or(0.0) - kept.first().copied().unwrap_or(0.0);
-    (best, middle, if middle > 0.0 { range / middle } else { 0.0 })
+    (best, middle, if best > 0.0 { (middle - best) / best } else { 0.0 })
 }
 
 /// The twin's time over ours, as a percentage.
@@ -188,7 +187,7 @@ fn table(rows: &[Row], counter: Option<&Counter>) -> String {
     text.push_str(
         "\n\nEach is the overflow-checked Rust twin's count or time over LLVM's, so 100 matches Rust and \
          higher is faster. Times are each side's best and median of runs that take turns. Spread is \
-         the range of the middle runs over the median.\n",
+         how far a median run is from the best, on the side where it's farther.\n",
     );
     text
 }
@@ -274,12 +273,12 @@ mod tests {
     use super::{geomean, summary};
 
     #[test]
-    fn the_best_run_counts_and_the_spread_leaves_out_the_fastest_and_slowest() {
+    fn the_best_run_counts_and_the_spread_is_how_far_the_median_is_from_it() {
         let times: Vec<Duration> = [10, 11, 12, 13, 40].iter().map(|ms| Duration::from_millis(*ms)).collect();
         let (best, median, spread) = summary(&times);
         assert!((best - 0.010).abs() < 1e-9);
         assert!((median - 0.012).abs() < 1e-9);
-        assert!((spread - 2.0 / 12.0).abs() < 1e-9, "{spread}");
+        assert!((spread - 0.2).abs() < 1e-9, "{spread}");
     }
 
     #[test]

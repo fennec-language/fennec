@@ -16,6 +16,8 @@ const SYSTEM_LIBRARIES: &[&str] =
 
 /// The runtime library's file name.
 const RUNTIME: &str = "libfennec_runtime.a";
+/// The runtime's own bitcode, which a release build puts in the program's unit when it's there.
+const RUNTIME_BITCODE: &str = "libfennec_runtime.bc";
 
 pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
     if cfg!(windows) {
@@ -78,7 +80,9 @@ pub(crate) fn build_llvm(path: &str, output: Option<&str>, release: bool) -> Exi
     match llvm_objects(&program, release) {
         Ok((objects, total, fresh)) => {
             let compiled = started.elapsed();
-            match link_objects(&objects, &output) {
+            // A release built with the runtime's bitcode has its Rust inside already.
+            let runtime_in = release && runtime_bitcode().is_some();
+            match link_objects(&objects, &output, runtime_in) {
                 Ok(linked) => {
                     println!(
                         "🦊 built {} with LLVM: compiled {fresh} of {total} functions in {} ms, linked in {} ms",
@@ -138,7 +142,7 @@ fn llvm_objects(
         .map(fennec_build::Cache::new);
     let work = std::env::temp_dir().join(format!("fennec-llvm-{}", std::process::id()));
     let built = if release {
-        fennec_llvm::compile_whole(&tools, &units, &entry, &work)
+        fennec_llvm::compile_whole(&tools, &units, &entry, &work, runtime_bitcode().as_deref())
     } else {
         fennec_llvm::compile(&tools, &units, &entry, cache.as_ref(), &work)
     };
@@ -150,8 +154,10 @@ fn llvm_objects(
     Ok((built.objects, units.len(), built.compiled))
 }
 
-/// Links object files with the runtime library, giving back how long linking took.
-fn link_objects(objects: &[Vec<u8>], output: &Path) -> Result<std::time::Duration, String> {
+/// Links object files with the runtime library, giving back how long linking took. When the
+/// runtime's Rust is in the objects already, only its C parts are linked, so nothing of it is
+/// there twice.
+fn link_objects(objects: &[Vec<u8>], output: &Path, runtime_in: bool) -> Result<std::time::Duration, String> {
     let runtime = runtime_library()?;
     let work = std::env::temp_dir().join(format!("fennec-link-{}", std::process::id()));
     std::fs::create_dir_all(&work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
@@ -162,6 +168,7 @@ fn link_objects(objects: &[Vec<u8>], output: &Path) -> Result<std::time::Duratio
         paths.push(path);
     }
     let started = Instant::now();
+    let runtime = if runtime_in { c_parts(&runtime, &work)? } else { runtime };
     let linked = Command::new("cc")
         .args(&paths)
         .arg(&runtime)
@@ -216,6 +223,36 @@ fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
     } else {
         Err(format!("linking failed:\n{}", String::from_utf8_lossy(&linked.stderr)))
     }
+}
+
+/// The runtime's bitcode, next to the `fennec` command, if it was built: see `RUNTIME_BITCODE`.
+pub(crate) fn runtime_bitcode() -> Option<PathBuf> {
+    let fennec = std::env::current_exe().ok()?;
+    Some(fennec.with_file_name(RUNTIME_BITCODE)).filter(|path| path.is_file())
+}
+
+/// A copy of the runtime library with only its C objects: mimalloc and the compiler's helpers.
+fn c_parts(runtime: &Path, work: &Path) -> Result<PathBuf, String> {
+    let copy = work.join("runtime-c.a");
+    std::fs::copy(runtime, &copy).map_err(|err| format!("couldn't copy the runtime library: {err}"))?;
+    let ar = |args: &[&std::ffi::OsStr]| {
+        Command::new("ar").args(args).output().map_err(|err| format!("couldn't run `ar`: {err}"))
+    };
+    let listed = ar(&["t".as_ref(), copy.as_os_str()])?;
+    let rust: Vec<String> = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter(|name| name.ends_with(".rcgu.o"))
+        .map(str::to_owned)
+        .collect();
+    for names in rust.chunks(200) {
+        let mut args: Vec<&std::ffi::OsStr> = vec!["d".as_ref(), copy.as_os_str()];
+        args.extend(names.iter().map(std::ffi::OsStr::new));
+        let done = ar(&args)?;
+        if !done.status.success() {
+            return Err(format!("`ar d` failed: {}", String::from_utf8_lossy(&done.stderr)));
+        }
+    }
+    Ok(copy)
 }
 
 /// The runtime library, next to the `fennec` command.

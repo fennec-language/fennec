@@ -615,6 +615,86 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Pieces only ever added to a `list[str]` and joined with `""` are kept as that string, f-strings
+/// and `str` going straight on its end: added to in a function given it, joined before more is
+/// added, and alongside lists looked at some other way, or joined with something between.
+#[test]
+fn pieces_joined_once_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = r#"def add(n: int, mut out: list[str]):
+    if n > 0:
+        out.append(f"<{n}:")
+        add(n - 1, mut out)
+        out.append(str(n))
+        out.append(">")
+
+def shown(items: list[str]) -> str:
+    "-".join(items)
+
+def main(stdout: Stdout):
+    mut out = ["start "]
+    add(3, mut out)
+    stdout.print("".join(out))
+    mut empty: list[str] = []
+    stdout.print("".join(empty).len())
+    mut looked = ["a", "b"]
+    looked.append("c")
+    stdout.print(looked.len(), looked[2], shown(looked), "".join(looked))
+    mut again = ["x"]
+    first = "".join(again)
+    again.append("y")
+    stdout.print(first, "".join(again))
+    mut words: list[str] = []
+    for i in range(5):
+        words.append(f"w{i}")
+    stdout.print(", ".join(words))
+"#;
+    for (name, how) in [("pieces", &["--llvm"][..]), ("pieces_release", &["--llvm", "--release"][..])] {
+        let (ours, jit) = both_built(name, source, how)?;
+        assert_eq!(ours, jit);
+    }
+    Ok(())
+}
+
+/// `for at, item in enumerate(list)` makes no pairs when the list stays as it is, and still does
+/// when the pairs are kept, looked at whole, or the list grows while it's gone through.
+#[test]
+fn enumerates_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = r#"def total(names: list[str]) -> int:
+    mut sum = 0
+    for at, name in enumerate(names):
+        sum += at * name.len()
+    sum
+
+def main(stdout: Stdout):
+    names = ["fox", "kit", "den"]
+    stdout.print(total(names))
+    for at, name in enumerate(names):
+        if at > 0:
+            stdout.print(at, name)
+    pairs = enumerate(names)
+    stdout.print(pairs.len(), pairs[1])
+    mut grow = [1, 2, 3]
+    for at, n in enumerate(grow):
+        grow.append(n + at)
+    stdout.print(grow)
+    for at, word in enumerate(["a", "b"]):
+        kept = (at, word)
+        stdout.print(kept)
+"#;
+    for (name, how) in [("enumerates", &["--llvm"][..]), ("enumerates_release", &["--llvm", "--release"][..])]
+    {
+        let (ours, jit) = both_built(name, source, how)?;
+        assert_eq!(ours, jit);
+    }
+    Ok(())
+}
+
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

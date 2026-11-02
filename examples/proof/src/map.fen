@@ -50,12 +50,17 @@ def tile_of(symbol: str) -> Tile:
 struct Map:
     tiles: Grid[Tile]
     ## For each cell, by its number `y * width + x`, the numbers of the walkable cells next to it.
-    links: Packed[int]
+    ## They come from the tiles, so they aren't saved, and `Map.of` works them out again.
+    @skip
+    links = Packed[int]()
+
+    ## A map of `tiles`, with the links between them worked out.
+    def of(tiles: Grid[Tile]) -> Map:
+        Map(tiles=tiles, links=links_of(tiles))
 
     ## A map drawn with one character a tile, every row the same length.
     def drawn(rows: list[str]) -> Map:
-        tiles = Grid.of([[tile_of(symbol) for symbol in row] for row in rows])
-        Map(tiles=tiles, links=links_of(tiles))
+        Map.of(Grid.of([[tile_of(symbol) for symbol in row] for row in rows]))
 
     def width(self) -> int:
         self.tiles.width

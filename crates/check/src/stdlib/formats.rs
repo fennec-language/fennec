@@ -108,12 +108,19 @@ impl FnCx<'_> {
             && self.checker.program.type_info(name).is_some_and(|info| info.prelude)
     }
 
-    /// The fields of a struct, or of every case of an enum, each with its case.
+    /// The fields a format saves of a struct, or of every case of an enum, each with its case.
+    /// A field with `@skip` isn't saved, so it can be of a type the format can't hold.
     fn fields_of(&self, name: &str) -> Vec<(Option<String>, String)> {
         let Some(info) = self.checker.program.type_info(name) else { return Vec::new() };
-        let own = info.def.fields.iter().map(|field| (None, field.name.clone()));
+        let own = info
+            .def
+            .fields
+            .iter()
+            .filter(|field| !field.is_skipped())
+            .map(|field| (None, field.name.clone()));
         let cases = info.def.cases.iter().flat_map(|case| {
-            case.fields.iter().map(move |field| (Some(case.name.clone()), field.name.clone()))
+            let saved = case.fields.iter().filter(|field| !field.is_skipped());
+            saved.map(move |field| (Some(case.name.clone()), field.name.clone()))
         });
         own.chain(cases).collect()
     }
@@ -192,6 +199,9 @@ fn mentions_none(ty: &Type, program: &crate::program::Program) -> bool {
                 seen.push(name.clone());
                 let fields = program.type_info(name).map(|info| info.def.fields.clone()).unwrap_or_default();
                 for field in fields {
+                    if field.is_skipped() {
+                        continue;
+                    }
                     let written = field.ty.as_ref().and_then(|ty| program.resolve(ty).ok());
                     pending.extend(written);
                     if field

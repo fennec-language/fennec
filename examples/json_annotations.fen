@@ -1,0 +1,59 @@
+# decision: Every field is serialized by default, private `_` fields included.
+
+# `@skip` leaves a field out of JSON and TOML, and loading fills it in from its default.
+# `@serialize(name=...)` gives a field another name in the text. A skipped field can be of a
+# type the format can't hold, like a set, since it's never written.
+from std import json, toml
+
+struct Account:
+    @serialize(name="uid")
+    id: int
+    display_name: str
+    @skip
+    cache = dict[str, int]()
+    @skip
+    seen = set[str]()
+
+def failure[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Err(error):
+            error.message
+        case _:
+            "loaded"
+
+def ash() -> Account:
+    mut account = Account(id=7, display_name="Ash")
+    account.cache["visits"] = 3
+    account.seen.add("home")
+    account
+
+test "a skipped field isn't saved":
+    assert json.dumps(ash()) == "{\"uid\": 7, \"display_name\": \"Ash\"}"
+    assert toml.dumps(ash()) == "uid = 7\ndisplay_name = \"Ash\"\n"
+
+test "loading fills a skipped field in from its default":
+    loaded = json.loads[Account](json.dumps(ash()))?
+    assert loaded.id == 7 and loaded.display_name == "Ash"
+    assert loaded.cache.len() == 0 and loaded.seen.len() == 0
+
+test "a saved name wins over names=":
+    assert json.dumps(ash(), names=.camel_case) == "{\"uid\": 7, \"displayName\": \"Ash\"}"
+    loaded = json.loads[Account]("{\"uid\": 7, \"displayName\": \"Ash\"}", names=.camel_case)?
+    assert loaded.id == 7
+
+test "the field's own name isn't read":
+    assert (
+        failure(json.loads[Account]("{\"id\": 7, \"display_name\": \"Ash\"}"))
+        == "`Account` saves `id` as \"uid\", but the text has \"id\""
+    )
+
+test "a skipped field in the text is a field it doesn't have":
+    found = json.loads[Account]("{\"uid\": 7, \"display_name\": \"Ash\", \"cache\": {}}")
+    assert (
+        failure(found) == "`Account` doesn't save `cache`, which has `@skip`, but the text has it"
+    )
+
+def main(stdout: Stdout):
+    text = json.dumps(ash())
+    stdout.print(text)
+    stdout.print(json.loads[Account](text))

@@ -344,6 +344,84 @@ fn slice_key(state: &mut State, text: i64, from: i64, to: i64) -> Option<i64> {
     Some(text_from_bytes(state, &bytes, chars))
 }
 
+/// A string key given as its header (see `super::text`): its bytes and how many characters
+/// they are, read from the header itself or from its block, with no block made.
+fn header_text(state: &State, header: &[u64; 3]) -> Option<(Vec<u8>, usize)> {
+    if let Some(bytes) = super::text::inline_bytes(header) {
+        let chars = String::from_utf8_lossy(&bytes).chars().count();
+        return Some((bytes, chars));
+    }
+    let block = state.heap.block(super::text::block_of(header)?)?;
+    let length = usize::try_from(*block.get(2)?).ok()?;
+    let chars = usize::try_from(*block.get(3)?).ok()?;
+    let words = block.get(TEXT_HEADER_WORDS..)?;
+    Some((words.iter().flat_map(|word| word.to_le_bytes()).take(length).collect(), chars))
+}
+
+/// `dict.get(key)` for a dict of string keys, the key given as its header's words: the
+/// address of the key's value word, to read straight away, or 0 if the key isn't there. No
+/// block is made for a key held in its header.
+pub extern "C" fn find_header(dict: i64, a: u64, b: u64, c: u64) -> i64 {
+    with(|state| {
+        let (bytes, chars) = header_text(state, &[a, b, c])?;
+        let block = state.heap.block(u64::try_from(dict).ok()?)?;
+        if kind(state, block)?.0 != Word::Str {
+            return None;
+        }
+        let (Probe::Found(entry), _) = find_text(state, block, (&bytes, chars))? else { return Some(0) };
+        let mask = usize::try_from(*block.get(4)?).ok()?;
+        let word = DICT_HEADER_WORDS + mask + 1 + entry * ENTRY_WORDS + 2;
+        i64::try_from(block.as_ptr().addr() + word * 8).ok()
+    })
+    .unwrap_or(0)
+}
+
+/// `dict[key] = value` for a dict of string keys, the key given as its header's words: takes
+/// over the owners `dict`, `value` and a key in a block had, like `set`. A block is made for a
+/// key held in its header only when the key is new.
+pub extern "C" fn set_header(dict: i64, a: u64, b: u64, c: u64, value: i64) -> i64 {
+    with(|state| {
+        let header = [a, b, c];
+        let (bytes, chars) = header_text(state, &header)?;
+        let at = u64::try_from(dict).ok()?;
+        let block = state.heap.block(at)?;
+        let (key_word, value_word) = kind(state, block)?;
+        if key_word != Word::Str {
+            return None;
+        }
+        let owned = super::text::block_of(&header);
+        if let (Some(&1), (Probe::Found(entry), _)) =
+            (block.first(), find_text(state, block, (&bytes, chars))?)
+        {
+            let mask = usize::try_from(*block.get(4)?).ok()?;
+            let word = DICT_HEADER_WORDS + mask + 1 + entry * ENTRY_WORDS + 2;
+            let old = std::mem::replace(state.heap.block_mut(at)?.get_mut(word)?, value.cast_unsigned());
+            if value_word.owned() {
+                release(state, old);
+            }
+            if let Some(key) = owned {
+                release(state, key);
+            }
+            return Some(dict);
+        }
+        let key = match owned {
+            Some(key) => key.cast_signed(),
+            None => text_from_bytes(state, &bytes, chars),
+        };
+        set_in(state, dict, key, value)
+    })
+    .unwrap_or(dict)
+}
+
+/// `dict.pop(key)` for a dict of string keys, the key given as its header's words, as `pop`
+/// does it. The key's owner stays with the caller.
+pub extern "C" fn pop_header(dict: i64, a: u64, b: u64, c: u64, start: i64, end: i64) -> i64 {
+    let key = super::text::block(a, b, c);
+    let popped = pop(dict, key, start, end);
+    with(|state| release(state, key.cast_unsigned()));
+    popped
+}
+
 /// A new empty dict of a shape, owned once, with room for `room` keys.
 pub extern "C" fn new(shape: i64, room: i64) -> i64 {
     with(|state| {

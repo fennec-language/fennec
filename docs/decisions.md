@@ -522,6 +522,7 @@ with db.transaction() as mut tx:
 - `std` collections take their natural shape: `SortedMap` is an object, `SortedSet` and `Deque` are arrays, and `Grid` is a list of rows.
 - A `Time`, a moment in UTC, is an ISO 8601 string, with fractions of a second only when it has some. In TOML it's a datetime. An `Instant` from the monotonic clock can't be saved, which is a compile error, since it means nothing outside the run that read it.
 - `bytes` are a base64 string (RFC 4648, with padding). Loading text that isn't base64 fails with `ParseError`.
+- A `Duration` is a string in the form its literals take: `"30s"`, `"1.5s"`, `"200ms"`, `"1h30min"`. Loading accepts the same forms.
 - An `int` is its exact digits, all 64 bits of it. `@serialize(string=True)` on a field writes it as a string of digits instead, for readers like JavaScript that lose ints beyond 2^53. Loading that field takes either form.
 
 ```fennec
@@ -530,9 +531,10 @@ struct Upload:
     data: bytes
     @serialize(string=True)
     id: int
+    timeout = 30s
 
 json.dumps(Upload(at=clock.time(), data="hi".encode(), id=9007199254740993))
-# {"at": "2026-11-02T07:18:00Z", "data": "aGk=", "id": "9007199254740993"}
+# {"at": "2026-11-02T07:18:00Z", "data": "aGk=", "id": "9007199254740993", "timeout": "30s"}
 ```
 *Why:* ISO 8601 and base64 are what every other language's JSON reader expects for times and binary data. Ints stay exact by default, since most readers hold 64 bits, and a field a browser reads says so where it's declared.
 
@@ -765,6 +767,13 @@ with net.listen(8080) as server:
 
 **A module can hold constants.** `KEYWORDS = {"def", "if", "else"}` at the top level is an immutable name, computed when compiling from literals, collections and calls to functions that take no capabilities. There's still no `mut` at the top level, so there's no global state. UPPER_CASE is a convention the lint suggests, not a rule.
 *Why:* A table rebuilt inside a function on every call is what people write only when the language leaves them no choice. A constant is computed once, before the program runs.
+
+**Durations have literals:** `30s`, `1.5s`, `200ms`, `16ms`, `5min`, `2h`. The units are exactly `ns`, `us`, `ms`, `s`, `min` and `h`. Minutes are `min`, never `m`, so a duration can't be read as meters. Durations are the only unit literals: there's no `kb`, `px` or `deg`.
+```fennec
+clock.sleep(16ms)
+response = net.get(url, timeout=5s)?
+```
+*Why:* Timeouts and frame times are written everywhere, and `5s` reads better than `Duration.seconds(5)`. With durations the only unit literals, a literal never means two things.
 
 **String escapes are Python's:** `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\xhh`, `\uhhhh` and `\Uhhhhhhhh`.
 *Why:* Control and invisible characters need a way to be written, and these are the forms people and AI already know.

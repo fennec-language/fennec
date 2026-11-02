@@ -413,10 +413,7 @@ impl Emit<'_, '_, '_> {
         let first = self.header_word(header, 0);
         let (block, text, bytes) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
-        self.line(&format!(
-            "{text} = getelementptr inbounds i8, ptr {block}, i64 {}",
-            crate::emit::TEXT_START
-        ));
+        self.line(&format!("{text} = getelementptr i8, ptr {block}, i64 {}", crate::emit::TEXT_START));
         self.line(&format!("{bytes} = select i1 {in_block}, ptr {text}, ptr {place}"));
         bytes
     }
@@ -559,24 +556,9 @@ impl Emit<'_, '_, '_> {
         use fennec_interp::embed::layout::{TEXT_BYTES, TEXT_CHARS};
         let in_block = self.header_in_block(header);
         let inline = self.inline_ascii(header);
-        let first = self.header_word(header, 0);
-        // A block's counts are only read when it is one, so an inline header's words aren't.
-        let (block, safe, bytes_at, chars_at) = (self.temp(), self.temp(), self.temp(), self.temp());
-        let place = self.place_for_text();
-        self.line(&format!("store {HEADER} zeroinitializer, ptr {place}"));
-        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
-        self.line(&format!("{safe} = select i1 {in_block}, ptr {block}, ptr {place}"));
-        self.line(&format!(
-            "{bytes_at} = getelementptr inbounds i8, ptr {safe}, i64 {}",
-            TEXT_BYTES.unsigned_abs()
-        ));
-        self.line(&format!(
-            "{chars_at} = getelementptr inbounds i8, ptr {safe}, i64 {}",
-            TEXT_CHARS.unsigned_abs()
-        ));
-        let (bytes, chars, same, ascii) = (self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{bytes} = load i64, ptr {bytes_at}"));
-        self.line(&format!("{chars} = load i64, ptr {chars_at}"));
+        // A block's counts are only read when it is one.
+        let (bytes, chars) = (self.block_word(header, TEXT_BYTES), self.block_word(header, TEXT_CHARS));
+        let (same, ascii) = (self.temp(), self.temp());
         self.line(&format!("{same} = icmp eq i64 {bytes}, {chars}"));
         self.line(&format!("{ascii} = select i1 {in_block}, i1 {same}, i1 {inline}"));
         ascii
@@ -689,6 +671,98 @@ impl Emit<'_, '_, '_> {
         self.start_block(&done);
         let result = self.temp();
         self.line(&format!("{result} = phi {HEADER} [ {piece}, %{fast_end} ], [ {other}, %{slow_end} ]"));
+        result
+    }
+
+    /// A header's length in characters: a block's count, or an inline string's bytes that
+    /// don't continue a character.
+    pub(crate) fn header_chars(&mut self, header: &str) -> String {
+        use fennec_interp::embed::layout::TEXT_CHARS;
+        let in_block = self.header_in_block(header);
+        let counted = self.block_word(header, TEXT_CHARS);
+        // A byte continues a character when it's 10xxxxxx: count the bytes that aren't.
+        self.declare("declare i64 @llvm.ctpop.i64(i64)");
+        let length = self.inline_length(header);
+        let mut continuing = "0".to_owned();
+        for at in 0..3 {
+            let word = self.header_word(header, at);
+            let word = if at == 2 {
+                let low = self.temp();
+                self.line(&format!("{low} = and i64 {word}, 72057594037927935"));
+                low
+            } else {
+                word
+            };
+            // Top bit set and the next clear, in each byte.
+            let (shifted, not_next, both, ones, count, sum) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{shifted} = shl i64 {word}, 1"));
+            self.line(&format!("{not_next} = xor i64 {shifted}, -1"));
+            self.line(&format!("{both} = and i64 {word}, {not_next}"));
+            self.line(&format!("{ones} = and i64 {both}, -9187201950435737472"));
+            self.line(&format!("{count} = call i64 @llvm.ctpop.i64(i64 {ones})"));
+            self.line(&format!("{sum} = add i64 {continuing}, {count}"));
+            continuing = sum;
+        }
+        let (inline, chars) = (self.temp(), self.temp());
+        self.line(&format!("{inline} = sub i64 {length}, {continuing}"));
+        self.line(&format!("{chars} = select i1 {in_block}, i64 {counted}, i64 {inline}"));
+        chars
+    }
+
+    /// `text.code()` on a header: one ASCII byte inline is its own code, and anything else
+    /// goes to the runtime, which fails as the interpreter does.
+    pub(crate) fn header_code(
+        &mut self,
+        dest: fennec_ir::LocalId,
+        text: &str,
+        span: fennec_syntax::Span,
+    ) -> Result<(), String> {
+        let (first, last) = (self.header_word(text, 0), self.header_word(text, 2));
+        let (one_byte, ascii, quick) = (self.temp(), self.temp(), self.temp());
+        // Inline, one byte long, and that byte below 0x80.
+        self.line(&format!("{one_byte} = icmp eq i64 {last}, -9151314442816847872"));
+        self.line(&format!("{ascii} = icmp ult i64 {first}, 128"));
+        self.line(&format!("{quick} = and i1 {one_byte}, {ascii}"));
+        let (fast, slow, done) =
+            (self.label("code_byte"), self.label("code_runtime"), self.label("code_done"));
+        self.line(&format!("br i1 {quick}, label %{fast}, label %{slow}, !prof !8"));
+        self.start_block(&fast);
+        self.line(&format!("br label %{done}"));
+        self.start_block(&slow);
+        self.declare("declare i64 @fennec_str_code(ptr, i64, i64) nounwind");
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let counted = self.on_blocks([text], |emit, [block]| {
+            let counted = emit.temp();
+            emit.line(&format!("{counted} = call i64 @fennec_str_code(ptr {block}, i64 {from}, i64 {to})"));
+            counted
+        });
+        self.leave_if_failed();
+        let slow_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let code = self.temp();
+        self.line(&format!("{code} = phi i64 [ {first}, %{fast} ], [ {counted}, %{slow_end} ]"));
+        self.assign(dest, &code)
+    }
+
+    /// A word of a header's block at `offset`, read only when it's in a block, and 0 otherwise.
+    fn block_word(&mut self, header: &str, offset: i32) -> String {
+        let in_block = self.header_in_block(header);
+        let before = self.current.clone();
+        let (read, done) = (self.label("block_word"), self.label("block_word_done"));
+        self.line(&format!("br i1 {in_block}, label %{read}, label %{done}"));
+        self.start_block(&read);
+        let first = self.header_word(header, 0);
+        let (block, at, word) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+        self.line(&format!("{at} = getelementptr inbounds i8, ptr {block}, i64 {}", offset.unsigned_abs()));
+        self.line(&format!("{word} = load i64, ptr {at}"));
+        let read_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let result = self.temp();
+        self.line(&format!("{result} = phi i64 [ {word}, %{read_end} ], [ 0, %{before} ]"));
         result
     }
 }

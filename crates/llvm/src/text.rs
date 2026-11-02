@@ -778,6 +778,22 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        if self.headers()
+            && let (Some(dest), Some(first)) = (dest, args.first())
+        {
+            match name {
+                "str.len" => {
+                    let (text, _) = self.operand(first)?;
+                    let length = self.header_chars(&text);
+                    return self.assign(dest, &length);
+                }
+                "str.code" => {
+                    let (text, _) = self.operand(first)?;
+                    return self.header_code(dest, &text, span);
+                }
+                _ => {}
+            }
+        }
         let mut made = Vec::new();
         let result = self.text_builtin_on(dest, name, args, span, &mut made);
         for (block, owned) in &made {

@@ -581,7 +581,66 @@ There's no per-format override, like a `def json` method on a type. This replace
 **What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Entropy`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the global functions, like `sum`, `range` and `sorted`.
 *Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
 
-**Network access is a capability, `Net`, like `Fs`.** Its API for HTTP and sockets is decided when it's built; how it narrows is under Supply chain.
+**Network access is a capability, `Net`, like `Fs`.** How it narrows is under Supply chain.
+
+**`std.net` is shaped like Python's `socket` and `requests`, and every call blocks.** There's no `async` or `await`, so no function is coloured by how it waits. A server handles many connections by giving each its own `parallel` task. A task waiting on the network is parked, not its thread, so a few threads serve thousands of connections, as in Go.
+```fennec
+from std.net import Connection, NetError
+
+def main(net: Net, stdout: Stdout):
+    with net.listen(9000)? as server:
+        for conn in parallel(server):
+            match echo(mut conn):
+                case Err(error):
+                    stdout.print(f"{conn.peer} dropped: {error}")
+                case Ok(_):
+                    stdout.print(f"{conn.peer} left")
+
+## Sends back each line it's sent, until the client hangs up.
+def echo(mut conn: Connection) fails NetError:
+    for line in conn.lines():
+        conn.write(f"{line}\n")?
+```
+- **TCP:** `net.connect(host, port)` gives a `Connection`, and `net.listen(port)` gives a server whose items are connections. Both are used in a `with` block, which closes them. A connection has `read(n)`, which gives up to `n` bytes and empty bytes at the end, `read_line()`, which gives `None` at the end, `lines()`, `write(data)`, taking `bytes` or `str`, and `peer`, the other side's address.
+- **UDP:** `net.udp(port=9001)` gives a socket whose items are `Packet(data, sender)`, and `send_to(data, address)` answers.
+- **A failing connection ends only its own task.** A `NetError` is a value its task handles, as in `main` above. A runtime failure, like overflow, ends that task and closes its connection, and the server goes on. This is the containment recorded under Concurrency.
+- **Shared state** between connections is a `shared` handle, like a game's world, and one task hands work to another through a `Channel`, as under Concurrency.
+
+**The HTTP client is `net.get`, `net.post` and `net.request`.**
+```fennec
+from std import json
+
+def weather(net: Net, city: str) -> Weather fails NetError:
+    response = net.get("https://api.example.com/weather", params={"city": city})?
+    if not response.ok():
+        return Err(NetError.Status(response.status))
+    return json.loads[Weather](response.text())?
+```
+- `net.post(url, json=value)` sends a value as JSON, and `body=` sends bytes. `headers=`, `params=` and `timeout=` work on every call.
+- A `Response` has `status`, `headers` and `body`, plus `text()`, `ok()` for a 2xx status, and `json[T]()`. A 404 is a response, not an error, since what it means is the caller's to say.
+- Redirects are followed, up to 10. TLS checks certificates, and there's no option to stop it: a test uses the fake instead.
+
+**Every call that waits takes `timeout=`, a `Duration`.** Connecting and HTTP requests stop after 30 seconds unless told otherwise, so nothing hangs forever by accident. Reads on an open connection wait as long as it takes unless given a timeout, since a server waits on idle clients.
+*Why:* Python's `requests` has no default timeout, and hung clients are among the most common bugs it causes.
+
+**Network failures are one error, `NetError`, with a case for each way it fails:**
+```fennec
+error NetError:
+    NotFound(host: str)
+    Refused(host: str, port: int)
+    TimedOut(after: Duration)
+    Closed
+    Denied(reason: str)
+    Tls(reason: str)
+    Status(code: int)
+    Other(reason: str)
+```
+- `NotFound` is a name that didn't resolve, and `Closed` is the other side hanging up during a write. Reaching the end of what was sent isn't an error.
+- `Denied` is a narrowed `Net` refusing a host or port: "this Net can reach only `api.example.com`, so it can't reach `evil.example`".
+- `Status` is for callers that turn a response into an error, as above. The client itself never returns it.
+
+**A test's `Net` is a fake that never touches the network.** `net.script("GET https://api.example.com/weather", Response(status=200, body=...))` sets what a request answers, and `net.requests()` lists what was sent. `listen` and `connect` work in memory, so a test can run a server and a client against each other. `fennec test --real` uses the real network.
+*Why:* One API on every platform, shaped like the libraries people and AI already know. Blocking calls in `parallel` tasks keep server code as plain as a script, which is what the MMO's server needs.
 
 **Environment variables and running other programs are capabilities too, `Env` and `Process`,** handed to `main`. `std.process` goes through `Process`. `Process` is the most powerful capability, since a program it runs can reach files and the network too.
 
@@ -722,7 +781,7 @@ latest = Channel[Snapshot](size=1, when_full=.DropOldest)
 **There's one scheduler, with I/O multiplexed by the OS.** Code looks blocking, and a task that waits parks and frees its core.
 *Why:* Thousands of parked tasks cost almost nothing, and nobody has to manage a pool or color functions `async`.
 
-**A failure in a server task is meant to stay in that task.** That's recorded as the intent, and it's designed when servers are built.
+**A failure in a server task stays in that task.** A runtime failure in a task of `parallel(server)` ends that task and closes its connection, and the server goes on, as under `std.net`.
 *Why:* One bad index in one request shouldn't drop every connection. Tasks don't share state a failure could corrupt, which makes containment unusually safe here.
 
 **Reference counts are biased for values that cross tasks.** The thread that owns a block counts cheaply, and other threads count atomically. Programs with no tasks compile the check away.
@@ -1264,6 +1323,7 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 
 - How a type marks that its finishing method must be called.
 - How replay records the order tasks reach a `shared` value or a channel.
+- How the interpreter runs a `parallel` loop over a server's connections. It runs `parallel` loops in order, which would serve one client at a time. Until it can switch tasks at a blocking call, such a program runs only in the native engines.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.
 - SQLite: whether and how Fennec includes it. Porting it isn't realistic.
 - Whether independent writes, not just reads, should overlap automatically.

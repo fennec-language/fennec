@@ -502,6 +502,31 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// `==` with a literal of at most eight bytes: its length and its one word, zeros after
+    /// the bytes as in every string's block, are known here.
+    pub(crate) fn same_as_short(&mut self, op: BinOp, text: &str, literal: &str) -> String {
+        let mut bytes = [0_u8; 8];
+        for (slot, byte) in bytes.iter_mut().zip(literal.bytes()) {
+            *slot = byte;
+        }
+        let word = i64::from_le_bytes(bytes);
+        let (length_at, word_at) =
+            (self.offset(text, TEXT_BYTES.unsigned_abs()), self.offset(text, TEXT.unsigned_abs()));
+        let (length, held, same_length, same_word, same) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{length} = load i64, ptr {length_at}{LENGTH_ACCESS}"));
+        self.line(&format!("{held} = load i64, ptr {word_at}"));
+        self.line(&format!("{same_length} = icmp eq i64 {length}, {}", literal.len()));
+        self.line(&format!("{same_word} = icmp eq i64 {held}, {word}"));
+        self.line(&format!("{same} = and i1 {same_length}, {same_word}"));
+        if op == BinOp::Eq {
+            return same;
+        }
+        let differs = self.temp();
+        self.line(&format!("{differs} = xor i1 {same}, true"));
+        differs
+    }
+
     /// `==` on two strings: the same block, different lengths and short ones decide it here.
     fn same_text(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
         self.declare("declare i8 @fennec_box_equal(ptr, ptr) nounwind");

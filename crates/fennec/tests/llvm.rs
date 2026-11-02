@@ -550,6 +550,28 @@ fn the_last_copy_of_a_list_takes_it_over() -> std::io::Result<()> {
     )
 }
 
+/// `==` with a literal of up to eight bytes reads the length and one word: empty, eight
+/// bytes, nine, a zero byte and two-byte characters all compare as in the interpreter.
+#[test]
+fn strings_compare_with_short_literals_like_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "short_literals",
+        r#"def main(stdout: Stdout):
+    words = ["", "a", " ", "fox", "fennec ", "eightchr", "eightchrs", "é", "ab\x00", "ab"]
+    for w in words:
+        stdout.print(w == "", w == " ", w != "fox", "eightchr" == w, w == "é", w == "ab", w == "eightchrs")
+    mut spaces = 0
+    for c in "a b  c":
+        if c == " ":
+            spaces += 1
+    stdout.print(spaces)
+"#,
+    )
+}
+
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

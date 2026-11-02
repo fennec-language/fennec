@@ -922,6 +922,11 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store ptr {joined}, ptr {slot}"));
                 return Ok(());
             }
+            Kind::Str if matches!(op, BinOp::Eq | BinOp::NotEq) => match (lhs, rhs) {
+                (_, Operand::Str(literal)) if literal.len() <= 8 => self.same_as_short(op, &a, literal),
+                (Operand::Str(literal), _) if literal.len() <= 8 => self.same_as_short(op, &b, literal),
+                _ => self.string_binary(op, (&a, &b))?,
+            },
             Kind::Str => self.string_binary(op, (&a, &b))?,
             Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
             Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b)),

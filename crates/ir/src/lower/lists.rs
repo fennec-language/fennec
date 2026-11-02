@@ -88,7 +88,34 @@ impl Lowering<'_> {
     }
 
     /// `item in items`, and `not in`, on a collection.
+    /// `item in value` when `value`'s type has its own `def in`: a call to it, with the value
+    /// first, and `not in` its opposite. The item is worked out first, as it's written first.
+    fn own_in(&mut self, op: BinOp, item: &Expr, items: &Expr, span: Span) -> Lowered<Option<Operand>> {
+        let Some(held) = self.type_at(items.span) else { return Ok(None) };
+        let Some(key) = owner_name(&held).map(|owner| format!("{owner}.in")) else { return Ok(None) };
+        let given = [Some(held.clone()), self.type_at(item.span)];
+        let Some((function, signature)) = self.resolve(&key, &given, None) else { return Ok(None) };
+        let item = self.expr(item)?;
+        let items = self.expr(items)?;
+        let own = self.context.functions.contains(self.context.base_key(&key).as_str());
+        let item = match signature.params.get(1) {
+            Some(param) if own => self.coerce(item, &param.ty, span)?,
+            _ => item,
+        };
+        let dest = self.temporary(Type::Bool);
+        self.emit(InstKind::Call { dest: Some(dest), function, args: vec![items, item] }, span);
+        if op == BinOp::In {
+            return Ok(Some(Operand::Local(dest)));
+        }
+        let flipped = self.temporary(Type::Bool);
+        self.emit(InstKind::Unary { dest: flipped, op: UnaryOp::Not, value: Operand::Local(dest) }, span);
+        Ok(Some(Operand::Local(flipped)))
+    }
+
     pub(super) fn contains(&mut self, op: BinOp, item: &Expr, items: &Expr, span: Span) -> Lowered<Operand> {
+        if let Some(found) = self.own_in(op, item, items, span)? {
+            return Ok(found);
+        }
         let owner = match self.type_at(items.span) {
             Some(
                 ref ty @ (Type::List(_)

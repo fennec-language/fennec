@@ -28,10 +28,11 @@ pub enum Cpu {
 /// Each function's attributes, with the processor it's for, which LLVM's choices go by. Being
 /// in the text, it keeps code for one level from being cached as code for the other.
 fn attributes(cpu: Cpu) -> String {
+    let arm = crate::build::arm_cpu().map(|name| format!(" \"target-cpu\"=\"{name}\""));
     let target = match (std::env::consts::ARCH, cpu) {
         ("x86_64", Cpu::Usual) => " \"target-cpu\"=\"x86-64-v3\"",
         ("x86_64", Cpu::Baseline) => " \"target-cpu\"=\"x86-64\"",
-        _ => "",
+        _ => arm.as_deref().unwrap_or(""),
     };
     format!(
         "attributes #0 = {{ nounwind \"frame-pointer\"=\"non-leaf\"{target} }}\nattributes #1 = {{ cold nounwind{target} }}\nattributes #2 = {{ alwaysinline nounwind \"frame-pointer\"=\"non-leaf\"{target} }}\n{METADATA}"

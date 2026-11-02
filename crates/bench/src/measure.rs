@@ -92,8 +92,21 @@ const OPTIMIZED: [&str; 8] =
 /// it, and matching what the JIT uses. Cranelift emits VEX instructions on x86-64, which is
 /// worth about 20 points on `mandelbrot` against a twin built for the baseline. On 64-bit Arm
 /// the baseline already has what the JIT uses.
-fn twin_cpu() -> &'static [&'static str] {
-    if cfg!(target_arch = "x86_64") { &["-C", "target-cpu=x86-64-v3"] } else { &[] }
+fn twin_cpu() -> Vec<String> {
+    let step = std::env::var("FENNEC_EXP_STEP").ok().and_then(|step| step.parse::<u32>().ok()).unwrap_or(0);
+    let mut flags: Vec<String> = Vec::new();
+    if cfg!(target_arch = "x86_64") {
+        flags.extend(["-C".to_owned(), "target-cpu=x86-64-v3".to_owned()]);
+    }
+    // The optimization experiment's flags, matching what the Fennec side gets at each step.
+    if step >= 1 {
+        flags.extend(["-C".to_owned(), "llvm-args=-inline-threshold=1000".to_owned()]);
+    }
+    if step >= 2 && cfg!(target_arch = "aarch64") {
+        let cpu = if cfg!(target_os = "macos") { "apple-m1" } else { "neoverse-n1" };
+        flags.extend(["-C".to_owned(), format!("target-cpu={cpu}")]);
+    }
+    flags
 }
 
 /// The version of the compiler that builds the twins, which targets depend on.

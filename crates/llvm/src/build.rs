@@ -20,9 +20,31 @@ pub fn sanitizing() -> bool {
     std::env::var_os("FENNEC_SANITIZE").is_some_and(|asked| asked == "address")
 }
 
+/// The optimization experiment's step, cumulative: 1 raises the inlining limit for a release,
+/// 2 builds for this Arm processor, 3 puts the runtime in a release's unit, 4 runs the
+/// optimizer twice. 0, the default, is as built today.
+pub(crate) fn experiment() -> u32 {
+    std::env::var("FENNEC_EXP_STEP").ok().and_then(|step| step.parse().ok()).unwrap_or(0)
+}
+
+/// The Arm processor to build for, from step 2.
+#[must_use]
+pub(crate) fn arm_cpu() -> Option<&'static str> {
+    if experiment() < 2 || std::env::consts::ARCH != "aarch64" {
+        return None;
+    }
+    Some(if cfg!(target_os = "macos") { "apple-m1" } else { "neoverse-n1" })
+}
+
 /// The passes `opt` runs.
 fn pipeline() -> String {
-    if sanitizing() { format!("{PIPELINE},asan") } else { PIPELINE.to_owned() }
+    let base = if experiment() >= 4 { format!("{PIPELINE},{PIPELINE}") } else { PIPELINE.to_owned() };
+    if sanitizing() { format!("{base},asan") } else { base }
+}
+
+/// What `llc` is told beyond its usual flags.
+fn llc_extra() -> Vec<String> {
+    arm_cpu().map(|name| vec![format!("-mcpu={name}")]).unwrap_or_default()
 }
 
 /// A module's text, marked for `AddressSanitizer` to instrument when it's asked for: it only
@@ -163,6 +185,7 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, optimize: bool) -> Re
     run(
         Command::new(&tools.llc)
             .args(["-O3", "-filetype=obj", "-relocation-model=pic"])
+            .args(llc_extra())
             .arg(compiled_from)
             .arg("-o")
             .arg(&output),
@@ -187,6 +210,12 @@ pub fn compile_whole(tools: &Tools, units: &[Unit], entry: &str, work: &Path) ->
     std::fs::write(&entry_at, entry)
         .map_err(|err| format!("couldn't write {}: {err}", entry_at.display()))?;
     inputs.push(entry_at);
+    // From step 3, the runtime's own bitcode joins the unit, so its calls can inline.
+    if experiment() >= 3
+        && let Some(runtime) = std::env::var_os("FENNEC_EXP_RUNTIME_BC")
+    {
+        inputs.push(PathBuf::from(runtime));
+    }
     let (whole, optimized, output) = (work.join("whole.bc"), work.join("optimized.bc"), work.join("whole.o"));
     let run = |command: &mut Command, what: &str| {
         let done = command.output().map_err(|err| format!("couldn't run {what}: {err}"))?;
@@ -203,6 +232,7 @@ pub fn compile_whole(tools: &Tools, units: &[Unit], entry: &str, work: &Path) ->
     run(
         Command::new(&tools.opt)
             .arg(format!("-passes=internalize,{}", pipeline()))
+            .args(if experiment() >= 1 { vec!["-inline-threshold=1000"] } else { Vec::new() })
             .arg("-internalize-public-api-list=main")
             .arg(&whole)
             .arg("-o")
@@ -212,6 +242,7 @@ pub fn compile_whole(tools: &Tools, units: &[Unit], entry: &str, work: &Path) ->
     run(
         Command::new(&tools.llc)
             .args(["-O3", "-filetype=obj", "-relocation-model=pic"])
+            .args(llc_extra())
             .arg(&optimized)
             .arg("-o")
             .arg(&output),

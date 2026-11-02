@@ -766,6 +766,36 @@ fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()
     std::fs::remove_dir_all(&dir)
 }
 
+/// A narrowed capability is a block owned like any other: made in a function, handed back,
+/// copied and replaced each time round a loop, it still says what it allows when it's used.
+#[test]
+fn narrowed_capabilities_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = r#"from std.process import Output
+
+def narrowed(process: Process) -> Process:
+    process.only("echo")
+
+def main(stdout: Stdout, process: Process):
+    mut kept = 0
+    for i in range(2000):
+        echo = narrowed(process)
+        again = echo
+        if i % 500 == 0:
+            found = again.run("echo", [f"{i}"]) else Output()
+            stdout.print(found.stdout.strip())
+        kept += 1
+    stdout.print(kept)
+"#;
+    for (name, how) in [("narrowed", &["--llvm"][..]), ("narrowed_release", &["--llvm", "--release"][..])] {
+        let (ours, jit) = both_built(name, source, how)?;
+        assert_eq!(ours, jit);
+    }
+    Ok(())
+}
+
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

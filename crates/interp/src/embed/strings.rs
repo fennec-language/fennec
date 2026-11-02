@@ -382,24 +382,15 @@ pub extern "C" fn code(address: i64, start: i64, end: i64) -> i64 {
 pub extern "C" fn strip(address: i64, which: i64) -> i64 {
     with(|state| {
         let Some(at) = u64::try_from(address).ok() else { return 0 };
-        let settled =
-            |byte: u8| byte.is_ascii() && !byte.is_ascii_whitespace() && byte != 0x0b && byte >= 0x20;
-        let ends = state.heap.block(at).and_then(|block| {
-            let length = usize::try_from(*block.get(2)?).ok().filter(|length| *length > 0)?;
-            let word = |at: usize| block.get(TEXT_HEADER_WORDS + at / 8).map(|word| word.to_le_bytes());
-            let first = word(0)?.first().copied()?;
-            let last = word(length - 1)?.get((length - 1) % 8).copied()?;
-            Some((first, last))
-        });
-        if let Some((first, last)) = ends
-            && (which == 2 || settled(first))
-            && (which == 1 || settled(last))
-        {
-            retain(state, at);
-            return address;
-        }
-        if let Some(part) = state.heap.block(at).and_then(|block| ascii_ends(block, which)) {
-            return ascii_part_of(state, at, part).unwrap_or(0);
+        let ends = state.heap.block(at).and_then(|block| Some((ascii_ends(block, which)?, lengths(block))));
+        if let Some(((from, to), (length, chars))) = ends {
+            if from == 0 && to == length {
+                retain(state, at);
+                return address;
+            }
+            // Only ASCII came off, a character a byte.
+            let left = chars.saturating_sub(u64::try_from(length - (to - from)).unwrap_or(0));
+            return ascii_part_of(state, at, (from, to), left).unwrap_or(0);
         }
         // Short strings are read without allocating.
         let mut short = [0_u8; 120];
@@ -459,14 +450,9 @@ fn ascii_ends(block: &[u64], which: i64) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
-/// A string owned once of the bytes `from..to` of a string whose bytes outside them are
-/// ASCII, copied a word at a time.
-fn ascii_part_of(state: &mut State, address: u64, (from, to): (usize, usize)) -> Option<i64> {
-    let (length, chars) = lengths(state.heap.block(address)?);
-    if from == 0 && to == length {
-        retain(state, address);
-        return i64::try_from(address).ok();
-    }
+/// A string owned once of the bytes `from..to` of a string, `chars` characters of them,
+/// copied a word at a time.
+fn ascii_part_of(state: &mut State, address: u64, (from, to): (usize, usize), chars: u64) -> Option<i64> {
     let kept = to - from;
     if kept == 0 {
         return Some(text_from_bytes(state, &[], 0));
@@ -479,8 +465,7 @@ fn ascii_part_of(state: &mut State, address: u64, (from, to): (usize, usize)) ->
     let words = kept.div_ceil(8);
     let mut part = state.heap.fresh(TEXT_HEADER_WORDS + words);
     let number = |n: usize| u64::try_from(n).unwrap_or(0);
-    let left = chars.saturating_sub(number(length - kept));
-    let header = [1, state.tables.str_shape, number(kept), left, number(words * 8)];
+    let header = [1, state.tables.str_shape, number(kept), chars, number(words * 8)];
     part.get_mut(..TEXT_HEADER_WORDS)?.copy_from_slice(&header);
     let source = state.heap.block(address)?.get(TEXT_HEADER_WORDS + from / 8..)?;
     let shift = u32::try_from(from % 8 * 8).ok()?;

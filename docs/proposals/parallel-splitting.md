@@ -12,7 +12,7 @@ A collection that has positions, `def len(self)` plus `def []` with an `int` (an
 
 - `parallel(xs)` splits `0..xs.len()` into ranges. The work-stealing pool halves a range when a thread runs out of work, down to a smallest chunk the runtime picks from the element size.
 - Where a reduction's parts combine is fixed by the length alone, so `sum(u.health for u in parallel(units))` gives the same float on every machine and every thread count.
-- `for mut unit in parallel(units)` gives each task a disjoint range. That's safe only if writing position `i` touches nothing but element `i`. The compiler checks it from the `mut` form of `def []`: its body must be a place rooted in one field of `self`, indexed by `i` itself, like `self._items[i]`. If it isn't, `for mut` over `parallel(...)` is a compile error naming that method, and the plain `for mut` still works.
+- `for mut unit in parallel(units)` gives each task a disjoint range. That's safe only if writing position `i` touches nothing but element `i`. The compiler checks it from the `mut` form of `def []`: it must return a place rooted in one field of `self`, indexed by `i` itself, like `return self._items[i]`. If it isn't, `for mut` over `parallel(...)` is a compile error naming that method, and the plain `for mut` still works.
 
 That check is what lets a user type join without any `unsafe` and without a splitting interface to implement.
 
@@ -27,7 +27,7 @@ def step(mut units: IdMap[Unit], dt: float):
     alive = sum(1 for unit in parallel(units) if unit.health > 0)
 ```
 
-The user `Units` table from the `for mut` draft splits the same way, since its `mut` `def []` is `self._items[i]`.
+The user `Units` table from the `for mut` draft splits the same way, since its `mut` `def []` returns `self._items[i]`.
 
 ## The `std` types
 

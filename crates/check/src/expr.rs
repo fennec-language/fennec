@@ -6,7 +6,7 @@ use fennec_syntax::{BinOp, CompKind, Diagnostic, Expr, ExprKind, FStrPart, Span,
 use crate::builtins;
 use crate::function::FnCx;
 use crate::infer::Hole;
-use crate::messages::{describe, might_be_none, unhandled_result, unknown_name};
+use crate::messages::{bad_spec, describe, might_be_none, unhandled_result, unknown_name};
 use crate::program::TypeKind;
 use crate::stmt::{not_none, path};
 use crate::types::{Type, a, article};
@@ -112,8 +112,12 @@ impl FnCx<'_> {
         match &expr.kind {
             ExprKind::FStr(parts) => {
                 for part in parts {
-                    if let FStrPart::Expr { expr, .. } = part {
-                        self.expr(expr);
+                    if let FStrPart::Expr { expr, spec } = part {
+                        let ty = self.expr(expr);
+                        if let Some(problem) = spec.as_deref().and_then(|spec| bad_spec(spec, &ty, expr.span))
+                        {
+                            self.error(problem);
+                        }
                     }
                 }
                 Type::Str

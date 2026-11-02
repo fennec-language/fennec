@@ -42,15 +42,41 @@ impl Emit<'_, '_, '_> {
 
     /// A new block of a boxed type, its shape's number read from a symbol.
     pub(crate) fn new_block(&mut self, id: u32) -> Result<String, String> {
+        let shape = self.shape_of(id)?;
+        self.declare("declare ptr @fennec_alloc(i64) nounwind");
+        let block = self.temp();
+        self.line(&format!("{block} = call ptr @fennec_alloc(i64 {shape})"));
+        Ok(block)
+    }
+
+    /// The runtime's number for the shape of a layout's blocks, which a plain layout has too.
+    pub(crate) fn shape_of(&mut self, id: u32) -> Result<String, String> {
         let name = self.layout_of(id)?.name.clone();
         let symbol = format!("h_{name}");
         self.module.shared.shapes.insert(symbol.clone(), id);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
-        self.declare("declare ptr @fennec_alloc(i64) nounwind");
-        let (shape, block) = (self.temp(), self.temp());
+        let shape = self.temp();
         self.line(&format!("{shape} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
-        self.line(&format!("{block} = call ptr @fennec_alloc(i64 {shape})"));
-        Ok(block)
+        Ok(shape)
+    }
+
+    /// Whether a layout held in place has a block anywhere in it, in a field or a case.
+    pub(crate) fn holds_blocks(&self, id: u32) -> Result<bool, String> {
+        let layout = self.layout_of(id)?;
+        let fields = layout.fields.iter().map(|field| field.ty);
+        let cases = layout.cases.iter().flatten().flat_map(|case| case.fields.iter().map(|field| field.ty));
+        for ty in fields.chain(cases) {
+            match Kind::from_ty(self.module.layouts, ty) {
+                Some(Kind::Struct(inner) | Kind::Enum(inner)) if inner != id => {
+                    if self.holds_blocks(inner)? {
+                        return Ok(true);
+                    }
+                }
+                Some(kind) if !kind.counted() => {}
+                _ => return Ok(true),
+            }
+        }
+        Ok(false)
     }
 
     /// Writes a value inside something that hasn't held one before, with an owner if it needs one.
@@ -866,12 +892,8 @@ impl Emit<'_, '_, '_> {
         }
         if let Kind::Dict(key, value_word) = kind {
             let place = self.place_of(object, path)?;
-            if let Operand::Local(sliced) = index
-                && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
-            {
-                return self.slice_set(&place, value_word, &slice, value);
-            }
-            // A lookup on this dict, or on a local read from this field holding it.
+            // A lookup on this dict, or on a local read from this field holding it: where it
+            // found the key, or for a slice where it found the value.
             let same_dict = |dict: LocalId| match path {
                 [] => dict == object,
                 [field] => {
@@ -885,6 +907,11 @@ impl Emit<'_, '_, '_> {
                 .rev()
                 .find(|(dict, looked_up, _)| same_dict(*dict) && looked_up == index)
                 .map(|(_, _, entry)| entry.clone());
+            if let Operand::Local(sliced) = index
+                && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
+            {
+                return self.slice_set(&place, value_word, (&slice, found), value);
+            }
             return self.dict_store_at(&place, (key, value_word), index, Some(value), found);
         }
         let item = list_item(&kind)?;

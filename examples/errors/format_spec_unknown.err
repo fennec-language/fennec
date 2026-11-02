@@ -1,0 +1,7 @@
+error: Fennec has no format `02x`
+ --> examples/errors/format_spec_unknown.fen:3:21
+  |
+3 |     stdout.print(f"{b:02x}")
+  |                     ^
+  |
+  = help: a format is an optional `,` for thousands separators, then `.N` for N decimal places, then `f` or `d`: like `{x:,}`, `{x:.2f}` or `{n:,d}`

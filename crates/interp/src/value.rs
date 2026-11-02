@@ -78,6 +78,7 @@ pub(crate) enum Capability {
     Args,
     Stdin,
     Process,
+    Entropy,
 }
 
 #[derive(Clone, Debug)]
@@ -231,6 +232,7 @@ impl Value {
             Value::Capability(Capability::Args) => "Args".to_owned(),
             Value::Capability(Capability::Stdin) => "Stdin".to_owned(),
             Value::Capability(Capability::Process) => "Process".to_owned(),
+            Value::Capability(Capability::Entropy) => "Entropy".to_owned(),
             Value::Limited(limited) => Value::Capability(limited.capability).type_name(),
         }
     }

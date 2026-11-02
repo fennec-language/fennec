@@ -22,7 +22,7 @@ fn call(_: &mut Interp<'_>, name: &str, args: Vec<CallArg>, span: Span) -> Resul
 }
 
 /// The `n`th 64-bit number of `seed`'s sequence.
-fn splitmix(seed: i64, n: i64) -> u64 {
+pub(crate) fn splitmix(seed: i64, n: i64) -> u64 {
     const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
     let step = n.cast_unsigned().wrapping_add(1).wrapping_mul(GOLDEN);
     let mut z = seed.cast_unsigned().wrapping_add(step);

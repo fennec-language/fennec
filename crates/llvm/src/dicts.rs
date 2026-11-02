@@ -509,14 +509,17 @@ impl Emit<'_, '_, '_> {
     fn slice_get(
         &mut self,
         dest: LocalId,
-        dict: &Operand,
+        (dict, key_local): (&Operand, &Operand),
         key: &crate::analysis::SliceKey,
     ) -> Result<(), String> {
+        let looked_up = (dict.clone(), key_local.clone());
         let (dict, kind) = self.operand(dict)?;
         let Kind::Dict(_, value_word) = kind else { return Err("`dict.get` on something else".to_owned()) };
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let place = self.slice_place(key)?;
         let value_at = self.slice_value_at(&dict, &place);
+        // A store with the same slice next finds the value here, as nothing's changed between.
+        self.remember_entry(&looked_up, &value_at);
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {value_at}, null"));
         let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
@@ -551,7 +554,7 @@ impl Emit<'_, '_, '_> {
         &mut self,
         place: &str,
         value_word: Word,
-        key: &crate::analysis::SliceKey,
+        (key, found): (&crate::analysis::SliceKey, Option<String>),
         value: &Operand,
     ) -> Result<(), String> {
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
@@ -561,7 +564,10 @@ impl Emit<'_, '_, '_> {
         let (dict, count) = (self.temp(), self.temp());
         self.line(&format!("{dict} = load ptr, ptr {place}"));
         // A key that's there, in a dict nothing else holds, just gets its new value.
-        let value_at = self.slice_value_at(&dict, &sliced);
+        let value_at = match found {
+            Some(value_at) => value_at,
+            None => self.slice_value_at(&dict, &sliced),
+        };
         self.line(&format!("{count} = load i64, ptr {dict}"));
         let (alone, there, quick) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
@@ -583,11 +589,13 @@ impl Emit<'_, '_, '_> {
         }
         self.line(&format!("br label %{done}"));
         self.start_block(&add);
+        // Mostly a new key, so the runtime doesn't look for it again before adding it; it still
+        // finds one that's there, in a dict something else holds.
         let word = self.dict_word(&value_kind, &held, !fresh);
-        self.declare("declare ptr @fennec_dict_add_slice(ptr, ptr, i64, i64, i64) nounwind");
+        self.declare("declare ptr @fennec_dict_add_new_slice(ptr, ptr, i64, i64, i64) nounwind");
         let changed = self.temp();
         self.line(&format!(
-            "{changed} = call ptr @fennec_dict_add_slice(ptr {dict}, ptr {text}, i64 {from}, i64 {to}, i64 {word})"
+            "{changed} = call ptr @fennec_dict_add_new_slice(ptr {dict}, ptr {text}, i64 {from}, i64 {to}, i64 {word})"
         ));
         self.line(&format!("store ptr {changed}, ptr {place}"));
         self.line(&format!("br label %{done}"));
@@ -658,7 +666,7 @@ impl Emit<'_, '_, '_> {
         if let [dict, Operand::Local(key)] = args
             && let Some(sliced) = self.known.slice_keys.get(&key.0).cloned()
         {
-            return self.slice_get(dest, dict, &sliced);
+            return self.slice_get(dest, (dict, &Operand::Local(*key)), &sliced);
         }
         if let [dict, key] = args {
             return self.dict_get_optional(dest, dict, key);

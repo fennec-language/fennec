@@ -588,11 +588,14 @@ impl Emit<'_, '_, '_> {
                     _ => Err("`add` on something else".to_owned()),
                 }
             }
-            ("str.strip", [text]) => result(dest).and_then(|dest| {
+            ("str.strip" | "str.lstrip" | "str.rstrip", [text]) => result(dest).and_then(|dest| {
                 let (text, _) = self.operand(text)?;
-                self.declare("declare ptr @fennec_str_strip(ptr, i64) nounwind");
-                let stripped = self.temp();
-                self.line(&format!("{stripped} = call ptr @fennec_str_strip(ptr {text}, i64 0)"));
+                let which = match name {
+                    "str.lstrip" => 1,
+                    "str.rstrip" => 2,
+                    _ => 0,
+                };
+                let stripped = self.strip_text(&text, which);
                 self.assign(dest, &stripped)
             }),
             _ => return None,

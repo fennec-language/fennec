@@ -113,7 +113,7 @@ fn indexed_only(cond: Option<&Expr>, body: &[Stmt], name: &str) -> Option<bool> 
             StmtKind::For { names, is_mut, iter, .. } => {
                 safe &= !names.iter().any(|bound| bound == name) && (!*is_mut || !rooted_at_item(iter, name));
             }
-            StmtKind::With { name: Some(bound), .. } => safe &= bound != name,
+            StmtKind::With { names, .. } => safe &= !names.iter().any(|held| held.name == *name),
             StmtKind::Def(_) => safe = false,
             _ => {}
         });

@@ -241,11 +241,11 @@ impl Finder<'_> {
                     finder.block(body);
                 });
             }
-            StmtKind::With { value, name, body, .. } => {
+            StmtKind::With { value, names, body } => {
                 self.expr(value);
                 self.scoped(|finder| {
-                    if let Some(name) = name {
-                        finder.declare(name, stmt.span);
+                    for held in names {
+                        finder.declare(&held.name, held.span);
                     }
                     finder.block(body);
                 });

@@ -99,6 +99,9 @@ impl<'a> Lowering<'a> {
     /// `yield value`: stops here, to go on from the next block.
     pub(super) fn yield_value(&mut self, value: &Expr, span: Span) -> Lowered<()> {
         let item = self.generating.as_ref().ok_or("it has `yield` outside a generator")?.item.clone();
+        if self.leaving.iter().any(|entered| matches!(entered, Leaving::Unlock { .. })) {
+            return Err("it yields while a `with` block holds a lock".into());
+        }
         let lowered = self.expr(value)?;
         let lowered = self.coerce(lowered, &item, span)?;
         self.yield_operand(lowered);
@@ -115,7 +118,7 @@ impl<'a> Lowering<'a> {
             .iter()
             .filter_map(|entered| match entered {
                 Leaving::With { resource, cleanup } => Some((*resource, cleanup.clone())),
-                Leaving::Item { .. } => None,
+                Leaving::Item { .. } | Leaving::Unlock { .. } => None,
             })
             .collect();
         if let Some(generating) = &mut self.generating {

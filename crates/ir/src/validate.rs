@@ -115,14 +115,21 @@ impl<'p> Check<'p> {
                 self.make_closure(*dest, function, captures);
             }
             InstKind::CallClosure { dest, closure, args } => self.call_closure(*dest, closure, args),
-            InstKind::Lock { handle, .. } | InstKind::Unlock { handle } => {
-                let shared =
-                    |name: &str| self.program.structs.iter().any(|def| def.name == name && def.shared);
-                if !matches!(self.function.type_of(handle), Some(Type::Named(name)) if shared(&name)) {
-                    self.problems.push(format!("`{inst}` is on something other than a `shared` handle"));
-                }
-            }
+            InstKind::Lock { .. }
+            | InstKind::Unlock { .. }
+            | InstKind::LockAll { .. }
+            | InstKind::UnlockAll { .. } => self.lock_inst(inst),
             _ => self.failure_inst(inst),
+        }
+    }
+
+    /// Taking and giving back locks, which only `shared` handles have.
+    fn lock_inst(&mut self, inst: &InstKind) {
+        let shared = |name: &str| self.program.structs.iter().any(|def| def.name == name && def.shared);
+        let handles = crate::costs::operands(inst);
+        let is_handle = |handle: &&Operand| matches!(self.function.type_of(handle), Some(Type::Named(name)) if shared(&name));
+        if !handles.iter().all(is_handle) {
+            self.problems.push(format!("`{inst}` is on something other than a `shared` handle"));
         }
     }
 

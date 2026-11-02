@@ -46,3 +46,41 @@ fn a_shared_value_cant_be_a_constant() {
         ["`BANK` holds `Account`, which is `shared`, so it can't be a constant @ BANK = Account()"]
     );
 }
+
+#[test]
+fn a_with_block_changes_handles_through_the_names_it_locks() {
+    let text = format!(
+        "{ACCOUNT}def transfer(a: Account, b: Account, amount: int):\n    with a, b as mut x, mut y:\n        \
+         x.total -= amount\n        y.add(amount)\n\ndef main(stdout: Stdout):\n    a = Account(total=10)\n    \
+         b = Account()\n    transfer(a, b, 3)\n    with a as seen:\n        stdout.print(seen.total)\n"
+    );
+    let empty: [&str; 0] = [];
+    assert_eq!(problems(&text), empty);
+}
+
+#[test]
+fn a_with_block_locks_only_handles_and_names_each_one() {
+    let with = |body: &str| {
+        format!(
+            "{ACCOUNT}def main(stdout: Stdout):\n    a = Account()\n    b = Account()\n{body}        pass\n"
+        )
+    };
+    assert_eq!(problems(&with("    with a, b as x, y:\n        x.total = 1\n")), ["`x` isn't mut @ x.total"]);
+    assert_eq!(
+        problems(&with("    with a as x:\n        x.add(1)\n")),
+        ["`x` is locked to read, and `add` changes it @ x"]
+    );
+    assert_eq!(
+        problems(&with("    with a:\n")),
+        ["this `with` locks an Account, so it needs a name for it @ a"]
+    );
+    assert_eq!(
+        problems(&with("    with a, 5 as x, y:\n")),
+        ["a `with` holds several values only to lock `shared` handles, but this is an int @ 5"]
+    );
+    assert_eq!(
+        problems(&with("    with a as mut x:\n        x = b\n")),
+        ["`x` holds a lock for this `with` block, so it can't name anything else @ x"]
+    );
+    assert_eq!(problems(&with("    with a, b as x:\n")), ["parse: this `with` holds 2 values but names 1"]);
+}

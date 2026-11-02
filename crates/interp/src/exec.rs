@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind};
+use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, Span, Stmt, StmtKind, WithName};
 
 use crate::format;
 use crate::generators::Position;
@@ -121,9 +121,7 @@ impl Interp<'_> {
                 self.assert(expr)?;
                 Ok(Flow::Normal(Value::Unit))
             }
-            StmtKind::With { value, name, is_mut, body } => {
-                self.with_block(value, name.as_deref(), *is_mut, body)
-            }
+            StmtKind::With { value, names, body } => self.with_block(value, names, body),
             StmtKind::Def(def) => {
                 let function = Value::Function(Rc::new(callable(def, self.frame.visible())));
                 self.frame.declare(&def.name, function, false);
@@ -237,31 +235,39 @@ impl Interp<'_> {
         Ok(Flow::Normal(Value::Unit))
     }
 
-    fn with_block(
-        &mut self,
-        value: &Expr,
-        name: Option<&str>,
-        is_mut: bool,
-        body: &[Stmt],
-    ) -> Result<Flow, Diagnostic> {
-        let key = name.unwrap_or("_with");
+    /// `with value as name:`, or `with a, b as mut x, mut y:`, which holds each value by its
+    /// own name. What's held is cleaned up when the block ends, the last one first. The
+    /// interpreter runs one task, so the locks of `shared` handles are never contended.
+    fn with_block(&mut self, value: &Expr, names: &[WithName], body: &[Stmt]) -> Result<Flow, Diagnostic> {
+        let keys: Vec<&str> = match names {
+            [] => vec!["_with"],
+            names => names.iter().map(|held| held.name.as_str()).collect(),
+        };
         if self.is_resuming() && matches!(self.resume_at(), Some(Position::With { .. })) {
         } else {
             let resource = self.eval(value)?;
+            let resources = match resource {
+                Value::Tuple(items) if keys.len() > 1 => items.to_vec(),
+                resource => vec![resource],
+            };
             self.frame.push();
-            self.frame.declare(key, resource, is_mut);
+            for (at, (key, resource)) in keys.iter().zip(resources).enumerate() {
+                self.frame.declare(key, resource, names.get(at).is_some_and(|held| held.is_mut));
+            }
         }
         let flow = self.exec_stmts(body);
+        let held: Vec<Value> =
+            keys.iter().filter_map(|key| self.frame.get(key).map(|binding| binding.value.clone())).collect();
         if matches!(flow, Ok(Flow::Yield(_))) {
-            if let Some(binding) = self.frame.get(key) {
-                let resource = binding.value.clone();
-                self.suspending.push(Position::With { resource, span: value.span });
-            }
+            let resource = match <[Value; 1]>::try_from(held) {
+                Ok([resource]) => resource,
+                Err(held) => Value::Tuple(Rc::new(held)),
+            };
+            self.suspending.push(Position::With { resource, span: value.span });
             return flow;
         }
-        let resource = self.frame.get(key).map(|binding| binding.value.clone());
         self.frame.pop();
-        if let Some(resource) = resource {
+        for resource in held.into_iter().rev() {
             self.clean_up(resource, value.span)?;
         }
         flow

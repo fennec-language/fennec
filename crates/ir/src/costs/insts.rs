@@ -43,12 +43,14 @@ pub(super) fn dest(inst: &InstKind) -> Option<LocalId> {
         | InstKind::SetIndex { .. }
         | InstKind::SetSlot { .. }
         | InstKind::Lock { .. }
-        | InstKind::Unlock { .. } => None,
+        | InstKind::Unlock { .. }
+        | InstKind::LockAll { .. }
+        | InstKind::UnlockAll { .. } => None,
     }
 }
 
 /// The values an instruction reads.
-pub(super) fn operands(inst: &InstKind) -> Vec<&Operand> {
+pub(crate) fn operands(inst: &InstKind) -> Vec<&Operand> {
     match inst {
         InstKind::Copy { value, .. }
         | InstKind::Unary { value, .. }
@@ -95,6 +97,8 @@ pub(super) fn operands(inst: &InstKind) -> Vec<&Operand> {
         InstKind::GetSlot { generator, .. } | InstKind::Resume { generator, .. } => vec![generator],
         InstKind::SetSlot { generator, value, .. } => vec![generator, value],
         InstKind::Lock { handle, .. } | InstKind::Unlock { handle } => vec![handle],
+        InstKind::LockAll { handles } => handles.iter().map(|(handle, _)| handle).collect(),
+        InstKind::UnlockAll { handles } => handles.iter().collect(),
     }
 }
 

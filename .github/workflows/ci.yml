@@ -79,10 +79,14 @@ jobs:
     name: Test (${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
+    # A merge group leaves out macOS. GitHub's macOS runners are short, and a job no runner
+    # takes is cancelled after about 15 minutes ("not acquired by Runner"), which knocks the
+    # pull request out of the queue. The pull request ran on macOS already, up to date with
+    # main as the ruleset requires, and the push to main runs it again.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: ${{ fromJSON(github.event_name == 'merge_group' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

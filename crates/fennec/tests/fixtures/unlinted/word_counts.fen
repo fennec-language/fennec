@@ -40,9 +40,9 @@ def main(stdout: Stdout):
     squares[7] += 10
     stdout.print(copy[7], squares[7], squares == copy)
 
-    # The loop goes over the dict as it was when the loop started.
+    # A loop can't change what it goes over, so this one goes over its keys, sorted, while it grows the dict.
     mut grow: dict[int, int] = {1: 1}
-    for key in grow:
+    for key in sorted(grow):
         grow[key + 1] = key
     stdout.print(grow)
 

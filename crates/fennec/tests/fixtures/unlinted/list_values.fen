@@ -75,7 +75,7 @@ def main(stdout: Stdout):
     stdout.print(sorted, last, sorted + [5], xs[1:3])
 
     mut walked = [1, 2, 3]
-    for w in walked:
+    for w in walked[:]:
         walked.append(w)
     stdout.print(walked)
 

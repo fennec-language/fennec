@@ -29,6 +29,7 @@ mod imports;
 mod index;
 mod infer;
 mod keys;
+mod loops;
 mod messages;
 mod parallel;
 mod pattern;

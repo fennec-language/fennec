@@ -82,6 +82,7 @@ fn finding(sources: &Sources, shown: &Finding<'_>) -> Json {
     fields.push(("message", Json::string(shown.message)));
     fields.push(("help", diagnostic.help.as_ref().map_or(Json::Null, |help| Json::string(help.clone()))));
     fields.push(("also", diagnostic.also.map_or(Json::Null, |also| object(located(sources, also)))));
+    fields.push(("also_is", diagnostic.also.map_or(Json::Null, |_| Json::string(diagnostic.also_is()))));
     fields.push(("fixes", Json::Array(diagnostic.fixes.iter().map(|fixed| edit(sources, fixed)).collect())));
     object(fields)
 }

@@ -10,8 +10,19 @@ pub struct Diagnostic {
     pub help: Option<String>,
     /// Another place the problem involves, like the first of two methods with one name.
     pub also: Option<Span>,
+    /// What `also` points at, for the note about it.
+    pub also_is: Also,
     /// Changes to the source that fix the problem, which `fennec fix` makes.
     pub fixes: Vec<Edit>,
+}
+
+/// What a diagnostic's other place is, for the note that points at it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Also {
+    /// Another one of the same thing, like the first of two methods with one name.
+    Other,
+    /// The loop going over what changed.
+    Loop,
 }
 
 /// One change to a source: the text at `span` becomes `text`. An empty span inserts.
@@ -23,7 +34,14 @@ pub struct Edit {
 
 impl Diagnostic {
     pub fn new(message: impl Into<String>, span: Span) -> Self {
-        Diagnostic { message: message.into(), span, help: None, also: None, fixes: Vec::new() }
+        Diagnostic {
+            message: message.into(),
+            span,
+            help: None,
+            also: None,
+            also_is: Also::Other,
+            fixes: Vec::new(),
+        }
     }
 
     #[must_use]
@@ -37,6 +55,22 @@ impl Diagnostic {
     pub fn also_at(mut self, span: Span) -> Self {
         self.also = Some(span);
         self
+    }
+
+    /// Points at another place the problem involves, saying what it is.
+    #[must_use]
+    pub fn also_at_the(mut self, what: Also, span: Span) -> Self {
+        self.also = Some(span);
+        self.also_is = what;
+        self
+    }
+
+    /// What `also` points at, as the notes about it say.
+    pub fn also_is(&self) -> &'static str {
+        match self.also_is {
+            Also::Other => "the other one",
+            Also::Loop => "the loop",
+        }
     }
 
     /// Adds a change to the source that fixes the problem.
@@ -74,7 +108,7 @@ impl Diagnostic {
         let help =
             self.help.as_ref().map_or_else(String::new, |help| format!("{pad} |\n{pad} = help: {help}\n"));
         let note =
-            also.map_or_else(String::new, |also| format!("{pad} = note: the other one is at {also}\n"));
+            also.map_or_else(String::new, |also| format!("{pad} = note: {} is at {also}\n", self.also_is()));
         format!(
             "error: {message}\n{pad}--> {path}:{line_number}:{col}\n{pad} |\n{gutter} | {line}\n{pad} | {indent}{carets}\n{help}{note}",
             message = self.message,

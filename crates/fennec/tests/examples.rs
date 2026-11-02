@@ -17,14 +17,33 @@ const INTERPRETED: &[&str] = &["shared_accounts.fen"];
 /// the interpreter.
 const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] = &[
     ("case_guards.fen", &["describe", "first_word", "size"]),
+    // The standard library's collections loop with `yield`. A run fuses each loop over one
+    // into a plain loop, but this whole-program path leaves the generator to the interpreter,
+    // since the JIT fuses only a program's own generators (#450).
+    ("collections_equality.fen", &["Deque.iter", "SortedMap.iter", "SortedSet.iter"]),
     ("functions_more.fen", &["countdown"]),
     ("generators.fen", &["checked", "countdown", "doubled", "holding", "naturals", "words"]),
     ("generators_fused.fen", &["checked", "odd", "running", "three", "upto"]),
+    // Each std collection's `iter`, below, for the same reason (#450).
+    ("imports.fen", &["Deque.iter"]),
+    ("json_collections.fen", &["Grid.iter", "SortedMap.iter"]),
+    ("json_enums.fen", &["Grid.iter"]),
     ("operators.fen", &["Grid.iter"]),
-    // Generator methods from the standard library, as `Grid.iter` is from the program.
+    ("std_collections.fen", &["Counter.iter", "Deque.iter"]),
+    ("std_grid.fen", &["Deque.iter", "Grid.iter"]),
+    // Generator methods from the standard library, as `Grid.iter` is from the program, and
+    // `Deque.iter` and `Packed.iter` (#450).
     ("std_net.fen", &["Server.iter"]),
-    ("std_packed.fen", &["Packed.[]"]),
+    ("std_packed.fen", &["Deque.iter", "Packed.[]", "Packed.iter"]),
+    ("std_sorted_map.fen", &["SortedMap.iter"]),
+    ("std_sorted_set.fen", &["SortedMap.iter", "SortedSet.iter"]),
 ];
+
+/// The standard library's `yield` iters. Checking only what a run reaches fuses a loop over
+/// one before the JIT sees it, so the iter is gone, while the whole-program path keeps it for
+/// the interpreter (#450).
+const FUSED_STD_ITERS: [&str; 6] =
+    ["Counter.iter", "Deque.iter", "Grid.iter", "Packed.iter", "SortedMap.iter", "SortedSet.iter"];
 
 /// Examples that compile to plain machine code: nothing handed to the interpreter, and no
 /// function needing the runtime's frames.
@@ -200,9 +219,14 @@ fn a_run_checking_only_what_it_reaches_compiles_the_same() {
                 "reached",
             )
             .unwrap();
+            // A std iter the reached run fused away, and only that, is left out of the whole one.
+            let mut whole_interpreted = whole.interpreted.clone();
+            whole_interpreted.retain(|key| {
+                !(FUSED_STD_ITERS.contains(&key.as_str()) && !reached.interpreted.contains(key))
+            });
             assert_eq!(
                 (reached.interpreted, reached.handed_over, reached.with_frames),
-                (whole.interpreted, whole.handed_over, whole.with_frames),
+                (whole_interpreted, whole.handed_over, whole.with_frames),
                 "{} compiled differently",
                 path.display()
             );

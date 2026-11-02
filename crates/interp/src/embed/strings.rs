@@ -452,7 +452,12 @@ fn ascii_ends(block: &[u64], which: i64) -> Option<(usize, usize)> {
 
 /// A string owned once of the bytes `from..to` of a string, `chars` characters of them,
 /// copied a word at a time.
-fn ascii_part_of(state: &mut State, address: u64, (from, to): (usize, usize), chars: u64) -> Option<i64> {
+pub(super) fn ascii_part_of(
+    state: &mut State,
+    address: u64,
+    (from, to): (usize, usize),
+    chars: u64,
+) -> Option<i64> {
     let kept = to - from;
     if kept == 0 {
         return Some(text_from_bytes(state, &[], 0));

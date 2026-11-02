@@ -480,6 +480,17 @@ mod tests {
         assert_eq!(read(dict, string("éb"), 0, 2), Some(2));
         assert_eq!(read(dict, dna, 0, 2), None);
         assert_eq!(word(dict, 16), Some(3));
+        // A key said to be new is added, and one that's there after all is changed, not added
+        // again.
+        dict = super::super::dicts::add_new_slice(dict, dna, 0, 3, 5);
+        dict = super::super::dicts::add_new_slice(dict, dna, 2, 4, 9);
+        dict = super::super::dicts::add_new_slice(dict, accented, 0, 2, 6);
+        dict = super::super::dicts::add_new_slice(dict, dna, 6, -10, 4);
+        assert_eq!(read(dict, string("ggt"), 0, 3), Some(5));
+        assert_eq!(read(dict, dna, 2, 4), Some(9));
+        assert_eq!(read(dict, string("éa"), 0, 2), Some(6));
+        assert_eq!(read(dict, string(""), 0, 0), Some(4));
+        assert_eq!(word(dict, 16), Some(6));
         finish();
     }
 

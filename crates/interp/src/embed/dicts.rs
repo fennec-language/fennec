@@ -211,8 +211,11 @@ fn slice_of(state: &State, text: i64, from: i64, to: i64) -> Option<(Vec<u8>, us
     let byte = |at: usize| words.get(at / 8).and_then(|word| word.to_le_bytes().get(at % 8).copied());
     if length == chars {
         // ASCII: a character is a byte, so only the bytes in the slice are read.
-        let bytes: Option<Vec<u8>> = (from..to).map(byte).collect();
-        return Some((bytes?, to - from));
+        let mut bytes = Vec::with_capacity(to - from);
+        for at in from..to {
+            bytes.push(byte(at)?);
+        }
+        return Some((bytes, to - from));
     }
     let all: Option<Vec<u8>> = (0..length).map(byte).collect();
     let all = String::from_utf8(all?).ok()?;
@@ -306,6 +309,39 @@ pub extern "C" fn add_slice(dict: i64, text: i64, from: i64, to: i64, value: i64
         set_in(state, dict, key, value)
     })
     .unwrap_or(dict)
+}
+
+/// `add_slice`, for a caller that has just looked for the key and not found it: the key's
+/// block is made straight from the text's, with no looking first. A key that's there after
+/// all is still found, by `set_in`.
+pub extern "C" fn add_new_slice(dict: i64, text: i64, from: i64, to: i64, value: i64) -> i64 {
+    with(|state| {
+        let key = slice_key(state, text, from, to)?;
+        set_in(state, dict, key, value)
+    })
+    .unwrap_or(dict)
+}
+
+/// A new string owned once of the characters `from..to` of a string, as `text[from:to]`
+/// gives them. An ASCII string's bytes are copied a word at a time.
+fn slice_key(state: &mut State, text: i64, from: i64, to: i64) -> Option<i64> {
+    let address = u64::try_from(text).ok()?;
+    let block = state.heap.block(address)?;
+    let (length, chars) = (*block.get(2)?, *block.get(3)?);
+    if super::heap::is_text(state, block) && length == chars {
+        let count = i64::try_from(chars).ok()?;
+        let bound = |at: i64, missing: i64| {
+            let at = if at == i64::MIN { missing } else { at };
+            let at = if at < 0 { at + count } else { at };
+            usize::try_from(at.clamp(0, count)).unwrap_or(0)
+        };
+        let (from, to) = (bound(from, 0), bound(to, count));
+        let to = to.max(from);
+        let kept = u64::try_from(to - from).ok()?;
+        return super::strings::ascii_part_of(state, address, (from, to), kept);
+    }
+    let (bytes, chars) = slice_of(state, text, from, to)?;
+    Some(text_from_bytes(state, &bytes, chars))
 }
 
 /// A new empty dict of a shape, owned once, with room for `room` keys.

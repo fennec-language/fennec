@@ -9,9 +9,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same pull request cancels the older run; pushes to main always finish.
+# A newer push to the same pull request cancels its older run. Anything else, like a push to
+# main or a merge group, gets a group of its own: a group keeps only its newest waiting run, so
+# sharing one would drop some.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -19,9 +21,30 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # A pull request or merge group that changes only documentation skips building, testing,
+  # benchmarks and sanitizers. It still checks the docs build and the website.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs_only: ${{ steps.changes.outputs.docs-only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: changes
+        # actionlint and the runner take only `./` for an action in this repository.
+        uses: ./.github/actions/docs-only # zizmor: ignore[self-repository]
+
   lint:
     name: Format, lints and docs
+    needs: changes
     runs-on: ubuntu-latest
+    env:
+      CODE: ${{ needs.changes.outputs.docs_only != 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -29,9 +52,11 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --check
       - name: Check the Fennec code is formatted
+        if: env.CODE == 'true'
         run: cargo run --locked --quiet -p fennec -- fmt --check examples crates/syntax/src/stdlib bench
       # The linter has no off switch, so the examples, which people and AI learn from, pass it.
       - name: Lint the examples
+        if: env.CODE == 'true'
         shell: bash
         run: |
           cargo build --locked --quiet -p fennec
@@ -42,7 +67,9 @@ jobs:
           done
           exit "$failed"
       - run: cargo clippy --all-targets --locked -- -D warnings
+        if: env.CODE == 'true'
       - name: Clippy for the playground's WebAssembly module
+        if: env.CODE == 'true'
         run: cargo clippy --target wasm32-unknown-unknown -p fennec-wasm --locked -- -D warnings
       - run: cargo doc --no-deps --locked
         env:
@@ -50,6 +77,8 @@ jobs:
 
   test:
     name: Test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -101,6 +130,8 @@ jobs:
 
   coverage:
     name: Coverage
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -169,6 +200,8 @@ jobs:
 
   bench:
     name: Benchmarks
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -211,6 +244,8 @@ jobs:
   # fails this job; one not met yet shows as a warning. See crates/bench/src/budgets.rs.
   budgets:
     name: Instant-feedback budgets
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -233,6 +268,8 @@ jobs:
   # to the system.
   asan:
     name: AddressSanitizer on LLVM-built programs
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     env:
       NIGHTLY: nightly-2026-10-15
@@ -291,16 +328,22 @@ jobs:
           if-no-files-found: ignore
 
   # One status for branch protection to require, so adding jobs never means changing settings.
+  # A job skipped because the change is only documentation counts as passed; any other skip,
+  # failure or cancellation doesn't.
   ok:
     name: CI passed
     if: always()
-    needs: [lint, test, coverage, deny, site, workflows, budgets, bench, asan]
+    needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, asan]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: |
           for result in $RESULTS; do
-            [ "$result" = success ] || { echo "a job finished with: $result"; exit 1; }
+            [ "$result" = success ] && continue
+            [ "$result" = skipped ] && [ "$DOCS_ONLY" = true ] && continue
+            echo "a job finished with: $result"
+            exit 1
           done

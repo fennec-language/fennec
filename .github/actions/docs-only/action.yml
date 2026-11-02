@@ -1,0 +1,55 @@
+name: Docs only
+description: >-
+  Whether a pull request or merge group changes nothing but documentation, which needs no
+  build, tests, benchmarks or code analysis. A push is never docs-only, so main always gets
+  every check.
+
+outputs:
+  docs-only:
+    description: "`true` when every changed file is documentation"
+    value: ${{ steps.files.outputs.docs-only }}
+
+runs:
+  using: composite
+  steps:
+    # Documentation is Markdown outside `crates/`, where `guidance.md` is compiled into
+    # `fennec init`, everything under `docs/`, and the website's pictures and data. A renamed
+    # file counts by both its names, so moving code into `docs/` still runs everything. A
+    # merge group holds every pull request queued ahead of this one, so it's docs-only only
+    # when they all are.
+    - id: files
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT: ${{ github.event_name }}
+        PR: ${{ github.event.pull_request.number }}
+        BASE: ${{ github.event.merge_group.base_sha }}
+        HEAD: ${{ github.event.merge_group.head_sha }}
+      run: |
+        names='.[] | .filename, (.previous_filename // empty)'
+        files=""
+        case "$EVENT" in
+          pull_request)
+            files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" --jq "$names")
+            ;;
+          merge_group)
+            compare=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD")
+            # The comparison lists at most 300 files, so one that long may leave some out.
+            if [ "$(jq '.files | length' <<< "$compare")" -lt 300 ]; then
+              files=$(jq -r ".files | $names" <<< "$compare")
+            fi
+            ;;
+        esac
+        docs_only=false
+        if [ -n "$files" ]; then
+          docs_only=true
+          while IFS= read -r file; do
+            case "$file" in
+              crates/*) docs_only=false ;;
+              docs/* | *.md | site/public/* | site/src/data/*) ;;
+              *) docs_only=false ;;
+            esac
+          done <<< "$files"
+        fi
+        echo "Docs only: $docs_only"
+        echo "docs-only=$docs_only" >> "$GITHUB_OUTPUT"

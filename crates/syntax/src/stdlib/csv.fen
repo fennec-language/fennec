@@ -13,7 +13,7 @@ def records(text: str, delimiter = ",") -> list[dict[str, str]]:
     if rows.len() == 0: return []
     _, names = rows[0]
     if set(names).len() != names.len(): fail _problem("the first row has the same name twice", 1, 1)
-    mut found = []
+    mut found = list[dict[str, str]]()
     for line, row in rows[1:]:
         if row.len() != names.len():
             problem = f"the first row sets {names.len()} as the number of fields, but this row has {row.len()}"
@@ -23,7 +23,7 @@ def records(text: str, delimiter = ",") -> list[dict[str, str]]:
 
 ## CSV text of `rows`, each ending in `\n`.
 def dumps(rows: list[list[str]], delimiter = ",") -> str:
-    mut lines = []
+    mut lines = list[str]()
     for row in rows:
         lines.append(_line(row, delimiter))
     "".join(lines)

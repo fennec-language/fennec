@@ -127,7 +127,7 @@ mod tests {
     fn lowered(source: &str) -> HashMap<String, String> {
         let module = fennec_syntax::parse(source).unwrap();
         let signatures = fennec_check::check(&module).unwrap();
-        let prelude = fennec_syntax::prelude_modules().unwrap();
+        let prelude = fennec_syntax::prelude_to_run().unwrap();
         let program = Program::from_module(&module, prelude, &signatures).unwrap();
         let mut jit = new_module(program.main_span).unwrap();
         let mut shared = Shared::new(&program, 0);

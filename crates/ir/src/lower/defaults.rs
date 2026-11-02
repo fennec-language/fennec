@@ -14,7 +14,7 @@ pub(super) type FieldKey<'a> = (&'a str, Option<&'a str>, &'a str);
 
 /// The default of every field that has one, in the module and the standard library.
 pub(super) fn written(module: &Module) -> HashMap<FieldKey<'_>, &Expr> {
-    let library = fennec_syntax::prelude_modules().unwrap_or_default();
+    let library = fennec_syntax::prelude_to_run().unwrap_or_default();
     let mut found = HashMap::new();
     for item in library.iter().chain([module]).flat_map(|module| &module.items) {
         if let Item::Struct(def) | Item::Enum(def) | Item::Error(def) = item {
@@ -26,7 +26,7 @@ pub(super) fn written(module: &Module) -> HashMap<FieldKey<'_>, &Expr> {
 
 /// The `where` rules of each struct in the module and the standard library.
 pub(super) fn rules(module: &Module) -> HashMap<&str, Vec<(&str, &Expr)>> {
-    let library = fennec_syntax::prelude_modules().unwrap_or_default();
+    let library = fennec_syntax::prelude_to_run().unwrap_or_default();
     let mut found = HashMap::new();
     for item in library.iter().chain([module]).flat_map(|module| &module.items) {
         if let Item::Struct(def) = item {

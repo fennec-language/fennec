@@ -31,6 +31,7 @@ pub mod regex;
 pub mod strings;
 mod table;
 mod tests;
+pub mod text;
 
 use std::collections::HashMap;
 
@@ -67,6 +68,9 @@ pub struct Tables {
     pub literals: HashMap<String, i64>,
     /// What closes what's open in a generator that's let go partway, by its block's shape.
     pub abandons: HashMap<u64, extern "C" fn(i64)>,
+    /// Whether native code holds a `str` as its 24-byte header (see `text`), so a list of
+    /// strings the runtime makes holds headers.
+    pub text_headers: bool,
 }
 
 impl Tables {

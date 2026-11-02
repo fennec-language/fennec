@@ -11,9 +11,34 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same pull request cancels its older run. Anything else, like a push to
+# main or a merge group, gets a group of its own: a group keeps only its newest waiting run, so
+# sharing one would drop some.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # A pull request or merge group that changes only documentation has no code to analyze.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs_only: ${{ steps.changes.outputs.docs-only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: changes
+        # actionlint and the runner take only `./` for an action in this repository.
+        uses: ./.github/actions/docs-only # zizmor: ignore[self-repository]
+
   analyze:
     name: Analyze (${{ matrix.language }})
+    needs: changes
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -28,9 +53,24 @@ jobs:
         with:
           persist-credentials: false
       - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        if: needs.changes.outputs.docs_only != 'true'
         with:
           languages: ${{ matrix.language }}
           build-mode: none
       - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        if: needs.changes.outputs.docs_only != 'true'
         with:
+          category: /language:${{ matrix.language }}
+      # Code scanning is required to merge, and waits for each language's results. Documentation
+      # can't add an alert, so an analysis with nothing in it lets it pass without the minutes
+      # a real one takes.
+      - name: Report nothing to analyze
+        if: needs.changes.outputs.docs_only == 'true'
+        run: |
+          echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "CodeQL", "rules": []}}, "results": []}]}' \
+            > "$RUNNER_TEMP/empty.sarif"
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        if: needs.changes.outputs.docs_only == 'true'
+        with:
+          sarif_file: ${{ runner.temp }}/empty.sarif
           category: /language:${{ matrix.language }}

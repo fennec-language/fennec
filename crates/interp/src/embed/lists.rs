@@ -276,9 +276,35 @@ pub extern "C" fn sorted(list: i64, kind: i64) -> i64 {
         {
             return sorted;
         }
+        if let Some(sorted) = sorted_texts(state, list) {
+            return sorted;
+        }
         let keys = state.heap.block(list).map(|block| items(block, 1).to_vec()).unwrap_or_default();
         in_order(state, list, &keys, kind).unwrap_or(0)
     })
+}
+
+/// A new list owned once of a list of strings' headers in order, kept stable, when it is one.
+fn sorted_texts(state: &mut State, list: u64) -> Option<i64> {
+    let block = state.heap.block(list)?;
+    if element_in(state, block) != Some(&Element::Text) {
+        return None;
+    }
+    let element = element_of(state, block)?;
+    let at = usize::try_from(block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
+        .ok()?;
+    let headers = items(block, 3).to_vec();
+    let texts = super::text::texts(state, &headers);
+    let mut order: Vec<usize> = (0..texts.len()).collect();
+    order.sort_by(|a, b| texts.get(*a).cmp(&texts.get(*b)));
+    let words: Vec<u64> = order
+        .iter()
+        .flat_map(|place| headers.get(place * 3..place * 3 + 3).unwrap_or_default())
+        .copied()
+        .collect();
+    retain_items(state, &element, &words);
+    let block = build(state, at, 3, &words, 0);
+    Some(state.heap.insert(block))
 }
 
 /// A new list owned once holding these words, one an item, of a kind of item by its number.
@@ -290,6 +316,12 @@ pub(super) fn list_of_words(state: &mut State, element: i64, words: &[u64]) -> i
 
 /// A new list owned once of new strings, with the number of the kind of item it has.
 pub(super) fn list_of_strings(state: &mut State, element: i64, strings: &[&str]) -> i64 {
+    if self::element(state, element).is_some_and(|(_, element)| *element == Element::Text) {
+        let words: Vec<u64> = strings.iter().flat_map(|text| super::text::header(state, text)).collect();
+        let Some((at, _)) = self::element(state, element) else { return 0 };
+        let block = build(state, at, 3, &words, 0);
+        return state.heap.insert(block);
+    }
     let words: Vec<u64> =
         strings.iter().filter_map(|text| u64::try_from(text_address(state, text)).ok()).collect();
     list_of_words(state, element, &words)
@@ -510,6 +542,12 @@ fn passed_as_block(element: &Element) -> bool {
 fn place_of(state: &State, list: u64, word: u64) -> Option<usize> {
     let block = state.heap.block(list)?;
     let element = element_of(state, block)?;
+    if *element == Element::Text {
+        // A string to find comes as its block, and items are compared by their text.
+        let wanted = super::text::text_of(state, &[word, 0, 0]);
+        let at = super::text::texts(state, items(block, 3)).iter().position(|text| *text == wanted)?;
+        return Some(LIST_HEADER_WORDS + at * 3);
+    }
     if passed_as_block(&element) {
         let stride = element.words().max(1);
         let wanted = state.heap.block(word)?.get(super::heap::HEADER_WORDS..)?;

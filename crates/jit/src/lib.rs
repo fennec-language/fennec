@@ -91,7 +91,7 @@ pub fn start_only(
     let compile = || {
         let here = 0_u8;
         let stack_limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
-        let prelude = fennec_syntax::prelude_modules().unwrap_or_default();
+        let prelude = fennec_syntax::prelude_to_run().unwrap_or_default();
         let compiled = types::Program::from_module(module, prelude, signatures)
             .and_then(|program_| lower::compile(&program_, signatures, stack_limit, Some((cache, program))))
             .map_err(JitError::Unsupported)?;
@@ -177,7 +177,7 @@ fn compile_and_run(
         })?;
         &checked
     };
-    let prelude = fennec_syntax::prelude_modules().unwrap_or_default();
+    let prelude = fennec_syntax::prelude_to_run().unwrap_or_default();
     let program = types::Program::from_module(module, prelude, signatures).map_err(JitError::Unsupported)?;
 
     let (entry, tables, compilation) =
@@ -227,7 +227,7 @@ pub fn build(module: &Module, sources: &fennec_syntax::Sources) -> Result<Built,
     let signatures = fennec_check::check(module).map_err(|diagnostics| {
         diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default()))
     })?;
-    let prelude = fennec_syntax::prelude_modules().unwrap_or_default();
+    let prelude = fennec_syntax::prelude_to_run().unwrap_or_default();
     let program = types::Program::from_module(module, prelude, &signatures)?;
     let image = lower::object::Written { module, sources };
     let (object, compilation) = lower::object::compile_object(&program, &signatures, &image)?;
@@ -248,7 +248,7 @@ pub fn fallbacks(module: &Module) -> Result<Vec<Note>, Diagnostic> {
         diagnostics.into_iter().next().unwrap_or_else(|| Diagnostic::new("", Span::default()))
     })?;
     let module = &*module;
-    let prelude = fennec_syntax::prelude_modules().unwrap_or_default();
+    let prelude = fennec_syntax::prelude_to_run().unwrap_or_default();
     let program = types::Program::from_module(module, prelude, &signatures)?;
     let (_, _, compilation) = lower::compile(&program, &signatures, 0, None)?;
     let whole = |function: &str, what: String| Note {

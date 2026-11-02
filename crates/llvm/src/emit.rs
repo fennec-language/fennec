@@ -1476,7 +1476,8 @@ impl Emit<'_, '_, '_> {
             }
             return self.assign_memory(dest, &held, "");
         }
-        if kind.counted() {
+        // A borrowing local takes no owner, so its copy needs none either.
+        if kind.counted() && !self.known.is_borrowed(dest) {
             match value {
                 Operand::Local(from)
                     if self.owns(*from)

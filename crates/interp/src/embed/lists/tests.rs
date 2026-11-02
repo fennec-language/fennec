@@ -126,3 +126,29 @@ fn items_holding_a_string_in_an_enum_case_own_it_only_in_that_case() {
     assert_eq!(live(), before);
     finish();
 }
+
+#[test]
+fn a_struct_item_handed_over_as_a_block_is_found_by_its_fields() {
+    let fields = vec![(Rc::from("name"), Element::Str), (Rc::from("hp"), Element::Int)];
+    let shape = Rc::new(Element::Struct { name: Rc::from("Unit"), fields });
+    let tables = Tables {
+        shapes: vec![Rc::clone(&shape), Rc::new(Element::Str)],
+        str_shape: 1,
+        elements: vec![shape],
+        ..Tables::default()
+    };
+    start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+    let before = live();
+    let all = list(&["archer", "medic", "soldier"]);
+    // As native code hands one over: a block of the item's shape with equal fields.
+    let wanted = with(|state| Some(state.push(unit("medic", 2)))).unwrap();
+    let wanted = heap::from_value(wanted, 0, 0, 0);
+    assert_eq!(super::contains(all, wanted), 1);
+    super::remove(all, wanted, 0, 0);
+    assert_eq!(read(all), Value::list(vec![unit("archer", 1), unit("soldier", 3)]));
+    assert_eq!(super::contains(all, wanted), 0);
+    heap::free(wanted);
+    heap::free(all);
+    assert_eq!(live(), before);
+    finish();
+}

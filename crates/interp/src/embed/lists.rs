@@ -483,15 +483,33 @@ fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
     }
 }
 
-/// The place of the first item of a list that equals a word, in words past the header.
+/// Whether `in` and `remove` are handed an item of this kind as the address of a block of its
+/// shape holding it, rather than as the item's one word: a struct or enum laid out in place
+/// that takes more than a word or holds blocks.
+fn passed_as_block(element: &Element) -> bool {
+    matches!(element, Element::Struct { .. } | Element::Enum { .. })
+        && (element.words() > 1 || super::heap::holds_blocks(element))
+}
+
+/// The place of the first item of a list that equals a word, or the item in the block at
+/// `word` for items passed as blocks, in words past the header.
 fn place_of(state: &State, list: u64, word: u64) -> Option<usize> {
     let block = state.heap.block(list)?;
     let element = element_of(state, block)?;
+    if passed_as_block(&element) {
+        let stride = element.words().max(1);
+        let wanted = state.heap.block(word)?.get(super::heap::HEADER_WORDS..)?;
+        let at = items(block, stride)
+            .chunks(stride)
+            .position(|item| super::heap::same_words(state, &element, item, wanted))?;
+        return Some(LIST_HEADER_WORDS + at * stride);
+    }
     let at = items(block, 1).iter().position(|item| same_item(state, &element, *item, word))?;
     Some(LIST_HEADER_WORDS + at)
 }
 
-/// `list.remove(word)` on a list of items of a word each, only one owner holds.
+/// `list.remove(word)` on a list only one owner holds, of items of a word each, or of items
+/// passed as blocks (see `passed_as_block`).
 pub extern "C" fn remove(list: i64, word: i64, start: i64, end: i64) {
     attempt(|state: &mut State| {
         let (address, word) = (u64::try_from(list).unwrap_or(0), word.cast_unsigned());
@@ -500,13 +518,17 @@ pub extern "C" fn remove(list: i64, word: i64, start: i64, end: i64) {
             return Ok(());
         }
         let element = state.heap.block(address).and_then(|block| element_of(state, block));
-        let value = element.map_or(Value::None, |element| super::heap::read_word(state, &element, word));
+        let value = match element {
+            Some(element) if passed_as_block(&element) => read_block(state, word),
+            Some(element) => super::heap::read_word(state, &element, word),
+            None => Value::None,
+        };
         let message = format!("{} isn't in the list", crate::format::repr(&value));
         Err(Diagnostic::new(message, span(start, end)))
     });
 }
 
-/// `word in list`, on a list of items of a word each.
+/// `word in list`, on a list of items of a word each, or of items passed as blocks.
 pub extern "C" fn contains(list: i64, word: i64) -> i8 {
     with(|state| i8::from(place_of(state, u64::try_from(list).unwrap_or(0), word.cast_unsigned()).is_some()))
 }

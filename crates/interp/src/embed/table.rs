@@ -71,6 +71,7 @@ impl Table {
     pub(super) fn get_mut(&mut self, address: usize) -> Option<&mut [u64]> {
         match slot_mut(&mut self.regions, address).and_then(|slot| slot.as_deref_mut()) {
             Some(block) => Some(block),
+            None if self.short.is_empty() => None,
             None => self.short.get_mut(&address).map(AsMut::as_mut),
         }
     }
@@ -79,24 +80,50 @@ impl Table {
     pub(super) fn insert(&mut self, block: Box<[u64]>) {
         let address = at(&block);
         if block.len() < PLACED_WORDS {
-            if self.short.insert(address, block).is_none() {
-                self.len += 1;
-            }
+            self.insert_short(address, block);
             return;
         }
         let (region, page, place) = split(address);
-        if !self.regions.iter().any(|(number, _)| *number == region) {
-            self.regions.push((region, vec![None; PAGES].into_boxed_slice()));
+        let found = self.regions.iter_mut().find(|(number, _)| *number == region);
+        let page = found.and_then(|(_, pages)| pages.get_mut(page)).and_then(Option::as_mut);
+        match page.and_then(|page| page.get_mut(place)) {
+            Some(slot) => {
+                if slot.is_none() {
+                    self.len += 1;
+                }
+                *slot = Some(block);
+            }
+            None => self.insert_in_new_page(block),
         }
-        let pages = self.regions.iter_mut().find(|(number, _)| *number == region);
-        let Some(page) = pages.and_then(|(_, pages)| pages.get_mut(page)) else {
+    }
+
+    /// `insert`, for a block too short to have a place of its own.
+    #[cold]
+    #[inline(never)]
+    fn insert_short(&mut self, address: usize, block: Box<[u64]>) {
+        if self.short.insert(address, block).is_none() {
+            self.len += 1;
+        }
+    }
+
+    /// `insert`, for a block on a page with no block yet.
+    #[cold]
+    #[inline(never)]
+    fn insert_in_new_page(&mut self, block: Box<[u64]>) {
+        let (region, page, place) = split(at(&block));
+        let pages = self.regions.iter().position(|(number, _)| *number == region).unwrap_or_else(|| {
+            self.regions.push((region, vec![None; PAGES].into_boxed_slice()));
+            self.regions.len() - 1
+        });
+        let Some(page) = self.regions.get_mut(pages).and_then(|(_, pages)| pages.get_mut(page)) else {
             return;
         };
         let page = page.get_or_insert_with(|| vec![None; PLACES].into_boxed_slice());
-        if let Some(slot) = page.get_mut(place)
-            && slot.replace(block).is_none()
-        {
-            self.len += 1;
+        if let Some(slot) = page.get_mut(place) {
+            if slot.is_none() {
+                self.len += 1;
+            }
+            *slot = Some(block);
         }
     }
 

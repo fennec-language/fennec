@@ -255,7 +255,7 @@ fn lints_and_copies_show_with_their_rules_and_fixes() {
         (Some(2), Some(4)),
         "a lint warns; a copy that runs once is a hint"
     );
-    assert!(messages(in_main)[1].contains("may copy `items`"), "{:?}", messages(in_main));
+    assert!(messages(in_main)[1].contains("`items` is copied here"), "{:?}", messages(in_main));
 
     let params = Json::object([
         ("textDocument", Json::object([("uri", Json::string(editor.uri("src/main.fen")))])),

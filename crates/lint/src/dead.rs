@@ -202,7 +202,13 @@ fn names_for(stmts: &[Stmt], found: &mut Vec<(String, String)>) {
 /// as `mut`, directly or through a `mut` name for part of them. Any method call counts, since
 /// which ones change their value isn't known here.
 pub(crate) fn changed(body: &[Stmt]) -> HashSet<String> {
-    let mut found = changed_directly(body);
+    changed_in(body, body)
+}
+
+/// The locals `part` of a function's `body` may change, as `changed` tells, counting a change
+/// through a `mut` name the body gives anywhere.
+pub(crate) fn changed_in(part: &[Stmt], body: &[Stmt]) -> HashSet<String> {
+    let mut found = changed_directly(part);
     let mut names = Vec::new();
     names_for(body, &mut names);
     loop {

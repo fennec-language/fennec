@@ -106,6 +106,86 @@ mod tests {
     }
 
     #[test]
+    fn strings_join_and_grow_a_word_at_a_time_from_any_byte() {
+        let str = Rc::new(Element::Str);
+        let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let pieces = ["", "a", "bcdefghij", "é", "klmnopq", "rstuvwxyz0123456789", "ü!"];
+        let mut grown = string("");
+        let mut expected = String::new();
+        for piece in pieces.iter().cycle().take(40) {
+            grown = strings::append(grown, string(piece));
+            expected.push_str(piece);
+            assert_eq!(text_of(grown), expected);
+        }
+        grown = strings::append(grown, grown);
+        assert_eq!(text_of(grown), expected.repeat(2));
+        let list = lists::new(0, 7);
+        for (at, piece) in (LIST_ITEMS..).step_by(8).zip(pieces) {
+            set_word(list, at, u64::try_from(string(piece)).unwrap());
+        }
+        assert_eq!(text_of(strings::join(string(", "), list)), pieces.join(", "));
+        assert_eq!(text_of(strings::join(string(""), list)), pieces.concat());
+        let chars = u64::try_from(pieces.join("--").chars().count()).unwrap();
+        assert_eq!(word(strings::join(string("--"), list), TEXT_CHARS), Some(chars));
+        finish();
+    }
+
+    #[test]
+    fn a_string_is_freed_as_one_and_anything_else_as_free_would() {
+        let shapes =
+            vec![Rc::new(Element::Str), Rc::new(Element::Struct { name: "S".into(), fields: Vec::new() })];
+        start(
+            &Module { items: Vec::new() },
+            Tables { shapes, ..Tables::default() },
+            crate::Inputs::default(),
+        )
+        .unwrap();
+        let text = with(|state| heap::text_address(state, "a string long enough to have its own block"));
+        heap::free_text(text);
+        assert_eq!(word(text, 0), None);
+        let other = heap::alloc(1);
+        heap::free_text(other);
+        assert_eq!(word(other, 0), None);
+        heap::free_text(0);
+        finish();
+    }
+
+    /// For measuring: `FENNEC_LOOPS` allocations and frees of a small block.
+    #[test]
+    #[ignore = "a measurement"]
+    fn measure_alloc_and_free() {
+        let boxed = Element::Boxed(0);
+        let node = Element::Struct {
+            name: "Node".into(),
+            fields: vec![("l".into(), boxed.clone()), ("r".into(), boxed)],
+        };
+        let shapes = vec![Rc::new(node), Rc::new(Element::Str)];
+        let tables = Tables { shapes, str_shape: 1, ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let loops: u64 = std::env::var("FENNEC_LOOPS").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+        let names = ["", "spare", "pop", "nothing", "table", "with", "alloc", "allocdrop"];
+        let part =
+            std::env::var("FENNEC_PART").ok().and_then(|part| names.iter().position(|name| *name == part));
+        let part = u8::try_from(part.unwrap_or(0)).unwrap();
+        for _ in 0..loops {
+            match part {
+                5 => {
+                    std::hint::black_box(with(|state| state.heap.live()));
+                }
+                6 => {
+                    std::hint::black_box(heap::alloc(0));
+                }
+                1..=4 => heap::measure_part(part, 0),
+                7 => heap::measure_part(5, usize::try_from(heap::alloc(0)).unwrap()),
+                _ => heap::free(std::hint::black_box(heap::alloc(0))),
+            }
+        }
+        finish();
+    }
+
+    #[test]
     fn numbers_format_without_a_temporary() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
         start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();

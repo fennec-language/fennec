@@ -133,7 +133,7 @@ def main(stdout: Stdout):
     stdout.print(c[-1], c[-3], [i * i for i in range(4)][2])
     mut h = [1, 2]
     for _ in range(3):
-        k = h
+        k = copy(h)
         h.append(k.len())
         stdout.print(k.len(), h.len())
 ",

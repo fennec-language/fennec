@@ -1,0 +1,46 @@
+# `std.process` runs other programs through the `Process` capability. Arguments are always a
+# list, so nothing in them is read by a shell. In a test, `Process` is a fake that runs nothing
+# and gives back what the test scripted.
+from std.process import Output, ProcessError
+
+## The commits since `tag`, one a line, newest first.
+def changes(process: Process, tag: str) -> list[str]:
+    found = process.run("git", ["log", "--format=%s", f"{tag}..HEAD"])?
+    if not found.ok(): return []
+    [line for line in found.stdout.split("\n") if line != ""]
+
+def notes(process: Process, tag: str) -> str:
+    lines = changes(process, tag) else []
+    if lines.len() == 0: return "nothing new"
+    "\n".join([f"- {line}" for line in lines])
+
+test "the release notes list each commit"(process: Process):
+    process.script("git", Output(stdout="Add Tree\nFix a typo\n"))
+    assert notes(process, "v0.1") == "- Add Tree\n- Fix a typo"
+    assert process.ran() == [["git", "log", "--format=%s", "v0.1..HEAD"]]
+
+test "a failing program is its status, not an error"(process: Process):
+    process.script("git", Output(status=128, stderr="fatal: bad revision"))
+    assert notes(process, "nope") == "nothing new"
+
+test "a program nothing scripted can't run"(process: Process):
+    match process.run("cargo", ["build"]):
+        case Err(ProcessError(program, message)):
+            assert program == "cargo"
+            assert message.startswith("the test's fake Process has nothing scripted for `cargo`")
+        case Ok(_):
+            assert False
+    assert process.ran() == [["cargo", "build"]]
+
+test "an argument with spaces or quotes is one argument"(process: Process):
+    process.script("echo", Output(stdout="ok"))
+    process.run("echo", ["a b", "'c'", "$(rm -rf /)"])?
+    assert process.ran() == [["echo", "a b", "'c'", "$(rm -rf /)"]]
+
+def main(stdout: Stdout, process: Process):
+    # A program that isn't installed fails with a `ProcessError` value.
+    match process.run("fennec-no-such-program", []):
+        case Err(ProcessError(program, _)):
+            stdout.print(f"couldn't run {program}")
+        case Ok(_):
+            stdout.print("ran")

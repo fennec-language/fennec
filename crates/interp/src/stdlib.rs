@@ -37,6 +37,7 @@ modules! {
     fs,
     json,
     math,
+    process,
     random,
     re,
     toml,

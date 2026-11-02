@@ -75,6 +75,7 @@ impl Interp<'_> {
             let given = match capability.ty.as_ref().map_or("", |ty| ty.name.as_str()) {
                 "Fs" => Capability::Fs,
                 "Clock" => Capability::Clock,
+                "Process" => Capability::Process,
                 _ => Capability::Stdout,
             };
             self.frame.declare(&capability.name, Value::Capability(given), false);

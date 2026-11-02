@@ -1,0 +1,15 @@
+## What a program that ran gave back: the status it exited with, and what it wrote. A status
+## other than 0 usually means it failed, but it's the program's to say, so it isn't an error.
+struct Output:
+    status = 0
+    stdout = ""
+    stderr = ""
+
+    ## Whether the program says it succeeded.
+    def ok(self) -> bool:
+        self.status == 0
+
+## A program that couldn't be run at all, like one that isn't installed.
+error ProcessError:
+    program: str
+    message: str

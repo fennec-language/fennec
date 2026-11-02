@@ -207,7 +207,9 @@ impl Parser {
 
     fn is_declaration(&self, word: &str) -> bool {
         match word {
-            "struct" | "enum" | "error" | "interface" | "extend" => matches!(self.peek_at(1), Tok::Name(_)),
+            "struct" | "shared" | "enum" | "error" | "interface" | "extend" => {
+                matches!(self.peek_at(1), Tok::Name(_))
+            }
             "type" => matches!((self.peek_at(1), self.peek_at(2)), (Tok::Name(_), Tok::P(Punct::Assign))),
             "test" | "bench" => matches!(self.peek_at(1), Tok::Str(_)),
             _ => false,
@@ -218,6 +220,7 @@ impl Parser {
         let start = self.advance().span;
         match word {
             "struct" => Ok(Item::Struct(self.type_def(start, false)?)),
+            "shared" => Ok(Item::Struct(TypeDef { shared: true, ..self.type_def(start, false)? })),
             "error" => Ok(Item::Error(self.type_def(start, false)?)),
             "enum" => Ok(Item::Enum(self.type_def(start, true)?)),
             "interface" => self.interface(start),
@@ -241,8 +244,15 @@ impl Parser {
         let span = start.to(self.prev_span());
         self.expect_p(Punct::Colon)?;
         self.expect_block_start()?;
-        let mut def =
-            TypeDef { name, generics, fields: Vec::new(), cases: Vec::new(), methods: Vec::new(), span };
+        let mut def = TypeDef {
+            name,
+            generics,
+            fields: Vec::new(),
+            cases: Vec::new(),
+            methods: Vec::new(),
+            shared: false,
+            span,
+        };
         while !self.eat(&Tok::Dedent) && !self.at(&Tok::Eof) {
             // Enum cases come with their enum and have no `pub` of their own.
             if !is_enum || matches!(self.peek_at(1), Tok::Kw(Kw::Def)) {

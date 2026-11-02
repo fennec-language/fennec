@@ -306,6 +306,12 @@ impl Interp<'_> {
     ) -> Result<Value, Diagnostic> {
         let takes_mut_self = function.def.params.first().is_some_and(|param| param.is_self && param.is_mut);
         let mut evaluated = self.eval_args(args)?;
+        if takes_mut_self
+            && is_plain_place(object)
+            && let Value::Shared(cell) = self.eval(object)?
+        {
+            return self.call_on_shared(&cell, function, evaluated, span);
+        }
         let receiver = if takes_mut_self {
             let what = format!(
                 "`{}` changes its value, so call it on something held in a mut name",
@@ -325,6 +331,27 @@ impl Interp<'_> {
         };
         evaluated.insert(0, receiver);
         self.call_user(function, evaluated, span)
+    }
+
+    /// A `mut self` method of a `shared` value: it changes what's in the cell, with the cell
+    /// locked for the call. The interpreter runs one task, so the lock is never contended.
+    fn call_on_shared(
+        &mut self,
+        cell: &Rc<std::cell::RefCell<Value>>,
+        function: &Callable,
+        mut args: Vec<CallArg>,
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        const HELD: &str = "\0shared";
+        let inner = cell.replace(Value::Unit);
+        self.frame.declare(HELD, Value::Unit, true);
+        let place = Place { root: HELD.to_owned(), steps: Vec::new(), span };
+        args.insert(0, CallArg { name: None, value: inner, mut_place: Some(place), literal: false, span });
+        let result = self.call_user(function, args, span);
+        let changed =
+            self.frame.get_mut(HELD).map(|binding| std::mem::replace(&mut binding.value, Value::Unit));
+        cell.replace(changed.unwrap_or(Value::Unit));
+        result
     }
 
     /// Runs a value's `def del` when a `with` block ends.
@@ -461,4 +488,16 @@ fn is_generator(expr: &Expr) -> bool {
 /// Whether this builtin uses every item of a generator written right inside the call.
 fn pulls_it_all(name: &str, first: &Arg) -> bool {
     is_generator(&first.value) && matches!(name, "sum" | "min" | "max" | "sorted" | "list" | "set" | "dict")
+}
+
+/// Whether reading an expression has no effects: a name, or fields and items of one.
+fn is_plain_place(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Name(_) => true,
+        ExprKind::Attr { object, .. } => is_plain_place(object),
+        ExprKind::Index { object, index } => {
+            is_plain_place(object) && matches!(index.kind, ExprKind::Int(_) | ExprKind::Name(_))
+        }
+        _ => false,
+    }
 }

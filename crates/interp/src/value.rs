@@ -30,6 +30,8 @@ pub(crate) enum Value {
     Set(Rc<Vec<Value>>),
     /// A struct, an error, or an enum case.
     Instance(Rc<Instance>),
+    /// A `shared` value: a counted handle to one cell. Copying the handle shares the cell.
+    Shared(Rc<std::cell::RefCell<Value>>),
     Ok(Rc<Value>),
     Err(Rc<Value>),
     IdMap(Rc<IdMap>),
@@ -202,6 +204,7 @@ impl Value {
     pub(crate) fn type_name(&self) -> String {
         match self {
             Value::Unit => "nothing".to_owned(),
+            Value::Shared(cell) => cell.borrow().type_name(),
             Value::None => "None".to_owned(),
             Value::Bool(_) => "bool".to_owned(),
             Value::Int(_) => "int".to_owned(),

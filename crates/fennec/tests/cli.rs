@@ -1353,3 +1353,17 @@ fn a_copy_each_time_round_a_loop_has_to_be_written() {
     assert_eq!(text(&output.stdout), "2 3\n3 4\n4 5\n");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// A `shared` value is a handle: every name for it, and every function it's passed to, changes
+/// one cell. The JIT hands such a program to the interpreter for now, so both print the same.
+#[test]
+fn a_shared_value_is_one_cell_however_its_reached() {
+    let dir = scratch("shared").unwrap();
+    let program = dir.join("account.fen");
+    std::fs::write(&program, "shared Account:\n    total = 0\n\n    def add(mut self, amount: int):\n        self.total += amount\n\n    def balance(self) -> int:\n        self.total\n\ndef pay(account: Account, amount: int):\n    account.add(amount)\n\ndef main(stdout: Stdout):\n    account = Account()\n    same = account\n    pay(account, 5)\n    same.add(10)\n    stdout.print(account.balance(), same.total, account)\n").unwrap();
+    for engine in ["--interp", "--no-test"] {
+        let output = fennec(&["run", engine, program.to_str().unwrap()], "").unwrap();
+        assert_eq!(text(&output.stdout), "15 15 Account(total=15)\n", "{engine}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

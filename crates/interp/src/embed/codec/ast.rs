@@ -31,7 +31,7 @@ fields!(FnDef { name, generics, params, ret, arrow, body, span });
 fields!(Generic { name, bounds, span });
 fields!(Param { name, ty, is_mut, is_self, default, span });
 fields!(TypeExpr { name, args, optional, span });
-fields!(TypeDef { name, generics, fields, cases, methods, span });
+fields!(TypeDef { name, generics, fields, cases, methods, shared, span });
 fields!(Field { name, ty, default, rule, annotations, span });
 fields!(Annotation { name, args, span });
 fields!(Case { name, fields, span });

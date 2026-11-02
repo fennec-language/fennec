@@ -149,6 +149,7 @@ impl<'m> Program<'m> {
         signatures: &Signatures,
         tests: &'m [(String, FnDef)],
     ) -> Result<Self, Diagnostic> {
+        no_shared(module)?;
         // A program's type named like a library type was given a name of its own when it was
         // checked, so the library's items never clash with the program's.
         let library = || prelude.iter().flat_map(|module| &module.items);
@@ -270,4 +271,20 @@ fn still_mentioned(excluded: Vec<(String, bool)>, mentions: &crate::reach::Menti
         })
         .map(|(key, _)| key)
         .collect()
+}
+
+/// A `shared` value is a handle to one cell, which native code doesn't hold yet, so the
+/// interpreter runs a program that has one.
+fn no_shared(module: &Module) -> Result<(), Diagnostic> {
+    let shared = module.items.iter().find_map(|item| match item {
+        Item::Struct(def) if def.shared => Some(def),
+        _ => None,
+    });
+    match shared {
+        Some(def) => Err(Diagnostic::new(
+            format!("`{}` is `shared`, which the JIT doesn't take yet", def.name),
+            def.span,
+        )),
+        None => Ok(()),
+    }
 }

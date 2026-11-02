@@ -54,6 +54,7 @@ pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str
     let enums = matching::definitions(&modules, signatures);
     let errors = failure::definitions(signatures);
     let context = Context {
+        shared_types: shared_types(module),
         signatures,
         errors: errors.iter().map(|def| def.name.as_str()).collect(),
         enums: enums.iter().map(|def| (def.name.as_str(), def)).collect(),
@@ -122,6 +123,12 @@ fn lower_into(
     def: &FnDef,
     context: &Context<'_>,
 ) {
+    // A `shared` value is a handle to one cell with a lock, which the IR doesn't have yet.
+    if let Some(shared) = context.shared_types.iter().find(|name| mentions(def, name)) {
+        let why = format!("it uses `{shared}`, which is `shared`, and that isn't lowered yet");
+        program.not_lowered.push(NotLowered { function: instance.name.clone(), why });
+        return;
+    }
     match Lowering::function(instance, def, context, (&[], None)) {
         Ok(functions) => program.functions.extend(functions),
         Err(why) => program.not_lowered.push(NotLowered { function: instance.name.clone(), why }),
@@ -197,6 +204,8 @@ const CAPABILITIES: [&str; 6] = ["Stdout", "Fs", "Clock", "Args", "Stdin", "Proc
 
 /// What's known about the whole program.
 struct Context<'a> {
+    /// The program's `shared` types, which aren't lowered yet.
+    shared_types: Vec<String>,
     signatures: &'a Signatures,
     /// The program's enums that the IR can hold.
     enums: HashMap<&'a str, &'a EnumDef>,
@@ -816,4 +825,22 @@ fn reachable(blocks: Vec<Open>) -> Vec<Block> {
             },
         })
         .collect()
+}
+
+/// The `shared` types a module declares.
+fn shared_types(module: &Module) -> Vec<String> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(def) if def.shared => Some(def.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether a function names a type, in its signature or its body.
+fn mentions(def: &FnDef, name: &str) -> bool {
+    // Every name in the tree is written out quoted, so this finds the type as a whole name.
+    format!("{def:?}").contains(&format!("{name:?}"))
 }

@@ -35,6 +35,16 @@ impl Interp<'_> {
                 return expect(receiver, &args, span);
             }
             Value::Ok(_) | Value::Err(_) => return Err(unhandled_result(object.span)),
+            Value::Shared(cell) => {
+                let type_name = match &*cell.borrow() {
+                    Value::Instance(instance) => std::rc::Rc::clone(&instance.type_name),
+                    _ => return Err(no_method(&receiver, method, span)),
+                };
+                let function = self.type_info(&type_name).and_then(|info| info.methods.get(method).cloned());
+                let function = function.ok_or_else(|| no_method(&receiver, method, span))?;
+                drop(receiver);
+                return self.call_method(object, &function, args, span);
+            }
             Value::Instance(instance) => {
                 let function =
                     self.type_info(&instance.type_name).and_then(|info| info.methods.get(method).cloned());

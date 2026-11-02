@@ -80,6 +80,26 @@ def step(mut units: Units, dt: float):
 
 *Why:* A get-and-set pair, like Python's `__getitem__` and `__setitem__`, copies each element out and back, and with copy-on-write an element that holds a collection would then copy on every iteration. `yield mut` stays cut: a lent place would have to stay locked across each suspension of a generator, and it can't be split for `parallel`. Positions add no new concept, never copy, and are what `parallel` splits by. Swift's `MutableCollection` works the same way, through an index and a subscript that writes in place.
 
+**A collection can't be changed another way while it's being looped over or written through.** Inside `for x in xs:`, `for mut x in xs:` or the life of any `mut` path into `xs`, changing `xs` by any other route is a compile error naming the loop's line. This is the one exclusivity rule behind the existing errors for `for mut`, `parallel` and `mut x = place`, like Swift's law of exclusivity, and it needs no annotations.
+```fennec
+for enemy in enemies:
+    if enemy.splits:
+        enemies.append(spawn_child(enemy))      # error
+```
+```
+error: `enemies` is changed while it's being looped over
+  --> game.fen:3:9
+   |
+1  | for enemy in enemies:
+   |              ------- the loop over `enemies` starts here
+3  |         enemies.append(spawn_child(enemy))
+   |         ^^^^^^^ changed here
+   = fix: loop over `copy(enemies)` to work on an explicit snapshot
+   = fix: collect the changes in a list and apply them after the loop
+```
+Neither fix is applied by `fennec fix`, since each changes what the program does. This replaces any reading where a loop silently works on a snapshot.
+*Why:* A loop that quietly sees the old collection, or skips and repeats items as it changes, is a classic bug in every language with references. One rule covers reading loops, writing loops and `parallel`, and the fix says which behavior was meant.
+
 **A value is moved, not shared, when it isn't used again.** The compiler finds each value's last use and moves it there.
 *Why:* Then nearly every collection has one owner, so copy-on-write's check before each write passes and nothing is copied. The check is a predictable branch the compiler can hoist out of loops, and deletes entirely when ownership proves the value has one owner.
 

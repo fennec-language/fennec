@@ -58,11 +58,21 @@ pub struct Layouts {
     /// Whether a `Buffer[T]` is laid out as a list's block, for a backend that does its
     /// methods. Otherwise it's an object the interpreter holds.
     native_buffers: bool,
-    /// Whether a `str` is held in place as its 24-byte header (see the runtime's `text`),
-    /// rather than as its block's address.
-    text_headers: bool,
+    /// What's held in place rather than by a block's address.
+    in_place: InPlace,
     /// The types `Ty::Block` names, by number.
     blocks: std::cell::RefCell<Vec<Ty>>,
+}
+
+/// What a backend holds in place, where others hold the address of a block.
+#[derive(Clone, Copy, Default)]
+struct InPlace {
+    /// Whether a `str` is held as its 24-byte header (see the runtime's `text`), rather than
+    /// as its block's address.
+    text_headers: bool,
+    /// Whether a struct's string and list fields live inside it, so a struct holding them is
+    /// still plain: kept in place, its fields owned by whatever holds it.
+    counted_fields: bool,
 }
 
 /// What laying out types needs to see: the checker's structs, and the enums as written.
@@ -113,8 +123,16 @@ impl Layouts {
         };
         // Strings are held as headers only once the backend that reads them does.
         let text_headers = std::env::var_os("FENNEC_INLINE_TEXT").is_some();
-        let mut layouts =
-            Layouts { one_word_optionals: true, native_buffers: true, text_headers, ..Layouts::default() };
+        let mut layouts = Layouts {
+            one_word_optionals: true,
+            native_buffers: true,
+            in_place: InPlace {
+                text_headers,
+                // `FENNEC_INLINE_STRUCTS=0` boxes them again, in case one shows a problem.
+                counted_fields: std::env::var_os("FENNEC_INLINE_STRUCTS").is_none_or(|set| set != "0"),
+            },
+            ..Layouts::default()
+        };
         for (name, def) in definitions {
             if let Written::Enum(cases) = def {
                 for (case, _) in cases {
@@ -138,17 +156,18 @@ impl Layouts {
         def: &Written,
         visiting: &mut Vec<String>,
     ) -> Option<Layout> {
-        let mut place = |fields: &[WrittenField], start: u32| {
+        let mut place = |fields: &[WrittenField], start: u32, holds: bool| {
             let mut typed = Vec::with_capacity(fields.len());
             for (field, ty, default) in fields {
-                typed.push((field.clone(), self.field_ty(sources, ty, visiting)?, default.clone()));
+                typed.push((field.clone(), self.field_ty(sources, ty, visiting, holds)?, default.clone()));
             }
             self.place_fields(typed, start)
         };
         match def {
             Written::Generator(_) => None,
             Written::Struct(fields) => {
-                let (fields, size) = place(fields, 0)?;
+                // An `IdMap` is a block of its own, shared until it changes, like a list.
+                let (fields, size) = place(fields, 0, !name.starts_with("IdMap["))?;
                 Some(Layout {
                     name: name.to_owned(),
                     fields,
@@ -161,7 +180,7 @@ impl Layouts {
                 let mut placed = Vec::with_capacity(cases.len());
                 let mut size = WORD;
                 for (case, fields) in cases {
-                    let (fields, end) = place(fields, WORD)?;
+                    let (fields, end) = place(fields, WORD, false)?;
                     size = size.max(end);
                     placed.push(Case { name: case.clone(), fields });
                 }
@@ -246,7 +265,7 @@ impl Layouts {
             Some(structure) if !structure.rules => {
                 let mut fields = Vec::with_capacity(structure.fields.len());
                 for (field, ty) in &structure.fields {
-                    fields.push((field.clone(), self.field_ty(sources, ty, visiting)?, None));
+                    fields.push((field.clone(), self.field_ty(sources, ty, visiting, true)?, None));
                 }
                 let (fields, size) = self.place_fields(fields, 0)?;
                 Layout { name: name.to_owned(), fields, size: size.max(WORD), cases: None, boxed: false }
@@ -283,7 +302,7 @@ impl Layouts {
                 let ty = written_type(field.ty.as_ref()?);
                 fields.push((
                     field.name.clone(),
-                    self.field_ty(sources, &ty, visiting)?,
+                    self.field_ty(sources, &ty, visiting, false)?,
                     field.default.clone(),
                 ));
             }
@@ -295,12 +314,29 @@ impl Layouts {
     }
 
     /// How a plain field is held, laying out the type it names first.
-    fn field_ty(&mut self, sources: &Sources<'_>, ty: &Type, visiting: &mut Vec<String>) -> Option<Ty> {
+    fn field_ty(
+        &mut self,
+        sources: &Sources<'_>,
+        ty: &Type,
+        visiting: &mut Vec<String>,
+        holds: bool,
+    ) -> Option<Ty> {
         Some(match ty {
             Type::Int => Ty::Int,
             Type::Float => Ty::Float,
             Type::Bool => Ty::Bool,
             Type::Named(inner) => Ty::Struct(self.add(sources, inner, visiting)?),
+            Type::Str if holds && self.in_place.counted_fields => Ty::Str,
+            Type::List(item) if holds && self.in_place.counted_fields => {
+                let item = match item.as_ref() {
+                    Type::Int => Ty::Int,
+                    Type::Float => Ty::Float,
+                    Type::Bool => Ty::Bool,
+                    Type::Str => Ty::Str,
+                    _ => return None,
+                };
+                Ty::List(self.list_item(item)?)
+            }
             _ => return None,
         })
     }
@@ -312,7 +348,7 @@ impl Layouts {
         for (name, ty, default) in fields {
             let size = match ty {
                 Ty::Struct(id) => self.get(id)?.size,
-                Ty::Str if self.text_headers => 3 * WORD,
+                Ty::Str if self.in_place.text_headers => 3 * WORD,
                 _ => WORD,
             };
             placed.push(Field { name, ty, offset, default });
@@ -363,7 +399,7 @@ impl Layouts {
     /// Whether a `str` is held in place as its 24-byte header.
     #[must_use]
     pub fn text_headers(&self) -> bool {
-        self.text_headers
+        self.in_place.text_headers
     }
 
     /// The type a `Ty::Block` names.
@@ -624,6 +660,27 @@ mod tests {
         let shape = layouts.get(layouts.id("Shape").unwrap()).unwrap();
         assert_eq!(shape.size, 40);
         assert_eq!(layouts.owner("Line"), Some("Shape"));
+    }
+
+    #[test]
+    fn a_struct_holding_strings_and_lists_is_kept_in_place() {
+        let list = |ty: Type| Type::List(Box::new(ty));
+        let definitions = vec![(
+            "Named".to_owned(),
+            Written::Struct(fields(&[
+                ("name", Type::Str),
+                ("scores", list(Type::Int)),
+                ("tags", list(Type::Str)),
+                ("n", Type::Int),
+            ])),
+        )];
+        let layouts = Layouts::from_definitions(&definitions);
+        let id = layouts.id("Named").unwrap();
+        assert_eq!(layouts.ty(&Type::Named("Named".to_owned())), Ty::Struct(id));
+        let layout = layouts.get(id).unwrap();
+        let types: Vec<Ty> = layout.fields.iter().map(|field| field.ty).collect();
+        assert_eq!(types, [Ty::Str, Ty::List(ListItem::Int), Ty::List(ListItem::Str), Ty::Int]);
+        assert_eq!(layout.size, 32);
     }
 
     #[test]

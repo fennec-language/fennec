@@ -129,23 +129,25 @@ pub(crate) struct Run<'r> {
     pub(crate) fennec_fuzz: &'r Path,
     pub(crate) target: &'r Target,
     pub(crate) seed: u64,
+    /// How long one input may take before it counts as stuck.
+    pub(crate) stuck: Duration,
 }
 
 impl Run<'_> {
     /// Runs workers until the time is up or `inputs` have run, each starting after the input
     /// that ended the last.
-    pub(crate) fn until(&self, seconds: u64, inputs: u64) -> Result<Outcome, String> {
-        let deadline = Instant::now() + Duration::from_secs(seconds);
+    pub(crate) fn until(&self, seconds: Option<u64>, inputs: u64) -> Result<Outcome, String> {
+        let deadline = seconds.map(|seconds| Instant::now() + Duration::from_secs(seconds));
         let folder = std::env::temp_dir().join(format!("fennec-fuzz-{}", std::process::id()));
         std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
         let progress = folder.join(self.target.name);
         let mut outcome = Outcome { inputs: 0, failures: Vec::new() };
         let mut next = 0_u64;
-        while next < inputs && Instant::now() < deadline {
+        while next < inputs && deadline.is_none_or(|deadline| Instant::now() < deadline) {
             let _ = std::fs::remove_file(&progress);
             let mut child = self.worker(next, inputs, &progress)?;
             let mut last = None;
-            let failure = watch(&mut child, self.target.stuck, Some(deadline), || {
+            let failure = watch(&mut child, self.stuck, deadline, || {
                 let now = noted(&progress);
                 let moved = now != last;
                 last = now;

@@ -2600,6 +2600,31 @@ def main(stdout: Stdout):
 }
 
 #[test]
+fn a_yield_method_unpacking_a_tuple_fuses() {
+    let source = "struct Pairs:
+    items: list[(int, int)]
+
+    def iter(self) -> Iterator[int]:
+        mut trail = copy(self.items)
+        while trail.len() > 0:
+            first, second = trail[-1]
+            trail.pop()
+            yield first + second
+
+def total(pairs: Pairs) -> int:
+    mut sum_so_far = 0
+    for n in pairs:
+        sum_so_far += n
+    sum_so_far
+
+def main(stdout: Stdout):
+    stdout.print(total(Pairs(items=[(1, 2), (3, 4)])))
+";
+    let text = printed_copies(source, "total").unwrap();
+    assert!(!text.contains("generator") && !text.contains("resume"), "{text}");
+}
+
+#[test]
 fn a_buffer_is_made_filled_and_read_through_its_own_builtins() {
     let source = "def main(stdout: Stdout):\n    mut b = Buffer[int](capacity=2)\n    b.extend(Buffer[int]())\n    b.insert(0, 1)\n    stdout.print(b.remove(0))\n    b.push(3)\n    b[0] = 4\n    b.reserve(8)\n    b.truncate(1)\n    stdout.print(b[0], b.len(), b.capacity(), b.pop())\n";
     let text = printed(source, "main").unwrap();

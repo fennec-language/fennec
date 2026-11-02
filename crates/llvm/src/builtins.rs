@@ -334,7 +334,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `list.pop()`: the last item's owner goes with it.
-    fn pop(&mut self, dest: Option<LocalId>, args: &[Operand], span: Span) -> Result<(), String> {
+    pub(crate) fn pop(&mut self, dest: Option<LocalId>, args: &[Operand], span: Span) -> Result<(), String> {
         if let [Operand::Local(local), at] = args {
             return self.pop_at(dest, *local, at, span);
         }

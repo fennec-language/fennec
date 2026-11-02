@@ -1,6 +1,7 @@
 ## Saving a battle to JSON and loading it back. JSON holds the whole world as it is: the
-## `IdMap`s with their slots, every `Id`, the enums, and the map's grid and packed links. So
-## every `Id` that was saved finds the same unit once it's loaded.
+## `IdMap`s with their slots, every `Id`, the enums, and the map's grid. So every `Id` that
+## was saved finds the same unit once it's loaded. The map's links come from its grid, so
+## they're left out with `@skip` and loading works them out again.
 
 from std import json
 
@@ -13,7 +14,9 @@ def dumps(world: World) -> str:
 
 ## A world from JSON text that `dumps` wrote.
 def loads(text: str) -> World:
-    json.loads[World](text)?
+    mut world = json.loads[World](text)?
+    world.field = map.Map.of(world.field.tiles)
+    world
 
 test "a saved world loads back the same":
     mut world = World(field=map.Map.drawn(["...", "^~."]))
@@ -33,3 +36,6 @@ test "a saved world loads back the same":
     assert loaded.units[c].following == a
     assert loaded.units[c].items == [Item(name="bandage", heals=15)]
     assert loaded.field.drawing() == ["...", "^~."]
+    # The links weren't saved, but loading worked them out again.
+    assert "links" not in text
+    assert loaded.field.next_to((0, 0)) == world.field.next_to((0, 0))

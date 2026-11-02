@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-use fennec_syntax::{Diagnostic, Span, TypeExpr};
+use fennec_syntax::{Diagnostic, Field, Span, TypeExpr};
 
 use super::Names;
 use crate::interp::Interp;
@@ -99,9 +99,16 @@ impl Interp<'_> {
                 }
             }
             Value::Instance(instance) => {
+                let defs = self.field_defs(instance);
                 let mut fields = Vec::new();
                 for (name, held) in &instance.fields {
-                    fields.push((Rc::from(names.spell(name)), self.natural(held, names, span)?));
+                    let def = defs.iter().find(|field| field.name == **name);
+                    if def.is_some_and(Field::is_skipped) {
+                        continue;
+                    }
+                    let saved =
+                        def.and_then(Field::saved_name).map_or_else(|| names.spell(name), str::to_owned);
+                    fields.push((Rc::from(saved), self.natural(held, names, span)?));
                 }
                 Value::Instance(Rc::new(Instance { fields, ..instance.as_ref().clone() }))
             }
@@ -125,6 +132,21 @@ impl Interp<'_> {
             }
             other => other.clone(),
         })
+    }
+
+    /// The fields declared for a struct, or for an enum case, with what's written above them.
+    fn field_defs(&self, instance: &Instance) -> Vec<Field> {
+        let Some(info) = self.type_info(&instance.type_name) else { return Vec::new() };
+        match instance.case.as_deref() {
+            None => info.def.fields.clone(),
+            Some(case) => info
+                .def
+                .cases
+                .iter()
+                .find(|found| found.name == case)
+                .map(|found| found.fields.clone())
+                .unwrap_or_default(),
+        }
     }
 
     fn all_natural(&mut self, items: &[Value], names: Names, span: Span) -> Result<Vec<Value>, Diagnostic> {

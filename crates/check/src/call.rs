@@ -431,7 +431,11 @@ impl FnCx<'_> {
         };
         let params =
             if takes_self { signature.params.get(1..).unwrap_or_default() } else { &signature.params };
-        if takes_self && signature.params.first().is_some_and(|param| param.is_mut) {
+        // A `shared` value's method takes its lock, so any name for the handle can call it.
+        if takes_self
+            && signature.params.first().is_some_and(|param| param.is_mut)
+            && !self.checker.program.is_shared(receiver)
+        {
             let what = format!("`{method}` changes its value, so call it on something held in a mut name");
             self.mut_place(object, &what);
         }

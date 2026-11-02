@@ -15,6 +15,7 @@ mod names;
 mod narrowing;
 mod places;
 mod returns;
+mod shared;
 mod signatures;
 mod strict;
 mod typed;

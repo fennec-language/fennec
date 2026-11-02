@@ -32,6 +32,12 @@ impl Checker {
         }
         self.const_types.insert(name.to_owned(), None);
         let ty = FnCx::check_constant(self, name, written.as_ref(), &value, !prelude);
+        if !prelude && let Some(inner) = self.shared_inside(&ty, &mut Vec::new()) {
+            let message = format!("`{name}` holds `{inner}`, which is `shared`, so it can't be a constant");
+            self.diagnostics.push(Diagnostic::new(message, span).with_help(
+                "there's no `shared` at the top of a file: make it in `main` and pass it to what uses it",
+            ));
+        }
         self.const_types.insert(name.to_owned(), Some(ty.clone()));
         Some(ty)
     }

@@ -27,6 +27,10 @@ impl Interp<'_> {
                     .with_help("call a method with parentheses, like `x.length()`")
             }),
             Value::Type(type_name) => self.type_attr(&type_name, name, span),
+            Value::Shared(cell) => {
+                let inner = cell.borrow().clone();
+                self.attr(inner, name, optional, span)
+            }
             Value::Capability(Capability::Args) => self.args_field(name, span),
             other => Err(Diagnostic::new(format!("a {} has no field `{name}`", other.type_name()), span)),
         }

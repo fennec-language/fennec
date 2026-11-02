@@ -311,30 +311,32 @@ impl<'c> FnCx<'c> {
     /// default that isn't such a literal needs its type written.
     fn default_written(&mut self, param: &fennec_syntax::Param) {
         let Some(default) = &param.default else { return };
-        let given = crate::program::literal_type(default, &self.checker.program);
-        match (&param.ty, given) {
-            (None, None) => {
+        // A default rules out `mut`, so the name starts the parameter.
+        let name_end = param.span.start + u32::try_from(param.name.len()).unwrap_or(0);
+        match &param.ty {
+            None if crate::program::literal_type(default, &self.checker.program).is_none() => {
                 let message = format!("can't tell the type of `{}` from its default", param.name);
-                let help = format!("write its type, like `{}: list[int] = []`", param.name);
+                let help = match &default.kind {
+                    fennec_syntax::ExprKind::List(_) => {
+                        format!("say it, like `{} = list[int]()`", param.name)
+                    }
+                    fennec_syntax::ExprKind::Dict(_) => {
+                        format!("say it, like `{} = dict[str, int]()`", param.name)
+                    }
+                    _ => format!("write its type, like `{}: Enemy? = None`", param.name),
+                };
                 self.error(Diagnostic::new(message, default.span).with_help(help));
             }
-            (Some(written), Some(given))
-                if written.args.is_empty() && !written.optional && self.resolve(written) == given =>
-            {
-                let message = format!(
-                    "`{}` takes its type from its default, so `: {}` isn't needed",
-                    param.name, written.name
-                );
-                // A default rules out `mut`, so the name starts the parameter.
-                let name_end = param.span.start + u32::try_from(param.name.len()).unwrap_or(0);
-                let between = Span { start: name_end, end: default.span.start };
-                self.error(
-                    Diagnostic::new(message, written.span)
-                        .with_help(format!("remove the type, so it reads `{}=` and its default", param.name))
-                        .with_fix(between, "="),
-                );
+            None => {}
+            Some(written) => {
+                let resolved = self.resolve(written);
+                let at = (param.name.as_str(), name_end);
+                if let Some(problem) =
+                    crate::program::default_problem(&self.checker.program, at, (written, &resolved), default)
+                {
+                    self.error(problem);
+                }
             }
-            _ => {}
         }
     }
 
@@ -401,8 +403,11 @@ impl<'c> FnCx<'c> {
 
     /// The type of a field's default, without reporting anything: that happens once, when
     /// the type's fields are checked.
-    pub(crate) fn type_of_default(checker: &'c mut Checker, default: &Expr) -> Type {
+    pub(crate) fn type_of_default(checker: &'c mut Checker, default: &Expr, owner: &str) -> Type {
         let mut cx = FnCx::new(checker, "", "", false);
+        // A default can name the type's own parameters, like `items = list[T]()`.
+        cx.generics =
+            cx.checker.program.type_info(owner).map(|info| info.def.generics.clone()).unwrap_or_default();
         let ty = cx.expr(default);
         cx.checker.settled(&ty)
     }

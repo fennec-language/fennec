@@ -7,6 +7,7 @@ use fennec_syntax::{BinOp, Span};
 
 use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS};
 use crate::kinds::{Kind, element_symbol};
+use crate::uniqueness::{FieldPath, item_step};
 
 /// A case's field: its name, where it goes, and how it's held if this backend takes it.
 type CaseField = (String, u32, Option<Kind>);
@@ -144,7 +145,7 @@ impl Emit<'_, '_, '_> {
         let base = match object {
             Operand::Local(local) if self.known.is_taken(dest) && matches!(kind, Kind::Boxed(_)) => {
                 let place = self.slot(*local);
-                self.alone_at(&place, "fennec_unshare")
+                self.alone_along((*local, &[]), &place, "fennec_unshare")
             }
             _ => base,
         };
@@ -172,6 +173,7 @@ impl Emit<'_, '_, '_> {
         }
         // The item was read at this index just before, so it's inside the list, counting from
         // the end if it's negative.
+        let index_operand = index;
         let (index, _) = self.operand(index)?;
         let length = self.list_length(&list);
         let (negative, from_end, position) = (self.temp(), self.temp(), self.temp());
@@ -179,7 +181,10 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{from_end} = add i64 {index}, {length}"));
         self.line(&format!("{position} = select i1 {negative}, i64 {from_end}, i64 {index}"));
         let at = self.item_address(&list, "ptr", &position);
-        let block = self.alone_at(&at, "fennec_unshare");
+        let block = match item_step(index_operand) {
+            Some(step) => self.alone_along((root, &[list_field.to_owned(), step]), &at, "fennec_unshare"),
+            None => self.alone_at(&at, "fennec_unshare"),
+        };
         let (offset, inner) = self.field(&held, field)?;
         let fields = self.fields_at(&block, &held);
         let place = self.offset(&fields, offset);
@@ -224,10 +229,14 @@ impl Emit<'_, '_, '_> {
         let mut place = self.slot(object);
         let mut kind = self.kind_of(object)?.clone();
         let mut in_block = false;
-        for name in path {
+        for (step, name) in path.iter().enumerate() {
             let inside = if matches!(kind, Kind::Boxed(_)) {
                 in_block = true;
-                let block = self.alone_at(&place, "fennec_unshare");
+                let block = self.alone_along(
+                    (object, path.get(..step).unwrap_or_default()),
+                    &place,
+                    "fennec_unshare",
+                );
                 self.offset(&block, FIELDS_OFFSET)
             } else {
                 place
@@ -591,12 +600,18 @@ impl Emit<'_, '_, '_> {
         } else {
             list
         };
+        let index_operand = index;
         let (index, _) = self.operand(index)?;
         let position = if inside { index } else { self.position(&list, &index, span) };
         let memory = held.memory(self.module.layouts);
         let at = self.item_address(&list, &memory, &position);
-        if self.known.item_home(dest).is_some_and(|(_, path)| held.counted() || !path.is_empty()) {
+        if let Some((home, path)) =
+            self.known.item_home(dest).filter(|(_, path)| held.counted() || !path.is_empty())
+        {
             self.taken_at.insert(dest.0, at.clone());
+            if let Some(step) = item_step(index_operand) {
+                self.taken_items.insert(dest.0, (*home, path.clone(), step));
+            }
         }
         self.read_into(dest, &held, &at, ITEM_ACCESS)
     }
@@ -657,9 +672,13 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn place_of(&mut self, object: LocalId, path: &[String]) -> Result<String, String> {
         let mut kind = self.kind_of(object)?.clone();
         let mut place = self.slot(object);
-        for name in path {
+        for (step, name) in path.iter().enumerate() {
             let inner = if matches!(kind, Kind::Boxed(_)) {
-                let block = self.alone_at(&place, "fennec_unshare");
+                let block = self.alone_along(
+                    (object, path.get(..step).unwrap_or_default()),
+                    &place,
+                    "fennec_unshare",
+                );
                 self.offset(&block, FIELDS_OFFSET)
             } else {
                 place
@@ -678,9 +697,13 @@ impl Emit<'_, '_, '_> {
         }
         let mut kind = self.kind_of(object)?.clone();
         let mut place = self.slot(object);
-        for name in path {
+        for (step, name) in path.iter().enumerate() {
             let inner = if matches!(kind, Kind::Boxed(_)) {
-                let block = self.alone_at(&place, "fennec_unshare");
+                let block = self.alone_along(
+                    (object, path.get(..step).unwrap_or_default()),
+                    &place,
+                    "fennec_unshare",
+                );
                 self.offset(&block, FIELDS_OFFSET)
             } else {
                 place
@@ -689,7 +712,67 @@ impl Emit<'_, '_, '_> {
             place = self.offset(&inner, offset);
             kind = field;
         }
-        Ok(self.alone_at(&place, "fennec_list_unshare"))
+        Ok(self.alone_along((object, path), &place, "fennec_list_unshare"))
+    }
+
+    /// The block at a field path from a local, made alone unless that's known already, and
+    /// known from here.
+    pub(crate) fn alone_along(
+        &mut self,
+        (root, path): (LocalId, &[String]),
+        place: &str,
+        helper: &str,
+    ) -> String {
+        let key = self.fact_key(root, path, 8);
+        if self.alone_fields.contains(&key) {
+            let block = self.temp();
+            self.line(&format!("{block} = load ptr, ptr {place}"));
+            return block;
+        }
+        let block = self.alone_at(place, helper);
+        self.alone_fields.push(key);
+        block
+    }
+
+    /// A field path from a local, from the list and index it was taken from, if it's an item
+    /// taken out to change: so what's known of the item outlives the local.
+    fn fact_key(&self, root: LocalId, path: &[String], depth: usize) -> FieldPath {
+        if let Some((home, list, step)) = self.taken_items.get(&root.0)
+            && let Some(deeper) = depth.checked_sub(1)
+        {
+            let (home, mut along) = self.fact_key(*home, list, deeper);
+            along.push(step.clone());
+            along.extend(path.iter().cloned());
+            return (home, along);
+        }
+        (root, path.to_vec())
+    }
+
+    /// Makes each block along a field path alone, unless it's known to be already: what a
+    /// function changing through it, given the root, counts on.
+    pub(crate) fn see_to(&mut self, root: LocalId, path: &[String]) -> Result<(), String> {
+        let mut kind = self.kind_of(root)?.clone();
+        let mut place = self.slot(root);
+        for step in 0..=path.len() {
+            let along = path.get(..step).unwrap_or_default();
+            let block = match kind {
+                Kind::Boxed(_) => Some(self.alone_along((root, along), &place, "fennec_unshare")),
+                Kind::List(_) if step > 0 => {
+                    self.alone_along((root, along), &place, "fennec_list_unshare");
+                    None
+                }
+                _ => None,
+            };
+            let Some(name) = path.get(step) else { break };
+            let inside = match block {
+                Some(block) => self.offset(&block, FIELDS_OFFSET),
+                None => place,
+            };
+            let Ok((offset, inner)) = self.field(&kind, name) else { break };
+            place = self.offset(&inside, offset);
+            kind = inner;
+        }
+        Ok(())
     }
 
     pub(crate) fn set_index(

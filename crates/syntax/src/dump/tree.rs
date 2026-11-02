@@ -174,6 +174,13 @@ impl Tree {
 
     fn field(&mut self, field: &Field) {
         self.node(&format!("field {}", field.name), Some(field.span), |tree| {
+            for annotation in &field.annotations {
+                tree.node(&format!("annotation {}", annotation.name), Some(annotation.span), |tree| {
+                    for arg in &annotation.args {
+                        tree.arg(arg);
+                    }
+                });
+            }
             if let Some(ty) = &field.ty {
                 tree.type_expr(ty);
             }

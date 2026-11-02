@@ -339,3 +339,25 @@ fn a_types_own_equality_takes_its_own_type() {
     let text = "struct Pair:\n    a: int\n\n    def ==(self, other: Pair) -> bool:\n        True\n\ndef main(stdout: Stdout):\n    stdout.print(Pair(a=1) != 2)\n";
     assert!(problems(text).iter().any(|problem| problem.ends_with("@ 2")), "{:?}", problems(text));
 }
+
+#[test]
+fn annotations_on_fields_are_checked() {
+    let text = "struct User:\n    @serialize(name=\"uid\")\n    id: int\n    @skip\n    cache = \"\"\n    @skip\n    \
+                total: int\n    @serialize(\"uid\")\n    name: str\n    @json\n    age: int\n";
+    assert_eq!(
+        problems(text),
+        [
+            "`@skip` needs `total` to have a default @ @skip",
+            "`@serialize` takes the field's saved name @ @serialize(\"uid\")",
+            "there's no annotation called `@json` @ @json",
+        ]
+    );
+}
+
+#[test]
+fn a_field_can_be_named_by_a_keyword() {
+    let text = "struct User:\n    type: str\n    from = 0\n\ndef main(stdout: Stdout):\n    \
+                user = User(type=\"admin\", from=2)\n    stdout.print(user.type, user.from)\n";
+    let empty: [&str; 0] = [];
+    assert_eq!(problems(text), empty);
+}

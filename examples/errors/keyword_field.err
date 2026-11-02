@@ -1,7 +1,0 @@
-error: expected a field name, found `for`
- --> examples/errors/keyword_field.fen:2:5
-  |
-2 |     for = 1
-  |     ^^^
-  |
-  = help: `for` is a keyword, so it can't be a name

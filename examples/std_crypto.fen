@@ -1,0 +1,54 @@
+# `std.crypto` hashes text or bytes, signs them with HMAC, and compares secrets in time that
+# doesn't depend on where they differ. Every result is written as lowercase hex.
+from std import crypto
+from std.crypto import blake3, derive_key, equal, hmac_sha256, keyed_blake3, sha256
+
+## A save file with a tag that shows it wasn't edited by hand.
+struct Save:
+    level: int
+    tag: str
+
+def sign(key: str, level: int) -> Save:
+    Save(level=level, tag=keyed_blake3(key, f"level {level}"))
+
+def untouched(key: str, save: Save) -> bool:
+    # Comparing the tags in constant time doesn't tell a forger how close a guess was.
+    equal(keyed_blake3(key, f"level {save.level}"), save.tag)
+
+test "the same text always has the same hash" for text: str:
+    assert blake3(text) == crypto.blake3(text)
+    assert blake3(text).len() == 64 and sha256(text).len() == 64
+    assert sha256(text) == sha256(text.encode())
+
+test "SHA-256 matches the standard":
+    assert sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    assert sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+test "HMAC-SHA256 matches RFC 4231":
+    signed = hmac_sha256("Jefe", "what do ya want for nothing?")
+    assert signed == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+    assert (
+        hmac_sha256(bytes([11 for _ in range(20)]), "Hi There")
+        == "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+    )
+
+test "BLAKE3 matches its reference":
+    assert blake3("") == "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+
+test "equal compares every byte":
+    assert equal("secret", "secret") and not equal("secret", "secreT")
+    assert not equal("secret", "secrets") and equal("", "")
+    assert equal(bytes([1, 2]), bytes([1, 2]))
+
+def main(stdout: Stdout):
+    # The same text gives the same hash on every machine, so a hash names its content.
+    stdout.print(blake3("fennec"))
+    stdout.print(sha256("fennec"))
+    stdout.print(blake3("fennec") == blake3("fennec"), blake3("fennec") == blake3("Fennec"))
+
+    # A key derived from a secret, for one purpose only.
+    key = derive_key("fennec example 2026-10-30 save files", "the player's secret")
+    save = sign(key, 3)
+    stdout.print(untouched(key, save))
+    stdout.print(untouched(key, Save(level=99, tag=save.tag)))
+    stdout.print(hmac_sha256("server key", "user=ash"))

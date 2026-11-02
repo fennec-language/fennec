@@ -44,6 +44,8 @@ pub(crate) struct Checker {
     pub(crate) generator_types: BTreeMap<(u32, u32), String>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     pub(crate) not_equals: BTreeSet<(u32, u32)>,
+    /// The `list[T]()`, `dict[K, V]()` and `set[T]()` calls, written in as `[]`, `{}` and `set()`.
+    pub(crate) empty_collections: BTreeSet<(u32, u32)>,
     /// The `parallel(xs)` that a `for mut` loops over, which becomes `xs`: running in order
     /// is a correct way to run it, and it changes the items where they are.
     pub(crate) parallel_changes: BTreeSet<(u32, u32)>,
@@ -96,6 +98,7 @@ impl Checker {
             defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
             not_equals: BTreeSet::new(),
+            empty_collections: BTreeSet::new(),
             parallel_changes: BTreeSet::new(),
             optional_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
@@ -144,6 +147,7 @@ impl Checker {
         }
         let structs = self.structs(TypeKind::Struct);
         let errors = self.structs(TypeKind::Error);
+        self.check_annotations();
         self.settle_typed();
         if self.diagnostics.is_empty() {
             self.unknowns_left();
@@ -174,6 +178,7 @@ impl Checker {
                 defaults: self.defaults,
                 generator_types: self.generator_types,
                 not_equals: self.not_equals,
+                empty_collections: self.empty_collections,
                 parallel_changes: self.parallel_changes,
                 optional_steps: self.optional_steps,
                 std_names: self.std_names,
@@ -521,7 +526,7 @@ impl Checker {
                 }
             },
             (None, Some(default)) => {
-                let ty = FnCx::type_of_default(self, default);
+                let ty = FnCx::type_of_default(self, default, owner);
                 if ((!ty.is_known() && ty != Type::Unknown) || ty == Type::None) && report {
                     self.diagnostics.push(field_needs_type(&found.name, &ty, default.span));
                 }
@@ -615,7 +620,8 @@ impl Checker {
 
     /// Every struct's fields and their types, in the order they're written.
     fn structs(&mut self, kind: TypeKind) -> BTreeMap<String, crate::Struct> {
-        let structs: Vec<(String, Vec<String>, bool)> = self
+        type Annotations = BTreeMap<String, Vec<fennec_syntax::Annotation>>;
+        let structs: Vec<(String, Vec<String>, (bool, Annotations))> = self
             .program
             .types
             .values()
@@ -623,12 +629,19 @@ impl Checker {
             .map(|info| {
                 let names = info.def.fields.iter().map(|field| field.name.clone()).collect();
                 let rules = info.def.fields.iter().any(|field| field.rule.is_some());
-                (info.def.name.clone(), names, rules)
+                let annotations: BTreeMap<String, Vec<fennec_syntax::Annotation>> = info
+                    .def
+                    .fields
+                    .iter()
+                    .filter(|field| !field.annotations.is_empty())
+                    .map(|field| (field.name.clone(), field.annotations.clone()))
+                    .collect();
+                (info.def.name.clone(), names, (rules, annotations))
             })
             .collect();
         structs
             .into_iter()
-            .map(|(name, fields, rules)| {
+            .map(|(name, fields, (rules, annotations))| {
                 let fields = fields
                     .into_iter()
                     .map(|field| {
@@ -636,7 +649,7 @@ impl Checker {
                         (field, ty)
                     })
                     .collect();
-                (name, crate::Struct { fields, rules })
+                (name, crate::Struct { fields, rules, annotations })
             })
             .collect()
     }

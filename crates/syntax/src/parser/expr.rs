@@ -248,7 +248,7 @@ impl Parser {
                 let span = expr.span.to(self.expect_p(Punct::RParen)?);
                 Expr { kind: ExprKind::Call { callee: Box::new(expr), args }, span }
             } else if self.eat_p(Punct::Dot) {
-                let name = self.name("a name after `.`")?;
+                let name = self.field_name("a name after `.`")?;
                 let span = expr.span.to(self.prev_span());
                 Expr { kind: ExprKind::Attr { object: Box::new(expr), name, optional: false }, span }
             } else if self.eat_p(Punct::LBracket) {
@@ -293,7 +293,7 @@ impl Parser {
 
     /// Arguments up to (not including) `)`. A single argument followed by `for` is a generator
     /// expression, as in `sum(x * x for x in xs)`.
-    fn call_args(&mut self) -> Result<Vec<Arg>, Diagnostic> {
+    pub(crate) fn call_args(&mut self) -> Result<Vec<Arg>, Diagnostic> {
         let mut args = Vec::new();
         while !self.at_p(Punct::RParen) {
             let is_mut = self.eat_kw(Kw::Mut);
@@ -301,6 +301,11 @@ impl Parser {
                 (Tok::Name(name), Tok::P(Punct::Assign)) if !is_mut => {
                     self.pos += 2;
                     Some(name)
+                }
+                // A field named by a keyword, like `User(type="admin")`.
+                (Tok::Kw(kw), Tok::P(Punct::Assign)) if !is_mut && !matches!(kw, Kw::Reserved(_)) => {
+                    self.pos += 2;
+                    Some(kw.text().to_owned())
                 }
                 _ => None,
             };

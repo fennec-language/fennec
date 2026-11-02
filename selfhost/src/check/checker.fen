@@ -19,7 +19,7 @@ def check(module: Module, library: list[Module]) -> list[Diagnostic]:
 
 struct Checker:
     program: Program = Program()
-    diagnostics: list[Diagnostic] = []
+    diagnostics = list[Diagnostic]()
 
     def check_all(mut self):
         self.check_declarations()
@@ -92,6 +92,10 @@ struct Checker:
     def check_fields(mut self, fields: list[Field], generics: list[str]):
         for field in fields:
             self.check_written(field.ty, generics)
+            # A default like `list[Token]()` says the field's type.
+            default = field.default
+            if field.ty is None and default is not None:
+                self.check_written(made_type(default), generics)
 
     def check_written(mut self, written: TypeExpr?, generics: list[str]):
         if written is None:
@@ -138,3 +142,36 @@ def sorted_diagnostics(diagnostics: list[Diagnostic]) -> list[Diagnostic]:
         if unique.len() == 0 or unique[-1] != diagnostic:
             unique.append(diagnostic)
     unique
+
+## The type a default makes with its type arguments, like `list[Token]` for `list[Token]()`.
+def made_type(default: Expr) -> TypeExpr?:
+    match default.kind:
+        case .Call(callee, _):
+            match callee.kind:
+                case .Index(_, _): as_type(callee)
+                case _: None
+        case _: None
+
+## An expression read as a type: `Token`, or `list[Token]`, or `dict[str, int]`.
+def as_type(expr: Expr) -> TypeExpr?:
+    match expr.kind:
+        case .Name(name): TypeExpr(name=name, args=[], optional=False, span=expr.span)
+        case .Index(object, index):
+            match object.kind:
+                case .Name(name):
+                    mut args = []
+                    match index.kind:
+                        case .Tuple(items):
+                            for item in items:
+                                found = as_type(item)
+                                if found is None:
+                                    return None
+                                args.append(found)
+                        case _:
+                            found = as_type(index)
+                            if found is None:
+                                return None
+                            args.append(found)
+                    TypeExpr(name=name, args=args, optional=False, span=expr.span)
+                case _: None
+        case _: None

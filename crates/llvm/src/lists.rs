@@ -1110,6 +1110,27 @@ pub(crate) fn list_item(list: &Kind) -> Result<ListItem, String> {
 }
 
 impl Emit<'_, '_, '_> {
+    /// `insert` on a list or a buffer: the runtime opens a zeroed slot at the place, failing
+    /// outside it as the interpreter says, and the item goes in it.
+    pub(crate) fn insert(&mut self, args: &[Operand], call: &str, span: Span) -> Result<(), String> {
+        let [Operand::Local(list), at, value] = args else {
+            return Err("`insert` with the wrong arguments".to_owned());
+        };
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let item = list_item(&self.kind_of(*list)?.clone())?;
+        let held = self.item_kind(item)?;
+        let (place, _) = self.operand(at)?;
+        self.declare(&format!("declare ptr @{call}(ptr, i64, i64, i64) nounwind"));
+        let (slot, old, grown) = (self.slot(*list), self.temp(), self.temp());
+        self.line(&format!("{old} = load ptr, ptr {slot}"));
+        self.line(&format!("{grown} = call ptr @{call}(ptr {old}, i64 {place}, i64 {from}, i64 {to})"));
+        self.leave_if_failed();
+        self.line(&format!("store ptr {grown}, ptr {slot}"));
+        let memory = held.memory(self.module.layouts);
+        let opened = self.item_address(&grown, &memory, &place);
+        self.fill(&held, value, &opened, ITEM_ACCESS)
+    }
+
     /// `Buffer[T]`'s methods: a buffer is a list's block, with its room for all to see.
     pub(crate) fn buffer_builtin(
         &mut self,
@@ -1194,24 +1215,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store ptr {grown}, ptr {slot}"));
                 Ok(())
             }
-            // The runtime opens a zeroed slot at the place, failing outside the buffer, and
-            // the item goes in it.
-            ("Buffer.insert", [Operand::Local(buffer), at, value]) => {
-                let item = list_item(&self.kind_of(*buffer)?.clone())?;
-                let held = self.item_kind(item)?;
-                let (place, _) = self.operand(at)?;
-                self.declare("declare ptr @fennec_buffer_insert(ptr, i64, i64, i64) nounwind");
-                let (slot, list, grown) = (self.slot(*buffer), self.temp(), self.temp());
-                self.line(&format!("{list} = load ptr, ptr {slot}"));
-                self.line(&format!(
-                    "{grown} = call ptr @fennec_buffer_insert(ptr {list}, i64 {place}, i64 {from}, i64 {to})"
-                ));
-                self.leave_if_failed();
-                self.line(&format!("store ptr {grown}, ptr {slot}"));
-                let memory = held.memory(self.module.layouts);
-                let opened = self.item_address(&grown, &memory, &place);
-                self.fill(&held, value, &opened, ITEM_ACCESS)
-            }
+            ("Buffer.insert", _) => self.insert(args, "fennec_buffer_insert", span),
             ("Buffer.remove", [_, _]) => self.pop(dest, args, span),
             _ => Err(format!("it calls `{name}`, which this backend doesn't take yet")),
         }

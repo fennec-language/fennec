@@ -589,11 +589,13 @@ impl Emit<'_, '_, '_> {
         }
         self.line(&format!("br label %{done}"));
         self.start_block(&add);
+        // Mostly a new key, so the runtime doesn't look for it again before adding it; it still
+        // finds one that's there, in a dict something else holds.
         let word = self.dict_word(&value_kind, &held, !fresh);
-        self.declare("declare ptr @fennec_dict_add_slice(ptr, ptr, i64, i64, i64) nounwind");
+        self.declare("declare ptr @fennec_dict_add_new_slice(ptr, ptr, i64, i64, i64) nounwind");
         let changed = self.temp();
         self.line(&format!(
-            "{changed} = call ptr @fennec_dict_add_slice(ptr {dict}, ptr {text}, i64 {from}, i64 {to}, i64 {word})"
+            "{changed} = call ptr @fennec_dict_add_new_slice(ptr {dict}, ptr {text}, i64 {from}, i64 {to}, i64 {word})"
         ));
         self.line(&format!("store ptr {changed}, ptr {place}"));
         self.line(&format!("br label %{done}"));

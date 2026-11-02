@@ -93,7 +93,7 @@ pub(crate) fn startup(path: &str) -> ExitCode {
 /// Loads and checks all of a program.
 fn whole(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures), ExitCode> {
     let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
-    match fennec_check::check_to_run(&mut program.module) {
+    match crate::copy_rule::check_to_run(&mut program.module) {
         Ok(signatures) => Ok((program, signatures)),
         Err(diagnostics) => Err(reject(&program, &diagnostics)),
     }
@@ -115,7 +115,7 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures)
     let name = passed_name(path);
     let text = fingerprint(program.sources.files());
     if cache.read("checked", &name).is_none_or(|passed| passed != text.as_bytes()) {
-        if let Err(diagnostics) = fennec_check::check_to_run(&mut program.module.clone()) {
+        if let Err(diagnostics) = crate::copy_rule::check_to_run(&mut program.module.clone()) {
             return Err(reject(&program, &diagnostics));
         }
         // A cache that can't be written only means checking all of it again next time.

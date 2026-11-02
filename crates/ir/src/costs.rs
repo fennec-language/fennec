@@ -21,10 +21,21 @@ use crate::{Function, InstKind, Program};
 /// What may cost something at one place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cost {
-    /// Changing `value` may copy it, since `referred_by` holds it too.
-    Copy { value: String, referred_by: String },
+    /// Changing `value` may copy it, since something else may still read it: `why` says what.
+    Copy { value: String, why: Shared },
     /// `what` may allocate.
     Allocation { what: String },
+}
+
+/// Why a value being changed may still be shared, so changing it copies it first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shared {
+    /// Another name holds it, and reads it again at `later`.
+    HeldBy { name: String, later: Option<Span> },
+    /// It was put into `container`, which is read again at `later`.
+    PutInto { container: String, later: Option<Span> },
+    /// It came from the caller, who still holds it.
+    Caller,
 }
 
 /// A place in a program that may copy or allocate.
@@ -38,6 +49,9 @@ pub struct Finding {
     pub loops: usize,
     /// A function that calls this one from inside a loop, however many calls away, if any does.
     pub called_from_loop: Option<String>,
+    /// For a copy in a loop, whether it happens each time round, rather than once the first
+    /// time with the value its own after that.
+    pub every_time: bool,
 }
 
 impl Finding {
@@ -46,11 +60,28 @@ impl Finding {
         self.loops > 0 || self.called_from_loop.is_some()
     }
 
+    /// Whether it happens each time round a loop: one it's in, or one that calls its function,
+    /// however many calls away. A copy of something shared before the loop happens once.
+    pub fn per_iteration(&self) -> bool {
+        match self.cost {
+            // What the caller goes on holding depends on the caller, so it's only a maybe.
+            Cost::Copy { why: Shared::Caller, .. } => self.loops > 0 && self.every_time,
+            Cost::Copy { .. } => (self.loops > 0 && self.every_time) || self.called_from_loop.is_some(),
+            Cost::Allocation { .. } => self.is_hot(),
+        }
+    }
+
     /// What it costs, in a few words, without where it is.
     pub fn message(&self) -> String {
         match &self.cost {
-            Cost::Copy { value, referred_by } => {
-                format!("may copy `{value}`: {referred_by} still refers to it")
+            Cost::Copy { value, why: Shared::HeldBy { name, .. } } => {
+                format!("`{value}` is copied here, since `{name}` still holds it and is used again")
+            }
+            Cost::Copy { value, why: Shared::PutInto { container, .. } } => {
+                format!("`{value}` is copied here, since it was put into `{container}`, which is used again")
+            }
+            Cost::Copy { value, why: Shared::Caller } => {
+                format!("`{value}` is copied here, since the caller still holds it")
             }
             Cost::Allocation { what } => format!("{what} may allocate"),
         }
@@ -68,6 +99,7 @@ pub fn costs(program: &Program) -> Vec<Finding> {
     for function in program.functions.iter().filter(|function| is_own(function)) {
         let depths = loops::depths(function);
         let mut found: Vec<(Span, Cost, usize)> = flow::copies(function, &by_name, &depths);
+        let every_time = flow::every_time(function, &by_name);
         for (block, depth) in function.blocks.iter().zip(&depths) {
             for inst in &block.insts {
                 let what = allocation(function, &inst.kind, &library_allocates);
@@ -77,7 +109,8 @@ pub fn costs(program: &Program) -> Vec<Finding> {
         findings.extend(found.into_iter().filter(|(span, ..)| !span.in_prelude()).map(
             |(span, cost, loops)| {
                 let called_from_loop = callers.get(function.name.as_str()).map(|caller| (*caller).to_owned());
-                Finding { function: function.name.clone(), span, cost, loops, called_from_loop }
+                let every_time = loops > 0 && every_time.contains(&(span.start, span.end));
+                Finding { function: function.name.clone(), span, cost, loops, called_from_loop, every_time }
             },
         ));
     }

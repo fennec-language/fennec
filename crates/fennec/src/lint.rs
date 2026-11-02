@@ -57,7 +57,8 @@ fn rejected(
 
 fn checked(path: &str, json: bool) -> ExitCode {
     let Some(program) = loaded(path, json) else { return ExitCode::FAILURE };
-    let diagnostics = fennec_check::check(&program.module).err().unwrap_or_default();
+    let diagnostics =
+        crate::copy_rule::check_and_resolve(&mut program.module.clone()).err().unwrap_or_default();
     rejected(&program, &diagnostics, json)
 }
 

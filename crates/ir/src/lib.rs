@@ -35,7 +35,7 @@ mod validate;
 use fennec_check::Type;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
-pub use costs::{Cost, Finding, costs};
+pub use costs::{Cost, Finding, Shared, costs};
 pub use lower::{lower, lower_some};
 pub use validate::validate;
 
@@ -150,6 +150,9 @@ pub struct Count {
 pub struct Local {
     pub name: Option<String>,
     pub ty: Type,
+    /// Whether it's what an explicit `copy(...)` gives: a separate value on purpose, so changing
+    /// it later is never reported as a copy.
+    pub copied: bool,
 }
 
 /// A local of the function, by position in [`Function::locals`].

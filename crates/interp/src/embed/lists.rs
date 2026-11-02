@@ -54,16 +54,35 @@ pub(super) fn owns_items(element: &Element) -> bool {
     matches!(element, Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_))
 }
 
+/// The blocks items of a kind hold, laid out as `words`: an item of a word that's a block's
+/// address, or the blocks an item laid out in place holds, like a struct's string field.
+fn held_blocks(element: &Element, words: &[u64]) -> Vec<u64> {
+    if owns_items(element) {
+        return words.iter().copied().filter(|address| *address != 0).collect();
+    }
+    let mut found = Vec::new();
+    if super::heap::holds_blocks(element) {
+        for item in words.chunks(element.words().max(1)) {
+            super::heap::held_addresses(element, item, &mut found);
+        }
+    }
+    found
+}
+
 /// One more owner for each block a list of this kind of item holds, for a new list that
 /// holds them too.
 fn retain_items(state: &mut State, element: &Element, words: &[u64]) {
-    if !owns_items(element) {
-        return;
-    }
-    for word in words {
-        if let Some(count) = state.heap.block_mut(*word).and_then(|block| block.first_mut()) {
+    for address in held_blocks(element, words) {
+        if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
             *count += 1;
         }
+    }
+}
+
+/// Gives up the owner a list held of each block its items, laid out as `words`, hold.
+fn release_items(state: &mut State, element: &Element, words: &[u64]) {
+    for address in held_blocks(element, words) {
+        release(state, address);
     }
 }
 
@@ -360,13 +379,14 @@ pub extern "C" fn from_value(value: i64, element: i64, start: i64, end: i64) -> 
         }
         let value = state.expanded(state.raw(value));
         let (at, element) = self::element(state, element).ok_or_else(|| wrong(&value))?;
-        if owns_items(&element) {
-            let Value::List(items) = &value else { return Err(wrong(&value)) };
-            let mut words = Vec::with_capacity(items.len());
+        // Items that are or hold blocks are written by the runtime, which makes those blocks.
+        if owns_items(&element) || !super::heap::packable(&element) {
+            let Value::List(items) = value.clone().unpacked() else { return Err(wrong(&value)) };
+            let mut words = Vec::with_capacity(items.len() * element.words());
             for item in items.iter() {
                 write(state, &element, item, &mut words).ok_or_else(|| wrong(&value))?;
             }
-            let block = build(state, at, 1, &words, 0);
+            let block = build(state, at, element.words(), &words, 0);
             return Ok(state.heap.insert(block));
         }
         let packed = match &value {
@@ -388,11 +408,7 @@ pub extern "C" fn clear(list: i64) {
         let Some(element) = element_of(state, block) else { return };
         let stride = element.words();
         let old = items(block, stride).to_vec();
-        if owns_items(&element) {
-            for word in &old {
-                release(state, *word);
-            }
-        }
+        release_items(state, &element, &old);
         if let Some(block) = state.heap.block_mut(address) {
             block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + old.len()).unwrap_or_default().fill(0);
             if let Some(length) = block.get_mut(2) {
@@ -409,14 +425,12 @@ fn close_up(state: &mut State, address: u64, at: usize) -> Option<()> {
     let element = element_of(state, block)?;
     let stride = element.words();
     let end = LIST_HEADER_WORDS + items(block, stride).len();
-    let removed = owns_items(&element).then(|| block.get(at).copied()).flatten();
+    let removed = block.get(at..at + stride)?.to_vec();
     let block = state.heap.block_mut(address)?;
     block.get_mut(at..end)?.copy_within(stride.., 0);
     block.get_mut(end - stride..end)?.fill(0);
     *block.get_mut(2)? -= 1;
-    if let Some(removed) = removed {
-        release(state, removed);
-    }
+    release_items(state, &element, &removed);
     Some(())
 }
 
@@ -590,3 +604,6 @@ pub extern "C" fn out_of_range(at: i64, len: i64, start: i64, end: i64) {
         Err(Diagnostic::new(format!("index {at} is out of range for length {len}"), span(start, end)))
     });
 }
+
+#[cfg(test)]
+mod tests;

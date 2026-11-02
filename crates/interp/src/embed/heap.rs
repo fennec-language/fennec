@@ -428,6 +428,23 @@ fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut
     }
 }
 
+/// Whether values of a kind, laid out in place, hold blocks.
+pub(super) fn holds_blocks(element: &Element) -> bool {
+    match element {
+        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => true,
+        Element::Struct { fields, .. } => fields.iter().any(|(_, field)| holds_blocks(field)),
+        Element::Enum { cases, .. } => {
+            cases.iter().any(|(_, fields)| fields.iter().any(|(_, field)| holds_blocks(field)))
+        }
+        Element::Int | Element::Float | Element::Bool => false,
+    }
+}
+
+/// Adds the addresses of the blocks a value of a kind, laid out in place as `words`, holds.
+pub(super) fn held_addresses(element: &Element, words: &[u64], found: &mut Vec<u64>) {
+    boxed_addresses(element, words, &mut 0, found);
+}
+
 /// Adds the addresses of a block's boxed fields to `found`.
 fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
     let Some(shape) = block.get(1).copied() else { return };
@@ -443,10 +460,16 @@ fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
             found.extend(super::dicts::children(state, block));
             return;
         }
-        if let Some(element) = super::lists::element_in(state, block)
-            && super::lists::owns_items(element)
-        {
-            found.extend(super::lists::items(block, 1).iter().copied().filter(|address| *address != 0));
+        if let Some(element) = super::lists::element_in(state, block) {
+            if super::lists::owns_items(element) {
+                found.extend(super::lists::items(block, 1).iter().copied().filter(|address| *address != 0));
+            } else if holds_blocks(element) {
+                // Items laid out in place that hold blocks, like structs with a string field.
+                let stride = element.words().max(1);
+                for item in super::lists::items(block, stride).chunks(stride) {
+                    held_addresses(element, item, found);
+                }
+            }
         }
         return;
     }
@@ -812,6 +835,14 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
         if super::lists::owns_items(&element) {
             return mine.len() == theirs.len() && mine.iter().zip(theirs).all(|(x, y)| same(state, *x, *y));
         }
+        if holds_blocks(&element) {
+            let stride = stride.max(1);
+            return mine.len() == theirs.len()
+                && mine
+                    .chunks(stride)
+                    .zip(theirs.chunks(stride))
+                    .all(|(x, y)| same_words(state, &element, x, y));
+        }
         return mine == theirs;
     }
     if left.len() != right.len() {
@@ -820,8 +851,14 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
     let Some(shape) = shape_of(state, left) else { return false };
     let (left, right) =
         (left.get(HEADER_WORDS..).unwrap_or_default(), right.get(HEADER_WORDS..).unwrap_or_default());
+    same_words(state, &shape, left, right)
+}
+
+/// Whether two values of a kind, laid out as words, are equal: the same plain words, and
+/// equal blocks where they hold blocks.
+pub(super) fn same_words(state: &State, element: &Element, left: &[u64], right: &[u64]) -> bool {
     let mut boxed = Vec::new();
-    boxed_words(&shape, left, &mut 0, &mut boxed);
+    boxed_words(element, left, &mut 0, &mut boxed);
     // The case decides where the boxed fields are, so compare the plain words first.
     let plain_same = left.iter().zip(right).enumerate().all(|(at, (x, y))| boxed.contains(&at) || x == y);
     plain_same

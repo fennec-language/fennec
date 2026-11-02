@@ -115,7 +115,7 @@ impl Interp<'_> {
             ("ignore", _) => Err(Diagnostic::new("`ignore` needs a reason the result doesn't matter", span)
                 .with_help("like `ignore(save(fs, game), \"autosave is best effort\")`")),
             ("range", _) => range(&values, span),
-            ("str", [value]) => Ok(Value::str(&format::display(value))),
+            ("str", [value]) => Ok(Value::str(&self.shown(value, span)?)),
             ("int" | "float", [Value::Str(text)]) => self.parse_number(name, text, span),
             ("int", [value]) => to_int(value, span),
             ("float", [value]) => to_float(value, span),

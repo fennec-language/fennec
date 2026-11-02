@@ -33,8 +33,8 @@ macro_rules! modules {
 }
 
 modules! {
+    crypto,
     fs,
-    hash,
     json,
     math,
     random,

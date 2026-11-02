@@ -123,7 +123,7 @@ fn is_type_name(expr: &Expr) -> bool {
         "time",
         "re",
         "math",
-        "hash",
+        "crypto",
         "game",
         "layout",
         "geometry",

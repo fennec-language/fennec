@@ -1,4 +1,4 @@
-from std.hash import keyed_blake3
+from std.crypto import keyed_blake3
 
 def main(stdout: Stdout):
     stdout.print(keyed_blake3("not a key", "level 3"))

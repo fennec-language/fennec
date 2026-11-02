@@ -32,10 +32,10 @@ macro_rules! modules {
 modules! {
     cli,
     collections,
+    crypto,
     csv,
     fs,
     game,
-    hash,
     json,
     layout,
     log,

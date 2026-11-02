@@ -399,34 +399,80 @@ impl Emit<'_, '_, '_> {
                 }
                 self.declare("declare ptr @fennec_str_with_room(i64) nounwind");
                 self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+                // With headers, one that fits is made inline, with no block.
+                let paths = self.headers().then(|| {
+                    let (inline, block, done) =
+                        (self.label("format_inline"), self.label("format_block"), self.label("format_done"));
+                    let fits = self.temp();
+                    self.line(&format!("{fits} = icmp ule i64 {bytes}, 23"));
+                    self.line(&format!("br i1 {fits}, label %{inline}, label %{block}"));
+                    self.start_block(&inline);
+                    let out = self.place_for_text();
+                    self.line(&format!("store {} zeroinitializer, ptr {out}", crate::headers::HEADER));
+                    self.copy_pieces(&out, &pieces, &sizes);
+                    let (tag, byte, tag_at, made) = (self.temp(), self.temp(), self.temp(), self.temp());
+                    self.line(&format!("{tag} = or i64 {bytes}, 128"));
+                    self.line(&format!("{byte} = trunc i64 {tag} to i8"));
+                    self.line(&format!("{tag_at} = getelementptr inbounds i8, ptr {out}, i64 23"));
+                    self.line(&format!("store i8 {byte}, ptr {tag_at}"));
+                    self.line(&format!("{made} = load {}, ptr {out}", crate::headers::HEADER));
+                    let inline_end = self.current.clone();
+                    self.line(&format!("br label %{done}"));
+                    self.start_block(&block);
+                    (made, inline_end, done)
+                });
                 let made = self.temp();
                 self.line(&format!("{made} = call ptr @fennec_str_with_room(i64 {bytes})"));
                 let start = self.offset(&made, TEXT.unsigned_abs());
-                let mut at = "0".to_owned();
-                for ((piece, owned), size) in pieces.iter().zip(&sizes) {
-                    let (to, from, after) =
-                        (self.temp(), self.offset(piece, TEXT.unsigned_abs()), self.temp());
-                    self.line(&format!("{to} = getelementptr inbounds i8, ptr {start}, i64 {at}"));
-                    self.line(&format!(
-                        "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {from}, i64 {size}, i1 false)"
-                    ));
-                    self.line(&format!("{after} = add i64 {at}, {size}"));
-                    at = after;
-                    if *owned {
-                        self.release(piece);
-                    }
-                }
+                self.copy_pieces(&start, &pieces, &sizes);
                 let (bytes_at, chars_at) = (
                     self.offset(&made, TEXT_BYTES.unsigned_abs()),
                     self.offset(&made, TEXT_CHARS.unsigned_abs()),
                 );
                 self.line(&format!("store i64 {bytes}, ptr {bytes_at}{header}"));
                 self.line(&format!("store i64 {chars}, ptr {chars_at}{header}"));
-                made
+                let value = match paths {
+                    Some((inline, inline_end, done)) => {
+                        let from_block = self.text_from_block(&made);
+                        let block_end = self.current.clone();
+                        self.line(&format!("br label %{done}"));
+                        self.start_block(&done);
+                        let value = self.temp();
+                        self.line(&format!(
+                            "{value} = phi {} [ {inline}, %{inline_end} ], [ {from_block}, %{block_end} ]",
+                            crate::headers::HEADER
+                        ));
+                        value
+                    }
+                    None => made,
+                };
+                for (piece, owned) in &pieces {
+                    if *owned {
+                        self.release(piece);
+                    }
+                }
+                if self.headers() {
+                    return self.assign(dest, &value);
+                }
+                value
             }
         };
         let value = self.text_value(&value);
         self.assign(dest, &value)
+    }
+
+    /// Copies an f-string's pieces' bytes one after another from `start`.
+    fn copy_pieces(&mut self, start: &str, pieces: &[(String, bool)], sizes: &[String]) {
+        let mut at = "0".to_owned();
+        for ((piece, _), size) in pieces.iter().zip(sizes) {
+            let (to, from, after) = (self.temp(), self.offset(piece, TEXT.unsigned_abs()), self.temp());
+            self.line(&format!("{to} = getelementptr inbounds i8, ptr {start}, i64 {at}"));
+            self.line(&format!(
+                "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {from}, i64 {size}, i1 false)"
+            ));
+            self.line(&format!("{after} = add i64 {at}, {size}"));
+            at = after;
+        }
     }
 
     /// `strip` (0), `lstrip` (1) or `rstrip` (2) of a string. ASCII is looked at here: one with

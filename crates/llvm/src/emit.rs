@@ -1518,7 +1518,7 @@ impl Emit<'_, '_, '_> {
         match inst {
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
-                if self.known.unmade.contains(&dest.0) && !self.headers() =>
+                if self.known.unmade.contains(&dest.0) =>
             {
                 Ok(())
             }
@@ -1667,7 +1667,6 @@ impl Emit<'_, '_, '_> {
         // A slice never made leaves what it's of to the lookups that read it in its place.
         if let InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. } = inst
             && self.known.unmade.contains(&dest.0)
-            && !self.headers()
         {
             return;
         }

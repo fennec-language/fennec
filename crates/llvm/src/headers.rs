@@ -171,7 +171,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A slot on this function's stack for a header.
-    fn place_for_text(&mut self) -> String {
+    pub(crate) fn place_for_text(&mut self) -> String {
         let at = self.label("%text");
         let _ = writeln!(self.allocas, "  {at} = alloca {HEADER}");
         at
@@ -537,13 +537,37 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br i1 {quick}, label %{copy}, label %{slow}, !prof !8"));
         self.start_block(&copy);
         self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
-        let place = self.place_for_text();
-        self.line(&format!("store {HEADER} {more}, ptr {place}"));
         let (start, to) = (self.offset(block, crate::emit::TEXT_START), self.temp());
         self.line(&format!("{to} = getelementptr inbounds i8, ptr {start}, i64 {length}"));
+        // With a header's worth of room past the end, its three words go in whole. An inline
+        // header is zero after its bytes, so with byte 23 cleared the block stays zero after
+        // its end, as the runtime's sorting and hashing expect.
+        let (past, roomy) = (self.temp(), self.temp());
+        self.line(&format!("{past} = add i64 {length}, 24"));
+        self.line(&format!("{roomy} = icmp ule i64 {past}, {room}"));
+        let (words, bytes, copied) =
+            (self.label("append_words"), self.label("append_bytes"), self.label("append_copied"));
+        self.line(&format!("br i1 {roomy}, label %{words}, label %{bytes}, !prof !8"));
+        self.start_block(&words);
+        for at in 0..3 {
+            let (mut word, word_at) = (self.header_word(more, at), self.temp());
+            if at == 2 {
+                let cleared = self.temp();
+                self.line(&format!("{cleared} = and i64 {word}, 72057594037927935"));
+                word = cleared;
+            }
+            self.line(&format!("{word_at} = getelementptr inbounds i8, ptr {to}, i64 {}", at * 8));
+            self.line(&format!("store i64 {word}, ptr {word_at}, align 1"));
+        }
+        self.line(&format!("br label %{copied}"));
+        self.start_block(&bytes);
+        let place = self.place_for_text();
+        self.line(&format!("store {HEADER} {more}, ptr {place}"));
         self.line(&format!(
             "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {place}, i64 {more_length}, i1 false)"
         ));
+        self.line(&format!("br label %{copied}"));
+        self.start_block(&copied);
         self.line(&format!("store i64 {total}, ptr {length_at}"));
         let chars_at = at(self, TEXT_CHARS);
         let (chars, more_chars) = (self.temp(), self.temp());
@@ -593,7 +617,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `text[index]` on a header: in ASCII text inside it, the byte's character made inline;
-    /// anything else as the runtime does it.
+    /// anything else as the runtime does it. A block's counts are read as without headers.
     pub(crate) fn header_index(
         &mut self,
         dest: fennec_ir::LocalId,
@@ -601,28 +625,71 @@ impl Emit<'_, '_, '_> {
         index: &fennec_ir::Operand,
         span: fennec_syntax::Span,
     ) -> Result<(), String> {
+        use fennec_interp::embed::layout::{TEXT_BYTES, TEXT_CHARS};
         let (at, _) = self.operand(index)?;
-        let ascii = self.header_ascii(text);
-        let length = self.header_byte_length(text);
-        let (inside, quick) = (self.temp(), self.temp());
-        self.line(&format!("{inside} = icmp ult i64 {at}, {length}"));
+        let in_block = self.header_in_block(text);
+        let (block_path, inline_path, slow, done) = (
+            self.label("index_block"),
+            self.label("index_inline"),
+            self.label("index_runtime"),
+            self.label("index_done"),
+        );
+        self.line(&format!("br i1 {in_block}, label %{block_path}, label %{inline_path}"));
+        // In a block: its byte and character counts say whether a character is its byte.
+        self.start_block(&block_path);
+        let first = self.header_word(text, 0);
+        let block = self.temp();
+        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+        let (bytes_at, chars_at) =
+            (self.offset(&block, TEXT_BYTES.unsigned_abs()), self.offset(&block, TEXT_CHARS.unsigned_abs()));
+        let (bytes, chars, ascii, inside, quick) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{bytes} = load i64, ptr {bytes_at}"));
+        self.line(&format!("{chars} = load i64, ptr {chars_at}"));
+        self.line(&format!("{ascii} = icmp eq i64 {bytes}, {chars}"));
+        self.line(&format!("{inside} = icmp ult i64 {at}, {bytes}"));
         self.line(&format!("{quick} = and i1 {ascii}, {inside}"));
-        let (fast, slow, done) =
-            (self.label("index_byte"), self.label("index_runtime"), self.label("index_done"));
-        self.line(&format!("br i1 {quick}, label %{fast}, label %{slow}, !prof !8"));
-        self.start_block(&fast);
-        let bytes = self.header_bytes(text);
+        let block_byte = self.label("index_block_byte");
+        self.line(&format!("br i1 {quick}, label %{block_byte}, label %{slow}, !prof !8"));
+        self.start_block(&block_byte);
+        let start = self.offset(&block, crate::emit::TEXT_START);
         let (byte_at, byte, wide) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!("{byte_at} = getelementptr inbounds i8, ptr {bytes}, i64 {at}"));
+        self.line(&format!("{byte_at} = getelementptr inbounds i8, ptr {start}, i64 {at}"));
         self.line(&format!("{byte} = load i8, ptr {byte_at}"));
         self.line(&format!("{wide} = zext i8 {byte} to i64"));
-        let header = self.header_of([&wide, "0", "-9151314442816847872"]);
-        self.assign(dest, &header)?;
+        let from_block = self.header_of([&wide, "0", "-9151314442816847872"]);
+        let block_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        // Inline: its bytes are in the words.
+        self.start_block(&inline_path);
+        let (length, plain) = (self.inline_length(text), self.inline_ascii(text));
+        let (inside_inline, quick_inline) = (self.temp(), self.temp());
+        self.line(&format!("{inside_inline} = icmp ult i64 {at}, {length}"));
+        self.line(&format!("{quick_inline} = and i1 {plain}, {inside_inline}"));
+        let inline_byte = self.label("index_inline_byte");
+        self.line(&format!("br i1 {quick_inline}, label %{inline_byte}, label %{slow}, !prof !8"));
+        self.start_block(&inline_byte);
+        let place = self.place_for_text();
+        self.line(&format!("store {HEADER} {text}, ptr {place}"));
+        let (inline_at, inline_byte_value, inline_wide) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{inline_at} = getelementptr inbounds i8, ptr {place}, i64 {at}"));
+        self.line(&format!("{inline_byte_value} = load i8, ptr {inline_at}"));
+        self.line(&format!("{inline_wide} = zext i8 {inline_byte_value} to i64"));
+        let from_inline = self.header_of([&inline_wide, "0", "-9151314442816847872"]);
+        let inline_end = self.current.clone();
         self.line(&format!("br label %{done}"));
         self.start_block(&slow);
         self.on_blocks([text], |emit, [block]| emit.string_index(dest, &block, index, span))?;
-        self.line(&format!("br label %{done}"));
+        let after = self.label("index_after");
+        self.line(&format!("br label %{after}"));
         self.start_block(&done);
+        let one = self.temp();
+        self.line(&format!(
+            "{one} = phi {HEADER} [ {from_block}, %{block_end} ], [ {from_inline}, %{inline_end} ]"
+        ));
+        self.assign(dest, &one)?;
+        self.line(&format!("br label %{after}"));
+        self.start_block(&after);
         Ok(())
     }
 
@@ -686,11 +753,25 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A header's length in characters: a block's count, or an inline string's bytes that
-    /// don't continue a character.
+    /// don't continue a character, worked out only for an inline one.
     pub(crate) fn header_chars(&mut self, header: &str) -> String {
         use fennec_interp::embed::layout::TEXT_CHARS;
         let in_block = self.header_in_block(header);
-        let counted = self.block_word(header, TEXT_CHARS);
+        let (block_path, inline_path, done) =
+            (self.label("chars_block"), self.label("chars_inline"), self.label("chars_done"));
+        self.line(&format!("br i1 {in_block}, label %{block_path}, label %{inline_path}"));
+        self.start_block(&block_path);
+        let first = self.header_word(header, 0);
+        let (block, chars_at, counted) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+        self.line(&format!(
+            "{chars_at} = getelementptr inbounds i8, ptr {block}, i64 {}",
+            TEXT_CHARS.unsigned_abs()
+        ));
+        self.line(&format!("{counted} = load i64, ptr {chars_at}"));
+        let block_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&inline_path);
         // A byte continues a character when it's 10xxxxxx: count the bytes that aren't.
         self.declare("declare i64 @llvm.ctpop.i64(i64)");
         let length = self.inline_length(header);
@@ -704,7 +785,6 @@ impl Emit<'_, '_, '_> {
             } else {
                 word
             };
-            // Top bit set and the next clear, in each byte.
             let (shifted, not_next, both, ones, count, sum) =
                 (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
             self.line(&format!("{shifted} = shl i64 {word}, 1"));
@@ -715,9 +795,13 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{sum} = add i64 {continuing}, {count}"));
             continuing = sum;
         }
-        let (inline, chars) = (self.temp(), self.temp());
+        let inline = self.temp();
         self.line(&format!("{inline} = sub i64 {length}, {continuing}"));
-        self.line(&format!("{chars} = select i1 {in_block}, i64 {counted}, i64 {inline}"));
+        let inline_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let chars = self.temp();
+        self.line(&format!("{chars} = phi i64 [ {counted}, %{block_end} ], [ {inline}, %{inline_end} ]"));
         chars
     }
 

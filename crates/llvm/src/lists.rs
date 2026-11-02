@@ -1006,7 +1006,6 @@ impl Emit<'_, '_, '_> {
                 .find(|(dict, looked_up, _)| same_dict(*dict) && looked_up == index)
                 .map(|(_, _, entry)| entry.clone());
             if let Operand::Local(sliced) = index
-                && !self.headers()
                 && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
             {
                 return self.slice_set(&place, value_word, (&slice, found), value);

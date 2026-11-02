@@ -74,7 +74,7 @@ These hold on both sides, the kernel and its twin:
 - **Results are printed and checked.** Every result depends on all of the work, and its hash is in the target file.
 - **Realistic work.** No kernel does something an optimizer can delete. A twin whose count looks too low for its work gets looked at, and noted here.
 
-## LLVM against Rust
+## LLVM against Rust, Go and Java
 
 `fennec-bench llvm-suite` builds every kernel with `fennec build --llvm --release` and runs it
 beside its overflow-checked twin, counting instructions where it can and timing both: ten runs
@@ -85,6 +85,20 @@ than 5% slower than the best, on either side. The Suite report workflow runs it 
 x86 Linux, where Valgrind counts, and on Arm macOS, after every push to `main` and on demand.
 It puts one table on the run's summary page and adds each push's numbers to `history.jsonl`
 on the `bench-history` branch. Being slow never fails it.
+
+A kernel can have Go and Java twins too, `name.go` and `name.java` beside `name.fen`. They do
+the same work in each language's plain standard library and print the same thing. They're
+built the way anyone would build them, `go build` and `javac`, with nothing tuned, and timed
+against the LLVM build the same way, by best time. The workflow installs Go 1.26 and Temurin
+Java 25. Each comparison has two numbers. The whole run is each program from start to exit;
+Java's includes the JVM starting and its JIT warming up, as it does for anyone running the
+program. Kernel ≈ takes each language's startup off first: startup is the best run of a
+hello-world in that language, `bench/startup/empty.*`, so this is only roughly the kernel's
+time, and Java's still includes the JIT warming up. It's left out where either side's kernel
+took less time than its startup, since what's left after that is mostly noise. The report
+leads with it for Go and Java. Rust is still the twin the LLVM backend is held to: a Go or Java twin
+that prints something else is noted, and doesn't fail the run. Where a toolchain isn't
+installed, its column is left out.
 
 ## Pinning targets
 

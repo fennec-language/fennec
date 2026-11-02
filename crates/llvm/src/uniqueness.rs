@@ -257,12 +257,20 @@ pub(crate) fn unsettled(
                 }
             }
         }
-        InstKind::Builtin { name, args, .. } => {
+        InstKind::Builtin { name, args, changes, .. } => {
             let gives = gives_back(name);
             for (position, arg) in args.iter().enumerate() {
                 if position > 0 || gives {
                     owned(function, known, arg, &mut out);
                 }
+            }
+            // Changed in place, a list's items can move along or go, and a block inside can be
+            // replaced by a bigger one.
+            if *changes && let Some(Operand::Local(changed)) = args.first() {
+                out.push(
+                    reaches(known, *changed, 8)
+                        .map_or(Unsettled::Everything, |(root, path)| Unsettled::Below(root, path)),
+                );
             }
         }
         other => visit(other, |operand| owned(function, known, operand, &mut out), |_| {}),

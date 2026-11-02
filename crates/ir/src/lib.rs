@@ -48,7 +48,7 @@ use fennec_check::Type;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
 pub use costs::{Cost, Finding, Shared, costs};
-pub use lower::{lower, lower_some};
+pub use lower::{Options, lower, lower_some, lower_with};
 pub use validate::validate;
 
 /// A program's functions: those lowered so far, and those that couldn't be yet.

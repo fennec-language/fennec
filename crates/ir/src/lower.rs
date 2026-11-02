@@ -14,6 +14,7 @@ mod imports;
 mod lists;
 mod matching;
 mod operators;
+mod parallel;
 mod places;
 mod structs;
 
@@ -27,16 +28,38 @@ use crate::{
     Program, Terminator, type_in,
 };
 
+/// How a backend wants a program lowered. The default is what every engine can run.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Options {
+    /// Whether the body of each `parallel` loop, comprehension and sum is lifted into a function
+    /// of its own, for a backend that runs them on threads (see `lower::parallel`).
+    pub outline_parallel: bool,
+}
+
 /// Lowers a module's functions and methods, and the standard library's that they reach. The
 /// module is one `check_and_resolve` has been over, which writes in what calls leave out.
 pub fn lower(module: &Module, signatures: &Signatures) -> Program {
     lower_some(module, signatures, &|_| true)
 }
 
+/// Like `lower`, the way a backend asks.
+pub fn lower_with(module: &Module, signatures: &Signatures, options: Options) -> Program {
+    lower_from(module, signatures, &|_| true, options)
+}
+
 /// Like `lower`, starting only from the functions and constants `wanted` picks. What they call
 /// in the module and `wanted` leaves out is listed in [`Program::external`]. Something that
 /// runs a program every time it changes wants this, since lowering a big one takes a while.
 pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str) -> bool) -> Program {
+    lower_from(module, signatures, wanted, Options::default())
+}
+
+fn lower_from(
+    module: &Module,
+    signatures: &Signatures,
+    wanted: &dyn Fn(&str) -> bool,
+    options: Options,
+) -> Program {
     let library = fennec_syntax::prelude_to_run().unwrap_or_default();
     let modules: Vec<&Module> = std::iter::once(module).chain(library).collect();
     let functions = definitions(module);
@@ -80,6 +103,7 @@ pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str
             .map(|(key, def)| (key.clone(), *def))
             .collect(),
         intrinsics: every.iter().filter(|(_, def)| is_intrinsic(def)).map(|(key, _)| key.clone()).collect(),
+        options,
     };
     let mut program = Program::default();
     for (key, def) in &functions {
@@ -238,6 +262,8 @@ struct Context<'a> {
     /// The standard library's `@intrinsic` functions, which have no body: a call to one is an
     /// [`InstKind::Builtin`] of its key, which each engine provides.
     intrinsics: HashSet<String>,
+    /// How the backend wants the program lowered.
+    options: Options,
 }
 
 impl Context<'_> {
@@ -538,7 +564,10 @@ impl<'a> Lowering<'a> {
             }
             StmtKind::Pass => {}
             StmtKind::For { names, is_mut, iter, body } => {
-                self.for_stmt((names, *is_mut), iter, body, stmt.span)?;
+                match self.parallel_for((names, *is_mut), iter, body, stmt.span) {
+                    Some(outlined) => outlined?,
+                    None => self.for_stmt((names, *is_mut), iter, body, stmt.span)?,
+                }
             }
             StmtKind::Fail(error) => self.fail(error, stmt.span)?,
             StmtKind::Yield(value) => self.yield_value(value, stmt.span)?,
@@ -770,6 +799,12 @@ impl<'a> Lowering<'a> {
             ExprKind::Dict(pairs) => self.dict(expr, pairs),
             ExprKind::Tuple(items) => self.tuple(expr, items),
             ExprKind::Comprehension { kind, elem, value, names, iter, cond } => {
+                if let (fennec_syntax::CompKind::List, None) = (kind, value)
+                    && let Some(outlined) =
+                        self.parallel_value(expr, (elem, names, iter, cond.as_deref()), parallel::Gives::List)
+                {
+                    return outlined;
+                }
                 let parts = collections::Parts { elem, value: value.as_deref(), cond: cond.as_deref() };
                 self.comprehension(expr, *kind, &parts, (names, iter))
             }

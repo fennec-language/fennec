@@ -29,7 +29,13 @@ impl Lowering<'_> {
     }
 
     /// A closure of `function` over what it captures, as a value of type `ty`.
-    fn make_closure(&mut self, function: String, captures: &Captures, ty: Type, span: Span) -> LocalId {
+    pub(super) fn make_closure(
+        &mut self,
+        function: String,
+        captures: &Captures,
+        ty: Type,
+        span: Span,
+    ) -> LocalId {
         let dest = self.temporary(ty);
         let captures = captures.iter().map(|(_, local)| Operand::Local(*local)).collect();
         self.emit(InstKind::MakeClosure { dest, function, captures }, span);

@@ -28,6 +28,7 @@ pub(crate) fn repr(value: &Value) -> String {
             format!("bytes([{}])", numbers.join(", "))
         }
         Value::List(items) => format!("[{}]", join(items.iter())),
+        Value::Buffer(buffer) => format!("Buffer([{}])", join(buffer.items.iter())),
         Value::Packed(packed) => repr(&packed.unpack()),
         Value::Tuple(items) if items.len() == 1 => format!("({},)", join(items.iter())),
         Value::Tuple(items) => format!("({})", join(items.iter())),

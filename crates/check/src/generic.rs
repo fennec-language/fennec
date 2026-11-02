@@ -156,6 +156,7 @@ impl FnCx<'_> {
     fn is_hashable(&self, ty: &Type) -> bool {
         match ty {
             Type::List(_)
+            | Type::Buffer(_)
             | Type::Set(_)
             | Type::Dict(..)
             | Type::IdMap(_)

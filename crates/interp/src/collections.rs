@@ -90,6 +90,7 @@ impl Interp<'_> {
             Value::Capability(Capability::Process) => self.process_method(method, &args, span),
             Value::Capability(Capability::Entropy) => self.entropy_method(method, &args, span),
             Value::Limited(limited) => self.limited_method(&Rc::clone(limited), method, &args, span),
+            Value::Buffer(buffer) => crate::buffer::read(buffer, method, &args, span),
             // The bytes share the string's memory: nothing is copied.
             Value::Str(text) if method == "encode" && args.is_empty() => {
                 Ok(Value::Bytes(Rc::from(Rc::clone(text))))
@@ -204,6 +205,7 @@ impl Interp<'_> {
         }
         match value {
             Value::List(items) => self.change_list(Rc::make_mut(items), method, &args, key.as_ref(), span),
+            Value::Buffer(buffer) => crate::buffer::change(Rc::make_mut(buffer), method, &args, span),
             Value::Dict(pairs) => {
                 let pairs = Rc::make_mut(pairs);
                 match (method, args.as_slice()) {

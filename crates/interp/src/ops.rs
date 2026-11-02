@@ -189,6 +189,9 @@ pub(crate) fn index(object: &Value, index: &Value, span: Span) -> Result<Value, 
     match object {
         Value::List(items) => position(*at, items.len(), span)
             .and_then(|at| items.get(at).cloned().ok_or_else(|| Diagnostic::new("index out of range", span))),
+        Value::Buffer(buffer) => position(*at, buffer.items.len(), span).and_then(|at| {
+            buffer.items.get(at).cloned().ok_or_else(|| Diagnostic::new("index out of range", span))
+        }),
         Value::Str(text) if let Some(found) = ascii_index(text, *at, span) => found,
         Value::Str(text) => {
             let count = text.chars().count();
@@ -237,6 +240,7 @@ pub(crate) fn slice(
 ) -> Result<Value, Diagnostic> {
     let len = match value {
         Value::List(items) | Value::Tuple(items) => items.len(),
+        Value::Buffer(buffer) => buffer.items.len(),
         Value::Str(text) => text.chars().count(),
         Value::Bytes(data) => data.len(),
         other => return Err(Diagnostic::new(format!("a {} can't be sliced", other.type_name()), span)),

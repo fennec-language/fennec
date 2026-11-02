@@ -23,6 +23,9 @@ pub enum Type {
     /// Binary data: a run of bytes, each an int from 0 to 255.
     Bytes,
     List(Box<Type>),
+    /// `Buffer[T]`: the growable, counted run of slots `list` is built on, with public
+    /// methods. Its block is a list's.
+    Buffer(Box<Type>),
     Set(Box<Type>),
     Dict(Box<Type>, Box<Type>),
     /// A generator: items one at a time, as they're asked for, once.
@@ -100,6 +103,7 @@ impl Type {
             Type::Str => "str".to_owned(),
             Type::Bytes => "bytes".to_owned(),
             Type::List(_) => "list".to_owned(),
+            Type::Buffer(_) => "Buffer".to_owned(),
             Type::Set(_) => "set".to_owned(),
             Type::Iterator(_) => "Iterator".to_owned(),
             Type::Dict(..) => "dict".to_owned(),
@@ -116,7 +120,10 @@ impl Type {
 
     /// Whether this is a list, str, bytes, dict or set: something with a length.
     pub(crate) fn is_collection(&self) -> bool {
-        matches!(self, Type::List(_) | Type::Str | Type::Bytes | Type::Dict(..) | Type::Set(_))
+        matches!(
+            self,
+            Type::List(_) | Type::Buffer(_) | Type::Str | Type::Bytes | Type::Dict(..) | Type::Set(_)
+        )
     }
 
     /// Whether every part of this type is known: no `Unknown` and no `Var` inside.
@@ -131,6 +138,7 @@ impl Type {
     pub(crate) fn children(&self) -> Vec<&Type> {
         match self {
             Type::List(inner)
+            | Type::Buffer(inner)
             | Type::Set(inner)
             | Type::Iterator(inner)
             | Type::Optional(inner)
@@ -151,6 +159,7 @@ impl Type {
         let mut inner = |ty: &Type| Box::new(ty.map(change));
         let mapped = match self {
             Type::List(item) => Type::List(inner(item)),
+            Type::Buffer(item) => Type::Buffer(inner(item)),
             Type::Set(item) => Type::Set(inner(item)),
             Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Optional(item) => Type::optional(*inner(item)),
@@ -178,6 +187,7 @@ impl Type {
         match self {
             Type::Str => Some("str"),
             Type::List(_) => Some("list"),
+            Type::Buffer(_) => Some("Buffer"),
             Type::Dict(..) => Some("dict"),
             Type::Set(_) => Some("set"),
             other => other.type_name(),
@@ -189,6 +199,7 @@ impl Type {
     pub(crate) fn built_in_generic(name: &str, args: &[Type]) -> Option<Type> {
         match (name, args) {
             ("list", [item]) => Some(Type::list(item.clone())),
+            ("Buffer", [item]) => Some(Type::Buffer(Box::new(item.clone()))),
             ("dict", [key, value]) => Some(Type::Dict(Box::new(key.clone()), Box::new(value.clone()))),
             ("set", [item]) => Some(Type::Set(Box::new(item.clone()))),
             _ => None,
@@ -199,7 +210,7 @@ impl Type {
     pub(crate) fn type_args(&self) -> Vec<Type> {
         match self {
             Type::Generic(_, args) => args.clone(),
-            Type::List(item) | Type::Set(item) => vec![item.as_ref().clone()],
+            Type::List(item) | Type::Buffer(item) | Type::Set(item) => vec![item.as_ref().clone()],
             Type::Dict(key, value) => vec![key.as_ref().clone(), value.as_ref().clone()],
             _ => Vec::new(),
         }
@@ -235,6 +246,7 @@ impl Type {
             Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes => self.kind(),
             Type::None => "None".to_owned(),
             Type::List(item) => format!("list[{}]", item.source()?),
+            Type::Buffer(item) => format!("Buffer[{}]", item.source()?),
             Type::Set(item) => format!("set[{}]", item.source()?),
             Type::Iterator(item) => format!("Iterator[{}]", item.source()?),
             Type::Dict(key, value) => format!("dict[{}, {}]", key.source()?, value.source()?),
@@ -260,6 +272,7 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Type::List(item) => write!(f, "list[{item}]"),
+            Type::Buffer(item) => write!(f, "Buffer[{item}]"),
             Type::Set(item) => write!(f, "set[{item}]"),
             Type::Iterator(item) => write!(f, "Iterator[{item}]"),
             Type::Dict(key, value) => write!(f, "dict[{key}, {value}]"),

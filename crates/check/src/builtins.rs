@@ -122,6 +122,7 @@ pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
     let sized = matches!(
         ty,
         Type::List(_)
+            | Type::Buffer(_)
             | Type::Set(_)
             | Type::Dict(..)
             | Type::IdMap(_)
@@ -137,6 +138,7 @@ pub(crate) fn method(ty: &Type, name: &str) -> Option<Method> {
     }
     match ty {
         Type::List(item) => list_method(item, name),
+        Type::Buffer(item) => buffer_method(item, name),
         Type::Set(item) => set_method(item, name),
         Type::Dict(key, value) => dict_method(key, value, name),
         Type::IdMap(item) => id_map_method(item, name),
@@ -156,6 +158,19 @@ fn list_method(item: &Type, name: &str) -> Option<Method> {
         "remove_where" => changes(&[], Type::Unit).receiving(&item).any_args(),
         "sort" => changes(&[], Type::Unit).receiving(&item),
         "pop" => changes(&[Type::Int], item).optional(1),
+        _ => return None,
+    })
+}
+
+/// `Buffer[T]`'s methods. `b[i]` and `b[i] = v` are indexing, as for a list.
+fn buffer_method(item: &Type, name: &str) -> Option<Method> {
+    let item = item.clone();
+    Some(match name {
+        "push" => changes(&[item], Type::Unit),
+        "pop" => changes(&[], item),
+        "reserve" | "truncate" => changes(&[Type::Int], Type::Unit),
+        "capacity" => reads(&[], Type::Int),
+        "is_unique" => reads(&[], Type::Bool),
         _ => return None,
     })
 }
@@ -596,6 +611,7 @@ impl FnCx<'_> {
 fn peek_item(ty: &Type) -> Type {
     match ty {
         Type::List(item)
+        | Type::Buffer(item)
         | Type::Set(item)
         | Type::Iterator(item)
         | Type::IdMap(item)

@@ -55,6 +55,9 @@ pub struct Layouts {
     /// Whether an optional of something held by a block is that block's address, or 0, and a
     /// list can hold lists, dicts and those optionals.
     one_word_optionals: bool,
+    /// Whether a `Buffer[T]` is laid out as a list's block, for a backend that does its
+    /// methods. Otherwise it's an object the interpreter holds.
+    native_buffers: bool,
     /// The types `Ty::Block` names, by number.
     blocks: std::cell::RefCell<Vec<Ty>>,
 }
@@ -105,7 +108,7 @@ impl Layouts {
             enums: HashMap::new(),
             definitions: definitions.iter().map(|(name, def)| (name.as_str(), def)).collect(),
         };
-        let mut layouts = Layouts { one_word_optionals: true, ..Layouts::default() };
+        let mut layouts = Layouts { one_word_optionals: true, native_buffers: true, ..Layouts::default() };
         for (name, def) in definitions {
             if let Written::Enum(cases) = def {
                 for (case, _) in cases {
@@ -388,6 +391,10 @@ impl Layouts {
             Type::Dict(key, value) => dict_ty(self, key, value),
             Type::Set(item) => set_ty(self, item),
             Type::List(item) => self.list_item(self.ty(item)).map_or(Ty::Obj, Ty::List),
+            // A buffer is a list's block.
+            Type::Buffer(item) if self.native_buffers => {
+                self.list_item(self.ty(item)).map_or(Ty::Obj, Ty::List)
+            }
             Type::Optional(inner) if self.one_word_optionals => {
                 Block::of(self.ty(inner)).map_or(Ty::Obj, Ty::Maybe)
             }
@@ -407,6 +414,7 @@ fn has_param(ty: &Type) -> bool {
     match ty {
         Type::Param(_) => true,
         Type::List(inner)
+        | Type::Buffer(inner)
         | Type::Set(inner)
         | Type::Optional(inner)
         | Type::Id(inner)
@@ -431,6 +439,9 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
             (None, None) => Ty::Obj,
         },
         Type::List(item) => {
+            layouts.list_item(boxed_field_ty(layouts, reserved, item)).map_or(Ty::Obj, Ty::List)
+        }
+        Type::Buffer(item) if layouts.native_buffers => {
             layouts.list_item(boxed_field_ty(layouts, reserved, item)).map_or(Ty::Obj, Ty::List)
         }
         Type::Dict(key, value) => dict_ty(layouts, key, value),
@@ -484,6 +495,7 @@ fn written_type(written: &TypeExpr) -> Type {
     }
     match (written.name.as_str(), written.args.as_slice()) {
         ("list", [item]) => Type::List(Box::new(written_type(item))),
+        ("Buffer", [item]) => Type::Buffer(Box::new(written_type(item))),
         ("set", [item]) => Type::Set(Box::new(written_type(item))),
         ("dict", [key, value]) => Type::Dict(Box::new(written_type(key)), Box::new(written_type(value))),
         (_, [_, ..]) | ("list" | "dict" | "set" | "tuple" | "Id" | "IdMap", _) => Type::Unknown,

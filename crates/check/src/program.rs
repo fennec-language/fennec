@@ -187,7 +187,7 @@ impl Program {
 
     /// Whether a name, used as a value, means a type: `Enemy` in `Enemy.at(...)`.
     pub(crate) fn is_type_name(&self, name: &str) -> bool {
-        self.types.contains_key(name) || matches!(name, "Id" | "IdMap" | "SoaList")
+        self.types.contains_key(name) || matches!(name, "Id" | "IdMap" | "SoaList" | "Buffer")
     }
 
     /// The enums that have a case with this name, in name order.
@@ -236,7 +236,7 @@ impl Program {
         }
         let wanted = match name {
             "->" => written.args.len().max(1),
-            "list" | "set" | "SoaList" | "Id" | "IdMap" | "Iterator" => 1,
+            "list" | "set" | "SoaList" | "Buffer" | "Id" | "IdMap" | "Iterator" => 1,
             "dict" | "Result" => 2,
             "tuple" => written.args.len(),
             name => self.type_params(name).len(),
@@ -261,6 +261,7 @@ impl Program {
             // type of one that calls itself.
             "nothing" => Type::Unit,
             "list" | "SoaList" => Type::List(arg()),
+            "Buffer" => Type::Buffer(arg()),
             "Iterator" => Type::Iterator(arg()),
             "set" => Type::Set(arg()),
             "dict" => Type::Dict(arg(), arg()),
@@ -375,10 +376,10 @@ impl Program {
 /// The interfaces every type that can fits automatically.
 pub(crate) const BUILT_IN_INTERFACES: [&str; 4] = ["Eq", "Hashable", "Ordered", "Format"];
 
-pub(crate) const BUILT_IN_TYPES: [&str; 24] = [
-    "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "set", "dict", "tuple",
-    "Id", "IdMap", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Result", "Iterator",
-    "->",
+pub(crate) const BUILT_IN_TYPES: [&str; 25] = [
+    "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "Buffer", "set", "dict",
+    "tuple", "Id", "IdMap", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Result",
+    "Iterator", "->",
 ];
 
 /// An interface written where a type goes, as in `list[Shape]`.
@@ -393,7 +394,7 @@ fn wrong_type_args(written: &TypeExpr, wanted: usize) -> Diagnostic {
     let example = match name.as_str() {
         "dict" => "dict[str, int]".to_owned(),
         "Result" => "Result[int, IoError]".to_owned(),
-        "list" | "set" | "SoaList" => format!("{name}[int]"),
+        "list" | "set" | "SoaList" | "Buffer" => format!("{name}[int]"),
         "Id" | "IdMap" => format!("{name}[Enemy]"),
         _ => name.clone(),
     };

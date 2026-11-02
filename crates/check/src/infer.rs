@@ -89,6 +89,7 @@ impl Checker {
             (Type::Errors(names), Type::Named(name)) => names.contains(name),
             (Type::Errors(names), Type::Errors(others)) => others.iter().all(|name| names.contains(name)),
             (Type::List(a), Type::List(b))
+            | (Type::Buffer(a), Type::Buffer(b))
             | (Type::Set(a), Type::Set(b))
             | (Type::Iterator(a), Type::Iterator(b))
             | (Type::Id(a), Type::Id(b))

@@ -64,7 +64,7 @@ impl Lowering<'_> {
             return Ok(Operand::Local(dest));
         }
         let key = match &held {
-            Some(Type::List(_) | Type::Str | Type::Bytes | Type::Tuple(_)) => Type::Int,
+            Some(Type::List(_) | Type::Buffer(_) | Type::Str | Type::Bytes | Type::Tuple(_)) => Type::Int,
             Some(Type::Dict(key, _)) => *key.clone(),
             Some(Type::IdMap(item)) => Type::Id(item.clone()),
             Some(Type::Named(name)) if name == "Args" => {
@@ -190,7 +190,7 @@ impl Lowering<'_> {
         }
         let (held, item, conversion) = match &ty {
             // A loop goes through the list as it was, whatever the body does to the name.
-            Type::List(item) => (ty.clone(), *item.clone(), None),
+            Type::List(item) | Type::Buffer(item) => (ty.clone(), *item.clone(), None),
             Type::Str => (Type::List(Box::new(Type::Str)), Type::Str, Some("str.chars")),
             Type::Set(item) | Type::Dict(item, _) => (Type::List(item.clone()), *item.clone(), Some("list")),
             Type::Bytes => (Type::List(Box::new(Type::Int)), Type::Int, Some("list")),

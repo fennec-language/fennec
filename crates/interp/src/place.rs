@@ -235,6 +235,9 @@ fn step_into<'v>(value: &'v Value, step: &Step) -> Option<&'v Value> {
         (Value::List(items), Step::Index(Value::Int(at))) => {
             items.get(ops::position(*at, items.len(), Span::default()).ok()?)
         }
+        (Value::Buffer(buffer), Step::Index(Value::Int(at))) => {
+            buffer.items.get(ops::position(*at, buffer.items.len(), Span::default()).ok()?)
+        }
         (Value::Dict(pairs), Step::Index(key)) => pairs.get(key),
         (Value::IdMap(map), Step::Index(Value::Id(id))) => map.get(*id),
         _ => None,
@@ -282,6 +285,11 @@ fn slot<'v>(value: &'v mut Value, step: &Step, span: Span) -> Result<&'v mut Val
         }
         (Value::List(items), Step::Index(Value::Int(at))) => {
             let items = Rc::make_mut(items);
+            let at = ops::position(*at, items.len(), span)?;
+            items.get_mut(at).ok_or_else(|| Diagnostic::new("index out of range", span))
+        }
+        (Value::Buffer(buffer), Step::Index(Value::Int(at))) => {
+            let items = &mut Rc::make_mut(buffer).items;
             let at = ops::position(*at, items.len(), span)?;
             items.get_mut(at).ok_or_else(|| Diagnostic::new("index out of range", span))
         }

@@ -28,7 +28,7 @@ impl FnCx<'_> {
                 self.error(might_be_none(span));
                 Type::Unknown
             }
-            Type::List(item) => {
+            Type::List(item) | Type::Buffer(item) => {
                 self.key_fits(&Type::Int, &at, index.span);
                 item.as_ref().clone()
             }

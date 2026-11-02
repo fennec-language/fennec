@@ -54,16 +54,35 @@ pub(super) fn owns_items(element: &Element) -> bool {
     matches!(element, Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_))
 }
 
+/// The blocks items of a kind hold, laid out as `words`: an item of a word that's a block's
+/// address, or the blocks an item laid out in place holds, like a struct's string field.
+fn held_blocks(element: &Element, words: &[u64]) -> Vec<u64> {
+    if owns_items(element) {
+        return words.iter().copied().filter(|address| *address != 0).collect();
+    }
+    let mut found = Vec::new();
+    if super::heap::holds_blocks(element) {
+        for item in words.chunks(element.words().max(1)) {
+            super::heap::held_addresses(element, item, &mut found);
+        }
+    }
+    found
+}
+
 /// One more owner for each block a list of this kind of item holds, for a new list that
 /// holds them too.
 fn retain_items(state: &mut State, element: &Element, words: &[u64]) {
-    if !owns_items(element) {
-        return;
-    }
-    for word in words {
-        if let Some(count) = state.heap.block_mut(*word).and_then(|block| block.first_mut()) {
+    for address in held_blocks(element, words) {
+        if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
             *count += 1;
         }
+    }
+}
+
+/// Gives up the owner a list held of each block its items, laid out as `words`, hold.
+fn release_items(state: &mut State, element: &Element, words: &[u64]) {
+    for address in held_blocks(element, words) {
+        release(state, address);
     }
 }
 
@@ -360,13 +379,14 @@ pub extern "C" fn from_value(value: i64, element: i64, start: i64, end: i64) -> 
         }
         let value = state.expanded(state.raw(value));
         let (at, element) = self::element(state, element).ok_or_else(|| wrong(&value))?;
-        if owns_items(&element) {
-            let Value::List(items) = &value else { return Err(wrong(&value)) };
-            let mut words = Vec::with_capacity(items.len());
+        // Items that are or hold blocks are written by the runtime, which makes those blocks.
+        if owns_items(&element) || !super::heap::packable(&element) {
+            let Value::List(items) = value.clone().unpacked() else { return Err(wrong(&value)) };
+            let mut words = Vec::with_capacity(items.len() * element.words());
             for item in items.iter() {
                 write(state, &element, item, &mut words).ok_or_else(|| wrong(&value))?;
             }
-            let block = build(state, at, 1, &words, 0);
+            let block = build(state, at, element.words(), &words, 0);
             return Ok(state.heap.insert(block));
         }
         let packed = match &value {
@@ -388,11 +408,7 @@ pub extern "C" fn clear(list: i64) {
         let Some(element) = element_of(state, block) else { return };
         let stride = element.words();
         let old = items(block, stride).to_vec();
-        if owns_items(&element) {
-            for word in &old {
-                release(state, *word);
-            }
-        }
+        release_items(state, &element, &old);
         if let Some(block) = state.heap.block_mut(address) {
             block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + old.len()).unwrap_or_default().fill(0);
             if let Some(length) = block.get_mut(2) {
@@ -409,14 +425,12 @@ fn close_up(state: &mut State, address: u64, at: usize) -> Option<()> {
     let element = element_of(state, block)?;
     let stride = element.words();
     let end = LIST_HEADER_WORDS + items(block, stride).len();
-    let removed = owns_items(&element).then(|| block.get(at).copied()).flatten();
+    let removed = block.get(at..at + stride)?.to_vec();
     let block = state.heap.block_mut(address)?;
     block.get_mut(at..end)?.copy_within(stride.., 0);
     block.get_mut(end - stride..end)?.fill(0);
     *block.get_mut(2)? -= 1;
-    if let Some(removed) = removed {
-        release(state, removed);
-    }
+    release_items(state, &element, &removed);
     Some(())
 }
 
@@ -469,15 +483,33 @@ fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
     }
 }
 
-/// The place of the first item of a list that equals a word, in words past the header.
+/// Whether `in` and `remove` are handed an item of this kind as the address of a block of its
+/// shape holding it, rather than as the item's one word: a struct or enum laid out in place
+/// that takes more than a word or holds blocks.
+fn passed_as_block(element: &Element) -> bool {
+    matches!(element, Element::Struct { .. } | Element::Enum { .. })
+        && (element.words() > 1 || super::heap::holds_blocks(element))
+}
+
+/// The place of the first item of a list that equals a word, or the item in the block at
+/// `word` for items passed as blocks, in words past the header.
 fn place_of(state: &State, list: u64, word: u64) -> Option<usize> {
     let block = state.heap.block(list)?;
     let element = element_of(state, block)?;
+    if passed_as_block(&element) {
+        let stride = element.words().max(1);
+        let wanted = state.heap.block(word)?.get(super::heap::HEADER_WORDS..)?;
+        let at = items(block, stride)
+            .chunks(stride)
+            .position(|item| super::heap::same_words(state, &element, item, wanted))?;
+        return Some(LIST_HEADER_WORDS + at * stride);
+    }
     let at = items(block, 1).iter().position(|item| same_item(state, &element, *item, word))?;
     Some(LIST_HEADER_WORDS + at)
 }
 
-/// `list.remove(word)` on a list of items of a word each, only one owner holds.
+/// `list.remove(word)` on a list only one owner holds, of items of a word each, or of items
+/// passed as blocks (see `passed_as_block`).
 pub extern "C" fn remove(list: i64, word: i64, start: i64, end: i64) {
     attempt(|state: &mut State| {
         let (address, word) = (u64::try_from(list).unwrap_or(0), word.cast_unsigned());
@@ -486,13 +518,17 @@ pub extern "C" fn remove(list: i64, word: i64, start: i64, end: i64) {
             return Ok(());
         }
         let element = state.heap.block(address).and_then(|block| element_of(state, block));
-        let value = element.map_or(Value::None, |element| super::heap::read_word(state, &element, word));
+        let value = match element {
+            Some(element) if passed_as_block(&element) => read_block(state, word),
+            Some(element) => super::heap::read_word(state, &element, word),
+            None => Value::None,
+        };
         let message = format!("{} isn't in the list", crate::format::repr(&value));
         Err(Diagnostic::new(message, span(start, end)))
     });
 }
 
-/// `word in list`, on a list of items of a word each.
+/// `word in list`, on a list of items of a word each, or of items passed as blocks.
 pub extern "C" fn contains(list: i64, word: i64) -> i8 {
     with(|state| i8::from(place_of(state, u64::try_from(list).unwrap_or(0), word.cast_unsigned()).is_some()))
 }
@@ -590,3 +626,6 @@ pub extern "C" fn out_of_range(at: i64, len: i64, start: i64, end: i64) {
         Err(Diagnostic::new(format!("index {at} is out of range for length {len}"), span(start, end)))
     });
 }
+
+#[cfg(test)]
+mod tests;

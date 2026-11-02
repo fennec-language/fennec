@@ -192,6 +192,35 @@ mod tests {
     }
 
     #[test]
+    fn a_list_of_tuples_reads_back_as_tuples() {
+        let pair = Element::Struct {
+            name: Rc::from("(int, int)"),
+            fields: vec![(Rc::from("_0"), Element::Int), (Rc::from("_1"), Element::Int)],
+        };
+        let tables = Tables {
+            shapes: vec![Rc::new(Element::Str)],
+            elements: vec![Rc::new(pair)],
+            ..Tables::default()
+        };
+        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let list = super::super::lists::new(0, 2);
+        let path = Value::list(vec![
+            Value::tuple(vec![Value::Int(13), Value::Int(5)]),
+            Value::tuple(vec![Value::Int(1), Value::Int(2)]),
+        ]);
+        for (at, word) in [13, 5, 1, 2].into_iter().enumerate() {
+            with(|state| {
+                let block = state.heap.block_mut(u64::try_from(list).ok()?)?;
+                *block.get_mut(super::super::lists::LIST_HEADER_WORDS + at)? = word;
+                Some(())
+            });
+        }
+        assert_eq!(temp(heap::to_value(list)), path);
+        assert_eq!(text_of(super::dumps(heap::to_value(list), 0, 0)), "[[13, 5], [1, 2]]");
+        finish();
+    }
+
+    #[test]
     fn strings_have_the_interpreter_s_methods() {
         let str = Rc::new(Element::Str);
         let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };

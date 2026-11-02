@@ -20,12 +20,15 @@ fn is_id_map(name: &str) -> bool {
 }
 
 /// Whether items of a kind read as the interpreter's packed items: numbers, and structs and
-/// enums of them that aren't one of these. Anything else is read item by item.
+/// enums of them that aren't one of these or a tuple. Anything else is read item by item.
 pub(in crate::embed) fn packable(element: &Element) -> bool {
     let all = |fields: &[(Rc<str>, Element)]| fields.iter().all(|(_, field)| packable(field));
     match element {
         Element::Int | Element::Float | Element::Bool => true,
-        Element::Struct { name, fields } => name.as_ref() != "Id" && !is_id_map(name) && all(fields),
+        // A tuple a backend lays out as a struct, like `(int, int)`, is a tuple to the interpreter.
+        Element::Struct { name, fields } => {
+            !name.starts_with('(') && name.as_ref() != "Id" && !is_id_map(name) && all(fields)
+        }
         Element::Enum { name, cases, .. } => !is_option(name) && cases.iter().all(|(_, fields)| all(fields)),
         _ => false,
     }

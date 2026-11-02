@@ -78,6 +78,8 @@ pub struct Interp<'out> {
     pub(crate) test_capabilities: crate::fakes::TestCapabilities,
     /// The command-line arguments and standard input `main` can receive.
     pub(crate) given: crate::inputs::Given,
+    /// How the `json.loads` call being read spells field names and treats unknown keys.
+    pub(crate) reading: crate::formats::Reading,
     /// The methods the standard library gives built-in types, like `str`'s `def *`, by type.
     pub(crate) built_in_methods: HashMap<String, HashMap<String, Rc<Callable>>>,
 }
@@ -120,6 +122,7 @@ impl<'out> Interp<'out> {
             world: None,
             test_capabilities: crate::fakes::TestCapabilities::Fakes,
             given: crate::inputs::Inputs::default().into(),
+            reading: crate::formats::Reading::default(),
             built_in_methods: HashMap::new(),
         };
         for module in fennec_syntax::prelude_modules()? {

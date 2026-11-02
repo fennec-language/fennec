@@ -41,11 +41,25 @@ impl FnCx<'_> {
 
     /// `json.loads[T](text)`: the text read as a `T`, or a `ParseError`.
     pub(crate) fn typed_loads(&mut self, name: &str, index: &Expr, args: &[Arg], span: Span) -> Type {
-        let types: Vec<Type> = args.iter().map(|arg| self.arg_value(arg, &[])).collect();
-        match (args, types.as_slice()) {
-            ([arg], [text]) if arg.name.is_none() && !arg.is_mut => {
+        let mut plain = Vec::new();
+        for arg in args {
+            let ty = self.arg_value(arg, &[]);
+            match arg.name.as_deref() {
+                None if !arg.is_mut => plain.push((ty, arg.value.span)),
+                Some(option @ ("names" | "extra")) if name == "json.loads" => {
+                    self.json_option(option, &ty, arg.value.span);
+                }
+                Some(other) => self.error(Diagnostic::new(
+                    format!("`{name}` has no parameter called `{other}`"),
+                    arg.value.span,
+                )),
+                None => self.error(crate::messages::wrong_args(name, span)),
+            }
+        }
+        match plain.as_slice() {
+            [(text, at)] => {
                 if !self.checker.fits(&Type::Str, text) {
-                    self.error(mismatch("the text to read", &Type::Str, text, arg.value.span));
+                    self.error(mismatch("the text to read", &Type::Str, text, *at));
                 }
             }
             _ => self.error(crate::messages::wrong_args(name, span)),

@@ -1,0 +1,7 @@
+error: `names` should be a JsonNames, but this is a str
+ --> examples/errors/json_names_wrong.fen:4:40
+  |
+4 |     stdout.print(json.dumps([1], names="camel"))
+  |                                        ^^^^^^^
+  |
+  = help: write `.snake_case`, `.camel_case`, `.pascal_case` or `.kebab_case`

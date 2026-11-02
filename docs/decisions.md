@@ -854,6 +854,35 @@ with net.listen(8080) as server:
 
 **Tasks change only separate pieces.** `for mut e in parallel(enemies):` gives each iteration `mut` access to its own element, checked by the same rule that makes `mut` exclusive. Results combine through reductions, like `sum(... for e in parallel(xs))`.
 
+**`parallel` splits a collection by position.** Anything with `def len` and an `int` `def []`, plus `def is_live` if it has one, splits with nothing more to write. These are the same positions `for mut` writes back through.
+```fennec
+def step(mut units: IdMap[Unit], dt: float):
+    for mut unit in parallel(units):
+        unit.pos += unit.vel * dt
+    alive = sum(1 for unit in parallel(units) if unit.health > 0)
+```
+- The work-stealing pool halves a range of positions when a thread runs out of work, down to a smallest chunk the runtime picks from the element size. Where a reduction's parts combine depends on the length alone.
+- `for mut x in parallel(xs)` gives each task a disjoint range. That's safe only if writing position `i` touches nothing but element `i`, so the compiler checks that the `mut` form of `def []` returns a place rooted in one field of `self` and indexed by `i` itself, like `return self._items[i]`. If it doesn't, `for mut` over `parallel(...)` is a compile error naming that method, and a plain `for mut` still works.
+- `list` and `Buffer` split into contiguous ranges, which also vectorize. `IdMap` is cut at its chunk boundaries, so a task's writes touch only its own chunks. `Grid` is cut at rows. `Packed` gives each task whole lists to read. `dict`, `set`, `SortedMap` and `SortedSet` are read-only in parallel, split by their own internal ranges.
+- A type with only `def iter(self)` and `yield` can't be split, since each item depends on the last. It works as a source, as below, and `for mut` over it in parallel is a compile error that says to add positions.
+
+*Why:* The positions a type already has for `def []` and `for mut` are exactly what splitting needs, and a fixed combine order falls out of splitting by length. Work-stealing libraries elsewhere have each type implement a splittable producer instead: a second interface every collection writes, whose writes the compiler can't check without lifetimes. Here a user type gets real parallelism for free, and one that can't prove separate writes still runs, in order.
+
+**What `parallel` keeps in order:**
+1. `for x in parallel(xs):` runs the body in parallel, in any order.
+2. `[f(x) for x in parallel(xs)]` runs in parallel, with results in input order.
+3. `(f(x) for x in parallel(xs))` does the same, streamed in order through a bounded window. A slow consumer makes the workers wait.
+4. Working in parallel and then going in order is (3) followed by a plain `for` loop.
+5. A generator works as a source: it's read in order, and the work runs in parallel. Pure stages feeding `parallel` may be fused into the workers by the compiler, invisibly.
+
+```fennec
+results = (simulate(seed) for seed in parallel(seeds))
+for result in results:
+    stdout.print(result)        # in input order, while later seeds still run
+```
+There's no `ordered=` option and no `map()`; comprehensions are the one form.
+*Why:* Each form already says what order it needs. A loop body has no result, a list keeps its positions, and a stream is consumed in order, so none of them needs an option. A bounded window keeps a fast producer from filling memory.
+
 **A value crosses a channel like it goes anywhere else.** It's moved at its last use, and otherwise costs one count bump. Any write copies first, so neither side sees the other's changes. `shared` handles can cross too. This replaces the earlier rule that only values with a single owner cross a channel.
 *Why:* Biased counts make it safe, so the restriction no longer buys anything.
 

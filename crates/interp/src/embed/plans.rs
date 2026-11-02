@@ -17,6 +17,8 @@ pub(super) enum Plan {
 /// value of the element: not for an enum inside it, whose case decides.
 fn fixed_words(element: &Element, at: &mut usize, found: &mut Vec<usize>) -> Option<()> {
     match element {
+        // An optional string's header holds a block or not by its string, as a string's does.
+        element if element.is_optional_text() => return None,
         Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
             found.push(*at);
             *at += 1;

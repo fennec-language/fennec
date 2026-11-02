@@ -51,6 +51,7 @@ fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
 /// Whether a list of this kind of item owns a block for each.
 pub(super) fn owns_items(element: &Element) -> bool {
     matches!(element, Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_))
+        && !element.is_optional_text()
 }
 
 /// The blocks items of a kind hold, laid out as `words`: an item of a word that's a block's
@@ -564,6 +565,16 @@ fn place_of(state: &State, list: u64, word: u64) -> Option<usize> {
         // A string to find comes as its block, and items are compared by their text.
         let wanted = super::text::text_of(state, &[word, 0, 0]);
         let at = super::text::texts(state, items(block, 3)).iter().position(|text| *text == wanted)?;
+        return Some(LIST_HEADER_WORDS + at * 3);
+    }
+    if element.is_optional_text() {
+        // As for strings, with 0 for `None`, which only an all-zero header equals.
+        let wanted = (word != 0).then(|| super::text::text_of(state, &[word, 0, 0]));
+        let at = items(block, 3).as_chunks::<3>().0.iter().position(|header| match (&wanted, header) {
+            (None, [0, 0, 0]) => true,
+            (Some(wanted), header) if *header != [0, 0, 0] => super::text::text_of(state, header) == *wanted,
+            _ => false,
+        })?;
         return Some(LIST_HEADER_WORDS + at * 3);
     }
     if passed_as_block(&element) {

@@ -64,10 +64,11 @@ impl Emit<'_, '_, '_> {
 
     /// Puts a value in a new list's empty place, with an owner of its own.
     pub(crate) fn put_item(&mut self, item: &Kind, kind: &Kind, value: &str, place: &str) {
-        if kind.counted() {
-            self.retain(value);
+        let (kind, value, owned) = self.as_header(kind, value);
+        if kind.counted() && !owned {
+            self.retain_value(&value, &kind);
         }
-        self.store_field(item, value, place, ITEM_ACCESS);
+        self.store_field(item, &value, place, ITEM_ACCESS);
     }
 
     /// Puts a tuple of these in a new list's empty place.
@@ -93,10 +94,11 @@ impl Emit<'_, '_, '_> {
             .unwrap_or_default();
         for ((kind, value), offset) in parts.into_iter().zip(offsets) {
             let at = self.offset(&base, offset);
-            if kind.counted() {
-                self.retain(value);
+            let (kind, value, owned) = self.as_header(kind, value);
+            if kind.counted() && !owned {
+                self.retain_value(&value, &kind);
             }
-            self.store_field(kind, value, &at, "");
+            self.store_field(&kind, &value, &at, "");
         }
         if let Some(block) = block {
             self.line(&format!("store ptr {block}, ptr {place}{ITEM_ACCESS}"));
@@ -279,6 +281,11 @@ impl Emit<'_, '_, '_> {
                         "  %xv{at} = load double, ptr %xa{at}\n  %yv{at} = load double, ptr %ya{at}\n"
                     );
                     (format!("fcmp olt double %xv{at}, %yv{at}"), format!("fcmp ogt double %xv{at}, %yv{at}"))
+                }
+                Kind::Str if self.headers() => {
+                    self.header_order_helper();
+                    text += &format!("  %o{at} = call i64 @fen_header_order(ptr %xa{at}, ptr %ya{at})\n");
+                    (format!("icmp slt i64 %o{at}, 0"), format!("icmp sgt i64 %o{at}, 0"))
                 }
                 Kind::Str => {
                     self.declare("declare i64 @fennec_str_compare(ptr, ptr) nounwind");
@@ -502,6 +509,21 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         let dest = dest.ok_or("no result")?;
         let (text, _) = self.operand(args.first().ok_or("no argument")?)?;
+        if self.headers() {
+            return self.on_blocks([&text], |emit, [block]| emit.text_by_bytes_of(dest, name, args, &block));
+        }
+        self.text_by_bytes_of(dest, name, args, &text)
+    }
+
+    /// [`Self::text_by_bytes`] on a string's block.
+    fn text_by_bytes_of(
+        &mut self,
+        dest: LocalId,
+        name: &str,
+        args: &[Operand],
+        text: &str,
+    ) -> Result<(), String> {
+        let text = text.to_owned();
         if name == "str.byte_len" {
             let (at, bytes) = (self.offset(&text, TEXT_BYTES.unsigned_abs()), self.temp());
             self.line(&format!("{bytes} = load i64, ptr {at}{LENGTH_ACCESS}"));
@@ -510,6 +532,10 @@ impl Emit<'_, '_, '_> {
         let (byte, _) = self.operand(args.get(1).ok_or("no argument")?)?;
         let start = self.offset(&text, TEXT.unsigned_abs());
         let (one, _) = self.char_at_byte(&text, &start, &byte);
+        if self.headers() {
+            let header = self.text_from_borrowed_block(&one);
+            return self.assign(dest, &header);
+        }
         // Each character's block lasts the whole run, so a local reading it needn't own it.
         if !self.known.is_borrowed(dest) {
             self.retain(&one);
@@ -520,6 +546,12 @@ impl Emit<'_, '_, '_> {
     /// `text.chars()`: each character's block lasts the whole run, and comes from its byte place.
     fn chars(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
         let (text, _) = self.operand(text)?;
+        self.on_blocks([&text], |emit, [block]| emit.chars_of(dest, &block))
+    }
+
+    /// [`Self::chars`] of a string's block.
+    fn chars_of(&mut self, dest: LocalId, text: &str) -> Result<(), String> {
+        let text = text.to_owned();
         let (chars_at, count) = (self.offset(&text, 24), self.temp());
         self.line(&format!("{count} = load i64, ptr {chars_at}"));
         let list = self.new_list(ListItem::Str, &count);
@@ -529,9 +561,15 @@ impl Emit<'_, '_, '_> {
         let byte = self.temp();
         self.line(&format!("{byte} = load i64, ptr {byte_place}"));
         let (one, lead) = self.char_at_byte(&text, &start, &byte);
-        self.retain(&one);
-        let place = self.item_address(&list, "ptr", &at);
-        self.line(&format!("store ptr {one}, ptr {place}{ITEM_ACCESS}"));
+        if self.headers() {
+            let header = self.text_from_borrowed_block(&one);
+            let place = self.item_address(&list, crate::headers::HEADER, &at);
+            self.line(&format!("store {} {header}, ptr {place}{ITEM_ACCESS}", crate::headers::HEADER));
+        } else {
+            self.retain(&one);
+            let place = self.item_address(&list, "ptr", &at);
+            self.line(&format!("store ptr {one}, ptr {place}{ITEM_ACCESS}"));
+        }
         let (under_two, under_three, under_four) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{under_two} = icmp ult i8 {lead}, -64"));
         self.line(&format!("{under_three} = icmp ult i8 {lead}, -32"));
@@ -600,7 +638,8 @@ impl Emit<'_, '_, '_> {
                     "str.rstrip" => 2,
                     _ => 0,
                 };
-                let stripped = self.strip_text(&text, which);
+                let stripped = self.on_blocks([&text], |emit, [block]| emit.strip_text(&block, which));
+                let stripped = self.text_value(&stripped);
                 self.assign(dest, &stripped)
             }),
             _ => return None,

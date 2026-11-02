@@ -39,6 +39,7 @@ impl Emit<'_, '_, '_> {
                     self.release(&block);
                 }
                 self.line(&format!("call void @fennec_truncate(i64 {mark})"));
+                let text = self.text_value(&text);
                 self.assign(dest, &text)
             }
             "json.loads" => {
@@ -51,9 +52,9 @@ impl Emit<'_, '_, '_> {
                 let written = self.literal(&wanted.to_string());
                 self.declare("declare i64 @fennec_json_loads(ptr, ptr, i64, i64) nounwind");
                 let handle = self.temp();
-                self.line(&format!(
-                    "{handle} = call i64 @fennec_json_loads(ptr {text}, ptr {written}, i64 {from}, i64 {to})"
-                ));
+                self.on_blocks([&text], |emit, [block]| {
+                    emit.line(&format!("{handle} = call i64 @fennec_json_loads(ptr {block}, ptr {written}, i64 {from}, i64 {to})"));
+                });
                 self.leave_if_failed();
                 let block = self.result_from(dest, &handle, span)?;
                 self.line(&format!("call void @fennec_truncate(i64 {mark})"));
@@ -126,6 +127,13 @@ impl Emit<'_, '_, '_> {
                 let byte = self.temp();
                 self.line(&format!("{byte} = zext i1 {value} to i8"));
                 self.line(&format!("{handle} = call i64 @fennec_bool(i8 {byte})"));
+            }
+            // A header crosses as a block of its own, let go of after.
+            Kind::Str if self.headers() => {
+                self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
+                let block = self.owned_text_block(value);
+                self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
+                return Ok((handle, Some(block)));
             }
             Kind::Str | Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
                 self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
@@ -200,6 +208,12 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!(
                     "{value} = call ptr @fennec_str_from_value(i64 {handle}, i64 {from}, i64 {to})"
                 ));
+                if self.headers() {
+                    self.leave_if_failed();
+                    let header = self.text_from_block(&value);
+                    self.store_field(kind, &header, at, "");
+                    return Ok(());
+                }
             }
             Kind::List(item) => {
                 let symbol = element_symbol(self.module.layouts, *item);

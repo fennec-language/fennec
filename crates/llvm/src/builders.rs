@@ -56,10 +56,8 @@ pub(crate) fn builders<'p>(
     loop {
         let mut dropped: Vec<(&str, usize)> = Vec::new();
         for (name, function) in functions {
+            // Even with nothing of its own kept, what it gives the functions it calls counts.
             let mine = kept.get(name).cloned().unwrap_or_default();
-            if mine.is_empty() {
-                continue;
-            }
             let is_kept = |local: usize| mine.contains(&local);
             for &param in mine.iter().filter(|at| **at < function.params) {
                 if !function.mut_params.contains(&param) || other_ways.contains(name) {

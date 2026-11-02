@@ -1731,7 +1731,7 @@ mod tests {
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        let source = "def f(mut items: list[int]):\n    items.insert(0, 1)\n\ndef main(stdout: Stdout):\n    mut items = [2]\n    f(mut items)\n    stdout.print(items.len())\n";
+        let source = "def f(mut items: list[int]):\n    items.sort()\n\ndef main(stdout: Stdout):\n    mut items = [2]\n    f(mut items)\n    stdout.print(items.len())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

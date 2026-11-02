@@ -626,7 +626,19 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
         Element::Struct { name, fields } => {
             let fields =
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, words)));
-            instance(name, None, fields.collect())
+            let value = instance(name, None, fields.collect());
+            // An error's block is laid out like a struct's, so its type says which it is.
+            let error =
+                state.interp.type_info(name).is_some_and(|info| info.kind == crate::interp::TypeKind::Error);
+            match value {
+                Value::Instance(mut made) if error => {
+                    if let Some(made) = Rc::get_mut(&mut made) {
+                        made.is_error = true;
+                    }
+                    Value::Instance(made)
+                }
+                other => other,
+            }
         }
         Element::Enum { name, cases, words: size } => {
             let mut mine = (&mut *words).take(*size);
@@ -716,8 +728,9 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             }
         }
         (Element::Struct { name, fields }, Value::Instance(instance))
-            if instance.type_name == *name && instance.case.is_none() && !instance.is_error =>
+            if instance.type_name == *name && instance.case.is_none() =>
         {
+            // An error is written like a struct: native code holds it as a block of its layout.
             for (field, element) in fields {
                 write(state, element, instance.field(field)?, words)?;
             }

@@ -286,7 +286,7 @@ impl<'p> Module<'_, 'p> {
     pub(crate) fn ret_text(&self, function: &Function) -> Result<String, String> {
         let kind = self.kind(&function.returns)?;
         Ok(match kind {
-            Kind::Unit | Kind::Cap | Kind::Struct(_) | Kind::Enum(_) => "void".to_owned(),
+            Kind::Unit | Kind::Struct(_) | Kind::Enum(_) => "void".to_owned(),
             other => other.slot(self.layouts),
         })
     }
@@ -1328,6 +1328,13 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{flipped} = sub i64 0, {value}"));
                 self.line(&format!("{temp} = select i1 {negative}, i64 {flipped}, i64 {value}"));
                 self.assign(dest.ok_or("no result")?, &temp)
+            }
+            // A capability's method, run by the runtime as the interpreter runs it.
+            other
+                if other.contains('.')
+                    && matches!(first, Some(Operand::Local(local)) if self.kind_of(*local).ok() == Some(&Kind::Cap)) =>
+            {
+                self.capability_call(dest, other, args, span)
             }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }

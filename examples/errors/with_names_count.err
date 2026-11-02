@@ -1,0 +1,7 @@
+error: this `with` holds 2 values but names 1
+ --> examples/errors/with_names_count.fen:2:10
+  |
+2 |     with 1, 2 as one:
+  |          ^^^^^^^^^^^
+  |
+  = help: give one name for each value, in order: `with a, b as x, y:`

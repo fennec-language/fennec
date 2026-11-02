@@ -114,7 +114,33 @@ pub struct Field {
     pub span: Span,
 }
 
+impl Field {
+    /// Whether `@skip` leaves the field out when a value is saved.
+    pub fn is_skipped(&self) -> bool {
+        self.annotations.iter().any(|annotation| annotation.name == "skip")
+    }
+
+    /// The name `@serialize(name=...)` gives the field when a value is saved, if it has one.
+    pub fn saved_name(&self) -> Option<&str> {
+        let args = self.annotations.iter().filter(|annotation| annotation.name == "serialize");
+        args.flat_map(|annotation| &annotation.args).find(|arg| arg.name.as_deref() == Some("name")).and_then(
+            |arg| match &arg.value.kind {
+                ExprKind::Str(text) => Some(text.as_str()),
+                _ => None,
+            },
+        )
+    }
+}
+
 /// `@name` or `@name(args)` above a field: data the field carries, read at compile time.
+/// A name after a `with`'s `as`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WithName {
+    pub name: String,
+    pub is_mut: bool,
+    pub span: Span,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Annotation {
     pub name: String,
@@ -219,10 +245,11 @@ pub enum StmtKind {
     Fail(Expr),
     Yield(Expr),
     Assert(Expr),
+    /// `with value as name:`, or `with a, b as mut x, mut y:`, whose `value` is the tuple of
+    /// what it holds and which names each one.
     With {
         value: Expr,
-        name: Option<String>,
-        is_mut: bool,
+        names: Vec<WithName>,
         body: Vec<Stmt>,
     },
     Def(FnDef),

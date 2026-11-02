@@ -203,19 +203,40 @@ impl Interp<'_> {
     ) -> Result<Vec<CallArg>, Misfit> {
         let names = self.reading.names;
         let ignore_extra = self.reading.extra == super::Extra::Ignore;
+        // A field's name in the text: the one `@serialize` gives it, or its own as `names=` spells it.
+        let wire = |field: &Field| field.saved_name().map_or_else(|| names.spell(&field.name), str::to_owned);
+        let saved: Vec<&Field> = fields.iter().filter(|field| !field.is_skipped()).collect();
         for (key, _) in pairs {
-            let known = matches!(key, Value::Str(key) if fields.iter().any(|field| names.spell(&field.name) == **key));
-            if !known && !ignore_extra {
-                return Err(format!(
-                    "{owner} has no field {}, but {} has one",
-                    crate::format::repr(key),
-                    place(at)
-                ));
+            let known = matches!(key, Value::Str(key) if saved.iter().any(|field| wire(field) == **key));
+            if known || ignore_extra {
+                continue;
             }
+            let shown = crate::format::repr(key);
+            // A field the program has, but under another name or not saved at all.
+            let own = fields
+                .iter()
+                .find(|field| matches!(key, Value::Str(key) if names.spell(&field.name) == **key));
+            return Err(match own {
+                Some(field) if field.is_skipped() => {
+                    format!(
+                        "{owner} doesn't save `{}`, which has `@skip`, but {} has it",
+                        field.name,
+                        place(at)
+                    )
+                }
+                Some(field) => format!(
+                    "{owner} saves `{}` as {}, but {} has {shown}",
+                    field.name,
+                    crate::format::repr(&Value::str(&wire(field))),
+                    place(at)
+                ),
+                None => format!("{owner} has no field {shown}, but {} has one", place(at)),
+            });
         }
+        // A skipped field isn't in the text, so it takes its default.
         let mut args = Vec::new();
-        for field in fields {
-            let wire = names.spell(&field.name);
+        for field in saved {
+            let wire = wire(field);
             let found = pairs.iter().find(|(key, _)| matches!(key, Value::Str(key) if **key == *wire));
             let place = inside(at, &wire);
             let value = match (found, &field.ty, &field.default) {

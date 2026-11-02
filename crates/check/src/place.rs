@@ -24,9 +24,9 @@ impl FnCx<'_> {
             && let Some(handle) = self.through_shared(expr)
         {
             let message = format!("`{handle}` is `shared`, so change it in one of its methods");
-            self.error(Diagnostic::new(message, expr.span).with_help(
-                "a `shared` value's methods take its lock: add a `mut self` method that makes the change",
-            ));
+            self.error(Diagnostic::new(message, expr.span).with_help(format!(
+                "a `shared` value's methods take its lock: add a `mut self` method that makes the change, or lock it for a block with `with {handle} as mut locked:`"
+            )));
             return;
         }
         match root(expr) {
@@ -142,6 +142,16 @@ impl FnCx<'_> {
 
     fn assign_name(&mut self, name: &str, span: Span, op: Option<BinOp>, ty: Type, declare_mut: bool) {
         if self.changes_constant(name, span) {
+            return;
+        }
+        if !declare_mut && self.origin(name) == Some(Origin::Locked) {
+            self.error(
+                Diagnostic::new(
+                    format!("`{name}` holds a lock for this `with` block, so it can't name anything else"),
+                    span,
+                )
+                .with_help("give the other value a name of its own"),
+            );
             return;
         }
         let existing = self.lookup(name);

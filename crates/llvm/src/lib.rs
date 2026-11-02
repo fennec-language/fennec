@@ -33,6 +33,7 @@ mod analysis;
 mod build;
 mod builders;
 mod builtins;
+mod capabilities;
 mod closures;
 mod dicts;
 mod emit;

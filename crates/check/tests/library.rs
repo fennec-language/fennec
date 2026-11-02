@@ -66,6 +66,26 @@ fn reading_needs_a_type_the_format_can_hold() {
 }
 
 #[test]
+fn a_field_the_format_cant_hold_is_named() {
+    let program = "
+        a = dumps(Hooks(name='a'))
+        b = loads[Player]('{}')
+        c = dumps(Account())
+    ";
+    let declarations = "from std.json import dumps, loads\n\nstruct Hooks:\n    name: str\n    \
+                        tags = set[str]()\n\nshared Account:\n    total = 0\n\nstruct Player:\n    \
+                        name: str\n    account: Account\n";
+    assert_eq!(
+        with_imports(declarations, program),
+        [
+            "JSON can't hold `Hooks.tags`, which is a set @ dumps(Hooks(name=\"a\"))",
+            "JSON can't hold `Player.account`, which is the `shared` handle `Account` @ Player",
+            "JSON can't hold the `shared` handle `Account` @ dumps(Account())",
+        ]
+    );
+}
+
+#[test]
 fn json_and_toml_are_called_the_right_way() {
     let program = "
         a = loads[int](1)

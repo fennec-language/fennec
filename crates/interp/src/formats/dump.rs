@@ -62,7 +62,11 @@ fn slots(map: &IdMap) -> Value {
 
 fn a(value: &Value) -> String {
     let name = value.type_name();
-    if name.starts_with(['a', 'e', 'i', 'o', 'u', 'I']) { format!("an {name}") } else { format!("a {name}") }
+    if name.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U']) {
+        format!("an {name}")
+    } else {
+        format!("a {name}")
+    }
 }
 
 /// A float as both formats write it: always with a `.` or an exponent, so it reads back as a

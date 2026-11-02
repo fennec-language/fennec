@@ -1,0 +1,34 @@
+# decision: Every field is serialized by default, private `_` fields included.
+
+# Loading runs a type's `where` rules, as making the value in code does, so a bad save fails
+# with an error saying which field broke its rule.
+from std import json
+
+struct Unit:
+    name: str
+    health: int where health >= 0
+
+struct Squad:
+    units: list[Unit]
+
+def failure[T](found: Result[T, ParseError]) -> str:
+    match found:
+        case Err(error):
+            error.message
+        case _:
+            "loaded"
+
+test "a value that keeps its rules loads":
+    squad = json.loads[Squad]("{\"units\": [{\"name\": \"ash\", \"health\": 3}]}")?
+    assert squad.units[0].health == 3
+
+test "a broken rule names the field and where it is":
+    text = "{\"units\": [{\"name\": \"ash\", \"health\": 3}, {\"name\": \"vex\", \"health\": -1}]}"
+    assert failure(json.loads[Squad](text)) == "in `units[1]`, Unit.health breaks its `where` rule"
+    assert (
+        failure(json.loads[Unit]("{\"name\": \"kit\", \"health\": -5}"))
+        == "in the text, Unit.health breaks its `where` rule"
+    )
+
+def main(stdout: Stdout):
+    stdout.print(failure(json.loads[Squad]("{\"units\": [{\"name\": \"vex\", \"health\": -1}]}")))

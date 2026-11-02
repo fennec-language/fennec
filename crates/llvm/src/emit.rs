@@ -14,10 +14,31 @@ use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
 use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
 
-const ATTRIBUTES: &str = "attributes #0 = { nounwind \"frame-pointer\"=\"non-leaf\" }\n\
-attributes #1 = { cold nounwind }\n\
-attributes #2 = { alwaysinline nounwind \"frame-pointer\"=\"non-leaf\" }\n\
-!0 = !{!\"branch_weights\", i32 1, i32 100000}\n\
+/// The level of processor code is built for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cpu {
+    /// On x86-64, `x86-64-v3`: AVX2, FMA and BMI, the level the JIT uses and the twins are built
+    /// for. On 64-bit Arm, the baseline already has what's wanted.
+    #[default]
+    Usual,
+    /// The first of its architecture, for older machines.
+    Baseline,
+}
+
+/// Each function's attributes, with the processor it's for, which LLVM's choices go by. Being
+/// in the text, it keeps code for one level from being cached as code for the other.
+fn attributes(cpu: Cpu) -> String {
+    let target = match (std::env::consts::ARCH, cpu) {
+        ("x86_64", Cpu::Usual) => " \"target-cpu\"=\"x86-64-v3\"",
+        ("x86_64", Cpu::Baseline) => " \"target-cpu\"=\"x86-64\"",
+        _ => "",
+    };
+    format!(
+        "attributes #0 = {{ nounwind \"frame-pointer\"=\"non-leaf\"{target} }}\nattributes #1 = {{ cold nounwind{target} }}\nattributes #2 = {{ alwaysinline nounwind \"frame-pointer\"=\"non-leaf\"{target} }}\n{METADATA}"
+    )
+}
+
+const METADATA: &str = "!0 = !{!\"branch_weights\", i32 1, i32 100000}\n\
 !1 = !{}\n\
 !2 = !{!\"fennec\"}\n\
 !3 = !{!\"header\", !2, i64 0}\n\
@@ -64,7 +85,13 @@ pub struct Unit {
 /// The layouts come back too: they number the blocks lists hold as they meet them, so the
 /// program's image has to be made from the same ones.
 pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+    emit_for(program, Cpu::Usual)
+}
+
+/// `emit`, for a level of processor.
+pub fn emit_for(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layouts), String> {
     let header = crate::header()?;
+    let attributes = attributes(cpu);
     let everything = whole(program);
     let layouts = crate::layouts_of(program);
     let mut shared = Shared::default();
@@ -72,7 +99,7 @@ pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared, Layouts), String> {
     // Every function it can't take yet is named, not just the first.
     let mut refused = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
-        match unit(function, &everything, &layouts, &mut shared, header) {
+        match unit(function, &everything, &layouts, &mut shared, (header, &attributes)) {
             Ok(text) => units.push(Unit { function: function.name.clone(), text }),
             Err(why) => refused.push(format!("`{}`: {why}", function.name)),
         }
@@ -129,7 +156,7 @@ fn unit<'p>(
     whole: &Whole<'p>,
     layouts: &Layouts,
     shared: &mut Shared,
-    header: &str,
+    (header, attributes): (&str, &str),
 ) -> Result<String, String> {
     let mut module = Module {
         whole,
@@ -200,7 +227,7 @@ fn unit<'p>(
     out.push('\n');
     out += &module.bodies;
     out.extend(module.helpers.values().map(String::as_str));
-    out += ATTRIBUTES;
+    out += attributes;
     Ok(out)
 }
 

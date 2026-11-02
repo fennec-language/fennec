@@ -1054,6 +1054,9 @@ tools = { path = "../tools" }
 **While it remains, the JIT aims for 80% of the speed of the benchmark suite's twins to start, then 85%, and no further.** Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
 *Why:* Development builds are for changing code and seeing it run at once. The 110% target applies to release builds.
 
+**On x86-64, native code is built for `x86-64-v3` (AVX2, FMA and BMI) by default, and `--cpu baseline` builds for the first x86-64 processors.** On 64-bit Arm the baseline already has what's wanted, so nothing changes there.
+*Why:* It's the level the JIT already uses and the benchmark twins are built for, so comparisons are fair, and nearly every x86 machine since 2013 has it. Those older than that still get a working build by asking for one.
+
 Every build and the language server share one build engine and store, described under Builds.
 
 ## Builds

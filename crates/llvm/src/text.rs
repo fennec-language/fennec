@@ -373,6 +373,31 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &value)
     }
 
+    /// `strip` (0), `lstrip` (1) or `rstrip` (2) of a string. ASCII is looked at here: one with
+    /// nothing to take off is shared, and the rest is copied once. Other text goes to the
+    /// runtime, which knows every kind of space.
+    pub(crate) fn strip_text(&mut self, text: &str, which: i64) -> String {
+        self.declare("declare ptr @fennec_str_strip(ptr, i64) nounwind");
+        self.declare("declare ptr @fennec_str_with_room(i64) nounwind");
+        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+        // A space, a tab, a line feed, a vertical tab, a form feed or a carriage return.
+        let space = |byte: &str, name: &str| {
+            format!(
+                "  %{name}_off = sub i8 {byte}, 9\n  %{name}_ctl = icmp ult i8 %{name}_off, 5\n  %{name}_sp = icmp eq i8 {byte}, 32\n  %{name} = or i1 %{name}_ctl, %{name}_sp\n"
+            )
+        };
+        let (front, back) = (space("%fb", "fw"), space("%bb", "bw"));
+        self.module.add_helper(
+            "fen_strip",
+            format!(
+                "define internal ptr @fen_strip(ptr %text, i64 %which) #0 {{\nentry:\n  %bytes_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_BYTES}\n  %n = load i64, ptr %bytes_at\n  %chars_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_CHARS}\n  %chars = load i64, ptr %chars_at\n  %body = getelementptr inbounds i8, ptr %text, i64 {TEXT}\n  %ascii = icmp eq i64 %n, %chars\n  br i1 %ascii, label %front, label %slow\nfront:\n  %keep_front = icmp eq i64 %which, 2\n  br i1 %keep_front, label %ends, label %front_loop\nfront_loop:\n  %s = phi i64 [ 0, %front ], [ %s_next, %front_on ]\n  %s_in = icmp ult i64 %s, %n\n  br i1 %s_in, label %front_test, label %front_done\nfront_test:\n  %fp = getelementptr inbounds i8, ptr %body, i64 %s\n  %fb = load i8, ptr %fp\n{front}  br i1 %fw, label %front_on, label %front_done\nfront_on:\n  %s_next = add i64 %s, 1\n  br label %front_loop\nfront_done:\n  br label %ends\nends:\n  %start = phi i64 [ 0, %front ], [ %s, %front_done ]\n  %keep_back = icmp eq i64 %which, 1\n  br i1 %keep_back, label %scanned, label %back_loop\nback_loop:\n  %e = phi i64 [ %n, %ends ], [ %e_less, %back_on ]\n  %e_in = icmp ugt i64 %e, %start\n  br i1 %e_in, label %back_test, label %back_done\nback_test:\n  %e_less = sub i64 %e, 1\n  %bp = getelementptr inbounds i8, ptr %body, i64 %e_less\n  %bb = load i8, ptr %bp\n{back}  br i1 %bw, label %back_on, label %back_done\nback_on:\n  br label %back_loop\nback_done:\n  br label %scanned\nscanned:\n  %end = phi i64 [ %n, %ends ], [ %e, %back_done ]\n  %from_start = icmp eq i64 %start, 0\n  %to_end = icmp eq i64 %end, %n\n  %whole = and i1 %from_start, %to_end\n  br i1 %whole, label %share, label %copy\nshare:\n  %count = load i64, ptr %text\n  %more = add i64 %count, 1\n  store i64 %more, ptr %text\n  ret ptr %text\ncopy:\n  %length = sub i64 %end, %start\n  %made = call ptr @fennec_str_with_room(i64 %length)\n  %to = getelementptr inbounds i8, ptr %made, i64 {TEXT}\n  %from = getelementptr inbounds i8, ptr %body, i64 %start\n  call void @llvm.memcpy.p0.p0.i64(ptr %to, ptr %from, i64 %length, i1 false)\n  %made_bytes = getelementptr inbounds i8, ptr %made, i64 {TEXT_BYTES}\n  store i64 %length, ptr %made_bytes\n  %made_chars = getelementptr inbounds i8, ptr %made, i64 {TEXT_CHARS}\n  store i64 %length, ptr %made_chars\n  ret ptr %made\nslow:\n  %stripped = call ptr @fennec_str_strip(ptr %text, i64 %which)\n  ret ptr %stripped\n}}\n\n"
+            ),
+        );
+        let stripped = self.temp();
+        self.line(&format!("{stripped} = call ptr @fen_strip(ptr {text}, i64 {which})"));
+        stripped
+    }
+
     /// `text += more`, taking over `text`'s owner: in place when nothing else holds it and it
     /// has room, which needs no call, or by the runtime, which may make a bigger block.
     pub(crate) fn append_text(&mut self, text: &str, more: &str) -> String {
@@ -690,6 +715,58 @@ impl Emit<'_, '_, '_> {
                 let temp = self.temp();
                 self.line(&format!("{temp} = call ptr @fennec_str_join(ptr {separator}, ptr {list})"));
                 self.assign(dest.ok_or("no result")?, &temp)
+            }
+            // The runtime's, running the interpreter's own code: a new block owned once.
+            "str.upper" | "str.lower" | "str.replace" => {
+                let mut texts = Vec::with_capacity(args.len());
+                for arg in args {
+                    texts.push(format!("ptr {}", self.operand(arg)?.0));
+                }
+                let symbol = name.replace('.', "_");
+                let params = vec!["ptr"; texts.len()].join(", ");
+                self.declare(&format!("declare ptr @fennec_{symbol}({params}) nounwind"));
+                let made = self.temp();
+                self.line(&format!("{made} = call ptr @fennec_{symbol}({})", texts.join(", ")));
+                self.assign(dest.ok_or("no result")?, &made)
+            }
+            "str.find" => {
+                let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let (part, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                self.declare("declare i64 @fennec_str_find(ptr, ptr) nounwind");
+                let at = self.temp();
+                self.line(&format!("{at} = call i64 @fennec_str_find(ptr {text}, ptr {part})"));
+                // -1 when it isn't there, which is `None`.
+                let dest = dest.ok_or("no result")?;
+                let kind = self.kind_of(dest)?.clone();
+                let ((some, fields), (none, _)) =
+                    (self.case_of(&kind, "Some")?, self.case_of(&kind, "None")?);
+                let offset = fields.first().map(|(_, offset, _)| *offset).ok_or("no field in `Some`")?;
+                let (found, number, value) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{found} = icmp sge i64 {at}, 0"));
+                self.line(&format!("{number} = select i1 {found}, i64 {some}, i64 {none}"));
+                self.line(&format!("{value} = select i1 {found}, i64 {at}, i64 0"));
+                let (slot, memory) = (self.slot(dest), kind.memory(self.module.layouts));
+                self.line(&format!("store {memory} zeroinitializer, ptr {slot}"));
+                self.line(&format!("store i64 {number}, ptr {slot}"));
+                let place = self.offset(&slot, offset);
+                self.line(&format!("store i64 {value}, ptr {place}"));
+                Ok(())
+            }
+            // With no separator, on runs of spaces. An empty one fails, as in the interpreter.
+            "str.split" => {
+                let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let separator = match args.get(1) {
+                    Some(separator) => self.operand(separator)?.0,
+                    None => "null".to_owned(),
+                };
+                self.declare("declare ptr @fennec_str_split(ptr, ptr, i64, i64) nounwind");
+                let (from, to) = (i64::from(span.start), i64::from(span.end));
+                let parts = self.temp();
+                self.line(&format!(
+                    "{parts} = call ptr @fennec_str_split(ptr {text}, ptr {separator}, i64 {from}, i64 {to})"
+                ));
+                self.leave_if_failed();
+                self.assign(dest.ok_or("no result")?, &parts)
             }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }

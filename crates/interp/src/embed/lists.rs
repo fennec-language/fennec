@@ -337,6 +337,9 @@ pub(super) fn read(state: &State, block: &[u64]) -> Value {
     if owns_items(&element) {
         return Value::list(words.iter().map(|word| read_block(state, *word)).collect());
     }
+    if !super::heap::packable(&element) {
+        return super::heap::read_items(state, &element, &words);
+    }
     Value::Packed(Rc::new(Packed::new(element, words)))
 }
 
@@ -554,6 +557,16 @@ pub(super) fn write_list(state: &mut State, element: &Rc<Element>, value: &Value
     }
     let block = build(state, at, element.words(), &words, 0);
     Some(state.heap.insert(block))
+}
+
+/// A new list block owned once of items already laid out as words, of a kind of item.
+pub(super) fn list_of_items(state: &mut State, element: &Rc<Element>, words: &[u64]) -> i64 {
+    let at = state.tables.elements.iter().position(|known| known == element).unwrap_or_else(|| {
+        state.tables.elements.push(Rc::clone(element));
+        state.tables.elements.len() - 1
+    });
+    let block = build(state, at, element.words(), words, 0);
+    state.heap.insert(block)
 }
 
 /// `a ** b` on ints, failing like the interpreter.

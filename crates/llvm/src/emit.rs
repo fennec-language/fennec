@@ -1230,9 +1230,8 @@ impl Emit<'_, '_, '_> {
             | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
             }
-            "str.len" | "str" | "str.code" | "str.join" | "str.contains" => {
-                self.text_builtin(dest, name, args, span)
-            }
+            "str.len" | "str" | "str.code" | "str.join" | "str.contains" | "str.upper" | "str.lower"
+            | "str.replace" | "str.find" | "str.split" => self.text_builtin(dest, name, args, span),
             "float" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
                 let temp = self.temp();
@@ -1596,7 +1595,7 @@ mod tests {
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        let source = "def f(text: str) -> str:\n    text.upper()\n\ndef main(stdout: Stdout):\n    stdout.print(f(\"fox\").len())\n";
+        let source = "def f(mut items: list[int]):\n    items.insert(0, 1)\n\ndef main(stdout: Stdout):\n    mut items = [2]\n    f(mut items)\n    stdout.print(items.len())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

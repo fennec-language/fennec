@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+rayon-core = { workspace = true, optional = true }
 fennec-blake3.workspace = true
 fennec-re.workspace = true
 fennec-syntax.workspace = true
@@ -24,4 +25,7 @@ workspace = true
 # The checks native code running on several threads needs: blocks counted across threads,
 # and each thread's queue of blocks to free. Programs with no tasks link a runtime without
 # them, so they pay nothing (decisions.md: "Programs with no tasks compile the check away").
-threads = []
+threads = ["dep:rayon-core"]
+
+[dev-dependencies]
+rayon-core.workspace = true

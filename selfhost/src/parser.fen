@@ -428,13 +428,14 @@ struct Parser:
         function.body = self.block()?
         function
 
-    ## `def name(params) -> ret`, without a body. Operators and indexing are defined as
-    ## `def +`, `def []` and `def []=`.
+    ## `def name(params) -> ret`, without a body. Operators, indexing and `in` are defined as
+    ## `def +`, `def []`, `def []=` and `def in`.
     def signature(mut self) -> FnDef:
         start = self.advance().span
         mut name = ""
         match self.peek():
             case .Name(text): name = text
+            case .Keyword("in"): name = "in"
             case .Punct(text):
                 if text in ["+", "-", "*", "/", "//", "%", "==", "<"]:
                     name = text

@@ -13,6 +13,12 @@ struct Deque[T]:
     def len(self) -> int:
         self.count
 
+    ## `item in deque`, looking from the front.
+    def in(self, item: T) -> bool:
+        for at in range(self.count):
+            if self.slots[(self.head + at) % self.slots.len()] == item: return True
+        False
+
     ## Adds an item at the back.
     def append(mut self, item: T):
         self.make_room(item)
@@ -198,6 +204,10 @@ struct Counter[T: Hashable]:
     ## How many times `item` was counted: 0 if never.
     def [](self, item: T) -> int:
         self.counts.get(item) else 0
+
+    ## `item in counter`: whether `item` was counted at all.
+    def in(self, item: T) -> bool:
+        item in self.counts
 
     def []=(mut self, item: T, count: int):
         self.counts[item] = count
@@ -441,6 +451,10 @@ struct SortedMap[K: Ordered, V]:
     def has(self, key: K) -> bool:
         node, _ = self._slot(key)
         node >= 0
+
+    ## `key in map`: whether `key` has a value.
+    def in(self, key: K) -> bool:
+        self.has(key)
 
     ## The value of `key`. A key with no value stops the program, like a dict.
     def [](self, key: K) -> V:
@@ -812,6 +826,10 @@ struct SortedSet[T: Ordered]:
         assert self._items.remove(item) is not None
 
     def has(self, item: T) -> bool:
+        self._items.has(item)
+
+    ## `item in set`.
+    def in(self, item: T) -> bool:
         self._items.has(item)
 
     ## The smallest item, or None when the set is empty.

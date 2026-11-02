@@ -210,12 +210,6 @@ pub fn compile_whole(tools: &Tools, units: &[Unit], entry: &str, work: &Path) ->
     std::fs::write(&entry_at, entry)
         .map_err(|err| format!("couldn't write {}: {err}", entry_at.display()))?;
     inputs.push(entry_at);
-    // From step 3, the runtime's own bitcode joins the unit, so its calls can inline.
-    if experiment() >= 3
-        && let Some(runtime) = std::env::var_os("FENNEC_EXP_RUNTIME_BC")
-    {
-        inputs.push(PathBuf::from(runtime));
-    }
     let (whole, optimized, output) = (work.join("whole.bc"), work.join("optimized.bc"), work.join("whole.o"));
     let run = |command: &mut Command, what: &str| {
         let done = command.output().map_err(|err| format!("couldn't run {what}: {err}"))?;
@@ -229,6 +223,25 @@ pub fn compile_whole(tools: &Tools, units: &[Unit], entry: &str, work: &Path) ->
         return Err(format!("LLVM's `llvm-link` isn't beside `opt` in {}", tools.link.display()));
     }
     run(Command::new(&tools.link).args(&inputs).arg("-o").arg(&whole), "llvm-link")?;
+    // From step 3, the runtime's own bitcode joins the unit, so its calls can inline: only what
+    // the program uses, unless `FENNEC_EXP_RUNTIME_ALL` asks for all of it.
+    if experiment() >= 3
+        && let Some(runtime) = std::env::var_os("FENNEC_EXP_RUNTIME_BC")
+    {
+        let program = work.join("program.bc");
+        std::fs::rename(&whole, &program).map_err(|err| err.to_string())?;
+        let needed = if std::env::var_os("FENNEC_EXP_RUNTIME_ALL").is_some() {
+            "--override="
+        } else {
+            "--only-needed"
+        };
+        let mut command = Command::new(&tools.link);
+        command.arg(&program);
+        if needed == "--only-needed" {
+            command.arg(needed);
+        }
+        run(command.arg(PathBuf::from(runtime)).arg("-o").arg(&whole), "llvm-link")?;
+    }
     run(
         Command::new(&tools.opt)
             .arg(format!("-passes=internalize,{}", pipeline()))

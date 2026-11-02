@@ -19,7 +19,7 @@ struct Decision:
     ## Who it's after now, which it remembers for the next tick.
     target: Id[Unit]?
     ## The rest of the way to where it's going.
-    path: list[(int, int)] = []
+    path = list[(int, int)]()
 
 ## Steps between two cells, going only across and down.
 def gap(a: (int, int), b: (int, int)) -> int:

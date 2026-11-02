@@ -6,7 +6,7 @@
 from span import Span, Diagnostic
 from token import FPart, Tok, Token, is_reserved
 from lexer import byte_length, lex
-from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Extension, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp, is_plain_value
+from ast import Annotation, Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Extension, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp, is_plain_value
 
 ## Parses a whole `.fen` file, where only declarations may sit at the top level.
 def parse(source: str) -> Module:
@@ -207,14 +207,47 @@ struct Parser:
             elif is_enum:
                 type_def.cases.append(self.case()?)
             else:
-                type_def.fields.append(self.field(True)?)
+                annotations = self.annotations()?
+                field = self.field(True)?
+                type_def.fields.append(replace(field, annotations=annotations))
                 self.end_line()?
         type_def
+
+    ## The annotations above a field, each on its own line.
+    def annotations(mut self) -> list[Annotation]:
+        mut found = []
+        while self.at_punct("@"):
+            start = self.advance().span
+            name = self.name("an annotation's name")?
+            mut args = []
+            if self.eat_punct("("):
+                args = self.call_args()?
+                self.expect_punct(")")?
+            span = start.to(self.prev_span())
+            self.end_line()?
+            if self.at_keyword("def"):
+                fail Diagnostic(
+                    message="an annotation goes above a field",
+                    span=span,
+                    help="annotations are data on fields, like `@skip` or `@serialize(name=\"uid\")`",
+                )
+            found.append(Annotation(name=name, args=args, span=span))
+        found
+
+    ## A field's name, which may be any word, keywords included.
+    def field_name(mut self, what: str) -> str:
+        match self.peek():
+            case .Keyword(word):
+                if not is_reserved(word):
+                    self.advance()
+                    return word
+            case _: pass
+        self.name(what)?
 
     ## `name: type`, `name = default`, or both, with a `where` rule when `rules` allows.
     def field(mut self, rules: bool) -> Field:
         start = self.span()
-        name = self.name("a field name")?
+        name = self.field_name("a field name")?
         mut ty = None
         if self.eat_punct(":"):
             ty = self.type_expr()?
@@ -477,6 +510,12 @@ struct Parser:
             self.expect_punct("]")?
         optional = self.eat_punct("?")
         TypeExpr(name=name, args=args, optional=optional, span=start.to(self.prev_span()))
+
+## Whether a token is a keyword that can name a field, like `type`.
+def is_field_word(tok: Tok) -> bool:
+    match tok:
+        case .Keyword(word): not is_reserved(word)
+        case _: False
 
 def is_name(tok: Tok) -> bool:
     match tok:

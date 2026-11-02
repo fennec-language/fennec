@@ -205,6 +205,8 @@ impl<'a> Analyzer<'_, 'a> {
             "." => Role::VariantDot,
             "?" => Role::Postfix,
             "-" | "~" if !after_operand => Role::UnaryMinus,
+            // An annotation's name follows its `@` straight away, like `@skip`.
+            "@" => Role::UnaryMinus,
             "=" if self.is_kwarg(at) => Role::KwargEq,
             _ => Role::Operator,
         }

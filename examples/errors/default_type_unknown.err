@@ -4,4 +4,4 @@ error: can't tell the type of `cells` from its default
 1 | def grid(cells = []) -> int:
   |                  ^^
   |
-  = help: write its type, like `cells: list[int] = []`
+  = help: say it, like `cells = list[int]()`

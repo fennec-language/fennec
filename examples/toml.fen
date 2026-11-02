@@ -41,7 +41,7 @@ struct Sample:
     speed = 0
     angle = 0.0
     at = ""
-    empty: list[int] = []
+    empty = list[int]()
 
 struct Window:
     title = "Fox Run"

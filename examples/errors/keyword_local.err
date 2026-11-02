@@ -1,0 +1,5 @@
+error: expected a value, found `=`
+ --> examples/errors/keyword_local.fen:2:8
+  |
+2 |     if = 1
+  |        ^

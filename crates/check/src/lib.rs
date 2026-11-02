@@ -14,6 +14,7 @@
 //! typed tree a compiler builds on. See [`Types`].
 
 mod alias;
+mod annotations;
 mod builtins;
 mod call;
 mod checker;
@@ -161,6 +162,7 @@ pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> 
 }
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
+    fennec_syntax::visit::type_fields_from_defaults(module);
     if !checked.places.is_empty() {
         fennec_syntax::visit::functions_mut(module, &mut |def| {
             alias::write_in(&mut def.body, &checked.places);
@@ -171,6 +173,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
         || !checked.generator_types.is_empty()
         || !checked.defaults.is_empty()
         || !checked.not_equals.is_empty()
+        || !checked.empty_collections.is_empty()
         || !checked.parallel_changes.is_empty()
         || !checked.optional_steps.is_empty()
         || !checked.std_names.is_empty()
@@ -199,6 +202,9 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
                 && let Some(items) = args.first()
             {
                 *expr = items.value.clone();
+            }
+            if checked.empty_collections.contains(&span) {
+                fennec_syntax::visit::empty_collection(expr);
             }
             if checked.not_equals.contains(&span) {
                 fennec_syntax::visit::not_of_equals(expr);
@@ -251,6 +257,8 @@ pub struct Checked {
     optional_steps: BTreeSet<(u32, u32)>,
     /// The `parallel(xs)` that a `for mut` loops over, which becomes `xs`.
     parallel_changes: BTreeSet<(u32, u32)>,
+    /// The `list[T]()`, `dict[K, V]()` and `set[T]()` calls, written in as `[]`, `{}` and `set()`.
+    empty_collections: BTreeSet<(u32, u32)>,
 }
 
 /// The typed tree: the type of every expression and every declared name in a program,
@@ -348,6 +356,9 @@ pub struct Struct {
     pub fields: Vec<(String, Type)>,
     /// Whether any field has a `where` rule, checked whenever a value is made.
     pub rules: bool,
+    /// What's written above each field that has annotations, like `@skip`, by the field's
+    /// name: data for formats and other code that reads the type.
+    pub annotations: BTreeMap<String, Vec<fennec_syntax::Annotation>>,
 }
 
 /// An enum's cases, in the order they're written, each with its fields and their types.

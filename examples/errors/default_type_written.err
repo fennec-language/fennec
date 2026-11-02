@@ -4,4 +4,4 @@ error: `times` takes its type from its default, so `: int` isn't needed
 1 | def repeat(text: str, times: int = 2) -> str:
   |                              ^^^
   |
-  = help: remove the type, so it reads `times=` and its default
+  = help: remove the type, so it reads `times = ` and its default

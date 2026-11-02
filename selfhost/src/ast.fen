@@ -52,6 +52,14 @@ def is_plain_value(expr: Expr) -> bool:
                 case _: False
         case .List(items): items.len() == 0
         case .Dict(pairs): pairs.len() == 0
+        # A type made with its type arguments, like `Packed[int]()`.
+        case .Call(callee, args):
+            match callee.kind:
+                case .Index(object, _):
+                    match object.kind:
+                        case .Name(_): all(not arg.is_mut and is_plain_value(arg.value) for arg in args)
+                        case _: False
+                case _: False
         case _: False
 
 struct Param:
@@ -76,9 +84,9 @@ struct TypeDef:
     name: str
     ## Type parameters, like `T` in `struct Deque[T]:`.
     generics: list[Generic]
-    fields: list[Field] = []
-    cases: list[Case] = []
-    methods: list[FnDef] = []
+    fields = list[Field]()
+    cases = list[Case]()
+    methods = list[FnDef]()
     span: Span
 
 struct Field:
@@ -87,6 +95,14 @@ struct Field:
     default: Expr?
     ## The `where` rule a value of this field must follow.
     rule: Expr?
+    ## What's written above it, like `@skip`: data, never a change to the field.
+    annotations = list[Annotation]()
+    span: Span
+
+## `@name` or `@name(args)` above a field.
+struct Annotation:
+    name: str
+    args: list[Arg]
     span: Span
 
 struct Case:

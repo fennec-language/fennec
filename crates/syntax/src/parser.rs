@@ -255,17 +255,56 @@ impl Parser {
             } else if is_enum {
                 def.cases.push(self.case()?);
             } else {
-                def.fields.push(self.field(true)?);
+                let annotations = self.annotations()?;
+                let field = self.field(true)?;
+                def.fields.push(Field { annotations, ..field });
                 self.end_line()?;
             }
         }
         Ok(def)
     }
 
+    /// The annotations above a field, each on its own line: `@skip`, `@serialize(name="uid")`.
+    fn annotations(&mut self) -> Result<Vec<crate::ast::Annotation>, Diagnostic> {
+        let mut found = Vec::new();
+        while self.at_p(Punct::At) {
+            let start = self.advance().span;
+            let name = self.name("an annotation's name")?;
+            let args = if self.eat_p(Punct::LParen) {
+                let args = self.call_args()?;
+                self.expect_p(Punct::RParen)?;
+                args
+            } else {
+                Vec::new()
+            };
+            let span = start.to(self.prev_span());
+            self.end_line()?;
+            if self.at_kw(Kw::Def) {
+                return Err(Diagnostic::new("an annotation goes above a field", span).with_help(
+                    "annotations are data on fields, like `@skip` or `@serialize(name=\"uid\")`",
+                ));
+            }
+            found.push(crate::ast::Annotation { name, args, span });
+        }
+        Ok(found)
+    }
+
+    /// A field's name, which may be any word, keywords included: `type: str`. Where a field is
+    /// named, after `.` or before `=` in a call, nothing else could be meant.
+    pub(crate) fn field_name(&mut self, what: &str) -> Result<String, Diagnostic> {
+        match self.peek().clone() {
+            Tok::Kw(kw) if !matches!(kw, Kw::Reserved(_)) => {
+                self.advance();
+                Ok(kw.text().to_owned())
+            }
+            _ => self.name(what),
+        }
+    }
+
     /// `name: type`, `name = default`, or both, with a `where` rule when `rules` allows.
     fn field(&mut self, rules: bool) -> Result<Field, Diagnostic> {
         let start = self.span();
-        let name = self.name("a field name")?;
+        let name = self.field_name("a field name")?;
         let ty = if self.eat_p(Punct::Colon) { Some(self.type_expr()?) } else { None };
         let default = if self.eat_p(Punct::Assign) { Some(self.expr()?) } else { None };
         let rule = if rules && self.at_soft("where") {
@@ -278,7 +317,7 @@ impl Parser {
             return Err(Diagnostic::new(format!("field `{name}` needs a type or a default"), start)
                 .with_help(format!("write `{name}: int`, or a default like `{name} = 0`")));
         }
-        Ok(Field { name, ty, default, rule, span: start.to(self.prev_span()) })
+        Ok(Field { name, ty, default, rule, annotations: Vec::new(), span: start.to(self.prev_span()) })
     }
 
     fn case(&mut self) -> Result<Case, Diagnostic> {

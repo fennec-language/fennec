@@ -84,8 +84,8 @@ struct Unit:
     ## Who it walks behind when it has no target.
     following: Id[Unit]? = None
     squad: Id[Squad]? = None
-    path: list[(int, int)] = []
-    items: list[Item] = []
+    path = list[(int, int)]()
+    items = list[Item]()
     kills = 0
 
     def alive(self) -> bool:
@@ -101,14 +101,14 @@ struct Squad:
     name: str
     team: Team
     leader: Id[Unit]
-    members: list[Id[Unit]] = []
+    members = list[Id[Unit]]()
     ## Where the squad is heading when nobody has a target.
     rally: (int, int)
 
 struct World:
     field: map.Map
-    units: IdMap[Unit] = IdMap[Unit]()
-    squads: IdMap[Squad] = IdMap[Squad]()
+    units = IdMap[Unit]()
+    squads = IdMap[Squad]()
     tick = 0
 
     ## Adds a unit, and gives back its `Id`.

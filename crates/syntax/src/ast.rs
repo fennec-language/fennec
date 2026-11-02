@@ -106,6 +106,17 @@ pub struct Field {
     pub default: Option<Expr>,
     /// The `where` rule a value of this field must follow.
     pub rule: Option<Expr>,
+    /// What's written above it, like `@skip`: data for code that reads the type, never a
+    /// change to the field.
+    pub annotations: Vec<Annotation>,
+    pub span: Span,
+}
+
+/// `@name` or `@name(args)` above a field: data the field carries, read at compile time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Annotation {
+    pub name: String,
+    pub args: Vec<Arg>,
     pub span: Span,
 }
 
@@ -431,6 +442,11 @@ impl Expr {
             }
             // An enum case, like `Mode.fast`, or an empty collection.
             ExprKind::Attr { object, optional: false, .. } => matches!(object.kind, ExprKind::Name(_)),
+            // A type made with its type arguments, like `Packed[int]()` or `Grid[Tile](width=8)`.
+            ExprKind::Call { callee, args } => {
+                matches!(&callee.kind, ExprKind::Index { object, .. } if matches!(object.kind, ExprKind::Name(_)))
+                    && args.iter().all(|arg| !arg.is_mut && arg.value.is_plain_value())
+            }
             ExprKind::List(items) => items.is_empty(),
             ExprKind::Dict(pairs) => pairs.is_empty(),
             _ => false,

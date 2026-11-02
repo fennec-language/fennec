@@ -11,10 +11,10 @@ struct Event:
     text: str
 
 struct Scoreboard:
-    kills: dict[str, int] = {}
-    damage: dict[str, int] = {}
-    healing: dict[str, int] = {}
-    events: list[Event] = []
+    kills = dict[str, int]()
+    damage = dict[str, int]()
+    healing = dict[str, int]()
+    events = list[Event]()
 
     def hit(mut self, team: Team, amount: int):
         name = team.name()

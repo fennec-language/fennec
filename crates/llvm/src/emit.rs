@@ -12,6 +12,7 @@ use fennec_syntax::{BinOp, Span, UnaryOp};
 use crate::Shared;
 use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
+use crate::uniqueness::{FieldPath, coming_in, unsettled, written_order};
 
 const ATTRIBUTES: &str = "attributes #0 = { nounwind \"frame-pointer\"=\"non-leaf\" }\n\
 attributes #1 = { cold nounwind }\n\
@@ -339,6 +340,8 @@ impl<'p> Module<'_, 'p> {
             taken_at: BTreeMap::new(),
             found_entries: Vec::new(),
             alone_slots: HashSet::new(),
+            alone_fields: Vec::new(),
+            taken_items: HashMap::new(),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -381,6 +384,11 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) found_entries: Vec<(LocalId, Operand, String)>,
     /// Slots of `mut` parameters made alone on the way in, that nothing here can share since.
     alone_slots: HashSet<String>,
+    /// Field paths from locals whose blocks are known alone here.
+    pub(crate) alone_fields: Vec<FieldPath>,
+    /// Items taken out of a list to change: the list's local and field path, and the step to
+    /// the item.
+    pub(crate) taken_items: HashMap<usize, (LocalId, Vec<String>, String)>,
 }
 
 pub(crate) fn float_text(value: f64) -> String {
@@ -494,6 +502,11 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store {text} %p{at}, ptr %l{at}"));
             }
         }
+        // What callers see to before calling.
+        let whole = self.module.whole;
+        if let Some(needs) = whole.needs.get(function.name.as_str()) {
+            self.alone_fields.clone_from(needs);
+        }
         for (at, kind) in kinds.iter().take(function.params).enumerate() {
             let local = LocalId(at);
             if matches!(kind, Kind::List(_)) && self.known.alone_once_checked(local) {
@@ -521,7 +534,7 @@ impl Emit<'_, '_, '_> {
                 && changes > 1
             {
                 let slot = self.slot(local);
-                self.alone_at(&slot, "fennec_unshare");
+                self.alone_along((local, &[]), &slot, "fennec_unshare");
                 self.alone_slots.insert(slot);
             }
         }
@@ -543,11 +556,19 @@ impl Emit<'_, '_, '_> {
             }
         }
         let mut left_with: HashMap<usize, Vec<(LocalId, Operand, String)>> = HashMap::new();
-        for (at, block) in function.blocks.iter().enumerate() {
+        let mut alone_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
+        let on_entry = std::mem::take(&mut self.alone_fields);
+        let settles = &whole.settles;
+        // Each block after every one leading to it, but for loops, so what's known carries on.
+        let mut done = HashSet::new();
+        for at in written_order(function) {
+            let Some(block) = function.blocks.get(at) else { continue };
             self.start_block(&format!("bb{at}"));
             let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
+            self.alone_fields =
+                coming_in(function, self.known, settles, (at, &before, &done), (&on_entry, &alone_left));
             self.found_entries = match ways_in.split_first() {
-                Some((first, rest)) if ways_in.iter().all(|from| *from < at) => {
+                Some((first, rest)) if ways_in.iter().all(|from| done.contains(from)) => {
                     let mut kept = left_with.get(first).cloned().unwrap_or_default();
                     for from in rest {
                         let theirs = left_with.get(from).map_or(&[][..], Vec::as_slice);
@@ -559,7 +580,18 @@ impl Emit<'_, '_, '_> {
             };
             for inst in &block.insts {
                 self.forget_entries(&inst.kind);
+                if let InstKind::Call { function: callee, args, .. } = &inst.kind {
+                    for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
+                        if let Some(Operand::Local(given)) = args.get(param.0) {
+                            self.see_to(*given, path)?;
+                        }
+                    }
+                }
                 self.inst(&inst.kind, inst.span, at)?;
+                if !self.alone_fields.is_empty() {
+                    let hit = unsettled(function, self.known, &inst.kind, settles);
+                    self.alone_fields.retain(|path| !hit.iter().any(|unsettled| unsettled.hits(path)));
+                }
                 // A store may have grown the dict, moving every entry: any dict, through a path.
                 if let InstKind::SetIndex { object, path, .. } = &inst.kind {
                     if path.is_empty() {
@@ -571,6 +603,8 @@ impl Emit<'_, '_, '_> {
                 self.let_go_after(&inst.kind);
             }
             left_with.insert(at, std::mem::take(&mut self.found_entries));
+            alone_left.insert(at, std::mem::take(&mut self.alone_fields));
+            done.insert(at);
             if let Some((list, limit)) = self.known.reservations.get(&at).cloned() {
                 self.reserve(LocalId(list), &limit)?;
             }

@@ -1,11 +1,13 @@
 //! The LLVM backend, behind `fennec build --llvm`: the typed IR as LLVM's text format, one module
 //! a function, each optimized and compiled by `opt` and `llc` and cached by what's in its text.
-//! Editing a function recompiles it and what copied it to inline, and nothing else.
+//! Editing a function recompiles it and what copied it to inline, and little else.
 //!
 //! So that a change elsewhere leaves a function's text alone, nothing that depends on the rest
 //! of the program is written in it. Where a function starts in its file and the numbers strings
 //! and kinds of list item have are read from symbols, all defined in one small module made fresh
-//! each build.
+//! each build. What a function's callers make alone before calling it, and what the functions
+//! it calls leave alone, are written in, so editing one can recompile those it calls or is
+//! called by.
 //!
 //! So far this takes ints, floats, bools, strings, structs and enums, plain and boxed, tuples,
 //! lists of those, optionals of blocks, and f-strings, laid out as `fennec_layout` says, on the
@@ -41,6 +43,7 @@ mod lists;
 mod random;
 mod regex;
 mod text;
+mod uniqueness;
 
 use std::collections::BTreeMap;
 

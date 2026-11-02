@@ -781,6 +781,88 @@ def main(stdout: Stdout):
     )
 }
 
+/// What's known to have one owner stops being known where something might give it another: a
+/// method keeping a field, a function handing one back, a copy of an item, an item stored
+/// twice, a new index, a loop keeping what it changes, and items moving along a list. Each
+/// change after has to copy.
+#[test]
+fn a_field_something_keeps_is_checked_again() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = r"struct Packet:
+    a2: list[int]
+    link: int
+
+struct Box:
+    items: list[int]
+    saved: list[int]
+    packets: list[Packet]
+
+    def keep(mut self):
+        self.saved = self.items
+
+    def poke(mut self):
+        self.items[0] = 1
+        self.keep()
+        self.items[0] = 99
+
+    def touch(mut self, at: int):
+        self.packets[at].a2[0] = 5
+        self.packets[at].link = 6
+
+def handed_back(b: Box) -> list[int]:
+    b.items
+
+def main(stdout: Stdout):
+    mut b = Box(items=[0, 0], saved=[], packets=[Packet(a2=[0], link=0), Packet(a2=[0], link=0)])
+    b.poke()
+    stdout.print(b.items, b.saved)
+    b.items[1] = 2
+    held = handed_back(b)
+    b.items[1] = 3
+    stdout.print(b.items, held)
+    mut at = 0
+    b.packets[at].a2[0] = 1
+    copied = b.packets[at]
+    b.packets[at].a2[0] = 2
+    stdout.print(copied.a2, b.packets[0].a2)
+    b.packets[1] = b.packets[0]
+    at = 1
+    b.packets[at].a2[0] = 3
+    stdout.print(b.packets[0].a2, b.packets[1].a2)
+    mut seen: list[list[int]] = []
+    for i in range(3):
+        b.items[0] = i
+        seen.append(b.items)
+    stdout.print(seen)
+    b.packets[0] = b.packets[1]
+    b.touch(0)
+    stdout.print(b.packets[0].a2, b.packets[1].a2, b.packets[0].link, b.packets[1].link)
+";
+    // Items move along when one before them goes, so the item now at an index is another.
+    let shifted = r"struct Packet:
+    a2: list[int]
+    link: int
+
+def main(stdout: Stdout):
+    shared = Packet(a2=[0], link=0)
+    mut xs = [Packet(a2=[0], link=0), Packet(a2=[0], link=0), shared]
+    mut at = 1
+    xs[at].a2[0] = 2
+    xs.pop(0)
+    xs[at].a2[0] = 3
+    stdout.print(shared.a2, xs[0].a2, xs[1].a2)
+";
+    for (name, how) in [("kept", &["--llvm"][..]), ("kept_release", &["--llvm", "--release"][..])] {
+        let (ours, jit) = both_built(name, source, how)?;
+        assert_eq!(ours, jit);
+        let (ours, jit) = both_built(&format!("{name}_shifted"), shifted, how)?;
+        assert_eq!(ours, jit);
+    }
+    Ok(())
+}
+
 #[test]
 fn failures_match_the_jit() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

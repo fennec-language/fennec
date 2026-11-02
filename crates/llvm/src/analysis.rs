@@ -9,6 +9,8 @@ use fennec_ir::facts::{Facts, Range};
 use fennec_ir::{Block, Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
 use fennec_syntax::{BinOp, UnaryOp};
 
+use crate::uniqueness::{FieldPath, Summaries, needed, summarized};
+
 const FULL: Range = (i64::MIN, i64::MAX);
 /// The most items anything in memory can have.
 pub(crate) const MOST_ITEMS: i64 = 1 << 48;
@@ -79,6 +81,10 @@ pub(crate) struct Whole<'p> {
     pub(crate) can_fail: HashSet<&'p str>,
     /// Each generator, by its name and by the names of its functions.
     pub(crate) generators: HashMap<&'p str, &'p GeneratorDef>,
+    /// What each function may give another owner, or replace, under each parameter.
+    pub(crate) settles: Summaries<'p>,
+    /// The field paths of `mut` parameters each function's callers make alone before calling.
+    pub(crate) needs: HashMap<&'p str, Vec<FieldPath>>,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments, and a
@@ -1159,6 +1165,23 @@ fn parameters_kept<'p>(functions: &HashMap<&'p str, &'p Function>) -> HashMap<&'
     }
 }
 
+/// Whether a builtin can give back what it works on, rather than only looking at it or
+/// changing it in place.
+pub(crate) fn gives_back(name: &str) -> bool {
+    matches!(
+        name,
+        "list"
+            | "parallel"
+            | "str"
+            | "str.strip"
+            | "str.lstrip"
+            | "str.rstrip"
+            | "sorted"
+            | "reversed"
+            | "copy"
+    )
+}
+
 /// Whether a function might give its parameter at `at` another owner, given what's known of
 /// the functions it calls.
 fn keeps_parameter(function: &Function, at: usize, kept: &HashMap<&str, Vec<bool>>) -> bool {
@@ -1171,19 +1194,8 @@ fn keeps_parameter(function: &Function, at: usize, kept: &HashMap<&str, Vec<bool
         // Read by a builtin as what it works on, it's only looked at or changed in place,
         // except by those that can give back what they're given.
         InstKind::Builtin { name, args, .. } => {
-            let gives_back = matches!(
-                name.as_str(),
-                "list"
-                    | "parallel"
-                    | "str"
-                    | "str.strip"
-                    | "str.lstrip"
-                    | "str.rstrip"
-                    | "sorted"
-                    | "reversed"
-                    | "copy"
-            );
-            args.iter().enumerate().any(|(position, arg)| *arg == me && (position > 0 || gives_back))
+            let gives = gives_back(name);
+            args.iter().enumerate().any(|(position, arg)| *arg == me && (position > 0 || gives))
         }
         InstKind::Call { function: callee, args, .. } => args.iter().enumerate().any(|(position, arg)| {
             *arg == me
@@ -1245,5 +1257,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         can_fail.insert(def.resume.as_str());
         can_fail.extend(def.abandon.as_deref());
     }
-    Whole { functions, analyses, can_fail, generators }
+    let settles = summarized(&functions, &analyses);
+    let needs = needed(program, &functions, &analyses);
+    Whole { functions, analyses, can_fail, generators, settles, needs }
 }

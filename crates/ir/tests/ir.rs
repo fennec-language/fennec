@@ -2590,7 +2590,7 @@ def main(stdout: Stdout):
 
 #[test]
 fn a_buffer_is_made_filled_and_read_through_its_own_builtins() {
-    let source = "def main(stdout: Stdout):\n    mut b = Buffer[int](capacity=2)\n    b.push(3)\n    b[0] = 4\n    b.reserve(8)\n    b.truncate(1)\n    stdout.print(b[0], b.len(), b.capacity(), b.pop())\n";
+    let source = "def main(stdout: Stdout):\n    mut b = Buffer[int](capacity=2)\n    b.extend(Buffer[int]())\n    b.insert(0, 1)\n    stdout.print(b.remove(0))\n    b.push(3)\n    b[0] = 4\n    b.reserve(8)\n    b.truncate(1)\n    stdout.print(b[0], b.len(), b.capacity(), b.pop())\n";
     let text = printed(source, "main").unwrap();
     assert!(text.contains("builtin Buffer.new.capacity(2)"), "{text}");
     for name in

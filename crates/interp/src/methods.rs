@@ -187,7 +187,7 @@ fn expect(result: Value, args: &[CallArg], span: Span) -> Result<Value, Diagnost
 fn changes_in_place(value: &Value, method: &str) -> bool {
     let methods: &[&str] = match value {
         Value::List(_) => &["append", "clear", "insert", "pop", "remove", "remove_where", "sort"],
-        Value::Buffer(_) => &["push", "pop", "reserve", "truncate"],
+        Value::Buffer(_) => &["push", "pop", "reserve", "truncate", "extend", "insert", "remove"],
         Value::Dict(_) => &["clear", "pop"],
         Value::Set(_) => &["add", "clear", "discard", "remove"],
         Value::IdMap(_) => &["clear", "insert", "modify", "remove", "remove_where"],

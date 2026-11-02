@@ -37,12 +37,23 @@ impl Buffer {
         Buffer { items: Vec::new(), room: room.max(MIN_ROOM) }
     }
 
+    /// Makes room for `more` items after the ones it has, as the runtime does.
+    fn grow(&mut self, more: usize) {
+        if self.items.len() + more > self.room {
+            self.room = grown_room(self.items.len(), more);
+        }
+    }
+
     /// Fills the next slot, growing first if every slot is filled.
     pub(crate) fn push(&mut self, item: Value) {
-        if self.items.len() >= self.room {
-            self.room = grown_room(self.items.len(), 1);
-        }
+        self.grow(1);
         self.items.push(item);
+    }
+
+    /// Adds `more` items after its own, growing once for all of them.
+    pub(crate) fn extend(&mut self, more: &[Value]) {
+        self.grow(more.len());
+        self.items.extend_from_slice(more);
     }
 
     /// Makes room for at least `room` items in all.
@@ -66,6 +77,19 @@ pub(crate) fn change(
             return buffer.items.pop().ok_or_else(|| Diagnostic::new("can't pop from an empty Buffer", span));
         }
         ("reserve", [Value::Int(room)]) => buffer.reserve(count(room)),
+        ("extend", [Value::Buffer(other)]) => buffer.extend(&other.items),
+        ("insert", [Value::Int(at), item]) => {
+            let length = buffer.items.len();
+            let at = usize::try_from(*at).ok().filter(|at| *at <= length).ok_or_else(|| {
+                Diagnostic::new(format!("can't insert at {at} in a Buffer of length {length}"), span)
+            })?;
+            buffer.grow(1);
+            buffer.items.insert(at, item.clone());
+        }
+        ("remove", [Value::Int(at)]) => {
+            let at = crate::ops::position(*at, buffer.items.len(), span)?;
+            return Ok(buffer.items.remove(at));
+        }
         ("truncate", [Value::Int(length)]) => buffer.items.truncate(count(length)),
         _ => return Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span)),
     }

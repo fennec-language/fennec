@@ -450,12 +450,22 @@ pub extern "C" fn remove_at(list: i64, item: i64) {
 /// at `at`, for native code to fill, failing like the interpreter for a place that isn't in
 /// the list or just past its end.
 pub extern "C" fn insert(list: i64, at: i64, start: i64, end: i64) -> i64 {
+    insert_into("list", list, at, (start, end))
+}
+
+/// `insert`, for a `Buffer`.
+pub extern "C" fn insert_buffer(list: i64, at: i64, start: i64, end: i64) -> i64 {
+    insert_into("Buffer", list, at, (start, end))
+}
+
+/// `insert`, failing with a message that names what's inserted into.
+fn insert_into(kind: &str, list: i64, at: i64, (start, end): (i64, i64)) -> i64 {
     attempt(|state: &mut State| {
         let block = u64::try_from(list).ok().and_then(|list| state.heap.block(list));
         let length = block.and_then(|block| block.get(2)).copied().unwrap_or(0);
         let place = u64::try_from(at).ok().filter(|place| *place <= length);
         let Some(place) = place.and_then(|place| usize::try_from(place).ok()) else {
-            let message = format!("can't insert at {at} in a list of length {length}");
+            let message = format!("can't insert at {at} in a {kind} of length {length}");
             return Err(Diagnostic::new(message, span(start, end)));
         };
         let grown = grow_in(state, list, 1).unwrap_or(list);
@@ -567,6 +577,30 @@ pub extern "C" fn truncate(list: i64, length: i64) -> i64 {
         }
         release_items(state, &element, &dropped);
         address
+    })
+}
+
+/// `buffer.extend(other)`: takes over a list's owner and gives back one only that owner holds
+/// with `other`'s items after its own, the same kind of item, each held once more.
+pub extern "C" fn extend(list: i64, other: i64) -> i64 {
+    with(|state| {
+        let Some(more) = u64::try_from(other).ok().and_then(|other| state.heap.block(other)) else {
+            return list;
+        };
+        let Some(element) = element_of(state, more) else { return list };
+        let stride = element.words().max(1);
+        let added = items(more, stride).to_vec();
+        let count =
+            state.heap.block(u64::try_from(list).unwrap_or(0)).map_or(0, |block| items(block, stride).len());
+        let grown = grow_in(state, list, added.len() / stride).unwrap_or(list);
+        if let Some(block) = u64::try_from(grown).ok().and_then(|at| state.heap.block_mut(at))
+            && let Some(slots) =
+                block.get_mut(LIST_HEADER_WORDS + count..LIST_HEADER_WORDS + count + added.len())
+        {
+            slots.copy_from_slice(&added);
+        }
+        retain_items(state, &element, &added);
+        grown
     })
 }
 

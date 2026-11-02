@@ -99,10 +99,17 @@ fn report_counts(counts: &heap::Counts) {
 
 /// The line `report_counts` writes.
 pub(super) fn counts_line(counts: &heap::Counts) -> String {
-    format!(
+    let line = format!(
         "copies {} copied_bytes {} largest_copy {} allocations {} allocated_bytes {}",
         counts.copies, counts.copied_bytes, counts.largest_copy, counts.allocations, counts.allocated_bytes
-    )
+    );
+    // Network waits that blocked a thread rather than parking a task, when there were any.
+    #[cfg(any(test, feature = "threads"))]
+    let line = match super::serve::blocked_waits() {
+        0 => line,
+        blocked => format!("{line} blocked_waits {blocked}"),
+    };
+    line
 }
 
 /// Ends the program for a failure where nothing can pass it on, printing what it printed and

@@ -70,7 +70,7 @@ impl Fake {
 type Made = (&'static str, Vec<(&'static str, Value)>);
 
 /// How a network call failed, which `NetError` says.
-enum Failure {
+pub(crate) enum Failure {
     NotFound(String),
     Refused(String, i64),
     TimedOut(Duration),
@@ -282,8 +282,23 @@ impl Interp<'_> {
         }
     }
 
+    /// Takes a real server's listener out of the program's open sockets, for `parallel(server)`
+    /// to serve from. A server in a test's fake network, or one already closed, has none.
+    #[cfg(any(test, feature = "threads"))]
+    pub(crate) fn take_listener(&mut self, server: &Value) -> Option<TcpListener> {
+        let Value::Instance(server) = server else { return None };
+        let handle = handle_of(server);
+        match self.sockets.open.remove(&handle)? {
+            Socket::Listener(listener) => Some(listener),
+            other @ Socket::Stream(_) => {
+                self.sockets.open.insert(handle, other);
+                None
+            }
+        }
+    }
+
     /// The case of `NetError` a failure is.
-    fn net_error(&mut self, failure: &Failure, span: Span) -> Result<Value, Diagnostic> {
+    pub(crate) fn net_error(&mut self, failure: &Failure, span: Span) -> Result<Value, Diagnostic> {
         let (case, fields) = match failure {
             Failure::NotFound(host) => ("NotFound", vec![Value::str(host)]),
             Failure::Refused(host, port) => ("Refused", vec![Value::str(host), Value::Int(*port)]),

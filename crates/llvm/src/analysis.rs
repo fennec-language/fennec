@@ -75,6 +75,10 @@ pub(crate) struct Analysis {
     /// Copies, by block and place in it, whose source nothing reads again or leans on: the
     /// copy takes over its owner.
     last_copies: HashSet<(usize, usize)>,
+    /// `enumerate(list)` results, and copies of them, never made: each with the list.
+    pub(crate) enumerated: HashMap<usize, LocalId>,
+    /// Pairs read from those, never made: the list, and the index the pair is at.
+    pub(crate) pairs: HashMap<usize, (LocalId, Operand)>,
 }
 
 /// What's known about every function, and which can fail.
@@ -401,6 +405,8 @@ fn analyze(
         reservations: HashMap::new(),
         zero_filled: HashSet::new(),
         last_copies: HashSet::new(),
+        enumerated: HashMap::new(),
+        pairs: HashMap::new(),
     };
     let grown = count_uses(function, (changes, keeps), &mut known);
     find_reads_again(function, &mut known);
@@ -464,6 +470,7 @@ fn analyze(
     known.below.retain(|local, _| facts.range_in(LocalId(*local), 0).is_some_and(|range| range.0 >= 0));
     find_reservations(function, &stepped, &mut known);
     find_slice_keys(function, &mut known);
+    find_unmade_enumerates(function, &mut known);
     known
 }
 
@@ -1161,6 +1168,123 @@ fn local_of(operand: &Operand) -> Option<usize> {
     match operand {
         Operand::Local(local) => Some(local.0),
         _ => None,
+    }
+}
+
+/// `enumerate(list)` where all that's done with what it gives is counting it and reading pairs
+/// to take apart right away: neither it nor the pairs are made. A pair's count is where its
+/// index points in the list, and its item is the list's there, as nothing here changes the list.
+fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
+    let insts: Vec<(usize, usize, &InstKind)> = function
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(at, block)| {
+            block.insts.iter().enumerate().map(move |(index, inst)| (at, index, &inst.kind))
+        })
+        .collect();
+    let changed_here = |list: LocalId| {
+        known.writes.get(list.0).copied().unwrap_or(0) > 1
+            || insts.iter().any(|(_, _, inst)| match inst {
+                InstKind::SetIndex { object, .. } | InstKind::SetField { object, .. } => *object == list,
+                InstKind::Builtin { args, changes: true, .. } => args.first() == Some(&Operand::Local(list)),
+                InstKind::Call { args, .. } => args.contains(&Operand::Local(list)),
+                _ => false,
+            })
+    };
+    for (_, _, inst) in &insts {
+        let InstKind::Builtin { dest: Some(made), name, args, .. } = inst else { continue };
+        let [Operand::Local(list)] = args.as_slice() else { continue };
+        // The list, or what it borrows from, stays as it is: a parameter that isn't `mut`, or a
+        // local nothing here changes.
+        let mut steady = false;
+        let mut held = *list;
+        for _ in 0..8 {
+            if held.0 < function.params {
+                steady = !function.mut_params.contains(&held.0);
+                break;
+            }
+            if known.is_taken(held) || known.alias(held).is_some() || changed_here(held) {
+                break;
+            }
+            if let Some(lender) = known.lender(held) {
+                held = lender;
+            } else {
+                steady = !known.is_borrowed(held);
+                break;
+            }
+        }
+        if name != "enumerate" || !steady || known.writes.get(made.0) != Some(&1) {
+            continue;
+        }
+        // The result and the copies of it, each written once.
+        let mut group = vec![*made];
+        let mut grown = true;
+        while grown {
+            grown = false;
+            for (_, _, inst) in &insts {
+                if let InstKind::Copy { dest, value: Operand::Local(from) } = inst
+                    && group.contains(from)
+                    && !group.contains(dest)
+                    && known.writes.get(dest.0) == Some(&1)
+                {
+                    group.push(*dest);
+                    grown = true;
+                }
+            }
+        }
+        let mut pairs = Vec::new();
+        let mut fine = true;
+        for &(at, index, inst) in &insts {
+            let mut read = Vec::new();
+            visit(inst, |operand| read.push(operand.clone()), |_| {});
+            let reads_group =
+                read.iter().any(|operand| matches!(operand, Operand::Local(local) if group.contains(local)));
+            if !reads_group {
+                continue;
+            }
+            match inst {
+                InstKind::Copy { dest, .. } if group.contains(dest) => {}
+                InstKind::Builtin { name, args, .. } if name == "list.len" && args.len() == 1 => {}
+                InstKind::GetIndex { dest, object: Operand::Local(_), index: pair_at }
+                    if known.writes.get(dest.0) == Some(&1) =>
+                {
+                    pairs.push((*dest, pair_at.clone(), at, index));
+                }
+                _ => fine = false,
+            }
+        }
+        // Each pair is only taken apart, after it's read, in its block.
+        for (pair, _, at, index) in &pairs {
+            let Some(block) = function.blocks.get(*at) else { continue };
+            let later = block.insts.get(index + 1..).unwrap_or_default();
+            let mut uses = 0;
+            for next in later {
+                let mut read = Vec::new();
+                visit(&next.kind, |operand| read.push(operand.clone()), |_| {});
+                if read.contains(&Operand::Local(*pair)) {
+                    match &next.kind {
+                        InstKind::GetTupleItem { value, at: 0 | 1, .. }
+                            if *value == Operand::Local(*pair) =>
+                        {
+                            uses += 1;
+                        }
+                        _ => fine = false,
+                    }
+                }
+            }
+            if uses != known.reads.get(pair.0).copied().unwrap_or(0) as usize {
+                fine = false;
+            }
+        }
+        if fine {
+            for local in &group {
+                known.enumerated.insert(local.0, *list);
+            }
+            for (pair, pair_at, _, _) in pairs {
+                known.pairs.insert(pair.0, (*list, pair_at));
+            }
+        }
     }
 }
 

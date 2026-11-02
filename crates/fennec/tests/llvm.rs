@@ -658,6 +658,43 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// `for at, item in enumerate(list)` makes no pairs when the list stays as it is, and still does
+/// when the pairs are kept, looked at whole, or the list grows while it's gone through.
+#[test]
+fn enumerates_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = r#"def total(names: list[str]) -> int:
+    mut sum = 0
+    for at, name in enumerate(names):
+        sum += at * name.len()
+    sum
+
+def main(stdout: Stdout):
+    names = ["fox", "kit", "den"]
+    stdout.print(total(names))
+    for at, name in enumerate(names):
+        if at > 0:
+            stdout.print(at, name)
+    pairs = enumerate(names)
+    stdout.print(pairs.len(), pairs[1])
+    mut grow = [1, 2, 3]
+    for at, n in enumerate(grow):
+        grow.append(n + at)
+    stdout.print(grow)
+    for at, word in enumerate(["a", "b"]):
+        kept = (at, word)
+        stdout.print(kept)
+"#;
+    for (name, how) in [("enumerates", &["--llvm"][..]), ("enumerates_release", &["--llvm", "--release"][..])]
+    {
+        let (ours, jit) = both_built(name, source, how)?;
+        assert_eq!(ours, jit);
+    }
+    Ok(())
+}
+
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

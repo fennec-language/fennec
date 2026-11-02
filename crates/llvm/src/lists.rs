@@ -623,6 +623,25 @@ impl Emit<'_, '_, '_> {
         index: &Operand,
         span: Span,
     ) -> Result<(), String> {
+        // A pair from an `enumerate` never made isn't made either: where it points in the list
+        // is checked, and kept for its parts.
+        if let Some((list, _)) = self.known.pairs.get(&dest.0).cloned() {
+            let (list, _) = self.operand(&Operand::Local(list))?;
+            let (index, _) = self.operand(index)?;
+            let position = self.position(&list, &index, span);
+            let slot = self.place_for(&Kind::Int);
+            self.line(&format!("store i64 {position}, ptr {slot}"));
+            self.pair_slots.insert(dest.0, slot);
+            // Holding nothing, letting go of it lets go of nothing.
+            let kind = self.kind_of(dest)?.clone();
+            let (held, text) = (self.slot(dest), self.text_of(&kind));
+            if kind.in_memory() {
+                self.line(&format!("store {text} zeroinitializer, ptr {held}"));
+            } else if kind.counted() {
+                self.line(&format!("store ptr null, ptr {held}"));
+            }
+            return Ok(());
+        }
         let inside = matches!(object, Operand::Local(local) if self.known.inside(*local, index));
         if let Operand::Local(local) = object
             && self.is_id_map(&self.kind_of(*local)?.clone())

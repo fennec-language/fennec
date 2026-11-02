@@ -181,7 +181,7 @@ impl FnCx<'_> {
     /// struct type, or a case of whichever enum has it.
     fn variant_fields(&mut self, name: &str, dotted: bool, subject: &Type, span: Span) -> Option<Vec<Type>> {
         if let Type::Named(owner) = subject
-            && self.checker.program.kind_of(subject) == Some(TypeKind::Enum)
+            && self.checker.program.type_info(owner).is_some_and(|info| !info.def.cases.is_empty())
         {
             let has_case = self
                 .checker
@@ -230,7 +230,7 @@ impl FnCx<'_> {
     /// A `match` over an enum has to handle every case, or have `case _`.
     fn check_cases(&mut self, subject: &Type, arms: &[MatchArm], span: Span) {
         let Type::Named(owner) = subject else { return };
-        let Some(info) = self.checker.program.type_info(owner).filter(|info| info.kind == TypeKind::Enum)
+        let Some(info) = self.checker.program.type_info(owner).filter(|info| !info.def.cases.is_empty())
         else {
             return;
         };

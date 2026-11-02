@@ -229,7 +229,7 @@ impl Parser {
         match word {
             "struct" => Ok(Item::Struct(self.type_def(start, false)?)),
             "shared" => Ok(Item::Struct(TypeDef { shared: true, ..self.type_def(start, false)? })),
-            "error" => Ok(Item::Error(self.type_def(start, false)?)),
+            "error" => Ok(Item::Error(self.error_def(start)?)),
             "enum" => Ok(Item::Enum(self.type_def(start, true)?)),
             "interface" => self.interface(start),
             "extend" => self.extension(start),
@@ -246,7 +246,25 @@ impl Parser {
         }
     }
 
+    /// An error: fields, like a struct's, or cases, like an enum's, each failing its own way:
+    /// `NotFound(path: str)`. A line that's a name and then `(` or nothing is a case.
+    fn error_def(&mut self, start: Span) -> Result<TypeDef, Diagnostic> {
+        let def = self.type_body(start, false, true)?;
+        if let (Some(field), false) = (def.fields.first(), def.cases.is_empty()) {
+            return Err(Diagnostic::new(format!("`{}` has both fields and cases", def.name), field.span)
+                .with_help(
+                    "an error has fields, like `path: str`, or cases, like `NotFound(path: str)`, not both",
+                ));
+        }
+        Ok(def)
+    }
+
     fn type_def(&mut self, start: Span, is_enum: bool) -> Result<TypeDef, Diagnostic> {
+        self.type_body(start, is_enum, false)
+    }
+
+    /// A struct's, enum's or error's name and body. An error's body may have cases.
+    fn type_body(&mut self, start: Span, is_enum: bool, is_error: bool) -> Result<TypeDef, Diagnostic> {
         let name = self.name("a type name")?;
         let generics = self.generic_params()?;
         let span = start.to(self.prev_span());
@@ -274,7 +292,14 @@ impl Parser {
                 def.methods.push(FnDef { annotations, ..self.def()? });
             } else if annotations.is_empty() && self.eat_kw(Kw::Pass) {
                 self.end_line()?;
-            } else if is_enum {
+            } else if is_enum
+                || (is_error
+                    && matches!(self.peek(), Tok::Name(_))
+                    && matches!(
+                        self.peek_at(1),
+                        Tok::P(Punct::LParen) | Tok::Newline | Tok::Dedent | Tok::Eof
+                    ))
+            {
                 def.cases.push(self.case()?);
             } else {
                 let field = self.field(true)?;

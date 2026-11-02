@@ -110,7 +110,7 @@ fn unused_imports(text: &str, base: u32, found: &mut Vec<Lint>) {
 }
 
 /// How often each name is read in a body: every time it appears, less when it's only assigned.
-fn reads(body: &[Stmt]) -> HashMap<String, i64> {
+pub(crate) fn reads(body: &[Stmt]) -> HashMap<String, i64> {
     let mut counts: HashMap<String, i64> = HashMap::new();
     let mut walked = FnDef {
         name: String::new(),

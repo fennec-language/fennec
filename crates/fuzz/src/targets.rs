@@ -97,7 +97,7 @@ const BYTES: [&str; 8] = ["\u{7f}", "é", "🦊", "\u{800}", "\u{10ffff}", "\0",
 
 const ANYTHING: [&str; 4] = ["\0", "\u{7f}", "é", "🦊"];
 
-pub(crate) const TARGETS: [Target; 9] = [
+pub(crate) const TARGETS: [Target; 10] = [
     Target { name: "lexer", corpus: &PROGRAMS, tokens: &SYNTAX, run: lexer, stuck: STUCK },
     Target { name: "parser", corpus: &PROGRAMS, tokens: &SYNTAX, run: parser, stuck: STUCK },
     Target { name: "formatter", corpus: &PROGRAMS, tokens: &SYNTAX, run: formatter, stuck: STUCK },
@@ -123,6 +123,13 @@ pub(crate) const TARGETS: [Target; 9] = [
         corpus: &["crates/fuzz/seeds/abi"],
         tokens: &ANYTHING,
         run: crate::engines::runtime,
+        stuck: STUCK,
+    },
+    Target {
+        name: "parked",
+        corpus: &["crates/fuzz/seeds/parked"],
+        tokens: &ANYTHING,
+        run: crate::parked::parked,
         stuck: STUCK,
     },
 ];

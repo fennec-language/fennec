@@ -1,0 +1,11 @@
+# Every use of `unsafe` outside comments in every Rust file in the repository, counted as uses,
+# not lines, by file. CI counts them on every change and fails when the counts differ from this
+# list, so new `unsafe` can't land without someone updating this file in the same pull request,
+# where review sees it. Each is explained where it is; the two in the self-host tests are the
+# word in test programs, and the one in the lexer is the word in its list of reserved words.
+crates/fennec/tests/selfhost.rs: 2
+crates/jit/src/runtime.rs: 4
+crates/parked/src/current.rs: 1
+crates/runtime/src/lib.rs: 4
+crates/syntax/src/token.rs: 1
+crates/wasm/src/lib.rs: 4

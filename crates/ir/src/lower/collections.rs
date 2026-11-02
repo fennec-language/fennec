@@ -107,7 +107,12 @@ impl Lowering<'_> {
             let ExprKind::Name(name) = &target.kind else {
                 return Err("it unpacks into something other than names".to_owned());
             };
-            let dest = self.named_target(target, name)?;
+            // A name made while fusing a stage is new, and holds the item it's given.
+            let dest = if name.starts_with('\0') && self.lookup(name).is_none() {
+                self.declare(name, ty.clone())
+            } else {
+                self.named_target(target, name)?
+            };
             let part = self.temporary(ty);
             self.emit(InstKind::GetTupleItem { dest: part, value: value.clone(), at }, span);
             let wanted = self.local_type(dest);

@@ -101,6 +101,11 @@ impl FnCx<'_> {
                 Flow::exit()
             }
             StmtKind::Yield(value) => {
+                self.not_under_lock(
+                    "`yield` can't pause",
+                    stmt.span,
+                    "work out the items under the lock, then yield them after the block",
+                );
                 let ty = self.expr(value);
                 // `-> Iterator[T]` says what each item it yields is.
                 if let Some(Type::Iterator(item) | Type::List(item)) = self.declared.clone()
@@ -127,6 +132,11 @@ impl FnCx<'_> {
     }
 
     fn fail(&mut self, error: &Expr) {
+        self.not_under_lock(
+            "`fail` can't leave",
+            error.span,
+            "give back a value that says what went wrong, so what the lock guards isn't left half changed",
+        );
         let ty = self.expr(error);
         if self.checker.is_error_type(&ty) || matches!(ty, Type::Errors(_)) {
             self.errors.push(ty);

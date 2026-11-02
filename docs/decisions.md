@@ -585,14 +585,44 @@ with db.transaction() as mut tx:
 **`SortedMap`, `SortedSet`, `Heap`, `Grid` and `Packed` are in `std`,** with `SortedMap` and `SortedSet` on B-trees. All of them hide their internals.
 *Why:* These are the structures people would otherwise reach for stored references to build. Written once in `std`, no program has to rebuild them, and their layout can improve without breaking anyone.
 
-**Each serialization format implements a `Writer` and `Reader` interface,** with one method per basic value and container. One generic function breaks any type down recursively, so structs need no code. A `shared` handle, a function value or a `Secret[str]` is a compile error naming the field.
+**Each serialization format implements a `Writer` and `Reader` interface,** with one method per basic value and container. One generic function breaks any type down recursively, so structs need no code.
 *Why:* Types don't know about formats and formats don't know about types, so a new format is written once and works with every struct, and a new struct works with every format.
+
+**`def serialize(self, mut out: Serializer)` and `def deserialize(mut src: Deserializer) -> Self` are the serialization protocol,** shaped like `def str`.
+- Both are generated from the fields by default: every field, with `@skip` and `@serialize(name=...)` honored, and loading goes through the normal constructor, so `where` rules run. Most types write neither.
+- A type overrides both or neither. Writing one alone is a compile error.
+- A collection writes them in plain Fennec: `out.sequence(self)`, which goes through `def iter`, or `out.map(pairs)`, read back with `src.sequence[T]()` or `src.map[K, V]()`. `std`'s `list`, `dict`, `Deque` and `SortedMap` do exactly this.
+- One pair serves every format, JSON, TOML and `std.pack` alike, so there are still no per-format overrides.
+```fennec
+struct Ring[T]:
+    _items = Buffer[T]()
+    _start = 0
+
+    def serialize(self, mut out: Serializer):
+        out.sequence(self)                  # its items in order, through def iter
+
+    def deserialize(mut src: Deserializer) -> Self:
+        mut ring = Ring[T]()
+        for item in src.sequence[T]():
+            ring.push(item)
+        return ring
+```
+A `Ring[int]` saves as `[3, 4, 5]` in JSON, not as its buffer and `_start`.
+
+**A type is serializable when all its fields are.** Otherwise it's a compile error naming the full path, with two fixes: `@skip` the field, or write the two methods.
+```
+error: `Character` can't be saved: `Character.inventory.on_change` is a function
+   = fix: `@skip` the field `on_change`, with a default
+   = fix: write `def serialize` and `def deserialize` for `Inventory`
+```
+A `shared` handle, a function value, a `Secret[str]` and an `Instant` are the values that can't be saved.
+*Why:* The name matches `@serialize`, and never collides with game words like `save` and `load`. Collections reach their natural shapes through the same public protocol any type can use, which replaces the idea that `std` collections map to those shapes inside `std`.
 
 **Structs mirror the wire format.** In JSON:
 - Numbers and strings are themselves, `True` and `False` are `true` and `false`, and `None` is `null`.
 - Lists, tuples and sets are arrays. Dicts with `str` keys, and structs, are objects.
 - An enum case is `"Case"`, or `{"Case": {...}}` when it has data. A union is tagged with its member's type name, as under Functions and types.
-- `std` collections take their natural shape: `SortedMap` is an object, `SortedSet` and `Deque` are arrays, and `Grid` is a list of rows.
+- `std` collections take their natural shape through `def serialize`: `SortedMap` is an object, `SortedSet` and `Deque` are arrays, and `Grid` is a list of rows.
 - A `Time`, a moment in UTC, is an ISO 8601 string, with fractions of a second only when it has some. In TOML it's a datetime. An `Instant` from the monotonic clock can't be saved, which is a compile error, since it means nothing outside the run that read it.
 - `bytes` are a base64 string (RFC 4648, with padding). Loading text that isn't base64 fails with `ParseError`.
 - A `Duration` is a string in the form its literals take: `"30s"`, `"1.5s"`, `"200ms"`, `"1h30min"`. Loading accepts the same forms.
@@ -611,7 +641,7 @@ json.dumps(Upload(at=clock.time(), data="hi".encode(), id=9007199254740993))
 ```
 *Why:* ISO 8601 and base64 are what every other language's JSON reader expects for times and binary data. Ints stay exact by default, since most readers hold 64 bits, and a field a browser reads says so where it's declared.
 
-There's no per-format override, like a `def json` method on a type. This replaces the earlier rule that a type overrides one format with a method named for it.
+There's no per-format override, like a `def json` method on a type; one `def serialize` and `def deserialize` serve every format. This replaces the earlier rule that a type overrides one format with a method named for it.
 *Why:* What's on the wire is what's in the struct, with nothing hidden.
 
 **Case style is an option on each call,** not on the type: `json.dumps(x, names=.camel_case)` and `json.loads[T](text, names=.camel_case)`. The styles are `.snake_case`, the default, `.camel_case`, `.pascal_case` and `.kebab_case`. A name is converted word by word, with no acronym rules: `user_id` becomes `userId` in camel case, never `userID`.
@@ -635,11 +665,42 @@ There's no per-format override, like a `def json` method on a type. This replace
 *Why:* One mechanism covers printing and every data format, and it's how `std` types keep their internals hidden. The method is `str`, not `text`, because `text` would clash with common fields like `message.text`, while `str(x)` already means "make text of this".
 
 **`std.pack` is the default binary format,** written in plain Fennec.
-- There are no field names on the wire, and a schema hash says which shape the data has.
+- v1 is flat positional binary: little-endian, small ints in fewer bytes (varints), and no names on the wire. Union members and enum cases are written by position.
+- Every pack stream or file carries a fingerprint: a compile-time hash of the exact layout of every type reachable from what's sent, its types, fields and cases, in order. A mismatch is an error value, never misread bytes.
 - `where` ranges shrink values: a field that's `where hp >= 0 and hp <= 100` takes one byte.
 - Delta encoding is built in, and quantization is opt-in.
 
 *Why:* Saves and network messages are where games and servers feel size most, and the types already say most of what a compact format needs to know.
+
+**A protocol is a union of message types.** `net.connect` stays about bytes, and `conn.messages[GameMsg]()?` puts a typed message layer on any byte stream: TCP, later QUIC, the test fake or a file. It sends in `std.pack` and checks fingerprints when it starts.
+```fennec
+struct Move:
+    unit: Id[Unit]
+    to: Vec2
+
+struct Attack:
+    unit: Id[Unit]
+    target: Id[Unit]
+
+struct Chat:
+    text: str
+
+type GameMsg = Move | Attack | Chat
+
+def play(mut conn: Connection, mut world: World) fails NetError:
+    mut wire = conn.messages[GameMsg]()?
+    wire.send(Chat(text="hello"))?
+    for msg in wire:
+        match msg:
+            case Move(unit, to): world.move(unit, to)
+            case Attack(unit, target): world.attack(unit, target)
+            case Chat(text): world.say(text)
+```
+- A fingerprint mismatch is `NetError.ProtocolMismatch(ours, theirs)`. The program decides whether to exit, prompt an update or retry.
+- `wire.send(x)` accepts only members of the union; anything else is a compile error.
+- Receiving is `for msg in wire:` and `match`, with no handler registry.
+
+*Why:* The union already says every message a protocol has, so `match` checks that each is handled, and both sides compile the same fingerprint from the same types. Keeping the typed layer separate from the connection means one protocol runs over any byte stream.
 
 **A module is in `std` if most programs need it, it's security-sensitive, or it has to be consistent everywhere.** Everything else is a kit. Only reachable code gets compiled, so unused `std` costs nothing.
 
@@ -714,11 +775,13 @@ error NetError:
     Denied(reason: str)
     Tls(reason: str)
     Status(code: int)
+    ProtocolMismatch(ours: Fingerprint, theirs: Fingerprint)
     Other(reason: str)
 ```
 - `NotFound` is a name that didn't resolve, and `Closed` is the other side hanging up during a write. Reaching the end of what was sent isn't an error.
 - `Denied` is a narrowed `Net` refusing a host or port: "this Net can reach only `api.example.com`, so it can't reach `evil.example`".
 - `Status` is for callers that turn a response into an error, as above. The client itself never returns it.
+- `ProtocolMismatch` is a typed message layer finding that the other side was built from different message types, under `std.pack`.
 
 **A test's `Net` is a fake that never touches the network.** `net.script("GET https://api.example.com/weather", Response(status=200, body=...))` sets what a request answers, and `net.requests()` lists what was sent. `listen` and `connect` work in memory, so a test can run a server and a client against each other. `fennec test --real` uses the real network.
 *Why:* One API on every platform, shaped like the libraries people and AI already know. Blocking calls in `parallel` tasks keep server code as plain as a script, which is what the MMO's server needs.
@@ -1456,6 +1519,7 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 
 ## Still open
 
+- How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
 - How a type marks that its finishing method must be called.
 - The syntax of the `mut` form of `def []`, which returns a place.
 - How replay records the order tasks reach a `shared` value or a channel.

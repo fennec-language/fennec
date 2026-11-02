@@ -784,4 +784,56 @@ impl Emit<'_, '_, '_> {
             Operand::None => Kind::Unit,
         })
     }
+
+    /// `strip` (0), `lstrip` (1) or `rstrip` (2) of a header: an inline ASCII string is cut
+    /// here, from its bytes, and anything else as the runtime does it.
+    pub(crate) fn header_strip(&mut self, text: &str, which: i64) -> String {
+        let in_block = self.header_in_block(text);
+        let ascii = self.inline_ascii(text);
+        let (inline, quick) = (self.temp(), self.temp());
+        self.line(&format!("{inline} = xor i1 {in_block}, true"));
+        self.line(&format!("{quick} = and i1 {inline}, {ascii}"));
+        let (fast, slow, done) =
+            (self.label("strip_inline"), self.label("strip_block"), self.label("strip_done"));
+        self.line(&format!("br i1 {quick}, label %{fast}, label %{slow}, !prof !8"));
+        self.start_block(&fast);
+        // A space, a tab, a line feed, a vertical tab, a form feed or a carriage return.
+        let space = |byte: &str, name: &str| {
+            format!(
+                "  %{name}_off = sub i8 {byte}, 9\n  %{name}_ctl = icmp ult i8 %{name}_off, 5\n  %{name}_sp = icmp eq i8 {byte}, 32\n  %{name} = or i1 %{name}_ctl, %{name}_sp\n"
+            )
+        };
+        let (front, back) = (space("%fb", "fw"), space("%bb", "bw"));
+        self.module.add_helper(
+            "fen_strip_range",
+            format!(
+                "define internal void @fen_strip_range(ptr %body, i64 %n, i64 %which, ptr %out) #0 {{\nentry:\n  %keep_front = icmp eq i64 %which, 2\n  br i1 %keep_front, label %ends, label %front_loop\nfront_loop:\n  %s = phi i64 [ 0, %entry ], [ %s_next, %front_on ]\n  %s_in = icmp ult i64 %s, %n\n  br i1 %s_in, label %front_test, label %ends\nfront_test:\n  %fp = getelementptr inbounds i8, ptr %body, i64 %s\n  %fb = load i8, ptr %fp\n{front}  br i1 %fw, label %front_on, label %ends\nfront_on:\n  %s_next = add i64 %s, 1\n  br label %front_loop\nends:\n  %start = phi i64 [ 0, %entry ], [ %s, %front_loop ], [ %s, %front_test ]\n  %keep_back = icmp eq i64 %which, 1\n  br i1 %keep_back, label %scanned, label %back_loop\nback_loop:\n  %e = phi i64 [ %n, %ends ], [ %e_less, %back_on ]\n  %e_in = icmp ugt i64 %e, %start\n  br i1 %e_in, label %back_test, label %scanned\nback_test:\n  %e_less = sub i64 %e, 1\n  %bp = getelementptr inbounds i8, ptr %body, i64 %e_less\n  %bb = load i8, ptr %bp\n{back}  br i1 %bw, label %back_on, label %scanned\nback_on:\n  br label %back_loop\nscanned:\n  %end = phi i64 [ %n, %ends ], [ %e, %back_loop ], [ %e, %back_test ]\n  store i64 %start, ptr %out\n  %end_at = getelementptr inbounds i64, ptr %out, i64 1\n  store i64 %end, ptr %end_at\n  ret void\n}}\n\n"
+            ),
+        );
+        let (bytes, length) = (self.header_bytes(text), self.inline_length(text));
+        let range = self.label("%strip_range");
+        let _ = writeln!(self.allocas, "  {range} = alloca [2 x i64]");
+        self.line(&format!(
+            "call void @fen_strip_range(ptr {bytes}, i64 {length}, i64 {which}, ptr {range})"
+        ));
+        let (end_at, start, end, size, from) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{start} = load i64, ptr {range}"));
+        self.line(&format!("{end_at} = getelementptr inbounds i64, ptr {range}, i64 1"));
+        self.line(&format!("{end} = load i64, ptr {end_at}"));
+        self.line(&format!("{size} = sub i64 {end}, {start}"));
+        self.line(&format!("{from} = getelementptr inbounds i8, ptr {bytes}, i64 {start}"));
+        let piece = self.inline_from(&from, &size);
+        let fast_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&slow);
+        let stripped = self.on_blocks([text], |emit, [block]| emit.strip_text(&block, which));
+        let other = self.text_from_block(&stripped);
+        let slow_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let result = self.temp();
+        self.line(&format!("{result} = phi {HEADER} [ {piece}, %{fast_end} ], [ {other}, %{slow_end} ]"));
+        result
+    }
 }

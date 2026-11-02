@@ -638,8 +638,11 @@ impl Emit<'_, '_, '_> {
                     "str.rstrip" => 2,
                     _ => 0,
                 };
-                let stripped = self.on_blocks([&text], |emit, [block]| emit.strip_text(&block, which));
-                let stripped = self.text_value(&stripped);
+                if self.headers() {
+                    let stripped = self.header_strip(&text, which);
+                    return self.assign(dest, &stripped);
+                }
+                let stripped = self.strip_text(&text, which);
                 self.assign(dest, &stripped)
             }),
             _ => return None,

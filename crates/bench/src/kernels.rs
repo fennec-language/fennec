@@ -114,6 +114,14 @@ impl Kernel {
         output.status.success().then(|| places(&String::from_utf8_lossy(&output.stdout)))
     }
 
+    /// The Fennec file `fennec build` takes, when the kernel is one file with a Rust twin of its
+    /// own: not a second twin, and not the self-hosted front end.
+    pub(crate) fn single_file(&self) -> Option<&str> {
+        let own_twin = matches!(&self.twin, Twin::Source(_)) && !self.name.contains('.');
+        let file = Path::new(&self.path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("fen"));
+        (own_twin && file).then_some(self.path.as_str())
+    }
+
     /// Its twin, built if it needs to be.
     pub(crate) fn twin(&self, fennec: &Path, out_dir: &Path, checks: Overflow) -> Result<Program, String> {
         match &self.twin {

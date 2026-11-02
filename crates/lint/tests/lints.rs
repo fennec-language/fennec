@@ -161,6 +161,34 @@ fn assert_is_for_tests() {
 }
 
 #[test]
+fn an_if_chain_comparing_one_name_with_values_is_a_match() {
+    let source = "def name(n: int) -> str:\n    if n == 1:\n        \"one\"\n    elif 2 == n:\n        x = \"two\"\n        x\n    elif n == 3: \"three\"\n    else:\n        \"many\"\n";
+    assert_eq!(rules(source), ["elif-to-match"]);
+    assert_eq!(
+        fixed(source),
+        "def name(n: int) -> str:\n    match n:\n        case 1:\n            \"one\"\n        case 2:\n            x = \"two\"\n            x\n        case 3:\n            \"three\"\n        case _:\n            \"many\"\n"
+    );
+    let open = "def f(text: str):\n    if text == \"a\":\n        g()\n    elif text == \"b\":\n        h()\n    elif text == \"c\":\n        k()\n";
+    assert!(
+        fixed(open).ends_with("        case _:\n            pass\n"),
+        "no `else` does nothing: {}",
+        fixed(open)
+    );
+    let nested = "def f(n: int):\n    if n == 1:\n        if g():\n            h()\n    elif n == 2:\n        h()\n    elif n == 3:\n        k()\n    g()\n";
+    assert_eq!(
+        fixed(nested),
+        "def f(n: int):\n    match n:\n        case 1:\n            if g():\n                h()\n        case 2:\n            h()\n        case 3:\n            k()\n        case _:\n            pass\n    g()\n",
+        "a block inside keeps its lines, and what follows the chain stays on its own"
+    );
+    let two = "def f(n: int):\n    if n == 1:\n        g()\n    elif n == 2:\n        h()\n";
+    assert_eq!(rules(two), NONE, "two branches read fine as they are");
+    let mixed = "def f(n: int, m: int):\n    if n == 1:\n        g()\n    elif m == 2:\n        h()\n    elif n == 3:\n        k()\n";
+    assert_eq!(rules(mixed), NONE, "two names");
+    let commented = "def f(n: int):\n    if n == 1:\n        g()\n    # the rare one\n    elif n == 2:\n        h()\n    elif n == 3:\n        k()\n";
+    assert_eq!(rules(commented), NONE, "a comment the rewrite would lose");
+}
+
+#[test]
 fn pass_is_only_for_an_empty_block() {
     assert_eq!(rules("def f():\n    pass\n"), NONE);
     let source = "def f():\n    pass\n    g()\n";

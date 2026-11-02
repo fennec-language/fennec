@@ -81,6 +81,19 @@ impl Emit<'_, '_, '_> {
             self.print_text(")");
             return Ok(());
         }
+        if *kind == Kind::MaybeText {
+            let none = self.header_is_none(value);
+            let (holds, missing, joined) = (self.label("holds"), self.label("none"), self.label("printed"));
+            self.line(&format!("br i1 {none}, label %{missing}, label %{holds}"));
+            self.start_block(&holds);
+            self.print_one(value, &Kind::Str)?;
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&missing);
+            self.print_text("None");
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&joined);
+            return Ok(());
+        }
         if let Kind::Maybe(inner) = kind {
             let none = self.temp();
             self.line(&format!("{none} = icmp eq ptr {value}, null"));

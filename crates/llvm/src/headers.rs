@@ -306,4 +306,13 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{address} = inttoptr i64 {chosen} to ptr"));
         address
     }
+
+    /// Whether an optional string's header is `None`: all zero, which no string is.
+    pub(crate) fn header_is_none(&mut self, header: &str) -> String {
+        let (first, last) = (self.header_word(header, 0), self.header_word(header, 2));
+        let (both, none) = (self.temp(), self.temp());
+        self.line(&format!("{both} = or i64 {first}, {last}"));
+        self.line(&format!("{none} = icmp eq i64 {both}, 0"));
+        none
+    }
 }

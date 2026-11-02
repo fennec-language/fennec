@@ -670,6 +670,10 @@ impl Emit<'_, '_, '_> {
         };
         match dest {
             Some(dest) if self.kind_of(dest)? == &value_kind => self.assign(dest, &value),
+            // An optional string is the same header.
+            Some(dest) if value_kind == Kind::Str && *self.kind_of(dest)? == Kind::MaybeText => {
+                self.assign(dest, &value)
+            }
             Some(dest) => {
                 // Given where an optional's wanted.
                 let optional = self.kind_of(dest)?.clone();

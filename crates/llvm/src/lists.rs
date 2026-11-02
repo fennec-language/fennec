@@ -116,33 +116,36 @@ impl Emit<'_, '_, '_> {
         let wanted = self.kind_of(dest)?.clone();
         // A list's items hold an optional as an enum, where a local holds it as one word: what a
         // `Some` holds, and as `None` never writes that word, it's null for `None`.
-        let (kind, at, access) = if matches!(wanted, Kind::Maybe(_)) && self.is_optional(kind) {
-            let (_, fields) = self.case_of(kind, "Some")?;
-            let (_, offset, field) = fields.first().cloned().ok_or("an optional with nothing in it")?;
-            let (base, inner) = if matches!(kind, Kind::Boxed(_)) {
-                let block = self.temp();
-                self.line(&format!("{block} = load ptr, ptr {at}{access}"));
-                (self.fields_at(&block, kind), "")
+        let (kind, at, access) =
+            if matches!(wanted, Kind::Maybe(_) | Kind::MaybeText) && self.is_optional(kind) {
+                let (_, fields) = self.case_of(kind, "Some")?;
+                let (_, offset, field) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+                let (base, inner) = if matches!(kind, Kind::Boxed(_)) {
+                    let block = self.temp();
+                    self.line(&format!("{block} = load ptr, ptr {at}{access}"));
+                    (self.fields_at(&block, kind), "")
+                } else {
+                    (at.to_owned(), access)
+                };
+                // A header in the enum and in the local: `None` leaves it all zero.
+                if field == Some(Kind::Str) && wanted == Kind::MaybeText {
+                    let place = self.offset(&base, offset);
+                    let header = self.load_field(&Kind::Str, &place, inner);
+                    if !self.known.is_borrowed(dest) {
+                        self.retain_text(&header);
+                    }
+                    return self.assign(dest, &header);
+                }
+                (wanted.clone(), self.offset(&base, offset), inner)
             } else {
-                (at.to_owned(), access)
+                (kind.clone(), at.to_owned(), access)
             };
-            // A header in the enum, a block in the local: `None`'s zero header gives null.
-            if field == Some(Kind::Str) && self.headers() {
-                let place = self.offset(&base, offset);
-                let header = self.load_field(&Kind::Str, &place, inner);
-                let block = self.owned_text_block(&header);
-                return self.assign(dest, &block);
-            }
-            (wanted.clone(), self.offset(&base, offset), inner)
-        } else {
-            (kind.clone(), at.to_owned(), access)
-        };
         let (kind, at) = (&kind, at.as_str());
         if kind.in_memory() {
             return self.assign_memory(dest, at, access);
         }
         // A string a dict holds as a block, read into a local that holds a header.
-        if *kind == Kind::TextBlock && wanted == Kind::Str {
+        if *kind == Kind::TextBlock && matches!(wanted, Kind::Str | Kind::MaybeText) {
             let block = self.load_field(kind, at, access);
             let header = self.text_from_borrowed_block(&block);
             return self.assign(dest, &header);
@@ -417,6 +420,15 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn is_case(&mut self, dest: LocalId, value: &Operand, case: &str) -> Result<(), String> {
         let (base, kind) = self.operand(value)?;
+        if kind == Kind::MaybeText {
+            let none = self.header_is_none(&base);
+            if case == "None" {
+                return self.assign(dest, &none);
+            }
+            let some = self.temp();
+            self.line(&format!("{some} = xor i1 {none}, true"));
+            return self.assign(dest, &some);
+        }
         if matches!(kind, Kind::Maybe(_)) {
             let cc = if case == "None" { "eq" } else { "ne" };
             let same = self.temp();

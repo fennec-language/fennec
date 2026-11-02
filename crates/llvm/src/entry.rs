@@ -159,8 +159,22 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     out += &thunks;
     let _ = writeln!(
         out,
-        "define i32 @main(i32 %argc, ptr %argv) {{\nstart:\n  br label %head\nhead:\n  %at = phi i64 [ 0, %start ], [ %next, %word ]\n  %more = icmp ult i64 %at, {count}\n  br i1 %more, label %word, label %done\nword:\n  %place = getelementptr [{count} x i64], ptr @fennec_image, i64 0, i64 %at\n  %value = load i64, ptr %place\n  call void @fennec_aot_image(i64 %value)\n  %next = add i64 %at, 1\n  br label %head\ndone:\n  %code = call i32 @fennec_aot_run(ptr @fennec_entry, i64 {})\n  ret i32 %code\n}}",
+        "define i32 @main(i32 %argc, ptr %argv) {{\nstart:\n  br label %head\nhead:\n  %at = phi i64 [ 0, %start ], [ %next, %word ]\n  %more = icmp ult i64 %at, {count}\n  br i1 %more, label %word, label %done\nword:\n  %place = getelementptr [{count} x i64], ptr @fennec_image, i64 0, i64 %at\n  %value = load i64, ptr %place\n  call void @fennec_aot_image(i64 %value)\n  %next = add i64 %at, 1\n  br label %head\ndone:\n  %code = call i32 @fennec_aot_run(ptr @fennec_entry, i64 {})\n{{RC}}  ret i32 %code\n}}",
         bytes.len()
     );
-    Ok(out)
+    // Diagnostic: each counting function's retains and releases, on stderr at the end.
+    let mut dump = String::new();
+    if !shared.counted.is_empty() {
+        out += "declare i32 @dprintf(i32, ptr, ...)\n@rc.format = private constant [17 x i8] c\"rc %s %lld %lld\\0A\\00\"\n";
+        for (at, name) in shared.counted.iter().enumerate() {
+            let length = name.len() + 1;
+            let _ = writeln!(out, "@\"rc.{name}\" = dso_local global [2 x i64] zeroinitializer");
+            let _ = writeln!(out, "@rc.name{at} = private constant [{length} x i8] c\"{name}\\00\"");
+            let _ = write!(
+                dump,
+                "  %rr{at}p = getelementptr [2 x i64], ptr @\"rc.{name}\", i64 0, i64 0\n  %rr{at} = load i64, ptr %rr{at}p\n  %rl{at}p = getelementptr [2 x i64], ptr @\"rc.{name}\", i64 0, i64 1\n  %rl{at} = load i64, ptr %rl{at}p\n  call i32 (i32, ptr, ...) @dprintf(i32 2, ptr @rc.format, ptr @rc.name{at}, i64 %rr{at}, i64 %rl{at})\n"
+            );
+        }
+    }
+    Ok(out.replace("{RC}", &dump))
 }

@@ -73,6 +73,8 @@ pub struct Shared {
     pub shapes: BTreeMap<String, u32>,
     /// Each kind of dict's symbol for its shape's number, and what it holds.
     pub dicts: BTreeMap<String, (Word, Word)>,
+    /// Diagnostic: the functions counting their retains and releases (`FENNEC_RC_PROFILE`).
+    pub counted: std::collections::BTreeSet<String>,
 }
 
 /// The layouts of everything a program defines, generic types' copies included, and of the

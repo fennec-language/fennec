@@ -779,8 +779,24 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// Diagnostic: counts one more retain (0) or release (1) for this function.
+    fn rc_count(&mut self, which: usize) {
+        if std::env::var_os("FENNEC_RC_PROFILE").is_none() {
+            return;
+        }
+        let name = self.function.name.clone();
+        self.module.shared.counted.insert(name.clone());
+        self.declare(&format!("@\"rc.{name}\" = external global [2 x i64]"));
+        let (at, old, new) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{at} = getelementptr [2 x i64], ptr @\"rc.{name}\", i64 0, i64 {which}"));
+        self.line(&format!("{old} = load i64, ptr {at}"));
+        self.line(&format!("{new} = add i64 {old}, 1"));
+        self.line(&format!("store i64 {new}, ptr {at}"));
+    }
+
     /// One more owner for a block.
     pub(crate) fn retain(&mut self, block: &str) {
+        self.rc_count(0);
         let (count, more) = (self.temp(), self.temp());
         self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
         self.line(&format!("{more} = add i64 {count}, 1"));
@@ -796,6 +812,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{none} = icmp eq ptr {block}, null"));
         self.line(&format!("br i1 {none}, label %{done}, label %{held}"));
         self.start_block(&held);
+        self.rc_count(1);
         let (count, fewer, gone) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
         self.line(&format!("{fewer} = add i64 {count}, -1"));

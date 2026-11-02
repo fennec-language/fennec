@@ -1,7 +1,8 @@
 name: Suite report
 
 # Every kernel built by `fennec build --llvm --release` beside its overflow-checked Rust twin:
-# counted with Valgrind on x86 and timed on x86 and Arm, after each push to main and on demand.
+# counted with Valgrind on x86 and timed on x86 and Arm, best of ten runs that take turns with
+# the twin, with the median beside it, after each push to main and on demand.
 # One table goes on the run's summary page, and each push's numbers join `history.jsonl` on the
 # `bench-history` branch, so trends show. Nothing waits on this, and being slow never fails it:
 # only a kernel that prints something other than its twin does.
@@ -46,7 +47,7 @@ jobs:
       - name: Measure every kernel against its twin
         env:
           OS: ${{ matrix.os }}
-        run: ./target/release/fennec-bench llvm-suite --runs 7 --json "suite-$OS.json"
+        run: ./target/release/fennec-bench llvm-suite --runs 10 --json "suite-$OS.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -78,7 +79,8 @@ jobs:
           shown = lambda value: "-" if value is None else f"{value:.0f}"
           header = ["kernel"]
           for run in runs:
-              header += [f"instructions % ({run['platform']})", f"time % ({run['platform']})"]
+              platform = run["platform"]
+              header += [f"instructions % ({platform})", f"best time % ({platform})", f"median % ({platform})"]
           print("## Suite report: LLVM against Rust\n")
           print("| " + " | ".join(header + ["notes"]) + " |")
           print("|---" + "|---:" * (len(header) - 1) + "|---|")
@@ -87,7 +89,7 @@ jobs:
               cells, notes = [name], []
               for run in runs:
                   kernel = next((k for k in run["kernels"] if k["name"] == name), {})
-                  cells += [shown(kernel.get("instructions")), shown(kernel.get("time"))]
+                  cells += [shown(kernel.get(key)) for key in ("instructions", "time", "median")]
                   if kernel.get("problem"):
                       notes.append(f"{run['platform']}: {kernel['problem']}")
                   elif kernel.get("noisy"):
@@ -96,8 +98,10 @@ jobs:
           print()
           for run in runs:
               print(f"- {run['platform']}: geometric mean {shown(run['instructions'])}% by instructions, "
-                    f"{shown(run['time'])}% by time; slowest {run['slowest'] or '-'}")
-          print("\nEach is the overflow-checked Rust twin's count or median time over LLVM's: 100 matches Rust, higher is faster.")
+                    f"{shown(run['time'])}% by best time, {shown(run.get('median'))}% by median time; "
+                    f"slowest {run['slowest'] or '-'}")
+          print("\nEach is the overflow-checked Rust twin's count or time over LLVM's: 100 matches Rust, higher is faster. "
+                "Each side runs ten times, taking turns, and its best and median runs are shown.")
           TABLE
       # Only main's own runs join the history, one line per machine.
       - name: Add the run to the history

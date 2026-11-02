@@ -1,11 +1,13 @@
 //! `fennec-bench llvm-suite`: every kernel built by `fennec build --llvm --release` beside its
 //! overflow-checked Rust twin, the way the LLVM lane compares them. Each is counted where
-//! instructions can be counted, and timed on whatever machine this runs on, taking turns with
-//! its twin. Speeds are a percentage of the twin's: 100 matches Rust, and higher is faster.
+//! instructions can be counted, and timed on whatever machine this runs on: it and its twin run
+//! ten times each, taking turns and swapping which goes first, and each side's best run counts,
+//! which filters out other work on a shared machine. The medians stay beside them, so noise
+//! shows. Speeds are a percentage of the twin's: 100 matches Rust, and higher is faster.
 //!
 //! It prints one Markdown table, and with `--json PATH` writes the same as one JSON object for a
-//! history of runs. Time on a shared machine wanders, so each kernel's spread is shown, and one
-//! that wanders too far is called noisy. Nothing here fails for being slow: only a kernel that
+//! history of runs. Each kernel's spread is shown too, and one whose times wander too far is
+//! called noisy. Nothing here fails for being slow: only a kernel that
 //! prints something other than its twin does.
 
 use std::fmt::Write as _;
@@ -24,9 +26,11 @@ const NOISY: f64 = 0.10;
 /// What one kernel came to.
 struct Row {
     name: String,
-    /// Instructions and time as a percentage of the twin's speed, when they could be measured.
+    /// Instructions, best time and median time as a percentage of the twin's speed, when they
+    /// could be measured.
     instructions: Option<f64>,
     time: Option<f64>,
+    median: Option<f64>,
     /// The spread of the slower of the two's middle runs, as a share of its median.
     spread: f64,
     /// Why it has no numbers: it doesn't build, or it prints the wrong thing.
@@ -40,15 +44,21 @@ fn sorted(times: &[Duration]) -> Vec<f64> {
     seconds
 }
 
-/// The median of sorted times, and their spread: the range of all but the fastest and slowest
-/// run, once there are five or more, over the median.
-fn median_and_spread(times: &[Duration]) -> (f64, f64) {
+/// The best of some times, their median, and their spread: the range of all but the fastest and
+/// slowest run, once there are five or more, over the median.
+fn summary(times: &[Duration]) -> (f64, f64, f64) {
     let seconds = sorted(times);
+    let best = seconds.first().copied().unwrap_or(0.0);
     let middle = seconds.get(seconds.len() / 2).copied().unwrap_or(0.0);
     let kept =
         if seconds.len() >= 5 { seconds.get(1..seconds.len() - 1).unwrap_or(&seconds) } else { &seconds };
     let range = kept.last().copied().unwrap_or(0.0) - kept.first().copied().unwrap_or(0.0);
-    (middle, if middle > 0.0 { range / middle } else { 0.0 })
+    (best, middle, if middle > 0.0 { range / middle } else { 0.0 })
+}
+
+/// The twin's time over ours, as a percentage.
+fn speed(rust: f64, mine: f64) -> Option<f64> {
+    (mine > 0.0).then(|| rust / mine * 100.0)
 }
 
 /// Builds a kernel through LLVM into `out_dir`, or says why it doesn't build.
@@ -66,13 +76,26 @@ fn built(fennec: &Path, source: &str, out_dir: &Path, name: &str) -> Result<Path
     Err(said.lines().next().unwrap_or("it didn't build").trim_start_matches("error: ").to_owned())
 }
 
-/// Runs a kernel and its twin `runs` times each, taking turns, and compares them.
+/// Runs a kernel and its twin `runs` times each, taking turns and swapping which goes first, and
+/// compares them.
 fn measured(kernel: &Kernel, llvm: &Program, twin: &Program, counter: Option<&Counter>, runs: usize) -> Row {
-    let mut row =
-        Row { name: kernel.name.clone(), instructions: None, time: None, spread: 0.0, problem: None };
+    let mut row = Row {
+        name: kernel.name.clone(),
+        instructions: None,
+        time: None,
+        median: None,
+        spread: 0.0,
+        problem: None,
+    };
     let (mut ours, mut theirs) = (Vec::with_capacity(runs), Vec::with_capacity(runs));
-    for _ in 0..runs {
-        match (llvm.run(), twin.run()) {
+    for round in 0..runs {
+        let ran = if round % 2 == 0 {
+            (llvm.run(), twin.run())
+        } else {
+            let rust = twin.run();
+            (llvm.run(), rust)
+        };
+        match ran {
             (Ok(mine), Ok(rust)) if kernel.output_hash(&mine.stdout) == kernel.output_hash(&rust.stdout) => {
                 ours.push(mine.took);
                 theirs.push(rust.took);
@@ -87,8 +110,10 @@ fn measured(kernel: &Kernel, llvm: &Program, twin: &Program, counter: Option<&Co
             }
         }
     }
-    let ((mine, my_spread), (rust, rust_spread)) = (median_and_spread(&ours), median_and_spread(&theirs));
-    row.time = (mine > 0.0).then(|| rust / mine * 100.0);
+    let ((my_best, my_median, my_spread), (rust_best, rust_median, rust_spread)) =
+        (summary(&ours), summary(&theirs));
+    row.time = speed(rust_best, my_best);
+    row.median = speed(rust_median, my_median);
     row.spread = my_spread.max(rust_spread);
     if let Some(counter) = counter
         && let (Some(mine), Some(rust)) = (counter.count(llvm), counter.count(twin))
@@ -125,7 +150,8 @@ fn slowest(rows: &[Row]) -> Option<(&str, f64)> {
 /// The table, then the geometric means and the slowest kernel.
 fn table(rows: &[Row], counter: Option<&Counter>) -> String {
     let mut text = format!("## LLVM against Rust on {}\n\n", platform());
-    text.push_str("| kernel | instructions % | time % | spread | |\n|---|---:|---:|---:|---|\n");
+    text.push_str("| kernel | instructions % | best time % | median time % | spread | |\n");
+    text.push_str("|---|---:|---:|---:|---:|---|\n");
     for row in rows {
         let note = match &row.problem {
             Some(problem) => problem.replace('|', "\\|"),
@@ -136,19 +162,22 @@ fn table(rows: &[Row], counter: Option<&Counter>) -> String {
             if row.problem.is_some() { "-".to_owned() } else { format!("{:.0}%", row.spread * 100.0) };
         let _ = writeln!(
             text,
-            "| {} | {} | {} | {spread} | {note} |",
+            "| {} | {} | {} | {} | {spread} | {note} |",
             row.name,
             percent(row.instructions),
-            percent(row.time)
+            percent(row.time),
+            percent(row.median)
         );
     }
     let instructions = geomean(rows.iter().filter_map(|row| row.instructions));
     let time = geomean(rows.iter().filter_map(|row| row.time));
+    let median = geomean(rows.iter().filter_map(|row| row.median));
     let _ = write!(
         text,
-        "\nGeometric mean: {}% by instructions, {}% by time.",
+        "\nGeometric mean: {}% by instructions, {}% by best time, {}% by median time.",
         percent(instructions),
-        percent(time)
+        percent(time),
+        percent(median)
     );
     if let Some((name, speed)) = slowest(rows) {
         let _ = write!(text, " Slowest: {name}, at {speed:.0}% of its twin's speed.");
@@ -157,8 +186,9 @@ fn table(rows: &[Row], counter: Option<&Counter>) -> String {
         text.push_str(" Nothing could count instructions here.");
     }
     text.push_str(
-        "\n\nEach is the overflow-checked Rust twin's count or median time over LLVM's, so 100 matches \
-         Rust and higher is faster. Spread is the range of the middle runs over the median.\n",
+        "\n\nEach is the overflow-checked Rust twin's count or time over LLVM's, so 100 matches Rust and \
+         higher is faster. Times are each side's best and median of runs that take turns. Spread is \
+         the range of the middle runs over the median.\n",
     );
     text
 }
@@ -174,6 +204,7 @@ fn json(rows: &[Row]) -> Json {
             ("name", Json::string(row.name.as_str())),
             ("instructions", number(row.instructions)),
             ("time", number(row.time)),
+            ("median", number(row.median)),
             ("spread", number(Some(row.spread * 100.0))),
             ("noisy", Json::Bool(row.problem.is_none() && row.spread > NOISY)),
             ("problem", row.problem.as_ref().map_or(Json::Null, |problem| Json::string(problem.as_str()))),
@@ -184,6 +215,7 @@ fn json(rows: &[Row]) -> Json {
         ("commit", Json::string(std::env::var("GITHUB_SHA").unwrap_or_default())),
         ("instructions", number(geomean(rows.iter().filter_map(|row| row.instructions)))),
         ("time", number(geomean(rows.iter().filter_map(|row| row.time)))),
+        ("median", number(geomean(rows.iter().filter_map(|row| row.median)))),
         ("slowest", slowest(rows).map_or(Json::Null, |(name, _)| Json::string(name))),
         ("kernels", Json::Array(kernels.collect())),
     ])
@@ -209,6 +241,7 @@ pub(crate) fn run(
                 name: kernel.name.clone(),
                 instructions: None,
                 time: None,
+                median: None,
                 spread: 0.0,
                 problem: Some(format!("doesn't build: {problem}")),
             },
@@ -238,12 +271,13 @@ pub(crate) fn run(
 mod tests {
     use std::time::Duration;
 
-    use super::{geomean, median_and_spread};
+    use super::{geomean, summary};
 
     #[test]
-    fn the_spread_leaves_out_the_fastest_and_slowest_run() {
+    fn the_best_run_counts_and_the_spread_leaves_out_the_fastest_and_slowest() {
         let times: Vec<Duration> = [10, 11, 12, 13, 40].iter().map(|ms| Duration::from_millis(*ms)).collect();
-        let (median, spread) = median_and_spread(&times);
+        let (best, median, spread) = summary(&times);
+        assert!((best - 0.010).abs() < 1e-9);
         assert!((median - 0.012).abs() < 1e-9);
         assert!((spread - 2.0 / 12.0).abs() < 1e-9, "{spread}");
     }

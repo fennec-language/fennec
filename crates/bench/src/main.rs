@@ -79,7 +79,7 @@ fn budgets(mut args: impl Iterator<Item = String>) -> std::result::Result<bool, 
 
 fn llvm_suite(mut args: impl Iterator<Item = String>) -> std::result::Result<bool, String> {
     let (mut fennec, mut runs, mut kernels) =
-        (PathBuf::from("target/release/fennec"), 7, PathBuf::from("bench/kernels"));
+        (PathBuf::from("target/release/fennec"), 10, PathBuf::from("bench/kernels"));
     let mut json = None;
     while let Some(flag) = args.next() {
         let value = args.next().ok_or_else(|| format!("`{flag}` needs a value"))?;

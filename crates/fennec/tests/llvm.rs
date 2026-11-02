@@ -531,6 +531,25 @@ fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Resul
     Ok(())
 }
 
+/// A copy that's the last thing done with its source takes the source's owner over, so a
+/// list made by a comprehension and then changed isn't copied. A source read again still
+/// keeps its own value.
+#[test]
+fn the_last_copy_of_a_list_takes_it_over() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let counts = counts_of(
+        "last_copy",
+        "def main(stdout: Stdout):\n    mut marks = [0 for _ in range(1000)]\n    for i in range(1000):\n        marks[i] = i\n    stdout.print(marks[999])\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    same_as_the_jit(
+        "copies_kept",
+        "def main(stdout: Stdout):\n    mut a = [1, 2, 3]\n    mut b = copy(a)\n    b[0] = 9\n    stdout.print(a, b)\n    mut c = [0 for _ in range(3)]\n    d = c\n    c[1] = 5\n    stdout.print(c, d)\n    mut keep: list[list[int]] = []\n    for i in range(3):\n        row = [i, i]\n        mut held = copy(row)\n        held[0] = 7\n        keep.append(held)\n        keep.append(row)\n    stdout.print(keep)\n",
+    )
+}
+
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

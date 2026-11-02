@@ -1185,6 +1185,34 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store ptr {changed}, ptr {slot}"));
                 Ok(())
             }
+            ("Buffer.extend", [Operand::Local(buffer), other]) => {
+                let (other, _) = self.operand(other)?;
+                self.declare("declare ptr @fennec_list_extend(ptr, ptr) nounwind");
+                let (slot, list, grown) = (self.slot(*buffer), self.temp(), self.temp());
+                self.line(&format!("{list} = load ptr, ptr {slot}"));
+                self.line(&format!("{grown} = call ptr @fennec_list_extend(ptr {list}, ptr {other})"));
+                self.line(&format!("store ptr {grown}, ptr {slot}"));
+                Ok(())
+            }
+            // The runtime opens a zeroed slot at the place, failing outside the buffer, and
+            // the item goes in it.
+            ("Buffer.insert", [Operand::Local(buffer), at, value]) => {
+                let item = list_item(&self.kind_of(*buffer)?.clone())?;
+                let held = self.item_kind(item)?;
+                let (place, _) = self.operand(at)?;
+                self.declare("declare ptr @fennec_buffer_insert(ptr, i64, i64, i64) nounwind");
+                let (slot, list, grown) = (self.slot(*buffer), self.temp(), self.temp());
+                self.line(&format!("{list} = load ptr, ptr {slot}"));
+                self.line(&format!(
+                    "{grown} = call ptr @fennec_buffer_insert(ptr {list}, i64 {place}, i64 {from}, i64 {to})"
+                ));
+                self.leave_if_failed();
+                self.line(&format!("store ptr {grown}, ptr {slot}"));
+                let memory = held.memory(self.module.layouts);
+                let opened = self.item_address(&grown, &memory, &place);
+                self.fill(&held, value, &opened, ITEM_ACCESS)
+            }
+            ("Buffer.remove", [_, _]) => self.pop(dest, args, span),
             _ => Err(format!("it calls `{name}`, which this backend doesn't take yet")),
         }
     }

@@ -1347,6 +1347,8 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                 name.as_str(),
                 "math.sqrt"
                     | "Buffer.pop"
+                    | "Buffer.insert"
+                    | "Buffer.remove"
                     | "json.dumps"
                     | "json.loads"
                     | "str.code"

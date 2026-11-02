@@ -796,7 +796,8 @@ def main(stdout: Stdout, process: Process):
     Ok(())
 }
 
-/// A `Buffer` popped empty fails as the interpreter says, not as a list's `pop` does.
+/// A `Buffer` popped empty, or inserted into past its end, fails as the interpreter says, not
+/// as a list does.
 #[test]
 fn an_empty_buffer_fails_to_pop_like_the_jit() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
@@ -805,6 +806,10 @@ fn an_empty_buffer_fails_to_pop_like_the_jit() -> std::io::Result<()> {
     same_message_as_the_jit(
         "empty_buffer",
         "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.push(\"fox\")\n    stdout.print(kept.pop())\n    stdout.print(kept.pop())\n",
+    )?;
+    same_message_as_the_jit(
+        "buffer_insert",
+        "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.insert(0, \"fox\")\n    kept.insert(1, \"kit\")\n    stdout.print(kept[0], kept[1])\n    kept.insert(5, \"den\")\n",
     )
 }
 

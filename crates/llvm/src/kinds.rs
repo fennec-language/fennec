@@ -94,7 +94,8 @@ pub(crate) enum Kind {
     Float,
     Bool,
     Unit,
-    /// A capability, which needs nothing at run time.
+    /// A capability: the address of a block saying what it may do, owned like any block. The
+    /// whole ones are the runtime's, and never go.
     Cap,
     /// A plain struct, by its layout's number, in a slot of its own.
     Struct(u32),
@@ -158,7 +159,8 @@ impl Kind {
     pub(crate) fn counted(&self) -> bool {
         matches!(
             self,
-            Kind::List(_)
+            Kind::Cap
+                | Kind::List(_)
                 | Kind::Str
                 | Kind::Boxed(_)
                 | Kind::Dict(..)

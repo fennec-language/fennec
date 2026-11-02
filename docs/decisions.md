@@ -1038,7 +1038,7 @@ A stage used once becomes part of what uses it. A stage kept in a name that does
 
 *Why:* Streaming lets a chain of stages read like the steps it is, handles input too big to hold, and can compile to a single loop with nothing allocated per item. Being used once is what keeps that honest: a second loop quietly finding nothing is Python's trap.
 
-**A type is loopable when it has `def iter(self) -> Iterator[T]`,** written with `yield`, so it makes its items one at a time and never builds a list. `for x in thing` calls it, and `list(thing)` makes a list when one is wanted.
+**A type is loopable when it has `def iter(self) -> Iterator[T]`,** written with `yield`, so it makes its items one at a time and never builds a list. `for x in thing` calls it, and `list(thing)` makes a list when one is wanted. The standard library's own collections loop this way too.
 ```fennec
 struct Ring:
     slots: list[int]

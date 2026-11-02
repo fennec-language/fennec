@@ -1,0 +1,2 @@
+{"displayName": "Ash", "hitPoints": 12, "mainWeapon": {"damageBonus": 2, "maxRange": 1.5}, "_saveSlot": 0}
+Player(display_name="Ash", hit_points=12, main_weapon=Weapon(damage_bonus=2, max_range=1.5), _save_slot=0)

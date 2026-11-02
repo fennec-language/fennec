@@ -313,6 +313,9 @@ impl FnCx<'_> {
                         self.error(mismatch("`indent`", &Type::Int, &ty, arg.value.span));
                     }
                 }
+                Some(option @ ("names" | "extra")) if named.contains(&option) => {
+                    self.json_option(option, &ty, arg.value.span);
+                }
                 Some(other) => self.error(Diagnostic::new(
                     format!("`{name}` has no parameter called `{other}`"),
                     arg.value.span,
@@ -325,6 +328,21 @@ impl FnCx<'_> {
         }
         plain.extend(start);
         plain
+    }
+
+    /// `names=` and `extra=` take a case of `JsonNames` and `JsonExtra`, like `.camel_case`.
+    pub(crate) fn json_option(&mut self, option: &str, ty: &Type, span: Span) {
+        let expected = Type::named(if option == "names" { "JsonNames" } else { "JsonExtra" });
+        if !self.checker.fits(&expected, ty) {
+            let cases = if option == "names" {
+                "`.snake_case`, `.camel_case`, `.pascal_case` or `.kebab_case`"
+            } else {
+                "`.error` or `.ignore`"
+            };
+            self.error(
+                mismatch(&format!("`{option}`"), &expected, ty, span).with_help(format!("write {cases}")),
+            );
+        }
     }
 
     pub(crate) fn call_builtin(&mut self, name: &str, args: &[Arg], span: Span) -> Type {

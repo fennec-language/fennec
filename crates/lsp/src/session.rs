@@ -7,6 +7,7 @@ use fennec_kit::Overlay;
 use fennec_syntax::Span;
 
 use crate::analysis::{Analysis, Clean, analyze, edited_bodies, program_of};
+use crate::completion;
 use crate::declaration::{declarations, hover_text};
 use crate::definition::{Target, target};
 use crate::json::Json;
@@ -75,6 +76,7 @@ impl Session {
             "textDocument/formatting" => Some(self.formatting(params)),
             "textDocument/references" => Some(self.references(params)),
             "textDocument/documentSymbol" => Some(self.symbols(params)),
+            "textDocument/completion" => Some(self.completion(params)),
             "textDocument/rename" => match self.rename(params) {
                 Ok(edit) => Some(edit),
                 Err(message) => return vec![error(id, REQUEST_FAILED, &message)],
@@ -310,6 +312,21 @@ impl Session {
         Json::Array(outline(analysis, module, &path))
     }
 
+    /// What can be written at a position.
+    fn completion(&mut self, params: &Json) -> Json {
+        let Some(uri) = params.at(&["textDocument", "uri"]).and_then(Json::as_str) else { return Json::Null };
+        let Some(file) = text::path_of(uri).map(|path| canonical(&path)) else { return Json::Null };
+        let Some(text) = self.documents.get(uri).cloned().or_else(|| std::fs::read_to_string(&file).ok())
+        else {
+            return Json::Null;
+        };
+        let Some(offset) = params.get("position").and_then(|position| text::offset(&text, position)) else {
+            return Json::Null;
+        };
+        let items = completion::complete(&program_of(&file), &file, &text, offset, self.overlay());
+        Json::object([("isIncomplete", Json::Bool(false)), ("items", Json::Array(items))])
+    }
+
     fn hover(&mut self, params: &Json) -> Json {
         let Some((found, analysis)) = self.at_position(params) else { return Json::Null };
         let Some(module) = &analysis.module else { return Json::Null };
@@ -423,6 +440,7 @@ fn capabilities() -> Json {
         ("referencesProvider", Json::Bool(true)),
         ("renameProvider", Json::Bool(true)),
         ("documentSymbolProvider", Json::Bool(true)),
+        ("completionProvider", Json::object([("triggerCharacters", Json::Array(vec![Json::string(".")]))])),
     ]);
     let info = Json::object([
         ("name", Json::string("fennec")),

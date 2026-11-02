@@ -7,12 +7,17 @@
 //! - go to definition, for names, members, types and enum cases;
 //! - hover, showing a declaration's signature as written and its `##` doc comment, or what
 //!   a local name holds;
+//! - find references and rename, which know scopes and types, so a local of the same name
+//!   elsewhere isn't touched;
+//! - a document's outline;
+//! - completion of names in scope, members after a dot and enum cases;
 //! - formatting, with `fennec fmt`'s one style.
 //!
 //! `fennec lsp` runs it, in the build daemon when there is one, so every editor shares the
 //! daemon's engine and cache.
 
 mod analysis;
+mod completion;
 mod declaration;
 mod definition;
 mod findings;

@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use fennec_syntax::{Item, Span};
+use fennec_syntax::{Item, Sources, Span};
 
 use crate::analysis::Analysis;
 use crate::declaration::declarations;
@@ -19,17 +19,17 @@ use crate::definition::{Target, imported_names, name_in, target};
 
 /// Each name an import in the program's files lists: the name, where it's written, and whether
 /// the import is from the standard library.
-fn imported(analysis: &Analysis) -> Vec<(String, Span, bool)> {
+pub(crate) fn imported(sources: &Sources) -> Vec<(String, Span, bool)> {
     let mut found = Vec::new();
-    for (path, text) in analysis.sources.files() {
-        let Some((_, base)) = analysis.sources.by_path(path) else { continue };
+    for (path, text) in sources.files() {
+        let Some((_, base)) = sources.by_path(path) else { continue };
         let Ok(module) = fennec_syntax::parse_at(text, base) else { continue };
         for item in &module.items {
             let Item::Import(import) = item else { continue };
             let from_std = import.module.first().is_some_and(|first| first == "std");
-            let listed = imported_names(&analysis.sources, import.span);
+            let listed = imported_names(sources, import.span);
             for name in &import.names {
-                found.push((name.clone(), name_in(&analysis.sources, listed, name), from_std));
+                found.push((name.clone(), name_in(sources, listed, name), from_std));
             }
         }
     }
@@ -39,7 +39,7 @@ fn imported(analysis: &Analysis) -> Vec<(String, Span, bool)> {
 /// What the name an import lists at `at` refers to: a top-level name.
 pub(crate) fn import_at(analysis: &Analysis, at: u32) -> Option<Target> {
     let (name, ..) =
-        imported(analysis).into_iter().find(|(_, span, _)| span.start <= at && at <= span.end)?;
+        imported(&analysis.sources).into_iter().find(|(_, span, _)| span.start <= at && at <= span.end)?;
     Some(Target::Global(name))
 }
 
@@ -75,7 +75,7 @@ pub(crate) fn references(analysis: &Analysis, found: &Target) -> Vec<Span> {
     let mut places = Vec::new();
     if let Target::Global(_) = found {
         let library = wanted.iter().all(|(start, end)| Span { start: *start, end: *end }.in_prelude());
-        let listed = imported(analysis)
+        let listed = imported(&analysis.sources)
             .into_iter()
             .filter(|(listed, _, from_std)| listed == name && *from_std == library);
         places.extend(listed.map(|(_, span, _)| span));

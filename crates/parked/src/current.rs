@@ -22,12 +22,12 @@
 //! 4. **It never crosses threads.** `CURRENT` and `RUNNING` are thread-locals, and a task's
 //!    coroutine isn't `Send`, so it's resumed only on the thread that made it.
 //!
-//! Before following the pointer, and again once resumed, `check` confirms two things that
-//! only `Running` records, in `RUNNING`: that `CURRENT`'s task is the one last resumed on this
-//! thread, by a number no other task on the thread ever has, and that the code checking is
-//! running on that task's own stack. If either fails, an invariant is broken, and the process
-//! stops with a message rather than switching onto the wrong stack. The checks are a few
-//! compares, kept in release builds.
+//! Before following the pointer, and again once resumed, `check` confirms three things against
+//! what only `Running` records, in `RUNNING`: that `CURRENT`'s task is the one last resumed on
+//! this thread, by a number no other task on the thread ever has; that the code checking is
+//! running on that task's own stack; and that the yielder is on that stack too. If any fails,
+//! an invariant is broken, and the process stops with a message rather than switching onto the
+//! wrong stack. The checks are a few compares, kept in release builds.
 
 use std::cell::Cell;
 use std::io::Write as _;
@@ -95,8 +95,9 @@ impl Drop for Running {
 
 /// Called by a task first thing on its own stack, with the yielder corosensei gave it.
 pub(crate) fn enter(task: TaskId, yielder: &TaskYielder) {
-    check(task);
-    CURRENT.set(Some(Current { task, yielder }));
+    let current = Current { task, yielder };
+    check(current);
+    CURRENT.set(Some(current));
 }
 
 /// Suspends the running task, asking for `request`, until it's resumed with a `Wake`. With no
@@ -104,13 +105,13 @@ pub(crate) fn enter(task: TaskId, yielder: &TaskYielder) {
 /// cancelled task isn't suspended again: it's told at once that it was cancelled.
 pub(crate) fn suspend(request: Request) -> Option<Wake> {
     let current = CURRENT.get()?;
-    check(current.task);
+    check(current);
     if RUNNING.get().is_some_and(|resumed| resumed.cancelled) {
         return Some(Wake::Cancelled);
     }
     // SAFETY: `current.yielder` was written by `current.task` and points to its own yielder
     // (invariant 1). `check` just confirmed that task is the one running on this thread, and
-    // that this code is on its stack. A running task's stack is alive, and its yielder with it
+    // that this code and the yielder are on its stack. A running task's stack is alive, and its yielder with it
     // (invariant 3), on this thread (invariant 4). So this is a shared borrow of a live
     // `Yielder`, as corosensei's own `&Yielder` is. It's held across the switch: while the task
     // is suspended, the borrow sits on the task's own stack, which stays alive and untouched
@@ -118,29 +119,38 @@ pub(crate) fn suspend(request: Request) -> Option<Wake> {
     let yielder = unsafe { &*current.yielder };
     let wake = yielder.suspend(request);
     // Resumed: `Running` has taken `CURRENT` out and marked this task as the one running.
-    check(current.task);
+    check(current);
     CURRENT.set(Some(current));
     Some(wake)
 }
 
-/// The address of a byte on the stack this runs on.
+/// The address of a byte on the stack this runs on. Under the address sanitizer with
+/// `detect_stack_use_after_return`, a local can live on a fake stack on the heap instead, which
+/// fails the stack check, so the sanitizer runs turn that off.
 #[inline(never)]
 fn here() -> usize {
     let marker = 0_u8;
     std::hint::black_box(&raw const marker).addr()
 }
 
-/// Stops the process unless `task` is the one last resumed on this thread and this code runs
-/// on its stack, which would mean an invariant above is broken.
-fn check(task: TaskId) {
+/// Stops the process unless `current`'s task is the one last resumed on this thread, and this
+/// code and its yielder are on that task's stack, which would mean an invariant above is
+/// broken.
+fn check(current: Current) {
     let resumed = RUNNING.get();
-    let at = here();
-    let on_its_stack = resumed.is_some_and(|resumed| (resumed.stack.low..resumed.stack.high).contains(&at));
-    if resumed.map(|resumed| resumed.task) != Some(task) || !on_its_stack {
+    let on_its_stack =
+        |at: usize| resumed.is_some_and(|resumed| (resumed.stack.low..resumed.stack.high).contains(&at));
+    let (here, yielder) = (on_its_stack(here()), on_its_stack(current.yielder.addr()));
+    if resumed.map(|resumed| resumed.task) != Some(current.task) || !here || !yielder {
+        let task = current.task;
+        let running = resumed.map(|resumed| resumed.task);
+        let place = match (here, yielder) {
+            (false, _) => "on another stack",
+            (true, false) => "with a yielder off its stack",
+            (true, true) => "on its stack",
+        };
         stop(&format!(
-            "parked task {task} tried to run while the thread's running task was {:?}, on {}",
-            resumed.map(|resumed| resumed.task),
-            if on_its_stack { "its stack" } else { "another stack" }
+            "parked task {task} tried to run while the thread's running task was {running:?}, {place}"
         ));
     }
 }
@@ -163,6 +173,13 @@ pub(crate) fn records() -> (Option<Current>, Option<Resumed>) {
 pub(crate) fn overwrite(current: Option<Current>, resumed: Option<Resumed>) {
     CURRENT.set(current);
     RUNNING.set(resumed);
+}
+
+/// For tests: points the running task's record at a yielder somewhere else, as a broken
+/// invariant would.
+#[cfg(test)]
+pub(crate) fn move_yielder(to: *const TaskYielder) {
+    CURRENT.set(CURRENT.get().map(|current| Current { yielder: to, ..current }));
 }
 
 /// For tests: marks another task as running, as a broken invariant would.

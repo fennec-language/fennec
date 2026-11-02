@@ -356,15 +356,18 @@ jobs:
         # Each sanitizer runs with unwinding, as tests build, and with `panic=abort`, as release
         # builds do.
         include:
+          # A local can live on a fake stack on the heap when AddressSanitizer looks for use
+          # after return, which the check that a task runs on its own stack would rightly
+          # stop on, so that one check is turned off here.
           - name: AddressSanitizer
             flags: -Zsanitizer=address
             features: --features sanitizer
-            options: ASAN_OPTIONS=detect_leaks=1
+            options: ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=0
             std: std
           - name: AddressSanitizer, panic=abort
             flags: -Zsanitizer=address -Cpanic=abort -Zpanic-abort-tests
             features: --features sanitizer
-            options: ASAN_OPTIONS=detect_leaks=1
+            options: ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=0
             std: std,panic_abort
           - name: ThreadSanitizer
             flags: -Zsanitizer=thread

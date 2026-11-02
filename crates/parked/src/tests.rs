@@ -395,6 +395,18 @@ fn stop_the_process(how: &str) {
                 .unwrap();
             scheduler.resume(task, Wake::Ready(0));
         }
+        // The running task's own record, with its yielder somewhere off its stack.
+        "a yielder off its task's stack" => {
+            let task = scheduler
+                .spawn(|| {
+                    let elsewhere = Box::new(0_u64);
+                    super::current::move_yielder((&raw const *elsewhere).cast());
+                    park(1);
+                    0
+                })
+                .unwrap();
+            scheduler.resume(task, Wake::Ready(0));
+        }
         "a parked task is dropped" => {
             let task = scheduler.spawn(|| i64::try_from(native_code(0, 1)).unwrap()).unwrap();
             scheduler.resume(task, Wake::Ready(0));
@@ -438,6 +450,7 @@ fn a_broken_invariant_a_dropped_parked_task_or_a_panic_stops_the_process() {
         ("another task is resumed", ours),
         ("another task starts", ours),
         ("an outer task's records", "on another stack"),
+        ("a yielder off its task's stack", "with a yielder off its stack"),
         ("a parked task is dropped", "dropped before it ended"),
         ("a task panics", "a task's own bug"),
         ("a task panics as its scheduler drops", "a task's own bug, when cancelled"),

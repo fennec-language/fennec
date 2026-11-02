@@ -1,6 +1,5 @@
 # `std.crypto` hashes text or bytes, signs them with HMAC, and compares secrets in time that
 # doesn't depend on where they differ. Every result is written as lowercase hex.
-from std import crypto
 from std.crypto import blake3, derive_key, equal, hmac_sha256, keyed_blake3, sha256
 
 ## A save file with a tag that shows it wasn't edited by hand.
@@ -16,7 +15,7 @@ def untouched(key: str, save: Save) -> bool:
     equal(keyed_blake3(key, f"level {save.level}"), save.tag)
 
 test "the same text always has the same hash" for text: str:
-    assert blake3(text) == crypto.blake3(text)
+    assert blake3(text) == blake3(text.encode())
     assert blake3(text).len() == 64 and sha256(text).len() == 64
     assert sha256(text) == sha256(text.encode())
 

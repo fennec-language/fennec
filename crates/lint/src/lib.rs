@@ -9,6 +9,7 @@ mod dead;
 mod flow;
 mod loops;
 mod names;
+mod paths;
 mod rewrites;
 mod sizes;
 
@@ -59,6 +60,7 @@ pub fn lint(module: &Module, sources: &Sources) -> Vec<Lint> {
     found.extend(dead::of(module, sources));
     found.extend(loops::of(module, sources));
     found.extend(names::of(module, sources));
+    found.extend(paths::of(sources));
     found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
     found
 }

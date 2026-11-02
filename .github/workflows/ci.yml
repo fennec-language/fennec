@@ -66,6 +66,21 @@ jobs:
             ./target/debug/fennec lint "$program" > /dev/null || failed=1
           done
           exit "$failed"
+      # New `unsafe` can't land quietly: every use outside comments, in every Rust file in the
+      # repository, is counted by file, and the counts must match the list, which a pull request
+      # adding one has to change.
+      - name: Count the uses of unsafe
+        shell: bash
+        run: |
+          # One perl reads every file, so the counts aren't split across runs.
+          git ls-files -z '*.rs' | perl -e 'my @files = split /\0/, do { local $/; <STDIN> }; my %c;
+            for my $file (@files) { open(my $f, "<", $file) or die "$file: $!";
+              while (<$f>) { next if m{^\s*//}; $c{$file} += () = /\bunsafe\b/g } }
+            printf "%s: %d\n", $_, $c{$_} for grep { $c{$_} } sort keys %c' > unsafe-found.txt
+          if ! diff -u <(grep -v '^#' .github/unsafe-allowed.txt) unsafe-found.txt; then
+            echo "::error::The uses of unsafe changed: update .github/unsafe-allowed.txt, and say why in the pull request"
+            exit 1
+          fi
       - run: cargo clippy --all-targets --locked -- -D warnings
         if: env.CODE == 'true'
       - name: Clippy for the playground's WebAssembly module
@@ -327,13 +342,69 @@ jobs:
           path: found
           if-no-files-found: ignore
 
+  # Parked tasks switch stacks, the one place our own code follows a pointer `unsafe`ly, so
+  # their stress tests run under AddressSanitizer, told of each switch, with leaks checked,
+  # and under ThreadSanitizer.
+  parked-sanitizers:
+    name: Parked tasks under ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each sanitizer runs with unwinding, as tests build, and with `panic=abort`, as release
+        # builds do.
+        include:
+          # A local can live on a fake stack on the heap when AddressSanitizer looks for use
+          # after return, which the check that a task runs on its own stack would rightly
+          # stop on, so that one check is turned off here.
+          - name: AddressSanitizer
+            flags: -Zsanitizer=address
+            features: --features sanitizer
+            options: ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=0
+            std: std
+          - name: AddressSanitizer, panic=abort
+            flags: -Zsanitizer=address -Cpanic=abort -Zpanic-abort-tests
+            features: --features sanitizer
+            options: ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=0
+            std: std,panic_abort
+          - name: ThreadSanitizer
+            flags: -Zsanitizer=thread
+            features: ""
+            options: TSAN_OPTIONS=halt_on_error=1
+            std: std
+          - name: ThreadSanitizer, panic=abort
+            flags: -Zsanitizer=thread -Cpanic=abort -Zpanic-abort-tests
+            features: ""
+            options: TSAN_OPTIONS=halt_on_error=1
+            std: std,panic_abort
+    env:
+      NIGHTLY: nightly-2026-10-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the nightly compiler the sanitizers need
+        run: rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+      - name: Run the parked tasks' tests
+        env:
+          FLAGS: ${{ matrix.flags }}
+          FEATURES: ${{ matrix.features }}
+          OPTIONS: ${{ matrix.options }}
+          STD: ${{ matrix.std }}
+        run: |
+          # shellcheck disable=SC2086 # `$FEATURES` is two words or none
+          env "$OPTIONS" RUSTFLAGS="$FLAGS" RUSTDOCFLAGS="$FLAGS" cargo "+$NIGHTLY" test --locked \
+            -Zbuild-std="$STD" --target x86_64-unknown-linux-gnu -p fennec-parked $FEATURES
+
   # One status for branch protection to require, so adding jobs never means changing settings.
   # A job skipped because the change is only documentation counts as passed; any other skip,
   # failure or cancellation doesn't.
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, asan]
+    needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, asan, parked-sanitizers]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

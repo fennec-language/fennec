@@ -20,12 +20,13 @@ ignore = true
 multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
-# Cranelift's own dependencies pull in older copies of these. Remove each once Cranelift
-# catches up.
+# Cranelift's and corosensei's own dependencies pull in older copies of these. Remove each once
+# they catch up.
 skip = [
     { crate = "hashbrown@0.16.1", reason = "gimli, through cranelift-codegen" },
     { crate = "mach2@0.4.3", reason = "region, through cranelift-jit" },
     { crate = "windows-sys@0.52.0", reason = "region, through cranelift-jit" },
+    { crate = "windows-sys@0.59.0", reason = "corosensei's Windows stacks, through fennec-parked" },
 ]
 
 [sources]

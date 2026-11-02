@@ -55,35 +55,7 @@ impl Emit<'_, '_, '_> {
                     "{handle} = call i64 @fennec_json_loads(ptr {text}, ptr {written}, i64 {from}, i64 {to})"
                 ));
                 self.leave_if_failed();
-                // `Ok` with what was read, or `Err` with the `ParseError`, made here.
-                let kind = self.kind_of(dest)?.clone();
-                let block = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
-                let base = if let Some(block) = &block {
-                    self.offset(block, FIELDS_OFFSET)
-                } else {
-                    let (slot, text) = (self.slot(dest), self.text_of(&kind));
-                    self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
-                    slot
-                };
-                self.declare("declare i8 @fennec_is_err(i64) nounwind");
-                self.declare("declare i64 @fennec_unwrap(i64) nounwind");
-                let (failed, bad) = (self.temp(), self.temp());
-                self.line(&format!("{failed} = call i8 @fennec_is_err(i64 {handle})"));
-                self.line(&format!("{bad} = icmp ne i8 {failed}, 0"));
-                let (err, ok, done) = (self.label("unread"), self.label("read"), self.label("loaded"));
-                self.line(&format!("br i1 {bad}, label %{err}, label %{ok}"));
-                self.start_block(&err);
-                self.declare("declare i64 @fennec_error_of(i64) nounwind");
-                let error = self.temp();
-                self.line(&format!("{error} = call i64 @fennec_error_of(i64 {handle})"));
-                self.write_case(&kind, &base, ("Err", &error), span)?;
-                self.line(&format!("br label %{done}"));
-                self.start_block(&ok);
-                let inner = self.temp();
-                self.line(&format!("{inner} = call i64 @fennec_unwrap(i64 {handle})"));
-                self.write_case(&kind, &base, ("Ok", &inner), span)?;
-                self.line(&format!("br label %{done}"));
-                self.start_block(&done);
+                let block = self.result_from(dest, &handle, span)?;
                 self.line(&format!("call void @fennec_truncate(i64 {mark})"));
                 if let Some(block) = block {
                     self.assign(dest, &block)?;
@@ -94,8 +66,51 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// A result made here from a temporary holding `Ok` or `Err`, written into `dest`'s slot, or
+    /// into a block given back for `dest` to take once the temporaries are let go of.
+    pub(crate) fn result_from(
+        &mut self,
+        dest: LocalId,
+        handle: &str,
+        span: Span,
+    ) -> Result<Option<String>, String> {
+        let kind = self.kind_of(dest)?.clone();
+        let block = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
+        let base = if let Some(block) = &block {
+            self.offset(block, FIELDS_OFFSET)
+        } else {
+            let (slot, text) = (self.slot(dest), self.text_of(&kind));
+            self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
+            slot
+        };
+        self.declare("declare i8 @fennec_is_err(i64) nounwind");
+        self.declare("declare i64 @fennec_unwrap(i64) nounwind");
+        let (failed, bad) = (self.temp(), self.temp());
+        self.line(&format!("{failed} = call i8 @fennec_is_err(i64 {handle})"));
+        self.line(&format!("{bad} = icmp ne i8 {failed}, 0"));
+        let (err, ok, done) = (self.label("unread"), self.label("read"), self.label("loaded"));
+        self.line(&format!("br i1 {bad}, label %{err}, label %{ok}"));
+        self.start_block(&err);
+        self.declare("declare i64 @fennec_error_of(i64) nounwind");
+        let error = self.temp();
+        self.line(&format!("{error} = call i64 @fennec_error_of(i64 {handle})"));
+        self.write_case(&kind, &base, ("Err", &error), span)?;
+        self.line(&format!("br label %{done}"));
+        self.start_block(&ok);
+        let inner = self.temp();
+        self.line(&format!("{inner} = call i64 @fennec_unwrap(i64 {handle})"));
+        self.write_case(&kind, &base, ("Ok", &inner), span)?;
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(block)
+    }
+
     /// A temporary for a value, and the block made to carry it across, to let go of after.
-    fn value_handle(&mut self, value: &str, kind: &Kind) -> Result<(String, Option<String>), String> {
+    pub(crate) fn value_handle(
+        &mut self,
+        value: &str,
+        kind: &Kind,
+    ) -> Result<(String, Option<String>), String> {
         let handle = self.temp();
         match kind {
             Kind::Int => {
@@ -152,7 +167,13 @@ impl Emit<'_, '_, '_> {
 
     /// Writes what a temporary holds at `at`, as a value of this kind, with an owner of its own,
     /// failing as the interpreter does when it isn't one.
-    fn native_at(&mut self, handle: &str, kind: &Kind, at: &str, span: Span) -> Result<(), String> {
+    pub(crate) fn native_at(
+        &mut self,
+        handle: &str,
+        kind: &Kind,
+        at: &str,
+        span: Span,
+    ) -> Result<(), String> {
         let (from, to) = (i64::from(span.start), i64::from(span.end));
         let value = self.temp();
         match kind {

@@ -388,6 +388,7 @@ dependencies = [
 name = "fennec-lint"
 version = "0.0.1"
 dependencies = [
+ "fennec-ir",
  "fennec-syntax",
 ]
 
@@ -412,7 +413,9 @@ dependencies = [
  "fennec-build",
  "fennec-check",
  "fennec-fmt",
+ "fennec-ir",
  "fennec-kit",
+ "fennec-lint",
  "fennec-syntax",
 ]
 

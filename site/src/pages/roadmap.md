@@ -10,7 +10,7 @@ description: What Fennec does today, what's being built next, and the design que
 
 ## Works today
 
-- `fennec run`, which runs the tests a change affects and then your program. `fennec test`, `fennec bench`, `fennec new`, `fennec init`, `fennec fmt`, `fennec lint`, `fennec fix`, `fennec repl` and a language server.
+- `fennec run`, which runs the tests a change affects and then your program. `fennec test`, `fennec bench`, `fennec new`, `fennec init`, `fennec fmt`, `fennec check`, `fennec lint` (each with JSON for agents), `fennec fix`, `fennec repl` and a language server.
 - Programs over several files: a kit is a folder with a `kit.toml`, and its files import from each other.
 - Names and `mut`, functions with written return types, default parameters passed by name, nested functions and arrow functions.
 - Structs with defaults, methods, named constructors and `where` rules; enums and `match`; operators; interfaces and generics.
@@ -37,10 +37,13 @@ description: What Fennec does today, what's being built next, and the design que
 
 Each of these is decided and not built.
 
-- `xs.pair(i, j)`, and a compile error for copies that can go stale.
+- `xs.pair(i, j)`, and compile errors for copies that can go stale and for a copy on every iteration of a loop.
 - `fails Name` in signatures, with one `error` listing several cases. `?` required wherever a failure passes up, narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
 - `xs.get(i)`, and `sum(xs, start=...)` replacing today's positional start.
 - `_name` hiding a field, and `pub` on top-level things only.
+- Constructor calls like `dict[str, int]()` as defaults, giving the type as a literal does, and the only form for an empty collection.
+- Fields named with any word, keywords included, like `from: str`. Soft keywords like `type` and `match` work as field names today.
+- `names=` and `extra=` on `json.loads` and `json.dumps`, and `@serialize(name=...)`.
 - Union types, `Circle | Square`, inline with a one-byte tag, narrowed with `is` and `match`.
 - Hard errors for positional calls that are easy to get backwards.
 - `fennec fix` applying only fixes that can't change what a program does, with the rest shown as hints to make by hand.

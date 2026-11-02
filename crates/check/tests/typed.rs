@@ -214,7 +214,14 @@ fn every_example_is_fully_typed() {
             }
         }
         for (key, stmts, exprs) in bodies(&module) {
-            let body = checked.types.body(&key).unwrap_or_else(|| panic!("{file}: nothing typed in {key}"));
+            // A type with the same name as a library type is checked under a name of its own.
+            let renamed = match key.strip_prefix("fields of ") {
+                Some(owner) => Some(format!("fields of {owner}'")),
+                None => key.split_once('.').map(|(owner, rest)| format!("{owner}'.{rest}")),
+            };
+            let body =
+                renamed.and_then(|renamed| checked.types.body(&renamed)).or_else(|| checked.types.body(&key));
+            let body = body.unwrap_or_else(|| panic!("{file}: nothing typed in {key}"));
             let mut found = Vec::new();
             values_in(&stmts, &mut found);
             for expr in &exprs {

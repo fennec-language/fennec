@@ -422,11 +422,8 @@ impl<'a> Check<'a> {
         // A name that's only replaced is a value of its own, and one nothing changes needs
         // nothing from the place.
         let Some(edit) = uses.edits.first().copied() else { return };
-        let copied = |diagnostic: Diagnostic| {
-            diagnostic
-                .with_fix(Span { start: value.span.start, end: value.span.start }, "copy(")
-                .with_fix(Span { start: value.span.end, end: value.span.end }, ")")
-        };
+        // `copy(...)` changes what the program does, so it's only suggested, never a fix that
+        // `fennec fix` would make.
         if let Some(replaced) = uses.replaces.first() {
             let message = format!("`{name}` edits a place and is given a new value too");
             self.problems.push(
@@ -437,25 +434,23 @@ impl<'a> Check<'a> {
             return;
         }
         if place.steps.is_empty() {
-            self.named_for_a_name(&uses, &place, copied);
+            self.named_for_a_name(&uses, &place);
             return;
         }
         if !self.changeable.contains(place.root) {
             let message = format!("`{name}` edits `{}`, which isn't mut", place.root);
-            self.problems.push(copied(
-                Diagnostic::new(message, edit).with_help(format!(
-                    "write `mut {} = ...` where it's declared, or `mut {name} = copy(...)` to edit a value of its own",
-                    place.root
-                )),
-            ));
+            self.problems.push(Diagnostic::new(message, edit).with_help(format!(
+                "write `mut {} = ...` where it's declared, or `mut {name} = copy(...)` to edit a value of its own",
+                place.root
+            )));
             return;
         }
         if let Some(escape) = uses.escapes.first() {
             let message = format!("`{name}` names a place, so it can't be kept or given back");
-            self.problems.push(copied(
+            self.problems.push(
                 Diagnostic::new(message, *escape)
                     .with_help("start it with `copy(...)` to keep a value of its own"),
-            ));
+            );
             return;
         }
         if self.index_problem(&uses, &place, name, at) {
@@ -468,18 +463,13 @@ impl<'a> Check<'a> {
     }
 
     /// `mut name = other`: reading `other` after that would see a value that may have changed.
-    fn named_for_a_name(
-        &mut self,
-        uses: &Uses<'a>,
-        place: &Path<'a>,
-        copied: impl Fn(Diagnostic) -> Diagnostic,
-    ) {
+    fn named_for_a_name(&mut self, uses: &Uses<'a>, place: &Path<'a>) {
         let read = uses.mentions.iter().find(|(path, _)| path.root == place.root);
         if let Some((_, read)) = read {
             let message = format!("`{}` is read after `{}` changes it", place.root, uses.name);
             let fix =
                 format!("write `mut {} = copy({})` to change a value of its own", uses.name, place.root);
-            self.problems.push(copied(Diagnostic::new(message, *read).with_help(fix)));
+            self.problems.push(Diagnostic::new(message, *read).with_help(fix));
         }
     }
 

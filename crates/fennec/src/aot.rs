@@ -112,9 +112,8 @@ fn llvm_objects(
     if let Some(skipped) = lowered.not_lowered.first() {
         return Err(format!("`{}` isn't lowered yet: {}", skipped.function, skipped.why));
     }
-    let (units, shared) = fennec_llvm::emit(&lowered)?;
+    let (units, shared, layouts) = fennec_llvm::emit(&lowered)?;
     let tools = fennec_llvm::Tools::find()?;
-    let layouts = fennec_llvm::layouts_of(&lowered);
     let mut image = fennec_llvm::Image::of(&layouts, &shared)?;
     let bytes = fennec_interp::embed::codec::Image {
         module: program.module.clone(),

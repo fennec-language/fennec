@@ -39,7 +39,7 @@ mod stmt;
 mod sum;
 mod types;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use fennec_syntax::{Diagnostic, Expr, Module, Span};
 
@@ -55,7 +55,62 @@ pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
 /// name, or every problem found, in source order.
 pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
     library_parses()?;
-    checker::Checker::new(module).run(false)
+    let names = own_type_names(module);
+    if names.is_empty() {
+        return checker::Checker::new(module).run(false);
+    }
+    let mut renamed = module.clone();
+    fennec_syntax::rename::rename_types(&mut renamed, &names);
+    checker::Checker::new(&renamed).run(false).map_err(|problems| as_written(problems, &names))
+}
+
+/// The types a program declares with the same name as a standard library type, each with the
+/// name it's checked under, so the library's code still means its own.
+fn own_type_names(module: &Module) -> BTreeMap<String, String> {
+    let library: HashSet<&str> = fennec_syntax::prelude_modules()
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(declared_type)
+        .collect();
+    module
+        .items
+        .iter()
+        .filter_map(declared_type)
+        .filter(|name| library.contains(name))
+        .map(|name| (name.to_owned(), format!("{name}{}", fennec_syntax::rename::RENAMED)))
+        .collect()
+}
+
+fn declared_type(item: &fennec_syntax::Item) -> Option<&str> {
+    match item {
+        fennec_syntax::Item::Struct(def)
+        | fennec_syntax::Item::Enum(def)
+        | fennec_syntax::Item::Error(def) => Some(def.name.as_str()),
+        _ => None,
+    }
+}
+
+/// Problems with the program's own types named as they're written.
+fn as_written(mut problems: Vec<Diagnostic>, names: &BTreeMap<String, String>) -> Vec<Diagnostic> {
+    for problem in &mut problems {
+        for (written, checked) in names {
+            problem.message = problem.message.replace(checked, written);
+            problem.help = problem.help.take().map(|help| help.replace(checked, written));
+            for fix in &mut problem.fixes {
+                fix.text = fix.text.replace(checked, written);
+            }
+        }
+    }
+    problems
+}
+
+/// Gives a program's types that share a name with a library type the names they're checked
+/// under, in place, for a module about to run.
+fn own_types_apart(module: &mut Module) -> BTreeMap<String, String> {
+    let names = own_type_names(module);
+    fennec_syntax::rename::rename_types(module, &names);
+    names
 }
 
 /// A mistake in the standard library's own code comes first, since without it a program's
@@ -90,7 +145,8 @@ pub fn builtin_method_changes(ty: &Type, name: &str) -> Option<bool> {
 /// start of `0.0` written in. Running a module needs this, since what runs it doesn't know
 /// types.
 pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
-    let checked = check_typed(module)?;
+    let names = own_types_apart(module);
+    let checked = check_typed(module).map_err(|problems| as_written(problems, &names))?;
     Ok(resolved(module, checked))
 }
 
@@ -99,7 +155,8 @@ pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnost
 /// library's own tests check all of it.
 pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
     library_parses()?;
-    let checked = checker::Checker::new(module).run(true)?;
+    let names = own_types_apart(module);
+    let checked = checker::Checker::new(module).run(true).map_err(|problems| as_written(problems, &names))?;
     Ok(resolved(module, checked))
 }
 
@@ -159,6 +216,14 @@ impl Checked {
     /// The signatures, holding the type of every expression too, for compilers to use.
     fn into_signatures(self) -> Signatures {
         Signatures { types: self.types, ..self.signatures }
+    }
+
+    /// Writes into `module`, a copy of the one checked, what `check_and_resolve` would, and gives
+    /// back the signatures lowering takes: a program checked with `check_typed` can then be
+    /// lowered without being checked twice.
+    #[must_use]
+    pub fn resolve(&self, module: &mut Module) -> Signatures {
+        resolved(module, self.clone())
     }
 }
 

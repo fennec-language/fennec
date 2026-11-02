@@ -55,9 +55,10 @@ fn join<'a>(items: impl Iterator<Item = &'a Value>) -> String {
 }
 
 fn instance_repr(instance: &Instance) -> String {
+    let type_name = fennec_syntax::rename::shown_type_name(&instance.type_name);
     let name = match &instance.case {
-        Some(case) => format!("{}.{case}", instance.type_name),
-        None => instance.type_name.to_string(),
+        Some(case) => format!("{type_name}.{case}"),
+        None => type_name.to_owned(),
     };
     if instance.fields.is_empty() && instance.case.is_some() {
         return name;

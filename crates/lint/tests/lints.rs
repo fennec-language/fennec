@@ -13,6 +13,10 @@ fn found(source: &str) -> Result<Vec<Lint>, String> {
 /// The rules about names, which most tests' short names would set off: `name_rules` has them.
 const NAME_RULES: [&str; 3] = ["short-name", "naming-case", "shadowed-builtin"];
 
+/// The rule about parameters, which most tests' small functions would set off: `fixed_params`
+/// makes its fixes.
+const PARAM_RULES: [&str; 1] = ["unused-param"];
+
 /// The lints' names, which won't match anything a test expects if the source doesn't parse.
 fn all_rules(source: &str) -> Vec<&'static str> {
     found(source)
@@ -20,17 +24,30 @@ fn all_rules(source: &str) -> Vec<&'static str> {
 }
 
 fn rules(source: &str) -> Vec<&'static str> {
-    all_rules(source).into_iter().filter(|rule| !NAME_RULES.contains(rule)).collect()
+    all_rules(source)
+        .into_iter()
+        .filter(|rule| !NAME_RULES.contains(rule) && !PARAM_RULES.contains(rule))
+        .collect()
 }
 
 fn name_rules(source: &str) -> Vec<&'static str> {
     all_rules(source).into_iter().filter(|rule| NAME_RULES.contains(rule)).collect()
 }
 
-/// The source with every fix made, which has to parse.
+/// The source with every fix made but `PARAM_RULES`', which has to parse.
 fn fixed(source: &str) -> String {
+    fixed_by(source, &|rule| !PARAM_RULES.contains(&rule))
+}
+
+/// The source with only `PARAM_RULES`' fixes made.
+fn fixed_params(source: &str) -> String {
+    fixed_by(source, &|rule| PARAM_RULES.contains(&rule))
+}
+
+fn fixed_by(source: &str, made: &dyn Fn(&str) -> bool) -> String {
     let lints = found(source).unwrap_or_default();
-    let diagnostics: Vec<_> = lints.into_iter().map(|lint| lint.diagnostic).collect();
+    let diagnostics: Vec<_> =
+        lints.into_iter().filter(|lint| made(lint.rule)).map(|lint| lint.diagnostic).collect();
     let fixed = apply_fixes(source, 0, &diagnostics).unwrap_or_default();
     if fennec_syntax::parse(&fixed).is_err() { format!("this doesn't parse: {fixed}") } else { fixed }
 }
@@ -186,6 +203,26 @@ fn an_if_chain_comparing_one_name_with_values_is_a_match() {
     assert_eq!(rules(mixed), NONE, "two names");
     let commented = "def f(n: int):\n    if n == 1:\n        g()\n    # the rare one\n    elif n == 2:\n        h()\n    elif n == 3:\n        k()\n";
     assert_eq!(rules(commented), NONE, "a comment the rewrite would lose");
+}
+
+#[test]
+fn a_parameter_nothing_reads_goes_with_its_arguments() {
+    let source = "def damage(power: int, target: str, bonus: int = 1) -> int:\n    power * 2 + bonus\n\ndef main(stdout: Stdout):\n    stdout.print(damage(3, \"rat\"), damage(power=4, target=\"bat\", bonus=2))\n";
+    assert!(all_rules(source).contains(&"unused-param"), "{:?}", all_rules(source));
+    assert_eq!(
+        fixed_params(source),
+        "def damage(power: int, bonus: int = 1) -> int:\n    power * 2 + bonus\n\ndef main(stdout: Stdout):\n    stdout.print(damage(3), damage(power=4, bonus=2))\n"
+    );
+    let last = "def f(n: int, unused: int) -> int:\n    n\n\ndef g() -> int:\n    f(1, 2)\n";
+    assert_eq!(fixed_params(last), "def f(n: int) -> int:\n    n\n\ndef g() -> int:\n    f(1)\n");
+    let held = "def f(n: int, unused: int) -> int:\n    n\n\ndef g(h: (int, int) -> int) -> int:\n    h(1, 2)\n\ndef k() -> int:\n    g(f)\n";
+    assert!(!all_rules(held).contains(&"unused-param"), "held as a value, it has to take two");
+    let public = "pub def f(n: int, unused: int) -> int:\n    n\n";
+    assert!(!all_rules(public).contains(&"unused-param"), "another kit may call it");
+    let method = "struct Dog:\n    age: int\n\n    def speak(self, loud: bool) -> str:\n        \"woof\"\n";
+    assert!(!all_rules(method).contains(&"unused-param"), "an interface may need it");
+    let read_inside = "def f(n: int, scale: int) -> list[int]:\n    [x * scale for x in range(n)]\n";
+    assert!(!all_rules(read_inside).contains(&"unused-param"), "read in a comprehension");
 }
 
 #[test]

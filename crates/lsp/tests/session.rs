@@ -30,7 +30,7 @@ def hit(
     fighter: Fighter,
     power: int,
 ) -> int:
-    power * 2
+    power * 2 + fighter.health // 100
 ";
 
 /// An editor talking to a session, with a kit on disk.
@@ -300,7 +300,7 @@ fn lints_and_copies_show_with_their_rules_and_fixes() {
 #[test]
 fn a_quick_edit_keeps_what_other_files_show_and_lints_the_edited_one() {
     let mut editor = Editor::new("quick_lints").unwrap();
-    editor.open("src/combat.fen", &COMBAT.replace("    power * 2\n", "    return power * 2\n"));
+    editor.open("src/combat.fen", &COMBAT.replace("    power * 2", "    return power * 2"));
     editor.open("src/main.fen", MAIN);
     let published = editor.change("src/main.fen", &MAIN.replace("hit(fighter, 3)", "hit(fighter, 4)"));
     assert_eq!(codes(for_file(&published, "combat.fen").unwrap()), ["needless-return"], "kept");

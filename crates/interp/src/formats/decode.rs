@@ -186,7 +186,16 @@ impl Interp<'_> {
         let args = self.decode_fields(&fields, &given, pairs, (&format!("`{name}`"), at), span)?;
         match self.construct(name, args, span).map_err(|problem| problem.message)? {
             Value::Ok(built) => Ok(built.as_ref().clone()),
-            Value::Err(_) => Err(format!("{} breaks a `where` rule of `{name}`", place(at))),
+            Value::Err(error) => {
+                let broken = match error.as_ref() {
+                    Value::Instance(error) => match error.field("message") {
+                        Some(Value::Str(message)) => message.to_string(),
+                        _ => format!("a `where` rule of `{name}` is broken"),
+                    },
+                    _ => format!("a `where` rule of `{name}` is broken"),
+                };
+                Err(format!("in {}, {broken}", place(at)))
+            }
             built => Ok(built),
         }
     }

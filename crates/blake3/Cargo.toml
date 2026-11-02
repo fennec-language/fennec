@@ -1,6 +1,6 @@
 [package]
 name = "fennec-blake3"
-description = "BLAKE3, written in-house: for the build cache and std.hash"
+description = "BLAKE3, written in-house: for the build cache and std.crypto"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

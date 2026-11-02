@@ -1,5 +1,5 @@
 //! BLAKE3, written in-house so Fennec has no outside dependencies. The build cache hashes
-//! source files and syntax trees with it, and `std.hash` gives it to Fennec programs.
+//! source files and syntax trees with it, and `std.crypto` gives it to Fennec programs.
 //!
 //! This is the portable reference design: no SIMD and no threads. It's checked against the
 //! official test vectors. Comparing two `Hash`es isn't constant-time, so don't use `==` to

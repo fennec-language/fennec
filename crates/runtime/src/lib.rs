@@ -12,7 +12,7 @@
 
 use fennec_interp::embed::{
     aot, capabilities, checks, dicts, eval, heap, io, json, lists, names, objects, regex, strings, temps,
-    text,
+    text, threads,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
@@ -224,6 +224,8 @@ export! {
     fennec_case_of(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => objects::case_of(a0, a1, a2, a3);
     fennec_alloc(a0: i64) -> i64 => heap::alloc(a0);
     fennec_free(a0: i64) => heap::free(a0);
+    fennec_retain_shared(a0: i64, a1: i64) => threads::retain_shared(a0, a1);
+    fennec_release_shared(a0: i64, a1: i64) => threads::release_shared(a0, a1);
     fennec_free_text(a0: i64) => heap::free_text(a0);
     fennec_set_abandon(a0: i64, a1: extern "C" fn(i64)) => heap::set_abandon(a0, a1);
     fennec_unshare(a0: i64) -> i64 => heap::unshare(a0);

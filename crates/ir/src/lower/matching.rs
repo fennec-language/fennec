@@ -11,8 +11,10 @@ use crate::{BlockId, CaseDef, EnumDef, InstKind, Operand, Terminator};
 /// are checked whenever a value is made.
 pub(super) fn definitions(modules: &[&Module], signatures: &Signatures) -> Vec<EnumDef> {
     let mut seen = std::collections::HashSet::new();
+    // An error with cases is held like an enum.
     let defs = modules.iter().flat_map(|module| &module.items).filter_map(|item| match item {
         Item::Enum(def) if def.generics.is_empty() => Some(def),
+        Item::Error(def) if !def.cases.is_empty() => Some(def),
         _ => None,
     });
     defs.filter(|def| seen.insert(def.name.as_str()))

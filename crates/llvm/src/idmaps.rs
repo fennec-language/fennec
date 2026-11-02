@@ -128,9 +128,13 @@ impl Emit<'_, '_, '_> {
     /// already has one.
     fn some_from(&mut self, dest: LocalId, held: &Kind, at: &str, owned: bool) -> Result<(), String> {
         let optional = self.kind_of(dest)?.clone();
-        let value = self.load_field(held, at, ITEM_ACCESS);
+        // An item in place is copied from where it is.
+        let value = if held.in_memory() { at.to_owned() } else { self.load_field(held, at, ITEM_ACCESS) };
         if held.counted() && !owned {
             self.retain_value(&value, held);
+        }
+        if !owned {
+            self.retain_inline(held, at);
         }
         if matches!(optional, Kind::Maybe(_)) {
             return self.assign(dest, &value);
@@ -208,6 +212,10 @@ impl Emit<'_, '_, '_> {
                 if held.counted() && !fresh {
                     self.retain_value(&value, &held);
                 }
+                // An item in place: its blocks get the owner the map's copy is.
+                if !fresh {
+                    self.retain_inline(&held, &value);
+                }
                 let place = self.slot(*map);
                 let block = self.alone_at(&place, "fennec_unshare");
                 let (generations_place, generations) = self.part(&block, parts.generations, true);
@@ -281,6 +289,8 @@ impl Emit<'_, '_, '_> {
                 let at = self.item_address(&items, &memory, &id.0);
                 if let Some(dest) = dest {
                     self.some_from(dest, &held, &at, true)?;
+                } else if held.in_memory() {
+                    self.release_inline(&held, &at);
                 } else {
                     let value = self.load_field(&held, &at, ITEM_ACCESS);
                     if held.counted() {
@@ -381,6 +391,10 @@ impl Emit<'_, '_, '_> {
             emit.line(&format!("store i64 {generation}, ptr {generation_place}"));
         };
         match name {
+            "IdMap.values" if held.in_memory() => {
+                self.store_field(&held, &from, &to, ITEM_ACCESS);
+                self.retain_inline(&held, &to);
+            }
             "IdMap.values" => {
                 let value = self.load_field(&held, &from, ITEM_ACCESS);
                 if held.counted() {
@@ -390,25 +404,42 @@ impl Emit<'_, '_, '_> {
             }
             "IdMap.ids" => write_id(self, &to),
             _ => {
-                // A pair of an `Id` and the item, a block of its own when it holds a block.
-                let Kind::Boxed(pair) = out_held else {
-                    return Err(format!(
-                        "`IdMap.items` gives {out_held:?}, which this backend doesn't take yet"
-                    ));
-                };
                 let (id_at, _) = self.field(&out_held, "_0")?;
                 let (value_at, _) = self.field(&out_held, "_1")?;
-                let made = self.new_block(pair)?;
-                let pair_fields = self.offset(&made, FIELDS_OFFSET);
-                let id_place = self.offset(&pair_fields, id_at);
-                write_id(self, &id_place);
-                let value = self.load_field(&held, &from, ITEM_ACCESS);
-                if held.counted() {
-                    self.retain_value(&value, &held);
+                if let Kind::Struct(_) = out_held {
+                    // A pair of an `Id` and the item, in place in the list.
+                    let id_place = self.offset(&to, id_at);
+                    write_id(self, &id_place);
+                    let value_place = self.offset(&to, value_at);
+                    if held.in_memory() {
+                        self.store_field(&held, &from, &value_place, ITEM_ACCESS);
+                        self.retain_inline(&held, &value_place);
+                    } else {
+                        let value = self.load_field(&held, &from, ITEM_ACCESS);
+                        if held.counted() {
+                            self.retain_value(&value, &held);
+                        }
+                        self.store_field(&held, &value, &value_place, ITEM_ACCESS);
+                    }
+                } else {
+                    // A pair of an `Id` and the item, a block of its own when it holds a block.
+                    let Kind::Boxed(pair) = out_held else {
+                        return Err(format!(
+                            "`IdMap.items` gives {out_held:?}, which this backend doesn't take yet"
+                        ));
+                    };
+                    let made = self.new_block(pair)?;
+                    let pair_fields = self.offset(&made, FIELDS_OFFSET);
+                    let id_place = self.offset(&pair_fields, id_at);
+                    write_id(self, &id_place);
+                    let value = self.load_field(&held, &from, ITEM_ACCESS);
+                    if held.counted() {
+                        self.retain_value(&value, &held);
+                    }
+                    let value_place = self.offset(&pair_fields, value_at);
+                    self.store_field(&held, &value, &value_place, "");
+                    self.line(&format!("store ptr {made}, ptr {to}{ITEM_ACCESS}"));
                 }
-                let value_place = self.offset(&pair_fields, value_at);
-                self.store_field(&held, &value, &value_place, "");
-                self.line(&format!("store ptr {made}, ptr {to}{ITEM_ACCESS}"));
             }
         }
         self.line(&format!("{written_after} = add i64 {written}, 1"));
@@ -482,6 +513,10 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store ptr {value}, ptr {at}{ITEM_ACCESS}"));
             self.release_kind(&old, &held);
         } else {
+            self.release_inline(&held, &at);
+            if !fresh {
+                self.retain_inline(&held, &value);
+            }
             self.store_field(&held, &value, &at, ITEM_ACCESS);
         }
         Ok(())

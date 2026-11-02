@@ -183,7 +183,7 @@ struct Parser:
         match word:
             case "struct": .Struct(self.type_def(start, False)?)
             case "shared": .Struct(replace(self.type_def(start, False)?, shared=True))
-            case "error": .Error(self.type_def(start, False)?)
+            case "error": .Error(self.error_def(start)?)
             case "enum": .Enum(self.type_def(start, True)?)
             case "interface": self.interface(start)?
             case "extend": self.extension(start)?
@@ -196,7 +196,32 @@ struct Parser:
                 .TypeAlias(name, ty, span)
             case _: self.test(start, word == "bench")?
 
+    ## Whether the line starts with a case: a name, and then `(` or nothing.
+    def at_case(self) -> bool:
+        if not is_name(self.peek()):
+            return False
+        match self.peek_at(1):
+            case .Punct(text): text == "("
+            case .Newline | .Dedent | .Eof: True
+            case _: False
+
+    ## An error: fields, like a struct's, or cases, like an enum's, each failing its own way:
+    ## `NotFound(path: str)`. A line that's a name and then `(` or nothing is a case.
+    def error_def(mut self, start: Span) -> TypeDef:
+        type_def = self.type_body(start, False, True)?
+        if type_def.fields.len() > 0 and type_def.cases.len() > 0:
+            fail Diagnostic(
+                message=f"`{type_def.name}` has both fields and cases",
+                span=type_def.fields[0].span,
+                help="an error has fields, like `path: str`, or cases, like `NotFound(path: str)`, not both",
+            )
+        type_def
+
     def type_def(mut self, start: Span, is_enum: bool) -> TypeDef:
+        self.type_body(start, is_enum, False)?
+
+    ## A struct's, enum's or error's name and body. An error's body may have cases.
+    def type_body(mut self, start: Span, is_enum: bool, is_error: bool) -> TypeDef:
         name = self.name("a type name")?
         generics = self.generic_params()?
         span = start.to(self.prev_span())
@@ -216,7 +241,7 @@ struct Parser:
                 type_def.methods.append(replace(self.function()?, annotations=annotations))
             elif annotations.len() == 0 and self.eat_keyword("pass"):
                 self.end_line()?
-            elif is_enum:
+            elif is_enum or (is_error and self.at_case()):
                 type_def.cases.append(self.case()?)
             else:
                 field = self.field(True)?

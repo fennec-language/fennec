@@ -89,7 +89,9 @@ impl Interp<'_> {
         let info = self.type_info(&owner).ok_or_else(|| crate::eval::unknown_name(&owner, span))?;
         let fields =
             info.def.cases.iter().find(|c| c.name == case).map(|c| c.fields.clone()).unwrap_or_default();
-        let shape = Shape { type_name: &owner, case: Some(case), fields: &fields, is_error: false };
+        // An error's case is an error, which `fail` passes up.
+        let is_error = info.kind == TypeKind::Error;
+        let shape = Shape { type_name: &owner, case: Some(case), fields: &fields, is_error };
         self.build(&shape, args, span)
     }
 

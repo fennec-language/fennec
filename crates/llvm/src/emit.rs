@@ -267,7 +267,7 @@ impl<'p> Module<'_, 'p> {
     }
 
     /// Has the types a kind needs defined.
-    fn define_types(&mut self, kind: &Kind) {
+    pub(crate) fn define_types(&mut self, kind: &Kind) {
         match kind {
             Kind::Struct(id) => {
                 let mut lines = Vec::new();
@@ -528,6 +528,8 @@ impl Emit<'_, '_, '_> {
             let _ = writeln!(self.allocas, "  %l{at} = alloca {text}");
             if kind.counted() {
                 let _ = writeln!(self.allocas, "  store ptr null, ptr %l{at}");
+            } else if !self.inline_blocks(kind).is_empty() {
+                let _ = writeln!(self.allocas, "  store {text} zeroinitializer, ptr %l{at}");
             }
         }
         for (at, kind) in kinds.iter().take(function.params).enumerate() {
@@ -540,6 +542,7 @@ impl Emit<'_, '_, '_> {
                 let held = self.temp();
                 self.line(&format!("{held} = load {text}, ptr %p{at}"));
                 self.line(&format!("store {text} {held}, ptr %l{at}"));
+                self.retain_inline(kind, &format!("%l{at}"));
             } else if text != "void" {
                 if self.owns(local) {
                     self.retain(&format!("%p{at}"));
@@ -894,18 +897,58 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
-    /// Copies what's in memory at `from` into a local.
+    /// Copies what's in memory at `from` into a local: an inline struct's blocks get another
+    /// owner, and let go of what the local held, if the local owns what it holds.
     pub(crate) fn assign_memory(&mut self, dest: LocalId, from: &str, access: &str) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
         let text = self.text_of(&kind);
         let (held, slot) = (self.temp(), self.slot(dest));
+        let owner = self.owns_inline(dest);
+        if owner {
+            self.release_inline(&kind, &slot);
+        }
         self.line(&format!("{held} = load {text}, ptr {from}{access}"));
+        self.line(&format!("store {text} {held}, ptr {slot}"));
+        if owner {
+            self.retain_inline(&kind, &slot);
+        }
+        Ok(())
+    }
+
+    /// Moves an inline struct whose blocks are already owned, like a call's result, into a
+    /// local, letting go of what the local held.
+    pub(crate) fn assign_memory_owned(&mut self, dest: LocalId, from: &str) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        let text = self.text_of(&kind);
+        let (held, slot) = (self.temp(), self.slot(dest));
+        if self.owns_inline(dest) {
+            self.release_inline(&kind, &slot);
+        } else {
+            // Nothing here owns them, so they're let go of now.
+            self.line(&format!("{held} = load {text}, ptr {from}"));
+            self.line(&format!("store {text} {held}, ptr {slot}"));
+            self.release_inline(&kind, from);
+            return Ok(());
+        }
+        self.line(&format!("{held} = load {text}, ptr {from}"));
         self.line(&format!("store {text} {held}, ptr {slot}"));
         Ok(())
     }
 
+    /// Whether a local holds an inline struct with blocks in it, and owns them.
+    pub(crate) fn owns_inline(&self, local: LocalId) -> bool {
+        self.kinds.get(local.0).is_some_and(|kind| !self.inline_blocks(kind).is_empty())
+            && !self.is_mut_param(local)
+            && !self.is_lent(local)
+            && self.known.alias(local).is_none()
+            && !self.known.is_borrowed(local)
+            && !self.known.is_taken(local)
+    }
+
     /// Reads a value of this kind from inside something, as a number or a block's address.
     pub(crate) fn load_field(&mut self, kind: &Kind, at: &str, access: &str) -> String {
+        // A struct held in place inside something no local holds may be new to this module.
+        self.module.define_types(kind);
         let memory = kind.memory(self.module.layouts);
         let held = self.temp();
         self.line(&format!("{held} = load {memory}, ptr {at}{access}"));
@@ -919,6 +962,7 @@ impl Emit<'_, '_, '_> {
 
     /// Writes a value inside something: a number as a word, or what's at a slot, in memory.
     pub(crate) fn store_field(&mut self, kind: &Kind, value: &str, at: &str, access: &str) {
+        self.module.define_types(kind);
         let memory = kind.memory(self.module.layouts);
         if kind.in_memory() {
             let held = self.temp();
@@ -1254,7 +1298,8 @@ impl Emit<'_, '_, '_> {
             self.release(&block);
         }
         match (dest, returned_at) {
-            (Some(dest), Some(at)) => self.assign_memory(dest, &at, "")?,
+            (Some(dest), Some(at)) => self.assign_memory_owned(dest, &at)?,
+            (None, Some(at)) => self.release_inline(&returns, &at),
             (Some(dest), None) if ret != "void" => {
                 self.assign(dest, &result)?;
                 self.alone_from_here(dest);
@@ -1402,6 +1447,16 @@ impl Emit<'_, '_, '_> {
         }
         let (held, kind) = self.operand(value)?;
         if kind.in_memory() {
+            // The last use of an inline struct's local hands its blocks over.
+            if let Operand::Local(from) = value
+                && self.owns_inline(*from)
+                && (self.known.moves(*from) || self.known.is_last_copy(self.at.0, self.at.1))
+            {
+                self.assign_memory_owned(dest, &held)?;
+                let text = self.text_of(&kind);
+                self.line(&format!("store {text} zeroinitializer, ptr {held}"));
+                return Ok(());
+            }
             return self.assign_memory(dest, &held, "");
         }
         if kind.counted() {
@@ -1631,6 +1686,10 @@ impl Emit<'_, '_, '_> {
                 let (held, slot) = (self.temp(), self.slot(local));
                 self.line(&format!("{held} = load ptr, ptr {slot}"));
                 self.release_kind(&held, &kind);
+            } else if Some(local) != except && self.owns_inline(local) {
+                let kind = self.kinds.get(at).cloned().unwrap_or(Kind::Unit);
+                let slot = self.slot(local);
+                self.release_inline(&kind, &slot);
             }
         }
     }
@@ -1644,7 +1703,15 @@ impl Emit<'_, '_, '_> {
             let held = self.temp();
             self.line(&format!("{held} = load {text}, ptr {at}"));
             self.line(&format!("store {text} {held}, ptr %ret"));
-            self.release_locals(None);
+            // Leaving, a local's blocks go with its value; others' get another owner.
+            let moved = match value {
+                Some(Operand::Local(local)) if self.owns_inline(*local) => Some(*local),
+                _ => None,
+            };
+            if moved.is_none() {
+                self.retain_inline(&returns, "%ret");
+            }
+            self.release_locals(moved);
             self.line("ret void");
             return Ok(());
         }

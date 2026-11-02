@@ -80,6 +80,26 @@ def step(mut units: Units, dt: float):
 
 *Why:* A get-and-set pair, like Python's `__getitem__` and `__setitem__`, copies each element out and back, and with copy-on-write an element that holds a collection would then copy on every iteration. `yield mut` stays cut: a lent place would have to stay locked across each suspension of a generator, and it can't be split for `parallel`. Positions add no new concept, never copy, and are what `parallel` splits by. Swift's `MutableCollection` works the same way, through an index and a subscript that writes in place.
 
+**A collection can't be changed another way while it's being looped over or written through.** Inside `for x in xs:`, `for mut x in xs:` or the life of any `mut` path into `xs`, changing `xs` by any other route is a compile error naming the loop's line. This is the one exclusivity rule behind the existing errors for `for mut`, `parallel` and `mut x = place`, like Swift's law of exclusivity, and it needs no annotations.
+```fennec
+for enemy in enemies:
+    if enemy.splits:
+        enemies.append(spawn_child(enemy))      # error
+```
+```
+error: `enemies` is changed while it's being looped over
+  --> game.fen:3:9
+   |
+1  | for enemy in enemies:
+   |              ------- the loop over `enemies` starts here
+3  |         enemies.append(spawn_child(enemy))
+   |         ^^^^^^^ changed here
+   = fix: loop over `copy(enemies)` to work on an explicit snapshot
+   = fix: collect the changes in a list and apply them after the loop
+```
+Neither fix is applied by `fennec fix`, since each changes what the program does. This replaces any reading where a loop silently works on a snapshot.
+*Why:* A loop that quietly sees the old collection, or skips and repeats items as it changes, is a classic bug in every language with references. One rule covers reading loops, writing loops and `parallel`, and the fix says which behavior was meant.
+
 **A value is moved, not shared, when it isn't used again.** The compiler finds each value's last use and moves it there.
 *Why:* Then nearly every collection has one owner, so copy-on-write's check before each write passes and nothing is copied. The check is a predictable branch the compiler can hoist out of loops, and deletes entirely when ownership proves the value has one owner.
 
@@ -177,7 +197,7 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 **Floats give the same results on every platform.** There are no fused operations and no fast-math outside an opt-in, and `sin`, `cos` and the rest are in the stdlib rather than the platform's math library. `@fast_math` on a function opts out. This replaces `with fast_math():`.
 *Why:* It makes lockstep multiplayer and replays possible. It costs a little, and only in math-heavy code, which can opt out.
 
-**Parallel reductions combine in a fixed order.** How `sum(... for e in parallel(xs))` splits and combines its work depends on the data's size, never the thread count.
+**Parallel reductions combine in a fixed order.** `sum(... for e in parallel(xs))` combines its parts in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, never by element size or thread count. So the interpreter and native code give identical bits for a float sum.
 *Why:* Float results don't drift between runs or machines.
 
 **`Clock` is a capability,** passed to `main` like `Stdout` and `Fs`. `clock.now()` reads a monotonic clock, for measuring. `clock.time()` reads the wall clock as a `Time`, a moment in UTC, for saving and showing. Tests get a fixed clock by default, as under Tooling.
@@ -861,7 +881,7 @@ def step(mut units: IdMap[Unit], dt: float):
         unit.pos += unit.vel * dt
     alive = sum(1 for unit in parallel(units) if unit.health > 0)
 ```
-- The work-stealing pool halves a range of positions when a thread runs out of work, down to a smallest chunk the runtime picks from the element size. Where a reduction's parts combine depends on the length alone.
+- A reduction combines in a tree whose leaves are ranges of at most 1,024 positions, set by the length alone, as under Determinism. How work is scheduled for a `for` loop or a comprehension may still use the element size, since their order doesn't show in results: the work-stealing pool halves a range when a thread runs out of work, down to a smallest chunk the runtime picks.
 - `for mut x in parallel(xs)` gives each task a disjoint range. That's safe only if writing position `i` touches nothing but element `i`, so the compiler checks that the `mut` form of `def []` returns a place rooted in one field of `self` and indexed by `i` itself, like `return self._items[i]`. If it doesn't, `for mut` over `parallel(...)` is a compile error naming that method, and a plain `for mut` still works.
 - `list` and `Buffer` split into contiguous ranges, which also vectorize. `IdMap` is cut at its chunk boundaries, so a task's writes touch only its own chunks. `Grid` is cut at rows. `Packed` gives each task whole lists to read. `dict`, `set`, `SortedMap` and `SortedSet` are read-only in parallel, split by their own internal ranges.
 - A type with only `def iter(self)` and `yield` can't be split, since each item depends on the last. It works as a source, as below, and `for mut` over it in parallel is a compile error that says to add positions.

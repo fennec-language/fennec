@@ -6,7 +6,7 @@ use std::rc::Rc;
 use fennec_syntax::{Diagnostic, Span};
 
 use crate::eval::unhandled_result;
-use crate::interp::{Interp, TypeKind};
+use crate::interp::Interp;
 use crate::ops;
 use crate::value::{Capability, Value};
 
@@ -40,7 +40,6 @@ impl Interp<'_> {
     fn type_attr(&mut self, type_name: &str, name: &str, span: Span) -> Result<Value, Diagnostic> {
         let info = self.type_info(type_name);
         if let Some(info) = &info
-            && info.kind == TypeKind::Enum
             && info.def.cases.iter().any(|case| case.name == name)
         {
             return self.construct_variant(Some(type_name), name, Vec::new(), span);

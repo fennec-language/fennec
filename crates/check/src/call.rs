@@ -547,9 +547,11 @@ impl FnCx<'_> {
 
     /// `Type.name(...)`: an enum case, or a named constructor.
     fn static_call(&mut self, type_name: &str, method: &str, args: &[Arg], span: Span) -> Type {
-        let is_case = self.checker.program.type_info(type_name).is_some_and(|info| {
-            info.kind == TypeKind::Enum && info.def.cases.iter().any(|case| case.name == method)
-        });
+        let is_case = self
+            .checker
+            .program
+            .type_info(type_name)
+            .is_some_and(|info| info.def.cases.iter().any(|case| case.name == method));
         if is_case {
             return self.construct_variant(Some(type_name), method, args, span);
         }
@@ -592,12 +594,12 @@ impl FnCx<'_> {
         let Some(info) = self.checker.program.type_info(type_name) else {
             return self.construct_builtin(type_name, None, args, span);
         };
-        if info.kind == TypeKind::Enum {
+        if !info.def.cases.is_empty() {
             let cases: Vec<String> =
                 info.def.cases.iter().map(|case| format!("{type_name}.{}", case.name)).collect();
-            let diagnostic =
-                Diagnostic::new(format!("`{type_name}` is an enum, so pick one of its cases"), span)
-                    .with_help(format!("write one of {}", cases.join(", ")));
+            let what = if info.kind == TypeKind::Enum { "is an enum" } else { "has cases" };
+            let diagnostic = Diagnostic::new(format!("`{type_name}` {what}, so pick one of its cases"), span)
+                .with_help(format!("write one of {}", cases.join(", ")));
             return self.unusable(diagnostic, args);
         }
         let (fields, generics) = (info.def.fields.clone(), info.def.generics.clone());

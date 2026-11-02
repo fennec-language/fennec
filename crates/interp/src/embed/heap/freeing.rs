@@ -2,7 +2,7 @@
 //! owner, all the way down. Most blocks are small and are freed one at a time, so the paths
 //! for those are kept lean and everything else is out of their way.
 
-use super::{CELL_SHAPE, FINISHED, GENERATOR_PC, HEADER_WORDS, Heap, children_into, is_text};
+use super::{CELL_SHAPE, FINISHED, GENERATOR_PC, HEADER_WORDS, Heap, children_into, is_text, shape_word};
 use crate::embed::{State, with};
 use crate::value::Value;
 
@@ -14,12 +14,25 @@ use crate::value::Value;
 /// `del` runs no program code.
 pub extern "C" fn free(address: i64) {
     let abandoning = with(|state| {
+        // What other threads let go of last waits for this one, which made it, to free it.
+        if crate::embed::threads::any_waiting() {
+            free_waiting(state);
+        }
         let address = u64::try_from(address).unwrap_or(0);
         free_block(state, address);
         !state.heap.abandoning.is_empty()
     });
     if abandoning {
         run_abandons();
+    }
+}
+
+/// Frees what other threads let go of last, which waits for this one, which made it.
+#[cold]
+#[inline(never)]
+fn free_waiting(state: &mut State) {
+    for waiting in crate::embed::threads::waiting() {
+        free_block(state, waiting);
     }
 }
 
@@ -76,14 +89,14 @@ pub(in crate::embed) fn run_abandons() {
 /// The next generator to close.
 fn next_abandoned(state: &mut State) -> Option<(u64, extern "C" fn(i64))> {
     let address = state.heap.abandoning.pop()?;
-    let shape = *state.heap.block(address)?.get(1)?;
+    let shape = shape_word(state.heap.block(address)?)?;
     Some((address, *state.tables.abandons.get(&shape)?))
 }
 
 /// Whether a block being freed is a generator stopped at a `yield` with something to close.
 fn is_abandoned(state: &State, block: &[u64]) -> bool {
     !state.tables.abandons.is_empty()
-        && block.get(1).is_some_and(|shape| state.tables.abandons.contains_key(shape))
+        && shape_word(block).is_some_and(|shape| state.tables.abandons.contains_key(&shape))
         && block.get(GENERATOR_PC).is_some_and(|pc| i64::from_ne_bytes(pc.to_ne_bytes()) > 0)
 }
 
@@ -93,10 +106,13 @@ fn free_block(state: &mut State, address: u64) {
     let mut pending = std::mem::take(&mut state.heap.pending);
     pending.push(address);
     while let Some(address) = pending.pop() {
+        if crate::embed::threads::held_elsewhere(address) {
+            continue;
+        }
         let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove(at)) else {
             continue;
         };
-        let shape = block.get(1).copied().unwrap_or(u64::MAX);
+        let shape = shape_word(&block).unwrap_or(u64::MAX);
         if is_abandoned(state, &block) {
             keep_abandoned(state, address, block);
             continue;
@@ -137,7 +153,7 @@ fn forget_text(state: &mut State, address: u64) {
 /// unplanned struct refers to.
 #[inline(never)]
 fn free_unplanned(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
-    if block.get(1) == Some(&CELL_SHAPE) {
+    if shape_word(block) == Some(CELL_SHAPE) {
         let number = block.get(2).and_then(|number| usize::try_from(*number).ok());
         if let Some(number) = number {
             // Whatever the value held is let go now, not when the number's used again.
@@ -172,7 +188,7 @@ fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
 /// its shape's plan doesn't say.
 fn release_planned(heap: &mut Heap, block: &[u64], pending: &mut Vec<u64>) -> bool {
     let Heap { plans, blocks, .. } = heap;
-    let shape = block.get(1).and_then(|shape| usize::try_from(*shape).ok());
+    let shape = shape_word(block).and_then(|shape| usize::try_from(shape).ok());
     let fields = block.get(HEADER_WORDS..).unwrap_or_default();
     let words = match shape.and_then(|shape| plans.get(shape)) {
         Some(crate::embed::plans::Plan::Fixed(words)) => words,

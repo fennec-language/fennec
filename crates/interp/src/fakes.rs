@@ -1,5 +1,5 @@
-//! What a test's capabilities reach: an in-memory `Fs`, a fixed `Clock` and captured `Stdout`,
-//! fresh for each run of a test. These hold state every copy of a capability shares, which
+//! What a test's capabilities reach: an in-memory `Fs`, a fixed `Clock`, captured `Stdout` and a
+//! `Process` that runs nothing but gives back what the test scripted, fresh for each run of a test. These hold state every copy of a capability shares, which
 //! Fennec code has no way to do yet, so they're written here. With `fennec test --real` only
 //! the output is kept, and the rest is real.
 
@@ -29,11 +29,22 @@ pub(crate) struct TestWorld {
     nodes: BTreeMap<String, Node>,
     nanos: i64,
     printed: String,
+    /// What each program gives back, by name, as the test scripted it.
+    pub(crate) scripts: BTreeMap<String, Value>,
+    /// Each program the test ran, with its arguments, in order.
+    pub(crate) ran: Vec<Vec<String>>,
 }
 
 impl TestWorld {
     pub(crate) fn new(capabilities: TestCapabilities) -> Self {
-        TestWorld { capabilities, nodes: BTreeMap::new(), nanos: 0, printed: String::new() }
+        TestWorld {
+            capabilities,
+            nodes: BTreeMap::new(),
+            nanos: 0,
+            printed: String::new(),
+            scripts: BTreeMap::new(),
+            ran: Vec::new(),
+        }
     }
 
     pub(crate) fn real(&self) -> bool {

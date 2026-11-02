@@ -4,4 +4,4 @@ error: a test can't receive `count` this way
 1 | test "a test takes capabilities"(count: int):
   |                                  ^^^^^^^^^^
   |
-  = help: a test can receive `stdout: Stdout`, `fs: Fs` and `clock: Clock`
+  = help: a test can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock` and `process: Process`

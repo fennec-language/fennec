@@ -273,7 +273,7 @@ impl Program {
             }
             "Id" => Type::Id(arg()),
             "IdMap" => Type::IdMap(arg()),
-            "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" => Type::named(name),
+            "Stdout" | "Fs" | "Clock" | "Args" | "Stdin" | "Process" => Type::named(name),
             name if generics.iter().any(|generic| generic == name) => Type::Param(name.to_owned()),
             name if self.types.contains_key(name) && !args.is_empty() => Type::Generic(name.to_owned(), args),
             name if self.types.contains_key(name) => Type::named(name),
@@ -375,9 +375,9 @@ impl Program {
 /// The interfaces every type that can fits automatically.
 pub(crate) const BUILT_IN_INTERFACES: [&str; 4] = ["Eq", "Hashable", "Ordered", "Format"];
 
-pub(crate) const BUILT_IN_TYPES: [&str; 22] = [
+pub(crate) const BUILT_IN_TYPES: [&str; 23] = [
     "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "set", "dict", "tuple",
-    "Id", "IdMap", "Stdout", "Fs", "Clock", "Args", "Stdin", "Result", "Iterator", "->",
+    "Id", "IdMap", "Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Result", "Iterator", "->",
 ];
 
 /// An interface written where a type goes, as in `list[Shape]`.

@@ -247,6 +247,11 @@ impl FnCx<'_> {
             let help = "only a test's own body can read what it printed, from the `Stdout` it received";
             return self.unusable(no_method(ty, name, span).with_help(help), args);
         }
+        // Only a test's fake `Process` is scripted, and says what ran.
+        if matches!(name, "script" | "ran") && *ty == Type::named("Process") && !self.in_a_test() {
+            let help = "only a test's own body can script or read the fake `Process` it received";
+            return self.unusable(no_method(ty, name, span).with_help(help), args);
+        }
         if method.changes {
             let what = format!(
                 "`{name}` changes it, so call it on something held in a mut name, like `items.{name}(...)`"
@@ -255,7 +260,12 @@ impl FnCx<'_> {
         }
         let named: &[&str] = if name == "sort" { &["key"] } else { &[] };
         let plain = self.builtin_args(name, args, named, &method.receives, span);
-        if plain.len() < method.arity.0 || plain.len() > method.arity.1 {
+        if name == "run" && *ty == Type::named("Process") && plain.len() != 2 {
+            let message =
+                "`run` takes the program, then its arguments as a list, never one string a shell would split";
+            let help = "like `process.run(\"git\", [\"log\", \"--oneline\"])`, or `process.run(\"ls\", [])` for none";
+            self.error(Diagnostic::new(message, span).with_help(help));
+        } else if plain.len() < method.arity.0 || plain.len() > method.arity.1 {
             self.error(wrong_args(name, span));
         }
         // `Fs` takes a file's path as a `Path` or as text.

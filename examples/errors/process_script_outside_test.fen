@@ -1,0 +1,4 @@
+from std.process import Output
+
+def main(stdout: Stdout, process: Process):
+    process.script("git", Output())

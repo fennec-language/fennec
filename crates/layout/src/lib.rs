@@ -166,6 +166,7 @@ pub enum Cap {
     Clock,
     Args,
     Stdin,
+    Process,
 }
 
 impl Cap {
@@ -176,6 +177,7 @@ impl Cap {
             "Clock" => Some(Cap::Clock),
             "Args" => Some(Cap::Args),
             "Stdin" => Some(Cap::Stdin),
+            "Process" => Some(Cap::Process),
             _ => None,
         }
     }
@@ -187,6 +189,7 @@ impl Cap {
             Cap::Clock => "Clock",
             Cap::Args => "Args",
             Cap::Stdin => "Stdin",
+            Cap::Process => "Process",
         }
     }
 
@@ -198,6 +201,7 @@ impl Cap {
             Cap::Clock => 2,
             Cap::Args => 3,
             Cap::Stdin => 4,
+            Cap::Process => 5,
         }
     }
 }

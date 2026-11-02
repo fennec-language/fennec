@@ -41,6 +41,7 @@ modules! {
     log,
     math,
     path,
+    process,
     random,
     re,
     time,

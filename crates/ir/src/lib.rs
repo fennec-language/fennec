@@ -19,6 +19,15 @@
 //! set of error types is expected as it is. A constant whose value is a literal is written
 //! out where it's read.
 //!
+//! A `shared` type is the one exception to values being copies: a value of one is a counted
+//! handle to a cell, so every local holding it reaches the same struct. [`InstKind::Make`] of
+//! one makes a new cell, and reading, setting and changing its fields goes through to the cell,
+//! just as it would for a struct held in a local. Its methods take the handle as their first
+//! parameter, which is never `mut`, since the handle itself doesn't change. A call to one of
+//! them, or a read of a field, takes the handle's lock first and gives it back after, with
+//! [`InstKind::Lock`] and [`InstKind::Unlock`]. Inside its own methods, `self` is locked
+//! already, so what they do with `self` takes no lock.
+//!
 //! Generics are gone by now: a generic function or type is copied for each set of types a
 //! program uses it with, so `Deque[T]` for ints is the struct `Deque[int]`, and its `append`
 //! is the function `Deque.append[int]`. The standard library's functions come in as they're
@@ -63,6 +72,8 @@ pub struct Program {
 pub struct StructDef {
     pub name: String,
     pub fields: Vec<(String, Type)>,
+    /// Whether it's a `shared` type, whose values are handles to a cell with a lock.
+    pub shared: bool,
 }
 
 /// A generator's block's slots, by number. Every generator's start the same way, so a loop can
@@ -394,6 +405,16 @@ pub enum InstKind {
         function: String,
         args: Vec<Operand>,
     },
+    /// Waits for a `shared` handle's lock and takes it: to change the cell with `write`, and
+    /// otherwise to read it, which other readers may do at the same time.
+    Lock {
+        handle: Operand,
+        write: bool,
+    },
+    /// Gives back the lock the last [`InstKind::Lock`] of this handle took.
+    Unlock {
+        handle: Operand,
+    },
 }
 
 /// One piece of an f-string.
@@ -477,7 +498,11 @@ impl InstKind {
             InstKind::Builtin { dest, .. }
             | InstKind::Call { dest, .. }
             | InstKind::CallClosure { dest, .. } => *dest,
-            InstKind::SetField { .. } | InstKind::SetIndex { .. } | InstKind::SetSlot { .. } => None,
+            InstKind::SetField { .. }
+            | InstKind::SetIndex { .. }
+            | InstKind::SetSlot { .. }
+            | InstKind::Lock { .. }
+            | InstKind::Unlock { .. } => None,
         }
     }
 }

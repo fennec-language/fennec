@@ -15,7 +15,7 @@ pub(super) fn definitions(signatures: &Signatures) -> Vec<StructDef> {
         .error_types()
         .filter_map(|name| {
             let found = signatures.error_type(name).filter(|found| !found.rules)?;
-            Some(StructDef { name: name.to_owned(), fields: found.fields.clone() })
+            Some(StructDef { name: name.to_owned(), fields: found.fields.clone(), shared: false })
         })
         .collect()
 }

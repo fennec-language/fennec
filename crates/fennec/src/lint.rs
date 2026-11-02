@@ -70,7 +70,9 @@ fn linted(path: &str, json: bool) -> ExitCode {
         Ok(signatures) => signatures,
         Err(diagnostics) => return rejected(&program, &diagnostics, json),
     };
-    let found = fennec_lint::lint(&program.module, &program.sources);
+    let mut found = fennec_lint::lint(&program.module, &program.sources);
+    found.extend(fennec_lint::needless_copies(&program.module, &program.sources));
+    found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
     let hints = fennec_lint::costs(&fennec_ir::lower(&resolved, &signatures));
     if json {
         let shown: Vec<Finding<'_>> = found.iter().chain(&hints).map(Finding::linted).collect();

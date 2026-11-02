@@ -117,9 +117,17 @@ impl Emit<'_, '_, '_> {
                 } else {
                     format!("  call void @fennec_free(ptr %h{at})\n")
                 };
+                // A header holds a block only when byte 23's top bit is clear, and may hold none.
+                let block = if *kind == Kind::Str && layouts.text_headers() {
+                    format!(
+                        "  %l{at}_at = getelementptr inbounds i64, ptr %c{at}_at, i64 2\n  %l{at} = load i64, ptr %l{at}_at\n  %b{at} = icmp sgt i64 %l{at}, -1\n  %a{at} = load i64, ptr %c{at}_at\n  %p{at} = select i1 %b{at}, i64 %a{at}, i64 0\n  %h{at} = inttoptr i64 %p{at} to ptr\n  %e{at} = icmp eq ptr %h{at}, null\n  br i1 %e{at}, label %kept{at}, label %held{at}\nheld{at}:\n"
+                    )
+                } else {
+                    format!("  %h{at} = load ptr, ptr %c{at}_at\n")
+                };
                 let _ = write!(
                     release,
-                    "  %h{at} = load ptr, ptr %c{at}_at\n  %o{at} = load i64, ptr %h{at}\n  %n{at} = add i64 %o{at}, -1\n  store i64 %n{at}, ptr %h{at}\n  %z{at} = icmp eq i64 %n{at}, 0\n  br i1 %z{at}, label %free{at}, label %kept{at}\nfree{at}:\n{free}  br label %kept{at}\nkept{at}:\n"
+                    "{block}  %o{at} = load i64, ptr %h{at}\n  %n{at} = add i64 %o{at}, -1\n  store i64 %n{at}, ptr %h{at}\n  %z{at} = icmp eq i64 %n{at}, 0\n  br i1 %z{at}, label %free{at}, label %kept{at}\nfree{at}:\n{free}  br label %kept{at}\nkept{at}:\n"
                 );
             }
             offset += kind.size(layouts);

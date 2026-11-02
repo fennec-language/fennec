@@ -123,9 +123,9 @@ impl<'p> Emit<'_, '_, 'p> {
             if !fresh {
                 self.retain_value(&value, &kind);
             }
-            let old = self.temp();
-            self.line(&format!("{old} = load ptr, ptr {at}"));
-            self.line(&format!("store ptr {value}, ptr {at}"));
+            let (old, text) = (self.temp(), self.text_of(&kind));
+            self.line(&format!("{old} = load {text}, ptr {at}"));
+            self.line(&format!("store {text} {value}, ptr {at}"));
             self.release_kind(&old, &kind);
         } else {
             self.store_field(&kind, &value, &at, "");
@@ -221,6 +221,11 @@ impl<'p> Emit<'_, '_, 'p> {
             let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
             self.store_field(&held, &at, &fields, "");
             self.retain_inline(&held, &fields);
+            self.line(&format!("{error} = getelementptr inbounds i8, ptr {block}, i64 0"));
+        } else if held == Kind::Str && self.headers() {
+            let header = self.temp();
+            self.line(&format!("{header} = load {}, ptr {at}", crate::headers::HEADER));
+            let block = self.owned_text_block(&header);
             self.line(&format!("{error} = getelementptr inbounds i8, ptr {block}, i64 0"));
         } else {
             self.line(&format!("{error} = load ptr, ptr {at}"));

@@ -37,6 +37,10 @@ fn find_start(name: &str, key_type: &str) -> String {
 
 impl Emit<'_, '_, '_> {
     fn word_kind(&self, word: Word) -> Option<Kind> {
+        // A dict holds a string as its block, where strings are otherwise headers.
+        if word == Word::Str && self.headers() {
+            return Some(Kind::TextBlock);
+        }
         Kind::from_ty(self.module.layouts, word_ty(word))
     }
 
@@ -102,6 +106,9 @@ impl Emit<'_, '_, '_> {
 
     /// The address of a key's entry, or zero.
     fn find(&mut self, dict: &str, word: Word, key: &str) -> String {
+        if word == Word::Str && self.headers() {
+            return self.find_header(dict, key, i64::from(ENTRY_VALUE));
+        }
         let hash = self.hash(word, key);
         let (name, key_type) = match word {
             Word::Str => {
@@ -160,6 +167,14 @@ impl Emit<'_, '_, '_> {
         match kind {
             Kind::Float => self.line(&format!("{word} = bitcast double {value} to i64")),
             Kind::Bool => self.line(&format!("{word} = zext i1 {value} to i64")),
+            // A header becomes a block of its own, the dict's.
+            Kind::Str | Kind::TextBlock if self.headers() => {
+                let block = self.owned_text_block(value);
+                if !retain {
+                    self.release_text(value);
+                }
+                self.line(&format!("{word} = ptrtoint ptr {block} to i64"));
+            }
             Kind::Str | Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
                 if retain {
                     self.retain(value);
@@ -276,7 +291,12 @@ impl Emit<'_, '_, '_> {
         let value_at = self.temp();
         self.line(&format!("{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {ENTRY_VALUE}"));
         if value_kind.counted() {
-            self.retain(&held);
+            let held = if value_kind == Kind::TextBlock {
+                self.owned_text_block(&held)
+            } else {
+                self.retain(&held);
+                held.clone()
+            };
             let old = self.temp();
             self.line(&format!("{old} = load ptr, ptr {value_at}"));
             self.line(&format!("store ptr {held}, ptr {value_at}"));
@@ -387,7 +407,8 @@ impl Emit<'_, '_, '_> {
         let value_at = self.temp();
         self.line(&format!("{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {ENTRY_VALUE}"));
         let value = self.load_field(&value_kind, &value_at, "");
-        if value_kind.counted() {
+        let (value_kind, value, owned) = self.as_header(&value_kind, &value);
+        if value_kind.counted() && !owned {
             self.retain_value(&value, &value_kind);
         }
         let at = self.offset(&slot, offset);
@@ -538,7 +559,8 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store {memory} zeroinitializer, ptr {slot}"));
             self.line(&format!("store i64 {number}, ptr {slot}"));
             let value = self.load_field(&value_kind, &value_at, "");
-            if value_kind.counted() {
+            let (value_kind, value, owned) = self.as_header(&value_kind, &value);
+            if value_kind.counted() && !owned {
                 self.retain_value(&value, &value_kind);
             }
             let at = self.offset(&slot, offset);
@@ -635,6 +657,17 @@ impl Emit<'_, '_, '_> {
         let at = self.place_for(&Kind::Int);
         self.line(&format!("store i64 {word}, ptr {at}"));
         let value = self.load_field(&value_kind, &at, "");
+        // A string comes out as its block, with the owner the dict had: a header takes it over,
+        // unless an optional's wanted, which holds the block.
+        let wants_block = match dest {
+            Some(dest) => matches!(self.kind_of(dest)?, Kind::Maybe(_)),
+            None => false,
+        };
+        let (value_kind, value) = if value_kind == Kind::TextBlock && !wants_block {
+            (Kind::Str, self.text_from_block(&value))
+        } else {
+            (value_kind, value)
+        };
         match dest {
             Some(dest) if self.kind_of(dest)? == &value_kind => self.assign(dest, &value),
             Some(dest) => {
@@ -664,6 +697,7 @@ impl Emit<'_, '_, '_> {
     /// `dict.get(key, default)`, or `dict.get(key)` as an optional.
     pub(crate) fn dict_get(&mut self, dest: LocalId, args: &[Operand]) -> Result<(), String> {
         if let [dict, Operand::Local(key)] = args
+            && !self.headers()
             && let Some(sliced) = self.known.slice_keys.get(&key.0).cloned()
         {
             return self.slice_get(dest, (dict, &Operand::Local(*key)), &sliced);

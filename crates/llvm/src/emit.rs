@@ -341,7 +341,8 @@ impl<'p> Module<'_, 'p> {
         };
         let known = self.whole.analyses.get(function.name.as_str()).ok_or("no analysis")?;
         let mut kinds = Vec::with_capacity(function.locals.len());
-        let joined = self.whole.builders.get(function.name.as_str());
+        // Held as headers, strings aren't grown in place yet, so pieces stay a list.
+        let joined = self.whole.builders.get(function.name.as_str()).filter(|_| !self.layouts.text_headers());
         for (at, local) in function.locals.iter().enumerate() {
             // Pieces only ever joined are the string they're joined into.
             let kind = if joined.is_some_and(|locals| locals.contains(&at)) {
@@ -403,7 +404,7 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) known: &'w Analysis,
     kinds: Vec<Kind>,
     returns: Kind,
-    allocas: String,
+    pub(crate) allocas: String,
     out: String,
     cold: String,
     next: usize,
@@ -526,9 +527,9 @@ impl Emit<'_, '_, '_> {
                 continue;
             }
             let _ = writeln!(self.allocas, "  %l{at} = alloca {text}");
-            if kind.counted() {
+            if kind.counted() && text == "ptr" {
                 let _ = writeln!(self.allocas, "  store ptr null, ptr %l{at}");
-            } else if !self.inline_blocks(kind).is_empty() {
+            } else if kind.counted() || !self.inline_blocks(kind).is_empty() {
                 let _ = writeln!(self.allocas, "  store {text} zeroinitializer, ptr %l{at}");
             }
         }
@@ -691,7 +692,8 @@ impl Emit<'_, '_, '_> {
 
     /// A slot holding this block's address, for code that may replace it.
     pub(crate) fn temp_slot(&mut self, block: &str) -> String {
-        let at = self.place_for(&Kind::Str);
+        let at = self.label("%place");
+        let _ = writeln!(self.allocas, "  {at} = alloca ptr");
         self.line(&format!("store ptr {block}, ptr {at}"));
         at
     }
@@ -703,7 +705,9 @@ impl Emit<'_, '_, '_> {
 
     /// One owner fewer for a value of this kind.
     pub(crate) fn release_kind(&mut self, value: &str, kind: &Kind) {
-        if matches!(kind, Kind::Closure(..)) {
+        if *kind == Kind::Str && self.headers() {
+            self.release_text(value);
+        } else if matches!(kind, Kind::Closure(..)) {
             self.release_closure(value);
         } else {
             self.release(value);
@@ -713,6 +717,10 @@ impl Emit<'_, '_, '_> {
     /// One more owner for a value, unless it's the one that's nothing: an optional's may be.
     pub(crate) fn retain_value(&mut self, value: &str, kind: &Kind) {
         if value == "null" {
+            return;
+        }
+        if *kind == Kind::Str && self.headers() {
+            self.retain_text(value);
             return;
         }
         if !matches!(kind, Kind::Maybe(_)) {
@@ -749,6 +757,17 @@ impl Emit<'_, '_, '_> {
         };
         self.line(&format!("store i64 {tag}, ptr {fields_at}"));
         let at = self.offset(&fields_at, offset);
+        if matches!(held, Kind::Maybe(inner) if **inner == Kind::TextBlock) {
+            // The enum holds a header: `None`'s stays zero.
+            let (some_label, done) = (self.label("text_some"), self.label("text_put"));
+            self.line(&format!("br i1 {missing}, label %{done}, label %{some_label}"));
+            self.start_block(&some_label);
+            let header = self.text_from_block(value);
+            self.line(&format!("store {} {header}, ptr {at}", crate::headers::HEADER));
+            self.line(&format!("br label %{done}"));
+            self.start_block(&done);
+            return Ok((place, true));
+        }
         self.line(&format!("store ptr {value}, ptr {at}"));
         Ok((place, true))
     }
@@ -873,7 +892,7 @@ impl Emit<'_, '_, '_> {
             Operand::Int(value) => (value.to_string(), Kind::Int),
             Operand::Float(value) => (float_text(*value), Kind::Float),
             Operand::Bool(value) => (value.to_string(), Kind::Bool),
-            Operand::Str(text) => (self.literal(text), Kind::Str),
+            Operand::Str(text) => (self.literal_value(text), Kind::Str),
             Operand::None => ("null".to_owned(), Kind::Unit),
         })
     }
@@ -888,8 +907,8 @@ impl Emit<'_, '_, '_> {
         let slot = self.slot(dest);
         if self.owns(dest) || (kind.counted() && self.is_mut_param(dest)) {
             let old = self.temp();
-            self.line(&format!("{old} = load ptr, ptr {slot}"));
-            self.line(&format!("store ptr {value}, ptr {slot}"));
+            self.line(&format!("{old} = load {text}, ptr {slot}"));
+            self.line(&format!("store {text} {value}, ptr {slot}"));
             self.release_kind(&old, &kind);
         } else {
             self.line(&format!("store {text} {value}, ptr {slot}"));
@@ -1021,6 +1040,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = icmp {cc} i1 {a}, {b}"));
                 temp
             }
+            Kind::Str if self.headers() => self.header_binary(op, (&a, &b))?,
             Kind::Str if op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) => {
                 // `text += more` takes over the owner the local had, and grows in place if it can.
                 let joined = self.append_text(&a, &b);
@@ -1437,6 +1457,24 @@ impl Emit<'_, '_, '_> {
             Operand::Str(_) => Kind::Str,
             Operand::None => wanted.clone(),
         };
+        if from != wanted && self.headers() {
+            let as_block = |kind: &Kind| match kind {
+                Kind::TextBlock => true,
+                Kind::Maybe(inner) => **inner == Kind::TextBlock,
+                _ => false,
+            };
+            // A string held as a block, as a dict or an optional holds one, and as a header.
+            if as_block(&from) && wanted == Kind::Str {
+                let (held, _) = self.operand(value)?;
+                let header = self.text_from_borrowed_block(&held);
+                return self.assign(dest, &header);
+            }
+            if from == Kind::Str && as_block(&wanted) {
+                let (held, _) = self.operand(value)?;
+                let block = self.owned_text_block(&held);
+                return self.assign(dest, &block);
+            }
+        }
         if from != wanted {
             if self.is_optional(&wanted) {
                 return self.make_case(dest, "Some", std::slice::from_ref(value));
@@ -1465,8 +1503,8 @@ impl Emit<'_, '_, '_> {
                     if self.owns(*from)
                         && (self.known.moves(*from) || self.known.is_last_copy(self.at.0, self.at.1)) =>
                 {
-                    let slot = self.slot(*from);
-                    self.line(&format!("store ptr null, ptr {slot}"));
+                    let (slot, text) = (self.slot(*from), self.text_of(&kind));
+                    self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
                 }
                 _ => self.retain_value(&held, &kind),
             }
@@ -1489,7 +1527,7 @@ impl Emit<'_, '_, '_> {
         match inst {
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
-                if self.known.unmade.contains(&dest.0) =>
+                if self.known.unmade.contains(&dest.0) && !self.headers() =>
             {
                 Ok(())
             }
@@ -1638,6 +1676,7 @@ impl Emit<'_, '_, '_> {
         // A slice never made leaves what it's of to the lookups that read it in its place.
         if let InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. } = inst
             && self.known.unmade.contains(&dest.0)
+            && !self.headers()
         {
             return;
         }
@@ -1669,9 +1708,9 @@ impl Emit<'_, '_, '_> {
         for local in done_with {
             if self.owns(local) && self.known.moves(local) && !writes.contains(&local) {
                 let kind = self.kinds.get(local.0).cloned().unwrap_or(Kind::Unit);
-                let (held, slot) = (self.temp(), self.slot(local));
-                self.line(&format!("{held} = load ptr, ptr {slot}"));
-                self.line(&format!("store ptr null, ptr {slot}"));
+                let (held, slot, text) = (self.temp(), self.slot(local), self.text_of(&kind));
+                self.line(&format!("{held} = load {text}, ptr {slot}"));
+                self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
                 self.release_kind(&held, &kind);
             }
         }
@@ -1683,8 +1722,8 @@ impl Emit<'_, '_, '_> {
             let local = LocalId(at);
             if Some(local) != except && self.owns(local) {
                 let kind = self.kinds.get(at).cloned().unwrap_or(Kind::Unit);
-                let (held, slot) = (self.temp(), self.slot(local));
-                self.line(&format!("{held} = load ptr, ptr {slot}"));
+                let (held, slot, text) = (self.temp(), self.slot(local), self.text_of(&kind));
+                self.line(&format!("{held} = load {text}, ptr {slot}"));
                 self.release_kind(&held, &kind);
             } else if Some(local) != except && self.owns_inline(local) {
                 let kind = self.kinds.get(at).cloned().unwrap_or(Kind::Unit);

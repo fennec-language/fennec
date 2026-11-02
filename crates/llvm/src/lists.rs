@@ -7,7 +7,7 @@ use fennec_syntax::{BinOp, Span};
 
 use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS};
 use crate::kinds::{Kind, element_symbol};
-use crate::uniqueness::{FieldPath, item_step};
+use crate::uniqueness::{FieldPath, item_step, list_place};
 
 /// A case's field: its name, where it goes, and how it's held if this backend takes it.
 type CaseField = (String, u32, Option<Kind>);
@@ -548,6 +548,52 @@ impl Emit<'_, '_, '_> {
         at
     }
 
+    /// The list a field path from a local leads to, named as what's known of it is.
+    fn list_key(&self, object: LocalId, path: &[String]) -> Option<FieldPath> {
+        let (root, mut along) = if self.taken_items.contains_key(&object.0) {
+            self.fact_key(object, &[], 8)
+        } else {
+            list_place(self.known, object)?
+        };
+        along.extend(path.iter().cloned());
+        Some((root, along))
+    }
+
+    /// Where an index points in a list, checked once: until something shortens or replaces
+    /// the list, or writes the index, it's read back from where the first check left it.
+    fn position_once(
+        &mut self,
+        place: Option<FieldPath>,
+        (list, index_operand, index): (&str, &Operand, &str),
+        span: Span,
+    ) -> String {
+        let fact = place.zip(item_step(index_operand)).map(|((root, mut path), step)| {
+            path.push(step);
+            (root, path)
+        });
+        if let Some(fact) = &fact
+            && self.inside_items.contains(fact)
+            && let Some(slot) = self.inside_slots.get(fact).cloned()
+        {
+            let position = self.temp();
+            self.line(&format!("{position} = load i64, ptr {slot}"));
+            return position;
+        }
+        let position = self.position(list, index, span);
+        if let Some(fact) = fact {
+            let slot = if let Some(slot) = self.inside_slots.get(&fact) {
+                slot.clone()
+            } else {
+                let slot = self.place_for(&Kind::Int);
+                self.inside_slots.insert(fact.clone(), slot.clone());
+                slot
+            };
+            self.line(&format!("store i64 {position}, ptr {slot}"));
+            self.inside_items.push(fact);
+        }
+        position
+    }
+
     /// Where an index points: from the start, or the end if it's negative, failing outside.
     pub(crate) fn position(&mut self, list: &str, index: &str, span: Span) -> String {
         let length = self.list_length(list);
@@ -602,7 +648,15 @@ impl Emit<'_, '_, '_> {
         };
         let index_operand = index;
         let (index, _) = self.operand(index)?;
-        let position = if inside { index } else { self.position(&list, &index, span) };
+        let position = if inside {
+            index
+        } else {
+            let place = match object {
+                Operand::Local(local) => self.list_key(*local, &[]),
+                _ => None,
+            };
+            self.position_once(place, (&list, index_operand, &index), span)
+        };
         let memory = held.memory(self.module.layouts);
         let at = self.item_address(&list, &memory, &position);
         if let Some((home, path)) =
@@ -827,6 +881,7 @@ impl Emit<'_, '_, '_> {
             }
             _ => None,
         };
+        let index_operand = index;
         let (index, _) = self.operand(index)?;
         let (value, fresh) = self.value_for(value, &held)?;
         let memory = held.memory(self.module.layouts);
@@ -834,7 +889,12 @@ impl Emit<'_, '_, '_> {
             at
         } else {
             let list = if path.is_empty() { self.unshared(object) } else { self.alone_list(object, path)? };
-            let position = if inside { index } else { self.position(&list, &index, span) };
+            let position = if inside {
+                index
+            } else {
+                let place = self.list_key(object, path);
+                self.position_once(place, (&list, index_operand, &index), span)
+            };
             self.item_address(&list, &memory, &position)
         };
         if put_back && held.counted() {

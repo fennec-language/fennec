@@ -138,10 +138,17 @@ pub(super) fn waiting() -> Vec<u64> {
     remote(|queues| queues.remove(&index()).unwrap_or_default())
 }
 
-/// What this thread's runtime made that outlives the task it ran, handed over as blocks for
-/// the thread that started the task to adopt when the task ends.
-pub fn hand_over() -> Vec<Box<[u64]>> {
-    super::with(|state| state.heap.hand_over())
+/// How many blocks this thread's runtime has made since it last handed them over: where a
+/// task starts, so it hands over only what it made. Work a worker steals while the task waits
+/// starts and ends inside it, and hands its own over first.
+pub fn made_so_far() -> usize {
+    super::with(|state| state.heap.made_so_far())
+}
+
+/// What this thread's runtime made since `since` that outlives the task it ran, handed over
+/// as blocks for the thread that started the task to adopt when the task ends.
+pub fn hand_over(since: usize) -> Vec<Box<[u64]>> {
+    super::with(|state| state.heap.hand_over(since))
 }
 
 /// Takes over blocks a task's thread handed over, as this thread's own.
@@ -189,7 +196,7 @@ mod tests {
             assert_eq!(text_of(names[0]), Value::str("a fox's name, longer than a word"));
             let marked = names.iter().all(|name| shape_word(*name) >> heap::OWNER_SHIFT == u64::from(owner));
             assert!(marked);
-            let handed = super::hand_over();
+            let handed = super::hand_over(0);
             finish();
             (owner, (names, handed))
         })

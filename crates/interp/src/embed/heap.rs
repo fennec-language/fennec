@@ -253,11 +253,17 @@ impl Heap {
         i64::try_from(address).unwrap_or(0)
     }
 
-    /// Takes every block this heap made that doesn't live for the whole run, for another
-    /// thread's heap to adopt: what a task made that outlives it.
-    pub(crate) fn hand_over(&mut self) -> Vec<Box<[u64]>> {
+    /// How many blocks this heap has made since it last handed them over, to hand over only
+    /// the ones made after this.
+    pub(crate) fn made_so_far(&self) -> usize {
+        self.made.len()
+    }
+
+    /// Takes every block this heap made after it had made `since`, and that doesn't live for
+    /// the whole run, for another thread's heap to adopt: what a task made that outlives it.
+    pub(crate) fn hand_over(&mut self, since: usize) -> Vec<Box<[u64]>> {
         let mut handed = Vec::new();
-        for address in std::mem::take(&mut self.made) {
+        for address in self.made.split_off(since.min(self.made.len())) {
             let lives = self.block(address).and_then(<[u64]>::first).is_some_and(|count| *count < IMMORTAL);
             if lives && let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at))
             {

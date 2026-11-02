@@ -94,10 +94,11 @@ impl Run {
         }
     }
 
-    /// Keeps what the range just run on this thread made, when this thread is a worker.
-    fn keep_made(&self) {
+    /// Keeps what the range just run on this thread made since `since`, when this thread is a
+    /// worker.
+    fn keep_made(&self, since: usize) {
         if super::threads::index() != self.caller {
-            let made = super::threads::hand_over();
+            let made = super::threads::hand_over(since);
             self.made.lock().unwrap_or_else(PoisonError::into_inner).extend(made);
         }
     }
@@ -119,8 +120,9 @@ impl Run {
             return;
         }
         if to - from <= self.chunk {
+            let since = super::threads::made_so_far();
             let failed = leaf(from, to, i64::from(super::threads::index())) != 0;
-            self.keep_made();
+            self.keep_made(since);
             if failed {
                 self.failed(from);
             }
@@ -139,8 +141,9 @@ impl Run {
         let thread = i64::from(super::threads::index());
         if to - from <= self.chunk {
             let mut partial = 0;
+            let since = super::threads::made_so_far();
             let failed = body(env, number(from), number(to), thread, &mut partial) != 0;
-            self.keep_made();
+            self.keep_made(since);
             if failed {
                 self.failed(from);
                 return None;
@@ -151,8 +154,9 @@ impl Run {
         let (left, right) =
             pool::join(|| self.reduce((from, middle), steps), || self.reduce((middle, to), steps));
         let mut combined = 0;
+        let since = super::threads::made_so_far();
         let failed = combine(env, left?, right?, &mut combined) != 0;
-        self.keep_made();
+        self.keep_made(since);
         if failed {
             self.failed(from);
             return None;
@@ -226,10 +230,23 @@ mod pool {
     pub(super) fn join<A, B>(first: impl FnOnce() -> A, second: impl FnOnce() -> B) -> (A, B) {
         (first(), second())
     }
+
+    /// Without threads, a stream's reader runs every chunk itself.
+    pub(super) fn window(_words: usize) -> usize {
+        0
+    }
+
+    pub(super) fn spawn(task: impl FnOnce() + Send + 'static) {
+        task();
+    }
 }
 
 #[cfg(any(test, feature = "threads"))]
 mod pool;
+
+mod stream;
+
+pub use stream::{parallel_stream, stream_end, stream_next};
 
 pub use pool::set_worker_setup;
 

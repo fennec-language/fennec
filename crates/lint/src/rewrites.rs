@@ -89,9 +89,7 @@ fn rebound(def: &FnDef) -> HashSet<String> {
                     }
                 }
                 StmtKind::For { names, .. } => found.extend(names.iter().cloned()),
-                StmtKind::With { name: Some(name), .. } => {
-                    found.insert(name.clone());
-                }
+                StmtKind::With { names, .. } => found.extend(names.iter().map(|held| held.name.clone())),
                 _ => {}
             }
             for inner in blocks(stmt) {

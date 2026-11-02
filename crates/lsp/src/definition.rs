@@ -44,14 +44,42 @@ impl Target {
 
 /// What the name at `at` refers to, if there's a name there.
 pub(crate) fn target(module: &Module, sources: &Sources, at: u32) -> Option<Target> {
-    let mut finder = Finder { at, sources, module, scopes: Vec::new(), function: String::new(), found: None };
+    finder(module, sources, at).found
+}
+
+/// What completing at a place needs to know about it.
+pub(crate) struct Around {
+    /// The names in scope where a name is written at the place, outermost first, each with what
+    /// declares it.
+    pub(crate) names: Vec<(String, Span)>,
+    /// The innermost expression that ends at the place, with the key of the function it's in.
+    pub(crate) ending: Option<(Span, String)>,
+}
+
+/// What's around `at`, for completing there.
+pub(crate) fn around(module: &Module, sources: &Sources, at: u32) -> Around {
+    let finder = finder(module, sources, at);
+    Around { names: finder.seen, ending: finder.ending }
+}
+
+fn finder<'a>(module: &'a Module, sources: &'a Sources, at: u32) -> Finder<'a> {
+    let mut finder = Finder {
+        at,
+        sources,
+        module,
+        scopes: Vec::new(),
+        function: String::new(),
+        found: None,
+        seen: Vec::new(),
+        ending: None,
+    };
     for item in &module.items {
         finder.item(item);
         if finder.found.is_some() {
             break;
         }
     }
-    finder.found
+    finder
 }
 
 /// Where `name` is written within `span`, as a whole word. The span itself when it isn't.
@@ -95,6 +123,10 @@ struct Finder<'a> {
     /// The key of the function being walked, as the typed tree keys it.
     function: String,
     found: Option<Target>,
+    /// The names in scope when something was found, outermost first.
+    seen: Vec<(String, Span)>,
+    /// The innermost expression ending at the place, with its function's key.
+    ending: Option<(Span, String)>,
 }
 
 impl Finder<'_> {
@@ -105,6 +137,12 @@ impl Finder<'_> {
     fn found(&mut self, target: Target) {
         if self.found.is_none() {
             self.found = Some(target);
+            self.seen = self
+                .scopes
+                .iter()
+                .flatten()
+                .map(|(name, _, declared, _)| (name.clone(), *declared))
+                .collect();
         }
     }
 
@@ -273,11 +311,11 @@ impl Finder<'_> {
                     finder.block(body);
                 });
             }
-            StmtKind::With { value, name, body, .. } => {
+            StmtKind::With { value, names, body } => {
                 self.expr(value);
                 self.scoped(|finder| {
-                    if let Some(name) = name {
-                        finder.declare(name, stmt.span);
+                    for held in names {
+                        finder.declare(&held.name, held.span);
                     }
                     finder.block(body);
                 });
@@ -312,6 +350,9 @@ impl Finder<'_> {
     fn expr(&mut self, expr: &Expr) {
         if self.found.is_some() || !self.contains(expr.span) {
             return;
+        }
+        if expr.span.end == self.at {
+            self.ending = Some((expr.span, self.function.clone()));
         }
         match &expr.kind {
             ExprKind::Name(name) => self.found(self.resolve(name)),

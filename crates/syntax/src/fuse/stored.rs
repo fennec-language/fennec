@@ -51,11 +51,10 @@ impl Declared {
                     }
                     self.walk(body);
                 }
-                StmtKind::With { name, is_mut, body, .. } => {
-                    self.names.extend(name.iter().cloned());
-                    if *is_mut {
-                        self.changing.extend(name.iter().cloned());
-                    }
+                StmtKind::With { names, body, .. } => {
+                    self.names.extend(names.iter().map(|held| held.name.clone()));
+                    self.changing
+                        .extend(names.iter().filter(|held| held.is_mut).map(|held| held.name.clone()));
                     self.walk(body);
                 }
                 StmtKind::Def(def) => self.names.push(def.name.clone()),

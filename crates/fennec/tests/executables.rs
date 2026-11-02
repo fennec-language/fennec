@@ -73,6 +73,10 @@ fn work_dir(test: &str) -> std::io::Result<PathBuf> {
     Ok(work)
 }
 
+/// Examples that can't be built to executables yet, because the JIT doesn't take a type they
+/// use: `shared` types, for now. Each must still fail to build, so it comes off when it builds.
+const NOT_BUILT: &[&str] = &["shared_accounts.fen"];
+
 #[test]
 #[cfg_attr(windows, ignore = "`fennec build` doesn't link executables on Windows yet")]
 fn examples_build_to_executables_that_print_their_expected_output() {
@@ -83,6 +87,10 @@ fn examples_build_to_executables_that_print_their_expected_output() {
     let work = work_dir("examples").unwrap();
     for path in programs(&examples_dir()).unwrap() {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if NOT_BUILT.contains(&name.as_str()) {
+            assert!(build(&path, &work).unwrap().is_err(), "{name} builds now: take it off `NOT_BUILT`");
+            continue;
+        }
         let executable = build(&path, &work).unwrap().unwrap_or_else(|built| {
             panic!("{name} didn't build ({}):\n{}", built.status, String::from_utf8_lossy(&built.stderr))
         });

@@ -71,9 +71,7 @@ fn bound<'m>(stmts: &'m [Stmt], names: &mut HashSet<&'m str>) {
                 }
             }
             StmtKind::For { names: loop_names, .. } => names.extend(loop_names.iter().map(String::as_str)),
-            StmtKind::With { name: Some(name), .. } => {
-                names.insert(name);
-            }
+            StmtKind::With { names: held, .. } => names.extend(held.iter().map(|held| held.name.as_str())),
             _ => {}
         }
         for block in blocks(stmt) {

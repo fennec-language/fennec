@@ -4,7 +4,7 @@
 use fennec_syntax::{
     Annotation, Arg, BinOp, Case, CompKind, Expr, ExprKind, Extension, FStrPart, Field, FnDef, Generic,
     Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr,
-    UnaryOp,
+    UnaryOp, WithName,
 };
 
 use super::{Decode, Encode, Reader, Writer};
@@ -34,6 +34,7 @@ fields!(TypeExpr { name, args, optional, span });
 fields!(TypeDef { name, generics, fields, cases, methods, shared, span });
 fields!(Field { name, ty, default, rule, annotations, span });
 fields!(Annotation { name, args, span });
+fields!(WithName { name, is_mut, span });
 fields!(Case { name, fields, span });
 fields!(Interface { name, methods, span });
 fields!(Extension { name, generics, methods, span });
@@ -173,11 +174,10 @@ impl Encode for StmtKind {
             StmtKind::Fail(value) => (6, value).encode_tagged(to),
             StmtKind::Yield(value) => (7, value).encode_tagged(to),
             StmtKind::Assert(value) => (8, value).encode_tagged(to),
-            StmtKind::With { value, name, is_mut, body } => {
+            StmtKind::With { value, names, body } => {
                 to.tag(9);
                 value.encode(to);
-                name.encode(to);
-                is_mut.encode(to);
+                names.encode(to);
                 body.encode(to);
             }
             StmtKind::Def(def) => (10, def).encode_tagged(to),
@@ -214,8 +214,7 @@ impl Decode for StmtKind {
             8 => StmtKind::Assert(Decode::decode(r)?),
             9 => StmtKind::With {
                 value: Decode::decode(r)?,
-                name: Decode::decode(r)?,
-                is_mut: Decode::decode(r)?,
+                names: Decode::decode(r)?,
                 body: Decode::decode(r)?,
             },
             10 => StmtKind::Def(Decode::decode(r)?),

@@ -35,6 +35,8 @@ pub(crate) enum Origin {
     Loop,
     /// A name from around a nested function.
     Captured,
+    /// A `with` block's name for a `shared` handle it locks.
+    Locked,
 }
 
 struct Scope {
@@ -516,6 +518,7 @@ impl<'c> FnCx<'c> {
                 self.name
             ),
             Origin::Loop => format!("loop with `for mut {name} in ...` to change each item"),
+            Origin::Locked => format!("it's locked to read: lock it to write with `as mut {name}`"),
             Origin::Local | Origin::Captured => return not_mut(name, span),
         };
         Diagnostic::new(format!("`{name}` isn't mut"), span).with_help(help)
@@ -536,6 +539,16 @@ impl<'c> FnCx<'c> {
             crossed |= scope.barrier;
         }
         None
+    }
+
+    /// Where the name in sight came from.
+    pub(crate) fn origin(&self, name: &str) -> Option<Origin> {
+        self.scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.bindings.iter().rev())
+            .find(|binding| binding.name == name)
+            .map(|binding| binding.origin)
     }
 
     fn binding_mut(&mut self, name: &str) -> Option<&mut Binding> {

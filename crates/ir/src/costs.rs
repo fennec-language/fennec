@@ -210,4 +210,4 @@ fn allocation(
     }
 }
 
-pub(crate) use insts::{reads as inst_reads, terminator_reads};
+pub(crate) use insts::{operands, reads as inst_reads, terminator_reads};

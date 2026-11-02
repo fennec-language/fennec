@@ -821,13 +821,17 @@ fn the_validator_finds_malformed_ir() {
     let handle = Operand::Local(LocalId(0));
     locks.blocks[0].insts = vec![
         Inst { kind: InstKind::Lock { handle: handle.clone(), write: true }, span: Span::default() },
-        Inst { kind: InstKind::Unlock { handle }, span: Span::default() },
+        Inst { kind: InstKind::Unlock { handle: handle.clone() }, span: Span::default() },
+        Inst { kind: InstKind::LockAll { handles: vec![(handle.clone(), false)] }, span: Span::default() },
+        Inst { kind: InstKind::UnlockAll { handles: vec![handle] }, span: Span::default() },
     ];
     assert_eq!(
         problems(locks),
         [
             "f: `lock _0 to write` is on something other than a `shared` handle",
             "f: `unlock _0` is on something other than a `shared` handle",
+            "f: `lock all _0 to read` is on something other than a `shared` handle",
+            "f: `unlock all _0` is on something other than a `shared` handle",
         ]
     );
 }
@@ -2594,4 +2598,79 @@ fn a_buffer_is_made_filled_and_read_through_its_own_builtins() {
     {
         assert!(text.contains(name), "{name} in\n{text}");
     }
+}
+
+const TRANSFER: &str = "shared Account:
+    total = 0
+
+    def add(mut self, amount: int):
+        self.total += amount
+
+def transfer(a: Account, b: Account, amount: int) -> bool:
+    with a, b as mut x, mut y:
+        if x.total < amount:
+            return False
+        x.total -= amount
+        y.add(amount)
+    True
+
+def peek(a: Account) -> int:
+    with a as seen:
+        seen.total
+";
+
+#[test]
+fn a_with_block_locks_its_handles_for_the_block() {
+    // Several handles lock together, in an order the backend fixes, and unlock on every way
+    // out. Through the names the block gives them, nothing locks again.
+    assert_eq!(
+        printed(TRANSFER, "transfer").unwrap(),
+        "fn transfer(_0, _1, _2) -> bool
+  local _0 a: Account
+  local _1 b: Account
+  local _2 amount: int
+  local _3 x: Account
+  local _4 y: Account
+  local _5: int
+  local _6: bool
+  local _7: int
+  local _8: int
+  bb0:
+    _3 = _0
+    _4 = _1
+    lock all _3 to write, _4 to write
+    _5 = _3.total
+    _6 = _5 < _2
+    branch _6 bb2 bb3
+  bb1:
+    _7 = _3.total
+    _8 = _7 - _2
+    _3.total = _8
+    call Account.add(_4, _2)
+    unlock all _3, _4
+    return true
+  bb2:
+    unlock all _3, _4
+    return false
+  bb3:
+    jump bb1
+"
+    );
+    // One handle takes its own lock, to read when its name isn't `mut`.
+    assert_eq!(
+        printed(TRANSFER, "peek").unwrap(),
+        "fn peek(_0) -> int
+  local _0 a: Account
+  local _1 seen: Account
+  local _2: int
+  local _3: int
+  bb0:
+    _1 = _0
+    lock _1 to read
+    _2 = _1.total
+    _3 = _2
+    unlock _1
+    return _3
+"
+    );
 }

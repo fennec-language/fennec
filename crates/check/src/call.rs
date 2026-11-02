@@ -7,7 +7,7 @@ use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Span, UnaryOp};
 use crate::ParamType;
 use crate::builtins;
 use crate::expr::Member;
-use crate::function::FnCx;
+use crate::function::{FnCx, Origin};
 use crate::generic::Chosen;
 use crate::infer::Hole;
 use crate::messages::{mismatch, no_method, unhandled_result};
@@ -438,6 +438,19 @@ impl FnCx<'_> {
         {
             let what = format!("`{method}` changes its value, so call it on something held in a mut name");
             self.mut_place(object, &what);
+        } else if takes_self
+            && signature.params.first().is_some_and(|param| param.is_mut)
+            && let ExprKind::Name(name) = &object.kind
+            && self.origin(name) == Some(Origin::Locked)
+            && self.lookup(name).is_some_and(|(_, is_mut)| !is_mut)
+        {
+            self.error(
+                Diagnostic::new(
+                    format!("`{name}` is locked to read, and `{method}` changes it"),
+                    object.span,
+                )
+                .with_help(format!("lock it to write with `as mut {name}`")),
+            );
         }
         self.bind_args(method, params, args, span);
         signature.returns

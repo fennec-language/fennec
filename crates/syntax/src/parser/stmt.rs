@@ -1,7 +1,7 @@
 //! Statements and blocks.
 
 use super::Parser;
-use crate::ast::{BinOp, Expr, ExprKind, Stmt, StmtKind};
+use crate::ast::{BinOp, Expr, ExprKind, Stmt, StmtKind, WithName};
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
 use crate::token::{Kw, Punct, Tok};
@@ -185,18 +185,43 @@ impl Parser {
         Ok(names)
     }
 
+    /// `with value as name:`, or `with a, b as mut x, mut y:` with one name for each value.
     fn with_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
-        let value = self.expr()?;
-        let (name, is_mut) = if self.eat_kw(Kw::As) {
-            let is_mut = self.eat_kw(Kw::Mut);
-            (Some(self.name("a name after `as`")?), is_mut)
-        } else {
-            (None, false)
-        };
+        let mut value = self.expr()?;
+        let mut held = 1;
+        if self.at_p(Punct::Comma) {
+            let mut items = vec![value];
+            while self.eat_p(Punct::Comma) {
+                items.push(self.expr()?);
+            }
+            held = items.len();
+            let span = items.iter().fold(self.prev_span(), |span, item| span.to(item.span));
+            value = Expr { kind: ExprKind::Tuple(items), span };
+        }
+        let mut names = Vec::new();
+        if self.eat_kw(Kw::As) {
+            loop {
+                let at = self.span();
+                let is_mut = self.eat_kw(Kw::Mut);
+                let name = self.name("a name after `as`")?;
+                names.push(WithName { name, is_mut, span: at.to(self.prev_span()) });
+                if !self.eat_p(Punct::Comma) {
+                    break;
+                }
+            }
+        }
+        if !names.is_empty() && names.len() != held {
+            let span = names.iter().fold(value.span, |span, name| span.to(name.span));
+            return Err(Diagnostic::new(
+                format!("this `with` holds {held} values but names {}", names.len()),
+                span,
+            )
+            .with_help("give one name for each value, in order: `with a, b as x, y:`"));
+        }
         self.expect_p(Punct::Colon)?;
         let body = self.block()?;
-        Ok(Stmt { kind: StmtKind::With { value, name, is_mut, body }, span: start.to(self.prev_span()) })
+        Ok(Stmt { kind: StmtKind::With { value, names, body }, span: start.to(self.prev_span()) })
     }
 }
 

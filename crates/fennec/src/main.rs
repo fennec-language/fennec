@@ -31,8 +31,9 @@ const USAGE: &str = "usage:
   fennec run --no-test [path] [args]  run it without running the tests first
   fennec run --interp [path]  run it with the interpreter instead of compiling it
   fennec build [path] [-o out]  compile it to a standalone executable
-  fennec build --llvm [--release] [path] [-o out]  the same through LLVM, for what that backend takes so far;
-                                     --release optimizes the whole program as one
+  fennec build --llvm [--release] [--cpu baseline] [path] [-o out]  the same through LLVM, for what that backend takes so far;
+                                     --release optimizes the whole program as one;
+                                     --cpu baseline builds for x86-64 machines older than AVX2
   fennec test [path]        run a kit's tests, or a single file's, skipping unchanged ones that passed
   fennec test --all [path]  run every test
   fennec test --real [path]  run every test with real capabilities rather than fakes
@@ -57,7 +58,16 @@ const USAGE: &str = "usage:
 pub(crate) const STACK_BYTES: usize = 512 * 1024 * 1024;
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // `--cpu baseline` builds for the first processors of the architecture, wherever it's put.
+    if let Some(at) = args.iter().position(|arg| arg == "--cpu") {
+        if args.get(at + 1).map(String::as_str) != Some("baseline") {
+            eprintln!("error: `--cpu` takes `baseline`, for older machines");
+            return ExitCode::FAILURE;
+        }
+        args.drain(at..at + 2);
+        aot::BASELINE.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["run"] => run(run::Engine::Native, ".", &[]),
         ["run", "--no-test"] => run(run::Engine::Untested, ".", &[]),

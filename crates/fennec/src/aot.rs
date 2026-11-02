@@ -59,6 +59,9 @@ pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
     }
 }
 
+/// Whether `--cpu baseline` asked for code any machine of its architecture runs.
+pub(crate) static BASELINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// `fennec build --llvm`: the same through LLVM, which says what it can't take yet rather than
 /// falling back to anything.
 pub(crate) fn build_llvm(path: &str, output: Option<&str>, release: bool) -> ExitCode {
@@ -112,7 +115,12 @@ fn llvm_objects(
     if let Some(skipped) = lowered.not_lowered.first() {
         return Err(format!("`{}` isn't lowered yet: {}", skipped.function, skipped.why));
     }
-    let (units, shared, layouts) = fennec_llvm::emit(&lowered)?;
+    let cpu = if BASELINE.load(std::sync::atomic::Ordering::Relaxed) {
+        fennec_llvm::Cpu::Baseline
+    } else {
+        fennec_llvm::Cpu::Usual
+    };
+    let (units, shared, layouts) = fennec_llvm::emit_for(&lowered, cpu)?;
     let tools = fennec_llvm::Tools::find()?;
     let mut image = fennec_llvm::Image::of(&layouts, &shared)?;
     let bytes = fennec_interp::embed::codec::Image {

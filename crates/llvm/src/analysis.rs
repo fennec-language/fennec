@@ -1099,6 +1099,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                 name.as_str(),
                 "math.sqrt"
                     | "str.code"
+                    | "str.split"
                     | "int.abs"
                     | "sum"
                     | "sum.start"

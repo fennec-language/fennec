@@ -6,7 +6,10 @@ use std::path::Path;
 
 use fennec_check::Type;
 use fennec_ir::facts::Facts;
-use fennec_ir::{Block, Function, Local, LocalId, Operand, Program, Terminator, lower, validate};
+use fennec_ir::{
+    Block, Function, Inst, InstKind, Local, LocalId, Operand, Program, Terminator, lower, validate,
+};
+use fennec_syntax::Span;
 
 fn lowered(source: &str) -> Result<Program, String> {
     let mut module = fennec_syntax::parse(source).map_err(|problem| problem.message)?;
@@ -812,6 +815,20 @@ fn the_validator_finds_malformed_ir() {
     assert_eq!(
         problems(function(Vec::new(), Terminator::Return(None))),
         ["f: returns nothing, but has a return type"]
+    );
+    let mut locks =
+        function(vec![Type::Named("Point".to_owned())], Terminator::Return(Some(Operand::Int(1))));
+    let handle = Operand::Local(LocalId(0));
+    locks.blocks[0].insts = vec![
+        Inst { kind: InstKind::Lock { handle: handle.clone(), write: true }, span: Span::default() },
+        Inst { kind: InstKind::Unlock { handle }, span: Span::default() },
+    ];
+    assert_eq!(
+        problems(locks),
+        [
+            "f: `lock _0 to write` is on something other than a `shared` handle",
+            "f: `unlock _0` is on something other than a `shared` handle",
+        ]
     );
 }
 
@@ -2026,8 +2043,8 @@ def f() -> int:
         .collect();
     assert_eq!(
         shown.join(", "),
-        "StructDef { name: \"Box[int]\", fields: [(\"held\", Int), (\"count\", Int)] }, \
-         StructDef { name: \"Box[str]\", fields: [(\"held\", Str), (\"count\", Int)] }"
+        "StructDef { name: \"Box[int]\", fields: [(\"held\", Int), (\"count\", Int)], shared: false }, \
+         StructDef { name: \"Box[str]\", fields: [(\"held\", Str), (\"count\", Int)], shared: false }"
     );
     assert_eq!(
         printed(source, "f").unwrap(),
@@ -2175,6 +2192,94 @@ def f(mut pair: Pair):
     let text = printed(source, "f").unwrap();
     assert!(text.contains("`Pair.low`"), "{text}");
     assert!(!text.contains("`Pair.high`"), "{text}");
+}
+
+const ACCOUNT: &str = "shared Account:
+    total = 0
+    log = list[int]()
+
+    def add(mut self, amount: int):
+        self.total += amount
+        self.log.append(amount)
+        self.note()
+
+    def note(self):
+        pass
+
+    def balance(self) -> int:
+        self.total
+
+
+def pay(account: Account, amount: int):
+    account.add(amount)
+
+
+def main(stdout: Stdout):
+    account = Account()
+    same = account
+    pay(account, 5)
+    same.add(10)
+    stdout.print(account.balance(), same.total, account)
+";
+
+#[test]
+fn a_shared_types_methods_are_called_with_its_lock() {
+    let program = lowered(ACCOUNT).unwrap();
+    let account = program.structs.iter().find(|def| def.name == "Account");
+    assert_eq!(account.map(|def| def.shared), Some(true));
+    // Inside its own methods, `self` is locked already, and the handle is never copied back.
+    assert_eq!(
+        printed(ACCOUNT, "Account.add").unwrap(),
+        "fn Account.add(_0, _1)
+  local _0 self: Account
+  local _1 amount: int
+  local _2: int
+  local _3: int
+  local _4: list[int]
+  bb0:
+    _2 = _0.total
+    _3 = _2 + _1
+    _0.total = _3
+    _4 = _0.log
+    builtin list.append(mut _4, _1)
+    _0.log = _4
+    call Account.note(_0)
+    return
+"
+    );
+    // Anywhere else, a `mut self` method locks to write and a `self` method to read, and so do
+    // reading a field and printing.
+    assert_eq!(
+        printed(ACCOUNT, "main").unwrap(),
+        "fn main(_0)
+  local _0 stdout: Stdout
+  local _1: list[int]
+  local _2: Account
+  local _3 account: Account
+  local _4 same: Account
+  local _5: int
+  local _6: int
+  bb0:
+    _1 = []
+    _2 = make Account(0, _1)
+    _3 = _2
+    _4 = _3
+    call pay(_3, 5)
+    lock _4 to write
+    call Account.add(_4, 10)
+    unlock _4
+    lock _3 to read
+    _5 = call Account.balance(_3)
+    unlock _3
+    lock _4 to read
+    _6 = _4.total
+    unlock _4
+    lock _3 to read
+    builtin Stdout.print(_0, _5, _6, _3)
+    unlock _3
+    return
+"
+    );
 }
 
 #[test]

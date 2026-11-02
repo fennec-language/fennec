@@ -23,8 +23,8 @@ use fennec_check::{Body, Signatures, Type};
 use fennec_syntax::{Arg, BinOp, Expr, ExprKind, FnDef, Item, Module, Span, Stmt, StmtKind, UnaryOp, fuse};
 
 use crate::{
-    Block, BlockId, EnumDef, Function, Inst, InstKind, Local, LocalId, NotLowered, Operand, Program,
-    Terminator,
+    Block, BlockId, EnumDef, FormatPart, Function, Inst, InstKind, Local, LocalId, NotLowered, Operand,
+    Program, Terminator, type_in,
 };
 
 /// Lowers a module's functions and methods, and the standard library's that they reach. The
@@ -123,12 +123,6 @@ fn lower_into(
     def: &FnDef,
     context: &Context<'_>,
 ) {
-    // A `shared` value is a handle to one cell with a lock, which the IR doesn't have yet.
-    if let Some(shared) = context.shared_types.iter().find(|name| mentions(def, name)) {
-        let why = format!("it uses `{shared}`, which is `shared`, and that isn't lowered yet");
-        program.not_lowered.push(NotLowered { function: instance.name.clone(), why });
-        return;
-    }
     match Lowering::function(instance, def, context, (&[], None)) {
         Ok(functions) => program.functions.extend(functions),
         Err(why) => program.not_lowered.push(NotLowered { function: instance.name.clone(), why }),
@@ -204,7 +198,7 @@ const CAPABILITIES: [&str; 6] = ["Stdout", "Fs", "Clock", "Args", "Stdin", "Proc
 
 /// What's known about the whole program.
 struct Context<'a> {
-    /// The program's `shared` types, which aren't lowered yet.
+    /// The program's `shared` types, whose values are handles.
     shared_types: Vec<String>,
     signatures: &'a Signatures,
     /// The program's enums that the IR can hold.
@@ -238,6 +232,11 @@ struct Context<'a> {
 }
 
 impl Context<'_> {
+    /// Whether a value of this type is a `shared` handle.
+    fn is_handle(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Named(name) if self.shared_types.contains(name))
+    }
+
     /// The type of a function as a value, when the IR holds it.
     fn arrow_of(&self, key: &str) -> Option<Type> {
         let signature = self.signatures.get(key)?;
@@ -372,11 +371,12 @@ impl<'a> Lowering<'a> {
         let plain = lowering.returns == Type::Unit;
         lowering.stmts(&def.body, if plain { Tail::Drop } else { Tail::Return })?;
         lowering.end_function(def.span)?;
+        // A `shared` handle is never copied back: it's the same handle after the call.
         let mut_params = signature
             .params
             .iter()
             .enumerate()
-            .filter(|(_, param)| param.is_mut)
+            .filter(|(_, param)| param.is_mut && !context.is_handle(&param.ty))
             .map(|(at, _)| at + captures.len())
             .collect();
         Ok(lowering.finished(captures.len() + signature.params.len(), mut_params))
@@ -423,10 +423,51 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Adds an instruction to the block being built. One that reads what a `shared` handle
+    /// holds takes the handle's lock to read, around just that instruction.
     fn emit(&mut self, kind: InstKind, span: Span) {
-        if let Some(block) = self.blocks.get_mut(self.current.0) {
-            block.insts.push(Inst { kind, span });
+        let handles = self.read_through(&kind);
+        let Some(block) = self.blocks.get_mut(self.current.0) else { return };
+        for handle in &handles {
+            let lock = InstKind::Lock { handle: handle.clone(), write: false };
+            block.insts.push(Inst { kind: lock, span });
         }
+        block.insts.push(Inst { kind, span });
+        for handle in handles.into_iter().rev() {
+            block.insts.push(Inst { kind: InstKind::Unlock { handle }, span });
+        }
+    }
+
+    /// The `shared` handles an instruction reads the cell of, and that aren't locked already.
+    fn read_through(&self, kind: &InstKind) -> Vec<Operand> {
+        let read: Vec<&Operand> = match kind {
+            InstKind::GetField { object, .. } => vec![object],
+            InstKind::Builtin { args, .. } => args.iter().collect(),
+            InstKind::Format { parts, .. } => parts
+                .iter()
+                .filter_map(|part| match part {
+                    FormatPart::Value { value, .. } => Some(value),
+                    FormatPart::Text(_) => None,
+                })
+                .collect(),
+            _ => return Vec::new(),
+        };
+        let mut handles: Vec<Operand> = Vec::new();
+        for operand in read {
+            let is_handle = type_in(&self.locals, operand).is_some_and(|ty| self.context.is_handle(&ty));
+            if is_handle && !self.locked_already(operand) && !handles.contains(operand) {
+                handles.push(operand.clone());
+            }
+        }
+        handles
+    }
+
+    /// Whether a handle's lock is held already: it's `self`, in one of its own methods, which
+    /// are only called with the lock taken.
+    fn locked_already(&self, handle: &Operand) -> bool {
+        let itself = self.lookup("self").map(Operand::Local);
+        itself.as_ref() == Some(handle)
+            && type_in(&self.locals, handle).is_some_and(|ty| self.context.is_handle(&ty))
     }
 
     /// The type the typed tree has for an expression, when the IR can hold it.
@@ -837,10 +878,4 @@ fn shared_types(module: &Module) -> Vec<String> {
             _ => None,
         })
         .collect()
-}
-
-/// Whether a function names a type, in its signature or its body.
-fn mentions(def: &FnDef, name: &str) -> bool {
-    // Every name in the tree is written out quoted, so this finds the type as a whole name.
-    format!("{def:?}").contains(&format!("{name:?}"))
 }

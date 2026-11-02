@@ -13,6 +13,7 @@ use fennec_check::Checked;
 use fennec_kit::{Entry, Overlay};
 use fennec_syntax::{Diagnostic, Item, Module, Sources, Span};
 
+use crate::findings::{self, Located};
 use crate::json::Json;
 use crate::text;
 
@@ -26,6 +27,8 @@ pub(crate) struct Analysis {
     pub(crate) module: Option<Module>,
     /// The types of everything, when the program has no mistakes.
     pub(crate) checked: Option<Checked>,
+    /// What the linter finds and what may copy or allocate, when the program has no mistakes.
+    pub(crate) findings: Vec<Located>,
     /// Whether this looked at only part of the program. See `edited_bodies`.
     pub(crate) partial: bool,
 }
@@ -46,6 +49,8 @@ pub(crate) fn program_of(file: &Path) -> PathBuf {
 pub(crate) struct Clean {
     program: PathBuf,
     files: HashMap<String, (Hash, Vec<Row>)>,
+    /// What there was to show in each file, which still holds for a file that hasn't changed.
+    findings: HashMap<String, Vec<Located>>,
 }
 
 impl Clean {
@@ -65,7 +70,11 @@ impl Clean {
             let of_file = items.get(path).map_or(&[][..], Vec::as_slice);
             (path.to_owned(), (fennec_blake3::hash(text.as_bytes()), rows(of_file.iter().copied())))
         });
-        Some(Clean { program: program.to_path_buf(), files: files.collect() })
+        let mut findings: HashMap<String, Vec<Located>> = HashMap::new();
+        for found in &analysis.findings {
+            findings.entry(found.path.clone()).or_default().push(found.clone());
+        }
+        Some(Clean { program: program.to_path_buf(), files: files.collect(), findings })
     }
 }
 
@@ -93,21 +102,35 @@ pub(crate) fn edited_bodies(clean: &Clean, program: &Path, overlay: &Overlay) ->
             items.entry(path).or_default().push(item);
         }
     }
+    let mut edited = Vec::new();
     for (path, text) in loaded.sources.files() {
         let (old_text, old_rows) = clean.files.get(path)?;
         if fennec_blake3::hash(text.as_bytes()) != *old_text {
             let of_file = items.get(path).map_or(&[][..], Vec::as_slice);
             fennec_build::changed_bodies(old_rows, &rows(of_file.iter().copied()))?;
+            edited.push(path.to_owned());
         }
     }
     drop(items);
+    let linted = findings::located(&loaded.sources, &fennec_lint::lint(&loaded.module, &loaded.sources));
     let diagnostics = fennec_check::check_to_run(&mut loaded.module).err().unwrap_or_default();
+    // A file that hasn't changed keeps what it had. One that has gets the linter's findings
+    // afresh, and what may copy waits for the whole program to be checked again.
+    let findings = if diagnostics.is_empty() {
+        let kept =
+            clean.findings.iter().filter(|(path, _)| !edited.contains(path)).flat_map(|(_, found)| found);
+        let fresh = linted.into_iter().filter(|found| edited.contains(&found.path));
+        kept.cloned().chain(fresh).collect()
+    } else {
+        Vec::new()
+    };
     Some(Analysis {
         sources: loaded.sources,
         diagnostics,
         unplaced: Vec::new(),
         module: None,
         checked: None,
+        findings,
         partial: true,
     })
 }
@@ -122,6 +145,7 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
             unplaced: problems.unplaced,
             module: None,
             checked: None,
+            findings: Vec::new(),
             partial: false,
         },
         Ok(loaded) => {
@@ -129,12 +153,17 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
                 Ok(checked) => (Vec::new(), Some(checked)),
                 Err(diagnostics) => (diagnostics, None),
             };
+            let findings = checked
+                .as_ref()
+                .map(|checked| findings::of_clean(&loaded.module, &loaded.sources, checked))
+                .unwrap_or_default();
             Analysis {
                 sources: loaded.sources,
                 diagnostics,
                 unplaced: Vec::new(),
                 module: Some(loaded.module),
                 checked,
+                findings,
                 partial: false,
             }
         }
@@ -168,8 +197,11 @@ impl Analysis {
     ) -> Vec<(String, Vec<Json>)> {
         let mut files: Vec<(String, Vec<Json>)> =
             self.sources.files().map(|(path, _)| (path.to_owned(), Vec::new())).collect();
-        if !files.iter().any(|(path, _)| path == fallback) {
-            files.push((fallback.to_owned(), Vec::new()));
+        // A quick check keeps what files it didn't load had to show.
+        for path in self.findings.iter().map(|found| found.path.as_str()).chain([fallback]) {
+            if !files.iter().any(|(file, _)| file == path) {
+                files.push((path.to_owned(), Vec::new()));
+            }
         }
         let mut add = |path: &str, diagnostic: Json| {
             if let Some((_, list)) = files.iter_mut().find(|(file, _)| file == path) {
@@ -188,6 +220,9 @@ impl Analysis {
             };
             let related = self.related(diagnostic, uri_of);
             add(path, protocol_diagnostic(range, &message_of(diagnostic), related));
+        }
+        for found in &self.findings {
+            add(&found.path, findings::protocol(found));
         }
         files
     }
@@ -240,6 +275,9 @@ impl Analysis {
                 ("edit", Json::object([("changes", Json::Object(changes))])),
             ]));
         }
+        let touched =
+            self.findings.iter().filter(|found| found.path == path && found.to >= from && found.from <= to);
+        actions.extend(touched.filter_map(|found| findings::action(found, uri_of)));
         actions
     }
 }

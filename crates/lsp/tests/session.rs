@@ -18,11 +18,11 @@ def main(stdout: Stdout):
 const COMBAT: &str = "## Someone in the arena.
 struct Fighter:
     name: str
-    hp = 100
+    health = 100
 
     ## A line about this fighter.
     def describe(self) -> str:
-        f\"{self.name}: {self.hp}\"
+        f\"{self.name}: {self.health}\"
 
 ## How much a hit does,
 ## doubled.
@@ -236,6 +236,57 @@ fn a_diagnostics_fix_is_a_code_action() {
     assert_eq!(edit.at(&["range", "start"]), Some(&position(text, ":\n", 0)));
 }
 
+/// What a published diagnostic's `code` is: a lint's rule.
+fn codes(diagnostics: &[Json]) -> Vec<&str> {
+    diagnostics.iter().filter_map(|diagnostic| diagnostic.get("code")?.as_str()).collect()
+}
+
+#[test]
+fn lints_and_copies_show_with_their_rules_and_fixes() {
+    let mut editor = Editor::new("lints").unwrap();
+    let text = "def one() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
+                held = items\n    items.append(2)\n    stdout.print(held.len(), one())\n";
+    let published = editor.open("src/main.fen", text);
+    let in_main = for_file(&published, "main.fen").unwrap();
+    assert_eq!(codes(in_main), ["needless-return", "copies"], "{:?}", messages(in_main));
+    let severity = |at: usize| in_main[at].get("severity").and_then(Json::as_usize);
+    assert_eq!(
+        (severity(0), severity(1)),
+        (Some(2), Some(4)),
+        "a lint warns; a copy that runs once is a hint"
+    );
+    assert!(messages(in_main)[1].contains("may copy `items`"), "{:?}", messages(in_main));
+
+    let params = Json::object([
+        ("textDocument", Json::object([("uri", Json::string(editor.uri("src/main.fen")))])),
+        (
+            "range",
+            Json::object([("start", position(text, "return", 0)), ("end", position(text, "return", 6))]),
+        ),
+        ("context", Json::object([("diagnostics", Json::Array(Vec::new()))])),
+    ]);
+    let actions = editor.request("textDocument/codeAction", params);
+    let action = &actions.as_array().unwrap()[0];
+    let edits =
+        action.at(&["edit", "changes"]).and_then(|changes| changes.get(&editor.uri("src/main.fen"))).unwrap();
+    assert_eq!(edits.as_array().unwrap()[0].get("newText"), Some(&Json::string("")));
+}
+
+#[test]
+fn a_quick_edit_keeps_what_other_files_show_and_lints_the_edited_one() {
+    let mut editor = Editor::new("quick_lints").unwrap();
+    editor.open("src/combat.fen", &COMBAT.replace("    power * 2\n", "    return power * 2\n"));
+    editor.open("src/main.fen", MAIN);
+    let published = editor.change("src/main.fen", &MAIN.replace("hit(fighter, 3)", "hit(fighter, 4)"));
+    assert_eq!(codes(for_file(&published, "combat.fen").unwrap()), ["needless-return"], "kept");
+    assert_eq!(for_file(&published, "main.fen"), Some(&[][..]));
+    let with_lint =
+        MAIN.replace("    stdout.print(fighter", "    stdout.print(f\"go\")\n    stdout.print(fighter");
+    let published = editor.change("src/main.fen", &with_lint);
+    assert_eq!(codes(for_file(&published, "main.fen").unwrap()), ["plain-fstring"], "found in the edit");
+    assert_eq!(codes(for_file(&published, "combat.fen").unwrap()), ["needless-return"], "still kept");
+}
+
 #[test]
 fn definitions_of_functions_locals_members_and_constants() {
     let mut editor = Editor::new("definitions").unwrap();
@@ -289,8 +340,8 @@ fn hovers_show_signatures_docs_and_what_names_hold() {
     assert_eq!(shown(&fighter), "```fennec\nstruct Fighter\n```\n\nSomeone in the arena.");
     let damage = editor.at("textDocument/hover", "src/main.fen", MAIN, "damage, SIZE", 0);
     assert_eq!(shown(&damage), "```fennec\ndamage: int\n```");
-    let field = editor.at("textDocument/hover", "src/combat.fen", COMBAT, "hp = 100", 0);
-    assert_eq!(shown(&field), "```fennec\nhp = 100\n```");
+    let field = editor.at("textDocument/hover", "src/combat.fen", COMBAT, "health = 100", 0);
+    assert_eq!(shown(&field), "```fennec\nhealth = 100\n```");
     let size = editor.at("textDocument/hover", "src/main.fen", MAIN, "SIZE)", 0);
     assert_eq!(shown(&size), "```fennec\nSIZE = 10\n```\n\nThe arena's size.");
 }

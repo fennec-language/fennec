@@ -14,6 +14,11 @@ const FULL: Range = (i64::MIN, i64::MAX);
 pub(crate) const MOST_ITEMS: i64 = 1 << 48;
 
 /// What's known about one function.
+/// Which parameters of a function it changes in place.
+type Changes<'f> = &'f dyn Fn(&str) -> Vec<usize>;
+/// Whether a function might give its parameter at a place another owner.
+type Keeps<'f> = &'f dyn Fn(&str, usize) -> bool;
+
 /// What a slice used as a key is of: the string, and its start and end as slicing takes them.
 pub(crate) type SliceKey = (Operand, Option<Operand>, Option<Operand>);
 
@@ -297,7 +302,7 @@ fn note(
 /// Gives back those that can change length.
 fn count_uses(
     function: &Function,
-    changes: &dyn Fn(&str) -> Vec<usize>,
+    (changes, keeps): (Changes<'_>, Keeps<'_>),
     known: &mut Analysis,
 ) -> HashSet<usize> {
     let mut grown = HashSet::new();
@@ -333,8 +338,11 @@ fn count_uses(
                             grown.insert(list.0);
                         }
                     }
-                    for arg in args {
-                        if let Operand::Local(local) = arg {
+                    // Only what the callee might keep comes to have another owner.
+                    for (at, arg) in args.iter().enumerate() {
+                        if let Operand::Local(local) = arg
+                            && keeps(callee, at)
+                        {
                             known.shared.insert(local.0);
                         }
                     }
@@ -352,7 +360,11 @@ fn count_uses(
     grown
 }
 
-fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysis {
+fn analyze(
+    function: &Function,
+    changes: &dyn Fn(&str) -> Vec<usize>,
+    keeps: &dyn Fn(&str, usize) -> bool,
+) -> Analysis {
     let count = function.locals.len();
     let mut known = Analysis {
         safe: HashSet::new(),
@@ -376,7 +388,7 @@ fn analyze(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>) -> Analysi
         reservations: HashMap::new(),
         zero_filled: HashSet::new(),
     };
-    let grown = count_uses(function, changes, &mut known);
+    let grown = count_uses(function, (changes, keeps), &mut known);
     find_reads_again(function, &mut known);
     find_borrows(function, changes, &mut known);
     find_path_takes(function, &mut known);
@@ -1032,6 +1044,11 @@ impl Analysis {
     }
 
     /// Whether a local took a field's value out, to put it back, so its owner moves both ways.
+    /// Whether anything here could give a local's value another owner.
+    pub(crate) fn is_shared(&self, local: LocalId) -> bool {
+        self.shared.contains(&local.0)
+    }
+
     pub(crate) fn is_taken(&self, local: LocalId) -> bool {
         self.taken.contains(&local.0)
     }
@@ -1116,13 +1133,99 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
     })
 }
 
+/// For each function, which parameters it might give another owner: copy, store, return, or
+/// pass to something that might. Worked out over every function at once, as calls go both ways.
+fn parameters_kept<'p>(functions: &HashMap<&'p str, &'p Function>) -> HashMap<&'p str, Vec<bool>> {
+    let mut kept: HashMap<&str, Vec<bool>> =
+        functions.iter().map(|(name, function)| (*name, vec![false; function.params])).collect();
+    loop {
+        let mut changed = false;
+        for (name, function) in functions {
+            for at in 0..function.params {
+                if kept.get(name).and_then(|params| params.get(at)).copied().unwrap_or(true) {
+                    continue;
+                }
+                if keeps_parameter(function, at, &kept) {
+                    if let Some(slot) = kept.get_mut(name).and_then(|params| params.get_mut(at)) {
+                        *slot = true;
+                    }
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return kept;
+        }
+    }
+}
+
+/// Whether a function might give its parameter at `at` another owner, given what's known of
+/// the functions it calls.
+fn keeps_parameter(function: &Function, at: usize, kept: &HashMap<&str, Vec<bool>>) -> bool {
+    let me = Operand::Local(LocalId(at));
+    let ends = function
+        .blocks
+        .iter()
+        .any(|block| matches!(&block.end, Terminator::Return(Some(value)) if *value == me));
+    ends || function.blocks.iter().flat_map(|block| &block.insts).any(|inst| match &inst.kind {
+        // Read by a builtin as what it works on, it's only looked at or changed in place,
+        // except by those that can give back what they're given.
+        InstKind::Builtin { name, args, .. } => {
+            let gives_back = matches!(
+                name.as_str(),
+                "list"
+                    | "parallel"
+                    | "str"
+                    | "str.strip"
+                    | "str.lstrip"
+                    | "str.rstrip"
+                    | "sorted"
+                    | "reversed"
+                    | "copy"
+            );
+            args.iter().enumerate().any(|(position, arg)| *arg == me && (position > 0 || gives_back))
+        }
+        InstKind::Call { function: callee, args, .. } => args.iter().enumerate().any(|(position, arg)| {
+            *arg == me
+                && kept
+                    .get(callee.as_str())
+                    .is_none_or(|params| params.get(position).copied().unwrap_or(true))
+        }),
+        InstKind::GetField { .. }
+        | InstKind::GetIndex { .. }
+        | InstKind::GetTupleItem { .. }
+        | InstKind::GetCaseField { .. }
+        | InstKind::IsCase { .. }
+        | InstKind::IsNone { .. }
+        | InstKind::Binary { .. }
+        | InstKind::Unary { .. }
+        | InstKind::SetField { .. }
+        | InstKind::SetIndex { .. } => {
+            let mut stored = false;
+            if let InstKind::SetField { value, .. } | InstKind::SetIndex { value, .. } = &inst.kind {
+                stored = *value == me;
+            }
+            stored
+        }
+        other => {
+            let mut read = false;
+            visit(other, |operand| read |= *operand == me, |_| {});
+            read
+        }
+    })
+}
+
 pub(crate) fn whole(program: &Program) -> Whole<'_> {
     let every = || program.functions.iter().chain(&program.constants);
     let functions: HashMap<&str, &Function> =
         every().map(|function| (function.name.as_str(), function)).collect();
     let changes = |callee: &str| functions.get(callee).map_or_else(Vec::new, |f| f.mut_params.clone());
+    let kept = parameters_kept(&functions);
+    let keeps = |callee: &str, at: usize| {
+        kept.get(callee).is_none_or(|params| params.get(at).copied().unwrap_or(true))
+    };
     let analyses: HashMap<&str, Analysis> =
-        every().map(|function| (function.name.as_str(), analyze(function, &changes))).collect();
+        every().map(|function| (function.name.as_str(), analyze(function, &changes, &keeps))).collect();
     let mut generators = HashMap::new();
     for def in &program.generators {
         generators.insert(def.name.as_str(), def);

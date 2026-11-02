@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(
             tree,
             "Module { items: [Function(FnDef { name: \"f\", generics: [], params: [], ret: None, arrow: None, \
-             body: [Stmt { kind: Pass, span: Span }], span: Span })] }"
+             body: [Stmt { kind: Pass, span: Span }], annotations: [], span: Span })] }"
         );
         assert_eq!(tree, without_spans(&parse("def  f( ):\n\n        pass\n")));
         assert_ne!(tree, without_spans(&parse("def g():\n    pass\n")));

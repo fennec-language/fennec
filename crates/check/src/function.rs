@@ -184,6 +184,9 @@ impl<'c> FnCx<'c> {
         let entry = cx.checker.program.functions.get(key);
         cx.generics = entry.map(|entry| cx.checker.program.generics_of(entry)).unwrap_or_default();
         cx.declared = crate::program::written_ret(def).map(|ret| cx.resolve(ret));
+        if def.body.is_empty() {
+            return cx.bodiless(def);
+        }
         let effects = effects::of_body(&def.body);
         (cx.generator, cx.fallible) = (effects.yields, effects.fails);
         for binding in captured {
@@ -245,6 +248,19 @@ impl<'c> FnCx<'c> {
         let (value, error) = (cx.checker.settled(&value), cx.checker.settled(&error));
         cx.finish(&[value.clone(), error.clone()]);
         BodyType { value, error }
+    }
+
+    /// A `def` with no body: an intrinsic, which the engines provide, gives back what its
+    /// signature says. Only the standard library's `@intrinsic` functions have no body.
+    fn bodiless(mut self, def: &FnDef) -> BodyType {
+        if !def.annotations.iter().any(|annotation| annotation.name == "intrinsic") {
+            self.error(Diagnostic::new(format!("`{}` has no body", def.name), def.span).with_help(
+                "end the signature with `:` and write its body below: only std's `@intrinsic` functions have none",
+            ));
+        }
+        let value = self.declared.clone().unwrap_or(Type::Unit);
+        self.finish(std::slice::from_ref(&value));
+        BodyType { value, error: Type::Unknown }
     }
 
     /// Checks that a function whose last line isn't a value doesn't run off its end, when its

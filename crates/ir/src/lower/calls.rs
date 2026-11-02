@@ -131,6 +131,10 @@ impl Lowering<'_> {
             let (function, values, lock) =
                 self.direct((callee, args), keep.as_ref(), &mut write_backs, span)?;
             dest = keep.map(|ty| self.temporary(ty));
+            if self.context.intrinsics.contains(&function) {
+                self.emit(InstKind::Builtin { dest, name: function, args: values, changes: false }, span);
+                return Ok(dest);
+            }
             if let Some((handle, write)) = &lock {
                 self.emit(InstKind::Lock { handle: handle.clone(), write: *write }, span);
             }

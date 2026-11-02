@@ -1,0 +1,7 @@
+error: only the standard library has `@intrinsic` functions
+ --> examples/errors/intrinsic_outside_std.fen:1:1
+  |
+1 | @intrinsic
+  | ^^^^^^^^^^
+  |
+  = help: write the function's body: intrinsics are the machine operations std's types are built from

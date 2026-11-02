@@ -7,7 +7,7 @@ from token import FPart, Tok
 from lexer import lex
 from parser import parse
 from check.checker import check
-from ast import Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Extension, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
+from ast import Annotation, Module, Item, FnDef, Generic, Param, TypeExpr, TypeDef, Field, Case, Interface, Extension, Import, TestDef, Stmt, StmtKind, Expr, ExprKind, CompKind, MatchArm, Pattern, FStrPart, Arg, UnaryOp, BinOp
 
 ## Every token in `source`, one per line, or the error that stopped the lexer.
 def dump_tokens(source: str) -> str:
@@ -153,6 +153,7 @@ struct Tree:
 
     def write_function(mut self, function: FnDef):
         self.open(f"def {function.name}", function.span)
+        self.write_annotations(function.annotations)
         self.write_generics(function.generics)
         for param in function.params:
             self.write_param(param)
@@ -204,13 +205,16 @@ struct Tree:
             self.write_function(method)
         self.close()
 
-    def write_field(mut self, field: Field):
-        self.open(f"field {field.name}", field.span)
-        for annotation in field.annotations:
+    def write_annotations(mut self, annotations: list[Annotation]):
+        for annotation in annotations:
             self.open(f"annotation {annotation.name}", annotation.span)
             for arg in annotation.args:
                 self.write_arg(arg)
             self.close()
+
+    def write_field(mut self, field: Field):
+        self.open(f"field {field.name}", field.span)
+        self.write_annotations(field.annotations)
         ty = field.ty
         if ty is not None:
             self.write_type_expr(ty)

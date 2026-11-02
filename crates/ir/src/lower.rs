@@ -79,6 +79,7 @@ pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str
             .filter(|(_, def)| fuse::has_yield(&def.body))
             .map(|(key, def)| (key.clone(), *def))
             .collect(),
+        intrinsics: every.iter().filter(|(_, def)| is_intrinsic(def)).map(|(key, _)| key.clone()).collect(),
     };
     let mut program = Program::default();
     for (key, def) in &functions {
@@ -115,6 +116,11 @@ pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str
     program.enums = enums;
     program.errors = errors;
     program
+}
+
+/// Whether a function is one of the standard library's `@intrinsic` ones, which have no body.
+fn is_intrinsic(def: &FnDef) -> bool {
+    def.body.is_empty() && def.annotations.iter().any(|annotation| annotation.name == "intrinsic")
 }
 
 fn lower_into(
@@ -229,6 +235,9 @@ struct Context<'a> {
     generators: HashMap<String, &'a FnDef>,
     /// The generators lowered so far.
     generator_defs: std::cell::RefCell<Vec<crate::GeneratorDef>>,
+    /// The standard library's `@intrinsic` functions, which have no body: a call to one is an
+    /// [`InstKind::Builtin`] of its key, which each engine provides.
+    intrinsics: HashSet<String>,
 }
 
 impl Context<'_> {

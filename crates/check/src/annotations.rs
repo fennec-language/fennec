@@ -1,8 +1,9 @@
 //! Annotations on fields: data written above a field, like `@skip`, that formats and other code
 //! read at compile time. An annotation never changes the field, so each is checked here for
-//! being one the language has, written the way it reads.
+//! being one the language has, written the way it reads. A `def` can have one too: std's
+//! `@intrinsic` functions, which have no body because the engines provide them.
 
-use fennec_syntax::{Annotation, Diagnostic, ExprKind, Field};
+use fennec_syntax::{Annotation, Diagnostic, ExprKind, Field, FnDef};
 
 use crate::checker::Checker;
 
@@ -13,6 +14,29 @@ const KNOWN: [(&str, &str); 2] = [
 ];
 
 impl Checker {
+    /// Checks the annotations on every function and method: the program's own can have none,
+    /// and std's intrinsics are written without a body or arguments.
+    pub(crate) fn check_function_annotations(&mut self) {
+        let mut defs: Vec<(FnDef, bool)> =
+            self.program.functions.values().map(|entry| (entry.def.clone(), entry.prelude)).collect();
+        defs.sort_by_key(|(def, _)| (def.span.start, def.span.end));
+        for (def, prelude) in defs {
+            let mut seen: Vec<&str> = Vec::new();
+            for annotation in &def.annotations {
+                if seen.contains(&annotation.name.as_str()) {
+                    let message = format!("`@{}` is written twice on `{}`", annotation.name, def.name);
+                    self.diagnostics
+                        .push(Diagnostic::new(message, annotation.span).with_help("write it once"));
+                    continue;
+                }
+                seen.push(&annotation.name);
+                if let Some(problem) = function_problem(&def, annotation, prelude) {
+                    self.diagnostics.push(problem);
+                }
+            }
+        }
+    }
+
     /// Checks the annotations on every field of the program's own types.
     pub(crate) fn check_annotations(&mut self) {
         let defs: Vec<_> =
@@ -45,6 +69,31 @@ impl Checker {
                 }
             }
         }
+    }
+}
+
+/// What's wrong with one annotation on a `def`, if anything.
+fn function_problem(def: &FnDef, annotation: &Annotation, prelude: bool) -> Option<Diagnostic> {
+    let span = annotation.span;
+    match annotation.name.as_str() {
+        "intrinsic" if !prelude => {
+            Some(Diagnostic::new("only the standard library has `@intrinsic` functions", span).with_help(
+                "write the function's body: intrinsics are the machine operations std's types are built from",
+            ))
+        }
+        "intrinsic" if !annotation.args.is_empty() => Some(
+            Diagnostic::new("`@intrinsic` takes nothing", span)
+                .with_help("write it as `@intrinsic`: the function's name says which one it is"),
+        ),
+        "intrinsic" if !def.body.is_empty() => Some(
+            Diagnostic::new(format!("`{}` is `@intrinsic`, so it has no body", def.name), span)
+                .with_help("end the signature without `:`, since the engines provide what it does"),
+        ),
+        "intrinsic" => None,
+        other => Some(
+            Diagnostic::new(format!("`@{other}` isn't something a `def` can have"), span)
+                .with_help("only std's machine operations are marked, with `@intrinsic`"),
+        ),
     }
 }
 

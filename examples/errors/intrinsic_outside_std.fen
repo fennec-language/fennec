@@ -1,0 +1,5 @@
+@intrinsic
+def int_add(a: int, b: int) -> int
+
+def main(stdout: Stdout):
+    stdout.print(int_add(1, 2))

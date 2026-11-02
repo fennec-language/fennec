@@ -139,6 +139,7 @@ fn as_function(name: &str, body: &[Stmt], span: Span) -> FnDef {
         ret: None,
         arrow: None,
         body,
+        annotations: Vec::new(),
         span,
     }
 }

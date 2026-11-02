@@ -7,7 +7,7 @@
 //! Interfaces are fitted by having their methods. `Eq`, `Hashable`, `Ordered` and `Format`
 //! are built in and fitted automatically, wherever `==`, hashing, `<` and printing work.
 
-use fennec_syntax::{Diagnostic, FnDef, Span, TypeExpr};
+use fennec_syntax::{Diagnostic, FnDef, Generic, Span, TypeExpr};
 
 use crate::function::FnCx;
 use crate::infer::Hole;
@@ -171,43 +171,71 @@ impl FnCx<'_> {
     pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
         let methods = self.checker.program.interfaces.get(interface).map(|found| found.methods.clone());
         for wanted in methods.unwrap_or_default() {
-            // A generic method fits when it does for the same stand-ins in each position.
-            let stand_ins: Vec<Type> =
-                (0..wanted.generics.len()).map(|at| Type::Param(format!("{}'{at}", wanted.name))).collect();
-            let expected = self.interface_method_with(&wanted, ty, &stand_ins, Span::default());
-            let wanted_text = signature_text(&wanted);
-            let fix = format!("give {} the method `def {wanted_text}`", show(ty));
-            let missing = (format!("it has no `{wanted_text}`"), fix.clone());
-            let key = ty
-                .method_owner()
-                .and_then(|owner| self.checker.program.method(owner, &wanted.name).map(|(key, _)| key));
-            let actual = if let Some(key) = key {
-                let Some(actual) = self.method_signature_with(ty, &key, &stand_ins, Span::default()) else {
-                    continue;
-                };
-                actual
-            } else if let Some(actual) = crate::builtins::engine_signature(ty, &wanted.name) {
-                actual
-            } else {
-                return Err(missing);
-            };
-            let takes = actual.params.len() == expected.params.len()
-                && actual.params.iter().zip(&expected.params).skip(1).all(|(actual, expected)| {
-                    actual.is_mut == expected.is_mut && self.checker.fits(&actual.ty, &expected.ty)
-                });
-            if !takes {
-                return Err((
-                    format!("it has no `{wanted_text}`. Its `{}` takes other arguments", wanted.name),
-                    fix,
-                ));
+            // A generic method fits when it does for the same stand-ins in each position, which
+            // promise only what the interface's method says of them.
+            let stand_ins: Vec<Generic> = wanted
+                .generics
+                .iter()
+                .enumerate()
+                .map(|(at, generic)| Generic { name: format!("{}'{at}", wanted.name), ..generic.clone() })
+                .collect();
+            let in_scope = self.generics.len();
+            self.generics.extend(stand_ins.iter().cloned());
+            let types: Vec<Type> =
+                stand_ins.iter().map(|generic| Type::Param(generic.name.clone())).collect();
+            let fits = self.method_fits(ty, &wanted, &types);
+            self.generics.truncate(in_scope);
+            fits?;
+        }
+        Ok(())
+    }
+
+    /// Whether a type has a method as an interface writes it, with these types for its type
+    /// parameters.
+    fn method_fits(&mut self, ty: &Type, wanted: &FnDef, types: &[Type]) -> Result<(), (String, String)> {
+        let expected = self.interface_method_with(wanted, ty, types, Span::default());
+        let wanted_text = signature_text(wanted);
+        let fix = format!("give {} the method `def {wanted_text}`", show(ty));
+        let missing = (format!("it has no `{wanted_text}`"), fix.clone());
+        let key = ty
+            .method_owner()
+            .and_then(|owner| self.checker.program.method(owner, &wanted.name).map(|(key, _)| key));
+        let actual = if let Some(key) = key {
+            let Some(signature) = self.checker.signature(&key) else { return Ok(()) };
+            let (actual, chosen) = self.instantiate(&key, &signature, Some(ty), types, Span::default());
+            for Chosen { ty: chosen, bounds } in chosen {
+                let chosen = self.checker.settled(&chosen);
+                let asks_more =
+                    chosen.is_known() && bounds.iter().any(|bound| self.fits_bound(&chosen, bound).is_err());
+                if asks_more {
+                    return Err((
+                        format!(
+                            "it has no `{wanted_text}`. Its `{}` asks more of its type parameters",
+                            wanted.name
+                        ),
+                        fix,
+                    ));
+                }
             }
-            if !self.checker.fits(&expected.returns, &actual.returns) {
-                let returns = a(&self.checker.settled(&actual.returns));
-                return Err((
-                    format!("it has no `{wanted_text}`. Its `{}` returns {returns}", wanted.name),
-                    fix,
-                ));
-            }
+            actual
+        } else if let Some(actual) = crate::builtins::engine_signature(ty, &wanted.name) {
+            actual
+        } else {
+            return Err(missing);
+        };
+        let takes = actual.params.len() == expected.params.len()
+            && actual.params.iter().zip(&expected.params).skip(1).all(|(actual, expected)| {
+                actual.is_mut == expected.is_mut && self.checker.fits(&actual.ty, &expected.ty)
+            });
+        if !takes {
+            return Err((
+                format!("it has no `{wanted_text}`. Its `{}` takes other arguments", wanted.name),
+                fix,
+            ));
+        }
+        if !self.checker.fits(&expected.returns, &actual.returns) {
+            let returns = a(&self.checker.settled(&actual.returns));
+            return Err((format!("it has no `{wanted_text}`. Its `{}` returns {returns}", wanted.name), fix));
         }
         Ok(())
     }
@@ -258,13 +286,17 @@ impl FnCx<'_> {
         span: Span,
     ) -> Signature {
         let mut own = vec![("Self".to_owned(), owner.clone())];
+        let mut chosen = Vec::new();
         for (at, generic) in method.generics.iter().enumerate() {
             let ty = match explicit.get(at) {
                 Some(ty) => ty.clone(),
                 None => self.checker.fresh(span, Hole::TypeParam(generic.name.clone())),
             };
+            let bounds = generic.bounds.iter().map(|bound| bound.name.clone()).collect();
+            chosen.push(Chosen { ty: ty.clone(), bounds });
             own.push((generic.name.clone(), ty));
         }
+        self.check_bounds(chosen, span);
         let names: Vec<String> = own.iter().map(|(name, _)| name.clone()).collect();
         let resolve = |cx: &mut Self, ty: &TypeExpr| {
             let written = cx.checker.program.resolve_in(ty, &names);
@@ -312,13 +344,11 @@ fn signature_text(def: &FnDef) -> String {
         })
         .collect();
     let ret = def.ret.as_ref().map(|ret| format!(" -> {}", crate::program::written(ret))).unwrap_or_default();
-    let generics = if def.generics.is_empty() {
+    let written: Vec<&Generic> = def.generics.iter().filter(|generic| !generic.is_hidden()).collect();
+    let generics = if written.is_empty() {
         String::new()
     } else {
-        format!(
-            "[{}]",
-            def.generics.iter().map(|generic| generic.name.as_str()).collect::<Vec<_>>().join(", ")
-        )
+        format!("[{}]", written.iter().map(|generic| generic.name.as_str()).collect::<Vec<_>>().join(", "))
     };
     format!("{}{generics}({}){ret}", def.name, params.join(", "))
 }

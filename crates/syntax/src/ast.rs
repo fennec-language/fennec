@@ -70,6 +70,14 @@ pub struct Generic {
     pub span: Span,
 }
 
+impl Generic {
+    /// Whether the checker made this for a parameter typed by an interface, rather than the
+    /// program writing it.
+    pub fn is_hidden(&self) -> bool {
+        self.name.contains(crate::visit::HIDDEN)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Param {
     pub name: String,

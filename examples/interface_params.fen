@@ -1,0 +1,47 @@
+# A parameter whose type is an interface takes any type that has the interface's methods. Each
+# call is compiled for the type it's given, like any generic function.
+
+interface Shape:
+    def area(self) -> float
+
+struct Square:
+    side = 1.0
+
+    def area(self) -> float:
+        self.side * self.side
+
+struct Circle:
+    radius = 1.0
+
+    def area(self) -> float:
+        3.0 * self.radius * self.radius
+
+def total(first: Shape, second: Shape) -> float:
+    first.area() + second.area()
+
+# An interface's own methods can take one too, and each type that fits it writes the same thing.
+interface Scale:
+    def scaled(self, shape: Shape) -> float
+
+struct Doubled:
+    def scaled(self, shape: Shape) -> float:
+        shape.area() * 2.0
+
+def scaled_twice(scale: Scale, shape: Shape) -> float:
+    mut shapes = []
+    shapes.append(shape)
+    shapes.append(shape)
+    sum(scale.scaled(each) for each in shapes)
+
+def grown(mut shape: Square, by: float) -> float:
+    shape.side += by
+    shape.area()
+
+def main(stdout: Stdout):
+    stdout.print(
+        total(Square(side=2.0), second=Circle()),
+        total(Circle(radius=2.0), second=Square()),
+    )
+    stdout.print(scaled_twice(Doubled(), shape=Square(side=2.0)))
+    mut square = Square()
+    stdout.print(grown(mut square, by=1.0))

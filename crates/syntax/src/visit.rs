@@ -1,8 +1,10 @@
 //! Walking every expression of a module to change it in place, as the kit loader and the
 //! checker do when they work out which enum a leading-dot case like `.Int(value)` belongs to.
 
+use std::collections::HashSet;
+
 use crate::ast::{
-    BinOp, Expr, ExprKind, FStrPart, FnDef, Item, Module, Pattern, Stmt, StmtKind, TypeDef, UnaryOp,
+    BinOp, Expr, ExprKind, FStrPart, FnDef, Generic, Item, Module, Pattern, Stmt, StmtKind, TypeDef, UnaryOp,
 };
 
 /// Calls `change` on every expression in `module`, outer ones before the ones inside them.
@@ -34,6 +36,64 @@ pub fn functions_mut(module: &mut Module, edit: &mut dyn FnMut(&mut FnDef)) {
         }
     }
 }
+
+/// The interfaces every type that can fits automatically.
+pub const BUILT_IN_INTERFACES: [&str; 4] = ["Eq", "Hashable", "Ordered", "Format"];
+
+/// The interfaces a set of modules declares, with the built-in ones.
+pub fn interface_names<'m>(modules: impl IntoIterator<Item = &'m Module>) -> HashSet<String> {
+    let declared = modules.into_iter().flat_map(|module| &module.items).filter_map(|item| match item {
+        Item::Interface(interface) => Some(interface.name.clone()),
+        _ => None,
+    });
+    declared.chain(BUILT_IN_INTERFACES.map(str::to_owned)).collect()
+}
+
+/// Gives each parameter whose type is an interface a type parameter of its own, bound by that
+/// interface: `def save(mut out: Serializer)` becomes `def save[Serializer'1: Serializer](mut out:
+/// Serializer'1)`. A call is then copied for each type it's given, like any generic, and the
+/// hidden name can't be written, so nothing else can use it.
+pub fn interface_params<S: std::hash::BuildHasher>(module: &mut Module, interfaces: &HashSet<String, S>) {
+    for item in &mut module.items {
+        let (methods, owner) = match item {
+            Item::Function(def) => (std::slice::from_mut(def), &[][..]),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                (&mut def.methods[..], &def.generics[..])
+            }
+            Item::Interface(interface) => (&mut interface.methods[..], &[][..]),
+            Item::Extend(extension) => (&mut extension.methods[..], &extension.generics[..]),
+            _ => continue,
+        };
+        for def in methods {
+            hide_interface_params(def, owner, interfaces);
+        }
+    }
+}
+
+fn hide_interface_params<S: std::hash::BuildHasher>(
+    def: &mut FnDef,
+    owner: &[Generic],
+    interfaces: &HashSet<String, S>,
+) {
+    let in_scope =
+        |def: &FnDef, name: &str| def.generics.iter().chain(owner).any(|generic| generic.name == name);
+    let mut made = 0;
+    for at in 0..def.params.len() {
+        let Some(ty) = def.params.get(at).and_then(|param| param.ty.clone()) else { continue };
+        if !ty.args.is_empty() || ty.optional || !interfaces.contains(&ty.name) || in_scope(def, &ty.name) {
+            continue;
+        }
+        made += 1;
+        let hidden = format!("{}{HIDDEN}{made}", ty.name);
+        def.generics.push(Generic { name: hidden.clone(), bounds: vec![ty], span: def.span });
+        if let Some(written) = def.params.get_mut(at).and_then(|param| param.ty.as_mut()) {
+            written.name = hidden;
+        }
+    }
+}
+
+/// What marks a type parameter the program didn't write, which can't be written in source.
+pub const HIDDEN: char = '\'';
 
 /// Calls `change` on an expression and every expression inside it.
 pub fn in_expr(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {

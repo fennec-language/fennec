@@ -73,6 +73,7 @@ pub(crate) enum Capability {
     Clock,
     Args,
     Stdin,
+    Process,
 }
 
 #[derive(Clone, Debug)]
@@ -224,6 +225,7 @@ impl Value {
             Value::Capability(Capability::Clock) => "Clock".to_owned(),
             Value::Capability(Capability::Args) => "Args".to_owned(),
             Value::Capability(Capability::Stdin) => "Stdin".to_owned(),
+            Value::Capability(Capability::Process) => "Process".to_owned(),
         }
     }
 }

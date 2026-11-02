@@ -1,0 +1,2 @@
+def main(stdout: Stdout, process: Process):
+    stdout.print(process.run("git log --oneline"))

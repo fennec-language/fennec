@@ -1,0 +1,7 @@
+error: `run` takes the program, then its arguments as a list, never one string a shell would split
+ --> examples/errors/process_shell_string.fen:2:18
+  |
+2 |     stdout.print(process.run("git log --oneline"))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: like `process.run("git", ["log", "--oneline"])`, or `process.run("ls", [])` for none

@@ -51,6 +51,7 @@ modules! {
     hash,
     json,
     math,
+    process,
     random,
     re,
     toml,

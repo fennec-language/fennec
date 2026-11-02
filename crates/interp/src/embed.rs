@@ -159,13 +159,14 @@ pub fn failed_flag() -> usize {
 }
 
 /// The capability native code means by `kind`: 0 for `Stdout`, 1 for `Fs`, 2 for `Clock`,
-/// 3 for `Args` and 4 for `Stdin`.
+/// 3 for `Args`, 4 for `Stdin` and 5 for `Process`.
 fn capability(kind: i64) -> Capability {
     match kind {
         0 => Capability::Stdout,
         1 => Capability::Fs,
         3 => Capability::Args,
         4 => Capability::Stdin,
+        5 => Capability::Process,
         _ => Capability::Clock,
     }
 }
@@ -453,7 +454,7 @@ pub mod names {
     }
 
     /// Declares a capability `main` was given, so interpreted code can use it: 0 for
-    /// `Stdout`, 1 for `Fs`, 2 for `Clock`, 3 for `Args` and 4 for `Stdin`.
+    /// `Stdout`, 1 for `Fs`, 2 for `Clock`, 3 for `Args`, 4 for `Stdin` and 5 for `Process`.
     pub extern "C" fn declare_capability(name: i64, kind: i64) {
         with(|state| {
             let name = state.name(name);

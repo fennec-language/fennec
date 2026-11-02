@@ -170,6 +170,28 @@ mod tests {
     }
 
     #[test]
+    fn a_generic_struct_s_block_holds_an_instance_named_after_its_type() {
+        use crate::value::Instance;
+        let fields = vec![(Rc::from("value"), Element::Int)];
+        let layout = Element::Struct { name: Rc::from("Holder[int]"), fields };
+        let tables = Tables {
+            shapes: vec![Rc::new(layout), Rc::new(Element::Str)],
+            str_shape: 1,
+            ..Tables::default()
+        };
+        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let fields = vec![(Rc::from("value"), Value::Int(4))];
+        let held =
+            Instance { type_name: Rc::from("Holder"), case: None, fields, is_error: false, cause: None };
+        let original = Value::Instance(Rc::new(held));
+        let value = with(|state| Some(state.push(original.clone()))).unwrap();
+        let block = heap::from_value(value, 0, 0, 0);
+        assert_ne!(block, 0);
+        assert_eq!(temp(heap::to_value(block)), original);
+        finish();
+    }
+
+    #[test]
     fn strings_have_the_interpreter_s_methods() {
         let str = Rc::new(Element::Str);
         let tables = Tables { shapes: vec![Rc::clone(&str)], elements: vec![str], ..Tables::default() };

@@ -832,7 +832,7 @@ fn net_reaches_native_code_as_its_own_kind() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {
         return Ok(());
     }
-    let source = "def main(stdout: Stdout, net: Net):\n    match net.listen(0):\n        case Ok(server):\n            stdout.print(\"listening\", server.port > 0)\n        case Err(error):\n            stdout.print(\"failed\", error.reason)\n";
+    let source = "def main(stdout: Stdout, net: Net):\n    match net.listen(0):\n        case Ok(server):\n            stdout.print(\"listening\", server.port > 0)\n        case Err(_):\n            stdout.print(\"failed\")\n";
     same_as_the_jit("net_kind", source)
 }
 

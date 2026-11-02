@@ -79,16 +79,6 @@ enum Failure {
 }
 
 impl Failure {
-    fn reason(&self) -> String {
-        match self {
-            Failure::NotFound(host) => format!("there's no host called `{host}`"),
-            Failure::Refused(host, port) => format!("`{host}` refused a connection on port {port}"),
-            Failure::TimedOut(after) => format!("gave up after {}", seconds(*after)),
-            Failure::Closed => "the other side closed the connection".to_owned(),
-            Failure::Other(reason) => reason.clone(),
-        }
-    }
-
     /// The failure an I/O error on an open connection means.
     fn of(error: &std::io::Error, waited: Option<Duration>) -> Failure {
         match error.kind() {
@@ -97,11 +87,6 @@ impl Failure {
             _ => Failure::Other(error.to_string()),
         }
     }
-}
-
-fn seconds(duration: Duration) -> String {
-    let secs = duration.as_secs_f64();
-    if secs.fract() == 0.0 { format!("{secs:.0}s") } else { format!("{secs}s") }
 }
 
 /// A random handle for a real socket, which nothing could guess. A handle is looked up in the
@@ -298,8 +283,20 @@ impl Interp<'_> {
         }
     }
 
+    /// The case of `NetError` a failure is.
     fn net_error(&mut self, failure: &Failure, span: Span) -> Result<Value, Diagnostic> {
-        let error = self.make_value("NetError", vec![("reason", Value::str(&failure.reason()))], span)?;
+        let (case, fields) = match failure {
+            Failure::NotFound(host) => ("NotFound", vec![Value::str(host)]),
+            Failure::Refused(host, port) => ("Refused", vec![Value::str(host), Value::Int(*port)]),
+            Failure::TimedOut(after) => {
+                let nanos = i64::try_from(after.as_nanos()).unwrap_or(i64::MAX);
+                ("TimedOut", vec![self.make_value("Duration", vec![("nanos", Value::Int(nanos))], span)?])
+            }
+            Failure::Closed => ("Closed", Vec::new()),
+            Failure::Other(reason) => ("Other", vec![Value::str(reason)]),
+        };
+        let args = fields.into_iter().map(|value| CallArg::plain(value, span)).collect();
+        let error = self.construct_variant(Some("NetError"), case, args, span)?;
         Ok(Value::Err(Rc::new(error)))
     }
 

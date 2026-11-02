@@ -1,5 +1,7 @@
-error: the format `.2f` doesn't apply to a list
+error: the format `.2f` doesn't apply to a list[str]
  --> examples/errors/format_spec_mismatch.fen:3:21
   |
 3 |     stdout.print(f"{names:.2f}")
   |                     ^^^^^
+  |
+  = help: only an int or a float takes a format: turn it into one first, or drop the format

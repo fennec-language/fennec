@@ -484,3 +484,40 @@ fn a_rule_can_read_a_constant_but_not_another_field() {
     assert_eq!(field_problems("9", "x < LIMIT"), Vec::<String>::new(), "a constant isn't worked out here");
     assert_eq!(field_problems("1", "x < other"), ["the `where` rule on `x` can't look at `other` @ other"]);
 }
+
+#[test]
+fn an_f_string_format_must_exist_and_fit_its_value() {
+    let program = "
+        n = 1234
+        x = 2.5
+        name = 'Ash'
+        stdout.print(f'{n:,} {n:d} {n:,d} {n:.2f} {n:.1} {x:.2f} {x:,.1f} {x:f} {x:,} {name:} {n}')
+    ";
+    assert_eq!(in_main(program), Vec::<String>::new());
+    let program = "
+        n = 12
+        x = 2.5
+        name = 'Ash'
+        stdout.print(f'{n:02x}')
+        stdout.print(f'{x:.f}')
+        stdout.print(f'{n:f}')
+        stdout.print(f'{n:.2d}')
+        stdout.print(f'{x:d}')
+        stdout.print(f'{name:,}')
+    ";
+    assert_eq!(
+        in_main(program),
+        [
+            "Fennec has no format `02x` @ n",
+            "`.f` needs a number after `.` @ x",
+            "the format `f` doesn't apply to an int @ n",
+            "the format `.2d` doesn't apply to an int @ n",
+            "the format `d` doesn't apply to a float @ x",
+            "the format `,` doesn't apply to a str @ name",
+        ]
+    );
+    assert_eq!(
+        helps("def main(stdout: Stdout):\n    x = 2.5\n    stdout.print(f'{x:d}')\n"),
+        ["show it with no decimal places with `.0f`, or round it to an int with `round(x)`"]
+    );
+}

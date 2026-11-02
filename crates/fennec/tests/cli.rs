@@ -825,6 +825,16 @@ fn check_and_lint_say_the_same_in_json() {
     assert_eq!((code, rules(&report)), (Some(1), vec!["check".to_owned()]));
     assert_eq!(fennec(&["check", &path], "").unwrap().status.code(), Some(1));
 
+    // A format the value can't take is found by the check, not when the line runs.
+    std::fs::write(&program, "def main(stdout: Stdout):\n    b = 7\n    stdout.print(f\"{b:02x}\")\n")
+        .unwrap();
+    let (code, report) = json(&["check", "--json", &path]);
+    let message = report.at(&["diagnostics"]).and_then(fennec_lsp::Json::as_array).and_then(<[_]>::first);
+    let message = message.and_then(|item| item.get("message")).and_then(fennec_lsp::Json::as_str);
+    assert_eq!((code, message), (Some(1), Some("Fennec has no format `02x`")));
+    let output = fennec(&["check", &path], "").unwrap();
+    assert!(text(&output.stderr).contains("Fennec has no format `02x`"), "{}", text(&output.stderr));
+
     std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print((\n").unwrap();
     let (code, report) = json(&["lint", "--json", &path]);
     std::fs::remove_dir_all(&dir).unwrap();

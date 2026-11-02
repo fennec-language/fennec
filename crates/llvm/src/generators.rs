@@ -171,7 +171,7 @@ impl<'p> Emit<'_, '_, 'p> {
     }
 
     /// Ends the program with a string's text.
-    fn stop_with(&mut self, text: &str, span: Span) {
+    pub(crate) fn stop_with(&mut self, text: &str, span: Span) {
         self.declare("declare void @fennec_stop(ptr, i64, i64) #1");
         let label = self.label("stop");
         let (place, args) = self.span_values(&label, span);

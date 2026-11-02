@@ -60,18 +60,26 @@ pub struct Unit {
 }
 
 /// What can't be emitted yet says so, by function.
-pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared), String> {
+/// The layouts come back too: they number the blocks lists hold as they meet them, so the
+/// program's image has to be made from the same ones.
+pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared, Layouts), String> {
     let header = crate::header()?;
     let everything = whole(program);
     let layouts = crate::layouts_of(program);
     let mut shared = Shared::default();
     let mut units = Vec::with_capacity(program.functions.len());
+    // Every function it can't take yet is named, not just the first.
+    let mut refused = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
-        let text = unit(function, &everything, &layouts, &mut shared, header)
-            .map_err(|why| format!("`{}`: {why}", function.name))?;
-        units.push(Unit { function: function.name.clone(), text });
+        match unit(function, &everything, &layouts, &mut shared, header) {
+            Ok(text) => units.push(Unit { function: function.name.clone(), text }),
+            Err(why) => refused.push(format!("`{}`: {why}", function.name)),
+        }
     }
-    Ok((units, shared))
+    if !refused.is_empty() {
+        return Err(refused.join("\n"));
+    }
+    Ok((units, shared, layouts))
 }
 
 fn size(function: &Function) -> usize {
@@ -1140,6 +1148,15 @@ impl Emit<'_, '_, '_> {
             "list.append" => self.append(args),
             "result.expect" => self.expect(dest, args, span),
             "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
+            "random.random_int" | "random.random_float" => self.random_builtin(dest, name, args, span),
+            // A list of a list's items is the list, shared until one changes.
+            "parallel" | "list"
+                if args.len() == 1
+                    && matches!(args.first(), Some(Operand::Local(from)) if matches!(self.kinds.get(from.0), Some(Kind::List(_)))) =>
+            {
+                let from = args.first().ok_or("no argument")?;
+                self.copy(dest.ok_or("no result")?, from)
+            }
             "IdMap" | "IdMap.len" | "IdMap.get" | "IdMap.insert" | "IdMap.remove" | "IdMap.values"
             | "IdMap.ids" | "IdMap.items" => self.id_map_builtin(dest, name, args, span),
             "is_regex" | "re.is_regex" | "Regex.replace" | "Regex.split" | "Regex.find_all"
@@ -1477,7 +1494,7 @@ mod tests {
     }
 
     fn text_of(source: &str, function: &str) -> Result<String, String> {
-        let (units, _) = emit(&lowered(source)?)?;
+        let (units, _, _) = emit(&lowered(source)?)?;
         Ok(units
             .into_iter()
             .find(|unit| unit.function == function)
@@ -1512,7 +1529,7 @@ mod tests {
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        let source = "def f() -> list[list[int]]:\n    [[1]]\n\ndef main(stdout: Stdout):\n    stdout.print(f().len())\n";
+        let source = "def f(text: str) -> str:\n    text.upper()\n\ndef main(stdout: Stdout):\n    stdout.print(f(\"fox\").len())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

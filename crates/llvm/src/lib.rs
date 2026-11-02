@@ -38,6 +38,7 @@ mod generators;
 mod idmaps;
 mod kinds;
 mod lists;
+mod random;
 mod regex;
 mod text;
 

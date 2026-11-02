@@ -8,6 +8,7 @@ pub mod fuse;
 mod lexer;
 mod modules;
 mod parser;
+pub mod rename;
 mod sources;
 mod span;
 mod stdlib;

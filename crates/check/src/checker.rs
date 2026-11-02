@@ -656,13 +656,13 @@ impl Checker {
             .collect()
     }
 
-    /// Every enum's cases, with the types of their fields.
+    /// Every enum's cases, with the types of their fields, and every error's that has cases.
     fn enums(&mut self) -> BTreeMap<String, crate::Enum> {
         let enums: Vec<fennec_syntax::TypeDef> = self
             .program
             .types
             .values()
-            .filter(|info| info.kind == TypeKind::Enum)
+            .filter(|info| info.kind == TypeKind::Enum || !info.def.cases.is_empty())
             .map(|info| info.def.clone())
             .collect();
         let mut found = BTreeMap::new();

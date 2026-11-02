@@ -593,11 +593,13 @@ impl FnCx<'_> {
             }
             Type::Named(type_name) if type_name == "Args" && name == "program" => Type::Str,
             Type::Named(type_name) | Type::Generic(type_name, _) => {
-                match self.checker.program.type_info(type_name).map(|info| info.kind) {
-                    Some(TypeKind::Enum) => {
+                let info = self.checker.program.type_info(type_name);
+                match info.map(|info| (info.kind, info.def.cases.is_empty())) {
+                    Some((kind, false)) => {
+                        let what = if kind == TypeKind::Enum { "is an enum" } else { "has cases" };
                         self.error(
                             Diagnostic::new(
-                                format!("`{type_name}` is an enum, so its fields depend on its case"),
+                                format!("`{type_name}` {what}, so its fields depend on its case"),
                                 span,
                             )
                             .with_help("get them with `match`, like `case .Circle(radius):`"),
@@ -635,9 +637,7 @@ impl FnCx<'_> {
     /// `Shape.Empty`, or a named constructor that takes nothing, like `Vec3.zero`.
     fn type_attr(&mut self, type_name: &str, name: &str, span: Span) -> Type {
         let info = self.checker.program.type_info(type_name);
-        if info.is_some_and(|info| {
-            info.kind == TypeKind::Enum && info.def.cases.iter().any(|case| case.name == name)
-        }) {
+        if info.is_some_and(|info| info.def.cases.iter().any(|case| case.name == name)) {
             return self.construct_variant(Some(type_name), name, &[], span);
         }
         let constructor = self

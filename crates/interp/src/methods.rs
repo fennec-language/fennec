@@ -201,7 +201,10 @@ fn changes_in_place(value: &Value, method: &str) -> bool {
 }
 
 pub(crate) fn no_method(value: &Value, method: &str, span: Span) -> Diagnostic {
-    let diagnostic = Diagnostic::new(format!("a {} has no method `{method}`", value.type_name()), span);
+    let name = value.type_name();
+    let article =
+        if name.starts_with(['a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U']) { "an" } else { "a" };
+    let diagnostic = Diagnostic::new(format!("{article} {name} has no method `{method}`"), span);
     match method {
         "length" | "size" | "count" => diagnostic.with_help("use `.len()`"),
         "push" | "add" => diagnostic.with_help("use `append`"),

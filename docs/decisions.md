@@ -578,18 +578,23 @@ There's no per-format override, like a `def json` method on a type. This replace
 ```fennec
 from std.net import Connection, NetError
 
-def main(net: Net):
+def main(net: Net, stdout: Stdout):
     with net.listen(9000)? as server:
         for conn in parallel(server):
-            echo(conn)
+            match echo(mut conn):
+                case Err(error):
+                    stdout.print(f"{conn.peer} dropped: {error}")
+                case Ok(_):
+                    stdout.print(f"{conn.peer} left")
 
 ## Sends back each line it's sent, until the client hangs up.
-def echo(mut conn: Connection):
+def echo(mut conn: Connection) fails NetError:
     for line in conn.lines():
-        conn.write(f"{line}\n") else return
+        conn.write(f"{line}\n")?
 ```
 - **TCP:** `net.connect(host, port)` gives a `Connection`, and `net.listen(port)` gives a server whose items are connections. Both are used in a `with` block, which closes them. A connection has `read(n)`, which gives up to `n` bytes and empty bytes at the end, `read_line()`, which gives `None` at the end, `lines()`, `write(data)`, taking `bytes` or `str`, and `peer`, the other side's address.
 - **UDP:** `net.udp(port=9001)` gives a socket whose items are `Packet(data, sender)`, and `send_to(data, address)` answers.
+- **A failing connection ends only its own task.** A `NetError` is a value its task handles, as in `main` above. A runtime failure, like overflow, ends that task and closes its connection, and the server goes on. This is the containment recorded under Concurrency.
 - **Shared state** between connections is a `shared` handle, like a game's world, and one task hands work to another through a `Channel`, as under Concurrency.
 
 **The HTTP client is `net.get`, `net.post` and `net.request`.**
@@ -600,7 +605,7 @@ def weather(net: Net, city: str) -> Weather fails NetError:
     response = net.get("https://api.example.com/weather", params={"city": city})?
     if not response.ok():
         return Err(NetError.Status(response.status))
-    json.loads[Weather](response.text())?
+    return json.loads[Weather](response.text())?
 ```
 - `net.post(url, json=value)` sends a value as JSON, and `body=` sends bytes. `headers=`, `params=` and `timeout=` work on every call.
 - A `Response` has `status`, `headers` and `body`, plus `text()`, `ok()` for a 2xx status, and `json[T]()`. A 404 is a response, not an error, since what it means is the caller's to say.
@@ -767,7 +772,7 @@ latest = Channel[Snapshot](size=1, when_full=.DropOldest)
 **There's one scheduler, with I/O multiplexed by the OS.** Code looks blocking, and a task that waits parks and frees its core.
 *Why:* Thousands of parked tasks cost almost nothing, and nobody has to manage a pool or color functions `async`.
 
-**A failure in a server task is meant to stay in that task.** That's recorded as the intent, and it's designed when servers are built.
+**A failure in a server task stays in that task.** A runtime failure in a task of `parallel(server)` ends that task and closes its connection, and the server goes on, as under `std.net`.
 *Why:* One bad index in one request shouldn't drop every connection. Tasks don't share state a failure could corrupt, which makes containment unusually safe here.
 
 **Reference counts are biased for values that cross tasks.** The thread that owns a block counts cheaply, and other threads count atomically. Programs with no tasks compile the check away.

@@ -452,8 +452,8 @@ fn a_broken_invariant_a_dropped_parked_task_or_a_panic_stops_the_process() {
         ("an outer task's records", "on another stack"),
         ("a yielder off its task's stack", "with a yielder off its stack"),
         ("a parked task is dropped", "dropped before it ended"),
-        ("a task panics", "a task's own bug"),
-        ("a task panics as its scheduler drops", "a task's own bug, when cancelled"),
+        ("a task panics", "a parked task panicked"),
+        ("a task panics as its scheduler drops", "a parked task panicked"),
     ] {
         let ran = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "tests::a_broken_invariant_a_dropped_parked_task_or_a_panic_stops_the_process"])

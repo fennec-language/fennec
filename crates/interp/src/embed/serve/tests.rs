@@ -42,7 +42,7 @@ fn noting(handler: Handler, finished: &Finished) -> Handler {
     let finished = Arc::clone(finished);
     Arc::new(move |conn: Conn| {
         let result = handler(conn);
-        finished.0.lock().unwrap().push(result);
+        finished.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(result);
         finished.1.notify_all();
         result
     })
@@ -52,11 +52,13 @@ fn noting(handler: Handler, finished: &Finished) -> Handler {
 /// order they finished. The bound is only there so a broken server fails the test rather than
 /// hanging it.
 fn wait_for(finished: &Finished, count: usize) -> Vec<i64> {
-    let ended = finished.0.lock().unwrap();
-    let (ended, _) =
-        finished.1.wait_timeout_while(ended, Duration::from_secs(30), |ended| ended.len() < count).unwrap();
+    let ended = finished.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let waited = finished.1.wait_timeout_while(ended, Duration::from_secs(30), |ended| ended.len() < count);
+    // Copied out and let go before checking, so a failure here can't leave the lock poisoned
+    // for a task still running.
+    let ended = waited.map_or_else(|poisoned| poisoned.into_inner().0.clone(), |(ended, _)| ended.clone());
     assert!(ended.len() >= count, "only {} of {count} connections finished", ended.len());
-    ended.clone()
+    ended
 }
 
 /// Serves with `handler` on `workers` workers while `clients` runs, then stops.
@@ -173,6 +175,30 @@ fn a_wait_with_a_timeout_gives_up_while_others_go_on() {
     let mut ended = wait_for(&finished, 2);
     ended.sort_unstable();
     assert_eq!(ended, [0, 7]);
+}
+
+#[test]
+fn a_connection_that_sends_nothing_times_out_however_often_its_task_is_woken() {
+    // Woken at every poll, as a socket that keeps saying it's writable wakes its task, a read
+    // that's never answered still gives up when its time's up, not later each time.
+    let quiet: Handler = Arc::new(|mut conn: Conn| {
+        super::WAKE_ALL.set(true);
+        let read = conn.read_line(Some(Duration::from_millis(100)));
+        super::WAKE_ALL.set(false);
+        match read {
+            Err(Failure::TimedOut(after)) if after == Duration::from_millis(100) => 7,
+            _ => 1,
+        }
+    });
+    let finished = Finished::default();
+    let waited = Arc::clone(&finished);
+    let served = run(1, &noting(quiet, &finished), move |address| {
+        let silent = std::net::TcpStream::connect(address).unwrap();
+        wait_for(&waited, 1);
+        drop(silent);
+    });
+    assert_eq!(wait_for(&finished, 1), [7]);
+    assert_eq!(served, Served { connections: 1, failed: 1 });
 }
 
 #[test]

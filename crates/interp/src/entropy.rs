@@ -47,12 +47,24 @@ impl Interp<'_> {
             world.entropy_drawn += count;
             return Ok((start..start + count).map(fake_byte).collect());
         }
-        let mut bytes = vec![0; count];
-        getrandom::fill(&mut bytes).map_err(|err| {
-            Diagnostic::new(format!("the operating system gave no random bytes: {err}"), span)
-        })?;
-        Ok(bytes)
+        os_random(count, span)
     }
+}
+
+/// `count` secure random bytes from the operating system.
+#[cfg(not(target_arch = "wasm32"))]
+fn os_random(count: usize, span: Span) -> Result<Vec<u8>, Diagnostic> {
+    let mut bytes = vec![0; count];
+    getrandom::fill(&mut bytes)
+        .map_err(|err| Diagnostic::new(format!("the operating system gave no random bytes: {err}"), span))?;
+    Ok(bytes)
+}
+
+/// The playground runs in a browser, with no operating system to ask.
+#[cfg(target_arch = "wasm32")]
+fn os_random(_: usize, span: Span) -> Result<Vec<u8>, Diagnostic> {
+    Err(Diagnostic::new("`Entropy` isn't available in the playground", span)
+        .with_help("a test's `entropy: Entropy` is a fake with fixed bytes, and works here"))
 }
 
 /// The fake's `at`th byte.

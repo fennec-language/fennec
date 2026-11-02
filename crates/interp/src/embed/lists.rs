@@ -13,7 +13,7 @@ use fennec_syntax::Diagnostic;
 
 use crate::buffer::{MIN_ROOM, grown_room};
 
-use super::heap::{TEXT_HEADER_WORDS, read_block, release, text_address, write};
+use super::heap::{TEXT_HEADER_WORDS, read_block, release, shape_word, text_address, write};
 use super::{State, attempt, span, with};
 use crate::packed::{Element, Packed};
 use crate::value::Value;
@@ -33,13 +33,13 @@ fn shape(state: &State, element: usize) -> u64 {
 
 /// The kind of item a block holds, when it's a list's.
 pub(super) fn element_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
-    let at = block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
+    let at = shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
     state.tables.elements.get(usize::try_from(at).ok()?).cloned()
 }
 
 /// `element_of`, borrowed.
 pub(super) fn element_in<'a>(state: &'a State, block: &[u64]) -> Option<&'a Element> {
-    let at = block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
+    let at = shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
     state.tables.elements.get(usize::try_from(at).ok()?).map(AsRef::as_ref)
 }
 
@@ -153,8 +153,9 @@ fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i6
     let address = u64::try_from(list).ok()?;
     let block = state.heap.block(address)?;
     let element = element_of(state, block)?;
-    let at = usize::try_from(block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
-        .ok()?;
+    let at =
+        usize::try_from(shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
+            .ok()?;
     let stride = element.words();
     let count = usize::try_from(*block.get(2)?).ok()?;
     let room = usize::try_from(*block.get(3)?).ok()?;
@@ -234,8 +235,9 @@ fn sorted_places(state: &State, keys: &[u64], kind: i64) -> Vec<usize> {
 fn in_order(state: &mut State, list: u64, keys: &[u64], kind: i64) -> Option<i64> {
     let block = state.heap.block(list)?;
     let element = element_of(state, block)?;
-    let at = usize::try_from(block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
-        .ok()?;
+    let at =
+        usize::try_from(shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
+            .ok()?;
     let stride = element.words();
     let old = items(block, stride).to_vec();
     let mut words = Vec::with_capacity(old.len());
@@ -257,8 +259,9 @@ fn sorted_ints(state: &mut State, list: u64) -> Option<i64> {
     if element.words() != 1 || owns_items(element) {
         return None;
     }
-    let at = usize::try_from(block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
-        .ok()?;
+    let at =
+        usize::try_from(shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
+            .ok()?;
     let numbers = items(block, 1).to_vec();
     let mut block = build(state, at, 1, &numbers, 0);
     block
@@ -332,7 +335,7 @@ fn copied_for_sorting(state: &mut State, list: i64) -> Option<(u64, usize, usize
     let block = state.heap.block(list)?;
     let element = element_of(state, block)?;
     let first = state.tables.str_shape + 1 + super::dicts::SHAPES;
-    let at = usize::try_from(block.get(1)?.checked_sub(first)?).ok()?;
+    let at = usize::try_from(shape_word(block)?.checked_sub(first)?).ok()?;
     let stride = element.words().max(1);
     let words = items(block, stride).to_vec();
     retain_items(state, &element, &words);
@@ -625,8 +628,7 @@ pub extern "C" fn slice(list: i64, from: i64, to: i64) -> i64 {
         let address = u64::try_from(list).unwrap_or(0);
         let Some(block) = state.heap.block(address) else { return 0 };
         let Some(element) = element_of(state, block) else { return 0 };
-        let Some(number) = block
-            .get(1)
+        let Some(number) = shape_word(block)
             .and_then(|shape| shape.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES))
         else {
             return 0;

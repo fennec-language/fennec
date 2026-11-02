@@ -12,7 +12,9 @@
 
 use fennec_syntax::Diagnostic;
 
-use super::heap::{HEADER_WORDS, TEXT_HEADER_WORDS, release, same, text_address, text_from_bytes};
+use super::heap::{
+    HEADER_WORDS, TEXT_HEADER_WORDS, release, same, shape_word, text_address, text_from_bytes,
+};
 use super::{State, attempt, span, with};
 use crate::value::Value;
 
@@ -68,7 +70,7 @@ pub fn shape(str_shape: u64, key: Word, value: Word) -> Option<u64> {
 
 /// What a dict's block holds, when it is a dict's.
 fn kind(state: &State, block: &[u64]) -> Option<(Word, Word)> {
-    let at = usize::try_from(block.get(1)?.checked_sub(state.tables.str_shape + 1)?).ok()?;
+    let at = usize::try_from(shape_word(block)?.checked_sub(state.tables.str_shape + 1)?).ok()?;
     Some((*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?))
 }
 
@@ -368,7 +370,7 @@ fn set_in(state: &mut State, dict: i64, key: i64, value: i64) -> Option<i64> {
     let used = usize::try_from(*block.get(3)?).ok()?;
     let shared = block.first() != Some(&1);
     if shared || used >= capacity(slots) {
-        let (shape, live) = (*block.get(1)?, entries(block));
+        let (shape, live) = (shape_word(block)?, entries(block));
         if shared {
             state.heap.counts.copied(live.len() * ENTRY_WORDS);
             for entry in &live {
@@ -425,7 +427,7 @@ fn unshared(state: &mut State, at: u64) -> Option<u64> {
         return Some(at);
     }
     let (key_word, value_word) = kind(state, block)?;
-    let (shape, live) = (*block.get(1)?, entries(block));
+    let (shape, live) = (shape_word(block)?, entries(block));
     state.heap.counts.copied(live.len() * ENTRY_WORDS);
     for entry in &live {
         retain_entry(state, key_word, value_word, entry);
@@ -532,7 +534,7 @@ pub extern "C" fn popped() -> i64 {
 pub extern "C" fn set_clear(set: i64) -> i64 {
     with(|state| {
         let at = u64::try_from(set).unwrap_or(0);
-        let shape = state.heap.block(at).and_then(|block| block.get(1)).copied().unwrap_or(0);
+        let shape = state.heap.block(at).and_then(shape_word).unwrap_or(0);
         release(state, at);
         let empty = build(state, shape, &[], 0);
         state.heap.insert(empty)

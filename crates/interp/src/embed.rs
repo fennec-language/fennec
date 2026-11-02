@@ -31,6 +31,7 @@ pub mod regex;
 pub mod strings;
 mod table;
 mod tests;
+pub mod threads;
 
 use std::collections::HashMap;
 

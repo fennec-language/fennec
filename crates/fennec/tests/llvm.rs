@@ -572,6 +572,49 @@ fn strings_compare_with_short_literals_like_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// An index checked once stays inside its list until something shortens or replaces the
+/// list, or writes the index: a pop, a method popping or replacing a field, a new list, and
+/// negative indexes are each checked again, and the last read fails as in the interpreter.
+#[test]
+fn an_index_is_checked_again_once_its_list_changes() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = r"struct Bag:
+    items: list[int]
+
+    def drop_last(mut self):
+        self.items.pop()
+
+    def swap_in(mut self):
+        self.items = [7]
+
+def main(stdout: Stdout):
+    mut xs = [1, 2, 3]
+    mut at = -1
+    stdout.print(xs[at], xs[at])
+    xs.pop()
+    stdout.print(xs[at])
+    mut bag = Bag(items=[1, 2, 3])
+    at = 2
+    stdout.print(bag.items[at])
+    bag.items[at] = 9
+    bag.swap_in()
+    at = 0
+    stdout.print(bag.items[at])
+    bag.items = [4, 5, 6]
+    at = 2
+    stdout.print(bag.items[at])
+    bag.drop_last()
+    stdout.print(bag.items[at])
+";
+    for (name, how) in [("range", &["--llvm"][..]), ("range_release", &["--llvm", "--release"][..])] {
+        let (ours, jit) = both_built(name, source, how)?;
+        assert_eq!(ours, jit);
+    }
+    Ok(())
+}
+
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

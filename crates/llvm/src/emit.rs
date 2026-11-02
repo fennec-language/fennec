@@ -12,7 +12,7 @@ use fennec_syntax::{BinOp, Span, UnaryOp};
 use crate::Shared;
 use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
-use crate::uniqueness::{FieldPath, coming_in, unsettled, written_order};
+use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
 
 const ATTRIBUTES: &str = "attributes #0 = { nounwind \"frame-pointer\"=\"non-leaf\" }\n\
 attributes #1 = { cold nounwind }\n\
@@ -343,6 +343,8 @@ impl<'p> Module<'_, 'p> {
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
             at: (usize::MAX, usize::MAX),
+            inside_items: Vec::new(),
+            inside_slots: HashMap::new(),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -392,6 +394,10 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) taken_items: HashMap<usize, (LocalId, Vec<String>, String)>,
     /// The instruction being written: its block, and its place in it.
     at: (usize, usize),
+    /// Items of lists, by field path and index, known to be inside their lists here.
+    pub(crate) inside_items: Vec<FieldPath>,
+    /// Where the position each was found at is kept, negative indexes counted from the end.
+    pub(crate) inside_slots: HashMap<FieldPath, String>,
 }
 
 pub(crate) fn float_text(value: f64) -> String {
@@ -560,8 +566,10 @@ impl Emit<'_, '_, '_> {
         }
         let mut left_with: HashMap<usize, Vec<(LocalId, Operand, String)>> = HashMap::new();
         let mut alone_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
+        let mut inside_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
         let on_entry = std::mem::take(&mut self.alone_fields);
-        let settles = &whole.settles;
+        let settles = (&whole.settles, Tracked::Owners);
+        let lengths = (&whole.lengths, Tracked::Lengths);
         // Each block after every one leading to it, but for loops, so what's known carries on.
         let mut done = HashSet::new();
         for at in written_order(function) {
@@ -570,6 +578,8 @@ impl Emit<'_, '_, '_> {
             let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
             self.alone_fields =
                 coming_in(function, self.known, settles, (at, &before, &done), (&on_entry, &alone_left));
+            self.inside_items =
+                coming_in(function, self.known, lengths, (at, &before, &done), (&[], &inside_left));
             self.found_entries = match ways_in.split_first() {
                 Some((first, rest)) if ways_in.iter().all(|from| done.contains(from)) => {
                     let mut kept = left_with.get(first).cloned().unwrap_or_default();
@@ -596,6 +606,10 @@ impl Emit<'_, '_, '_> {
                     let hit = unsettled(function, self.known, &inst.kind, settles);
                     self.alone_fields.retain(|path| !hit.iter().any(|unsettled| unsettled.hits(path)));
                 }
+                if !self.inside_items.is_empty() {
+                    let hit = unsettled(function, self.known, &inst.kind, lengths);
+                    self.inside_items.retain(|path| !hit.iter().any(|unsettled| unsettled.hits(path)));
+                }
                 // A store may have grown the dict, moving every entry: any dict, through a path.
                 if let InstKind::SetIndex { object, path, .. } = &inst.kind {
                     if path.is_empty() {
@@ -608,6 +622,7 @@ impl Emit<'_, '_, '_> {
             }
             left_with.insert(at, std::mem::take(&mut self.found_entries));
             alone_left.insert(at, std::mem::take(&mut self.alone_fields));
+            inside_left.insert(at, std::mem::take(&mut self.inside_items));
             done.insert(at);
             if let Some((list, limit)) = self.known.reservations.get(&at).cloned() {
                 self.reserve(LocalId(list), &limit)?;

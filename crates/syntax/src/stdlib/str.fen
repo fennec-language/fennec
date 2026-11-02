@@ -45,3 +45,7 @@ struct StrWriter:
     ## Adds `x` as printing it would show it.
     def value[T](mut self, x: T):
         self._parts.append(str(x))
+
+    ## Everything written so far.
+    def text(self) -> str:
+        "".join(self._parts)

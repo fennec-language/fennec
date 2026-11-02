@@ -7,10 +7,41 @@
 ## Nothing else runs while a test waits, so a test's server is done once no connection is
 ## waiting.
 
-## A failure of the network: a host that isn't there, a refused connection, a timeout, or the
-## other side hanging up.
+## A failure of the network, with a case for each way it fails. `message()` says it in words.
 error NetError:
-    reason: str
+    ## No host has that name.
+    NotFound(host: str)
+    ## The host is there, but nothing listens on that port.
+    Refused(host: str, port: int)
+    ## Nothing came in time.
+    TimedOut(after: Duration)
+    ## The other side hung up while this side wrote, or the connection was closed already.
+    Closed
+    ## A narrowed `Net` doesn't reach that host or port.
+    Denied(reason: str)
+    ## TLS failed: a certificate didn't check out, or the handshake broke off.
+    Tls(reason: str)
+    ## A response's status, for callers that turn one into an error. The client never fails
+    ## with it.
+    Status(code: int)
+    ## Any other failure, said in words.
+    Other(reason: str)
+
+    ## What went wrong, in words.
+    def message(self) -> str:
+        match self:
+            case NotFound(host):
+                f"there's no host called `{host}`"
+            case Refused(host, port):
+                f"`{host}` refused a connection on port {port}"
+            case TimedOut(after):
+                f"gave up after {after.as_seconds()}s"
+            case Closed:
+                "the other side closed the connection"
+            case Denied(reason) | Tls(reason) | Other(reason):
+                reason
+            case Status(code):
+                f"the response's status was {code}"
 
 ## One end of a TCP connection. Its methods, written in Rust: `read(n)` gives up to `n` bytes,
 ## or empty bytes once the other side is done; `read_line()` gives the next line without its

@@ -25,16 +25,24 @@ fn every_kept_input_runs_clean() {
     }
 }
 
+/// Every target runs the same hundred inputs, however busy the machine is: the run has no time
+/// limit, and an input counts as stuck only after two minutes, far longer than any takes.
 #[test]
 fn a_short_run_of_every_target_finds_nothing() {
     let dir = std::env::temp_dir().join(format!("fennec-fuzz-short-{}", std::process::id()));
-    let output =
-        fuzz().args(["run", "--seconds", "120", "--inputs", "100", "--found"]).arg(&dir).output().unwrap();
+    let output = fuzz()
+        .args(["run", "--seed", "1", "--inputs", "100", "--stuck", "120", "--found"])
+        .arg(&dir)
+        .output()
+        .unwrap();
     let printed = String::from_utf8_lossy(&output.stdout).into_owned();
     let _ = std::fs::remove_dir_all(&dir);
     assert!(output.status.success(), "{printed}");
-    assert!(printed.contains("lexer: 100 inputs, 0 failures"), "{printed}");
-    assert!(printed.contains("utf8: 100 inputs, 0 failures"), "{printed}");
+    let targets =
+        ["lexer", "parser", "formatter", "checker", "json", "toml", "regex", "jit", "runtime", "utf8"];
+    for target in targets {
+        assert!(printed.contains(&format!("{target}: 100 inputs, 0 failures")), "{target}: {printed}");
+    }
 }
 
 #[test]

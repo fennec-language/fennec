@@ -1,7 +1,7 @@
 //! `fennec-fuzz`: fuzzing Fennec with no help from outside, repeatably.
 //!
 //! ```text
-//! fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--found DIR] [target...]
+//! fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--stuck SECONDS] [--found DIR] [target...]
 //! fennec-fuzz one <target> <file>
 //! fennec-fuzz show [llvm] <file>
 //! fennec-fuzz worker <target> <seed> <first input> <input to stop at> <progress file>
@@ -29,6 +29,7 @@ mod targets;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use supervise::Failure;
 use targets::Target;
@@ -45,7 +46,7 @@ fn main() -> ExitCode {
         ["show", "llvm", file] => show(Path::new(file), generate::printing_plainly),
         ["worker", name, seed, first, end, progress] => worker(name, seed, (first, end), Path::new(progress)),
         ["run", rest @ ..] => run(rest),
-        _ => Err("usage: fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--found DIR] [target...]"
+        _ => Err("usage: fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--stuck SECONDS] [--found DIR] [target...]"
             .to_owned()),
     };
     match code {
@@ -113,8 +114,12 @@ fn worker(name: &str, seed: &str, (first, end): (&str, &str), progress: &Path) -
 /// What `run` was asked to do.
 struct Options {
     seed: u64,
-    seconds: u64,
+    /// How long each target runs. A run asked for a number of inputs and no time runs them all,
+    /// however long the machine takes, so it finds the same thing on a busy machine.
+    seconds: Option<u64>,
     inputs: u64,
+    /// How long one input may take before it counts as stuck, in place of each target's own.
+    stuck: Option<u64>,
     found: PathBuf,
     names: Vec<String>,
 }
@@ -122,8 +127,9 @@ struct Options {
 fn options(args: &[&str]) -> Result<Options, String> {
     let mut options = Options {
         seed: 1,
-        seconds: 10,
+        seconds: None,
         inputs: u64::MAX,
+        stuck: None,
         found: repository().join("crates/fuzz/found"),
         names: Vec::new(),
     };
@@ -132,11 +138,15 @@ fn options(args: &[&str]) -> Result<Options, String> {
         let mut value = || args.next().ok_or_else(|| format!("`{arg}` needs a value"));
         match *arg {
             "--seed" => options.seed = value()?.parse().map_err(|_| "--seed needs a number")?,
-            "--seconds" => options.seconds = value()?.parse().map_err(|_| "--seconds needs a number")?,
+            "--seconds" => options.seconds = Some(value()?.parse().map_err(|_| "--seconds needs a number")?),
             "--inputs" => options.inputs = value()?.parse().map_err(|_| "--inputs needs a number")?,
+            "--stuck" => options.stuck = Some(value()?.parse().map_err(|_| "--stuck needs a number")?),
             "--found" => options.found = PathBuf::from(value()?),
             name => options.names.push(name.to_owned()),
         }
+    }
+    if options.seconds.is_none() && options.inputs == u64::MAX {
+        options.seconds = Some(10);
     }
     Ok(options)
 }
@@ -156,7 +166,8 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
     let fennec_fuzz = std::env::current_exe().map_err(|err| err.to_string())?;
     let mut found_any = false;
     for target in chosen {
-        let run = supervise::Run { fennec_fuzz: &fennec_fuzz, target, seed: options.seed };
+        let stuck = options.stuck.map_or(target.stuck, Duration::from_secs);
+        let run = supervise::Run { fennec_fuzz: &fennec_fuzz, target, seed: options.seed, stuck };
         let outcome = run.until(options.seconds, options.inputs)?;
         println!("{}: {} inputs, {} failures", target.name, outcome.inputs, outcome.failures.len());
         for (failure, number) in outcome.failures {

@@ -260,6 +260,17 @@ impl Emit<'_, '_, '_> {
                 Ok(differs)
             }
             BinOp::Add => Ok(self.header_concat(a, b)),
+            BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
+                let cc = match op {
+                    BinOp::Lt => "slt",
+                    BinOp::LtEq => "sle",
+                    BinOp::Gt => "sgt",
+                    _ => "sge",
+                };
+                let (ordering, result) = (self.header_order(a, b), self.temp());
+                self.line(&format!("{result} = icmp {cc} i64 {ordering}, 0"));
+                Ok(result)
+            }
             _ => self.on_blocks([a, b], |emit, [x, y]| emit.string_binary(op, (&x, &y))),
         }
     }
@@ -834,6 +845,61 @@ impl Emit<'_, '_, '_> {
         self.start_block(&done);
         let result = self.temp();
         self.line(&format!("{result} = phi {HEADER} [ {piece}, %{fast_end} ], [ {other}, %{slow_end} ]"));
+        result
+    }
+
+    /// Which of two headers comes first, as -1, 0 or 1. Two inline ones compare here: their
+    /// bytes, zero after the end, as big-endian words, then their lengths. Others go to the
+    /// runtime.
+    pub(crate) fn header_order(&mut self, a: &str, b: &str) -> String {
+        let (a_block, b_block) = (self.header_in_block(a), self.header_in_block(b));
+        let either = self.temp();
+        self.line(&format!("{either} = or i1 {a_block}, {b_block}"));
+        let (words, runtime, done) =
+            (self.label("order_words"), self.label("order_runtime"), self.label("order_done"));
+        self.line(&format!("br i1 {either}, label %{runtime}, label %{words}"));
+        self.start_block(&words);
+        self.declare("declare i64 @llvm.bswap.i64(i64)");
+        let mut ordering = String::new();
+        let (a_length, b_length) = (self.inline_length(a), self.inline_length(b));
+        let (shorter, longer, low, by_length) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{shorter} = icmp ult i64 {a_length}, {b_length}"));
+        self.line(&format!("{longer} = icmp ugt i64 {a_length}, {b_length}"));
+        self.line(&format!("{low} = select i1 {shorter}, i64 -1, i64 0"));
+        self.line(&format!("{by_length} = select i1 {longer}, i64 1, i64 {low}"));
+        // From the last word back, so each earlier word decides when it differs.
+        for at in (0..3).rev() {
+            let (x, y) = (self.header_word(a, at), self.header_word(b, at));
+            let (x, y) = if at == 2 {
+                let (xm, ym) = (self.temp(), self.temp());
+                self.line(&format!("{xm} = and i64 {x}, 72057594037927935"));
+                self.line(&format!("{ym} = and i64 {y}, 72057594037927935"));
+                (xm, ym)
+            } else {
+                (x, y)
+            };
+            let (xs, ys, less, more, same, step_low, step) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{xs} = call i64 @llvm.bswap.i64(i64 {x})"));
+            self.line(&format!("{ys} = call i64 @llvm.bswap.i64(i64 {y})"));
+            self.line(&format!("{less} = icmp ult i64 {xs}, {ys}"));
+            self.line(&format!("{more} = icmp ugt i64 {xs}, {ys}"));
+            self.line(&format!("{same} = icmp eq i64 {xs}, {ys}"));
+            let after = if ordering.is_empty() { by_length.clone() } else { ordering.clone() };
+            self.line(&format!("{step_low} = select i1 {less}, i64 -1, i64 1"));
+            self.line(&format!("{step} = select i1 {same}, i64 {after}, i64 {step_low}"));
+            let _ = more;
+            ordering = step;
+        }
+        let words_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&runtime);
+        let counted = self.on_blocks([a, b], |emit, [x, y]| emit.text_order(&x, &y));
+        let runtime_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let result = self.temp();
+        self.line(&format!("{result} = phi i64 [ {ordering}, %{words_end} ], [ {counted}, %{runtime_end} ]"));
         result
     }
 }

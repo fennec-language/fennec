@@ -813,6 +813,17 @@ fn an_empty_buffer_fails_to_pop_like_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// `Net` reaches native code as kind 7, and its methods run through the runtime by that kind,
+/// so a wrong number would send `listen` to another capability.
+#[test]
+fn net_reaches_native_code_as_its_own_kind() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = "def main(stdout: Stdout, net: Net):\n    match net.listen(0):\n        case Ok(server):\n            stdout.print(\"listening\", server.port > 0)\n        case Err(error):\n            stdout.print(\"failed\", error.reason)\n";
+    same_as_the_jit("net_kind", source)
+}
+
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

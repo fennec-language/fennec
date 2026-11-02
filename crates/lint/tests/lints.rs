@@ -113,6 +113,24 @@ fn an_fstring_with_nothing_to_fill_in_is_a_string() {
 }
 
 #[test]
+fn text_built_with_plus_and_str_is_one_fstring() {
+    let source =
+        "def f(hp: int, top: int, name: str) -> str:\n    \"HP: \" + str(hp) + \"/\" + str(top) + name\n";
+    assert_eq!(rules(source), ["concat-to-fstring"], "one lint for the whole chain");
+    assert_eq!(fixed(source), "def f(hp: int, top: int, name: str) -> str:\n    f\"HP: {hp}/{top}{name}\"\n");
+    let source = "x = \"{a}\\n\\\"\" + str(1.5)\n";
+    assert_eq!(
+        fixed(source),
+        "x = f\"{{a}}\\n\\\"{1.5}\"\n",
+        "braces, escapes and quotes stay what they were"
+    );
+    assert_eq!(rules("x = \"a\" + name\n"), NONE, "no `str(...)` to save");
+    assert_eq!(rules("x = str(a) + str(b)\n"), NONE, "nothing says the `+` joins text");
+    assert_eq!(rules("x = \"a\" + str(d[\"k\"])\n"), NONE, "a quote can't go inside the braces");
+    assert_eq!(rules("x = \"a\" + str(xs[1:2])\n"), NONE, "a `:` would start a format");
+}
+
+#[test]
 fn pass_is_only_for_an_empty_block() {
     assert_eq!(rules("def f():\n    pass\n"), NONE);
     let source = "def f():\n    pass\n    g()\n";

@@ -411,6 +411,7 @@ fn analyze(
     let grown = count_uses(function, (changes, keeps), &mut known);
     find_reads_again(function, &mut known);
     find_borrows(function, changes, &mut known);
+    find_live_borrows(function, changes, &mut known);
     find_path_takes(function, &mut known);
     find_aliases(function, &mut known);
     find_last_copies(function, &mut known);
@@ -610,6 +611,167 @@ fn is_quiet(inst: &InstKind) -> bool {
             | InstKind::IsCase { .. }
             | InstKind::IsNone { .. }
     )
+}
+
+/// Whether an instruction could change one of these locals: write it, change what's inside it,
+/// or give it to a call as `mut`.
+fn may_change(inst: &InstKind, lenders: &[LocalId], changes: &dyn Fn(&str) -> Vec<usize>) -> bool {
+    let held = |operand: &Operand| matches!(operand, Operand::Local(local) if lenders.contains(local));
+    let mut written = false;
+    visit(inst, |_| {}, |local| written |= lenders.contains(&local));
+    written
+        || match inst {
+            InstKind::SetField { object, .. } | InstKind::SetIndex { object, .. } => lenders.contains(object),
+            InstKind::Builtin { args, changes: true, .. } => args.first().is_some_and(held),
+            InstKind::Call { .. } => !leaves_alone(inst, lenders, changes),
+            InstKind::Lock { .. } | InstKind::Unlock { .. } => true,
+            _ => false,
+        }
+}
+
+/// Whether an instruction reads `local` without needing an owner of its own for it: looking
+/// inside it, comparing it, or lending it to a call that doesn't take it `mut`.
+fn reads_without_owning(inst: &InstKind, local: LocalId, changes: &dyn Fn(&str) -> Vec<usize>) -> bool {
+    let held = Operand::Local(local);
+    if only_looks(inst, local) {
+        return true;
+    }
+    match inst {
+        InstKind::Binary { lhs, rhs, .. } => *lhs == held || *rhs == held,
+        InstKind::Unary { value, .. } => *value == held,
+        InstKind::GetTupleItem { value, .. } => *value == held,
+        InstKind::Call { function, args, .. } => {
+            let changed = changes(function);
+            args.iter().enumerate().all(|(at, arg)| *arg != held || !changed.contains(&at))
+        }
+        _ => false,
+    }
+}
+
+/// Finds more reads of a field or item that need no owner of their own: read any number of
+/// times, in any block, but only looked at, while nothing could change what they came from.
+/// What they came from has to be a parameter, or borrowed from one, so it outlives them.
+fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known: &mut Analysis) {
+    let is_param = |local: LocalId| local.0 < function.params;
+    let mut candidates: HashMap<usize, ((usize, usize), LocalId, Vec<LocalId>)> = HashMap::new();
+    let mut copies: HashSet<usize> = HashSet::new();
+    for (at, block) in function.blocks.iter().enumerate() {
+        for (index, inst) in block.insts.iter().enumerate() {
+            // A candidate copied once to a local of its own, which borrows from it in turn.
+            if let InstKind::Copy { dest, value: Operand::Local(from) } = &inst.kind
+                && known.writes.get(dest.0) == Some(&1)
+                && dest.0 >= function.params
+                && let Some((_, _, lenders)) = candidates.get(&from.0)
+            {
+                let lenders = std::iter::once(*from).chain(lenders.iter().copied()).collect();
+                candidates.insert(dest.0, ((at, index), *from, lenders));
+                copies.insert(dest.0);
+                continue;
+            }
+            let (dest, source) = match &inst.kind {
+                InstKind::GetField { dest, object: Operand::Local(from), .. }
+                | InstKind::GetIndex { dest, object: Operand::Local(from), .. }
+                | InstKind::GetCaseField { dest, value: Operand::Local(from), .. } => (*dest, *from),
+                _ => continue,
+            };
+            let id_map = matches!(function.locals.get(source.0).map(|local| &local.ty), Some(Type::IdMap(_)));
+            if known.writes.get(dest.0) != Some(&1)
+                || dest == source
+                || known.borrowed.contains(&dest.0)
+                || known.taken.contains(&dest.0)
+                || dest.0 < function.params
+                || (id_map && matches!(&inst.kind, InstKind::GetIndex { .. }))
+            {
+                continue;
+            }
+            let mut lenders = vec![source];
+            let mut lasting = true;
+            while let Some(&last) = lenders.last() {
+                if is_param(last) {
+                    break;
+                }
+                match known.borrowed_from.get(&last.0) {
+                    Some(lender) if known.borrowed.contains(&last.0) => lenders.push(*lender),
+                    _ => {
+                        lasting = false;
+                        break;
+                    }
+                }
+            }
+            // Anything that is one of them changes them too.
+            let aliased: Vec<LocalId> = (0..function.locals.len())
+                .map(LocalId)
+                .filter(|local| known.alias(*local).is_some_and(|of| lenders.contains(&of)))
+                .collect();
+            lenders.extend(aliased);
+            if lasting {
+                candidates.insert(dest.0, ((at, index), source, lenders));
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return;
+    }
+    let live_out = live_after_blocks(function);
+    for (at, block) in function.blocks.iter().enumerate() {
+        let mut live = live_out.get(at).cloned().unwrap_or_default();
+        match &block.end {
+            // Given back, it needs an owner.
+            Terminator::Return(Some(Operand::Local(local))) => {
+                candidates.remove(&local.0);
+                live.insert(local.0);
+            }
+            Terminator::Branch { cond: Operand::Local(local), .. }
+            | Terminator::NoMatch { value: Operand::Local(local), .. } => {
+                live.insert(local.0);
+            }
+            _ => {}
+        }
+        for (index, inst) in block.insts.iter().enumerate().rev() {
+            let (mut reads, mut writes) = (Vec::new(), Vec::new());
+            visit(&inst.kind, |operand| reads.extend(local_of(operand)), |local| writes.push(local.0));
+            candidates.retain(|dest, (defined, _, lenders)| {
+                // Copied to a local borrowing it in turn, like the list a loop goes over.
+                let copied = matches!(&inst.kind, InstKind::Copy { dest: to, value: Operand::Local(from) }
+                    if from.0 == *dest && copies.contains(&to.0));
+                if reads.contains(dest)
+                    && !copied
+                    && !reads_without_owning(&inst.kind, LocalId(*dest), changes)
+                {
+                    return false;
+                }
+                !(live.contains(dest) && *defined != (at, index) && may_change(&inst.kind, lenders, changes))
+            });
+            for write in writes {
+                live.remove(&write);
+            }
+            live.extend(reads);
+        }
+    }
+    // A copy borrows from what it copied, so that has to be borrowed too.
+    loop {
+        let gone: Vec<usize> = candidates
+            .iter()
+            .filter(|(_, (_, source, _))| {
+                copies.contains(&source.0)
+                    || candidates.contains_key(&source.0)
+                    || is_param(*source)
+                    || known.borrowed.contains(&source.0)
+            })
+            .filter(|(dest, (_, source, _))| copies.contains(dest) && !candidates.contains_key(&source.0))
+            .map(|(dest, _)| *dest)
+            .collect();
+        if gone.is_empty() {
+            break;
+        }
+        for dest in gone {
+            candidates.remove(&dest);
+        }
+    }
+    for (dest, (_, source, _)) in candidates {
+        known.borrowed.insert(dest);
+        known.borrowed_from.insert(dest, source);
+    }
 }
 
 /// Whether a call leaves these locals as they are: only what's given `mut` can change, and

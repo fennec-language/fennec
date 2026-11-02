@@ -14,6 +14,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Mutex, PoisonError};
 
+/// Whether this runtime is built for native code on several threads. Without it, the checks
+/// on the paths every block takes are compiled away.
+pub(super) const ON: bool = cfg!(any(test, feature = "threads"));
+
 /// The next number a thread taking one gets. The main thread is 0.
 static NEXT: AtomicU16 = AtomicU16::new(1);
 
@@ -99,10 +103,15 @@ pub extern "C" fn release_shared(address: i64, _owner: i64) {
 
 /// Whether a block whose owner has just let go of its last count is still held by another
 /// thread, in which case it waits for that thread to let go, rather than being freed now.
+#[inline]
 pub(super) fn held_elsewhere(address: u64) -> bool {
-    if !ANY_SHARED.load(Ordering::Relaxed) {
-        return false;
-    }
+    ON && ANY_SHARED.load(Ordering::Relaxed) && held_elsewhere_now(address)
+}
+
+/// `held_elsewhere`, once some block has been counted across threads.
+#[cold]
+#[inline(never)]
+fn held_elsewhere_now(address: u64) -> bool {
     shared(|table| match table.get_mut(&address) {
         Some(entry) if entry.count > 0 => {
             entry.owner_done = true;
@@ -116,11 +125,16 @@ pub(super) fn held_elsewhere(address: u64) -> bool {
     })
 }
 
+/// Whether any thread has blocks waiting on its queue: one load, for every `free` to ask.
+#[inline]
+pub(super) fn any_waiting() -> bool {
+    ON && ANY_REMOTE.load(Ordering::Acquire)
+}
+
 /// The blocks waiting on this thread's queue, for it to free.
+#[cold]
+#[inline(never)]
 pub(super) fn waiting() -> Vec<u64> {
-    if !ANY_REMOTE.load(Ordering::Acquire) {
-        return Vec::new();
-    }
     remote(|queues| queues.remove(&index()).unwrap_or_default())
 }
 

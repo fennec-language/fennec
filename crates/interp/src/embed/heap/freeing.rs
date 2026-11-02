@@ -15,8 +15,8 @@ use crate::value::Value;
 pub extern "C" fn free(address: i64) {
     let abandoning = with(|state| {
         // What other threads let go of last waits for this one, which made it, to free it.
-        for waiting in crate::embed::threads::waiting() {
-            free_block(state, waiting);
+        if crate::embed::threads::any_waiting() {
+            free_waiting(state);
         }
         let address = u64::try_from(address).unwrap_or(0);
         free_block(state, address);
@@ -24,6 +24,15 @@ pub extern "C" fn free(address: i64) {
     });
     if abandoning {
         run_abandons();
+    }
+}
+
+/// Frees what other threads let go of last, which waits for this one, which made it.
+#[cold]
+#[inline(never)]
+fn free_waiting(state: &mut State) {
+    for waiting in crate::embed::threads::waiting() {
+        free_block(state, waiting);
     }
 }
 

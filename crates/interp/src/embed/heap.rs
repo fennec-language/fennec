@@ -242,7 +242,7 @@ impl Heap {
     pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
         self.counts.allocations += 1;
         self.counts.allocated_bytes += u64::try_from(block.len()).unwrap_or(0) * 8;
-        if self.owner_bits != 0 {
+        if super::threads::ON && self.owner_bits != 0 {
             mark_owner(&mut block, self.owner_bits);
         }
         let address = block.as_ptr().addr();

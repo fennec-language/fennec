@@ -59,6 +59,7 @@ def built_in_types() -> list[str]:
         "Args",
         "Stdin",
         "Process",
+        "Entropy",
         "Result",
         "->",
     ]

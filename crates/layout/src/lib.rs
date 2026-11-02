@@ -167,6 +167,7 @@ pub enum Cap {
     Args,
     Stdin,
     Process,
+    Entropy,
 }
 
 impl Cap {
@@ -178,6 +179,7 @@ impl Cap {
             "Args" => Some(Cap::Args),
             "Stdin" => Some(Cap::Stdin),
             "Process" => Some(Cap::Process),
+            "Entropy" => Some(Cap::Entropy),
             _ => None,
         }
     }
@@ -190,6 +192,7 @@ impl Cap {
             Cap::Args => "Args",
             Cap::Stdin => "Stdin",
             Cap::Process => "Process",
+            Cap::Entropy => "Entropy",
         }
     }
 
@@ -202,6 +205,7 @@ impl Cap {
             Cap::Args => 3,
             Cap::Stdin => 4,
             Cap::Process => 5,
+            Cap::Entropy => 6,
         }
     }
 }

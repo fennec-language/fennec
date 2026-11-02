@@ -1,0 +1,39 @@
+# decision: Secure randomness is a capability, `Entropy`,
+
+# `Entropy` gives secure random bytes from the operating system, and unpredictable seeds for
+# `Random`. In a test it's a fake whose bytes are fixed, so the test repeats exactly.
+from std.random import Random
+
+## A session token nobody can guess: 16 random bytes.
+def token(entropy: Entropy) -> bytes:
+    entropy.bytes(16)
+
+## A die whose rolls nobody can predict.
+def die(entropy: Entropy) -> Random:
+    Random(seed=entropy.seed())
+
+test "a token is 16 bytes"(entropy: Entropy):
+    assert token(entropy).len() == 16
+    assert entropy.bytes(0) == bytes()
+
+test "each draw gives new bytes"(entropy: Entropy):
+    assert token(entropy) != token(entropy)
+
+test "the fake's bytes are the same every run"(entropy: Entropy):
+    assert entropy.bytes(4) == bytes([175, 205, 29, 123])
+
+test "the fake's seeds are the same every run"(entropy: Entropy):
+    assert entropy.seed() == -2152535657050944081
+    assert entropy.seed() != -2152535657050944081
+
+test "a seed starts a Random"(entropy: Entropy):
+    mut rng = die(entropy)
+    roll = rng.randint(1, high=6)
+    assert 1 <= roll <= 6
+
+def main(stdout: Stdout, entropy: Entropy):
+    first = token(entropy)
+    stdout.print(first.len(), first != token(entropy))
+    mut rng = die(entropy)
+    roll = rng.randint(1, high=6)
+    stdout.print(1 <= roll <= 6)

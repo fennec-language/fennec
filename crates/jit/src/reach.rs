@@ -159,6 +159,10 @@ fn expr(value: &Expr, mentions: &mut Mentions) {
         ExprKind::Name(name) => {
             mentions.names.insert(name.clone());
         }
+        // A duration literal makes a `Duration`, so its methods can be reached.
+        ExprKind::Duration(_) => {
+            mentions.names.insert("Duration".to_owned());
+        }
         ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {}
         ExprKind::Variant(name) => {
             mentions.members.insert(name.clone());

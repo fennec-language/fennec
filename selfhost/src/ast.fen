@@ -43,7 +43,7 @@ struct Generic:
 ## Whether an expression is a plain value written out: a number, string, bool or `None`.
 def is_plain_value(expr: Expr) -> bool:
     match expr.kind:
-        case .Int(_) | .Float(_) | .Str(_) | .Bool(_) | .Nothing: True
+        case .Int(_) | .Float(_) | .Duration(_) | .Str(_) | .Bool(_) | .Nothing: True
         case .Unary(op, operand):
             match operand.kind:
                 case .Int(_) | .Float(_): op == .Neg
@@ -213,6 +213,9 @@ enum ExprKind:
     ## `x => body` or `(a, b) => body`.
     Lambda(params: list[str], body: Expr)
     Match(subject: Expr, arms: list[MatchArm])
+    ## A duration literal, like `30s`, in nanoseconds: a `Duration` from `std.time`. It comes
+    ## last so the cases before it keep the numbers the embedding gives them.
+    Duration(nanos: int)
 
 enum CompKind:
     List

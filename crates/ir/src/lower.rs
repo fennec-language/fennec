@@ -684,6 +684,14 @@ impl<'a> Lowering<'a> {
         self.expr(expr).map(|_| ())
     }
 
+    /// A duration literal: `30s` is `Duration(nanos=30_000_000_000)`.
+    fn duration(&mut self, nanos: i64, expr: &Expr) -> Lowered<Operand> {
+        let dest = self.temporary(self.ty(expr)?);
+        let fields = vec![Operand::Int(nanos)];
+        self.emit(InstKind::Make { dest, type_name: "Duration".to_owned(), fields }, expr.span);
+        Ok(Operand::Local(dest))
+    }
+
     fn expr(&mut self, expr: &Expr) -> Lowered<Operand> {
         let span = expr.span;
         if let Some((owner, case, args)) = self.built_case(expr) {
@@ -692,6 +700,7 @@ impl<'a> Lowering<'a> {
         match &expr.kind {
             ExprKind::Int(value) => Ok(Operand::Int(*value)),
             ExprKind::Float(value) => Ok(Operand::Float(*value)),
+            ExprKind::Duration(nanos) => self.duration(*nanos, expr),
             ExprKind::Bool(value) => Ok(Operand::Bool(*value)),
             ExprKind::Str(value) => Ok(Operand::Str(value.clone())),
             ExprKind::None => Ok(Operand::None),

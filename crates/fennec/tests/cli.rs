@@ -835,6 +835,14 @@ fn check_and_lint_say_the_same_in_json() {
     let output = fennec(&["check", &path], "").unwrap();
     assert!(text(&output.stderr).contains("Fennec has no format `02x`"), "{}", text(&output.stderr));
 
+    // A duration's unit is checked as it's read.
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(5m)\n").unwrap();
+    let (code, report) = json(&["check", "--json", &path]);
+    let message = report.at(&["diagnostics"]).and_then(fennec_lsp::Json::as_array).and_then(<[_]>::first);
+    let message = message.and_then(|item| item.get("message")).and_then(fennec_lsp::Json::as_str);
+    assert_eq!(code, Some(1));
+    assert!(message.is_some_and(|message| message.contains("`5m` uses `m`, which isn't a unit of time")));
+
     std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print((\n").unwrap();
     let (code, report) = json(&["lint", "--json", &path]);
     std::fs::remove_dir_all(&dir).unwrap();

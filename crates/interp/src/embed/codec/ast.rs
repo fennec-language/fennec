@@ -317,6 +317,7 @@ fn encode_more(kind: &ExprKind, to: &mut Writer) {
             subject.encode(to);
             arms.encode(to);
         }
+        ExprKind::Duration(nanos) => (24, nanos).encode_tagged(to),
         _ => {}
     }
 }
@@ -375,6 +376,7 @@ fn decode_more(tag: u8, r: &mut Reader<'_>) -> Option<ExprKind> {
         }
         22 => ExprKind::Lambda { params: Decode::decode(r)?, body: Decode::decode(r)? },
         23 => ExprKind::Match { subject: Decode::decode(r)?, arms: Decode::decode(r)? },
+        24 => ExprKind::Duration(Decode::decode(r)?),
         _ => return None,
     })
 }

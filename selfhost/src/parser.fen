@@ -549,6 +549,7 @@ def describe(tok: Tok) -> str:
         case .Name(name): f"`{name}`"
         case .Int(_): "a number"
         case .Float(_): "a number"
+        case .Duration(_): "a duration"
         case .Str(_): "a string"
         case .FStr(_): "a string"
         case .Keyword(word): f"`{word}`"

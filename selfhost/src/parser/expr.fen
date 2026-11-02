@@ -245,6 +245,7 @@ extend Parser:
         kind = match token.tok:
             case .Int(value): ExprKind.Int(value)
             case .Float(value): ExprKind.Float(value)
+            case .Duration(nanos): ExprKind.Duration(nanos)
             case .Str(text): ExprKind.Str(text)
             case .FStr(parts): ExprKind.FStr(fstring_parts(parts)?)
             case .Name(name): ExprKind.Name(name)

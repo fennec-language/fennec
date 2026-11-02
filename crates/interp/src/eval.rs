@@ -11,12 +11,25 @@ use crate::value::{Lambda, Value};
 use crate::{builtins, format, ops};
 
 impl Interp<'_> {
+    /// A duration literal: `30s` is `Duration(nanos=30_000_000_000)`.
+    fn duration(&mut self, nanos: i64, span: Span) -> Result<Value, Diagnostic> {
+        let nanos = crate::call::CallArg {
+            name: Some("nanos".to_owned()),
+            value: Value::Int(nanos),
+            mut_place: None,
+            literal: true,
+            span,
+        };
+        self.construct("Duration", vec![nanos], span)
+    }
+
     pub(crate) fn eval(&mut self, expr: &Expr) -> Result<Value, Diagnostic> {
         let span = expr.span;
         self.step(span)?;
         match &expr.kind {
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Float(x) => Ok(Value::Float(*x)),
+            ExprKind::Duration(nanos) => self.duration(*nanos, span),
             ExprKind::Str(text) => Ok(Value::str(text)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
             ExprKind::None => Ok(Value::None),

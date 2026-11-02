@@ -183,6 +183,17 @@ fn a_format_that_doesnt_fit_is_found_before_running() {
 }
 
 #[test]
+fn a_duration_with_an_unknown_unit_is_found() {
+    let mut editor = Editor::new("duration_unit").unwrap();
+    let published = editor.open("src/main.fen", &MAIN.replace("damage, SIZE", "5m, SIZE"));
+    let in_main = for_file(&published, "main.fen").unwrap();
+    assert_eq!(in_main.len(), 1, "{:?}", messages(in_main));
+    let message = &messages(in_main)[0];
+    assert!(message.starts_with("`5m` uses `m`, which isn't a unit of time"), "{message}");
+    assert!(message.contains("minutes are `min`"), "{message}");
+}
+
+#[test]
 fn a_mistake_in_an_edited_body_is_found_and_cleared() {
     let mut editor = Editor::new("edited_body").unwrap();
     editor.open("src/main.fen", MAIN);

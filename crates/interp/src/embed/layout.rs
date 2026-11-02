@@ -186,6 +186,85 @@ mod tests {
     }
 
     #[test]
+    fn strings_strip_as_the_interpreter_does_from_any_byte() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let cases = [
+            "",
+            " ",
+            "        ",
+            "x",
+            " x ",
+            "  item 12 ",
+            "\t\n\x0b\x0c\r x \r",
+            "nothing to do",
+            "\u{a0}a\u{a0}",
+        ];
+        let cases = cases.into_iter().chain(["  é ", "  a fairly long line of text, longer than a word  "]);
+        for case in cases {
+            let text = string(case);
+            assert_eq!(text_of(strings::strip(text, 0)), case.trim(), "{case:?}");
+            assert_eq!(text_of(strings::strip(text, 1)), case.trim_start(), "{case:?}");
+            assert_eq!(text_of(strings::strip(text, 2)), case.trim_end(), "{case:?}");
+            let stripped = strings::strip(text, 0);
+            let chars = u64::try_from(case.trim().chars().count()).unwrap();
+            assert_eq!(word(stripped, TEXT_CHARS), Some(chars), "{case:?}");
+        }
+        finish();
+    }
+
+    #[test]
+    fn floats_sort_as_the_interpreter_sorts_them_whatever_their_order() {
+        let tables = Tables { elements: vec![Rc::new(Element::Float)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let nans = [f64::NAN, -f64::NAN, f64::from_bits(f64::NAN.to_bits() | 1)];
+        let floats = [0.0, -0.0, 1.5, -0.0, 0.0, f64::INFINITY, -1.0, f64::NEG_INFINITY];
+        let floats: Vec<f64> = floats.into_iter().chain(nans).chain([0.0, -0.0]).collect();
+        let mut expected = floats.clone();
+        expected.sort_by(f64::total_cmp);
+        for turn in 0..floats.len() {
+            let mut input = floats.clone();
+            input.rotate_left(turn);
+            let list = lists::new(0, i64::try_from(input.len()).unwrap());
+            for (at, float) in (LIST_ITEMS..).step_by(8).zip(&input) {
+                set_word(list, at, float.to_bits());
+            }
+            let sorted = lists::sorted(list, lists::SORT_FLOATS);
+            let bits: Vec<u64> =
+                (LIST_ITEMS..).step_by(8).take(input.len()).map(|at| word(sorted, at).unwrap()).collect();
+            assert_eq!(bits, expected.iter().map(|float| float.to_bits()).collect::<Vec<_>>());
+        }
+        finish();
+    }
+
+    #[test]
+    fn a_plain_struct_copied_into_a_block_crosses_as_a_value() {
+        let point = Element::Struct {
+            name: "Point".into(),
+            fields: vec![("x".into(), Element::Int), ("name".into(), Element::Str)],
+        };
+        let tables =
+            Tables { shapes: vec![Rc::new(point), Rc::new(Element::Str)], str_shape: 1, ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let block = heap::alloc(0);
+        set_word(block, FIELDS, 7);
+        set_word(block, FIELDS + 8, u64::try_from(with(|state| heap::text_address(state, "fox"))).unwrap());
+        let lent = heap::to_value(block);
+        // As the interpreter holds it, as `json.loads` would give it.
+        let value = with(|state| {
+            let plain = state.temp(lent);
+            Some(state.push(plain))
+        })
+        .unwrap();
+        let back = heap::from_value(value, 0, 0, 0);
+        assert_ne!(back, block);
+        assert_eq!(word(back, FIELDS), Some(7));
+        assert_eq!(text_of(i64::try_from(word(back, FIELDS + 8).unwrap()).unwrap()), "fox");
+        finish();
+    }
+
+    #[test]
     fn numbers_format_without_a_temporary() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
         start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
@@ -427,6 +506,17 @@ mod tests {
         assert_eq!(read(dict, string("éb"), 0, 2), Some(2));
         assert_eq!(read(dict, dna, 0, 2), None);
         assert_eq!(word(dict, 16), Some(3));
+        // A key said to be new is added, and one that's there after all is changed, not added
+        // again.
+        dict = super::super::dicts::add_new_slice(dict, dna, 0, 3, 5);
+        dict = super::super::dicts::add_new_slice(dict, dna, 2, 4, 9);
+        dict = super::super::dicts::add_new_slice(dict, accented, 0, 2, 6);
+        dict = super::super::dicts::add_new_slice(dict, dna, 6, -10, 4);
+        assert_eq!(read(dict, string("ggt"), 0, 3), Some(5));
+        assert_eq!(read(dict, dna, 2, 4), Some(9));
+        assert_eq!(read(dict, string("éa"), 0, 2), Some(6));
+        assert_eq!(read(dict, string(""), 0, 0), Some(4));
+        assert_eq!(word(dict, 16), Some(6));
         finish();
     }
 

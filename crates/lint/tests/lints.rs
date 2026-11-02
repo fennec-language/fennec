@@ -131,6 +131,24 @@ fn text_built_with_plus_and_str_is_one_fstring() {
 }
 
 #[test]
+fn a_path_to_a_name_imported_already_is_the_name() {
+    let source = "import std.math\nfrom std.math import sqrt\n\ndef f(x: float) -> float:\n    std.math.sqrt(x) + sqrt(x)\n";
+    assert!(rules(source).contains(&"full-path"), "{:?}", rules(source));
+    assert_eq!(
+        fixed(source),
+        "import std.math\nfrom std.math import sqrt\n\ndef f(x: float) -> float:\n    sqrt(x) + sqrt(x)\n"
+    );
+    let aliased = "from std import json\nfrom std.json import loads as parse\n\ndef f(text: str):\n    json.loads(text)\n";
+    assert!(fixed(aliased).contains("    parse(text)\n"), "{}", fixed(aliased));
+    let renamed =
+        "import game.physics as physics\nfrom game.physics import step\n\ndef f():\n    physics.step()\n";
+    assert!(fixed(renamed).contains("    step()\n"), "{}", fixed(renamed));
+    let other =
+        "import std.math\nfrom std.math import sqrt\n\ndef f(x: float) -> float:\n    std.math.floor(x)\n";
+    assert!(!rules(other).contains(&"full-path"), "a name that isn't imported by itself");
+}
+
+#[test]
 fn assert_is_for_tests() {
     let source = "def heal(hp: int) -> int:\n    assert hp > 0\n    hp + 1\n";
     assert_eq!(rules(source), ["assert-outside-tests"]);

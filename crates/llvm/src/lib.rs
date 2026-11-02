@@ -38,6 +38,7 @@ mod emit;
 mod entry;
 mod generators;
 mod idmaps;
+mod json;
 mod kinds;
 mod lists;
 mod random;

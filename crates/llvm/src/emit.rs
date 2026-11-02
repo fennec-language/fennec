@@ -1254,6 +1254,7 @@ impl Emit<'_, '_, '_> {
             | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
             }
+            "json.dumps" | "json.loads" => self.json_builtin(dest, name, args, span),
             "str.len" | "str" | "str.code" | "str.join" | "str.contains" => {
                 self.text_builtin(dest, name, args, span)
             }

@@ -374,7 +374,8 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `strip` (0), `lstrip` (1) or `rstrip` (2) of a string. ASCII is looked at here: one with
-    /// nothing to take off is shared, and the rest is copied once. Other text goes to the
+    /// nothing to take off is shared, as is what's left when that's nothing or one byte, and the
+    /// rest is copied once. Other text goes to the
     /// runtime, which knows every kind of space.
     pub(crate) fn strip_text(&mut self, text: &str, which: i64) -> String {
         self.declare("declare ptr @fennec_str_strip(ptr, i64) nounwind");
@@ -390,12 +391,39 @@ impl Emit<'_, '_, '_> {
         self.module.add_helper(
             "fen_strip",
             format!(
-                "define internal ptr @fen_strip(ptr %text, i64 %which) #0 {{\nentry:\n  %bytes_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_BYTES}\n  %n = load i64, ptr %bytes_at\n  %chars_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_CHARS}\n  %chars = load i64, ptr %chars_at\n  %body = getelementptr inbounds i8, ptr %text, i64 {TEXT}\n  %ascii = icmp eq i64 %n, %chars\n  br i1 %ascii, label %front, label %slow\nfront:\n  %keep_front = icmp eq i64 %which, 2\n  br i1 %keep_front, label %ends, label %front_loop\nfront_loop:\n  %s = phi i64 [ 0, %front ], [ %s_next, %front_on ]\n  %s_in = icmp ult i64 %s, %n\n  br i1 %s_in, label %front_test, label %front_done\nfront_test:\n  %fp = getelementptr inbounds i8, ptr %body, i64 %s\n  %fb = load i8, ptr %fp\n{front}  br i1 %fw, label %front_on, label %front_done\nfront_on:\n  %s_next = add i64 %s, 1\n  br label %front_loop\nfront_done:\n  br label %ends\nends:\n  %start = phi i64 [ 0, %front ], [ %s, %front_done ]\n  %keep_back = icmp eq i64 %which, 1\n  br i1 %keep_back, label %scanned, label %back_loop\nback_loop:\n  %e = phi i64 [ %n, %ends ], [ %e_less, %back_on ]\n  %e_in = icmp ugt i64 %e, %start\n  br i1 %e_in, label %back_test, label %back_done\nback_test:\n  %e_less = sub i64 %e, 1\n  %bp = getelementptr inbounds i8, ptr %body, i64 %e_less\n  %bb = load i8, ptr %bp\n{back}  br i1 %bw, label %back_on, label %back_done\nback_on:\n  br label %back_loop\nback_done:\n  br label %scanned\nscanned:\n  %end = phi i64 [ %n, %ends ], [ %e, %back_done ]\n  %from_start = icmp eq i64 %start, 0\n  %to_end = icmp eq i64 %end, %n\n  %whole = and i1 %from_start, %to_end\n  br i1 %whole, label %share, label %copy\nshare:\n  %count = load i64, ptr %text\n  %more = add i64 %count, 1\n  store i64 %more, ptr %text\n  ret ptr %text\ncopy:\n  %length = sub i64 %end, %start\n  %made = call ptr @fennec_str_with_room(i64 %length)\n  %to = getelementptr inbounds i8, ptr %made, i64 {TEXT}\n  %from = getelementptr inbounds i8, ptr %body, i64 %start\n  call void @llvm.memcpy.p0.p0.i64(ptr %to, ptr %from, i64 %length, i1 false)\n  %made_bytes = getelementptr inbounds i8, ptr %made, i64 {TEXT_BYTES}\n  store i64 %length, ptr %made_bytes\n  %made_chars = getelementptr inbounds i8, ptr %made, i64 {TEXT_CHARS}\n  store i64 %length, ptr %made_chars\n  ret ptr %made\nslow:\n  %stripped = call ptr @fennec_str_strip(ptr %text, i64 %which)\n  ret ptr %stripped\n}}\n\n"
+                "define internal ptr @fen_strip(ptr %text, i64 %which, ptr %empty) #0 {{\nentry:\n  %bytes_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_BYTES}\n  %n = load i64, ptr %bytes_at\n  %chars_at = getelementptr inbounds i8, ptr %text, i64 {TEXT_CHARS}\n  %chars = load i64, ptr %chars_at\n  %body = getelementptr inbounds i8, ptr %text, i64 {TEXT}\n  %ascii = icmp eq i64 %n, %chars\n  br i1 %ascii, label %front, label %slow\nfront:\n  %keep_front = icmp eq i64 %which, 2\n  br i1 %keep_front, label %ends, label %front_loop\nfront_loop:\n  %s = phi i64 [ 0, %front ], [ %s_next, %front_on ]\n  %s_in = icmp ult i64 %s, %n\n  br i1 %s_in, label %front_test, label %front_done\nfront_test:\n  %fp = getelementptr inbounds i8, ptr %body, i64 %s\n  %fb = load i8, ptr %fp\n{front}  br i1 %fw, label %front_on, label %front_done\nfront_on:\n  %s_next = add i64 %s, 1\n  br label %front_loop\nfront_done:\n  br label %ends\nends:\n  %start = phi i64 [ 0, %front ], [ %s, %front_done ]\n  %keep_back = icmp eq i64 %which, 1\n  br i1 %keep_back, label %scanned, label %back_loop\nback_loop:\n  %e = phi i64 [ %n, %ends ], [ %e_less, %back_on ]\n  %e_in = icmp ugt i64 %e, %start\n  br i1 %e_in, label %back_test, label %back_done\nback_test:\n  %e_less = sub i64 %e, 1\n  %bp = getelementptr inbounds i8, ptr %body, i64 %e_less\n  %bb = load i8, ptr %bp\n{back}  br i1 %bw, label %back_on, label %back_done\nback_on:\n  br label %back_loop\nback_done:\n  br label %scanned\nscanned:\n  %end = phi i64 [ %n, %ends ], [ %e, %back_done ]\n  %from_start = icmp eq i64 %start, 0\n  %to_end = icmp eq i64 %end, %n\n  %whole = and i1 %from_start, %to_end\n  br i1 %whole, label %share, label %copy\nshare:\n  %count = load i64, ptr %text\n  %more = add i64 %count, 1\n  store i64 %more, ptr %text\n  ret ptr %text\ncopy:\n  %length = sub i64 %end, %start\n  %none_left = icmp eq i64 %length, 0\n  br i1 %none_left, label %nothing, label %some\nnothing:\n  %empty_count = load i64, ptr %empty\n  %empty_more = add i64 %empty_count, 1\n  store i64 %empty_more, ptr %empty\n  ret ptr %empty\nsome:\n  %one_left = icmp eq i64 %length, 1\n  br i1 %one_left, label %one, label %many\none:\n  %only_at = getelementptr inbounds i8, ptr %body, i64 %start\n  %only = load i8, ptr %only_at\n  %only_wide = zext i8 %only to i64\n  %table = load ptr, ptr @fennec_ascii, !invariant.load !1\n  %entry_at = getelementptr inbounds i64, ptr %table, i64 %only_wide\n  %shared = load ptr, ptr %entry_at\n  %shared_count = load i64, ptr %shared\n  %shared_more = add i64 %shared_count, 1\n  store i64 %shared_more, ptr %shared\n  ret ptr %shared\nmany:\n  %made = call ptr @fennec_str_with_room(i64 %length)\n  %to = getelementptr inbounds i8, ptr %made, i64 {TEXT}\n  %from = getelementptr inbounds i8, ptr %body, i64 %start\n  call void @llvm.memcpy.p0.p0.i64(ptr %to, ptr %from, i64 %length, i1 false)\n  %made_bytes = getelementptr inbounds i8, ptr %made, i64 {TEXT_BYTES}\n  store i64 %length, ptr %made_bytes\n  %made_chars = getelementptr inbounds i8, ptr %made, i64 {TEXT_CHARS}\n  store i64 %length, ptr %made_chars\n  ret ptr %made\nslow:\n  %stripped = call ptr @fennec_str_strip(ptr %text, i64 %which)\n  ret ptr %stripped\n}}\n\n"
             ),
         );
+        // Nothing left is the one empty string, and one byte left the runtime's string of it.
+        self.declare("@fennec_ascii = external dso_local global ptr");
+        let empty = self.literal("");
         let stripped = self.temp();
-        self.line(&format!("{stripped} = call ptr @fen_strip(ptr {text}, i64 {which})"));
+        self.line(&format!("{stripped} = call ptr @fen_strip(ptr {text}, i64 {which}, ptr {empty})"));
         stripped
+    }
+
+    /// An f-string's parts, or `str(value)`, put straight on the end of the string pieces are
+    /// joined into, rather than made a string of their own first.
+    pub(crate) fn append_parts(
+        &mut self,
+        joined: LocalId,
+        parts: &[FormatPart],
+        span: Span,
+    ) -> Result<(), String> {
+        let (slot, mut text) = (self.slot(joined), self.temp());
+        self.line(&format!("{text} = load ptr, ptr {slot}"));
+        for part in parts {
+            let (piece, owned) = match part {
+                FormatPart::Text(literal) => (self.literal(literal), false),
+                FormatPart::Value { value, spec } => (self.piece(value, spec.as_deref(), span)?, true),
+            };
+            text = self.append_text(&text, &piece);
+            if owned {
+                self.release(&piece);
+            }
+        }
+        self.line(&format!("store ptr {text}, ptr {slot}"));
+        Ok(())
     }
 
     /// `text += more`, taking over `text`'s owner: in place when nothing else holds it and it
@@ -735,7 +763,12 @@ impl Emit<'_, '_, '_> {
             }
             "str.join" => {
                 let (separator, _) = self.operand(first.ok_or("no argument")?)?;
-                let (list, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                let (list, kind) = self.operand(args.get(1).ok_or("no argument")?)?;
+                // Pieces kept as the string they're joined into are that string.
+                if kind == Kind::Str {
+                    self.retain(&list);
+                    return self.assign(dest.ok_or("no result")?, &list);
+                }
                 self.declare("declare ptr @fennec_str_join(ptr, ptr) nounwind");
                 let temp = self.temp();
                 self.line(&format!("{temp} = call ptr @fennec_str_join(ptr {separator}, ptr {list})"));

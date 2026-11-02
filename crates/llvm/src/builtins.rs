@@ -170,6 +170,10 @@ impl Emit<'_, '_, '_> {
 
     /// `enumerate(list)`.
     fn enumerate(&mut self, dest: LocalId, list: &Operand) -> Result<(), String> {
+        // Only counted, and its pairs only taken apart: it's never made.
+        if self.known.enumerated.contains_key(&dest.0) {
+            return Ok(());
+        }
         let (list, _, held) = self.list_operand(list)?;
         let Kind::List(item) = self.kind_of(dest)?.clone() else {
             return Err("`enumerate`, not as a list".to_owned());

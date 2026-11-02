@@ -1,0 +1,7 @@
+error: `Process` has no method `script`
+ --> examples/errors/process_script_outside_test.fen:4:5
+  |
+4 |     process.script("git", Output())
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: only a test's own body can script or read the fake `Process` it received

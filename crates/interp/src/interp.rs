@@ -300,6 +300,7 @@ impl<'out> Interp<'out> {
                 "Clock" if self.clock => Capability::Clock,
                 "Args" => Capability::Args,
                 "Stdin" => Capability::Stdin,
+                "Process" => Capability::Process,
                 "Clock" => {
                     return Err(Diagnostic::new(
                         "`main` can't receive `Clock` here: there's no clock",
@@ -310,7 +311,7 @@ impl<'out> Interp<'out> {
                 other => {
                     return Err(Diagnostic::new(format!("`main` can't receive a `{other}`"), param.span)
                         .with_help(
-                            "`main` can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `args: Args` and `stdin: Stdin`",
+                            "`main` can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `args: Args`, `stdin: Stdin` and `process: Process`",
                         ));
                 }
             }));

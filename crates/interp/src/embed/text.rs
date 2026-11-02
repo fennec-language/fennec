@@ -220,6 +220,16 @@ mod tests {
         let mut ordered = names.to_vec();
         ordered.sort_unstable();
         assert_eq!(read, Value::list(ordered.iter().map(|name| Value::str(name)).collect()));
+        // Sorted by keys that are strings too, here the list itself backwards.
+        let keys: Vec<Value> = ["c", "b", "a"].iter().map(|key| Value::str(key)).collect();
+        let keys = with(|state| Some(state.push(Value::list(keys)))).unwrap();
+        let keys = lists::from_value(keys, 0, 0, 0);
+        let by_keys = lists::sorted_by(list, keys, lists::SORT_STRINGS);
+        let read =
+            with(|state| Some(heap::read_block(state, u64::try_from(by_keys).unwrap()).unpacked())).unwrap();
+        assert_eq!(read, Value::list(items.iter().rev().cloned().collect()));
+        heap::free(keys);
+        heap::free(by_keys);
         let wanted = with(|state| heap::text_address(state, "a name too long for any header"));
         assert_eq!(lists::contains(list, wanted), 1);
         let copy = lists::from_value(temp, 0, 0, 0);

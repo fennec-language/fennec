@@ -14,10 +14,8 @@ def main(stdout: Stdout):
     stdout.print(squares.capacity())
     squares.truncate(2)
     stdout.print(squares.len(), squares.capacity())
-    mut total = 0
     for square in squares:
-        total += square
-    stdout.print(total)
+        stdout.print(square)
     mut names = Buffer[str]()
     names.push("fox")
     names.push("fennec")

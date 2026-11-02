@@ -45,6 +45,8 @@ pub struct FnDef {
     pub ret: Option<TypeExpr>,
     /// Where `->` is, when the return type is written, so a fix can remove it.
     pub arrow: Option<Span>,
+    /// The error it says it can fail with: `LoadError` in `-> float fails LoadError`.
+    pub fails: Option<TypeExpr>,
     /// Empty only for a `def` written without one, which std's `@intrinsic` functions are.
     pub body: Vec<Stmt>,
     /// What's written above it, like `@intrinsic`.

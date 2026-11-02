@@ -468,12 +468,18 @@ struct Parser:
         if self.eat_punct("->"):
             arrow = self.prev_span()
             ret = self.type_expr()?
+        # `fails` is a word only here, after the parameters and any return type.
+        mut fails = None
+        if self.peek() == Tok.Name("fails"):
+            self.advance()
+            fails = self.type_expr()?
         FnDef(
             name=name,
             generics=generics,
             params=params,
             ret=ret,
             arrow=arrow,
+            fails=fails,
             body=[],
             span=start.to(self.prev_span()),
         )

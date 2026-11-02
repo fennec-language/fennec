@@ -50,6 +50,13 @@ impl Interp<'_> {
             ExprKind::Index { object, index }
                 if matches!(object.kind, ExprKind::Name(_) | ExprKind::Attr { .. }) =>
             {
+                // `src.field[int](0)`: a method with types for its own type parameters, which
+                // matter only to the type checker.
+                if let ExprKind::Attr { object: receiver, name, optional } = &object.kind
+                    && self.module_member(receiver, name, object.span).is_none()
+                {
+                    return self.method_call(receiver, name, *optional, args, span);
+                }
                 let function = self.eval(object)?;
                 match (&function, index.as_type()) {
                     (Value::Builtin(name), Some(ty)) if matches!(*name, "json.loads" | "toml.loads") => {

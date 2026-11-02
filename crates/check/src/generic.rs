@@ -171,7 +171,10 @@ impl FnCx<'_> {
     pub(crate) fn fits_interface(&mut self, ty: &Type, interface: &str) -> Result<(), (String, String)> {
         let methods = self.checker.program.interfaces.get(interface).map(|found| found.methods.clone());
         for wanted in methods.unwrap_or_default() {
-            let expected = self.interface_method(&wanted, ty);
+            // A generic method fits when it does for the same stand-ins in each position.
+            let stand_ins: Vec<Type> =
+                (0..wanted.generics.len()).map(|at| Type::Param(format!("{}'{at}", wanted.name))).collect();
+            let expected = self.interface_method_with(&wanted, ty, &stand_ins, Span::default());
             let wanted_text = signature_text(&wanted);
             let fix = format!("give {} the method `def {wanted_text}`", show(ty));
             let missing = (format!("it has no `{wanted_text}`"), fix.clone());
@@ -179,7 +182,9 @@ impl FnCx<'_> {
                 .method_owner()
                 .and_then(|owner| self.checker.program.method(owner, &wanted.name).map(|(key, _)| key));
             let actual = if let Some(key) = key {
-                let Some(actual) = self.method_signature(ty, &key) else { continue };
+                let Some(actual) = self.method_signature_with(ty, &key, &stand_ins, Span::default()) else {
+                    continue;
+                };
                 actual
             } else if let Some(actual) = crate::builtins::engine_signature(ty, &wanted.name) {
                 actual
@@ -210,9 +215,21 @@ impl FnCx<'_> {
     /// A method's signature for a value of type `receiver`, with its type's parameters
     /// filled in from the value.
     pub(crate) fn method_signature(&mut self, receiver: &Type, key: &str) -> Option<Signature> {
+        self.method_signature_with(receiver, key, &[], Span::default())
+    }
+
+    /// Like `method_signature`, with the types written in brackets for the method's own type
+    /// parameters, as in `src.field[int](0)`.
+    pub(crate) fn method_signature_with(
+        &mut self,
+        receiver: &Type,
+        key: &str,
+        explicit: &[Type],
+        span: Span,
+    ) -> Option<Signature> {
         let signature = self.checker.signature(key)?;
-        let (signature, chosen) = self.instantiate(key, &signature, Some(receiver), &[], Span::default());
-        self.check_bounds(chosen, Span::default());
+        let (signature, chosen) = self.instantiate(key, &signature, Some(receiver), explicit, span);
+        self.check_bounds(chosen, span);
         Some(signature)
     }
 
@@ -228,9 +245,29 @@ impl FnCx<'_> {
     /// The signature an interface gives a method, for a value of type `owner`, which is what
     /// `Self` means in it. A method that doesn't write its return type gives back nothing.
     pub(crate) fn interface_method(&mut self, method: &FnDef, owner: &Type) -> Signature {
-        let own = [("Self".to_owned(), owner.clone())];
+        self.interface_method_with(method, owner, &[], Span::default())
+    }
+
+    /// Like `interface_method`, with the method's own type parameters given: by the types
+    /// written in brackets at a call, in order, and otherwise worked out from the arguments.
+    pub(crate) fn interface_method_with(
+        &mut self,
+        method: &FnDef,
+        owner: &Type,
+        explicit: &[Type],
+        span: Span,
+    ) -> Signature {
+        let mut own = vec![("Self".to_owned(), owner.clone())];
+        for (at, generic) in method.generics.iter().enumerate() {
+            let ty = match explicit.get(at) {
+                Some(ty) => ty.clone(),
+                None => self.checker.fresh(span, Hole::TypeParam(generic.name.clone())),
+            };
+            own.push((generic.name.clone(), ty));
+        }
+        let names: Vec<String> = own.iter().map(|(name, _)| name.clone()).collect();
         let resolve = |cx: &mut Self, ty: &TypeExpr| {
-            let written = cx.checker.program.resolve_in(ty, &["Self".to_owned()]);
+            let written = cx.checker.program.resolve_in(ty, &names);
             written.unwrap_or(Type::Unknown).substitute(&own)
         };
         let params = method
@@ -275,7 +312,15 @@ fn signature_text(def: &FnDef) -> String {
         })
         .collect();
     let ret = def.ret.as_ref().map(|ret| format!(" -> {}", crate::program::written(ret))).unwrap_or_default();
-    format!("{}({}){ret}", def.name, params.join(", "))
+    let generics = if def.generics.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "[{}]",
+            def.generics.iter().map(|generic| generic.name.as_str()).collect::<Vec<_>>().join(", ")
+        )
+    };
+    format!("{}{generics}({}){ret}", def.name, params.join(", "))
 }
 
 /// A type for a message: `Rock`, or "an int".

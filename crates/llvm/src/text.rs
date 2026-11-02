@@ -398,6 +398,30 @@ impl Emit<'_, '_, '_> {
         stripped
     }
 
+    /// An f-string's parts, or `str(value)`, put straight on the end of the string pieces are
+    /// joined into, rather than made a string of their own first.
+    pub(crate) fn append_parts(
+        &mut self,
+        joined: LocalId,
+        parts: &[FormatPart],
+        span: Span,
+    ) -> Result<(), String> {
+        let (slot, mut text) = (self.slot(joined), self.temp());
+        self.line(&format!("{text} = load ptr, ptr {slot}"));
+        for part in parts {
+            let (piece, owned) = match part {
+                FormatPart::Text(literal) => (self.literal(literal), false),
+                FormatPart::Value { value, spec } => (self.piece(value, spec.as_deref(), span)?, true),
+            };
+            text = self.append_text(&text, &piece);
+            if owned {
+                self.release(&piece);
+            }
+        }
+        self.line(&format!("store ptr {text}, ptr {slot}"));
+        Ok(())
+    }
+
     /// `text += more`, taking over `text`'s owner: in place when nothing else holds it and it
     /// has room, which needs no call, or by the runtime, which may make a bigger block.
     pub(crate) fn append_text(&mut self, text: &str, more: &str) -> String {
@@ -735,7 +759,12 @@ impl Emit<'_, '_, '_> {
             }
             "str.join" => {
                 let (separator, _) = self.operand(first.ok_or("no argument")?)?;
-                let (list, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                let (list, kind) = self.operand(args.get(1).ok_or("no argument")?)?;
+                // Pieces kept as the string they're joined into are that string.
+                if kind == Kind::Str {
+                    self.retain(&list);
+                    return self.assign(dest.ok_or("no result")?, &list);
+                }
                 self.declare("declare ptr @fennec_str_join(ptr, ptr) nounwind");
                 let temp = self.temp();
                 self.line(&format!("{temp} = call ptr @fennec_str_join(ptr {separator}, ptr {list})"));

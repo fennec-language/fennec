@@ -615,6 +615,49 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Pieces only ever added to a `list[str]` and joined with `""` are kept as that string, f-strings
+/// and `str` going straight on its end: added to in a function given it, joined before more is
+/// added, and alongside lists looked at some other way, or joined with something between.
+#[test]
+fn pieces_joined_once_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = r#"def add(n: int, mut out: list[str]):
+    if n > 0:
+        out.append(f"<{n}:")
+        add(n - 1, mut out)
+        out.append(str(n))
+        out.append(">")
+
+def shown(items: list[str]) -> str:
+    "-".join(items)
+
+def main(stdout: Stdout):
+    mut out = ["start "]
+    add(3, mut out)
+    stdout.print("".join(out))
+    mut empty: list[str] = []
+    stdout.print("".join(empty).len())
+    mut looked = ["a", "b"]
+    looked.append("c")
+    stdout.print(looked.len(), looked[2], shown(looked), "".join(looked))
+    mut again = ["x"]
+    first = "".join(again)
+    again.append("y")
+    stdout.print(first, "".join(again))
+    mut words: list[str] = []
+    for i in range(5):
+        words.append(f"w{i}")
+    stdout.print(", ".join(words))
+"#;
+    for (name, how) in [("pieces", &["--llvm"][..]), ("pieces_release", &["--llvm", "--release"][..])] {
+        let (ours, jit) = both_built(name, source, how)?;
+        assert_eq!(ours, jit);
+    }
+    Ok(())
+}
+
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

@@ -88,6 +88,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) settles: Summaries<'p>,
     /// What each function may shorten, or replace, under each parameter.
     pub(crate) lengths: Summaries<'p>,
+    /// For each function, the `list[str]` locals kept as the string they're joined into.
+    pub(crate) builders: HashMap<&'p str, HashSet<usize>>,
     /// The field paths of `mut` parameters each function's callers make alone before calling.
     pub(crate) needs: HashMap<&'p str, Vec<FieldPath>>,
 }
@@ -1050,6 +1052,11 @@ impl Analysis {
         self.last_copies.contains(&(block, index))
     }
 
+    /// Whether a local is written once and read once.
+    pub(crate) fn used_once(&self, local: LocalId) -> bool {
+        self.reads.get(local.0) == Some(&1) && self.writes.get(local.0) == Some(&1)
+    }
+
     /// Whether this function changes a list in a local nothing else here comes to hold, so
     /// it's enough to see that it has one owner when the local gets it.
     pub(crate) fn alone_once_checked(&self, local: LocalId) -> bool {
@@ -1372,5 +1379,6 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
     let settles = summarized(&functions, &analyses, Tracked::Owners);
     let lengths = summarized(&functions, &analyses, Tracked::Lengths);
     let needs = needed(program, &functions, &analyses);
-    Whole { functions, analyses, can_fail, generators, settles, lengths, needs }
+    let builders = crate::builders::builders(program, &functions);
+    Whole { functions, analyses, can_fail, generators, settles, lengths, builders, needs }
 }

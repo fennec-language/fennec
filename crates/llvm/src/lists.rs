@@ -866,12 +866,8 @@ impl Emit<'_, '_, '_> {
         }
         if let Kind::Dict(key, value_word) = kind {
             let place = self.place_of(object, path)?;
-            if let Operand::Local(sliced) = index
-                && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
-            {
-                return self.slice_set(&place, value_word, &slice, value);
-            }
-            // A lookup on this dict, or on a local read from this field holding it.
+            // A lookup on this dict, or on a local read from this field holding it: where it
+            // found the key, or for a slice where it found the value.
             let same_dict = |dict: LocalId| match path {
                 [] => dict == object,
                 [field] => {
@@ -885,6 +881,11 @@ impl Emit<'_, '_, '_> {
                 .rev()
                 .find(|(dict, looked_up, _)| same_dict(*dict) && looked_up == index)
                 .map(|(_, _, entry)| entry.clone());
+            if let Operand::Local(sliced) = index
+                && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
+            {
+                return self.slice_set(&place, value_word, (&slice, found), value);
+            }
             return self.dict_store_at(&place, (key, value_word), index, Some(value), found);
         }
         let item = list_item(&kind)?;

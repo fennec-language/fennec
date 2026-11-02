@@ -695,6 +695,77 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// `json.dumps` of plain structs, lists, strings and ints, and `json.loads` reading a struct, a
+/// list of plain structs, and failing on bad text, as the interpreter does.
+#[test]
+fn json_matches_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let source = r#"from std import json
+
+struct Item:
+    name: str
+    heals: int
+
+struct Point:
+    x: int
+    y: int
+
+struct Bag:
+    items: list[Item]
+    at: Point
+    count = 0
+
+def load(text: str) -> Bag:
+    json.loads[Bag](text)?
+
+def main(stdout: Stdout):
+    b = Bag(items=[Item(name="a", heals=1)], at=Point(x=1, y=2))
+    text = json.dumps(b)
+    stdout.print(text, json.dumps(b.at), json.dumps([1, 2]), json.dumps("q"), json.dumps(3))
+    back = load(text) else Bag(items=[], at=Point(x=0, y=0))
+    stdout.print(back.items[0].name, back.at.y, back.count)
+    points = json.loads[list[Point]]("[{\"x\": 3, \"y\": 4}]") else []
+    stdout.print(points.len(), points[0].x)
+    failed = load("{") else Bag(items=[], at=Point(x=9, y=9))
+    stdout.print(failed.at.x)
+"#;
+    for (name, how) in [("json", &["--llvm"][..]), ("json_release", &["--llvm", "--release"][..])] {
+        let (ours, jit) = both_built(name, source, how)?;
+        assert_eq!(ours, jit);
+    }
+    Ok(())
+}
+
+/// Skirmish built with LLVM prints its `.out` file, as `cli.rs` checks the interpreter and the
+/// JIT do: a whole kit, saved to JSON and loaded back, cached and as a release.
+#[test]
+fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    let proof = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/proof");
+    let expected = std::fs::read_to_string(proof.join("skirmish.out"))?;
+    let dir = folder("skirmish")?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"]] {
+        let executable = dir.join("skirmish");
+        let output = executable.to_string_lossy().into_owned();
+        let args: Vec<&str> =
+            ["build"].into_iter().chain(how.iter().copied()).chain(["-o", &output]).collect();
+        let built = Command::new(env!("CARGO_BIN_EXE_fennec"))
+            .args(&args)
+            .env("FENNEC_HOME", &dir)
+            .current_dir(&proof)
+            .output()?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output()?;
+        assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), expected, "built with {how:?}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

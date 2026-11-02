@@ -1,0 +1,3 @@
+def main(stdout: Stdout):
+    b = 255
+    stdout.print(f"{b:02x}")

@@ -120,3 +120,43 @@ pub(crate) fn describe(ty: &Type) -> String {
         other => article(&other.kind()),
     }
 }
+
+/// An f-string format spec the interpreter would refuse while running, or `None` when it fits.
+/// A spec is an optional `,` for thousands separators, an optional `.N` for decimal places,
+/// and an optional `f` or `d`; only an int or a float takes one.
+pub(crate) fn bad_spec(spec: &str, ty: &Type, span: Span) -> Option<Diagnostic> {
+    const FORMS: &str = "a format is an optional `,` for thousands separators, then `.N` for N decimal places, then `f` or `d`: like `{x:,}`, `{x:.2f}` or `{n:,d}`";
+    let rest = spec.strip_prefix(',').unwrap_or(spec);
+    let (places, kind) = match rest.strip_prefix('.') {
+        Some(rest) => {
+            let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+            let (number, kind) = rest.split_at(digits);
+            if number.parse::<usize>().is_err() {
+                return Some(
+                    Diagnostic::new(format!("`{spec}` needs a number after `.`"), span).with_help(FORMS),
+                );
+            }
+            (true, kind)
+        }
+        None => (false, rest),
+    };
+    if !matches!(kind, "" | "d" | "f") {
+        return Some(Diagnostic::new(format!("Fennec has no format `{spec}`"), span).with_help(FORMS));
+    }
+    let help = match (ty, kind, places) {
+        (Type::Unknown, _, _)
+        | (Type::Int, "" | "d", false)
+        | (Type::Float, "" | "f", false)
+        | (Type::Int | Type::Float, "" | "f", true) => return None,
+        (_, _, _) if spec.is_empty() => return None,
+        (Type::Int, "f", false) => "say how many decimal places, like `.2f`",
+        (Type::Int, "d", true) => {
+            "`d` shows a whole number: drop the `.N`, or write `.Nf` for decimal places"
+        }
+        (Type::Float, "d", _) => {
+            "show it with no decimal places with `.0f`, or round it to an int with `round(x)`"
+        }
+        _ => "only an int or a float takes a format: turn it into one first, or drop the format",
+    };
+    Some(Diagnostic::new(format!("the format `{spec}` doesn't apply to {}", a(ty)), span).with_help(help))
+}

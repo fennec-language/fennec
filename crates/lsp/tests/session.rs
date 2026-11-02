@@ -169,6 +169,20 @@ fn diagnostics_cover_every_file_and_clear_when_fixed() {
 }
 
 #[test]
+fn a_format_that_doesnt_fit_is_found_before_running() {
+    let mut editor = Editor::new("format_spec").unwrap();
+    let published = editor.open("src/main.fen", &MAIN.replace("damage, SIZE", "f\"{damage:02x}\", SIZE"));
+    let in_main = for_file(&published, "main.fen").unwrap();
+    assert_eq!(in_main.len(), 1, "{:?}", messages(in_main));
+    assert!(
+        messages(in_main)[0].starts_with("Fennec has no format `02x`\nhelp: "),
+        "{:?}",
+        messages(in_main)
+    );
+    assert_eq!(line_of(&in_main[0]), 8);
+}
+
+#[test]
 fn a_mistake_in_an_edited_body_is_found_and_cleared() {
     let mut editor = Editor::new("edited_body").unwrap();
     editor.open("src/main.fen", MAIN);

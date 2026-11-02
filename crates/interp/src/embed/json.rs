@@ -87,7 +87,11 @@ mod tests {
     #[test]
     fn json_is_written_and_read_as_the_interpreter_does() {
         let module = fennec_syntax::parse("struct Point:\n    x: int\n    y: int\n").unwrap();
-        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        let fields = [("message", Element::Str), ("line", Element::Int), ("column", Element::Int)];
+        let fields = fields.into_iter().map(|(name, element)| (Rc::from(name), element)).collect();
+        let error = Element::Struct { name: Rc::from("ParseError"), fields };
+        let tables =
+            Tables { shapes: vec![Rc::new(error), Rc::new(Element::Str)], str_shape: 1, ..Tables::default() };
         start(&module, tables, crate::Inputs::default()).unwrap();
         let string = |text: &str| with(|state| heap::text_address(state, text));
         let numbers = with(|state| state.push(Value::list(vec![Value::Int(1), Value::Int(2)])));
@@ -100,6 +104,18 @@ mod tests {
         assert_eq!(temp(read), Value::Ok(Rc::new(Value::list(vec![Value::Int(5), Value::Int(6)]))));
         let untyped = super::loads(string("[true]"), 0, 0, 0);
         assert!(matches!(temp(untyped), Value::Ok(_)));
+        let failed = super::loads(string("[1, 2"), string("list[int]"), 0, 0);
+        assert!(matches!(temp(failed), Value::Err(_)));
+        let error = super::super::temps::error_of(failed);
+        let Value::Instance(instance) = temp(error) else { panic!("an error") };
+        assert!(instance.is_error);
+        // Native code holds the error as a block of its layout, and gives it back as an error.
+        let shape = with(|state| heap::shape_named(state, "ParseError")).unwrap();
+        let block = heap::from_value(error, i64::try_from(shape).unwrap(), 0, 0);
+        assert_ne!(block, 0);
+        let Value::Instance(back) = temp(heap::to_value(block)) else { panic!("an error") };
+        assert!(back.is_error);
+        assert_eq!(back.field("line"), Some(&Value::Int(1)));
         finish();
     }
 

@@ -74,6 +74,16 @@ These hold on both sides, the kernel and its twin:
 - **Results are printed and checked.** Every result depends on all of the work, and its hash is in the target file.
 - **Realistic work.** No kernel does something an optimizer can delete. A twin whose count looks too low for its work gets looked at, and noted here.
 
+## LLVM against Rust
+
+`fennec-bench llvm-suite` builds every kernel with `fennec build --llvm --release` and runs it
+beside its overflow-checked twin, counting instructions where it can and timing both, taking
+turns. Each number is the twin's count or median time over LLVM's, so 100 matches Rust. A
+kernel whose times spread more than 10% is marked noisy. The Suite report workflow runs it on
+x86 Linux, where Valgrind counts, and on Arm macOS, after every push to `main` and on demand.
+It puts one table on the run's summary page and adds each push's numbers to `history.jsonl`
+on the `bench-history` branch. Being slow never fails it.
+
 ## Pinning targets
 
 The twins beside the kernels are idiomatic code for the same work, in Rust, fully optimized: `opt-level=3`, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. The CPU level is fixed, so a target doesn't depend on which machine pinned it, and matches what the JIT uses: `x86-64-v3` on x86-64 and the baseline on 64-bit Arm. Each targets file says which compiler pinned it. `regex`'s twin runs on `crates/re`, the engine behind `std.re`. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.

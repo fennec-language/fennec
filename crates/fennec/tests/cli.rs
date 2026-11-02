@@ -40,6 +40,29 @@ fn run_prints_the_programs_output() {
     assert_eq!(text(&output.stdout), "Hello, Fennec\n");
 }
 
+/// Skirmish, the proof program in `examples/proof`, is the biggest Fennec program there is, so
+/// what breaks it has to fail here: it checks, passes its tests, and prints its `.out` file in
+/// both engines.
+#[test]
+fn the_proof_program_checks_passes_its_tests_and_runs() {
+    let proof = repo().join("examples/proof");
+    let expected = std::fs::read_to_string(proof.join("skirmish.out")).unwrap();
+    for command in [&["check"][..], &["test", "--all"]] {
+        let output = fennec_in(&proof, command, "").unwrap();
+        assert!(output.status.success(), "`fennec {}` failed:\n{}", command.join(" "), text(&output.stderr));
+    }
+    for command in [&["run", "--no-test"][..], &["run", "--interp"]] {
+        let output = fennec_in(&proof, command, "").unwrap();
+        assert!(output.status.success(), "`fennec {}` failed:\n{}", command.join(" "), text(&output.stderr));
+        assert_eq!(
+            text(&output.stdout),
+            expected,
+            "`fennec {}` printed something different",
+            command.join(" ")
+        );
+    }
+}
+
 #[test]
 fn run_hands_main_its_arguments_and_input() {
     let program = "examples/args_and_stdin.fen";
@@ -1328,5 +1351,19 @@ fn a_copy_each_time_round_a_loop_has_to_be_written() {
     std::fs::write(&program, source.replace("k = h", "k = copy(h)")).unwrap();
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "2 3\n3 4\n4 5\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A `shared` value is a handle: every name for it, and every function it's passed to, changes
+/// one cell. The JIT hands such a program to the interpreter for now, so both print the same.
+#[test]
+fn a_shared_value_is_one_cell_however_its_reached() {
+    let dir = scratch("shared").unwrap();
+    let program = dir.join("account.fen");
+    std::fs::write(&program, "shared Account:\n    total = 0\n\n    def add(mut self, amount: int):\n        self.total += amount\n\n    def balance(self) -> int:\n        self.total\n\ndef pay(account: Account, amount: int):\n    account.add(amount)\n\ndef main(stdout: Stdout):\n    account = Account()\n    same = account\n    pay(account, 5)\n    same.add(10)\n    stdout.print(account.balance(), same.total, account)\n").unwrap();
+    for engine in ["--interp", "--no-test"] {
+        let output = fennec(&["run", engine, program.to_str().unwrap()], "").unwrap();
+        assert_eq!(text(&output.stdout), "15 15 Account(total=15)\n", "{engine}");
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }

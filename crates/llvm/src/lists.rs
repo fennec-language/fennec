@@ -7,13 +7,15 @@ use fennec_syntax::{BinOp, Span};
 
 use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS};
 use crate::kinds::{Kind, element_symbol};
-use crate::uniqueness::{FieldPath, item_step};
+use crate::uniqueness::{FieldPath, item_step, list_place};
 
 /// A case's field: its name, where it goes, and how it's held if this backend takes it.
 type CaseField = (String, u32, Option<Kind>);
 
 /// Where a block's fields start.
 pub(crate) const FIELDS_OFFSET: u32 = FIELDS.unsigned_abs();
+/// The room a string that pieces are added to starts with, in bytes.
+const PIECES_ROOM: u32 = 64;
 
 impl Emit<'_, '_, '_> {
     /// The address `offset` bytes into something.
@@ -548,6 +550,52 @@ impl Emit<'_, '_, '_> {
         at
     }
 
+    /// The list a field path from a local leads to, named as what's known of it is.
+    fn list_key(&self, object: LocalId, path: &[String]) -> Option<FieldPath> {
+        let (root, mut along) = if self.taken_items.contains_key(&object.0) {
+            self.fact_key(object, &[], 8)
+        } else {
+            list_place(self.known, object)?
+        };
+        along.extend(path.iter().cloned());
+        Some((root, along))
+    }
+
+    /// Where an index points in a list, checked once: until something shortens or replaces
+    /// the list, or writes the index, it's read back from where the first check left it.
+    fn position_once(
+        &mut self,
+        place: Option<FieldPath>,
+        (list, index_operand, index): (&str, &Operand, &str),
+        span: Span,
+    ) -> String {
+        let fact = place.zip(item_step(index_operand)).map(|((root, mut path), step)| {
+            path.push(step);
+            (root, path)
+        });
+        if let Some(fact) = &fact
+            && self.inside_items.contains(fact)
+            && let Some(slot) = self.inside_slots.get(fact).cloned()
+        {
+            let position = self.temp();
+            self.line(&format!("{position} = load i64, ptr {slot}"));
+            return position;
+        }
+        let position = self.position(list, index, span);
+        if let Some(fact) = fact {
+            let slot = if let Some(slot) = self.inside_slots.get(&fact) {
+                slot.clone()
+            } else {
+                let slot = self.place_for(&Kind::Int);
+                self.inside_slots.insert(fact.clone(), slot.clone());
+                slot
+            };
+            self.line(&format!("store i64 {position}, ptr {slot}"));
+            self.inside_items.push(fact);
+        }
+        position
+    }
+
     /// Where an index points: from the start, or the end if it's negative, failing outside.
     pub(crate) fn position(&mut self, list: &str, index: &str, span: Span) -> String {
         let length = self.list_length(list);
@@ -575,6 +623,25 @@ impl Emit<'_, '_, '_> {
         index: &Operand,
         span: Span,
     ) -> Result<(), String> {
+        // A pair from an `enumerate` never made isn't made either: where it points in the list
+        // is checked, and kept for its parts.
+        if let Some((list, _)) = self.known.pairs.get(&dest.0).cloned() {
+            let (list, _) = self.operand(&Operand::Local(list))?;
+            let (index, _) = self.operand(index)?;
+            let position = self.position(&list, &index, span);
+            let slot = self.place_for(&Kind::Int);
+            self.line(&format!("store i64 {position}, ptr {slot}"));
+            self.pair_slots.insert(dest.0, slot);
+            // Holding nothing, letting go of it lets go of nothing.
+            let kind = self.kind_of(dest)?.clone();
+            let (held, text) = (self.slot(dest), self.text_of(&kind));
+            if kind.in_memory() {
+                self.line(&format!("store {text} zeroinitializer, ptr {held}"));
+            } else if kind.counted() {
+                self.line(&format!("store ptr null, ptr {held}"));
+            }
+            return Ok(());
+        }
         let inside = matches!(object, Operand::Local(local) if self.known.inside(*local, index));
         if let Operand::Local(local) = object
             && self.is_id_map(&self.kind_of(*local)?.clone())
@@ -602,7 +669,15 @@ impl Emit<'_, '_, '_> {
         };
         let index_operand = index;
         let (index, _) = self.operand(index)?;
-        let position = if inside { index } else { self.position(&list, &index, span) };
+        let position = if inside {
+            index
+        } else {
+            let place = match object {
+                Operand::Local(local) => self.list_key(*local, &[]),
+                _ => None,
+            };
+            self.position_once(place, (&list, index_operand, &index), span)
+        };
         let memory = held.memory(self.module.layouts);
         let at = self.item_address(&list, &memory, &position);
         if let Some((home, path)) =
@@ -827,6 +902,7 @@ impl Emit<'_, '_, '_> {
             }
             _ => None,
         };
+        let index_operand = index;
         let (index, _) = self.operand(index)?;
         let (value, fresh) = self.value_for(value, &held)?;
         let memory = held.memory(self.module.layouts);
@@ -834,7 +910,12 @@ impl Emit<'_, '_, '_> {
             at
         } else {
             let list = if path.is_empty() { self.unshared(object) } else { self.alone_list(object, path)? };
-            let position = if inside { index } else { self.position(&list, &index, span) };
+            let position = if inside {
+                index
+            } else {
+                let place = self.list_key(object, path);
+                self.position_once(place, (&list, index_operand, &index), span)
+            };
             self.item_address(&list, &memory, &position)
         };
         if put_back && held.counted() {
@@ -889,6 +970,17 @@ impl Emit<'_, '_, '_> {
     }
 
     pub(crate) fn make_list(&mut self, dest: LocalId, items: &[Operand], block: usize) -> Result<(), String> {
+        // Pieces kept as the string they're joined into start as their own text.
+        if *self.kind_of(dest)? == Kind::Str {
+            self.declare("declare ptr @fennec_str_with_room(i64) nounwind");
+            let mut text = self.temp();
+            self.line(&format!("{text} = call ptr @fennec_str_with_room(i64 {PIECES_ROOM})"));
+            for item in items {
+                let (piece, _) = self.operand(item)?;
+                text = self.append_text(&text, &piece);
+            }
+            return self.assign(dest, &text);
+        }
         // A list a loop right after fills is made once the loop's count is known.
         if self.known.reservations.get(&block).is_some_and(|(list, _)| *list == dest.0) && items.is_empty() {
             return Ok(());
@@ -928,6 +1020,15 @@ impl Emit<'_, '_, '_> {
         let Some(Operand::Local(local)) = args.first() else {
             return Err("it appends to a literal".to_owned());
         };
+        // A piece goes on the end of the string it'll be joined into.
+        if *self.kind_of(*local)? == Kind::Str {
+            let (piece, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+            let (slot, text) = (self.slot(*local), self.temp());
+            self.line(&format!("{text} = load ptr, ptr {slot}"));
+            let joined = self.append_text(&text, &piece);
+            self.line(&format!("store ptr {joined}, ptr {slot}"));
+            return Ok(());
+        }
         // Made whole already, of zeros.
         if self.known.zero_filled.contains(&local.0) {
             return Ok(());

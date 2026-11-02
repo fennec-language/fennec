@@ -30,6 +30,8 @@ pub(crate) enum Value {
     Set(Rc<Vec<Value>>),
     /// A struct, an error, or an enum case.
     Instance(Rc<Instance>),
+    /// A `shared` value: a counted handle to one cell. Copying the handle shares the cell.
+    Shared(Rc<std::cell::RefCell<Value>>),
     Ok(Rc<Value>),
     Err(Rc<Value>),
     IdMap(Rc<IdMap>),
@@ -40,6 +42,8 @@ pub(crate) enum Value {
     Builtin(&'static str),
     Lambda(Rc<Lambda>),
     Capability(Capability),
+    /// A capability narrowed with `only`, which reaches less than the whole capability.
+    Limited(Rc<crate::limits::Limited>),
 }
 
 /// One owner of a block native code holds, let go when the last copy of this is dropped.
@@ -202,6 +206,7 @@ impl Value {
     pub(crate) fn type_name(&self) -> String {
         match self {
             Value::Unit => "nothing".to_owned(),
+            Value::Shared(cell) => cell.borrow().type_name(),
             Value::None => "None".to_owned(),
             Value::Bool(_) => "bool".to_owned(),
             Value::Int(_) => "int".to_owned(),
@@ -226,6 +231,7 @@ impl Value {
             Value::Capability(Capability::Args) => "Args".to_owned(),
             Value::Capability(Capability::Stdin) => "Stdin".to_owned(),
             Value::Capability(Capability::Process) => "Process".to_owned(),
+            Value::Limited(limited) => Value::Capability(limited.capability).type_name(),
         }
     }
 }

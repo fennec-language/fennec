@@ -114,6 +114,12 @@ impl Interp<'_> {
             is_error: shape.is_error,
             cause: None,
         }));
+        // A `shared` value is a handle to one cell.
+        let instance = if self.type_info(shape.type_name).is_some_and(|info| info.def.shared) {
+            Value::Shared(Rc::new(std::cell::RefCell::new(instance)))
+        } else {
+            instance
+        };
         if shape.fields.iter().all(|field| field.rule.is_none()) {
             return Ok(instance);
         }

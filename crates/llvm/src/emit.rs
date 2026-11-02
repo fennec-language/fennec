@@ -5,14 +5,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use fennec_interp::embed::layout::COUNT;
-use fennec_ir::{Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
+use fennec_ir::{FormatPart, Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
 use fennec_layout::Layouts;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
 use crate::Shared;
 use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
-use crate::uniqueness::{FieldPath, coming_in, unsettled, written_order};
+use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
 
 const ATTRIBUTES: &str = "attributes #0 = { nounwind \"frame-pointer\"=\"non-leaf\" }\n\
 attributes #1 = { cold nounwind }\n\
@@ -314,8 +314,14 @@ impl<'p> Module<'_, 'p> {
         };
         let known = self.whole.analyses.get(function.name.as_str()).ok_or("no analysis")?;
         let mut kinds = Vec::with_capacity(function.locals.len());
-        for local in &function.locals {
-            let kind = self.kind(&local.ty)?;
+        let joined = self.whole.builders.get(function.name.as_str());
+        for (at, local) in function.locals.iter().enumerate() {
+            // Pieces only ever joined are the string they're joined into.
+            let kind = if joined.is_some_and(|locals| locals.contains(&at)) {
+                Kind::Str
+            } else {
+                self.kind(&local.ty)?
+            };
             self.define_types(&kind);
             kinds.push(kind);
         }
@@ -342,6 +348,10 @@ impl<'p> Module<'_, 'p> {
             alone_slots: HashSet::new(),
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
+            at: (usize::MAX, usize::MAX),
+            inside_items: Vec::new(),
+            inside_slots: HashMap::new(),
+            pair_slots: HashMap::new(),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -389,6 +399,14 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Items taken out of a list to change: the list's local and field path, and the step to
     /// the item.
     pub(crate) taken_items: HashMap<usize, (LocalId, Vec<String>, String)>,
+    /// The instruction being written: its block, and its place in it.
+    at: (usize, usize),
+    /// Items of lists, by field path and index, known to be inside their lists here.
+    pub(crate) inside_items: Vec<FieldPath>,
+    /// Where the position each was found at is kept, negative indexes counted from the end.
+    pub(crate) inside_slots: HashMap<FieldPath, String>,
+    /// Where each pair from an `enumerate` never made points in its list, kept for its parts.
+    pub(crate) pair_slots: HashMap<usize, String>,
 }
 
 pub(crate) fn float_text(value: f64) -> String {
@@ -557,8 +575,10 @@ impl Emit<'_, '_, '_> {
         }
         let mut left_with: HashMap<usize, Vec<(LocalId, Operand, String)>> = HashMap::new();
         let mut alone_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
+        let mut inside_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
         let on_entry = std::mem::take(&mut self.alone_fields);
-        let settles = &whole.settles;
+        let settles = (&whole.settles, Tracked::Owners);
+        let lengths = (&whole.lengths, Tracked::Lengths);
         // Each block after every one leading to it, but for loops, so what's known carries on.
         let mut done = HashSet::new();
         for at in written_order(function) {
@@ -567,6 +587,8 @@ impl Emit<'_, '_, '_> {
             let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
             self.alone_fields =
                 coming_in(function, self.known, settles, (at, &before, &done), (&on_entry, &alone_left));
+            self.inside_items =
+                coming_in(function, self.known, lengths, (at, &before, &done), (&[], &inside_left));
             self.found_entries = match ways_in.split_first() {
                 Some((first, rest)) if ways_in.iter().all(|from| done.contains(from)) => {
                     let mut kept = left_with.get(first).cloned().unwrap_or_default();
@@ -578,7 +600,9 @@ impl Emit<'_, '_, '_> {
                 }
                 _ => Vec::new(),
             };
-            for inst in &block.insts {
+            let mut appended = false;
+            for (index, inst) in block.insts.iter().enumerate() {
+                self.at = (at, index);
                 self.forget_entries(&inst.kind);
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
                     for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
@@ -587,10 +611,22 @@ impl Emit<'_, '_, '_> {
                         }
                     }
                 }
-                self.inst(&inst.kind, inst.span, at)?;
+                // A string made only to go on the end of joined pieces goes there as it's made.
+                let next = block.insts.get(index + 1).map(|next| &next.kind);
+                if std::mem::take(&mut appended) {
+                } else if let Some((joined, parts)) = self.appended_parts(&inst.kind, next) {
+                    self.append_parts(joined, &parts, inst.span)?;
+                    appended = true;
+                } else {
+                    self.inst(&inst.kind, inst.span, at)?;
+                }
                 if !self.alone_fields.is_empty() {
                     let hit = unsettled(function, self.known, &inst.kind, settles);
                     self.alone_fields.retain(|path| !hit.iter().any(|unsettled| unsettled.hits(path)));
+                }
+                if !self.inside_items.is_empty() {
+                    let hit = unsettled(function, self.known, &inst.kind, lengths);
+                    self.inside_items.retain(|path| !hit.iter().any(|unsettled| unsettled.hits(path)));
                 }
                 // A store may have grown the dict, moving every entry: any dict, through a path.
                 if let InstKind::SetIndex { object, path, .. } = &inst.kind {
@@ -604,8 +640,11 @@ impl Emit<'_, '_, '_> {
             }
             left_with.insert(at, std::mem::take(&mut self.found_entries));
             alone_left.insert(at, std::mem::take(&mut self.alone_fields));
+            inside_left.insert(at, std::mem::take(&mut self.inside_items));
             done.insert(at);
-            if let Some((list, limit)) = self.known.reservations.get(&at).cloned() {
+            if let Some((list, limit)) = self.known.reservations.get(&at).cloned()
+                && matches!(self.kinds.get(list), Some(Kind::List(_)))
+            {
                 self.reserve(LocalId(list), &limit)?;
             }
             self.terminator(&block.end)?;
@@ -918,6 +957,11 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store ptr {joined}, ptr {slot}"));
                 return Ok(());
             }
+            Kind::Str if matches!(op, BinOp::Eq | BinOp::NotEq) => match (lhs, rhs) {
+                (_, Operand::Str(literal)) if literal.len() <= 8 => self.same_as_short(op, &a, literal),
+                (Operand::Str(literal), _) if literal.len() <= 8 => self.same_as_short(op, &b, literal),
+                _ => self.string_binary(op, (&a, &b))?,
+            },
             Kind::Str => self.string_binary(op, (&a, &b))?,
             Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
             Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b)),
@@ -1208,7 +1252,14 @@ impl Emit<'_, '_, '_> {
         match name {
             "Stdout.print" => self.print(args.get(1..).unwrap_or_default()),
             "list.len" => {
-                let (list, _) = self.operand(first.ok_or("no argument")?)?;
+                // An `enumerate` never made is as long as its list.
+                let counted = match first {
+                    Some(Operand::Local(local)) => {
+                        self.known.enumerated.get(&local.0).map(|list| Operand::Local(*list))
+                    }
+                    _ => None,
+                };
+                let (list, _) = self.operand(counted.as_ref().or(first).ok_or("no argument")?)?;
                 let length = self.list_length(&list);
                 self.assign(dest.ok_or("no result")?, &length)
             }
@@ -1283,8 +1334,8 @@ impl Emit<'_, '_, '_> {
 
     /// `dest = value`: a block gets another owner, unless nothing else ever reads `value`.
     pub(crate) fn copy(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
-        // The local is the list, so there's nothing to copy.
-        if self.known.alias(dest).is_some() {
+        // The local is the list, so there's nothing to copy, or it's an `enumerate` never made.
+        if self.known.alias(dest).is_some() || self.known.enumerated.contains_key(&dest.0) {
             return Ok(());
         }
         if *value == Operand::None {
@@ -1319,7 +1370,10 @@ impl Emit<'_, '_, '_> {
         }
         if kind.counted() {
             match value {
-                Operand::Local(from) if self.owns(*from) && self.known.moves(*from) => {
+                Operand::Local(from)
+                    if self.owns(*from)
+                        && (self.known.moves(*from) || self.known.is_last_copy(self.at.0, self.at.1)) =>
+                {
                     let slot = self.slot(*from);
                     self.line(&format!("store ptr null, ptr {slot}"));
                 }
@@ -1398,6 +1452,26 @@ impl Emit<'_, '_, '_> {
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make(*dest, items),
+            // A pair never made: its count is the index, and its item is the list's there.
+            InstKind::GetTupleItem { dest, value: Operand::Local(pair), at }
+                if self.known.pairs.contains_key(&pair.0) =>
+            {
+                let (list, _) = self.known.pairs.get(&pair.0).cloned().ok_or("no pair")?;
+                let slot = self.pair_slots.get(&pair.0).cloned().ok_or("a pair read before it's made")?;
+                let position = self.temp();
+                self.line(&format!("{position} = load i64, ptr {slot}"));
+                if *at == 0 {
+                    return self.assign(*dest, &position);
+                }
+                let (list, kind) = self.operand(&Operand::Local(list))?;
+                let Kind::List(item) = kind else {
+                    return Err("an `enumerate` of something else".to_owned());
+                };
+                let held = self.item_kind(item)?;
+                let memory = held.memory(self.module.layouts);
+                let place = self.item_address(&list, &memory, &position);
+                self.read_into(*dest, &held, &place, ITEM_ACCESS)
+            }
             InstKind::GetTupleItem { dest, value, at } => self.get_field(*dest, value, &format!("_{at}")),
             InstKind::MakeList { dest, items } => self.make_list(*dest, items, block),
             InstKind::GetIndex { dest, object, index } => self.get_index(*dest, object, index, span),
@@ -1418,6 +1492,26 @@ impl Emit<'_, '_, '_> {
             }
             other => Err(format!("it uses `{other}`, which this backend doesn't take yet")),
         }
+    }
+
+    /// An f-string, or `str(value)`, whose one use is the append right after it onto pieces kept
+    /// as the string they're joined into: those pieces, and the parts to put on.
+    fn appended_parts(&self, inst: &InstKind, next: Option<&InstKind>) -> Option<(LocalId, Vec<FormatPart>)> {
+        let (made, parts) = match inst {
+            InstKind::Format { dest, parts } => (*dest, parts.clone()),
+            InstKind::Builtin { dest: Some(dest), name, args, .. } if name == "str" => {
+                let [value] = args.as_slice() else { return None };
+                (*dest, vec![FormatPart::Value { value: value.clone(), spec: None }])
+            }
+            _ => return None,
+        };
+        let Some(InstKind::Builtin { name, args, .. }) = next else { return None };
+        let [Operand::Local(joined), Operand::Local(piece)] = args.as_slice() else { return None };
+        (name == "list.append"
+            && *piece == made
+            && self.known.used_once(made)
+            && self.kinds.get(joined.0) == Some(&Kind::Str))
+        .then_some((*joined, parts))
     }
 
     /// Lookups only stay good across instructions that leave dicts alone and don't change the
@@ -1453,6 +1547,12 @@ impl Emit<'_, '_, '_> {
         // A slice never made leaves what it's of to the lookups that read it in its place.
         if let InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. } = inst
             && self.known.unmade.contains(&dest.0)
+        {
+            return;
+        }
+        // Nor does an `enumerate` never made, whose list its pairs read in its place.
+        if let InstKind::Builtin { dest: Some(dest), .. } | InstKind::Copy { dest, .. } = inst
+            && self.known.enumerated.contains_key(&dest.0)
         {
             return;
         }

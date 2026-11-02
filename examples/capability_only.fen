@@ -1,0 +1,74 @@
+# `only` narrows a capability: a `Process` that can run only one program, or an `Fs` that
+# reaches only what's in one folder. `main` hands each part of a program just what it needs,
+# and narrowing again only takes more away.
+from std.process import Output, ProcessError
+
+## Reads what the version-control tool says, and nothing else.
+def last_commit(git: Process) -> str:
+    found = git.run("git", ["log", "-1", "--format=%s"]) else Output(stdout="")
+    found.stdout.strip()
+
+def failure[T](found: Result[T, ProcessError]) -> str:
+    match found:
+        case Err(error):
+            error.message
+        case _:
+            "ran"
+
+def io_failure[T](found: Result[T, IoError]) -> str:
+    match found:
+        case Err(error):
+            error.reason
+        case _:
+            "done"
+
+test "a narrowed Process runs only what it names"(process: Process):
+    process.script("git", Output(stdout="Add Tree\n"))
+    git = process.only("git")
+    assert last_commit(git) == "Add Tree"
+    assert (
+        failure(git.run("rm", ["-rf", "/"]))
+        == "this Process can run only `git`, so it can't run `rm`"
+    )
+    assert process.ran() == [["git", "log", "-1", "--format=%s"]]
+
+test "narrowing again only takes more away"(process: Process):
+    nothing = process.only("git").only("ls")
+    assert (
+        failure(nothing.run("ls", [])) == "this Process can run only nothing, so it can't run `ls`"
+    )
+    assert (
+        failure(nothing.run("git", []))
+        == "this Process can run only nothing, so it can't run `git`"
+    )
+
+test "a narrowed Fs reaches only what's in its folder"(fs: Fs):
+    fs.make_dir("saves/slot1")?
+    fs.write_text("secret.txt", "hunter2")?
+    saves = fs.only("saves")
+    saves.write_text("saves/slot1/game.json", "{}")?
+    assert saves.read_text("saves/slot1/game.json")? == "{}"
+    assert saves.exists("saves/slot1") and not saves.exists("secret.txt")
+    assert io_failure(saves.read_text("secret.txt")).startswith(
+        "`secret.txt` is outside what this Fs can reach",
+    )
+    # A path can't climb out by naming the folder's parent.
+    assert io_failure(saves.read_text("saves/../secret.txt")).startswith(
+        "`saves/../secret.txt` is outside",
+    )
+    # A folder whose name only starts the same way isn't inside it.
+    assert io_failure(saves.write_text("saves2.txt", "x")).startswith("`saves2.txt` is outside")
+
+test "narrowing an Fs again stays inside the first folder"(fs: Fs):
+    fs.make_dir("saves/slot1")?
+    slot = fs.only("saves").only("saves/slot1")
+    slot.write_text("saves/slot1/a.txt", "a")?
+    assert io_failure(slot.write_text("saves/b.txt", "b")).startswith("`saves/b.txt` is outside")
+    escaped = fs.only("saves").only("other")
+    assert io_failure(escaped.write_text("other/c.txt", "c")).endswith("reach: nothing")
+
+def main(stdout: Stdout, process: Process):
+    echo = process.only("echo")
+    found = echo.run("echo", ["only echo runs"]) else Output()
+    stdout.print(found.stdout.strip())
+    stdout.print(failure(echo.run("ls", [])))

@@ -217,6 +217,16 @@ fn every_example_can_be_reported_on() {
 }
 
 #[test]
+fn a_shared_handle_is_never_copied_and_making_one_allocates() {
+    let source = "shared Account:\n    log = list[int]()\n\n    def add(mut self, amount: int):\n        \
+                  self.log.append(amount)\n\ndef main(stdout: Stdout):\n    account = Account()\n    \
+                  same = account\n    same.add(1)\n    stdout.print(account)\n";
+    assert_eq!(copies(source).unwrap(), Vec::<String>::new());
+    let made = allocations(source).unwrap();
+    assert!(made.contains(&("this `shared` Account may allocate".to_owned(), 0)), "{made:?}");
+}
+
+#[test]
 fn a_name_for_one_field_holds_only_that_field() {
     let source = "struct Unit:\n    team: str\n    items: list[int]\n\nstruct World:\n    units: list[Unit]\n\n\
                   def f(mut world: World) -> int:\n    unit = world.units[0]\n    team = unit.team\n    \

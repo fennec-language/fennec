@@ -112,6 +112,25 @@ pub fn add_defaults(call: &mut Expr, defaults: &[(String, Expr)]) {
     }
 }
 
+/// Where a program first narrows a capability with `only`, if it does. Native code carries a
+/// capability as its kind alone, so a narrowed one would quietly become the whole capability
+/// again: until a capability carries what it allows natively, both backends refuse such a
+/// program and it runs in the interpreter. A method of the program's own called `only` counts
+/// too, which only costs speed.
+pub fn calls_only(module: &Module) -> Option<crate::Span> {
+    let mut found = None;
+    let mut copy = module.clone();
+    exprs_mut(&mut copy, &mut |expr| {
+        if let ExprKind::Call { callee, .. } = &expr.kind
+            && let ExprKind::Attr { name, .. } = &callee.kind
+            && name == "only"
+        {
+            found = found.or(Some(expr.span));
+        }
+    });
+    found
+}
+
 /// Gives a call to `sum` of floats its start: `sum(xs)` becomes `sum(xs, start=0.0)`.
 pub fn add_float_start(call: &mut Expr) {
     let at = crate::Span { start: call.span.end, end: call.span.end };

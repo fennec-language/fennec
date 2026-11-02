@@ -80,8 +80,8 @@ These hold on both sides, the kernel and its twin:
 beside its overflow-checked twin, counting instructions where it can and timing both: ten runs
 each, taking turns and swapping which goes first. Each number is the twin's count or time over
 LLVM's, so 100 matches Rust. Times are each side's best run, which filters out other work on a
-shared machine, with the median beside it. A kernel whose times spread more than 10% is marked
-noisy. The Suite report workflow runs it on
+shared machine, with the median beside it. A kernel is marked noisy when a median run is more
+than 5% slower than the best, on either side. The Suite report workflow runs it on
 x86 Linux, where Valgrind counts, and on Arm macOS, after every push to `main` and on demand.
 It puts one table on the run's summary page and adds each push's numbers to `history.jsonl`
 on the `bench-history` branch. Being slow never fails it.

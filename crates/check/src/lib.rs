@@ -35,6 +35,7 @@ mod pattern;
 mod place;
 mod program;
 mod rules;
+mod shared;
 mod stdlib;
 mod stmt;
 mod sum;

@@ -164,7 +164,7 @@ struct Parser:
         constant(stmt)?
 
     def is_declaration(self, word: str) -> bool:
-        if word in ["struct", "enum", "error", "interface", "extend"]:
+        if word in ["struct", "shared", "enum", "error", "interface", "extend"]:
             return is_name(self.peek_at(1))
         if word == "type":
             return is_name(self.peek_at(1)) and self.peek_at(2) == .Punct("=")
@@ -176,6 +176,7 @@ struct Parser:
         start = self.advance().span
         match word:
             case "struct": .Struct(self.type_def(start, False)?)
+            case "shared": .Struct(replace(self.type_def(start, False)?, shared=True))
             case "error": .Error(self.type_def(start, False)?)
             case "enum": .Enum(self.type_def(start, True)?)
             case "interface": self.interface(start)?

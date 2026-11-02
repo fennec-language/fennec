@@ -87,6 +87,8 @@ struct TypeDef:
     fields = list[Field]()
     cases = list[Case]()
     methods = list[FnDef]()
+    ## Whether it's a `shared` type: a counted handle to one cell, whose methods lock it.
+    shared = False
     span: Span
 
 struct Field:

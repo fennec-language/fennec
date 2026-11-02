@@ -20,6 +20,15 @@ impl FnCx<'_> {
     /// Checks an expression names a place that can change. `what` explains what's wrong
     /// when it isn't a place at all.
     pub(crate) fn mut_place(&mut self, expr: &Expr, what: &str) {
+        if !matches!(expr.kind, ExprKind::Name(_))
+            && let Some(handle) = self.through_shared(expr)
+        {
+            let message = format!("`{handle}` is `shared`, so change it in one of its methods");
+            self.error(Diagnostic::new(message, expr.span).with_help(
+                "a `shared` value's methods take its lock: add a `mut self` method that makes the change",
+            ));
+            return;
+        }
         match root(expr) {
             None => self.error(Diagnostic::new(what, expr.span)),
             Some(name) => {

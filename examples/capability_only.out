@@ -1,0 +1,2 @@
+only echo runs
+this Process can run only `echo`, so it can't run `ls`

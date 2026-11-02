@@ -78,10 +78,14 @@ jobs:
               print("## Suite report\n\nNo machine finished measuring.")
               sys.exit()
           shown = lambda value: "-" if value is None else f"{value:.0f}"
+          # A machine that can't count instructions, like a hosted Mac, gets no column for them.
+          keys = {run["platform"]: [key for key in ("instructions", "time", "median")
+                                    if key != "instructions" or any(k.get(key) is not None for k in run["kernels"])]
+                  for run in runs}
+          label = {"instructions": "instructions %", "time": "best time %", "median": "median %"}
           header = ["kernel"]
           for run in runs:
-              platform = run["platform"]
-              header += [f"instructions % ({platform})", f"best time % ({platform})", f"median % ({platform})"]
+              header += [f"{label[key]} ({run['platform']})" for key in keys[run["platform"]]]
           print("## Suite report: LLVM against Rust\n")
           print("| " + " | ".join(header + ["notes"]) + " |")
           print("|---" + "|---:" * (len(header) - 1) + "|---|")
@@ -90,7 +94,7 @@ jobs:
               cells, notes = [name], []
               for run in runs:
                   kernel = next((k for k in run["kernels"] if k["name"] == name), {})
-                  cells += [shown(kernel.get(key)) for key in ("instructions", "time", "median")]
+                  cells += [shown(kernel.get(key)) for key in keys[run["platform"]]]
                   if kernel.get("problem"):
                       notes.append(f"{run['platform']}: {kernel['problem']}")
                   elif kernel.get("noisy"):
@@ -98,11 +102,12 @@ jobs:
               print("| " + " | ".join(cells + ["; ".join(notes).replace("|", "\\|")]) + " |")
           print()
           for run in runs:
-              print(f"- {run['platform']}: geometric mean {shown(run['instructions'])}% by instructions, "
-                    f"{shown(run['time'])}% by best time, {shown(run.get('median'))}% by median time; "
-                    f"slowest {run['slowest'] or '-'}")
+              counted = f"{shown(run['instructions'])}% by instructions, " if run["instructions"] is not None else ""
+              print(f"- {run['platform']}: geometric mean {counted}{shown(run['time'])}% by best time, "
+                    f"{shown(run.get('median'))}% by median time; slowest {run['slowest'] or '-'}")
           print("\nEach is the overflow-checked Rust twin's count or time over LLVM's: 100 matches Rust, higher is faster. "
-                "Each side runs ten times, taking turns, and its best and median runs are shown.")
+                "Each side runs ten times, taking turns, and its best and median runs are shown. "
+                "Noisy means a median run was more than 5% slower than the best.")
           TABLE
       # Only main's own runs join the history, one line per machine.
       - name: Add the run to the history

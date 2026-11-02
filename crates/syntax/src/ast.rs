@@ -96,6 +96,8 @@ pub struct TypeDef {
     pub fields: Vec<Field>,
     pub cases: Vec<Case>,
     pub methods: Vec<FnDef>,
+    /// Whether it's a `shared` type: a counted handle to one cell, whose methods lock it.
+    pub shared: bool,
     pub span: Span,
 }
 
@@ -329,8 +331,14 @@ impl Expr {
             ExprKind::None => Some(plain("None", Vec::new())),
             ExprKind::Index { object, index } => {
                 let ExprKind::Name(name) = &object.kind else { return None };
+                // `dict[str, int]` has two types; `list[(int, int)]` has one, a tuple, whose
+                // span starts at its `(` rather than at its first item.
                 let args = match &index.kind {
-                    ExprKind::Tuple(items) => items.iter().map(Expr::as_type).collect::<Option<Vec<_>>>()?,
+                    ExprKind::Tuple(items)
+                        if items.first().is_some_and(|first| first.span.start == index.span.start) =>
+                    {
+                        items.iter().map(Expr::as_type).collect::<Option<Vec<_>>>()?
+                    }
                     _ => vec![index.as_type()?],
                 };
                 Some(plain(name, args))

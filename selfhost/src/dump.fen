@@ -110,7 +110,7 @@ struct Tree:
     def write_item(mut self, item: Item):
         match item:
             case .Function(function): self.write_function(function)
-            case .Struct(type_def): self.write_type_def("struct", type_def)
+            case .Struct(type_def): self.write_type_def("shared" if type_def.shared else "struct", type_def)
             case .Enum(type_def): self.write_type_def("enum", type_def)
             case .Error(type_def): self.write_type_def("error", type_def)
             case .Interface(interface):

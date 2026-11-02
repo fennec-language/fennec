@@ -21,10 +21,12 @@ use crate::packed::Element;
 use crate::value::{Instance, Lent, Value};
 
 mod freeing;
+mod named;
 #[cfg(test)]
 pub(super) use freeing::measure_part;
 pub use freeing::{free, free_text, set_abandon};
 pub(super) use freeing::{release, run_abandons};
+pub(super) use named::packable;
 
 /// Words before a block's fields: its owner count and its shape.
 pub const HEADER_WORDS: usize = 2;
@@ -101,6 +103,9 @@ impl Counts {
 
 /// The shape of a cell: a block holding an interpreter value for a boxed value's field.
 const CELL_SHAPE: u64 = u64::MAX - 1;
+
+/// The shape of a capability's block (see `super::capabilities`).
+pub const CAPABILITY_SHAPE: u64 = u64::MAX - 2;
 
 /// Words a cell takes: owner count, shape and the number of its value.
 const CELL_WORDS: usize = 3;
@@ -423,9 +428,30 @@ fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut
     }
 }
 
+/// Whether values of a kind, laid out in place, hold blocks.
+pub(super) fn holds_blocks(element: &Element) -> bool {
+    match element {
+        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => true,
+        Element::Struct { fields, .. } => fields.iter().any(|(_, field)| holds_blocks(field)),
+        Element::Enum { cases, .. } => {
+            cases.iter().any(|(_, fields)| fields.iter().any(|(_, field)| holds_blocks(field)))
+        }
+        Element::Int | Element::Float | Element::Bool => false,
+    }
+}
+
+/// Adds the addresses of the blocks a value of a kind, laid out in place as `words`, holds.
+pub(super) fn held_addresses(element: &Element, words: &[u64], found: &mut Vec<u64>) {
+    boxed_addresses(element, words, &mut 0, found);
+}
+
 /// Adds the addresses of a block's boxed fields to `found`.
 fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
     let Some(shape) = block.get(1).copied() else { return };
+    if shape == CAPABILITY_SHAPE {
+        found.extend(block.get(3).copied().filter(|list| *list != 0));
+        return;
+    }
     if shape >= state.tables.str_shape {
         if is_text(state, block) {
             return;
@@ -434,10 +460,16 @@ fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
             found.extend(super::dicts::children(state, block));
             return;
         }
-        if let Some(element) = super::lists::element_in(state, block)
-            && super::lists::owns_items(element)
-        {
-            found.extend(super::lists::items(block, 1).iter().copied().filter(|address| *address != 0));
+        if let Some(element) = super::lists::element_in(state, block) {
+            if super::lists::owns_items(element) {
+                found.extend(super::lists::items(block, 1).iter().copied().filter(|address| *address != 0));
+            } else if holds_blocks(element) {
+                // Items laid out in place that hold blocks, like structs with a string field.
+                let stride = element.words().max(1);
+                for item in super::lists::items(block, stride).chunks(stride) {
+                    held_addresses(element, item, found);
+                }
+            }
         }
         return;
     }
@@ -585,6 +617,9 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     if let Some(value) = cell_value(state, &block) {
         return state.expanded(value);
     }
+    if block.get(1) == Some(&CAPABILITY_SHAPE) {
+        return super::capabilities::read(state, &block);
+    }
     if is_text(state, &block) {
         let text: Rc<str> = Rc::from(block_text(&block));
         state.heap.texts.borrow_mut().insert(at, Rc::clone(&text));
@@ -599,6 +634,13 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     let Some(shape) = shape_of(state, &block) else { return Value::None };
     let mut words = block.get(HEADER_WORDS..).unwrap_or_default().iter();
     read(state, &shape, &mut words)
+}
+
+/// A list's items, laid out as `words`, as the interpreter holds them, one by one.
+pub(super) fn read_items(state: &State, element: &Element, words: &[u64]) -> Value {
+    let count = words.len() / element.words().max(1);
+    let mut words = words.iter();
+    Value::list((0..count).map(|_| read(state, element, &mut words)).collect())
 }
 
 /// A value of a word, as the interpreter holds it.
@@ -628,8 +670,10 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, words)));
             let value = instance(name, None, fields.collect());
             // An error's block is laid out like a struct's, so its type says which it is.
-            let error =
-                state.interp.type_info(name).is_some_and(|info| info.kind == crate::interp::TypeKind::Error);
+            let error = state
+                .interp
+                .type_info(type_name(name))
+                .is_some_and(|info| info.kind == crate::interp::TypeKind::Error);
             match value {
                 Value::Instance(mut made) if error => {
                     if let Some(made) = Rc::get_mut(&mut made) {
@@ -637,7 +681,7 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
                     }
                     Value::Instance(made)
                 }
-                other => other,
+                other => named::interpreted(name, other),
             }
         }
         Element::Enum { name, cases, words: size } => {
@@ -646,21 +690,22 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             let (case, fields) = cases.get(at).or_else(|| cases.first()).cloned().unwrap_or_default();
             let fields =
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, &mut mine)));
-            let value = instance(name, Some(case), fields.collect());
+            let value = named::interpreted(name, instance(name, Some(case), fields.collect()));
             mine.for_each(drop);
             value
         }
     }
 }
 
+/// The name the interpreter gives instances of a layout: a generic type's layout is named
+/// with its type's arguments, like `Grid[Tile]`, and its instances just `Grid`.
+fn type_name(layout: &str) -> &str {
+    layout.split_once('[').map_or(layout, |(name, _)| name)
+}
+
 fn instance(name: &Rc<str>, case: Option<Rc<str>>, fields: Vec<(Rc<str>, Value)>) -> Value {
-    Value::Instance(Rc::new(Instance {
-        type_name: Rc::clone(name),
-        case,
-        fields,
-        is_error: false,
-        cause: None,
-    }))
+    let type_name = if name.contains('[') { Rc::from(type_name(name)) } else { Rc::clone(name) };
+    Value::Instance(Rc::new(Instance { type_name, case, fields, is_error: false, cause: None }))
 }
 
 /// A new block owned once, with a temporary's value, failing like the interpreter when the
@@ -705,6 +750,11 @@ pub(super) fn write_block(state: &mut State, shape: usize, value: &Value) -> Opt
 }
 
 pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: &mut Vec<u64>) -> Option<()> {
+    match named::write_named(state, element, value, words) {
+        named::Written::Done => return Some(()),
+        named::Written::Failed => return None,
+        named::Written::NotNamed => {}
+    }
     match (element, value) {
         (Element::Int, Value::Int(n)) => words.push(u64::from_ne_bytes(n.to_ne_bytes())),
         (Element::Float, Value::Float(x)) => words.push(x.to_bits()),
@@ -728,7 +778,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             }
         }
         (Element::Struct { name, fields }, Value::Instance(instance))
-            if instance.type_name == *name && instance.case.is_none() =>
+            if *instance.type_name == *type_name(name) && instance.case.is_none() =>
         {
             // An error is written like a struct: native code holds it as a block of its layout.
             for (field, element) in fields {
@@ -736,7 +786,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             }
         }
         (Element::Enum { name, cases, words: size }, Value::Instance(instance))
-            if instance.type_name == *name && !instance.is_error =>
+            if *instance.type_name == *type_name(name) && !instance.is_error =>
         {
             let case = instance.case.as_ref()?;
             let at = cases.iter().position(|(written, _)| written == case)?;
@@ -785,6 +835,14 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
         if super::lists::owns_items(&element) {
             return mine.len() == theirs.len() && mine.iter().zip(theirs).all(|(x, y)| same(state, *x, *y));
         }
+        if holds_blocks(&element) {
+            let stride = stride.max(1);
+            return mine.len() == theirs.len()
+                && mine
+                    .chunks(stride)
+                    .zip(theirs.chunks(stride))
+                    .all(|(x, y)| same_words(state, &element, x, y));
+        }
         return mine == theirs;
     }
     if left.len() != right.len() {
@@ -793,8 +851,14 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
     let Some(shape) = shape_of(state, left) else { return false };
     let (left, right) =
         (left.get(HEADER_WORDS..).unwrap_or_default(), right.get(HEADER_WORDS..).unwrap_or_default());
+    same_words(state, &shape, left, right)
+}
+
+/// Whether two values of a kind, laid out as words, are equal: the same plain words, and
+/// equal blocks where they hold blocks.
+pub(super) fn same_words(state: &State, element: &Element, left: &[u64], right: &[u64]) -> bool {
     let mut boxed = Vec::new();
-    boxed_words(&shape, left, &mut 0, &mut boxed);
+    boxed_words(element, left, &mut 0, &mut boxed);
     // The case decides where the boxed fields are, so compare the plain words first.
     let plain_same = left.iter().zip(right).enumerate().all(|(at, (x, y))| boxed.contains(&at) || x == y);
     plain_same

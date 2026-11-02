@@ -106,6 +106,11 @@ fn llvm_objects(
 ) -> Result<(Vec<Vec<u8>>, usize, usize), String> {
     let mut reached = program.module.clone();
     fennec_build::keep_what_main_reaches(&mut reached);
+    // Native code carries a capability as its kind alone, so a narrowed one would quietly
+    // become the whole capability again.
+    if fennec_syntax::visit::calls_only(&reached).is_some() {
+        return Err("`only` on a capability runs in the interpreter for now, so this program can't be built with LLVM yet".to_owned());
+    }
     let checked =
         fennec_check::check(&reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
     let lowered = fennec_ir::lower(&reached, &checked);

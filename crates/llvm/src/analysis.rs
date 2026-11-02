@@ -638,8 +638,7 @@ fn reads_without_owning(inst: &InstKind, local: LocalId, changes: &dyn Fn(&str) 
     }
     match inst {
         InstKind::Binary { lhs, rhs, .. } => *lhs == held || *rhs == held,
-        InstKind::Unary { value, .. } => *value == held,
-        InstKind::GetTupleItem { value, .. } => *value == held,
+        InstKind::Unary { value, .. } | InstKind::GetTupleItem { value, .. } => *value == held,
         InstKind::Call { function, args, .. } => {
             let changed = changes(function);
             args.iter().enumerate().all(|(at, arg)| *arg != held || !changed.contains(&at))
@@ -648,12 +647,20 @@ fn reads_without_owning(inst: &InstKind, local: LocalId, changes: &dyn Fn(&str) 
     }
 }
 
+/// A read that may borrow: where it's made, what it's read from, and everything that has to
+/// stay as it is while it's live.
+struct Candidate {
+    defined: (usize, usize),
+    source: LocalId,
+    lenders: Vec<LocalId>,
+}
+
 /// Finds more reads of a field or item that need no owner of their own: read any number of
 /// times, in any block, but only looked at, while nothing could change what they came from.
 /// What they came from has to be a parameter, or borrowed from one, so it outlives them.
 fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known: &mut Analysis) {
     let is_param = |local: LocalId| local.0 < function.params;
-    let mut candidates: HashMap<usize, ((usize, usize), LocalId, Vec<LocalId>)> = HashMap::new();
+    let mut candidates: HashMap<usize, Candidate> = HashMap::new();
     let mut copies: HashSet<usize> = HashSet::new();
     for (at, block) in function.blocks.iter().enumerate() {
         for (index, inst) in block.insts.iter().enumerate() {
@@ -661,10 +668,10 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
             if let InstKind::Copy { dest, value: Operand::Local(from) } = &inst.kind
                 && known.writes.get(dest.0) == Some(&1)
                 && dest.0 >= function.params
-                && let Some((_, _, lenders)) = candidates.get(&from.0)
+                && let Some(copied) = candidates.get(&from.0)
             {
-                let lenders = std::iter::once(*from).chain(lenders.iter().copied()).collect();
-                candidates.insert(dest.0, ((at, index), *from, lenders));
+                let lenders = std::iter::once(*from).chain(copied.lenders.iter().copied()).collect();
+                candidates.insert(dest.0, Candidate { defined: (at, index), source: *from, lenders });
                 copies.insert(dest.0);
                 continue;
             }
@@ -705,7 +712,7 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
                 .collect();
             lenders.extend(aliased);
             if lasting {
-                candidates.insert(dest.0, ((at, index), source, lenders));
+                candidates.insert(dest.0, Candidate { defined: (at, index), source, lenders });
             }
         }
     }
@@ -730,7 +737,7 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
         for (index, inst) in block.insts.iter().enumerate().rev() {
             let (mut reads, mut writes) = (Vec::new(), Vec::new());
             visit(&inst.kind, |operand| reads.extend(local_of(operand)), |local| writes.push(local.0));
-            candidates.retain(|dest, (defined, _, lenders)| {
+            candidates.retain(|dest, Candidate { defined, lenders, .. }| {
                 // Copied to a local borrowing it in turn, like the list a loop goes over.
                 let copied = matches!(&inst.kind, InstKind::Copy { dest: to, value: Operand::Local(from) }
                     if from.0 == *dest && copies.contains(&to.0));
@@ -752,13 +759,7 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
     loop {
         let gone: Vec<usize> = candidates
             .iter()
-            .filter(|(_, (_, source, _))| {
-                copies.contains(&source.0)
-                    || candidates.contains_key(&source.0)
-                    || is_param(*source)
-                    || known.borrowed.contains(&source.0)
-            })
-            .filter(|(dest, (_, source, _))| copies.contains(dest) && !candidates.contains_key(&source.0))
+            .filter(|(dest, held)| copies.contains(dest) && !candidates.contains_key(&held.source.0))
             .map(|(dest, _)| *dest)
             .collect();
         if gone.is_empty() {
@@ -768,7 +769,7 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
             candidates.remove(&dest);
         }
     }
-    for (dest, (_, source, _)) in candidates {
+    for (dest, Candidate { source, .. }) in candidates {
         known.borrowed.insert(dest);
         known.borrowed_from.insert(dest, source);
     }

@@ -838,7 +838,7 @@ fn net_reaches_native_code_as_its_own_kind() -> std::io::Result<()> {
 
 /// Reads of a field or item kept without an owner while nothing can change what they came
 /// from: across calls, in loops, through a `match`'s fields. One returned, stored, kept past a
-/// change, or copied out still takes an owner. FENNEC_COUNTS shows no copies.
+/// change, or copied out still takes an owner. `FENNEC_COUNTS` shows no copies.
 #[test]
 fn borrowed_reads_match_the_jit() -> std::io::Result<()> {
     if !has_tools() || !runtime_built() {

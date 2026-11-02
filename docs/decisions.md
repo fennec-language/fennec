@@ -54,6 +54,32 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 **Indexing gives a place, not a copy.** `enemies[i].health -= 1` writes straight into the list. A user-defined `def []` gets a `mut` form that does the same.
 *Why:* Otherwise each change through an index copies the element out and back, or copies the whole list if it's shared.
 
+**`for mut` over a user type writes back through positions.** A type supports it by defining `def len(self) -> int` and the `mut` form of `def []` taking an `int`, which returns the element as a place. A type whose positions can be empty, like a pool with free slots, also defines `def is_live(self, i: int) -> bool`, and empty positions are skipped.
+```fennec
+struct Units:
+    _items = Buffer[Unit]()
+    _live = Buffer[bool]()
+
+    def len(self) -> int:
+        return self._items.len()
+
+    def is_live(self, i: int) -> bool:
+        return self._live[i]
+
+    def [](mut self, i: int) -> Unit:      # the `mut` form: returns a place in `_items`
+        return self._items[i]
+
+def step(mut units: Units, dt: float):
+    for mut unit in units:
+        unit.pos += unit.vel * dt
+```
+- `for mut unit in units:` means `for i in range(units.len()):`, skipping positions that aren't live, with `mut unit = units[i]` inside. So `unit` is a place, by the rule `mut x = place` already has.
+- `units` stays locked for the whole loop, as any path behind a `mut` name is, so the body can't add or remove items or reach other elements. Nothing is copied or counted, and `unit` can't escape.
+- Positions are `int`s. A grid maps an `int` position to its own cell.
+- `IdMap`'s positions are its storage slots, and dead ones are skipped. A plain `for` still reads through `def iter(self)` with `yield`.
+
+*Why:* A get-and-set pair, like Python's `__getitem__` and `__setitem__`, copies each element out and back, and with copy-on-write an element that holds a collection would then copy on every iteration. `yield mut` stays cut: a lent place would have to stay locked across each suspension of a generator, and it can't be split for `parallel`. Positions add no new concept, never copy, and are what `parallel` splits by. Swift's `MutableCollection` works the same way, through an index and a subscript that writes in place.
+
 **A value is moved, not shared, when it isn't used again.** The compiler finds each value's last use and moves it there.
 *Why:* Then nearly every collection has one owner, so copy-on-write's check before each write passes and nothing is copied. The check is a predictable branch the compiler can hoist out of loops, and deletes entirely when ownership proves the value has one owner.
 
@@ -1364,6 +1390,7 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 ## Still open
 
 - How a type marks that its finishing method must be called.
+- The syntax of the `mut` form of `def []`, which returns a place.
 - How replay records the order tasks reach a `shared` value or a channel.
 - How the interpreter runs a `parallel` loop over a server's connections. It runs `parallel` loops in order, which would serve one client at a time. Until it can switch tasks at a blocking call, such a program runs only in the native engines.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.

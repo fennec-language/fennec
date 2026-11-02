@@ -922,3 +922,24 @@ fn an_edit_recompiles_only_the_function_it_touches() -> std::io::Result<()> {
     assert!(build(source("").replace("n * 33", "n * 34"))?.contains("compiled 1 of 3"));
     std::fs::remove_dir_all(&dir)
 }
+
+/// ASCII is stripped here, sharing a string with nothing to take off; other text goes to the
+/// runtime.
+#[test]
+fn strips_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "strips",
+        r#"def main(stdout: Stdout):
+    for s in ["", "   ", "x", " x", "x ", "\t a b \n", "\x0b\x0cq\r", "héllo  ", "  ünï  ", "abc", "  long text with spaces inside   "]:
+        stdout.print(f"[{s.strip()}] [{s.lstrip()}] [{s.rstrip()}] {s.strip().len()}")
+    mut total = 0
+    for i in range(1000):
+        line = f"  {i} " if i % 2 == 0 else f"{i}"
+        total += line.strip().len()
+    stdout.print(total)
+"#,
+    )
+}

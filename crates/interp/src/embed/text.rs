@@ -180,7 +180,7 @@ mod tests {
         begin();
         let before = live();
         let short = header("twenty-three bytes long");
-        assert_eq!(short[2].to_le_bytes()[7], INLINE | 23);
+        assert_eq!(super::tag(&short), INLINE + 23);
         assert_eq!(inline_bytes(&short).as_deref(), Some(&b"twenty-three bytes long"[..]));
         assert_eq!(header(""), super::inline(&[]));
         assert_eq!(live(), before);
@@ -227,11 +227,48 @@ mod tests {
         let spaced = with(|state| heap::text_address(state, "a b"));
         let split = strings::split(spaced, 0, 0, 0);
         let element =
-            with(|state| Some(lists::element_of(state, state.heap.block(split.cast_unsigned())?)?)).unwrap();
+            with(|state| lists::element_of(state, state.heap.block(split.cast_unsigned())?)).unwrap();
         assert_eq!(*element, Element::Text);
         for done in [list, sorted, copy, split, spaced, joined, wanted, comma] {
             heap::free(done);
         }
+        assert_eq!(live(), before);
+        finish();
+    }
+
+    #[test]
+    fn a_dict_of_strings_finds_and_sets_a_key_given_as_its_header_without_making_a_block() {
+        use super::super::dicts;
+        begin();
+        let before = live();
+        let shape = dicts::shape(0, dicts::Word::Str, dicts::Word::Int).unwrap();
+        let mut dict = dicts::new(i64::try_from(shape).unwrap(), 4);
+        let read = |dict: i64, key: [u64; 3]| {
+            let found = dicts::find_header(dict, key[0], key[1], key[2]);
+            (found != 0).then(|| {
+                with(|state| {
+                    let block = state.heap.block(dict.cast_unsigned())?;
+                    let at = (usize::try_from(found).ok()? - block.as_ptr().addr()) / 8;
+                    block.get(at).copied()
+                })
+            })
+        };
+        let short = header("fox");
+        dict = dicts::set_header(dict, short[0], short[1], short[2], 1);
+        let allocations = with(|state| state.heap.counts.allocations);
+        assert_eq!(read(dict, header("fox")), Some(Some(1)));
+        assert_eq!(read(dict, header("cat")), None);
+        assert_eq!(with(|state| state.heap.counts.allocations), allocations);
+        dict = dicts::set_header(dict, short[0], short[1], short[2], 2);
+        assert_eq!(read(dict, short), Some(Some(2)));
+        let long = header("a key much longer than any header");
+        dict = dicts::set_header(dict, long[0], long[1], long[2], 3);
+        // The dict holds the key's block now, so the header still reads it.
+        assert_eq!(read(dict, long), Some(Some(3)));
+        dict = dicts::pop_header(dict, short[0], short[1], short[2], 0, 0);
+        assert_eq!(dicts::popped(), 2);
+        assert_eq!(read(dict, short), None);
+        heap::free(dict);
         assert_eq!(live(), before);
         finish();
     }

@@ -132,12 +132,14 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
             }
             Kind::Struct(id) | Kind::Enum(id) => {
-                if self.holds_blocks(*id)? {
+                if matches!(kind, Kind::Enum(_)) && self.holds_blocks(*id)? {
                     return Err("it writes JSON of a value held in place that holds blocks".to_owned());
                 }
                 let block = self.new_block(*id)?;
                 let fields = self.offset(&block, FIELDS_OFFSET);
                 self.store_field(kind, value, &fields, "");
+                // The block owns what its copy holds, and lets go of it when it goes.
+                self.retain_inline(kind, &fields);
                 self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
                 return Ok((handle, Some(block)));
@@ -218,7 +220,7 @@ impl Emit<'_, '_, '_> {
                 ));
             }
             Kind::Struct(id) | Kind::Enum(id) => {
-                if self.holds_blocks(*id)? {
+                if matches!(kind, Kind::Enum(_)) && self.holds_blocks(*id)? {
                     return Err("it reads JSON into a value held in place that holds blocks".to_owned());
                 }
                 let shape = self.shape_of(*id)?;
@@ -229,6 +231,8 @@ impl Emit<'_, '_, '_> {
                 self.leave_if_failed();
                 let fields = self.offset(&value, FIELDS_OFFSET);
                 self.store_field(kind, &fields, at, "");
+                // What it holds outlives the block it came in.
+                self.retain_inline(kind, at);
                 self.release(&value);
                 return Ok(());
             }

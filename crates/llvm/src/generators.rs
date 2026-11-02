@@ -198,7 +198,7 @@ impl<'p> Emit<'_, '_, 'p> {
         let (number, fields) = self.case_of(&kind, "Err")?;
         let (_, offset, held) = fields.into_iter().find(|(name, ..)| name == "error").ok_or("no error")?;
         let held = held.ok_or("an error this backend doesn't take yet")?;
-        if !matches!(held, Kind::Boxed(_) | Kind::Str | Kind::List(_) | Kind::Dict(..)) {
+        if !matches!(held, Kind::Boxed(_) | Kind::Str | Kind::List(_) | Kind::Dict(..) | Kind::Struct(_)) {
             return Err(format!(
                 "it expects a result whose error is a {held:?}, which this backend doesn't take yet"
             ));
@@ -215,7 +215,16 @@ impl<'p> Emit<'_, '_, 'p> {
         self.declare("declare ptr @fennec_str_concat(ptr, ptr) nounwind");
         let at = self.offset(&fields_at, offset);
         let (error, handle, text, message) = (self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{error} = load ptr, ptr {at}"));
+        // An error in place goes across as a block made of it.
+        if let Kind::Struct(id) = held {
+            let block = self.new_block(id)?;
+            let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+            self.store_field(&held, &at, &fields, "");
+            self.retain_inline(&held, &fields);
+            self.line(&format!("{error} = getelementptr inbounds i8, ptr {block}, i64 0"));
+        } else {
+            self.line(&format!("{error} = load ptr, ptr {at}"));
+        }
         self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {error})"));
         self.line(&format!("{text} = call ptr @fennec_value_text(i64 {handle})"));
         let prefix = self.literal(&format!("this was expected to succeed ({reason}), but it failed: "));

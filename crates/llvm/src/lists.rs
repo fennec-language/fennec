@@ -92,6 +92,16 @@ impl Emit<'_, '_, '_> {
             self.retain_value(&value, kind);
         }
         self.store_field(kind, &value, at, access);
+        // An inline struct in a local read only here moves its blocks over; any other gets
+        // another owner for each.
+        let moved =
+            matches!(operand, Operand::Local(local) if self.owns_inline(*local) && self.known.moves(*local));
+        if moved {
+            let text = self.text_of(kind);
+            self.line(&format!("store {text} zeroinitializer, ptr {value}"));
+        } else if !fresh {
+            self.retain_inline(kind, at);
+        }
         Ok(())
     }
 
@@ -131,6 +141,44 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &value)
     }
 
+    /// Where an inline struct holds blocks, its inner structs' fields too: each word's offset,
+    /// and what it holds. Nothing for anything else.
+    pub(crate) fn inline_blocks(&self, kind: &Kind) -> Vec<(u32, Kind)> {
+        let Kind::Struct(id) = kind else { return Vec::new() };
+        let Some(layout) = self.module.layouts.get(*id) else { return Vec::new() };
+        let mut found = Vec::new();
+        for field in &layout.fields {
+            match Kind::from_ty(self.module.layouts, field.ty) {
+                Some(inner @ Kind::Struct(_)) => {
+                    found.extend(
+                        self.inline_blocks(&inner).into_iter().map(|(at, held)| (at + field.offset, held)),
+                    );
+                }
+                Some(held) if held.counted() => found.push((field.offset, held)),
+                _ => {}
+            }
+        }
+        found
+    }
+
+    /// One more owner for each block an inline struct at `at` holds.
+    pub(crate) fn retain_inline(&mut self, kind: &Kind, at: &str) {
+        for (offset, held) in self.inline_blocks(kind) {
+            let (place, block) = (self.offset(at, offset), self.temp());
+            self.line(&format!("{block} = load ptr, ptr {place}"));
+            self.retain_value(&block, &held);
+        }
+    }
+
+    /// One owner fewer for each block an inline struct at `at` holds.
+    pub(crate) fn release_inline(&mut self, kind: &Kind, at: &str) {
+        for (offset, held) in self.inline_blocks(kind) {
+            let (place, block) = (self.offset(at, offset), self.temp());
+            self.line(&format!("{block} = load ptr, ptr {place}"));
+            self.release_kind(&block, &held);
+        }
+    }
+
     /// Where the fields of what's in `base` start: inline, or in a block.
     pub(crate) fn fields_at(&mut self, base: &str, kind: &Kind) -> String {
         if matches!(kind, Kind::Boxed(_)) { self.offset(base, FIELDS_OFFSET) } else { base.to_owned() }
@@ -148,9 +196,13 @@ impl Emit<'_, '_, '_> {
             .map(|field| (field.offset, Kind::from_ty(self.module.layouts, field.ty)))
             .collect();
         let block = if matches!(kind, Kind::Boxed(_)) { Some(self.new_block(id)?) } else { None };
-        let base = match &block {
-            Some(block) => self.offset(block, FIELDS_OFFSET),
-            None => self.slot(dest),
+        // Holding blocks, it's made beside what the local holds, which may be read for it.
+        let beside =
+            (block.is_none() && !self.inline_blocks(&kind).is_empty()).then(|| self.place_for(&kind));
+        let base = match (&block, &beside) {
+            (Some(block), _) => self.offset(block, FIELDS_OFFSET),
+            (None, Some(place)) => place.clone(),
+            (None, None) => self.slot(dest),
         };
         let access = if block.is_some() { FIELD_ACCESS } else { "" };
         for ((offset, held), value) in written.into_iter().zip(fields) {
@@ -160,6 +212,9 @@ impl Emit<'_, '_, '_> {
         }
         if let Some(block) = block {
             self.assign(dest, &block)?;
+        }
+        if let Some(place) = beside {
+            self.assign_memory_owned(dest, &place)?;
         }
         Ok(())
     }
@@ -196,7 +251,7 @@ impl Emit<'_, '_, '_> {
         let item_kind = self.place_kind(root, &[list_field.to_owned()])?;
         let Kind::List(item) = item_kind else { return Err("an item of something else".to_owned()) };
         let held = self.item_kind(item)?;
-        if !matches!(held, Kind::Boxed(_)) {
+        if !matches!(held, Kind::Boxed(_) | Kind::Struct(_)) {
             return Err(format!("it takes a field of a {held:?} item, which this backend doesn't take yet"));
         }
         // The item was read at this index just before, so it's inside the list, counting from
@@ -208,6 +263,15 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{negative} = icmp slt i64 {index}, 0"));
         self.line(&format!("{from_end} = add i64 {index}, {length}"));
         self.line(&format!("{position} = select i1 {negative}, i64 {from_end}, i64 {index}"));
+        // An item in place: its field is right there in the list, which is alone.
+        if matches!(held, Kind::Struct(_)) {
+            let memory = held.memory(self.module.layouts);
+            let at = self.item_address(&list, &memory, &position);
+            let (offset, inner) = self.field(&held, field)?;
+            let place = self.offset(&at, offset);
+            let value = self.load_field(&inner, &place, ITEM_ACCESS);
+            return self.assign(dest, &value);
+        }
         let at = self.item_address(&list, "ptr", &position);
         let block = match item_step(index_operand) {
             Some(step) => self.alone_along((root, &[list_field.to_owned(), step]), &at, "fennec_unshare"),
@@ -286,7 +350,13 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store ptr {value}, ptr {place}{access}"));
             self.release(&old);
         } else {
+            if !put_back {
+                self.release_inline(&kind, &place);
+            }
             self.store_field(&kind, &value, &place, access);
+            if !put_back {
+                self.retain_inline(&kind, &place);
+            }
         }
         Ok(())
     }
@@ -956,7 +1026,15 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store ptr {value}, ptr {at}{ITEM_ACCESS}"));
             self.release(&old);
         } else {
+            // An inline struct's blocks: the old item's let go of, the new one's owned, unless
+            // it's the item that was taken out coming back.
+            if !put_back {
+                self.release_inline(&held, &at);
+            }
             self.store_field(&held, &value, &at, ITEM_ACCESS);
+            if !put_back {
+                self.retain_inline(&held, &at);
+            }
         }
         Ok(())
     }

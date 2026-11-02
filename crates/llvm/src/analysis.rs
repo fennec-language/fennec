@@ -1218,6 +1218,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "json.dumps"
                     | "json.loads"
                     | "str.code"
+                    | "str.split"
                     | "int.abs"
                     | "sum"
                     | "sum.start"

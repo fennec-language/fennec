@@ -1255,9 +1255,8 @@ impl Emit<'_, '_, '_> {
                 self.regex_builtin(dest, name, args, span)
             }
             "json.dumps" | "json.loads" => self.json_builtin(dest, name, args, span),
-            "str.len" | "str" | "str.code" | "str.join" | "str.contains" => {
-                self.text_builtin(dest, name, args, span)
-            }
+            "str.len" | "str" | "str.code" | "str.join" | "str.contains" | "str.upper" | "str.lower"
+            | "str.replace" | "str.find" | "str.split" => self.text_builtin(dest, name, args, span),
             "float" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
                 let temp = self.temp();

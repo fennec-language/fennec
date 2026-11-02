@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span, TypeExpr};
 
+use super::Names;
 use crate::interp::Interp;
 use crate::value::{Instance, Value};
 
@@ -69,9 +70,9 @@ impl Interp<'_> {
         self.call_with_values(&of, vec![read], span).map_err(|problem| problem.message)
     }
 
-    /// `value` with every standard library collection in it replaced by its natural shape,
-    /// ready to be written.
-    pub(super) fn natural(&mut self, value: &Value, span: Span) -> Result<Value, Diagnostic> {
+    /// `value` with every standard library collection in it replaced by its natural shape, and
+    /// every field named as `names` spells it, ready to be written.
+    pub(super) fn natural(&mut self, value: &Value, names: Names, span: Span) -> Result<Value, Diagnostic> {
         Ok(match value {
             Value::Instance(instance) if self.has_shape(&instance.type_name) => {
                 let name = instance.type_name.to_string();
@@ -82,7 +83,7 @@ impl Interp<'_> {
                     .and_then(|info| info.methods.get(method).cloned())
                     .ok_or_else(|| Diagnostic::new(format!("`{name}` has no `{method}`"), span))?;
                 let items = self.call_with_values(&held, vec![value.clone()], span)?;
-                let items = self.natural(&items, span)?;
+                let items = self.natural(&items, names, span)?;
                 match (name.as_str(), items) {
                     ("SortedMap", Value::List(pairs)) => {
                         let pairs: Vec<(Value, Value)> = pairs
@@ -100,16 +101,16 @@ impl Interp<'_> {
             Value::Instance(instance) => {
                 let mut fields = Vec::new();
                 for (name, held) in &instance.fields {
-                    fields.push((Rc::clone(name), self.natural(held, span)?));
+                    fields.push((Rc::from(names.spell(name)), self.natural(held, names, span)?));
                 }
                 Value::Instance(Rc::new(Instance { fields, ..instance.as_ref().clone() }))
             }
-            Value::List(items) => Value::list(self.all_natural(items, span)?),
-            Value::Tuple(items) => Value::tuple(self.all_natural(items, span)?),
+            Value::List(items) => Value::list(self.all_natural(items, names, span)?),
+            Value::Tuple(items) => Value::tuple(self.all_natural(items, names, span)?),
             Value::Dict(pairs) => {
                 let mut read = Vec::new();
                 for (key, held) in pairs.iter() {
-                    read.push((key.clone(), self.natural(held, span)?));
+                    read.push((key.clone(), self.natural(held, names, span)?));
                 }
                 Value::Dict(Rc::new(read.into()))
             }
@@ -117,7 +118,7 @@ impl Interp<'_> {
                 let mut map = map.as_ref().clone();
                 for slot in &mut map.slots {
                     if let Some(held) = &slot.value {
-                        slot.value = Some(self.natural(held, span)?);
+                        slot.value = Some(self.natural(held, names, span)?);
                     }
                 }
                 Value::IdMap(Rc::new(map))
@@ -126,7 +127,7 @@ impl Interp<'_> {
         })
     }
 
-    fn all_natural(&mut self, items: &[Value], span: Span) -> Result<Vec<Value>, Diagnostic> {
-        items.iter().map(|item| self.natural(item, span)).collect()
+    fn all_natural(&mut self, items: &[Value], names: Names, span: Span) -> Result<Vec<Value>, Diagnostic> {
+        items.iter().map(|item| self.natural(item, names, span)).collect()
     }
 }

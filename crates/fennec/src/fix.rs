@@ -15,7 +15,8 @@ pub(crate) fn fix(path: &str) -> ExitCode {
         // What's left once the program checks is the linter's. Some of its lints have no fix,
         // and those are for `fennec lint` to report.
         let Err(diagnostics) = fennec_check::check(&program.module) else {
-            let lints = fennec_lint::lint(&program.module, &program.sources);
+            let mut lints = fennec_lint::lint(&program.module, &program.sources);
+            lints.extend(fennec_lint::needless_copies(&program.module, &program.sources));
             let diagnostics: Vec<_> = lints.into_iter().map(|lint| lint.diagnostic).collect();
             let changed = program.sources.fixed(&diagnostics);
             if changed.is_empty() {

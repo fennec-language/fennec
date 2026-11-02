@@ -775,7 +775,7 @@ fn function(locals: Vec<Type>, end: Terminator) -> Function {
         params: 0,
         mut_params: Vec::new(),
         returns: Type::Int,
-        locals: locals.into_iter().map(|ty| Local { name: None, ty }).collect(),
+        locals: locals.into_iter().map(|ty| Local { name: None, ty, copied: false }).collect(),
         blocks: vec![Block { insts: Vec::new(), end }],
         counts: Vec::new(),
     }

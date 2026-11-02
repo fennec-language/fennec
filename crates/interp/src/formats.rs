@@ -17,6 +17,78 @@ use crate::call::CallArg;
 use crate::interp::Interp;
 use crate::value::Value;
 
+/// How field names are spelled in the text, from `names=`. The program spells them in snake
+/// case, so `Snake` writes them as they are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Names {
+    #[default]
+    Snake,
+    Camel,
+    Pascal,
+    Kebab,
+}
+
+impl Names {
+    fn of(case: &str) -> Option<Names> {
+        Some(match case {
+            "snake_case" => Names::Snake,
+            "camel_case" => Names::Camel,
+            "pascal_case" => Names::Pascal,
+            "kebab_case" => Names::Kebab,
+            _ => return None,
+        })
+    }
+
+    /// A field's name as the text spells it. Leading underscores stay as they are.
+    pub(crate) fn spell(self, field: &str) -> String {
+        if self == Names::Snake {
+            return field.to_owned();
+        }
+        let rest = field.trim_start_matches('_');
+        let lead = field.get(..field.len() - rest.len()).unwrap_or_default();
+        let words = rest.split('_').filter(|word| !word.is_empty());
+        let capital = |word: &str| {
+            let mut chars = word.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().chain(chars).collect::<String>())
+                .unwrap_or_default()
+        };
+        let joined = match self {
+            Names::Kebab => words.collect::<Vec<_>>().join("-"),
+            Names::Pascal => words.map(capital).collect(),
+            _ => words
+                .enumerate()
+                .map(|(at, word)| if at == 0 { word.to_owned() } else { capital(word) })
+                .collect(),
+        };
+        format!("{lead}{joined}")
+    }
+}
+
+/// What reading does with a key no field has, from `extra=`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Extra {
+    #[default]
+    Error,
+    Ignore,
+}
+
+/// How a `json.loads` call reads, at every level of what it reads.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Reading {
+    pub(crate) names: Names,
+    pub(crate) extra: Extra,
+}
+
+/// The case an option was given as, like `camel_case` for `.camel_case`.
+fn case_of(value: &Value) -> Option<&str> {
+    match value {
+        Value::Instance(instance) => instance.case.as_deref(),
+        _ => None,
+    }
+}
+
 /// Why some text couldn't be read, and the byte it went wrong at.
 pub(crate) struct Failure {
     message: String,
@@ -126,10 +198,26 @@ impl Interp<'_> {
         span: Span,
     ) -> Result<Value, Diagnostic> {
         let mut indent = None;
+        let mut reading = Reading::default();
         let mut values = Vec::new();
         for arg in args {
             match (arg.name.as_deref(), arg.value) {
                 (None, value) => values.push(value),
+                (Some("names"), value) if name.starts_with("json.") => {
+                    reading.names = case_of(&value).and_then(Names::of).ok_or_else(|| {
+                        Diagnostic::new(
+                            "`names` is `.snake_case`, `.camel_case`, `.pascal_case` or `.kebab_case`",
+                            arg.span,
+                        )
+                    })?;
+                }
+                (Some("extra"), value) if name == "json.loads" => {
+                    reading.extra = match case_of(&value) {
+                        Some("ignore") => Extra::Ignore,
+                        Some("error") => Extra::Error,
+                        _ => return Err(Diagnostic::new("`extra` is `.error` or `.ignore`", arg.span)),
+                    };
+                }
                 (Some("indent"), Value::Int(n)) if name == "json.dumps" => {
                     indent = Some(
                         usize::try_from(n)
@@ -145,16 +233,19 @@ impl Interp<'_> {
             }
         }
         match (name, values.as_slice()) {
-            ("json.loads", [Value::Str(text)]) => self.parsed(text, json::parse(text), span),
+            ("json.loads", [Value::Str(text)]) => {
+                self.reading = reading;
+                self.parsed(text, json::parse(text), span)
+            }
             ("toml.loads", [Value::Str(text)]) => self.parsed(text, toml::parse(text), span),
             ("json.dumps", [value]) => {
-                let value = self.natural(value, span)?;
+                let value = self.natural(value, reading.names, span)?;
                 dump::json(&value, indent)
                     .map(|text| Value::str(&text))
                     .map_err(|why| Diagnostic::new(why, span))
             }
             ("toml.dumps", [value]) => {
-                let value = self.natural(value, span)?;
+                let value = self.natural(value, Names::Snake, span)?;
                 dump::toml(&value).map(|text| Value::str(&text)).map_err(|why| Diagnostic::new(why, span))
             }
             _ => Err(Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span)),
@@ -173,6 +264,8 @@ impl Interp<'_> {
         let read = self.format_builtin(name, args, span)?;
         let Value::Ok(value) = read else { return Ok(read) };
         let read = self.decode(value.as_ref().clone(), ty, "", span);
+        // How this call reads is over once it has.
+        self.reading = Reading::default();
         match read.and_then(|value| self.check_ids(&value, ty).map(|()| value)) {
             Ok(value) => Ok(Value::Ok(Rc::new(value))),
             Err(message) => {

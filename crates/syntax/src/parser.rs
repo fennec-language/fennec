@@ -570,12 +570,20 @@ impl Parser {
         self.expect_p(Punct::RParen)?;
         let arrow = self.eat_p(Punct::Arrow).then(|| self.prev_span());
         let ret = if arrow.is_some() { Some(self.type_expr()?) } else { None };
+        // `fails` is a word only here, after the parameters and any return type.
+        let fails = if matches!(self.peek(), Tok::Name(word) if word == "fails") {
+            self.advance();
+            Some(self.type_expr()?)
+        } else {
+            None
+        };
         Ok(FnDef {
             name,
             generics,
             params,
             ret,
             arrow,
+            fails,
             body: Vec::new(),
             annotations: Vec::new(),
             span: start.to(self.prev_span()),

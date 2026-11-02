@@ -119,7 +119,7 @@ mod tests {
         let tree = without_spans(&parse("def f():\n    pass\n"));
         assert_eq!(
             tree,
-            "Module { items: [Function(FnDef { name: \"f\", generics: [], params: [], ret: None, arrow: None, \
+            "Module { items: [Function(FnDef { name: \"f\", generics: [], params: [], ret: None, arrow: None, fails: None, \
              body: [Stmt { kind: Pass, span: Span }], annotations: [], span: Span })] }"
         );
         assert_eq!(tree, without_spans(&parse("def  f( ):\n\n        pass\n")));

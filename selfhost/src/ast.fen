@@ -28,6 +28,8 @@ struct FnDef:
     ret: TypeExpr?
     ## Where the `->` is, when there is one.
     arrow: Span?
+    ## The error it says it can fail with: `LoadError` in `-> float fails LoadError`.
+    fails: TypeExpr? = None
     ## Empty only for a `def` written without one, which std's `@intrinsic` functions are.
     body: list[Stmt]
     ## What's written above it, like `@intrinsic`.

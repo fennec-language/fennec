@@ -102,6 +102,7 @@ fn shared(value: &Expr) -> Vec<String> {
         params: Vec::new(),
         ret: None,
         arrow: None,
+        fails: None,
         body: vec![Stmt { kind: StmtKind::Expr(value.clone()), span: value.span }],
         annotations: Vec::new(),
         span: value.span,

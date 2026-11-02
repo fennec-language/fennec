@@ -2,7 +2,7 @@
 //! to be `None`, and `is None`, `else`, `fail` and `?`.
 
 use fennec_check::{Signatures, Type};
-use fennec_syntax::{BinOp, Expr, ExprKind, Pattern, Span, UnaryOp};
+use fennec_syntax::{Arg, BinOp, Expr, ExprKind, Pattern, Span, UnaryOp};
 
 use super::{Lowered, Lowering};
 use crate::validate::fits;
@@ -23,6 +23,33 @@ pub(super) fn definitions(signatures: &Signatures) -> Vec<StructDef> {
 }
 
 impl Lowering<'_> {
+    /// `Ok(value)` or `Err(error)` written out, as a function that says `fails E` can return.
+    pub(super) fn written_result(
+        &mut self,
+        expr: &Expr,
+        callee: &Expr,
+        args: &[Arg],
+    ) -> Lowered<Option<Operand>> {
+        let ExprKind::Name(name) = &callee.kind else { return Ok(None) };
+        if !matches!(name.as_str(), "Ok" | "Err") || self.lookup(name).is_some() {
+            return Ok(None);
+        }
+        let ty = self.ty(expr)?;
+        let value = match args {
+            [] => None,
+            [arg] if arg.name.is_none() && !arg.is_mut => Some(self.expr(&arg.value)?),
+            _ => return Err(format!("it calls `{name}` with more than one value")),
+        };
+        let dest = self.temporary(ty);
+        let kind = match (name.as_str(), value) {
+            ("Err", Some(error)) => InstKind::MakeErr { dest, error },
+            ("Ok", value) => InstKind::MakeOk { dest, value },
+            _ => return Err("it calls `Err` with nothing".to_owned()),
+        };
+        self.emit(kind, expr.span);
+        Ok(Some(Operand::Local(dest)))
+    }
+
     /// Makes a value fit where it's going: wrapped as an optional or a result if it has to
     /// be. The checker has shown it fits, so anything else isn't lowered yet.
     pub(super) fn coerce(&mut self, value: Operand, to: &Type, span: Span) -> Lowered<Operand> {

@@ -1,6 +1,6 @@
-//! `std.net`: TCP through the `Net` capability. A `Connection` or `Server` holds a handle into
-//! the program's table of open sockets. Real handles are random, so code that was never given
-//! `Net` can't make one up to reach a socket. In a test, the network is in memory, in `Fake`.
+//! `std.net`: TCP through the `Net` capability. A `Connection` or `Server` holds a private
+//! handle into the program's table of open sockets, so code that was never given `Net` can't
+//! make one up to reach a socket. In a test, the network is in memory, in `Fake`.
 //! Nothing else runs while a test waits, so a read that would wait forever stops the test and
 //! says why, and a server with no connection waiting is done.
 
@@ -89,11 +89,10 @@ impl Failure {
     }
 }
 
-/// A random handle for a real socket, which nothing could guess. A handle is looked up in the
-/// program's own table, so one this program wasn't given reaches nothing.
-///
-/// TODO: once `_` fields are private, as decided under Visibility, making a `Connection` or
-/// `Server` outside `std.net` is a compile error, and the randomness is only a second wall.
+/// A random handle for a real socket, which nothing could guess. `_handle` is private, so code
+/// outside `std.net` can't make a `Connection` or `Server` at all
+/// (`examples/errors/net_forged_handle`). A handle is also looked up in the program's own
+/// table, so one this program wasn't given reaches nothing, and the randomness is a third wall.
 #[cfg(not(target_arch = "wasm32"))]
 fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
     loop {

@@ -1,0 +1,7 @@
+error: `_handle` is private to `Connection`
+ --> examples/errors/net_forged_handle.fen:4:31
+  |
+4 |     conn = Connection(_handle=1, peer="x")
+  |                               ^
+  |
+  = help: only `Connection`'s own methods can reach `_` names: go through one of its other methods

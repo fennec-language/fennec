@@ -11,6 +11,7 @@
 //!   elsewhere isn't touched;
 //! - a document's outline;
 //! - completion of names in scope, members after a dot and enum cases;
+//! - signature help inside a call's parentheses;
 //! - formatting, with `fennec fmt`'s one style.
 //!
 //! `fennec lsp` runs it, in the build daemon when there is one, so every editor shares the
@@ -24,6 +25,7 @@ mod findings;
 mod json;
 mod references;
 mod session;
+mod signature;
 mod symbols;
 mod text;
 mod wire;

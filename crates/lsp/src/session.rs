@@ -12,6 +12,7 @@ use crate::declaration::{declarations, hover_text};
 use crate::definition::{Target, target};
 use crate::json::Json;
 use crate::references::{import_at, own, references, valid_name};
+use crate::signature;
 use crate::symbols::outline;
 use crate::text;
 
@@ -77,6 +78,7 @@ impl Session {
             "textDocument/references" => Some(self.references(params)),
             "textDocument/documentSymbol" => Some(self.symbols(params)),
             "textDocument/completion" => Some(self.completion(params)),
+            "textDocument/signatureHelp" => Some(self.signature_help(params)),
             "textDocument/rename" => match self.rename(params) {
                 Ok(edit) => Some(edit),
                 Err(message) => return vec![error(id, REQUEST_FAILED, &message)],
@@ -312,19 +314,26 @@ impl Session {
         Json::Array(outline(analysis, module, &path))
     }
 
+    /// The text of the document a request is about, with the request's position in it.
+    fn document_at(&self, params: &Json) -> Option<(PathBuf, String, usize)> {
+        let uri = params.at(&["textDocument", "uri"]).and_then(Json::as_str)?;
+        let file = canonical(&text::path_of(uri)?);
+        let text = self.documents.get(uri).cloned().or_else(|| std::fs::read_to_string(&file).ok())?;
+        let offset = text::offset(&text, params.get("position")?)?;
+        Some((file, text, offset))
+    }
+
     /// What can be written at a position.
     fn completion(&mut self, params: &Json) -> Json {
-        let Some(uri) = params.at(&["textDocument", "uri"]).and_then(Json::as_str) else { return Json::Null };
-        let Some(file) = text::path_of(uri).map(|path| canonical(&path)) else { return Json::Null };
-        let Some(text) = self.documents.get(uri).cloned().or_else(|| std::fs::read_to_string(&file).ok())
-        else {
-            return Json::Null;
-        };
-        let Some(offset) = params.get("position").and_then(|position| text::offset(&text, position)) else {
-            return Json::Null;
-        };
+        let Some((file, text, offset)) = self.document_at(params) else { return Json::Null };
         let items = completion::complete(&program_of(&file), &file, &text, offset, self.overlay());
         Json::object([("isIncomplete", Json::Bool(false)), ("items", Json::Array(items))])
+    }
+
+    /// The signature of the call a position is in.
+    fn signature_help(&mut self, params: &Json) -> Json {
+        let Some((file, text, offset)) = self.document_at(params) else { return Json::Null };
+        signature::help(&program_of(&file), &file, &text, offset, self.overlay())
     }
 
     fn hover(&mut self, params: &Json) -> Json {
@@ -441,6 +450,10 @@ fn capabilities() -> Json {
         ("renameProvider", Json::Bool(true)),
         ("documentSymbolProvider", Json::Bool(true)),
         ("completionProvider", Json::object([("triggerCharacters", Json::Array(vec![Json::string(".")]))])),
+        (
+            "signatureHelpProvider",
+            Json::object([("triggerCharacters", Json::Array(vec![Json::string("("), Json::string(",")]))]),
+        ),
     ]);
     let info = Json::object([
         ("name", Json::string("fennec")),

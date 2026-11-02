@@ -140,6 +140,10 @@ impl<'m> Program<'m> {
         signatures: &Signatures,
         tests: &'m [(String, FnDef)],
     ) -> Result<Self, Diagnostic> {
+        if let Some(span) = fennec_syntax::visit::calls_only(module) {
+            return Err(Diagnostic::new("the JIT can't compile a capability narrowed with `only` yet", span)
+                .with_help("`only` on a capability runs in the interpreter for now"));
+        }
         Self::build(module, prelude, signatures, tests)
     }
 

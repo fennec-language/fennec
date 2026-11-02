@@ -154,9 +154,10 @@ mod tests {
 
     fn begin() {
         let text = Rc::new(Element::Text);
+        let optional = Rc::new(Element::Maybe(Rc::clone(&text)));
         let tables = Tables {
             shapes: vec![Rc::new(Element::Str)],
-            elements: vec![text],
+            elements: vec![text, optional],
             text_headers: true,
             ..Tables::default()
         };
@@ -240,6 +241,41 @@ mod tests {
             with(|state| lists::element_of(state, state.heap.block(split.cast_unsigned())?)).unwrap();
         assert_eq!(*element, Element::Text);
         for done in [list, sorted, copy, split, spaced, joined, wanted, comma] {
+            heap::free(done);
+        }
+        assert_eq!(live(), before);
+        finish();
+    }
+
+    #[test]
+    fn an_optional_string_is_a_header_with_all_zero_for_none() {
+        begin();
+        let before = live();
+        let items = vec![Value::None, Value::str("short"), Value::str("a string too long for any header")];
+        let temp = with(|state| Some(state.push(Value::list(items.clone())))).unwrap();
+        let list = lists::from_value(temp, 1, 0, 0);
+        let words =
+            with(|state| Some(lists::items(state.heap.block(list.cast_unsigned())?, 3).to_vec())).unwrap();
+        assert_eq!(words.len(), 9);
+        assert_eq!(words.get(..3), Some(&[0, 0, 0][..]));
+        let read =
+            with(|state| Some(heap::read_block(state, u64::try_from(list).unwrap()).unpacked())).unwrap();
+        assert_eq!(read, Value::list(items.clone()));
+        // Equal to a copy, and not to one with `None` where a string was.
+        let copy = lists::from_value(temp, 1, 0, 0);
+        assert_eq!(heap::equal(list, copy), 1);
+        let other = vec![Value::None, Value::None, Value::str("a string too long for any header")];
+        let other = with(|state| Some(state.push(Value::list(other)))).unwrap();
+        let other = lists::from_value(other, 1, 0, 0);
+        assert_eq!(heap::equal(list, other), 0);
+        assert_eq!(heap::equal(other, list), 0);
+        // `in` finds `None` and strings by their text.
+        assert_eq!(lists::contains(list, 0), 1);
+        let wanted = with(|state| heap::text_address(state, "a string too long for any header"));
+        assert_eq!(lists::contains(list, wanted), 1);
+        let missing = with(|state| heap::text_address(state, "not there"));
+        assert_eq!(lists::contains(list, missing), 0);
+        for done in [list, copy, other, wanted, missing] {
             heap::free(done);
         }
         assert_eq!(live(), before);

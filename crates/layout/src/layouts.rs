@@ -348,7 +348,7 @@ impl Layouts {
         for (name, ty, default) in fields {
             let size = match ty {
                 Ty::Struct(id) => self.get(id)?.size,
-                Ty::Str if self.in_place.text_headers => 3 * WORD,
+                Ty::Str | Ty::Maybe(Block::Str) if self.in_place.text_headers => 3 * WORD,
                 _ => WORD,
             };
             placed.push(Field { name, ty, offset, default });

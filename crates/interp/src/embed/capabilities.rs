@@ -112,6 +112,29 @@ pub extern "C" fn from_value(value: i64, start: i64, end: i64) -> i64 {
     })
 }
 
+/// `fennec_capability_call(word, method, count, start, end)`: a method of a capability, run
+/// as the interpreter runs it, with the last `count` inputs native code handed over as its
+/// arguments. `word` is a capability's block or kind, and `method` a string block naming the
+/// method. Gives back a temporary holding what the method gave: a result where the method can
+/// fail, and a capability where it gives one, as `only` does.
+pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let at = span(start, end);
+        let receiver = value_of(state, word);
+        let name = u64::try_from(method)
+            .ok()
+            .and_then(|address| state.heap.block(address))
+            .filter(|block| super::heap::is_text(state, block))
+            .map(super::heap::block_text)
+            .ok_or_else(|| Diagnostic::new("the native code lost a method's name", at))?;
+        let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
+        let given = state.inputs.split_off(state.inputs.len() - count);
+        let args = given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
+        let result = state.interp.read_method(&receiver, &name, args, at)?;
+        Ok(state.push(result))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
@@ -154,5 +177,30 @@ mod tests {
         assert_eq!(super::from_value(not, 0, 0), 0);
         let (_, failure, _) = finish();
         assert!(failure.is_some_and(|failure| failure.message.contains("expected a capability")));
+    }
+
+    #[test]
+    fn a_capability_s_methods_run_from_native_code_as_the_interpreter_runs_them() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let input = |value: Value| {
+            let temp = with(|state| Some(state.push(value))).unwrap();
+            super::super::eval::input(temp);
+        };
+        // `process.only("echo")` gives a narrowed capability, which crosses as a block.
+        input(Value::str("echo"));
+        let narrowed = super::call(super::block(5), string("only"), 1, 0, 0);
+        let block = super::from_value(narrowed, 0, 0);
+        let Value::Limited(limited) = value(block) else { panic!("narrowed") };
+        assert_eq!(limited.allowed, vec![Rc::<str>::from("echo")]);
+        // Running something else is refused as a `ProcessError`, and nothing is started.
+        input(Value::str("rm"));
+        input(Value::list(vec![Value::str("-rf"), Value::str("/")]));
+        let refused = super::call(block, string("run"), 2, 0, 0);
+        let Value::Err(error) = with(|state| Some(state.temp(refused))).unwrap() else { panic!("refused") };
+        assert!(format!("{error:?}").contains("can run only `echo`"), "{error:?}");
+        heap::free(block);
+        finish();
     }
 }

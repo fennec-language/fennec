@@ -4,16 +4,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use fennec_kit::Overlay;
+use fennec_syntax::Span;
 
 use crate::analysis::{Analysis, Clean, analyze, edited_bodies, program_of};
 use crate::declaration::{declarations, hover_text};
 use crate::definition::{Target, target};
 use crate::json::Json;
+use crate::references::{import_at, own, references, valid_name};
+use crate::symbols::outline;
 use crate::text;
 
 /// The protocol's error codes.
 const METHOD_NOT_FOUND: i32 = -32601;
 const INVALID_REQUEST: i32 = -32600;
+/// A request that could be answered but wasn't, like a rename that isn't safe.
+const REQUEST_FAILED: i32 = -32803;
 
 /// What a session keeps between messages.
 #[derive(Default)]
@@ -68,6 +73,12 @@ impl Session {
             "textDocument/hover" => Some(self.hover(params)),
             "textDocument/codeAction" => Some(self.code_actions(params)),
             "textDocument/formatting" => Some(self.formatting(params)),
+            "textDocument/references" => Some(self.references(params)),
+            "textDocument/documentSymbol" => Some(self.symbols(params)),
+            "textDocument/rename" => match self.rename(params) {
+                Ok(edit) => Some(edit),
+                Err(message) => return vec![error(id, REQUEST_FAILED, &message)],
+            },
             _ => None,
         };
         match result {
@@ -202,7 +213,9 @@ impl Session {
         let (text, _) = analysis.sources.by_path(&path)?;
         let offset = text::offset(text, params.get("position")?)?;
         let at = analysis.span_at(&path, offset)?;
-        Some((target(analysis.module.as_ref()?, &analysis.sources, at)?, analysis))
+        let found =
+            target(analysis.module.as_ref()?, &analysis.sources, at).or_else(|| import_at(analysis, at))?;
+        Some((found, analysis))
     }
 
     fn definition(&mut self, params: &Json) -> Json {
@@ -226,16 +239,81 @@ impl Session {
         if locations.is_empty() { Json::Null } else { Json::Array(locations) }
     }
 
+    /// Every place that refers to what the name at a position does, as locations. The
+    /// declaration is among them unless the request leaves it out.
+    fn references(&mut self, params: &Json) -> Json {
+        let documents = self.documents.clone();
+        let with_declaration =
+            !matches!(params.at(&["context", "includeDeclaration"]), Some(Json::Bool(false)));
+        let Some((found, analysis)) = self.at_position(params) else { return Json::Null };
+        let declared: Vec<Span> = match &analysis.module {
+            Some(module) => declarations(&found, module, &analysis.sources, analysis.checked.as_ref())
+                .iter()
+                .map(|declaration| declaration.name_at)
+                .collect(),
+            None => Vec::new(),
+        };
+        let locations = references(analysis, &found)
+            .into_iter()
+            .filter(|span| with_declaration || !declared.contains(span))
+            .filter_map(|span| {
+                let (file, text, start, end) = analysis.place(span)?;
+                let uri = uri_among(&documents, file);
+                Some(Json::object([("uri", Json::string(uri)), ("range", text::range(text, start, end))]))
+            });
+        Json::Array(locations.collect())
+    }
+
+    /// Every place that refers to what the name at a position does, renamed, as one edit. Only
+    /// a program with no mistakes, whose every member is known, and only its own names.
+    fn rename(&mut self, params: &Json) -> Result<Json, String> {
+        let documents = self.documents.clone();
+        let new_name = params.get("newName").and_then(Json::as_str).unwrap_or("").to_owned();
+        if !valid_name(&new_name) {
+            return Err(format!("`{new_name}` can't be a name"));
+        }
+        let Some((found, analysis)) = self.at_position(params) else {
+            return Err("there's no name here to rename".to_owned());
+        };
+        if analysis.checked.is_none() {
+            return Err("fix the program's mistakes first, so every use of the name is known".to_owned());
+        }
+        if !own(analysis, &found) {
+            return Err(format!("`{}` belongs to the standard library", found.name()));
+        }
+        let mut changes: Vec<(String, Json)> = Vec::new();
+        for span in references(analysis, &found) {
+            let Some((file, text, start, end)) = analysis.place(span) else { continue };
+            let edit = Json::object([
+                ("range", text::range(text, start, end)),
+                ("newText", Json::string(new_name.as_str())),
+            ]);
+            let uri = uri_among(&documents, file);
+            match changes.iter_mut().find(|(changed, _)| *changed == uri) {
+                Some((_, Json::Array(edits))) => edits.push(edit),
+                _ => changes.push((uri, Json::Array(vec![edit]))),
+            }
+        }
+        Ok(Json::object([("changes", Json::Object(changes))]))
+    }
+
+    /// A document's outline.
+    fn symbols(&mut self, params: &Json) -> Json {
+        let Some(file) = params.at(&["textDocument", "uri"]).and_then(Json::as_str).and_then(text::path_of)
+        else {
+            return Json::Null;
+        };
+        let file = canonical(&file);
+        let path = text::shown(&file);
+        let Some(analysis) = self.analysis(&program_of(&file)) else { return Json::Null };
+        let Some(module) = &analysis.module else { return Json::Null };
+        Json::Array(outline(analysis, module, &path))
+    }
+
     fn hover(&mut self, params: &Json) -> Json {
         let Some((found, analysis)) = self.at_position(params) else { return Json::Null };
         let Some(module) = &analysis.module else { return Json::Null };
-        let name = match &found {
-            Target::Local { name, .. }
-            | Target::Global(name)
-            | Target::Case(name)
-            | Target::Member { name, .. }
-            | Target::TypeMember { name, .. } => name.clone(),
-        };
+        let name = found.name().to_owned();
         let shown: Vec<String> = declarations(&found, module, &analysis.sources, analysis.checked.as_ref())
             .iter()
             .filter_map(|declaration| hover_text(declaration, &name, &analysis.sources))
@@ -342,6 +420,9 @@ fn capabilities() -> Json {
             Json::object([("codeActionKinds", Json::Array(vec![Json::string("quickfix")]))]),
         ),
         ("documentFormattingProvider", Json::Bool(true)),
+        ("referencesProvider", Json::Bool(true)),
+        ("renameProvider", Json::Bool(true)),
+        ("documentSymbolProvider", Json::Bool(true)),
     ]);
     let info = Json::object([
         ("name", Json::string("fennec")),

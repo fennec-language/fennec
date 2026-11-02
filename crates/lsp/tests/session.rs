@@ -401,3 +401,87 @@ fn names_bound_in_a_case_are_found_from_its_guard_and_body() {
         assert_eq!(found.as_array().unwrap()[0].at(&["range", "start"]), Some(&bound), "{needle}");
     }
 }
+
+/// A request about the place in `file` where `needle` starts, plus `into` characters, with more
+/// parameters.
+fn params_at(editor: &Editor, file: &str, text: &str, needle: &str, more: Vec<(&str, Json)>) -> Json {
+    let mut fields = vec![
+        ("textDocument".to_owned(), Json::object([("uri", Json::string(editor.uri(file)))])),
+        ("position".to_owned(), position(text, needle, 0)),
+    ];
+    fields.extend(more.into_iter().map(|(key, value)| (key.to_owned(), value)));
+    Json::Object(fields)
+}
+
+/// Each location's file name and line.
+fn places(locations: &Json) -> Vec<(String, usize)> {
+    let all = locations.as_array().unwrap_or(&[]);
+    let place = |location: &Json| {
+        let uri = location.get("uri").and_then(Json::as_str).unwrap_or("");
+        (uri.rsplit('/').next().unwrap_or(uri).to_owned(), line_of(location))
+    };
+    let mut found: Vec<(String, usize)> = all.iter().map(place).collect();
+    found.sort();
+    found
+}
+
+#[test]
+fn references_reach_every_file_and_can_leave_out_the_declaration() {
+    let mut editor = Editor::new("references").unwrap();
+    editor.open("src/main.fen", MAIN);
+    let with = |include: bool| Json::object([("includeDeclaration", Json::Bool(include))]);
+    let params = params_at(&editor, "src/main.fen", MAIN, "Fighter(", vec![("context", with(true))]);
+    let found = editor.request("textDocument/references", params);
+    assert_eq!(
+        places(&found),
+        [
+            ("combat.fen".to_owned(), 1),
+            ("combat.fen".to_owned(), 12),
+            ("main.fen".to_owned(), 0),
+            ("main.fen".to_owned(), 6)
+        ]
+    );
+    let params = params_at(&editor, "src/main.fen", MAIN, "Fighter, hit", vec![("context", with(true))]);
+    assert_eq!(places(&editor.request("textDocument/references", params)).len(), 4, "from the import");
+    let params = params_at(&editor, "src/main.fen", MAIN, "Fighter(", vec![("context", with(false))]);
+    let found = editor.request("textDocument/references", params);
+    assert_eq!(places(&found).len(), 3, "without where it's declared");
+    let params = params_at(&editor, "src/main.fen", MAIN, "damage =", vec![("context", with(true))]);
+    let found = editor.request("textDocument/references", params);
+    assert_eq!(places(&found), [("main.fen".to_owned(), 7), ("main.fen".to_owned(), 8)], "a local");
+}
+
+#[test]
+fn a_rename_changes_every_use_and_refuses_what_it_cant_do_safely() {
+    let mut editor = Editor::new("rename").unwrap();
+    editor.open("src/main.fen", MAIN);
+    let rename = |editor: &mut Editor, needle: &str, name: &str| {
+        let params = params_at(editor, "src/main.fen", MAIN, needle, vec![("newName", Json::string(name))]);
+        editor.request("textDocument/rename", params)
+    };
+    let edit = rename(&mut editor, "hit(", "strike");
+    let changes = edit.get("changes").unwrap();
+    let edits = |file: &str| changes.get(&editor.uri(file)).and_then(Json::as_array).map_or(0, <[Json]>::len);
+    assert_eq!((edits("src/main.fen"), edits("src/combat.fen")), (2, 1));
+    assert_eq!(rename(&mut editor, "hit(", "for"), Json::string("no result"), "a keyword");
+    assert_eq!(rename(&mut editor, "print", "say"), Json::string("no result"), "the standard library's");
+    editor.change("src/main.fen", &MAIN.replace("damage, SIZE", "damage + True, SIZE"));
+    let params = params_at(&editor, "src/main.fen", MAIN, "hit(", vec![("newName", Json::string("strike"))]);
+    assert_eq!(editor.request("textDocument/rename", params), Json::string("no result"), "with mistakes");
+}
+
+#[test]
+fn a_documents_outline_has_its_types_members_and_functions() {
+    let mut editor = Editor::new("outline").unwrap();
+    editor.open("src/combat.fen", COMBAT);
+    let params =
+        Json::object([("textDocument", Json::object([("uri", Json::string(editor.uri("src/combat.fen")))]))]);
+    let outline = editor.request("textDocument/documentSymbol", params);
+    let names = |symbols: &Json| -> Vec<String> {
+        let all = symbols.as_array().unwrap_or(&[]);
+        all.iter().filter_map(|symbol| symbol.get("name")?.as_str().map(str::to_owned)).collect()
+    };
+    assert_eq!(names(&outline), ["Fighter", "hit"]);
+    let fighter = &outline.as_array().unwrap()[0];
+    assert_eq!(names(fighter.get("children").unwrap()), ["name", "health", "describe"]);
+}

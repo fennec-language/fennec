@@ -104,7 +104,11 @@ fn seconds(duration: Duration) -> String {
     if secs.fract() == 0.0 { format!("{secs:.0}s") } else { format!("{secs}s") }
 }
 
-/// A random handle for a real socket, which nothing could guess.
+/// A random handle for a real socket, which nothing could guess. A handle is looked up in the
+/// program's own table, so one this program wasn't given reaches nothing.
+///
+/// TODO: once `_` fields are private, as decided under Visibility, making a `Connection` or
+/// `Server` outside `std.net` is a compile error, and the randomness is only a second wall.
 #[cfg(not(target_arch = "wasm32"))]
 fn fresh_handle(taken: &HashMap<i64, Socket>) -> i64 {
     loop {

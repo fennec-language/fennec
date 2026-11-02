@@ -49,6 +49,9 @@ mimalloc = { version = "=0.1.52", default-features = false }
 # Secure random bytes from the operating system, for `Entropy`, on every platform Fennec runs on.
 # Reading them on Windows takes FFI, which Fennec's own crates forbid. Under MIT or Apache-2.0.
 getrandom = { version = "=0.4.3", default-features = false }
+# The work-stealing pool `parallel` runs on, for programs with tasks: well-tested Chase-Lev
+# deques, which would be a lot of subtle code to write again. Under MIT or Apache-2.0.
+rayon-core = { version = "=1.13.0", default-features = false }
 cranelift-codegen = "=0.137.0"
 cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"

@@ -11,8 +11,8 @@
 )]
 
 use fennec_interp::embed::{
-    aot, capabilities, checks, dicts, eval, heap, io, json, lists, names, objects, regex, strings, temps,
-    text, threads,
+    aot, capabilities, checks, dicts, eval, heap, io, json, lists, names, objects, parallel, regex, strings,
+    temps, text, threads,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
@@ -58,6 +58,9 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_next",
     "fennec_no_match",
     "fennec_out_of_range",
+    "fennec_parallel_for",
+    "fennec_parallel_map",
+    "fennec_parallel_reduce",
     "fennec_path_get",
     "fennec_pop_empty",
     "fennec_print_spec",
@@ -226,6 +229,9 @@ export! {
     fennec_free(a0: i64) => heap::free(a0);
     fennec_retain_shared(a0: i64, a1: i64) => threads::retain_shared(a0, a1);
     fennec_release_shared(a0: i64, a1: i64) => threads::release_shared(a0, a1);
+    fennec_parallel_for(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for(a0, a1, a2);
+    fennec_parallel_map(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_map(a0, a1, a2, a3);
+    fennec_parallel_reduce(a0: i64, a1: parallel::ReduceBody, a2: parallel::Combine, a3: i64, a4: &mut i64) -> i64 => parallel::parallel_reduce(a0, a1, a2, a3, a4);
     fennec_free_text(a0: i64) => heap::free_text(a0);
     fennec_set_abandon(a0: i64, a1: extern "C" fn(i64)) => heap::set_abandon(a0, a1);
     fennec_unshare(a0: i64) -> i64 => heap::unshare(a0);

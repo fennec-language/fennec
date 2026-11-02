@@ -127,23 +127,6 @@ impl Table {
         }
     }
 
-    /// Takes out every block that `keep` picks, leaving the rest.
-    pub(super) fn take_where(&mut self, keep: impl Fn(&[u64]) -> bool) -> Vec<Box<[u64]>> {
-        let mut taken = Vec::new();
-        for (_, pages) in &mut self.regions {
-            for slot in pages.iter_mut().flatten().flat_map(|page| page.iter_mut()) {
-                if slot.as_deref().is_some_and(&keep) {
-                    taken.extend(slot.take());
-                }
-            }
-        }
-        let short: Vec<usize> =
-            self.short.iter().filter(|(_, block)| keep(block)).map(|(at, _)| *at).collect();
-        taken.extend(short.iter().filter_map(|at| self.short.remove(at)));
-        self.len -= taken.len();
-        taken
-    }
-
     pub(super) fn remove(&mut self, address: usize) -> Option<Box<[u64]>> {
         let removed = match slot_mut(&mut self.regions, address) {
             Some(slot) => slot.take(),

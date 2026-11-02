@@ -75,6 +75,8 @@ pub(crate) struct Heap {
     /// The number of the thread this heap is, in a shape word's owner bits: 0 on the main
     /// thread, so its blocks' shape words are just their shapes.
     owner_bits: u64,
+    /// On a worker, the blocks it made since it last handed what it made over.
+    made: Vec<u64>,
     /// How many words each shape's blocks take, by the shape's number.
     sizes: Vec<usize>,
     /// Words copied out of one block on the way to another, kept to save making them anew.
@@ -242,10 +244,11 @@ impl Heap {
     pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
         self.counts.allocations += 1;
         self.counts.allocated_bytes += u64::try_from(block.len()).unwrap_or(0) * 8;
+        let address = block.as_ptr().addr();
         if super::threads::ON && self.owner_bits != 0 {
             mark_owner(&mut block, self.owner_bits);
+            self.made.push(u64::try_from(address).unwrap_or(0));
         }
-        let address = block.as_ptr().addr();
         self.blocks.insert(block);
         i64::try_from(address).unwrap_or(0)
     }
@@ -253,7 +256,15 @@ impl Heap {
     /// Takes every block this heap made that doesn't live for the whole run, for another
     /// thread's heap to adopt: what a task made that outlives it.
     pub(crate) fn hand_over(&mut self) -> Vec<Box<[u64]>> {
-        self.blocks.take_where(|block| block.first().is_some_and(|count| *count < IMMORTAL))
+        let mut handed = Vec::new();
+        for address in std::mem::take(&mut self.made) {
+            let lives = self.block(address).and_then(<[u64]>::first).is_some_and(|count| *count < IMMORTAL);
+            if lives && let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at))
+            {
+                handed.push(block);
+            }
+        }
+        handed
     }
 
     /// Takes over blocks another thread's heap handed over, as this thread's own.

@@ -26,6 +26,7 @@ pub mod json;
 pub mod layout;
 pub mod lists;
 pub mod objects;
+pub mod parallel;
 mod plans;
 pub mod regex;
 pub mod strings;

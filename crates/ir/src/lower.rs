@@ -37,7 +37,7 @@ pub fn lower(module: &Module, signatures: &Signatures) -> Program {
 /// in the module and `wanted` leaves out is listed in [`Program::external`]. Something that
 /// runs a program every time it changes wants this, since lowering a big one takes a while.
 pub fn lower_some(module: &Module, signatures: &Signatures, wanted: &dyn Fn(&str) -> bool) -> Program {
-    let library = fennec_syntax::prelude_modules().unwrap_or_default();
+    let library = fennec_syntax::prelude_to_run().unwrap_or_default();
     let modules: Vec<&Module> = std::iter::once(module).chain(library).collect();
     let functions = definitions(module);
     let every: HashMap<String, &FnDef> = library

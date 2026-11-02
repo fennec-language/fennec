@@ -294,3 +294,18 @@ fn nothing_outside_a_type_reaches_its_underscore_names() {
         [format!("{private} @ self._balance")]
     );
 }
+
+#[test]
+fn a_type_another_std_module_imports_still_needs_its_own_import() {
+    // `std.net` imports `Duration` for its own use, and that doesn't make it a program's.
+    assert_eq!(
+        problems("def wait(pause: Duration) -> int:\n    1\n"),
+        ["`Duration` doesn't exist @ Duration"]
+    );
+    assert_eq!(
+        helps("def wait(pause: Duration) -> int:\n    1\n"),
+        ["import it from std.time, like `from std.time import Duration`"]
+    );
+    let imported = "from std.time import Duration\n\ndef wait(pause: Duration) -> int:\n    pause.nanos\n";
+    assert_eq!(problems(imported), Vec::<String>::new());
+}

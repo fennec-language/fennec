@@ -272,6 +272,17 @@ fn generator(inst: &InstKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         InstKind::Lock { handle, write: true } => write!(f, "lock {handle} to write"),
         InstKind::Lock { handle, write: false } => write!(f, "lock {handle} to read"),
         InstKind::Unlock { handle } => write!(f, "unlock {handle}"),
+        InstKind::LockAll { handles } => {
+            let each: Vec<String> = handles
+                .iter()
+                .map(|(handle, write)| format!("{handle} to {}", if *write { "write" } else { "read" }))
+                .collect();
+            write!(f, "lock all {}", each.join(", "))
+        }
+        InstKind::UnlockAll { handles } => {
+            let each: Vec<String> = handles.iter().map(ToString::to_string).collect();
+            write!(f, "unlock all {}", each.join(", "))
+        }
         _ => Ok(()),
     }
 }

@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 29;
+const BUILDING_EXAMPLES: usize = 34;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
@@ -1122,10 +1122,18 @@ fn failures_match_the_jit() -> std::io::Result<()> {
             "def f(n: int) -> int:\n    mut a = [1, 2]\n    a[n] = 3\n    a[0]{print_after}    stdout.print(f(-3))\n"
         ),
     )?;
-    same_message_as_the_jit(
-        "spec",
-        &format!("def f(n: int) -> int:\n    n{print_after}    stdout.print(f\"{{f(1):z}}\")\n"),
+    // A format Fennec doesn't have is caught when the program's checked, before anything runs.
+    let dir = folder("spec")?;
+    let program = dir.join("spec.fen");
+    std::fs::write(
+        &program,
+        format!("def f(n: int) -> int:\n    n{print_after}    stdout.print(f\"{{f(1):z}}\")\n"),
     )?;
+    let output = dir.join("spec").to_string_lossy().into_owned();
+    let built = fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &output], &dir)?;
+    assert!(!built.status.success());
+    assert!(String::from_utf8_lossy(&built.stderr).contains("Fennec has no format `z`"));
+    std::fs::remove_dir_all(&dir)?;
     same_as_the_jit(
         "deep",
         &format!("def f(n: int) -> int:\n    f(n + 1) + 1{print_after}    stdout.print(f(0))\n"),

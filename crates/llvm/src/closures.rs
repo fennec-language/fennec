@@ -177,7 +177,7 @@ impl Emit<'_, '_, '_> {
         shown.push(format!("ptr {closure}"));
         shown.extend_from_slice(args);
         shown.push("ptr swifterror %err".to_owned());
-        let ret = if returns.in_memory() || matches!(returns, Kind::Unit | Kind::Cap) {
+        let ret = if returns.in_memory() || matches!(returns, Kind::Unit) {
             "void".to_owned()
         } else {
             self.text_of(returns)
@@ -219,7 +219,7 @@ impl Emit<'_, '_, '_> {
         let result = self.call_closure_with(&held, &returns, &shown, span);
         match dest {
             Some(dest) if returns.in_memory() => self.assign_memory(dest, &result, ""),
-            Some(dest) if !matches!(*returns, Kind::Unit | Kind::Cap) => self.assign(dest, &result),
+            Some(dest) if !matches!(*returns, Kind::Unit) => self.assign(dest, &result),
             None if returns.counted() => {
                 self.release_kind(&result, &returns);
                 Ok(())

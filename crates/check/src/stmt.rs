@@ -116,16 +116,7 @@ impl FnCx<'_> {
                 self.condition(cond, "assert");
                 Flow::unit()
             }
-            StmtKind::With { value, name, is_mut, body } => {
-                let ty = self.expr(value);
-                self.push(false);
-                if let Some(name) = name {
-                    self.declare(name, ty, *is_mut, stmt.span);
-                }
-                let flow = self.stmts(body, used);
-                self.pop();
-                flow
-            }
+            StmtKind::With { value, names, body } => self.with_block(value, names, body, used),
             StmtKind::Def(def) => {
                 self.nested(def);
                 Flow::unit()

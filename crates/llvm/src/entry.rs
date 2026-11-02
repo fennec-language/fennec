@@ -90,7 +90,33 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     let _ = writeln!(out, "@fennec_image = private constant [{count} x i64] [{}]\n", shown.join(", "));
     out += "declare void @fennec_aot_image(i64)\ndeclare i32 @fennec_aot_run(ptr, i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\n\n";
     let flagged = crate::analysis::whole(program).can_fail.contains("main");
-    let mut args = vec!["ptr null".to_owned(); main.params];
+    // Each capability `main` takes is the runtime's whole one of its kind.
+    let mut args = Vec::with_capacity(main.params + 1);
+    let mut capabilities = String::new();
+    for (at, local) in main.locals.iter().take(main.params).enumerate() {
+        let kind = match &local.ty {
+            fennec_check::Type::Named(name) => fennec_layout::Cap::named(name).map(|cap| match cap {
+                fennec_layout::Cap::Stdout => 0,
+                fennec_layout::Cap::Fs => 1,
+                fennec_layout::Cap::Clock => 2,
+                fennec_layout::Cap::Args => 3,
+                fennec_layout::Cap::Stdin => 4,
+                fennec_layout::Cap::Process => 5,
+                fennec_layout::Cap::Entropy => 6,
+            }),
+            _ => None,
+        };
+        match kind {
+            Some(kind) => {
+                let _ = writeln!(
+                    capabilities,
+                    "  %cap{at} = call i64 @fennec_capability_block(i64 {kind})\n  %capability{at} = inttoptr i64 %cap{at} to ptr"
+                );
+                args.push(format!("ptr %capability{at}"));
+            }
+            None => args.push("ptr null".to_owned()),
+        }
+    }
     let mut types = vec!["ptr".to_owned(); main.params];
     if flagged {
         args.push("ptr swifterror %failed".to_owned());
@@ -123,6 +149,10 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     }
     if flagged {
         out += "  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n";
+    }
+    if !capabilities.is_empty() {
+        out += &capabilities;
+        thunks += "declare i64 @fennec_capability_block(i64)\n";
     }
     let _ = writeln!(out, "  call swiftcc void @\"f_main\"({})\n  ret void\n}}\n", args.join(", "));
     out += &thunks;

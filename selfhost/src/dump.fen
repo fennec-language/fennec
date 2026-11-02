@@ -285,10 +285,10 @@ struct Tree:
             case .Assert(value):
                 self.open("assert", span)
                 self.write_expr(value)
-            case .With(value, name, is_mut, body):
+            case .With(value, names, body):
                 mut label = "with"
-                if name is not None:
-                    label += (" as mut " if is_mut else " as ") + name
+                for at, held in enumerate(names):
+                    label += (" as " if at == 0 else ", ") + ("mut " if held.is_mut else "") + held.name
                 self.open(label, span)
                 self.write_expr(value)
                 self.write_stmts(body)

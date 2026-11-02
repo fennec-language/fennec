@@ -1,0 +1,34 @@
+# decision: `shared Name:` is the only reference type.
+
+# A `shared` value is one cell that every name for it reaches. Its methods take its lock, so a
+# call can't race another. To change several together, `with` locks them all for the block, in
+# an order every block agrees on, and the block changes them through the names it gives them:
+# `mut` ones to write, the rest to read.
+
+shared Account:
+    total = 0
+
+    def add(mut self, amount: int):
+        self.total += amount
+
+    def balance(self) -> int:
+        self.total
+
+def transfer(source: Account, target: Account, amount: int) -> bool:
+    with source, target as mut x, mut y:
+        if x.total < amount: return False
+        x.total -= amount
+        y.add(amount)
+    True
+
+def main(stdout: Stdout):
+    savings = Account(total=100)
+    checking = Account()
+    same = checking
+    stdout.print(
+        transfer(savings, target=checking, amount=30),
+        transfer(checking, target=savings, amount=50),
+    )
+    same.add(5)
+    with savings, checking as seen, other:
+        stdout.print(f"{seen.total} and {other.balance()}")

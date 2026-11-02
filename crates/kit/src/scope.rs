@@ -339,9 +339,9 @@ impl Resolver<'_> {
                 self.expr(iter);
                 self.stmts(body);
             }
-            StmtKind::With { value, name, body, .. } => {
-                if let Some(name) = name {
-                    self.bind(name);
+            StmtKind::With { value, names, body } => {
+                for held in names {
+                    self.bind(&held.name);
                 }
                 self.expr(value);
                 self.stmts(body);

@@ -3,6 +3,7 @@
 //! changed without being copied. A step into a type's own `def []` reads the item with it,
 //! and putting a value back writes the item with its `def []=`.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Expr, ExprKind, Span};
@@ -60,6 +61,9 @@ impl Interp<'_> {
 
     /// Takes the value out of a place, leaving a placeholder, so changing it doesn't copy it.
     pub(crate) fn take(&mut self, place: &Place) -> Result<Value, Diagnostic> {
+        if let Some(cell) = self.cell_at(place) {
+            return self.in_cell(&cell, place, Self::take);
+        }
         let binding = self
             .frame
             .get_mut(&place.root)
@@ -85,6 +89,9 @@ impl Interp<'_> {
     }
 
     pub(crate) fn put(&mut self, place: &Place, value: Value) -> Result<(), Diagnostic> {
+        if let Some(cell) = self.cell_at(place) {
+            return self.in_cell(&cell, place, |interp, inner| interp.put(inner, value));
+        }
         let binding = self
             .frame
             .get_mut(&place.root)
@@ -105,6 +112,31 @@ impl Interp<'_> {
             return Ok(());
         }
         self.check_rules_along(place)
+    }
+
+    /// The cell of the `shared` handle a path into starts at: `x` in `x.total`, in a `with`
+    /// block that locked `x`.
+    fn cell_at(&self, place: &Place) -> Option<Rc<RefCell<Value>>> {
+        match self.frame.get(&place.root).map(|binding| &binding.value) {
+            Some(Value::Shared(cell)) if !place.steps.is_empty() => Some(Rc::clone(cell)),
+            _ => None,
+        }
+    }
+
+    /// Changes what's in a `shared` handle's cell: holds it by a name of its own for the change.
+    fn in_cell<T>(
+        &mut self,
+        cell: &RefCell<Value>,
+        place: &Place,
+        change: impl FnOnce(&mut Self, &Place) -> Result<T, Diagnostic>,
+    ) -> Result<T, Diagnostic> {
+        self.frame.push();
+        self.frame.declare(CELL, cell.replace(Value::Unit), true);
+        let changed = change(self, &Place { root: CELL.to_owned(), ..place.clone() });
+        let held = self.frame.get_mut(CELL).map(|binding| std::mem::replace(&mut binding.value, Value::Unit));
+        self.frame.pop();
+        cell.replace(held.unwrap_or(Value::Unit));
+        changed
     }
 
     /// Runs the `where` rule of every field a write to a place went through. A broken rule
@@ -220,6 +252,7 @@ impl Interp<'_> {
 const ITEM: &str = "$item";
 const HOLDER: &str = "$holder";
 const KEY: &str = "$key";
+const CELL: &str = "$cell";
 
 /// A step of a place into a type's own `def []`, and the steps around it.
 struct OwnIndex<'p> {

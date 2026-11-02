@@ -1,0 +1,12 @@
+## How field names are spelled in JSON, set with `names=`. `snake_case` writes them as the
+## program does. The keys of a dict are written as they are.
+enum JsonNames:
+    snake_case
+    camel_case
+    pascal_case
+    kebab_case
+
+## What reading does with a key no field has, set with `extra=`.
+enum JsonExtra:
+    error
+    ignore

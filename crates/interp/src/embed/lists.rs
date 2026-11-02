@@ -38,6 +38,12 @@ pub(super) fn element_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
     state.tables.elements.get(usize::try_from(at).ok()?).cloned()
 }
 
+/// `element_of`, borrowed.
+pub(super) fn element_in<'a>(state: &'a State, block: &[u64]) -> Option<&'a Element> {
+    let at = block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
+    state.tables.elements.get(usize::try_from(at).ok()?).map(AsRef::as_ref)
+}
+
 fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
     let at = usize::try_from(element).ok()?;
     Some((at, Rc::clone(state.tables.elements.get(at)?)))

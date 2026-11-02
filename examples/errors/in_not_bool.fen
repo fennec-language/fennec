@@ -1,0 +1,8 @@
+struct Shelf:
+    size: int
+
+    def in(self, n: int) -> int:
+        n
+
+def main(stdout: Stdout):
+    stdout.print(3 in Shelf(size=2))

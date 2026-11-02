@@ -355,6 +355,15 @@ impl Interp<'_> {
         right: Value,
         span: Span,
     ) -> Result<Value, Diagnostic> {
+        // `item in value` calls the value's own `def in`, and `not in` is its opposite.
+        if matches!(op, BinOp::In | BinOp::NotIn)
+            && let Value::Instance(instance) = &right
+            && let Some(function) =
+                self.type_info(&instance.type_name).and_then(|info| info.methods.get("in").cloned())
+        {
+            let found = self.call_with_values(&function, vec![right, left], span)? == Value::Bool(true);
+            return Ok(Value::Bool(found != (op == BinOp::NotIn)));
+        }
         if let (Value::Instance(instance), Some(method)) = (&left, op.method_name())
             && let Some(function) =
                 self.type_info(&instance.type_name).and_then(|info| info.methods.get(method).cloned())

@@ -1,0 +1,7 @@
+error: `Shelf.in` gives back an int, but `in` needs a bool
+ --> examples/errors/in_not_bool.fen:8:18
+  |
+8 |     stdout.print(3 in Shelf(size=2))
+  |                  ^^^^^^^^^^^^^^^^^^
+  |
+  = help: make `def in` return `bool`

@@ -161,6 +161,16 @@ impl<'a> Analyzer<'_, 'a> {
         let after_operand = prev.is_some_and(ends_operand);
         match tok.kind {
             TokenKind::Keyword if matches!(tok.text, "True" | "False" | "None") => Role::Operand,
+            // A keyword naming a method, as in `def in(self, item)`, is its name.
+            TokenKind::Keyword
+                if self.in_def_name
+                    && at
+                        .checked_sub(1)
+                        .and_then(|before| self.tok(before))
+                        .is_some_and(|before| before.text == "def") =>
+            {
+                Role::Operand
+            }
             TokenKind::Keyword => Role::Keyword,
             TokenKind::Name if self.soft_keyword(at, tok.text, after_operand, block) => Role::Keyword,
             TokenKind::Punct => self.punct_role(at, tok.text, prev),

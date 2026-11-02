@@ -2773,3 +2773,33 @@ fn an_error_with_cases_is_held_like_an_enum() {
 "
     );
 }
+
+/// `item in value` calls the value's own `def in`, with the value first, and `not in` flips it.
+#[test]
+fn in_calls_a_types_own_in() {
+    let source = "struct Span:\n    low: int\n    high: int\n\n    def in(self, n: int) -> bool:\n        self.low <= n < self.high\n\ndef inside(span: Span, n: int) -> bool:\n    n in span\n\ndef outside(span: Span, n: int) -> bool:\n    n not in span\n";
+    assert_eq!(
+        printed(source, "inside").unwrap(),
+        "fn inside(_0, _1) -> bool
+  local _0 span: Span
+  local _1 n: int
+  local _2: bool
+  bb0:
+    _2 = call Span.in(_0, _1)
+    return _2
+"
+    );
+    assert_eq!(
+        printed(source, "outside").unwrap(),
+        "fn outside(_0, _1) -> bool
+  local _0 span: Span
+  local _1 n: int
+  local _2: bool
+  local _3: bool
+  bb0:
+    _2 = call Span.in(_0, _1)
+    _3 = not _2
+    return _3
+"
+    );
+}

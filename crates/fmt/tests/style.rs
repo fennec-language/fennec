@@ -55,6 +55,15 @@ fn operator_methods_and_generics_are_written_tight() {
     );
 }
 
+/// A method named by a keyword, like `def in`, is written tight like an operator's.
+#[test]
+fn a_keyword_method_name_is_written_tight() {
+    check(
+        "struct Span:\n    low: int\n\n    def in (self, n: int) -> bool:\n        self.low <= n\n",
+        "struct Span:\n    low: int\n\n    def in(self, n: int) -> bool:\n        self.low <= n\n",
+    );
+}
+
 #[test]
 fn match_arms_go_on_their_own_lines() {
     check(

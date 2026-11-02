@@ -33,7 +33,8 @@ jobs:
         with:
           persist-credentials: false
       - id: changes
-        uses: $/.github/actions/docs-only
+        # actionlint and the runner take only `./` for an action in this repository.
+        uses: ./.github/actions/docs-only # zizmor: ignore[self-repository]
 
   analyze:
     name: Analyze (${{ matrix.language }})

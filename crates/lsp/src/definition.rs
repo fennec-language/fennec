@@ -29,6 +29,19 @@ pub(crate) enum Target {
     TypeMember { owner: String, name: String },
 }
 
+impl Target {
+    /// The name as it's written.
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Target::Local { name, .. }
+            | Target::Global(name)
+            | Target::Case(name)
+            | Target::Member { name, .. }
+            | Target::TypeMember { name, .. } => name,
+        }
+    }
+}
+
 /// What the name at `at` refers to, if there's a name there.
 pub(crate) fn target(module: &Module, sources: &Sources, at: u32) -> Option<Target> {
     let mut finder = Finder { at, sources, module, scopes: Vec::new(), function: String::new(), found: None };
@@ -55,6 +68,17 @@ pub(crate) fn name_in(sources: &Sources, span: Span, name: &str) -> Span {
     let Some((offset, _)) = found else { return span };
     let start = span.start.saturating_add(u32::try_from(offset).unwrap_or(0));
     Span { start, end: start.saturating_add(u32::try_from(name.len()).unwrap_or(0)) }
+}
+
+/// The part of an import that lists the names it brings in: what follows `import`, past the
+/// module's path, which may hold the same words.
+pub(crate) fn imported_names(sources: &Sources, span: Span) -> Span {
+    let Some((_, text, base)) = sources.file_at(span) else { return span };
+    let local = |at: u32| usize::try_from(at.saturating_sub(base)).unwrap_or(0);
+    let Some(written) = text.get(local(span.start)..local(span.end).min(text.len())) else { return span };
+    let Some(at) = written.find(" import ") else { return span };
+    let start = span.start.saturating_add(u32::try_from(at + " import ".len()).unwrap_or(0));
+    Span { start, end: span.end }
 }
 
 fn local(name: &str, name_at: Span, declared: Span, function: String) -> Target {
@@ -180,7 +204,15 @@ impl Finder<'_> {
                     finder.block(&test.body);
                 });
             }
-            Item::Import(_) | Item::Stmt(_) => {}
+            Item::Import(import) => {
+                // A name brought in is the program's top-level name it names, so finding its uses,
+                // or renaming it, reaches the import too.
+                let names = imported_names(self.sources, import.span);
+                for name in &import.names {
+                    self.names(names, name, || Target::Global(name.clone()));
+                }
+            }
+            Item::Stmt(_) => {}
         }
     }
 

@@ -17,7 +17,9 @@ mod declaration;
 mod definition;
 mod findings;
 mod json;
+mod references;
 mod session;
+mod symbols;
 mod text;
 mod wire;
 

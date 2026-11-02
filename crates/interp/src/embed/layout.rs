@@ -186,6 +186,35 @@ mod tests {
     }
 
     #[test]
+    fn strings_strip_as_the_interpreter_does_from_any_byte() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let cases = [
+            "",
+            " ",
+            "        ",
+            "x",
+            " x ",
+            "  item 12 ",
+            "\t\n\x0b\x0c\r x \r",
+            "nothing to do",
+            "\u{a0}a\u{a0}",
+        ];
+        let cases = cases.into_iter().chain(["  é ", "  a fairly long line of text, longer than a word  "]);
+        for case in cases {
+            let text = string(case);
+            assert_eq!(text_of(strings::strip(text, 0)), case.trim(), "{case:?}");
+            assert_eq!(text_of(strings::strip(text, 1)), case.trim_start(), "{case:?}");
+            assert_eq!(text_of(strings::strip(text, 2)), case.trim_end(), "{case:?}");
+            let stripped = strings::strip(text, 0);
+            let chars = u64::try_from(case.trim().chars().count()).unwrap();
+            assert_eq!(word(stripped, TEXT_CHARS), Some(chars), "{case:?}");
+        }
+        finish();
+    }
+
+    #[test]
     fn numbers_format_without_a_temporary() {
         let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
         start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();

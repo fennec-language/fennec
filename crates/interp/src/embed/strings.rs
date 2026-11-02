@@ -398,6 +398,9 @@ pub extern "C" fn strip(address: i64, which: i64) -> i64 {
             retain(state, at);
             return address;
         }
+        if let Some(part) = state.heap.block(at).and_then(|block| ascii_ends(block, which)) {
+            return ascii_part_of(state, at, part).unwrap_or(0);
+        }
         // Short strings are read without allocating.
         let mut short = [0_u8; 120];
         let long;
@@ -424,6 +427,75 @@ pub extern "C" fn strip(address: i64, which: i64) -> i64 {
         let kept = if whole.is_ascii() { part.len() } else { part.chars().count() };
         text_from_bytes(state, part.as_bytes(), kept)
     })
+}
+
+/// Whether a byte is a whitespace character, as `char::is_whitespace` says of ASCII.
+fn is_ascii_space(byte: u8) -> bool {
+    byte == b' ' || (0x09..=0x0d).contains(&byte)
+}
+
+/// Where `strip` (0), `lstrip` (1) or `rstrip` (2) leaves a string's text, in bytes, when what
+/// comes off is ASCII whitespace. `None` when a character that isn't ASCII is at an end it
+/// looks at, which may be whitespace of another kind.
+fn ascii_ends(block: &[u64], which: i64) -> Option<(usize, usize)> {
+    let length = usize::try_from(*block.get(2)?).ok()?;
+    let words = block.get(TEXT_HEADER_WORDS..)?;
+    let byte = |at: usize| words.get(at / 8).and_then(|word| word.to_le_bytes().get(at % 8).copied());
+    let (mut start, mut end) = (0, length);
+    while which != 2 && start < end {
+        let first = byte(start).filter(u8::is_ascii)?;
+        if !is_ascii_space(first) {
+            break;
+        }
+        start += 1;
+    }
+    while which != 1 && end > start {
+        let last = byte(end - 1).filter(u8::is_ascii)?;
+        if !is_ascii_space(last) {
+            break;
+        }
+        end -= 1;
+    }
+    Some((start, end))
+}
+
+/// A string owned once of the bytes `from..to` of a string whose bytes outside them are
+/// ASCII, copied a word at a time.
+fn ascii_part_of(state: &mut State, address: u64, (from, to): (usize, usize)) -> Option<i64> {
+    let (length, chars) = lengths(state.heap.block(address)?);
+    if from == 0 && to == length {
+        retain(state, address);
+        return i64::try_from(address).ok();
+    }
+    let kept = to - from;
+    if kept == 0 {
+        return Some(text_from_bytes(state, &[], 0));
+    }
+    if kept == 1 {
+        let byte = state.heap.block(address)?.get(TEXT_HEADER_WORDS + from / 8)?.to_le_bytes();
+        let part = byte.get(from % 8..from % 8 + kept)?.to_vec();
+        return Some(text_from_bytes(state, &part, kept));
+    }
+    let words = kept.div_ceil(8);
+    let mut part = state.heap.fresh(TEXT_HEADER_WORDS + words);
+    let number = |n: usize| u64::try_from(n).unwrap_or(0);
+    let left = chars.saturating_sub(number(length - kept));
+    let header = [1, state.tables.str_shape, number(kept), left, number(words * 8)];
+    part.get_mut(..TEXT_HEADER_WORDS)?.copy_from_slice(&header);
+    let source = state.heap.block(address)?.get(TEXT_HEADER_WORDS + from / 8..)?;
+    let shift = u32::try_from(from % 8 * 8).ok()?;
+    for (at, word) in part.iter_mut().skip(TEXT_HEADER_WORDS).enumerate() {
+        let low = source.get(at).map_or(0, |word| word >> shift);
+        let high = if shift == 0 { 0 } else { source.get(at + 1).map_or(0, |word| word << (64 - shift)) };
+        *word = low | high;
+    }
+    let tail = u32::try_from(kept % 8 * 8).ok()?;
+    if tail > 0
+        && let Some(last) = part.last_mut()
+    {
+        *last &= u64::MAX >> (64 - tail);
+    }
+    Some(state.heap.insert(part))
 }
 
 /// A string's length in bytes and characters, from its block.

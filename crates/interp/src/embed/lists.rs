@@ -219,10 +219,33 @@ fn in_order(state: &mut State, list: u64, keys: &[u64], kind: i64) -> Option<i64
     Some(state.heap.insert(block))
 }
 
+/// A new list owned once of a list of numbers in order, sorted as words. Numbers that sort
+/// the same are the same number, so this needn't be stable, and nothing is gathered.
+fn sorted_numbers(state: &mut State, list: u64, kind: i64) -> Option<i64> {
+    let block = state.heap.block(list)?;
+    let element = element_in(state, block)?;
+    if element.words() != 1 || owns_items(element) {
+        return None;
+    }
+    let at = usize::try_from(block.get(1)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
+        .ok()?;
+    let numbers = items(block, 1).to_vec();
+    let mut block = build(state, at, 1, &numbers, 0);
+    block
+        .get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + numbers.len())?
+        .sort_unstable_by_key(|word| sort_word(*word, kind));
+    Some(state.heap.insert(block))
+}
+
 /// A new list owned once of a list of numbers' or strings' items in order.
 pub extern "C" fn sorted(list: i64, kind: i64) -> i64 {
     with(|state| {
         let list = u64::try_from(list).unwrap_or(0);
+        if kind != SORT_STRINGS
+            && let Some(sorted) = sorted_numbers(state, list, kind)
+        {
+            return sorted;
+        }
         let keys = state.heap.block(list).map(|block| items(block, 1).to_vec()).unwrap_or_default();
         in_order(state, list, &keys, kind).unwrap_or(0)
     })

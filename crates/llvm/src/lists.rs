@@ -42,15 +42,41 @@ impl Emit<'_, '_, '_> {
 
     /// A new block of a boxed type, its shape's number read from a symbol.
     pub(crate) fn new_block(&mut self, id: u32) -> Result<String, String> {
+        let shape = self.shape_of(id)?;
+        self.declare("declare ptr @fennec_alloc(i64) nounwind");
+        let block = self.temp();
+        self.line(&format!("{block} = call ptr @fennec_alloc(i64 {shape})"));
+        Ok(block)
+    }
+
+    /// The runtime's number for the shape of a layout's blocks, which a plain layout has too.
+    pub(crate) fn shape_of(&mut self, id: u32) -> Result<String, String> {
         let name = self.layout_of(id)?.name.clone();
         let symbol = format!("h_{name}");
         self.module.shared.shapes.insert(symbol.clone(), id);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
-        self.declare("declare ptr @fennec_alloc(i64) nounwind");
-        let (shape, block) = (self.temp(), self.temp());
+        let shape = self.temp();
         self.line(&format!("{shape} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
-        self.line(&format!("{block} = call ptr @fennec_alloc(i64 {shape})"));
-        Ok(block)
+        Ok(shape)
+    }
+
+    /// Whether a layout held in place has a block anywhere in it, in a field or a case.
+    pub(crate) fn holds_blocks(&self, id: u32) -> Result<bool, String> {
+        let layout = self.layout_of(id)?;
+        let fields = layout.fields.iter().map(|field| field.ty);
+        let cases = layout.cases.iter().flatten().flat_map(|case| case.fields.iter().map(|field| field.ty));
+        for ty in fields.chain(cases) {
+            match Kind::from_ty(self.module.layouts, ty) {
+                Some(Kind::Struct(inner) | Kind::Enum(inner)) if inner != id => {
+                    if self.holds_blocks(inner)? {
+                        return Ok(true);
+                    }
+                }
+                Some(kind) if !kind.counted() => {}
+                _ => return Ok(true),
+            }
+        }
+        Ok(false)
     }
 
     /// Writes a value inside something that hasn't held one before, with an owner if it needs one.

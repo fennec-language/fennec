@@ -124,6 +124,7 @@ export! {
     fennec_copy(a0: i64) -> i64 => temps::copy(a0);
     fennec_unpack(a0: i64, a1: i64, a2: i64, a3: i8, a4: i64, a5: i64) -> i64 => temps::unpack(a0, a1, a2, a3, a4, a5);
     fennec_unwrap(a0: i64) -> i64 => temps::unwrap(a0);
+    fennec_error_of(a0: i64) -> i64 => temps::error_of(a0);
     fennec_ok(a0: i64) -> i64 => temps::ok(a0);
     fennec_err(a0: i64, a1: i64, a2: i64) -> i64 => temps::err(a0, a1, a2);
     fennec_passes(a0: i64) -> i8 => temps::passes(a0);

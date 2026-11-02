@@ -125,11 +125,24 @@ fn grow_by(state: &mut State, text: i64, added: &[u64], extra: usize, extra_char
 /// zero, as native code compares strings' words whole.
 fn put_words(block: &mut [u64], from: usize, words: &[u64], length: usize) {
     let Some(to) = block.get_mut(TEXT_HEADER_WORDS..) else { return };
+    let tail = u32::try_from(length % 8 * 8).unwrap_or(0);
+    let count = length.div_ceil(8);
+    if from.is_multiple_of(8)
+        && let (Some(to), Some(words)) = (to.get_mut(from / 8..from / 8 + count), words.get(..count))
+    {
+        // Starting on a word, the words are copied whole and only the last one is cut.
+        to.copy_from_slice(words);
+        if tail > 0
+            && let Some(last) = to.last_mut()
+        {
+            *last &= u64::MAX >> (64 - tail);
+        }
+        return;
+    }
     let shift = u32::try_from(from % 8 * 8).unwrap_or(0);
     let kept = if shift == 0 { 0 } else { u64::MAX >> (64 - shift) };
     let last = length / 8;
-    let tail = u32::try_from(length % 8 * 8).unwrap_or(0);
-    for (n, word) in words.iter().take(length.div_ceil(8)).enumerate() {
+    for (n, word) in words.iter().take(count).enumerate() {
         let word = if n == last && tail > 0 { word & (u64::MAX >> (64 - tail)) } else { *word };
         let at = from / 8 + n;
         if let Some(slot) = to.get_mut(at) {
@@ -505,41 +518,29 @@ fn add_text(joined: &mut [u64], at: usize, part: &[u64]) -> (usize, u64) {
     (length, chars)
 }
 
-/// How many bytes `separator.join(list)` takes.
-fn joined_length(state: &State, separator: i64, list: i64) -> usize {
-    let block =
-        |address: i64| u64::try_from(address).ok().and_then(|at| state.heap.block(at)).unwrap_or_default();
-    let words = super::lists::items(block(list), 1);
-    let parts = words.iter().filter_map(|word| state.heap.block(*word)).map(|part| lengths(part).0);
-    parts.sum::<usize>() + lengths(block(separator)).0 * words.len().saturating_sub(1)
-}
-
 /// `separator.join(list)`, for a list of strings, written straight into the joined block.
+/// Each string's block is looked up once.
 pub extern "C" fn join(separator: i64, list: i64) -> i64 {
     with(|state| {
-        let mut joined =
-            state.heap.fresh(TEXT_HEADER_WORDS + joined_length(state, separator, list).div_ceil(8).max(1));
-        let between = u64::try_from(separator).ok().and_then(|at| state.heap.block(at)).unwrap_or_default();
-        let block = u64::try_from(list).ok().and_then(|list| state.heap.block(list)).unwrap_or_default();
-        let words = super::lists::items(block, 1);
+        let block = |address: u64| state.heap.block(address).unwrap_or_default();
+        let between = u64::try_from(separator).map_or(&[][..], block);
+        let items = super::lists::items(u64::try_from(list).map_or(&[][..], block), 1);
+        let parts: Vec<&[u64]> = items.iter().map(|item| block(*item)).collect();
+        let bytes = parts.iter().map(|part| lengths(part).0).sum::<usize>()
+            + lengths(between).0 * parts.len().saturating_sub(1);
+        // Made here rather than taken from the heap, which the parts are borrowed from.
+        let mut joined = vec![0; TEXT_HEADER_WORDS + bytes.div_ceil(8).max(1)].into_boxed_slice();
         let (mut at, mut chars) = (0, 0);
-        for (n, word) in words.iter().enumerate() {
+        for (n, part) in parts.iter().enumerate() {
             if n > 0 {
                 let (length, count) = add_text(&mut joined, at, between);
                 (at, chars) = (at + length, chars + count);
             }
-            if let Some(part) = state.heap.block(*word) {
-                let (length, count) = add_text(&mut joined, at, part);
-                (at, chars) = (at + length, chars + count);
-            }
+            let (length, count) = add_text(&mut joined, at, part);
+            (at, chars) = (at + length, chars + count);
         }
-        let header = [
-            1,
-            state.tables.str_shape,
-            0,
-            0,
-            u64::try_from(joined.len() - TEXT_HEADER_WORDS).unwrap_or(0) * 8,
-        ];
+        let room = u64::try_from(joined.len() - TEXT_HEADER_WORDS).unwrap_or(0) * 8;
+        let header = [1, state.tables.str_shape, 0, 0, room];
         if let Some(start) = joined.get_mut(..TEXT_HEADER_WORDS) {
             start.copy_from_slice(&header);
         }

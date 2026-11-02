@@ -94,15 +94,17 @@ impl Finding {
 pub fn costs(program: &Program) -> Vec<Finding> {
     let library_allocates = library_allocating(program);
     let by_name: HashMap<&str, &Function> = program.functions.iter().map(|f| (f.name.as_str(), f)).collect();
+    let handles: HashSet<&str> =
+        program.structs.iter().filter(|def| def.shared).map(|def| def.name.as_str()).collect();
     let callers = loops::callers_in_loops(program);
     let mut findings = Vec::new();
     for function in program.functions.iter().filter(|function| is_own(function)) {
         let depths = loops::depths(function);
-        let mut found: Vec<(Span, Cost, usize)> = flow::copies(function, &by_name, &depths);
-        let every_time = flow::every_time(function, &by_name);
+        let mut found: Vec<(Span, Cost, usize)> = flow::copies(function, (&by_name, &handles), &depths);
+        let every_time = flow::every_time(function, (&by_name, &handles));
         for (block, depth) in function.blocks.iter().zip(&depths) {
             for inst in &block.insts {
-                let what = allocation(function, &inst.kind, &library_allocates);
+                let what = allocation(function, &inst.kind, (&library_allocates, &handles));
                 found.extend(what.map(|what| (inst.span, Cost::Allocation { what }, *depth)));
             }
         }
@@ -138,7 +140,7 @@ fn library_allocating(program: &Program) -> HashSet<&str> {
     let library: Vec<&Function> = program.functions.iter().filter(|function| !is_own(function)).collect();
     let mut found: HashSet<&str> = HashSet::new();
     for function in &library {
-        if insts(function).any(|kind| allocation(function, kind, &none).is_some()) {
+        if insts(function).any(|kind| allocation(function, kind, (&none, &none)).is_some()) {
             found.insert(&function.name);
         }
     }
@@ -168,9 +170,16 @@ fn on_the_heap(ty: &Type) -> bool {
 const GROWS: [&str; 7] = ["append", "insert", "extend", "add", "update", "set", "push"];
 
 /// What an instruction may allocate, in a few words.
-fn allocation(function: &Function, inst: &InstKind, library: &HashSet<&str>) -> Option<String> {
+fn allocation(
+    function: &Function,
+    inst: &InstKind,
+    (library, handles): (&HashSet<&str>, &HashSet<&str>),
+) -> Option<String> {
     let of = |id: &crate::LocalId| function.locals.get(id.0).map(|local| &local.ty);
     match inst {
+        InstKind::Make { type_name, .. } if handles.contains(type_name.as_str()) => {
+            Some(format!("this `shared` {type_name}"))
+        }
         InstKind::MakeList { .. } => Some("this list".to_owned()),
         InstKind::MakeSet { .. } => Some("this set".to_owned()),
         InstKind::MakeDict { .. } => Some("this dict".to_owned()),

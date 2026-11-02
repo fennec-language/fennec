@@ -39,7 +39,11 @@ pub(super) fn dest(inst: &InstKind) -> Option<LocalId> {
         InstKind::Builtin { dest, .. } | InstKind::CallClosure { dest, .. } | InstKind::Call { dest, .. } => {
             *dest
         }
-        InstKind::SetField { .. } | InstKind::SetIndex { .. } | InstKind::SetSlot { .. } => None,
+        InstKind::SetField { .. }
+        | InstKind::SetIndex { .. }
+        | InstKind::SetSlot { .. }
+        | InstKind::Lock { .. }
+        | InstKind::Unlock { .. } => None,
     }
 }
 
@@ -90,6 +94,7 @@ pub(super) fn operands(inst: &InstKind) -> Vec<&Operand> {
         InstKind::MakeGenerator { args, .. } => args.iter().map(|(_, value)| value).collect(),
         InstKind::GetSlot { generator, .. } | InstKind::Resume { generator, .. } => vec![generator],
         InstKind::SetSlot { generator, value, .. } => vec![generator, value],
+        InstKind::Lock { handle, .. } | InstKind::Unlock { handle } => vec![handle],
     }
 }
 

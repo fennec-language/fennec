@@ -9,7 +9,7 @@ from std.time import Duration
 def reason[T](found: Result[T, NetError]) -> str:
     match found:
         case Err(error):
-            error.reason
+            error.message()
         case _:
             "it worked"
 
@@ -62,6 +62,13 @@ test "bytes go as they are"(net: Net):
                 assert conn.read(2)? == bytes([0, 255])
                 assert conn.read(10)? == bytes([10, 7])
 
+test "a failure is a case of NetError"(net: Net):
+    match net.connect("localhost", 9001):
+        case Err(Refused(host, port)):
+            assert host == "localhost" and port == 9001
+        case _:
+            assert False
+
 test "failures are NetError values"(net: Net):
     assert reason(net.connect("localhost", 9001)) == "`localhost` refused a connection on port 9001"
     assert reason(net.connect("example.com", 80)).startswith("the test's fake `Net` reaches only")
@@ -77,4 +84,11 @@ def main(stdout: Stdout, net: Net):
             with server.accept()? as conn:
                 stdout.print(conn.read_line()?)
                 conn.write("pong\n")?
-            stdout.print(client.read_line()?)
+                stdout.print(client.read_line()?)
+                # The server's end is still open but sends nothing more, so a read with a
+                # timeout gives up.
+                match client.read_line(timeout=Duration.millis(50)):
+                    case Err(TimedOut(after)):
+                        stdout.print("nothing came in", after.as_millis(), "ms")
+                    case _:
+                        stdout.print("something came")

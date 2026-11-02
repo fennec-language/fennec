@@ -110,7 +110,19 @@ impl FnCx<'_> {
                     self.error(Diagnostic::new(message, span));
                 }
                 let fields = fields.unwrap_or_default();
+                // A struct's or error's `_` fields can't be read from outside it, here either.
+                let written = self
+                    .checker
+                    .program
+                    .type_info(name)
+                    .filter(|_| !dotted)
+                    .map(|info| info.def.fields.clone());
                 for (at, arg) in args.iter().enumerate() {
+                    if let Some(field) = written.as_ref().and_then(|written| written.get(at))
+                        && !matches!(arg, Pattern::Wildcard)
+                    {
+                        self.private_member(name, &field.name, span);
+                    }
                     let field = fields.get(at).cloned().unwrap_or(Type::Unknown);
                     self.bind_pattern(arg, &field, span);
                 }

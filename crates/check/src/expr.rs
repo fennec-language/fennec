@@ -613,6 +613,7 @@ impl FnCx<'_> {
                             .type_info(type_name)
                             .is_some_and(|info| info.def.fields.iter().any(|field| field.name == name));
                         if has_field {
+                            self.private_member(type_name, name, span);
                             let field = self.checker.field_type(type_name, None, name);
                             return field.substitute(&self.checker.program.type_args(ty));
                         }

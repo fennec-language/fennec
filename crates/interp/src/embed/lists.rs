@@ -233,6 +233,12 @@ fn sorted_places(state: &State, keys: &[u64], kind: i64) -> Vec<usize> {
 
 /// A new list owned once of a list's items in the order of `keys`, one for each.
 fn in_order(state: &mut State, list: u64, keys: &[u64], kind: i64) -> Option<i64> {
+    let places = sorted_places(state, keys, kind);
+    in_places(state, list, &places)
+}
+
+/// A new list owned once of a list's items, taken from these places in turn.
+fn in_places(state: &mut State, list: u64, places: &[usize]) -> Option<i64> {
     let block = state.heap.block(list)?;
     let element = element_of(state, block)?;
     let at =
@@ -241,7 +247,7 @@ fn in_order(state: &mut State, list: u64, keys: &[u64], kind: i64) -> Option<i64
     let stride = element.words();
     let old = items(block, stride).to_vec();
     let mut words = Vec::with_capacity(old.len());
-    for place in sorted_places(state, keys, kind) {
+    for place in places {
         words.extend_from_slice(old.get(place * stride..(place + 1) * stride)?);
     }
     retain_items(state, &element, &words);
@@ -383,9 +389,17 @@ fn copied_for_sorting(state: &mut State, list: i64) -> Option<(u64, usize, usize
 /// Items with the same key stay in the order they were in.
 pub extern "C" fn sorted_by(list: i64, keys: i64, kind: i64) -> i64 {
     with(|state| {
-        let keys = u64::try_from(keys).ok().and_then(|keys| state.heap.block(keys));
-        let keys = keys.map(|block| items(block, 1).to_vec()).unwrap_or_default();
-        in_order(state, u64::try_from(list).unwrap_or(0), &keys, kind).unwrap_or(0)
+        let list = u64::try_from(list).unwrap_or(0);
+        let keys = u64::try_from(keys).ok().and_then(|keys| state.heap.block(keys)).unwrap_or_default();
+        // Strings' keys held as headers, three words each, ordered by their text.
+        if element_in(state, keys) == Some(&Element::Text) {
+            let texts = super::text::texts(state, items(keys, 3));
+            let mut places: Vec<usize> = (0..texts.len()).collect();
+            places.sort_by(|a, b| texts.get(*a).cmp(&texts.get(*b)));
+            return in_places(state, list, &places).unwrap_or(0);
+        }
+        let keys = items(keys, 1).to_vec();
+        in_order(state, list, &keys, kind).unwrap_or(0)
     })
 }
 

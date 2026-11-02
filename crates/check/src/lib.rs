@@ -217,6 +217,14 @@ impl Checked {
     fn into_signatures(self) -> Signatures {
         Signatures { types: self.types, ..self.signatures }
     }
+
+    /// Writes into `module`, a copy of the one checked, what `check_and_resolve` would, and gives
+    /// back the signatures lowering takes: a program checked with `check_typed` can then be
+    /// lowered without being checked twice.
+    #[must_use]
+    pub fn resolve(&self, module: &mut Module) -> Signatures {
+        resolved(module, self.clone())
+    }
 }
 
 /// Everything a check works out about a program that has no mistakes.

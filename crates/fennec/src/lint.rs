@@ -64,12 +64,15 @@ fn checked(path: &str, json: bool) -> ExitCode {
 
 fn linted(path: &str, json: bool) -> ExitCode {
     let Some(program) = loaded(path, json) else { return ExitCode::FAILURE };
-    let signatures = match fennec_check::check(&program.module) {
+    // Lowering takes the module with what checking works out written in, and the linter the
+    // module as it's written, so checking writes into a copy.
+    let mut resolved = program.module.clone();
+    let signatures = match fennec_check::check_and_resolve(&mut resolved) {
         Ok(signatures) => signatures,
         Err(diagnostics) => return rejected(&program, &diagnostics, json),
     };
     let found = fennec_lint::lint(&program.module, &program.sources);
-    let hints = fennec_lint::costs(&fennec_ir::lower(&program.module, &signatures));
+    let hints = fennec_lint::costs(&fennec_ir::lower(&resolved, &signatures));
     if json {
         let shown: Vec<Finding<'_>> = found.iter().chain(&hints).map(Finding::linted).collect();
         print!("{}", report::json(&program.sources, &shown));

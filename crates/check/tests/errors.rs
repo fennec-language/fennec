@@ -232,3 +232,40 @@ fn an_error_with_cases_is_made_from_one_and_matched_whole() {
         ["parse: `LoadError` has both fields and cases"]
     );
 }
+
+const LOAD_ERROR: &str =
+    "error LoadError:\n    NotFound(path: str)\n    BadRow(line: int)\n\nerror Other:\n    why: str\n\n";
+
+#[test]
+fn fails_names_the_one_error_a_function_can_fail_with() {
+    let text = format!(
+        "{LOAD_ERROR}def load(path: str) -> float fails LoadError:\n    if path == \"\":\n        \
+         fail LoadError.NotFound(path)\n    if path == \"bad\":\n        return Err(LoadError.BadRow(3))\n    1.5\n\n\
+         def total(paths: list[str]) -> float fails LoadError:\n    mut sum = 0.0\n    for path in paths:\n        \
+         sum += load(path)?\n    sum\n\ndef check(path: str) fails LoadError:\n    if load(path)? < 0.0:\n        \
+         fail LoadError.BadRow(0)\n"
+    );
+    assert_eq!(problems(&text), Vec::<String>::new());
+}
+
+#[test]
+fn only_the_error_fails_names_can_escape() {
+    assert_eq!(
+        problems(&format!(
+            "{LOAD_ERROR}def load(path: str) -> int fails LoadError:\n    if path == \"\":\n        \
+             fail Other(why=\"empty\")\n    1\n"
+        )),
+        ["`load` says it fails with `LoadError`, but it can fail with `Other` too @ LoadError"]
+    );
+    assert_eq!(
+        problems(&format!(
+            "{LOAD_ERROR}def load(path: str) -> int fails LoadError:\n    if path == \"\":\n        \
+             return Err(Other(why=\"empty\"))\n    1\n"
+        )),
+        ["`load` says it fails with a LoadError, but this fails with an Other @ Err(Other(why=\"empty\"))"]
+    );
+    assert_eq!(
+        problems("struct Point:\n    x = 0\n\ndef load() -> int fails Point:\n    1\n"),
+        ["`fails` names an error, but `Point` is a Point @ Point"]
+    );
+}

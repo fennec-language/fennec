@@ -95,6 +95,8 @@ pub(crate) struct FnCx<'c> {
     /// Which locks are held while checking a lock body, a `shared` type's method or a `with`
     /// block that locks handles, for messages: "while `x` is locked".
     pub(crate) lock: Option<String>,
+    /// The error it says it fails with, from `fails E`.
+    pub(crate) fails: Option<Type>,
 }
 
 impl<'c> FnCx<'c> {
@@ -122,6 +124,7 @@ impl<'c> FnCx<'c> {
             expecting: None,
             tail: None,
             else_chain: std::collections::HashSet::new(),
+            fails: None,
             lock: None,
         }
     }
@@ -184,11 +187,12 @@ impl<'c> FnCx<'c> {
         let entry = cx.checker.program.functions.get(key);
         cx.generics = entry.map(|entry| cx.checker.program.generics_of(entry)).unwrap_or_default();
         cx.declared = crate::program::written_ret(def).map(|ret| cx.resolve(ret));
+        cx.fails = def.fails.as_ref().map(|fails| cx.resolve(fails));
         if def.body.is_empty() {
             return cx.bodiless(def);
         }
         let effects = effects::of_body(&def.body);
-        (cx.generator, cx.fallible) = (effects.yields, effects.fails);
+        (cx.generator, cx.fallible) = (effects.yields, effects.fails || def.fails.is_some());
         for binding in captured {
             cx.capture(binding);
         }
@@ -320,6 +324,30 @@ impl<'c> FnCx<'c> {
     pub(crate) fn check_return(&mut self, declared: &Type, actual: &Type, span: Span) {
         let actual = self.checker.settled(actual);
         let passed_through = self.fallible && matches!(actual, Type::Result(..));
+        // A result passed through has to hold what it returns, and fail only with the error
+        // `fails E` names.
+        if let (true, Some(own)) = (passed_through, self.fails.clone()) {
+            if !self.checker.fits(&Type::result(declared.clone(), own.clone()), &actual) {
+                let message = match &actual {
+                    Type::Result(_, error) if !self.checker.fits(&own, error) => {
+                        let (own, error) = (crate::types::a(&own), crate::types::a(error));
+                        format!("`{}` says it fails with {own}, but this fails with {error}", self.name)
+                    }
+                    _ => format!(
+                        "`{}` returns {} or fails with {}, but this is {}",
+                        self.name,
+                        crate::types::a(declared),
+                        crate::types::a(&own),
+                        crate::types::a(&actual)
+                    ),
+                };
+                self.error(
+                    Diagnostic::new(message, span)
+                        .with_help("fail with the error it names, or change `fails`"),
+                );
+            }
+            return;
+        }
         if self.generator || passed_through || self.checker.fits(declared, &actual) {
             return;
         }

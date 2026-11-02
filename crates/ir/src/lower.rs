@@ -692,6 +692,20 @@ impl<'a> Lowering<'a> {
         Ok(Operand::Local(dest))
     }
 
+    /// A call that makes its value itself rather than calling a function: `replace(...)`, a
+    /// consumer like `sum(...)`, or `Ok(...)` or `Err(...)` written out.
+    fn made_by_name(&mut self, expr: &Expr, callee: &Expr, args: &[Arg]) -> Lowered<Option<Operand>> {
+        if matches!(&callee.kind, ExprKind::Name(name) if name == "replace" && self.lookup(name).is_none())
+            && !self.context.functions.contains("replace")
+        {
+            return self.replace(args, expr.span).map(Some);
+        }
+        if let Some(value) = self.consumer(expr, callee, args)? {
+            return Ok(Some(value));
+        }
+        self.written_result(expr, callee, args)
+    }
+
     fn expr(&mut self, expr: &Expr) -> Lowered<Operand> {
         let span = expr.span;
         if let Some((owner, case, args)) = self.built_case(expr) {
@@ -743,13 +757,8 @@ impl<'a> Lowering<'a> {
                 if let Some(copied) = self.copy_call(expr, callee, args)? {
                     return Ok(copied);
                 }
-                if matches!(&callee.kind, ExprKind::Name(name) if name == "replace" && self.lookup(name).is_none())
-                    && !self.context.functions.contains("replace")
-                {
-                    return self.replace(args, span);
-                }
-                if let Some(value) = self.consumer(expr, callee, args)? {
-                    return Ok(value);
+                if let Some(made) = self.made_by_name(expr, callee, args)? {
+                    return Ok(made);
                 }
                 let collected = self.collected_args(callee, args);
                 let args = collected.as_deref().unwrap_or(args);

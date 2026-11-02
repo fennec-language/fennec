@@ -117,6 +117,9 @@ impl Tree {
             if let Some(ret) = &function.ret {
                 tree.node("returns", function.arrow, |tree| tree.type_expr(ret));
             }
+            if let Some(fails) = &function.fails {
+                tree.node("fails", None, |tree| tree.type_expr(fails));
+            }
             tree.stmts(&function.body);
         });
     }

@@ -163,6 +163,11 @@ struct Tree:
             self.open("returns", function.arrow)
             self.write_type_expr(ret)
             self.close()
+        fails = function.fails
+        if fails is not None:
+            self.open("fails", None)
+            self.write_type_expr(fails)
+            self.close()
         self.write_stmts(function.body)
         self.close()
 

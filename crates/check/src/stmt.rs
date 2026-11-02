@@ -75,12 +75,21 @@ impl FnCx<'_> {
             }
             StmtKind::Return(value) => {
                 let declared = self.declared.clone().filter(|_| !self.generator);
+                // `return Err(...)` in a function that says `fails E` makes a result of both.
+                let declared = match (value.as_ref().map(|value| &value.kind), &self.fails) {
+                    (Some(ExprKind::Call { callee, .. }), Some(error)) if matches!(&callee.kind, ExprKind::Name(name) if name == "Err" || name == "Ok") => {
+                        Some(Type::result(declared.unwrap_or(Type::Unit), error.clone()))
+                    }
+                    _ => declared,
+                };
                 let ty = match (value, &declared) {
                     (Some(value), Some(declared)) => self.expr_as(value, declared),
                     (Some(value), None) => self.expr(value),
                     (None, _) => Type::Unit,
                 };
-                if let (Some(declared), Some(value)) = (self.declared.clone(), value) {
+                // A function that says `fails E` returns nothing without an arrow, or fails.
+                let checked = self.declared.clone().or_else(|| self.fails.as_ref().map(|_| Type::Unit));
+                if let (Some(declared), Some(value)) = (checked, value) {
                     self.check_return(&declared, &ty, value.span);
                 }
                 if let (Some(declared), None) = (declared.filter(|ty| *ty != Type::Unit), value) {

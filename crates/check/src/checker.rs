@@ -283,15 +283,28 @@ impl Checker {
         written.and_then(Result::ok).unwrap_or(Type::Unknown)
     }
 
+    /// The error a function says it fails with, from `fails E`.
+    fn declared_error(&self, key: &str) -> Option<Type> {
+        let entry = self.program.functions.get(key)?;
+        let generics = self.generic_names(entry);
+        Some(self.program.resolve_in(entry.def.fails.as_ref()?, &generics).unwrap_or(Type::Unknown))
+    }
+
     /// A signature from what's written, for a function still being checked.
     fn declared(&self, key: &str) -> Option<Signature> {
         let entry = self.program.functions.get(key)?;
         let returned = self.written_return(key);
         let effects = effects::of_body(&entry.def.body);
+        // `-> T fails E` gives back a `T`, or fails with an `E`.
+        let returns = match self.declared_error(key) {
+            Some(error) if entry.def.ret.is_none() => Type::result(Type::Unit, error),
+            Some(error) => Type::result(returned, error),
+            None => wrap(returned, Type::Unknown, effects),
+        };
         Some(Signature {
             params: self.params(entry),
-            returns: wrap(returned, Type::Unknown, effects),
-            can_fail: effects.fails,
+            returns,
+            can_fail: effects.fails || entry.def.fails.is_some(),
             generator: effects.yields,
         })
     }
@@ -411,10 +424,53 @@ impl Checker {
         {
             self.diagnostics.push(arrow_to_nothing(&def.name, arrow, ret.span));
         }
+        if let Some(fails) = def.fails.as_ref().filter(|_| !prelude) {
+            self.only_what_it_says(&def, fails, &body.error);
+        }
+        let returns = match self.declared_error(key) {
+            Some(error) => Type::result(value, error),
+            None => wrap(value, body.error, effects),
+        };
         // Anything still open in what it gives back has been reported, and callers
         // mustn't settle it.
-        signature.returns = forget_vars(&wrap(value, body.error, effects));
+        signature.returns = forget_vars(&returns);
         self.states.insert(key.to_owned(), State::Done(signature));
+    }
+
+    /// Reports a `fails E` that doesn't name an error, or a body that can fail with an error
+    /// other than `E`.
+    fn only_what_it_says(&mut self, def: &FnDef, fails: &fennec_syntax::TypeExpr, errors: &Type) {
+        let Ok(declared) = self.program.resolve(fails) else { return };
+        if !self.is_error_type(&declared) {
+            if declared.is_known() {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        format!("`fails` names an error, but `{}` is {}", written(fails), a(&declared)),
+                        fails.span,
+                    )
+                    .with_help("declare the ways it can fail with `error`, like `error LoadError:`"),
+                );
+            }
+            return;
+        }
+        let Some(own) = declared.type_name() else { return };
+        let others: Vec<String> = match self.settled(errors) {
+            Type::Named(name) if name != own => vec![name],
+            Type::Errors(names) => names.into_iter().filter(|name| name != own).collect(),
+            _ => Vec::new(),
+        };
+        if others.is_empty() {
+            return;
+        }
+        let others: Vec<String> = others.iter().map(|name| format!("`{name}`")).collect();
+        let others = others.join(" or ");
+        self.diagnostics.push(
+            Diagnostic::new(
+                format!("`{}` says it fails with `{own}`, but it can fail with {others} too", def.name),
+                fails.span,
+            )
+            .with_help(format!("handle {others} where it happens, or fail with a `{own}` in its place")),
+        );
     }
 
     /// Whether a program can write a type as it is, with every type it names in scope.

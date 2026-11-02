@@ -4,6 +4,7 @@
 
 mod asserts;
 mod calls;
+mod chains;
 mod copies;
 mod costs;
 mod dead;
@@ -61,6 +62,7 @@ pub fn lint(module: &Module, sources: &Sources) -> Vec<Lint> {
     found.extend(dead::of(module, sources));
     found.extend(loops::of(module, sources));
     found.extend(names::of(module, sources));
+    found.extend(chains::of(module, sources));
     found.extend(paths::of(sources));
     found.extend(asserts::of(module));
     found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));

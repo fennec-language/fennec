@@ -9,21 +9,27 @@
 //! Tasks stay on the thread that made them, so each thread's runtime keeps owning what its
 //! tasks make.
 //!
-//! A task is never dropped while suspended, since unwinding its stack would take
-//! `panic=unwind`. Cancelling one resumes it with `Wake::Cancelled`, and from then on `park`
-//! answers it at once with the same, so it runs to its end. Dropping a scheduler cancels its
-//! tasks that way.
+//! A task is never dropped while suspended: that stops the process. Cancelling one resumes it
+//! with `Wake::Cancelled`, and from then on `park` answers it at once with the same, so it
+//! runs to its end. Dropping a scheduler cancels its tasks that way. A panic in a task stops
+//! the process, in every build, as `panic=abort` does in release builds.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
-use corosensei::stack::DefaultStack;
+use corosensei::stack::{DefaultStack, Stack as _};
 use corosensei::{Coroutine, CoroutineResult};
 
 #[expect(unsafe_code, reason = "following the running task's yielder, under the invariants in `current`")]
 mod current;
 
-/// A task's number, unique on its thread for the life of the thread's scheduler.
+/// A task's number, which no other task on its thread ever has.
 pub type TaskId = u64;
+
+thread_local! {
+    /// The number the next task made on this thread gets.
+    static NEXT: Cell<TaskId> = const { Cell::new(1) };
+}
 
 /// What a parked task waits for, as a number its scheduler's owner gives meaning to, such as
 /// a socket's token and whether it waits to read or write.
@@ -58,33 +64,43 @@ pub fn park(request: Request) -> Option<Wake> {
 
 struct Task {
     coroutine: Coroutine<Wake, Request, i64, DefaultStack>,
+    stack: current::Bounds,
     cancelled: bool,
+}
+
+impl Drop for Task {
+    /// A task that started and hasn't ended still has a stack in use, which nothing may drop.
+    fn drop(&mut self) {
+        if self.coroutine.started() && !self.coroutine.done() {
+            current::stop("a parked task was dropped before it ended");
+        }
+    }
 }
 
 /// A thread's tasks.
 pub struct Scheduler {
     stack_bytes: usize,
     tasks: HashMap<TaskId, Task>,
-    next: TaskId,
 }
 
 impl Scheduler {
     /// A scheduler whose tasks each get a stack of `stack_bytes`, plus a guard page. A stack
     /// takes memory only for the pages a task touches.
     pub fn new(stack_bytes: usize) -> Scheduler {
-        Scheduler { stack_bytes, tasks: HashMap::new(), next: 1 }
+        Scheduler { stack_bytes, tasks: HashMap::new() }
     }
 
     /// Makes a task that runs `body` on its own stack, from its first resume.
     pub fn spawn(&mut self, body: impl FnOnce() -> i64 + 'static) -> std::io::Result<TaskId> {
-        let task = self.next;
         let stack = DefaultStack::new(self.stack_bytes)?;
+        let bounds = current::Bounds { low: stack.limit().get(), high: stack.base().get() };
+        let task = NEXT.get();
+        NEXT.set(task + 1);
         let coroutine = Coroutine::with_stack(stack, move |yielder: &current::TaskYielder, _first: Wake| {
             current::enter(task, yielder);
             body()
         });
-        self.next += 1;
-        self.tasks.insert(task, Task { coroutine, cancelled: false });
+        self.tasks.insert(task, Task { coroutine, stack: bounds, cancelled: false });
         Ok(task)
     }
 
@@ -94,7 +110,7 @@ impl Scheduler {
         let Some(mut running) = self.tasks.remove(&task) else { return Step::Unknown };
         running.cancelled |= wake == Wake::Cancelled;
         let result = {
-            let _running = current::Running::start(task, running.cancelled);
+            let _running = current::Running::start(task, running.stack, running.cancelled);
             running.coroutine.resume(wake)
         };
         match result {
@@ -123,7 +139,7 @@ impl Scheduler {
 }
 
 impl Drop for Scheduler {
-    /// Cancels every task left, running each to its end, so no stack is dropped suspended.
+    /// Cancels every task left, running each to its end, so no stack is dropped in use.
     fn drop(&mut self) {
         let mut left: Vec<TaskId> = self.tasks.keys().copied().collect();
         left.sort_unstable();

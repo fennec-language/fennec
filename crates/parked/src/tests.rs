@@ -1,5 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{Request, Scheduler, Step, TaskId, Wake, park};
 
@@ -21,9 +23,9 @@ impl Seeded {
     }
 }
 
-/// What a task asks for on its `step`th park, and what it's woken with.
-fn request(task: TaskId, step: u64) -> Request {
-    task * 1_000 + step
+/// What the task the test calls `key` asks for on its `step`th park, and what it's woken with.
+fn request(key: u64, step: u64) -> Request {
+    key * 1_000 + step
 }
 
 fn answer(request: Request) -> Wake {
@@ -31,17 +33,28 @@ fn answer(request: Request) -> Wake {
 }
 
 /// A task that parks `parks` times, checking each time that it's woken with its own answer and
-/// that what it keeps on its stack is as it left it. It gives back its number.
-fn checked_task(task: TaskId, parks: u64) -> impl FnOnce() -> i64 {
+/// that what it keeps on its stack is as it left it. It gives back its key.
+fn checked_task(key: u64, parks: u64) -> impl FnOnce() -> i64 {
     move || {
-        let kept: [u64; 16] = std::array::from_fn(|at| task.wrapping_mul(31).wrapping_add(at as u64));
+        let kept: [u64; 16] = std::array::from_fn(|at| key.wrapping_mul(31).wrapping_add(at as u64));
         for step in 0..parks {
-            let asked = request(task, step);
-            assert_eq!(park(asked), Some(answer(asked)), "task {task} woken with another's answer");
-            let again: [u64; 16] = std::array::from_fn(|at| task.wrapping_mul(31).wrapping_add(at as u64));
-            assert_eq!(kept, again, "task {task}'s stack changed while it was parked");
+            let asked = request(key, step);
+            assert_eq!(park(asked), Some(answer(asked)), "task {key} woken with another's answer");
+            let again: [u64; 16] = std::array::from_fn(|at| key.wrapping_mul(31).wrapping_add(at as u64));
+            assert_eq!(kept, again, "task {key}'s stack changed while it was parked");
         }
-        i64::try_from(task).unwrap()
+        i64::try_from(key).unwrap()
+    }
+}
+
+/// Resumes `task` until it ends, answering each park as `checked_task` expects.
+fn finish(scheduler: &mut Scheduler, task: TaskId, mut wake: Wake) -> i64 {
+    loop {
+        match scheduler.resume(task, wake) {
+            Step::Parked(asked) => wake = answer(asked),
+            Step::Done(result) => return result,
+            Step::Unknown => unreachable!(),
+        }
     }
 }
 
@@ -50,17 +63,15 @@ fn thousands_of_tasks_take_turns_on_one_thread_in_seeded_orders() {
     for seed in [1, 2, 3, 0xfeed, 0xdead_beef] {
         let mut order = Seeded(seed);
         let mut scheduler = Scheduler::new(STACK);
-        let mut parked: Vec<(TaskId, Request)> = Vec::new();
+        let mut parked: Vec<(TaskId, u64, Request)> = Vec::new();
         let mut ended = 0;
-        for _ in 0..2_000 {
-            let task = scheduler.next;
+        for key in 1..=2_000 {
             let parks = u64::try_from(order.below(6)).unwrap();
-            let made = scheduler.spawn(checked_task(task, parks)).unwrap();
-            assert_eq!(made, task);
+            let task = scheduler.spawn(checked_task(key, parks)).unwrap();
             match scheduler.resume(task, Wake::Ready(0)) {
-                Step::Parked(asked) => parked.push((task, asked)),
+                Step::Parked(asked) => parked.push((task, key, asked)),
                 Step::Done(result) => {
-                    assert_eq!(result, i64::try_from(task).unwrap());
+                    assert_eq!(result, i64::try_from(key).unwrap());
                     ended += 1;
                 }
                 Step::Unknown => unreachable!(),
@@ -70,14 +81,14 @@ fn thousands_of_tasks_take_turns_on_one_thread_in_seeded_orders() {
                 if parked.is_empty() {
                     break;
                 }
-                let (task, asked) = parked.swap_remove(order.below(parked.len()));
+                let (task, key, asked) = parked.swap_remove(order.below(parked.len()));
                 match scheduler.resume(task, answer(asked)) {
                     Step::Parked(next) => {
                         assert_eq!(next, asked + 1);
-                        parked.push((task, next));
+                        parked.push((task, key, next));
                     }
                     Step::Done(result) => {
-                        assert_eq!(result, i64::try_from(task).unwrap());
+                        assert_eq!(result, i64::try_from(key).unwrap());
                         ended += 1;
                     }
                     Step::Unknown => unreachable!(),
@@ -85,9 +96,9 @@ fn thousands_of_tasks_take_turns_on_one_thread_in_seeded_orders() {
             }
         }
         while !parked.is_empty() {
-            let (task, asked) = parked.swap_remove(order.below(parked.len()));
+            let (task, key, asked) = parked.swap_remove(order.below(parked.len()));
             match scheduler.resume(task, answer(asked)) {
-                Step::Parked(next) => parked.push((task, next)),
+                Step::Parked(next) => parked.push((task, key, next)),
                 Step::Done(_) => ended += 1,
                 Step::Unknown => unreachable!(),
             }
@@ -111,7 +122,7 @@ fn outside_a_task_park_asks_the_caller_to_wait_itself() {
     // After a task, the thread is a plain thread again.
     assert_eq!(park(7), None);
     assert_eq!(scheduler.resume(task, Wake::Ready(0)), Step::Unknown);
-    assert_eq!(scheduler.resume(12_345, Wake::Ready(0)), Step::Unknown);
+    assert_eq!(scheduler.resume(12_345_678, Wake::Ready(0)), Step::Unknown);
 }
 
 #[test]
@@ -124,11 +135,8 @@ fn a_task_ends_while_others_stay_parked() {
     assert_eq!(scheduler.resume(third, Wake::Ready(0)), Step::Parked(request(3, 0)));
     assert_eq!(scheduler.resume(second, Wake::Ready(0)), Step::Done(2));
     assert_eq!(scheduler.len(), 2);
-    assert_eq!(scheduler.resume(third, answer(request(3, 0))), Step::Parked(request(3, 1)));
-    assert_eq!(scheduler.resume(third, answer(request(3, 1))), Step::Done(3));
-    assert_eq!(scheduler.resume(first, answer(request(1, 0))), Step::Parked(request(1, 1)));
-    assert_eq!(scheduler.resume(first, answer(request(1, 1))), Step::Parked(request(1, 2)));
-    assert_eq!(scheduler.resume(first, answer(request(1, 2))), Step::Done(1));
+    assert_eq!(finish(&mut scheduler, third, answer(request(3, 0))), 3);
+    assert_eq!(finish(&mut scheduler, first, answer(request(1, 0))), 1);
     assert!(scheduler.is_empty());
 }
 
@@ -160,29 +168,7 @@ fn a_failure_in_a_parked_task_ends_only_that_task() {
     assert_eq!(scheduler.resume(failing, Wake::Ready(0)), Step::Parked(1));
     assert_eq!(scheduler.resume(other, Wake::Ready(0)), Step::Parked(request(2, 0)));
     assert_eq!(scheduler.resume(failing, Wake::Ready(0)), Step::Done(1));
-    assert_eq!(scheduler.resume(other, answer(request(2, 0))), Step::Parked(request(2, 1)));
-    assert_eq!(scheduler.resume(other, answer(request(2, 1))), Step::Done(2));
-}
-
-#[test]
-fn a_panic_in_a_parked_task_leaves_the_thread_and_the_other_tasks_as_they_were() {
-    let mut scheduler = Scheduler::new(STACK);
-    let panicking = scheduler
-        .spawn(|| {
-            park(1);
-            panic!("a task's own bug");
-        })
-        .unwrap();
-    let other = scheduler.spawn(checked_task(2, 1)).unwrap();
-    assert_eq!(scheduler.resume(panicking, Wake::Ready(0)), Step::Parked(1));
-    assert_eq!(scheduler.resume(other, Wake::Ready(0)), Step::Parked(request(2, 0)));
-    let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        scheduler.resume(panicking, Wake::Ready(0));
-    }));
-    assert!(resumed.is_err());
-    assert_eq!(park(7), None);
-    assert_eq!(scheduler.resume(panicking, Wake::Ready(0)), Step::Unknown);
-    assert_eq!(scheduler.resume(other, answer(request(2, 0))), Step::Done(2));
+    assert_eq!(finish(&mut scheduler, other, answer(request(2, 0))), 2);
 }
 
 #[test]
@@ -202,6 +188,32 @@ fn a_cancelled_task_is_told_so_and_runs_to_its_end_without_parking_again() {
     assert_eq!(scheduler.cancel(task), Step::Done(7));
     assert_eq!(*woken.borrow(), [Some(Wake::Cancelled); 3]);
     assert_eq!(scheduler.cancel(task), Step::Unknown);
+}
+
+/// Parks when dropped, as closing a socket that flushes what's left might.
+struct ParksWhenDropped(Rc<RefCell<Vec<Option<Wake>>>>);
+
+impl Drop for ParksWhenDropped {
+    fn drop(&mut self) {
+        self.0.borrow_mut().push(park(9));
+    }
+}
+
+#[test]
+fn a_destructor_that_parks_while_its_task_is_cancelled_is_told_so_at_once() {
+    let mut scheduler = Scheduler::new(STACK);
+    let woken = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&woken);
+    let task = scheduler
+        .spawn(move || {
+            let _socket = ParksWhenDropped(seen);
+            while park(1) != Some(Wake::Cancelled) {}
+            0
+        })
+        .unwrap();
+    assert_eq!(scheduler.resume(task, Wake::Ready(0)), Step::Parked(1));
+    assert_eq!(scheduler.cancel(task), Step::Done(0));
+    assert_eq!(*woken.borrow(), [Some(Wake::Cancelled)]);
 }
 
 #[test]
@@ -225,6 +237,34 @@ fn dropping_a_scheduler_cancels_its_parked_and_unstarted_tasks() {
     }
     assert_eq!(ended.get(), 100);
     assert_eq!(park(7), None);
+}
+
+thread_local! {
+    static KEPT: RefCell<Option<Scheduler>> = const { RefCell::new(None) };
+}
+
+#[test]
+fn a_scheduler_dropped_as_its_thread_exits_runs_its_tasks_to_their_end() {
+    let ended = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&ended);
+    std::thread::spawn(move || {
+        let mut scheduler = Scheduler::new(STACK);
+        for _ in 0..10 {
+            let ended = Arc::clone(&counted);
+            let task = scheduler
+                .spawn(move || {
+                    while park(1) != Some(Wake::Cancelled) {}
+                    ended.fetch_add(1, Ordering::Relaxed);
+                    0
+                })
+                .unwrap();
+            assert_eq!(scheduler.resume(task, Wake::Ready(0)), Step::Parked(1));
+        }
+        KEPT.set(Some(scheduler));
+    })
+    .join()
+    .unwrap();
+    assert_eq!(ended.load(Ordering::Relaxed), 10);
 }
 
 /// A runtime function native code calls, which parks from inside it.
@@ -264,62 +304,152 @@ fn a_task_parks_from_deep_inside_calls_and_inside_another_scheduler_s_task() {
 }
 
 #[test]
-fn task_numbers_are_never_given_twice() {
+fn an_inner_task_is_resumed_later_by_a_different_parent() {
+    let inner = Rc::new(RefCell::new(Scheduler::new(STACK)));
+    let nested = inner.borrow_mut().spawn(|| i64::try_from(native_code(1, 20) + native_code(0, 21)).unwrap());
+    let nested = nested.unwrap();
+    let mut outer = Scheduler::new(STACK);
+    let started_by = Rc::clone(&inner);
+    let first = outer
+        .spawn(move || {
+            assert_eq!(started_by.borrow_mut().resume(nested, Wake::Ready(0)), Step::Parked(20));
+            i64::try_from(native_code(0, 1)).unwrap()
+        })
+        .unwrap();
+    let finished_by = Rc::clone(&inner);
+    let second = outer
+        .spawn(move || {
+            assert_eq!(finished_by.borrow_mut().resume(nested, Wake::Ready(200)), Step::Parked(21));
+            let got = native_code(0, 2);
+            assert_eq!(finished_by.borrow_mut().resume(nested, Wake::Ready(300)), Step::Done(501));
+            i64::try_from(got).unwrap()
+        })
+        .unwrap();
+    assert_eq!(outer.resume(first, Wake::Ready(0)), Step::Parked(1));
+    assert_eq!(outer.resume(second, Wake::Ready(0)), Step::Parked(2));
+    assert_eq!(outer.resume(first, Wake::Ready(10)), Step::Done(10));
+    assert_eq!(outer.resume(second, Wake::Ready(20)), Step::Done(20));
+    assert!(inner.borrow().is_empty());
+}
+
+#[test]
+fn task_numbers_are_never_given_twice_on_a_thread() {
     let mut scheduler = Scheduler::new(STACK);
     let first = scheduler.spawn(|| 0).unwrap();
     assert_eq!(scheduler.resume(first, Wake::Ready(0)), Step::Done(0));
     let second = scheduler.spawn(|| 0).unwrap();
-    assert_ne!(first, second);
+    let mut other = Scheduler::new(STACK);
+    let third = other.spawn(|| 0).unwrap();
+    assert!(first != second && second != third && first != third);
     assert_eq!(scheduler.resume(first, Wake::Ready(0)), Step::Unknown);
+    assert_eq!(other.resume(second, Wake::Ready(0)), Step::Unknown);
     assert_eq!(scheduler.resume(second, Wake::Ready(0)), Step::Done(0));
+    assert_eq!(other.resume(third, Wake::Ready(0)), Step::Done(0));
 }
 
-/// Set in a copy of this test program run to break an invariant on purpose.
-const BREAK: &str = "FENNEC_PARKED_BREAK";
+/// Set in a copy of this test program run to stop the process on purpose.
+const STOP: &str = "FENNEC_PARKED_STOP";
 
-#[test]
-fn a_broken_invariant_stops_the_process_with_a_message_instead_of_switching_stacks() {
-    if let Some(how) = std::env::var_os(BREAK) {
-        let breaking = how.clone();
-        let mut scheduler = Scheduler::new(STACK);
-        let task = scheduler
-            .spawn(move || {
-                if breaking == "suspend" {
-                    // Another task marked as running while this one parks.
-                    super::current::pretend_running(999);
+/// What a copy of this test program does to stop the process, by name.
+fn stop_the_process(how: &str) {
+    let mut scheduler = Scheduler::new(STACK);
+    match how {
+        // Another task marked as running while this one parks.
+        "another task parks" => {
+            let task = scheduler
+                .spawn(|| {
+                    super::current::pretend_running(999_999);
                     park(1);
-                } else {
-                    park(1);
-                }
-                0
-            })
-            .unwrap();
-        if how == "resume" {
-            scheduler.resume(task, Wake::Ready(0));
-            // Another task marked as running while this one is resumed.
-            let _running = super::current::Running::start(999, false);
-            scheduler.tasks.get_mut(&task).unwrap().coroutine.resume(Wake::Ready(0));
-        } else if how == "enter" {
-            let mut running = scheduler.tasks.remove(&task).unwrap();
-            let _running = super::current::Running::start(999, false);
-            running.coroutine.resume(Wake::Ready(0));
-        } else {
+                    0
+                })
+                .unwrap();
             scheduler.resume(task, Wake::Ready(0));
         }
+        // Another task marked as running while this one is resumed, or starts.
+        "another task is resumed" | "another task starts" => {
+            let task = scheduler.spawn(|| i64::try_from(native_code(0, 1)).unwrap()).unwrap();
+            if how == "another task is resumed" {
+                scheduler.resume(task, Wake::Ready(0));
+            }
+            let mut running = scheduler.tasks.remove(&task).unwrap();
+            let _running = super::current::Running::start(999_999, running.stack, false);
+            running.coroutine.resume(Wake::Ready(0));
+        }
+        // A task finding an outer task's records, number and all, while it runs on its own
+        // stack: only the stack check tells them apart.
+        "an outer task's records" => {
+            let task = scheduler
+                .spawn(|| {
+                    let (current, resumed) = super::current::records();
+                    let mut inner = Scheduler::new(STACK);
+                    let nested = inner
+                        .spawn(move || {
+                            super::current::overwrite(current, resumed);
+                            park(1);
+                            0
+                        })
+                        .unwrap();
+                    inner.resume(nested, Wake::Ready(0));
+                    0
+                })
+                .unwrap();
+            scheduler.resume(task, Wake::Ready(0));
+        }
+        "a parked task is dropped" => {
+            let task = scheduler.spawn(|| i64::try_from(native_code(0, 1)).unwrap()).unwrap();
+            scheduler.resume(task, Wake::Ready(0));
+            drop(scheduler.tasks.remove(&task));
+        }
+        "a task panics" => {
+            let task = scheduler
+                .spawn(|| {
+                    park(1);
+                    panic!("a task's own bug");
+                })
+                .unwrap();
+            scheduler.resume(task, Wake::Ready(0));
+            scheduler.resume(task, Wake::Ready(0));
+        }
+        "a task panics as its scheduler drops" => {
+            for _ in 0..3 {
+                let task = scheduler
+                    .spawn(|| {
+                        assert_ne!(park(1), Some(Wake::Cancelled), "a task's own bug, when cancelled");
+                        0
+                    })
+                    .unwrap();
+                scheduler.resume(task, Wake::Ready(0));
+            }
+            drop(scheduler);
+        }
+        _ => unreachable!("no way to stop the process called {how}"),
+    }
+}
+
+#[test]
+fn a_broken_invariant_a_dropped_parked_task_or_a_panic_stops_the_process() {
+    if let Some(how) = std::env::var_os(STOP) {
+        stop_the_process(&how.to_string_lossy());
         return;
     }
-    for how in ["suspend", "resume", "enter"] {
+    let ours = "stopping rather than switching onto the wrong stack";
+    for (how, said) in [
+        ("another task parks", ours),
+        ("another task is resumed", ours),
+        ("another task starts", ours),
+        ("an outer task's records", "on another stack"),
+        ("a parked task is dropped", "dropped before it ended"),
+        ("a task panics", "a task's own bug"),
+        ("a task panics as its scheduler drops", "a task's own bug, when cancelled"),
+    ] {
         let ran = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "tests::a_broken_invariant_stops_the_process_with_a_message_instead_of_switching_stacks",
-            ])
+            .args(["--exact", "tests::a_broken_invariant_a_dropped_parked_task_or_a_panic_stops_the_process"])
             .args(["--nocapture", "--test-threads=1"])
-            .env(BREAK, how)
+            .env(STOP, how)
             .output()
             .unwrap();
-        let said = String::from_utf8_lossy(&ran.stderr);
+        let printed = String::from_utf8_lossy(&ran.stderr);
         assert!(!ran.status.success(), "{how}: the process went on");
-        assert!(said.contains("stopping rather than switching onto the wrong stack"), "{how}: {said}");
+        assert!(printed.contains(said), "{how}: {printed}");
     }
 }

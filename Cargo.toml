@@ -54,9 +54,10 @@ getrandom = { version = "=0.4.3", default-features = false }
 rayon-core = { version = "=1.13.0", default-features = false }
 # Switching a parked task's stack, for `parallel(server)`: the stack switch is a few lines of
 # assembly per platform, with guard pages on every stack, in a small, well-audited crate whose
-# `unsafe` stays its own. Our one use of `unsafe` with it is in fennec-parked. Under MIT or
-# Apache-2.0.
-corosensei = { version = "=0.3.4" }
+# `unsafe` stays its own. Our one use of `unsafe` with it is in fennec-parked. Without its
+# `unwind` feature, a panic in a task stops the process in every build, as `panic=abort` does,
+# and a task's stack is never unwound from outside it. Under MIT or Apache-2.0.
+corosensei = { version = "=0.3.4", default-features = false, features = ["default-stack"] }
 cranelift-codegen = "=0.137.0"
 cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"

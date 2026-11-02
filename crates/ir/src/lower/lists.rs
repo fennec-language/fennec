@@ -87,7 +87,6 @@ impl Lowering<'_> {
         Ok(Operand::Local(self.read_item(held.as_ref().unwrap_or(&ty), object, index, &ty, expr.span)))
     }
 
-    /// `item in items`, and `not in`, on a collection.
     /// `item in value` when `value`'s type has its own `def in`: a call to it, with the value
     /// first, and `not in` its opposite. The item is worked out first, as it's written first.
     fn own_in(&mut self, op: BinOp, item: &Expr, items: &Expr, span: Span) -> Lowered<Option<Operand>> {
@@ -112,6 +111,7 @@ impl Lowering<'_> {
         Ok(Some(Operand::Local(flipped)))
     }
 
+    /// `item in items`, and `not in`, on a collection.
     pub(super) fn contains(&mut self, op: BinOp, item: &Expr, items: &Expr, span: Span) -> Lowered<Operand> {
         if let Some(found) = self.own_in(op, item, items, span)? {
             return Ok(found);

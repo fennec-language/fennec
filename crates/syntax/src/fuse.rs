@@ -185,7 +185,13 @@ pub fn expand(names: &[String], iter: &Expr, body: &[Stmt], around: &Surrounding
                 [object, index].map(|value| Arg { name: None, is_mut: false, value: (**value).clone() });
             copied_in(names, (&key, &args, iter.span), body, around)
         }
-        _ => None,
+        // `for x in value` where its type yields its items with `def iter`: that method's
+        // body copied in, as if the loop called it.
+        _ => {
+            let key = (around.method)(iter, "iter")?;
+            let args = [Arg { name: None, is_mut: false, value: iter.clone() }];
+            copied_in(names, (&key, &args, iter.span), body, around)
+        }
     }
 }
 

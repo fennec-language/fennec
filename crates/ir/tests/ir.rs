@@ -1425,7 +1425,12 @@ fn a_loop_over_a_type_goes_through_what_its_iter_gives() {
 def f(bag: Bag) -> list[int]:
     [one for one in bag]
 ";
+    // Its body copied into the loop, with no generator.
     let text = printed(source, "f").unwrap();
+    assert!(!text.contains("Bag.iter") && !text.contains("resume"), "{text}");
+    // One that can't be copied is called, and the loop resumes what it gives.
+    let leaving = source.replace("            yield one", "            yield one\n        return");
+    let text = printed(&leaving, "f").unwrap();
     assert!(text.contains("= call Bag.iter(_0)"), "{text}");
 }
 
@@ -2562,6 +2567,10 @@ fn a_loop_over_what_a_yield_method_gives_is_a_plain_loop() {
     def all(self) -> Iterator[T]:
         for item in self.items:
             yield item
+
+    def iter(self) -> Iterator[T]:
+        for item in self.items:
+            yield item
 ";
     let total = "
 def total(packed: Packed[int], at: int) -> int:
@@ -2569,6 +2578,8 @@ def total(packed: Packed[int], at: int) -> int:
     for n in packed[at]:
         sum_so_far += n
     for n in packed.all():
+        sum_so_far += n
+    for n in packed:
         sum_so_far += n
     sum_so_far
 

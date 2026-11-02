@@ -58,14 +58,21 @@ pub struct Layouts {
     /// Whether a `Buffer[T]` is laid out as a list's block, for a backend that does its
     /// methods. Otherwise it's an object the interpreter holds.
     native_buffers: bool,
-    /// Whether a `str` is held in place as its 24-byte header (see the runtime's `text`),
-    /// rather than as its block's address.
+    /// What's held in place rather than by a block's address.
+    in_place: InPlace,
+    /// The types `Ty::Block` names, by number.
+    blocks: std::cell::RefCell<Vec<Ty>>,
+}
+
+/// What a backend holds in place, where others hold the address of a block.
+#[derive(Clone, Copy, Default)]
+struct InPlace {
+    /// Whether a `str` is held as its 24-byte header (see the runtime's `text`), rather than
+    /// as its block's address.
     text_headers: bool,
     /// Whether a struct's string and list fields live inside it, so a struct holding them is
     /// still plain: kept in place, its fields owned by whatever holds it.
-    inline_counted: bool,
-    /// The types `Ty::Block` names, by number.
-    blocks: std::cell::RefCell<Vec<Ty>>,
+    counted_fields: bool,
 }
 
 /// What laying out types needs to see: the checker's structs, and the enums as written.
@@ -119,9 +126,11 @@ impl Layouts {
         let mut layouts = Layouts {
             one_word_optionals: true,
             native_buffers: true,
-            text_headers,
-            // `FENNEC_INLINE_STRUCTS=0` boxes them again, in case one shows a problem.
-            inline_counted: std::env::var_os("FENNEC_INLINE_STRUCTS").is_none_or(|set| set != "0"),
+            in_place: InPlace {
+                text_headers,
+                // `FENNEC_INLINE_STRUCTS=0` boxes them again, in case one shows a problem.
+                counted_fields: std::env::var_os("FENNEC_INLINE_STRUCTS").is_none_or(|set| set != "0"),
+            },
             ..Layouts::default()
         };
         for (name, def) in definitions {
@@ -317,8 +326,8 @@ impl Layouts {
             Type::Float => Ty::Float,
             Type::Bool => Ty::Bool,
             Type::Named(inner) => Ty::Struct(self.add(sources, inner, visiting)?),
-            Type::Str if holds && self.inline_counted => Ty::Str,
-            Type::List(item) if holds && self.inline_counted => {
+            Type::Str if holds && self.in_place.counted_fields => Ty::Str,
+            Type::List(item) if holds && self.in_place.counted_fields => {
                 let item = match item.as_ref() {
                     Type::Int => Ty::Int,
                     Type::Float => Ty::Float,
@@ -339,7 +348,7 @@ impl Layouts {
         for (name, ty, default) in fields {
             let size = match ty {
                 Ty::Struct(id) => self.get(id)?.size,
-                Ty::Str if self.text_headers => 3 * WORD,
+                Ty::Str if self.in_place.text_headers => 3 * WORD,
                 _ => WORD,
             };
             placed.push(Field { name, ty, offset, default });
@@ -390,7 +399,7 @@ impl Layouts {
     /// Whether a `str` is held in place as its 24-byte header.
     #[must_use]
     pub fn text_headers(&self) -> bool {
-        self.text_headers
+        self.in_place.text_headers
     }
 
     /// The type a `Ty::Block` names.

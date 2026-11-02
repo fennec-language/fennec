@@ -667,6 +667,12 @@ impl FnCx<'_> {
         match (type_name, types.as_slice()) {
             ("IdMap", []) if has_item => Type::IdMap(Box::new(item)),
             ("SoaList", []) if has_item => Type::list(item),
+            ("Buffer", []) if has_item => Type::Buffer(Box::new(item)),
+            ("Buffer", [Type::Int])
+                if has_item && args.first().is_some_and(|arg| arg.name.as_deref() == Some("capacity")) =>
+            {
+                Type::Buffer(Box::new(item))
+            }
             _ => {
                 self.error(crate::messages::wrong_args(type_name, span));
                 Type::Unknown

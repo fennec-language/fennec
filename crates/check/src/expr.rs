@@ -431,7 +431,9 @@ impl FnCx<'_> {
     /// `x in items`: `x` has to be the kind of thing `items` holds.
     fn contains(&mut self, item: &Type, collection: &Type, span: Span) {
         let held = match collection {
-            Type::List(held) | Type::Set(held) | Type::Dict(held, _) => held.as_ref().clone(),
+            Type::List(held) | Type::Buffer(held) | Type::Set(held) | Type::Dict(held, _) => {
+                held.as_ref().clone()
+            }
             Type::IdMap(held) => Type::Id(held.clone()),
             Type::Str => Type::Str,
             Type::Bytes => Type::Int,
@@ -660,6 +662,7 @@ impl FnCx<'_> {
     pub(crate) fn item_type(&mut self, ty: &Type, span: Span) -> Type {
         match self.checker.settled(ty) {
             Type::List(item)
+            | Type::Buffer(item)
             | Type::Set(item)
             | Type::Iterator(item)
             | Type::IdMap(item)

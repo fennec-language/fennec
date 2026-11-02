@@ -250,6 +250,7 @@ impl Context<'_> {
         match ty {
             Type::Int | Type::Float | Type::Bool | Type::Str | Type::Bytes | Type::None => true,
             Type::List(item)
+            | Type::Buffer(item)
             | Type::Iterator(item)
             | Type::Set(item)
             | Type::Optional(item)

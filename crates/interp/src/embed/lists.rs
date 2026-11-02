@@ -11,6 +11,8 @@ use std::rc::Rc;
 
 use fennec_syntax::Diagnostic;
 
+use crate::buffer::{MIN_ROOM, grown_room};
+
 use super::heap::{TEXT_HEADER_WORDS, read_block, release, text_address, write};
 use super::{State, attempt, span, with};
 use crate::packed::{Element, Packed};
@@ -23,9 +25,6 @@ pub const LIST_HEADER_WORDS: usize = 4;
 pub const SORT_INTS: i64 = 0;
 pub const SORT_FLOATS: i64 = 1;
 pub const SORT_STRINGS: i64 = 2;
-
-/// The fewest items a new list has room for.
-const MIN_ROOM: usize = 4;
 
 /// The shape of lists of the element numbered `element`.
 fn shape(state: &State, element: usize) -> u64 {
@@ -146,6 +145,11 @@ pub extern "C" fn unshare(list: i64) -> i64 {
 }
 
 fn grow_in(state: &mut State, list: i64, more: usize) -> Option<i64> {
+    grow_to(state, list, more, 0)
+}
+
+/// `grow_in`, with room for at least `least` items afterwards.
+fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i64> {
     let address = u64::try_from(list).ok()?;
     let block = state.heap.block(address)?;
     let element = element_of(state, block)?;
@@ -155,14 +159,14 @@ fn grow_in(state: &mut State, list: i64, more: usize) -> Option<i64> {
     let count = usize::try_from(*block.get(2)?).ok()?;
     let room = usize::try_from(*block.get(3)?).ok()?;
     let shared = block.first() != Some(&1);
-    let address = if shared || count + more > room {
+    let wanted = if count + more > room { grown_room(count, more) } else { room }.max(least);
+    let address = if shared || wanted > room {
         let kept = items(block, stride).to_vec();
         if shared {
             state.heap.counts.copied(kept.len());
             retain_items(state, &element, &kept);
         }
-        let grown =
-            build(state, at, stride, &kept, if count + more > room { 2 * (count + more) } else { room });
+        let grown = build(state, at, stride, &kept, wanted);
         if shared {
             release(state, address);
         } else {
@@ -531,6 +535,46 @@ pub extern "C" fn remove(list: i64, word: i64, start: i64, end: i64) {
 /// `word in list`, on a list of items of a word each, or of items passed as blocks.
 pub extern "C" fn contains(list: i64, word: i64) -> i8 {
     with(|state| i8::from(place_of(state, u64::try_from(list).unwrap_or(0), word.cast_unsigned()).is_some()))
+}
+
+/// `buffer.reserve(room)`: takes over a list's owner and gives back one only that owner holds,
+/// with room for at least `room` items, the same block when it had one owner and the room.
+pub extern "C" fn reserve(list: i64, room: i64) -> i64 {
+    with(|state| grow_to(state, list, 0, usize::try_from(room).unwrap_or(0)).unwrap_or(list))
+}
+
+/// `buffer.truncate(length)`: takes over a list's owner and gives back one only that owner
+/// holds with no more than `length` items, letting go of the rest. Its room stays.
+pub extern "C" fn truncate(list: i64, length: i64) -> i64 {
+    with(|state| {
+        let address = grow_in(state, list, 0).unwrap_or(list);
+        let at = u64::try_from(address).unwrap_or(0);
+        let kept = usize::try_from(length).unwrap_or(0);
+        let Some(block) = state.heap.block(at) else { return address };
+        let Some(element) = element_of(state, block) else { return address };
+        let stride = element.words().max(1);
+        let count = items(block, stride).len() / stride;
+        if kept >= count {
+            return address;
+        }
+        let dropped = items(block, stride).get(kept * stride..).unwrap_or_default().to_vec();
+        if let Some(block) = state.heap.block_mut(at) {
+            let start = LIST_HEADER_WORDS + kept * stride;
+            block.get_mut(start..start + dropped.len()).unwrap_or_default().fill(0);
+            if let Some(length) = block.get_mut(2) {
+                *length = u64::try_from(kept).unwrap_or(0);
+            }
+        }
+        release_items(state, &element, &dropped);
+        address
+    })
+}
+
+/// Fails with the interpreter's message for `pop` on an empty `Buffer`.
+pub extern "C" fn pop_empty_buffer(start: i64, end: i64) {
+    attempt(|_: &mut State| -> Result<(), Diagnostic> {
+        Err(Diagnostic::new("can't pop from an empty Buffer", span(start, end)))
+    });
 }
 
 /// Fails with the interpreter's message for `pop` on an empty list.

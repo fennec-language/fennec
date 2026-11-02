@@ -29,6 +29,7 @@ impl Interp<'_> {
         match (type_name, args.as_slice()) {
             ("IdMap", []) => return Ok(Value::IdMap(Rc::default())),
             ("SoaList", []) => return Ok(Value::list(Vec::new())),
+            ("Buffer", _) => return crate::buffer::make(&args, span),
             ("IdMap" | "SoaList" | "Id", _) => {
                 return Err(Diagnostic::new(
                     format!("`{type_name}` was called with the wrong arguments"),

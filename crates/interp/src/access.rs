@@ -99,6 +99,12 @@ impl Interp<'_> {
             Value::List(items) => {
                 items.iter().zip(0_i64..).map(|(item, at)| (Some(Value::Int(at)), item.clone())).collect()
             }
+            Value::Buffer(buffer) => buffer
+                .items
+                .iter()
+                .zip(0_i64..)
+                .map(|(item, at)| (Some(Value::Int(at)), item.clone()))
+                .collect(),
             Value::Tuple(items) | Value::Set(items) => keyless(&items),
             Value::Capability(Capability::Args) => keyless(&self.arguments()),
             Value::Dict(pairs) => pairs.iter().map(|(key, _)| (None, key.clone())).collect(),

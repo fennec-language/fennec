@@ -311,6 +311,15 @@ This replaces the earlier rules that return types are inferred, and that recursi
 **`Buffer[T]` is the one public building block for memory.** It's safe, bounds-checked, growable and reference-counted: the same block as a `list`, with public methods. `push` fills the next slot, growing if it's full, `b[i]` reads and writes a filled slot, and `reserve`, `capacity`, `pop`, `truncate` and `is_unique` do the rest, the last being what copy-on-write needs. A buffer tracks how many slots are filled, so reading a slot nothing wrote is an ordinary out-of-bounds failure, and freeing it knows what to release. It's designed with the runtime work now, and `list`, `dict` and `str` move onto it once benchmarks show no slowdown. Written in Fennec on top of it, they use it the same way any program can.
 *Why:* The built-in collections need no machinery a program can't use, so a game's own pool or ring buffer is built from the same safe piece.
 
+**A buffer's room grows by one rule everywhere.** A new buffer has room for 4 items, or for the `capacity=` it's given if that's more. Pushing into a full one gives it room for twice the items it then holds. `reserve(n)` makes room for at least `n`, and `pop` and `truncate` keep the room. `capacity()` is the room.
+*Why:* `capacity()` is a number a program can print, so it has to be the same whichever way the program runs. The rule is the one lists already grow by, so a buffer and a list grow alike.
+
+**`is_unique()` is true only when nothing else holds the buffer, and may be false when unsure.** Use it to choose a faster path, like changing a buffer in place rather than copying it, never to change what a program does or prints.
+*Why:* How many things hold a value isn't the same in every way of running a program: an interpreter keeps temporaries a compiled program doesn't. A promise that's only ever true when it's safe lets each one answer from what it knows, and keeps output the same.
+
+**Intrinsics are bodiless functions in `std.intrinsics`, marked `@intrinsic`, and the compiler supplies each body.** Only the standard library can import `std.intrinsics`. A program that tries gets an error saying the module is the standard library's own.
+*Why:* The machine-level operations the built-in types stand on look like any other function to the code that calls them, so the checker and every tool treat them the same way. Keeping them inside `std` means a program's safety never rests on how one is used.
+
 **A function is global only when it works on any sequence using nothing but looping and operators; anything that asks a value about itself is a method.**
 - The globals are `sum`, `min`, `max`, `any`, `all`, `sorted`, `zip`, `enumerate` and `range`. They use only iteration and a type's operators (`def +`, `def <`), so a user type joins them by defining its operators. There are no hooks and no dunders.
 - Everything type-specific is a method, including `xs.len()` and `x.abs()`. `len(xs)` and `abs(x)` are ordinary "no such function" errors, and the message points to the method.

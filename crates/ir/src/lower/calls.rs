@@ -46,6 +46,7 @@ pub(super) fn external(program: &Program) -> Vec<String> {
 pub(super) fn owner_name(ty: &Type) -> Option<&str> {
     match ty {
         Type::List(_) => Some("list"),
+        Type::Buffer(_) => Some("Buffer"),
         Type::Set(_) => Some("set"),
         Type::Dict(..) => Some("dict"),
         Type::Tuple(_) => Some("tuple"),
@@ -84,6 +85,10 @@ impl Lowering<'_> {
         let mut write_backs = Vec::new();
         let dest;
         if let Some((mut name, object, changes)) = self.builtin(callee) {
+            // `Buffer[T]()` makes one, which has a name of its own: `Buffer.capacity` is a method.
+            if name == "Buffer" && object.is_none() {
+                "Buffer.new".clone_into(&mut name);
+            }
             if name == "list.remove"
                 && let Some(Type::List(held)) = object.and_then(|object| self.type_at(object.span))
                 && self.context.signatures.own_equality(&held)

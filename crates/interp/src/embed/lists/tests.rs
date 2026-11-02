@@ -152,3 +152,20 @@ fn a_struct_item_handed_over_as_a_block_is_found_by_its_fields() {
     assert_eq!(live(), before);
     finish();
 }
+
+#[test]
+fn a_buffer_reserves_room_and_truncates_letting_go_of_what_it_drops() {
+    begin();
+    let before = live();
+    let all = list(&["archer", "medic", "soldier"]);
+    let room = |list: i64| with(|state| state.heap.block(u64::try_from(list).ok()?)?.get(3).copied());
+    let reserved = super::reserve(all, 20);
+    assert_eq!(room(reserved), Some(20));
+    assert_eq!(super::reserve(reserved, 2), reserved);
+    let cut = super::truncate(reserved, 1);
+    assert_eq!(read(cut), Value::list(vec![unit("archer", 1)]));
+    assert_eq!(room(cut), Some(20));
+    heap::free(cut);
+    assert_eq!(live(), before);
+    finish();
+}

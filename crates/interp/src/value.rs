@@ -17,6 +17,8 @@ pub(crate) enum Value {
     /// Binary data, each byte from 0 to 255.
     Bytes(Rc<[u8]>),
     List(Rc<Vec<Value>>),
+    /// `Buffer[T]`: its items and its room (see `crate::buffer`).
+    Buffer(Rc<crate::buffer::Buffer>),
     /// A list native code packed into flat memory. The interpreter unpacks it to use it.
     Packed(Rc<crate::packed::Packed>),
     /// A generator: items one at a time, as they're asked for, once.
@@ -215,6 +217,7 @@ impl Value {
             Value::Str(_) => "str".to_owned(),
             Value::Bytes(_) => "bytes".to_owned(),
             Value::List(_) | Value::Packed(_) => "list".to_owned(),
+            Value::Buffer(_) => "Buffer".to_owned(),
             Value::Lent(_) => "value".to_owned(),
             Value::Generator(_) => "generator".to_owned(),
             Value::Tuple(_) => "tuple".to_owned(),
@@ -251,6 +254,7 @@ impl PartialEq for Value {
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::List(a), Value::List(b)) | (Value::Tuple(a), Value::Tuple(b)) => a == b,
+            (Value::Buffer(a), Value::Buffer(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a.len() == b.len() && a.iter().all(|item| b.contains(item)),
             (Value::Dict(a), Value::Dict(b)) => {
                 a.len() == b.len() && a.iter().all(|(key, value)| b.get(key) == Some(value))

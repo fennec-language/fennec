@@ -39,7 +39,7 @@ const NAMES: [&str; 22] = [
 ];
 
 /// Built-in types that can be called or indexed, like `IdMap[Enemy]()`.
-const TYPES: [&str; 3] = ["Id", "IdMap", "SoaList"];
+const TYPES: [&str; 4] = ["Id", "IdMap", "SoaList", "Buffer"];
 
 /// The longest list `range` will build, until ranges become lazy.
 const MAX_RANGE: usize = 10_000_000;
@@ -274,6 +274,7 @@ impl Interp<'_> {
 pub(crate) fn length(value: &Value, span: Span) -> Result<Value, Diagnostic> {
     let len = match value {
         Value::List(items) | Value::Tuple(items) | Value::Set(items) => items.len(),
+        Value::Buffer(buffer) => buffer.items.len(),
         Value::Dict(pairs) => pairs.len(),
         Value::Str(text) => text.chars().count(),
         Value::Bytes(data) => data.len(),

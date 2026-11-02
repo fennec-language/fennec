@@ -3,6 +3,7 @@
 //! compilers are built.
 
 mod access;
+mod buffer;
 mod builtins;
 mod call;
 mod collections;

@@ -29,6 +29,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_regex_replace",
     "fennec_binary",
     "fennec_box_from_value",
+    "fennec_buffer_pop_empty",
     "fennec_capability_call",
     "fennec_capability_from_value",
     "fennec_case_of",
@@ -169,6 +170,8 @@ export! {
     fennec_int_power(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => lists::int_power(a0, a1, a2, a3);
     fennec_list_new(a0: i64, a1: i64) -> i64 => lists::new(a0, a1);
     fennec_list_grow(a0: i64) -> i64 => lists::grow(a0);
+    fennec_list_reserve(a0: i64, a1: i64) -> i64 => lists::reserve(a0, a1);
+    fennec_list_truncate(a0: i64, a1: i64) -> i64 => lists::truncate(a0, a1);
     fennec_list_unshare(a0: i64) -> i64 => lists::unshare(a0);
     fennec_list_clear(a0: i64) => lists::clear(a0);
     fennec_list_remove_at(a0: i64, a1: i64) => lists::remove_at(a0, a1);
@@ -176,6 +179,7 @@ export! {
     fennec_list_remove(a0: i64, a1: i64, a2: i64, a3: i64) => lists::remove(a0, a1, a2, a3);
     fennec_list_contains(a0: i64, a1: i64) -> i8 => lists::contains(a0, a1);
     fennec_pop_empty(a0: i64, a1: i64) => lists::pop_empty(a0, a1);
+    fennec_buffer_pop_empty(a0: i64, a1: i64) => lists::pop_empty_buffer(a0, a1);
     fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
     fennec_float_text(a0: f64) -> i64 => strings::float_text(a0);
     fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);

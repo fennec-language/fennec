@@ -716,6 +716,58 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = call ptr @fennec_str_join(ptr {separator}, ptr {list})"));
                 self.assign(dest.ok_or("no result")?, &temp)
             }
+            // The runtime's, running the interpreter's own code: a new block owned once.
+            "str.upper" | "str.lower" | "str.replace" => {
+                let mut texts = Vec::with_capacity(args.len());
+                for arg in args {
+                    texts.push(format!("ptr {}", self.operand(arg)?.0));
+                }
+                let symbol = name.replace('.', "_");
+                let params = vec!["ptr"; texts.len()].join(", ");
+                self.declare(&format!("declare ptr @fennec_{symbol}({params}) nounwind"));
+                let made = self.temp();
+                self.line(&format!("{made} = call ptr @fennec_{symbol}({})", texts.join(", ")));
+                self.assign(dest.ok_or("no result")?, &made)
+            }
+            "str.find" => {
+                let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let (part, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                self.declare("declare i64 @fennec_str_find(ptr, ptr) nounwind");
+                let at = self.temp();
+                self.line(&format!("{at} = call i64 @fennec_str_find(ptr {text}, ptr {part})"));
+                // -1 when it isn't there, which is `None`.
+                let dest = dest.ok_or("no result")?;
+                let kind = self.kind_of(dest)?.clone();
+                let ((some, fields), (none, _)) =
+                    (self.case_of(&kind, "Some")?, self.case_of(&kind, "None")?);
+                let offset = fields.first().map(|(_, offset, _)| *offset).ok_or("no field in `Some`")?;
+                let (found, number, value) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{found} = icmp sge i64 {at}, 0"));
+                self.line(&format!("{number} = select i1 {found}, i64 {some}, i64 {none}"));
+                self.line(&format!("{value} = select i1 {found}, i64 {at}, i64 0"));
+                let (slot, memory) = (self.slot(dest), kind.memory(self.module.layouts));
+                self.line(&format!("store {memory} zeroinitializer, ptr {slot}"));
+                self.line(&format!("store i64 {number}, ptr {slot}"));
+                let place = self.offset(&slot, offset);
+                self.line(&format!("store i64 {value}, ptr {place}"));
+                Ok(())
+            }
+            // With no separator, on runs of spaces. An empty one fails, as in the interpreter.
+            "str.split" => {
+                let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let separator = match args.get(1) {
+                    Some(separator) => self.operand(separator)?.0,
+                    None => "null".to_owned(),
+                };
+                self.declare("declare ptr @fennec_str_split(ptr, ptr, i64, i64) nounwind");
+                let (from, to) = (i64::from(span.start), i64::from(span.end));
+                let parts = self.temp();
+                self.line(&format!(
+                    "{parts} = call ptr @fennec_str_split(ptr {text}, ptr {separator}, i64 {from}, i64 {to})"
+                ));
+                self.leave_if_failed();
+                self.assign(dest.ok_or("no result")?, &parts)
+            }
             other => Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
     }

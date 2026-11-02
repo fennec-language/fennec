@@ -943,3 +943,20 @@ fn strips_match_the_jit() -> std::io::Result<()> {
 "#,
     )
 }
+
+/// `upper`, `lower`, `replace`, `find` and `split`, which run the interpreter's own code.
+#[test]
+fn string_methods_the_runtime_runs_match_the_jit() -> std::io::Result<()> {
+    if !has_tools() || !runtime_built() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "string_methods",
+        r#"def main(stdout: Stdout):
+    words = ["Hello", "wörld", "", "MiXeD 123"]
+    for w in words:
+        stdout.print(w.upper(), w.lower(), w.replace("l", "L"), w.find("l"), w.find(""))
+    stdout.print("a b  c".split(), "a,b,,c".split(","), "".split(), "xyx".split("y"))
+"#,
+    )
+}

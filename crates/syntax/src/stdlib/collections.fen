@@ -597,13 +597,16 @@ struct SortedMap[K: Ordered, V]:
         while trail.len() > 0:
             at, spot = trail[-1]
             node = self._nodes[at]
-            if spot == node.keys.len():
+            # Most keys are in leaves, which give theirs all at once.
+            if node.children.len() == 0 or spot == node.keys.len():
+                if node.children.len() == 0:
+                    for key in node.keys:
+                        yield key
                 trail.pop()
                 continue
             trail[-1] = (at, spot + 1)
             yield node.keys[spot]
-            if node.children.len() > 0:
-                self._descend(node.children[spot + 1], mut trail)
+            self._descend(node.children[spot + 1], mut trail)
 
     def clear(mut self):
         self._nodes = []

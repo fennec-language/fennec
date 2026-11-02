@@ -58,6 +58,9 @@ rayon-core = { version = "=1.13.0", default-features = false }
 # `unwind` feature, a panic in a task stops the process in every build, as `panic=abort` does,
 # and a task's stack is never unwound from outside it. Under MIT or Apache-2.0.
 corosensei = { version = "=0.3.4", default-features = false, features = ["default-stack"] }
+# Waiting on many sockets at once, for `parallel(server)`: epoll, kqueue and IOCP behind one
+# API, the event loop under Tokio, without its logging. Under MIT.
+mio = { version = "=1.2.4", default-features = false, features = ["net", "os-poll"] }
 cranelift-codegen = "=0.137.0"
 cranelift-frontend = "=0.137.0"
 cranelift-jit = "=0.137.0"

@@ -48,9 +48,11 @@ struct Checker:
             self.check_bounds(function.generics)
         for name, interface in self.program.interfaces.items():
             for method in interface.methods:
+                # A method's own type parameters are types inside it, beside `Self`.
+                own = ["Self"] + generic_names(method.generics)
                 for param in method.params:
-                    self.check_written(param.ty, ["Self"])
-                self.check_written(method.ret, ["Self"])
+                    self.check_written(param.ty, own)
+                self.check_written(method.ret, own)
         for name, info in self.program.types.items():
             if not info.prelude:
                 self.check_bounds(info.type_def.generics)

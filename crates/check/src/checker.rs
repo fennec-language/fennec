@@ -224,6 +224,7 @@ impl Checker {
             problems.extend(self.bad_bounds(&info.def.generics));
         }
         self.diagnostics.extend(problems);
+        self.check_protocols();
     }
 
     /// Bounds that aren't interfaces, as in `T: Enemy`.

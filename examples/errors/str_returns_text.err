@@ -1,0 +1,7 @@
+error: `P`'s `def str` writes into `mut out: StrWriter` and gives back nothing
+ --> examples/errors/str_returns_text.fen:4:5
+  |
+4 |     def str(self) -> str:
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: write `def str(self, mut out: StrWriter)`, and add its text with `out.write(...)`

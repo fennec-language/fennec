@@ -32,3 +32,16 @@ extend str:
             else:
                 found.append(part)
         found
+
+## Where a type's `def str(self, mut out: StrWriter)` writes how it prints. `print`, `str(x)`
+## and f-strings call it, and so does printing a collection that holds the type.
+struct StrWriter:
+    _parts = list[str]()
+
+    ## Adds `text` as it is.
+    def write(mut self, text: str):
+        self._parts.append(text)
+
+    ## Adds `x` as printing it would show it.
+    def value[T](mut self, x: T):
+        self._parts.append(str(x))

@@ -862,7 +862,8 @@ pub mod io {
     /// Prints a value as `stdout.print` shows it.
     pub extern "C" fn print_value(value: i64) {
         attempt(|state: &mut State| {
-            let text = format::display(&state.temp(value));
+            let value = state.temp(value);
+            let text = state.interp.shown(&value, Span::default())?;
             write(state, &text)
         });
     }
@@ -871,8 +872,12 @@ pub mod io {
     pub extern "C" fn print_spec(value: i64, spec: i64, start: i64, end: i64) {
         attempt(|state: &mut State| {
             let spec = usize::try_from(spec).ok().and_then(|at| state.tables.strings.get(at)).cloned();
-            let text = format::with_spec(&state.temp(value), spec.as_deref().unwrap_or_default())
-                .map_err(|message| Diagnostic::new(message, super::span(start, end)))?;
+            let value = state.temp(value);
+            let text = state.interp.shown_spec(
+                &value,
+                spec.as_deref().unwrap_or_default(),
+                super::span(start, end),
+            )?;
             write(state, &text)
         });
     }

@@ -66,6 +66,17 @@ jobs:
             ./target/debug/fennec lint "$program" > /dev/null || failed=1
           done
           exit "$failed"
+      # New `unsafe` can't land quietly: every use outside comments is counted by file, and the
+      # counts must match the list, which a pull request adding one has to change.
+      - name: Count the uses of unsafe
+        shell: bash
+        run: |
+          grep -rnw --include='*.rs' unsafe crates/*/src | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
+            | cut -d: -f1 | LC_ALL=C sort | uniq -c | awk '{print $2": "$1}' > unsafe-found.txt
+          if ! diff -u <(grep -v '^#' .github/unsafe-allowed.txt) unsafe-found.txt; then
+            echo "::error::The uses of unsafe changed: update .github/unsafe-allowed.txt, and say why in the pull request"
+            exit 1
+          fi
       - run: cargo clippy --all-targets --locked -- -D warnings
         if: env.CODE == 'true'
       - name: Clippy for the playground's WebAssembly module
@@ -327,13 +338,51 @@ jobs:
           path: found
           if-no-files-found: ignore
 
+  # Parked tasks switch stacks, the one place our own code follows a pointer `unsafe`ly, so
+  # their stress tests run under AddressSanitizer, told of each switch, with leaks checked,
+  # and under ThreadSanitizer.
+  parked-sanitizers:
+    name: Parked tasks under ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: AddressSanitizer
+            flags: -Zsanitizer=address
+            features: --features sanitizer
+            options: ASAN_OPTIONS=detect_leaks=1
+          - name: ThreadSanitizer
+            flags: -Zsanitizer=thread
+            features: ""
+            options: TSAN_OPTIONS=halt_on_error=1
+    env:
+      NIGHTLY: nightly-2026-10-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the nightly compiler the sanitizers need
+        run: rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+      - name: Run the parked tasks' tests
+        env:
+          FLAGS: ${{ matrix.flags }}
+          FEATURES: ${{ matrix.features }}
+          OPTIONS: ${{ matrix.options }}
+        run: |
+          # shellcheck disable=SC2086 # `$FEATURES` is two words or none
+          env "$OPTIONS" RUSTFLAGS="$FLAGS" RUSTDOCFLAGS="$FLAGS" cargo "+$NIGHTLY" test --locked \
+            -Zbuild-std --target x86_64-unknown-linux-gnu -p fennec-parked $FEATURES
+
   # One status for branch protection to require, so adding jobs never means changing settings.
   # A job skipped because the change is only documentation counts as passed; any other skip,
   # failure or cancellation doesn't.
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, asan]
+    needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, asan, parked-sanitizers]
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

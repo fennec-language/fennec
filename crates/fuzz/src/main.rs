@@ -23,6 +23,7 @@ mod generate;
 mod llvm;
 mod minimize;
 mod mutate;
+mod parked;
 mod supervise;
 mod targets;
 

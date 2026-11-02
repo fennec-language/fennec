@@ -1,0 +1,8 @@
+# Every use of `unsafe` in our crates, outside comments, by file. CI counts them on every change and
+# fails when the count differs from this list, so new `unsafe` can't land without someone updating
+# this file in the same pull request, where review sees it. Each is explained where it is.
+crates/jit/src/runtime.rs: 4
+crates/parked/src/current.rs: 1
+crates/runtime/src/lib.rs: 4
+crates/syntax/src/token.rs: 1
+crates/wasm/src/lib.rs: 4

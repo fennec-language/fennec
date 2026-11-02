@@ -46,11 +46,15 @@ struct Row {
     /// Against each of `Language::ALL`'s twins: best time as a percentage of that twin's speed,
     /// or why there's none.
     others: Vec<Versus>,
+    /// The best whole runs, in seconds: the LLVM build's and the Rust twin's.
+    best: (Option<f64>, Option<f64>),
 }
 
 /// How a kernel did against one of its other twins.
 #[derive(Default)]
 struct Versus {
+    /// The twin's best whole run, in seconds.
+    best: Option<f64>,
     /// The whole run's best time, as a percentage of the twin's speed.
     time: Option<f64>,
     /// Roughly the kernel's: the best time with each side's startup taken off.
@@ -68,6 +72,7 @@ impl Row {
             spread: 0.0,
             problem: None,
             others: Language::ALL.iter().map(|_| Versus::default()).collect(),
+            best: (None, None),
         }
     }
 }
@@ -155,6 +160,7 @@ fn measured(kernel: &Kernel, llvm: &Program, twin: &Program, counter: Option<&Co
     let ((my_best, my_median, my_spread), (rust_best, rust_median, rust_spread)) =
         (summary(&ours), summary(&theirs));
     row.time = speed(rust_best, my_best);
+    row.best = (Some(my_best), Some(rust_best));
     row.median = speed(rust_median, my_median);
     row.spread = my_spread.max(rust_spread);
     if let Some(counter) = counter
@@ -196,9 +202,9 @@ fn versus(
                 }
                 _ => None,
             };
-            Versus { time: speed(theirs, ours), kernel, problem: None }
+            Versus { best: Some(theirs), time: speed(theirs, ours), kernel, problem: None }
         }
-        Err(problem) => Versus { time: None, kernel: None, problem: Some(problem) },
+        Err(problem) => Versus { best: None, time: None, kernel: None, problem: Some(problem) },
     }
 }
 
@@ -329,6 +335,17 @@ fn number(value: Option<f64>) -> Json {
     value.map_or(Json::Null, |value| Json::Number((value * 10.0).round() / 10.0))
 }
 
+/// Each side's best whole run in milliseconds, which less its language's startup is roughly
+/// what its kernel took.
+fn best_ms(row: &Row) -> Json {
+    let ms = |seconds: Option<f64>| number(seconds.map(|seconds| seconds * 1000.0));
+    let mut fields = vec![("fennec".to_owned(), ms(row.best.0)), ("rust".to_owned(), ms(row.best.1))];
+    for (language, versus) in Language::ALL.iter().zip(&row.others) {
+        fields.push((language.key().to_owned(), ms(versus.best)));
+    }
+    Json::Object(fields)
+}
+
 /// Each language's startup in milliseconds, for the history.
 fn startup_json(startups: &Startups) -> Json {
     let ms = |seconds: Option<f64>| number(seconds.map(|seconds| seconds * 1000.0));
@@ -350,6 +367,7 @@ fn json(rows: &[Row], startups: &Startups) -> Json {
             ("spread", number(Some(row.spread * 100.0))),
             ("noisy", Json::Bool(row.problem.is_none() && row.spread > NOISY)),
             ("problem", row.problem.as_ref().map_or(Json::Null, |problem| Json::string(problem.as_str()))),
+            ("best_ms", best_ms(row)),
         ]);
         let Json::Object(mut fields) = fields else { return fields };
         for (language, versus) in Language::ALL.iter().zip(&row.others) {

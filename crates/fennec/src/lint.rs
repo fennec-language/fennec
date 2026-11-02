@@ -74,7 +74,12 @@ fn linted(path: &str, json: bool) -> ExitCode {
     let mut found = fennec_lint::lint(&program.module, &program.sources);
     found.extend(fennec_lint::needless_copies(&program.module, &program.sources));
     found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
-    let hints = fennec_lint::costs(&fennec_ir::lower(&resolved, &signatures));
+    let costs = fennec_ir::costs(&fennec_ir::lower(&resolved, &signatures));
+    let copies = fennec_lint::implicit_copies(&costs);
+    if !copies.is_empty() {
+        return rejected(&program, &copies, json);
+    }
+    let hints = fennec_lint::costs(&costs);
     if json {
         let shown: Vec<Finding<'_>> = found.iter().chain(&hints).map(Finding::linted).collect();
         print!("{}", report::json(&program.sources, &shown));

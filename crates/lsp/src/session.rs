@@ -10,6 +10,7 @@ use crate::analysis::{Analysis, Clean, analyze, edited_bodies, program_of};
 use crate::completion;
 use crate::declaration::{declarations, hover_text};
 use crate::definition::{Target, target};
+use crate::inlay;
 use crate::json::Json;
 use crate::references::{import_at, own, references, valid_name};
 use crate::signature;
@@ -79,6 +80,7 @@ impl Session {
             "textDocument/documentSymbol" => Some(self.symbols(params)),
             "textDocument/completion" => Some(self.completion(params)),
             "textDocument/signatureHelp" => Some(self.signature_help(params)),
+            "textDocument/inlayHint" => Some(self.inlay_hints(params)),
             "textDocument/rename" => match self.rename(params) {
                 Ok(edit) => Some(edit),
                 Err(message) => return vec![error(id, REQUEST_FAILED, &message)],
@@ -336,6 +338,21 @@ impl Session {
         signature::help(&program_of(&file), &file, &text, offset, self.overlay())
     }
 
+    /// What an editor writes into a range of a document: types, parameter names and copies.
+    fn inlay_hints(&mut self, params: &Json) -> Json {
+        let Some(file) = params.at(&["textDocument", "uri"]).and_then(Json::as_str).and_then(text::path_of)
+        else {
+            return Json::Null;
+        };
+        let file = canonical(&file);
+        let path = text::shown(&file);
+        let Some(analysis) = self.analysis(&program_of(&file)) else { return Json::Null };
+        let Some((text, _)) = analysis.sources.by_path(&path) else { return Json::Null };
+        let place = |key: &str| params.at(&["range", key]).and_then(|position| text::offset(text, position));
+        let (from, to) = (place("start").unwrap_or(0), place("end").unwrap_or(text.len()));
+        Json::Array(inlay::hints(analysis, &path, from, to))
+    }
+
     fn hover(&mut self, params: &Json) -> Json {
         let Some((found, analysis)) = self.at_position(params) else { return Json::Null };
         let Some(module) = &analysis.module else { return Json::Null };
@@ -450,6 +467,7 @@ fn capabilities() -> Json {
         ("renameProvider", Json::Bool(true)),
         ("documentSymbolProvider", Json::Bool(true)),
         ("completionProvider", Json::object([("triggerCharacters", Json::Array(vec![Json::string(".")]))])),
+        ("inlayHintProvider", Json::Bool(true)),
         (
             "signatureHelpProvider",
             Json::object([("triggerCharacters", Json::Array(vec![Json::string("("), Json::string(",")]))]),

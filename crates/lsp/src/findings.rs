@@ -73,15 +73,20 @@ pub(crate) fn located(sources: &Sources, lints: &[Lint]) -> Vec<Located> {
         .collect()
 }
 
-/// Everything there is to show beyond mistakes, for a program with none: what the linter
-/// finds, then what may copy or allocate, as `fennec lint` shows them.
-pub(crate) fn of_clean(module: &Module, sources: &Sources, checked: &Checked) -> Vec<Located> {
-    let mut lints = fennec_lint::lint(module, sources);
-    lints.extend(fennec_lint::needless_copies(module, sources));
-    // Lowering takes the module with what checking works out written in, so it gets a copy.
+/// What a checked program may copy or allocate. Lowering takes the module with what checking
+/// works out written in, so it gets a copy.
+pub(crate) fn costs(module: &Module, checked: &Checked) -> Vec<fennec_ir::Finding> {
     let mut resolved = module.clone();
     let signatures = checked.resolve(&mut resolved);
-    lints.extend(fennec_lint::costs(&fennec_ir::lower(&resolved, &signatures)));
+    fennec_ir::costs(&fennec_ir::lower(&resolved, &signatures))
+}
+
+/// Everything there is to show beyond mistakes, for a program with none: what the linter
+/// finds, then what may copy or allocate, as `fennec lint` shows them.
+pub(crate) fn of_clean(module: &Module, sources: &Sources, costs: &[fennec_ir::Finding]) -> Vec<Located> {
+    let mut lints = fennec_lint::lint(module, sources);
+    lints.extend(fennec_lint::needless_copies(module, sources));
+    lints.extend(fennec_lint::costs(costs));
     located(sources, &lints)
 }
 

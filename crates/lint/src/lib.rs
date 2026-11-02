@@ -71,9 +71,18 @@ pub fn needless_copies(module: &Module, sources: &Sources) -> Vec<Lint> {
     copies::of(module, sources)
 }
 
-/// A hint for each place a lowered program may copy, and each it may allocate in code that runs
-/// often, in the order `fennec_ir::costs` gives them: hot code first.
+/// A hint for each place a lowered program may copy, once, and each it may allocate in code
+/// that runs often, from what `fennec_ir::costs` finds, in its order: hot code first. A copy
+/// made each time round a loop is a mistake instead, which `implicit_copies` gives.
 #[must_use]
-pub fn costs(program: &fennec_ir::Program) -> Vec<Lint> {
-    costs::of(&fennec_ir::costs(program))
+pub fn costs(findings: &[fennec_ir::Finding]) -> Vec<Lint> {
+    costs::of(findings)
+}
+
+/// Each copy made each time round a loop without saying so, as a compile error. Changing a
+/// value something else still holds copies it first, and a loop that does that every time
+/// round, here or further up the calls, says so with `copy(...)` or stops sharing the value.
+#[must_use]
+pub fn implicit_copies(findings: &[fennec_ir::Finding]) -> Vec<Diagnostic> {
+    costs::implicit(findings)
 }

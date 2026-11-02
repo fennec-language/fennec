@@ -40,6 +40,29 @@ fn run_prints_the_programs_output() {
     assert_eq!(text(&output.stdout), "Hello, Fennec\n");
 }
 
+/// Skirmish, the proof program in `examples/proof`, is the biggest Fennec program there is, so
+/// what breaks it has to fail here: it checks, passes its tests, and prints its `.out` file in
+/// both engines.
+#[test]
+fn the_proof_program_checks_passes_its_tests_and_runs() {
+    let proof = repo().join("examples/proof");
+    let expected = std::fs::read_to_string(proof.join("skirmish.out")).unwrap();
+    for command in [&["check"][..], &["test", "--all"]] {
+        let output = fennec_in(&proof, command, "").unwrap();
+        assert!(output.status.success(), "`fennec {}` failed:\n{}", command.join(" "), text(&output.stderr));
+    }
+    for command in [&["run", "--no-test"][..], &["run", "--interp"]] {
+        let output = fennec_in(&proof, command, "").unwrap();
+        assert!(output.status.success(), "`fennec {}` failed:\n{}", command.join(" "), text(&output.stderr));
+        assert_eq!(
+            text(&output.stdout),
+            expected,
+            "`fennec {}` printed something different",
+            command.join(" ")
+        );
+    }
+}
+
 #[test]
 fn run_hands_main_its_arguments_and_input() {
     let program = "examples/args_and_stdin.fen";

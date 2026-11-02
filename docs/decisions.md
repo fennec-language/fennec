@@ -2,6 +2,24 @@
 
 Decisions made while designing Fennec, with the reason for each. The [roadmap](../site/src/pages/roadmap.md) says when each one gets built. Newest decisions go at the top of each section.
 
+## Principles
+
+**Built-in types get no powers user types can't have.** They use the same protocols a user type implements:
+
+| What a program writes | What the type defines |
+| --- | --- |
+| `print(x)`, `str(x)`, `f"{x}"` | `def str(self, mut out: StrWriter)` |
+| `a == b`, `a != b` | `def ==` |
+| `a + b`, `a < b`, `sum(xs)`, `sorted(xs)` | operators: `def +`, `def <` and the rest |
+| `x in xs` | `def in` |
+| `xs.len()` | `def len` |
+| `for x in xs`, `list(xs)` | `def iter(self) -> Iterator[T]`, with `yield` |
+| `xs[i]`, and writes through it | `def []`, and its `mut` form |
+| `for mut x in xs`, `parallel(xs)` | positions: `def len` plus the `mut` form of `def []` |
+
+The only exceptions are the primitives, `int`, `float`, `bool` and the raw `Buffer`; literal syntax, `[...]`, `{...}` and `"..."`; and `std.intrinsics`, which only the standard library can import. Today `list`, `dict` and `str` are still built into the compiler, and making them ordinary `std` structs (#104) is how main gets there.
+*Why:* It's the language from first principles. A reader can learn the whole language from its protocols, and anything `std` does, a user type can do.
+
 ## Values and memory
 
 **Everything is a value unless the code says otherwise.** Structs nest freely and are stored in place. Nothing is shared unless the code says `mut`, `Id` or `shared`.

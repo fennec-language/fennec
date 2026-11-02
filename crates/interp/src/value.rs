@@ -40,6 +40,8 @@ pub(crate) enum Value {
     Builtin(&'static str),
     Lambda(Rc<Lambda>),
     Capability(Capability),
+    /// A capability narrowed with `only`, which reaches less than the whole capability.
+    Limited(Rc<crate::limits::Limited>),
 }
 
 /// One owner of a block native code holds, let go when the last copy of this is dropped.
@@ -226,6 +228,7 @@ impl Value {
             Value::Capability(Capability::Args) => "Args".to_owned(),
             Value::Capability(Capability::Stdin) => "Stdin".to_owned(),
             Value::Capability(Capability::Process) => "Process".to_owned(),
+            Value::Limited(limited) => Value::Capability(limited.capability).type_name(),
         }
     }
 }

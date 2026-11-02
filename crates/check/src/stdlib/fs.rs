@@ -20,6 +20,8 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
         ("Fs", "list_dir") => reads(&[path()], io(Type::list(Type::named("Path")))),
         ("Fs", "make_dir" | "remove") => reads(&[path()], io(Type::Unit)),
         ("Fs", "metadata") => reads(&[path()], io(Type::named("Metadata"))),
+        // An `Fs` that reaches only what's in one folder.
+        ("Fs", "only") => reads(&[path()], Type::named("Fs")),
         _ => return None,
     })
 }

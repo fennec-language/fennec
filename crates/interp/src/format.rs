@@ -46,7 +46,7 @@ pub(crate) fn repr(value: &Value) -> String {
         Value::Function(function) => format!("<function {}>", function.def.name),
         Value::Builtin(name) => format!("<builtin {name}>"),
         Value::Lambda(_) => "<function>".to_owned(),
-        Value::Capability(_) => format!("<{}>", value.type_name()),
+        Value::Capability(_) | Value::Limited(_) => format!("<{}>", value.type_name()),
     }
 }
 

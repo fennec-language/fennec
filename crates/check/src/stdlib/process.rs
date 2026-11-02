@@ -16,6 +16,8 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
         ("Process", "run") => {
             reads(&[Type::Str, Type::list(Type::Str)], Type::result(output(), Type::named("ProcessError")))
         }
+        // A `Process` that can run only one program.
+        ("Process", "only") => reads(&[Type::Str], Type::named("Process")),
         ("Process", "script") => reads(&[Type::Str, output()], Type::Unit),
         ("Process", "ran") => reads(&[], Type::list(Type::list(Type::Str))),
         _ => return None,

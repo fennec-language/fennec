@@ -15,6 +15,9 @@ pub(crate) const MODULE: Module = Module { functions: &[], call: no_functions, c
 impl Interp<'_> {
     pub(crate) fn fs_method(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
         let paths: Vec<Value> = args.iter().map(path_text).collect();
+        if let ("only", [Value::Str(folder)]) = (method, paths.as_slice()) {
+            return Ok(crate::limits::Limited::to(Capability::Fs, vec![Rc::from(crate::limits::absolute(folder))]));
+        }
         if let Some(faked) = self.fake_fs(method, &paths, span) {
             return faked;
         }
@@ -97,7 +100,7 @@ fn remove(path: &str) -> std::io::Result<()> {
 }
 
 /// A `Path`'s text, or a `str` as it is.
-fn path_text(value: &Value) -> Value {
+pub(crate) fn path_text(value: &Value) -> Value {
     match value {
         Value::Instance(instance) if instance.type_name.as_ref() == "Path" => {
             instance.field("text").cloned().unwrap_or_else(|| value.clone())

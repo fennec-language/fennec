@@ -36,6 +36,7 @@ impl Interp<'_> {
                 }
                 Ok(Value::Unit)
             }
+            ("only", [Value::Str(program)]) => Ok(crate::limits::Limited::to(Capability::Process, vec![Rc::clone(program)])),
             ("ran", []) => {
                 let ran = self.world.as_ref().map(|world| world.ran.clone()).unwrap_or_default();
                 let lists = ran.iter().map(|run| Value::list(run.iter().map(|part| Value::str(part)).collect()));

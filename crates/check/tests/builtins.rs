@@ -179,6 +179,14 @@ fn the_newer_modules_names_have_to_be_imported() {
 }
 
 #[test]
+fn a_tuple_in_brackets_is_one_type() {
+    let setup = "pairs = list[(int, int)]()\nnames = dict[(int, int), str]()";
+    plus_one(setup, "pairs[0]", "can't use `+` on a tuple and an int");
+    plus_one(setup, "pairs[0][1] / 2", "can't mix int and float in `+`");
+    plus_one(setup, "names[(1, 2)]", "can't use `+` on a str and an int");
+}
+
+#[test]
 fn every_modules_names_have_to_be_imported() {
     let program = "
         position = Vec3(x=1.0)

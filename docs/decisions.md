@@ -157,8 +157,11 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 **`Clock` is a capability,** passed to `main` like `Stdout` and `Fs`. `clock.now()` reads a monotonic clock. Tests get a fixed clock by default, as under Tooling.
 *Why:* Code that reads the time says so in its parameters, and can be handed a fixed clock instead.
 
-**`Random` is a seeded value.** `Random(seed=42)` draws the same numbers in the same order on every machine. It's SplitMix64, done in integer math, and `random_int(seed, n, low, high)`, imported from `std.random`, gives the `n`th number of a seed's sequence without keeping a generator. Seeding from the OS will be a capability `main` receives; it isn't built yet.
+**`Random` is a seeded value.** `Random(seed=42)` draws the same numbers in the same order on every machine. It's SplitMix64, done in integer math, and `random_int(seed, n, low, high)`, imported from `std.random`, gives the `n`th number of a seed's sequence without keeping a generator. Seeding from the OS comes through `Entropy`, below.
 *Why:* A seed is all a replay or a lockstep peer needs to see the same numbers. Drawing by position also suits procedural generation, where each chunk of a world takes numbers from its own index.
+
+**Secure randomness is a capability, `Entropy`,** handed to `main` like the others. `entropy.bytes(n)` gives `n` secure random bytes from the operating system, and `entropy.seed()` gives an unpredictable seed for `Random(seed=...)`. Tests receive a fake `Entropy` with fixed output, so they stay repeatable. Hashing, HMAC and other pure cryptography need no capability, since they read nothing from outside.
+*Why:* Randomness comes in through a capability, like every source of nondeterminism, and `Random` stays a plain seeded value.
 
 **Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit with `fennec replay`. The order tasks reach a `shared` value or a channel is the one source outside this, and how replay records it is still open.
 *Why:* A player's crash report becomes a replay file that runs again exactly. The determinism rules above make it almost free.
@@ -566,7 +569,7 @@ There's no per-format override, like a `def json` method on a type. This replace
 **Names live in their modules.** A standard library module provides nothing until it's imported: `from std.math import Vec3, sqrt`, or `from std import math` and then `math.Vec3` and `math.sqrt(x)`. That's every module so far: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`. Using a name without its import is reported with the import to add.
 *Why:* A file's imports show everything it uses from the standard library, as in Python.
 
-**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the global functions, like `sum`, `range` and `sorted`.
+**What the language itself needs is available everywhere.** Capabilities, `Stdout`, `Fs`, `Clock`, `Entropy`, `Args` and `Stdin`, which `main` names to say what the program may do. The errors that standard operations fail with, `IoError`, `InvalidValue` and `ParseError`, so code can match them without knowing which module failed. `Ok` and `Err`, which wrap any result. And the global functions, like `sum`, `range` and `sorted`.
 *Why:* These belong to the language, not to one module. A capability in particular can't come from an import: it's handed to `main`, and only what `main` is given exists.
 
 **Network access is a capability, `Net`, like `Fs`.** Its API for HTTP and sockets is decided when it's built; how it narrows is under Supply chain.
@@ -868,7 +871,7 @@ test "saves the score"(fs: Fs, clock: Clock):
     save_score(fs, clock, 120)?
     assert fs.read_text("score.txt")? == "120"
 ```
-The fakes are an in-memory `Fs`, a fixed `Clock`, captured `Stdout` and a scripted `Net`. `fennec test --real` uses actual files and the network, on a developer's machine and in their CI. The Den only ever uses fakes.
+The fakes are an in-memory `Fs`, a fixed `Clock`, an `Entropy` with fixed output, captured `Stdout` and a scripted `Net`. `fennec test --real` uses actual files and the network, on a developer's machine and in their CI. The Den only ever uses fakes.
 *Why:* Tests are fast and give the same result every run, and they can't touch the machine unless someone asks. The same signature as `main` means nothing new to learn.
 
 **Benchmarks are `bench "name":` blocks,** written next to the code they measure, like `test` blocks, and left out of release builds.

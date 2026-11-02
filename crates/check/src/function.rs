@@ -378,11 +378,11 @@ impl<'c> FnCx<'c> {
         let mut cx = FnCx::new(checker, &key, "test", true);
         for capability in &test.capabilities {
             let name = capability.ty.as_ref().map_or("", |ty| ty.name.as_str());
-            let fits = matches!(name, "Stdout" | "Fs" | "Clock" | "Process" | "Entropy")
+            let fits = matches!(name, "Stdout" | "Fs" | "Clock" | "Process" | "Entropy" | "Net")
                 && capability.default.is_none();
             if !fits {
                 let message = format!("a test can't receive `{}` this way", capability.name);
-                let help = "a test can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `process: Process` and `entropy: Entropy`";
+                let help = "a test can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `process: Process`, `entropy: Entropy` and `net: Net`";
                 cx.error(Diagnostic::new(message, capability.span).with_help(help));
             }
             let ty = if fits { Type::named(name) } else { Type::Unknown };

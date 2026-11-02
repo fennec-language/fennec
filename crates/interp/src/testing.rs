@@ -77,6 +77,7 @@ impl Interp<'_> {
                 "Clock" => Capability::Clock,
                 "Process" => Capability::Process,
                 "Entropy" => Capability::Entropy,
+                "Net" => Capability::Net,
                 _ => Capability::Stdout,
             };
             self.frame.declare(&capability.name, Value::Capability(given), false);

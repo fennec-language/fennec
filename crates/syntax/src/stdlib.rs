@@ -41,6 +41,7 @@ modules! {
     layout,
     log,
     math,
+    net,
     path,
     process,
     random,

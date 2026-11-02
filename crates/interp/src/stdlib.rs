@@ -37,6 +37,7 @@ modules! {
     fs,
     json,
     math,
+    net,
     process,
     random,
     re,

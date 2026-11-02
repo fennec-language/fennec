@@ -1,0 +1,3 @@
+def main(net: Net):
+    with net.connect("localhost", 80)? as conn:
+        conn.write(5)?

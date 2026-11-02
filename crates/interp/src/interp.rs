@@ -74,6 +74,8 @@ pub struct Interp<'out> {
     clock: bool,
     /// What the capabilities of the test that's running reach, with no test running.
     pub(crate) world: Option<crate::fakes::TestWorld>,
+    /// The sockets the program has open, by their handles.
+    pub(crate) sockets: crate::stdlib::net::Sockets,
     /// What tests get when they name a capability.
     pub(crate) test_capabilities: crate::fakes::TestCapabilities,
     /// The command-line arguments and standard input `main` can receive.
@@ -120,6 +122,7 @@ impl<'out> Interp<'out> {
             files: true,
             clock: true,
             world: None,
+            sockets: crate::stdlib::net::Sockets::default(),
             test_capabilities: crate::fakes::TestCapabilities::Fakes,
             given: crate::inputs::Inputs::default().into(),
             reading: crate::formats::Reading::default(),
@@ -302,6 +305,7 @@ impl<'out> Interp<'out> {
                 "Stdin" => Capability::Stdin,
                 "Process" => Capability::Process,
                 "Entropy" => Capability::Entropy,
+                "Net" => Capability::Net,
                 "Clock" => {
                     return Err(Diagnostic::new(
                         "`main` can't receive `Clock` here: there's no clock",
@@ -312,7 +316,7 @@ impl<'out> Interp<'out> {
                 other => {
                     return Err(Diagnostic::new(format!("`main` can't receive a `{other}`"), param.span)
                         .with_help(
-                            "`main` can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `args: Args`, `stdin: Stdin`, `process: Process` and `entropy: Entropy`",
+                            "`main` can receive `stdout: Stdout`, `fs: Fs`, `clock: Clock`, `args: Args`, `stdin: Stdin`, `process: Process`, `entropy: Entropy` and `net: Net`",
                         ));
                 }
             }));

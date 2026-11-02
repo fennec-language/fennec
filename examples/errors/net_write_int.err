@@ -1,0 +1,7 @@
+error: what's written should be bytes, but this is an int
+ --> examples/errors/net_write_int.fen:3:20
+  |
+3 |         conn.write(5)?
+  |                    ^
+  |
+  = help: a connection sends `bytes`, or a `str` as its UTF-8 bytes

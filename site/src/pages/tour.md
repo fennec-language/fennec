@@ -663,7 +663,7 @@ def parse_save(data: str) -> list[str]:
     data.split()                        # pure: no I/O possible
 ```
 
-Signatures show what code can do. `Stdout`, `Fs`, `Clock`, `Args`, `Stdin`, `Process` and `Entropy` work today. `Process` runs other programs, with their arguments always a list, and `Entropy` gives secure random bytes. `Net` and `Env` are planned.
+Signatures show what code can do. `Stdout`, `Fs`, `Clock`, `Args`, `Stdin`, `Process`, `Entropy` and `Net` work today. `Process` runs other programs, with their arguments always a list, `Entropy` gives secure random bytes, and `Net` makes TCP connections. `Env` is planned.
 
 ## Tests
 

@@ -18,7 +18,7 @@ description: Fennec's batteries-included standard library, from files and JSON t
 | Collections | `collections`: `Deque`, `Counter`, `Heap`, `PriorityQueue`, `Tree`, `SortedMap`, `SortedSet`, `Grid`, `Packed` |
 | Files and the OS | `fs`, `path`, `env`, `process`, `cli` |
 | Data formats | `json`, `toml`, `pack`, `csv`, `base64`, `compress` |
-| Networking | `net`: TCP, UDP, TLS, an HTTP client and server, and WebSocket; `url` |
+| Networking | `net`: TCP today; UDP, TLS, an HTTP client and server, and WebSocket planned; `url` |
 | Security | `crypto`: BLAKE3 and SHA-256 hashes, HMAC and comparing secrets; `uuid`. Secure random bytes come from the `Entropy` capability |
 | Storage | `sql`: one interface, with drivers as first-party kits |
 | Diagnostics | `log`, `profile`, `test` |
@@ -58,7 +58,7 @@ This works for JSON and TOML today. CSV reads and writes rows of text with `csv.
 
 ## Built the same way as your code
 
-- **I/O goes through capabilities.** `fs.read_text(path)` needs an `Fs`, so even the standard library can't reach the outside world unexpectedly. `Net` and test fakes are planned.
+- **I/O goes through capabilities.** `fs.read_text(path)` needs an `Fs`, so even the standard library can't reach the outside world unexpectedly. `Net` works the same way, and tests get fakes of each.
 - **Errors are typed,** with the same `error`, `fail` and `?` as everywhere else.
 - **You only pay for what you use.** Only what your program reaches gets compiled.
 

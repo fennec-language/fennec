@@ -474,6 +474,10 @@ with net.listen(8080) as server:
         handle(conn, app)
 ```
 
+**Do generators work with `parallel`?** Yes. A generator is read in order, and the work on its items runs in parallel.
+
+**How do I work in parallel, then go in order?** Stream the results, then loop over them: `results = (f(x) for x in parallel(xs))`, then `for r in results:`. They arrive in input order, and a slow loop makes the workers wait. A list comprehension through `parallel` keeps input order too.
+
 Each iteration can change only its own element, so data can't race. There'll be one scheduler, with I/O multiplexed by the OS, so a task that's waiting parks and frees its core while its code still reads as if it blocks. A bad index in one server task is meant to stay in that task; that gets designed when servers are built.
 
 ## Launch and channels

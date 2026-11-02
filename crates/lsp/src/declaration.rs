@@ -188,7 +188,7 @@ fn written(text: &str, indent: usize) -> String {
 
 /// The `##` doc comment on the lines just above the line starting at `line_start`, without
 /// its markers.
-fn doc_comment(text: &str, line_start: usize) -> String {
+pub(crate) fn doc_comment(text: &str, line_start: usize) -> String {
     let above = text.get(..line_start).unwrap_or("");
     let mut lines: Vec<&str> = above
         .lines()

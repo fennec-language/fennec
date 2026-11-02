@@ -485,3 +485,56 @@ fn a_documents_outline_has_its_types_members_and_functions() {
     let fighter = &outline.as_array().unwrap()[0];
     assert_eq!(names(fighter.get("children").unwrap()), ["name", "health", "describe"]);
 }
+
+/// The labels a completion offers, in the order it shows them.
+fn labels(completion: &Json) -> Vec<String> {
+    let items = completion.get("items").and_then(Json::as_array).unwrap_or(&[]);
+    items.iter().filter_map(|item| item.get("label")?.as_str().map(str::to_owned)).collect()
+}
+
+#[test]
+fn completion_after_a_dot_offers_what_the_objects_type_has() {
+    let mut editor = Editor::new("complete-members").unwrap();
+    let typing = MAIN.replace("    damage = hit", "    shown = fighter.\n    damage = hit");
+    editor.open("src/main.fen", &typing);
+    let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &typing, "fighter.\n", 8));
+    assert_eq!(offered, ["name", "health", "describe"]);
+    let typing = MAIN.replace("    damage = hit", "    shown = fighter.name.st\n    damage = hit");
+    editor.change("src/main.fen", &typing);
+    let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &typing, "name.st", 7));
+    for method in ["startswith", "upper", "split", "len"] {
+        assert!(offered.contains(&method.to_owned()), "text has {method}: {offered:?}");
+    }
+    assert!(!offered.contains(&"health".to_owned()), "{offered:?}");
+}
+
+#[test]
+fn completion_of_a_name_offers_whats_in_scope_first() {
+    let mut editor = Editor::new("complete-names").unwrap();
+    let typing = MAIN.replace("    stdout.print", "    total = da\n    stdout.print");
+    editor.open("src/main.fen", &typing);
+    let completion = editor.at("textDocument/completion", "src/main.fen", &typing, "= da\n", 4);
+    let offered = labels(&completion);
+    assert_eq!(offered.get(..3), Some(&["damage".to_owned(), "fighter".to_owned(), "stdout".to_owned()][..]));
+    for name in ["SIZE", "main", "Fighter", "hit", "range", "for"] {
+        assert!(offered.contains(&name.to_owned()), "{name}: {offered:?}");
+    }
+    assert!(!offered.contains(&"power".to_owned()), "another function's parameter: {offered:?}");
+    let items = completion.get("items").and_then(Json::as_array).unwrap();
+    let size = items.iter().find(|item| item.get("label") == Some(&Json::string("SIZE"))).unwrap();
+    assert_eq!(size.at(&["documentation", "value"]), Some(&Json::string("The arena's size.")));
+}
+
+#[test]
+fn completion_after_a_bare_dot_offers_enum_cases_and_a_type_offers_its_own() {
+    let mut editor = Editor::new("complete-cases").unwrap();
+    let typing = format!("{MAIN}\nenum Mood:\n    Calm\n    Angry\n\ndef mood() -> Mood:\n    .\n");
+    editor.open("src/main.fen", &typing);
+    let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &typing, "    .\n", 5));
+    assert_eq!(offered.get(..2), Some(&["Calm".to_owned(), "Angry".to_owned()][..]), "{offered:?}");
+    assert!(!offered.contains(&"damage".to_owned()), "{offered:?}");
+    let typing = typing.replace("    .\n", "    Mood.\n");
+    editor.change("src/main.fen", &typing);
+    let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &typing, "Mood.\n", 5));
+    assert_eq!(offered, ["Calm", "Angry"]);
+}

@@ -1,0 +1,7 @@
+error: `for mut` can't change the items of a `Ring`, since its `iter` makes copies of them
+  --> examples/errors/for_mut_iter.fen:10:21
+   |
+10 |     for mut slot in ring:
+   |                     ^^^^
+   |
+   = help: change them through a method of `Ring`, or loop with `for mut` over what it holds

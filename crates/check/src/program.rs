@@ -459,6 +459,7 @@ pub(crate) fn literal_type(default: &fennec_syntax::Expr, program: &Program) -> 
     match &default.kind {
         ExprKind::Int(_) => Some(Type::Int),
         ExprKind::Float(_) => Some(Type::Float),
+        ExprKind::Duration(_) => Some(Type::named("Duration")),
         ExprKind::Str(_) => Some(Type::Str),
         ExprKind::Bool(_) => Some(Type::Bool),
         ExprKind::Unary { op: UnaryOp::Neg, expr }

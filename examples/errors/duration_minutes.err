@@ -1,0 +1,7 @@
+error: `5m` uses `m`, which isn't a unit of time
+ --> examples/errors/duration_minutes.fen:2:18
+  |
+2 |     stdout.print(5m)
+  |                  ^^
+  |
+  = help: minutes are `min`, like `5min`

@@ -13,6 +13,8 @@ pub(crate) enum Tok {
     Name(String),
     Int(i64),
     Float(f64),
+    /// A duration literal, like `30s` or `1.5ms`, in nanoseconds.
+    Duration(i64),
     Str(String),
     FStr(Vec<FPart>),
     Kw(Kw),

@@ -5,6 +5,7 @@ mod builtins;
 mod calls;
 mod cases;
 mod constants;
+mod durations;
 mod errors;
 mod generics;
 mod intrinsics;

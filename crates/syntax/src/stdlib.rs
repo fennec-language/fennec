@@ -36,6 +36,7 @@ modules! {
     csv,
     fs,
     game,
+    intrinsics,
     json,
     layout,
     log,

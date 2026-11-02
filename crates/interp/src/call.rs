@@ -187,6 +187,11 @@ impl Interp<'_> {
                 return Err(diagnostic);
             }
         };
+        // A standard library intrinsic's body is the interpreter's own.
+        if def.body.is_empty() && def.annotations.iter().any(|annotation| annotation.name == "intrinsic") {
+            let values: Vec<Value> = bound.into_iter().map(|arg| arg.value).collect();
+            return crate::intrinsics::run(&def.name, &values, span);
+        }
         let caller = self.enter(span)?;
         for (name, value) in &function.captured {
             self.frame.declare(name, value.clone(), false);

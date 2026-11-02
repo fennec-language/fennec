@@ -209,6 +209,7 @@ fn expr(value: &mut Expr, change: &mut dyn FnMut(&mut Expr)) {
     match &mut value.kind {
         ExprKind::Int(_)
         | ExprKind::Float(_)
+        | ExprKind::Duration(_)
         | ExprKind::Str(_)
         | ExprKind::Bool(_)
         | ExprKind::None

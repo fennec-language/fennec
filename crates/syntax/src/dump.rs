@@ -51,6 +51,7 @@ fn tok(tok: &Tok) -> String {
         Tok::Name(name) => format!("name {name}"),
         Tok::Int(value) => format!("int {value}"),
         Tok::Float(value) => format!("float {}", float(*value)),
+        Tok::Duration(nanos) => format!("duration {nanos}"),
         Tok::Str(text) => format!("str {}", quoted(text)),
         Tok::FStr(parts) => {
             let parts: Vec<String> = parts.iter().map(fpart).collect();

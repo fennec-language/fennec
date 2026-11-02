@@ -13,6 +13,8 @@ enum Tok:
     Name(text: str)
     Int(value: int)
     Float(value: float)
+    ## A duration literal, like `30s` or `1.5ms`, in nanoseconds.
+    Duration(nanos: int)
     Str(text: str)
     FStr(parts: list[FPart])
     ## A hard keyword, like `def`. Soft keywords such as `match` stay names.

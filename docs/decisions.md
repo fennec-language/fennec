@@ -54,6 +54,32 @@ Immutable local snapshots stay allowed, and so does sharing that never changes.
 **Indexing gives a place, not a copy.** `enemies[i].health -= 1` writes straight into the list. A user-defined `def []` gets a `mut` form that does the same.
 *Why:* Otherwise each change through an index copies the element out and back, or copies the whole list if it's shared.
 
+**`for mut` over a user type writes back through positions.** A type supports it by defining `def len(self) -> int` and the `mut` form of `def []` taking an `int`, which returns the element as a place. A type whose positions can be empty, like a pool with free slots, also defines `def is_live(self, i: int) -> bool`, and empty positions are skipped.
+```fennec
+struct Units:
+    _items = Buffer[Unit]()
+    _live = Buffer[bool]()
+
+    def len(self) -> int:
+        return self._items.len()
+
+    def is_live(self, i: int) -> bool:
+        return self._live[i]
+
+    def [](mut self, i: int) -> Unit:      # the `mut` form: returns a place in `_items`
+        return self._items[i]
+
+def step(mut units: Units, dt: float):
+    for mut unit in units:
+        unit.pos += unit.vel * dt
+```
+- `for mut unit in units:` means `for i in range(units.len()):`, skipping positions that aren't live, with `mut unit = units[i]` inside. So `unit` is a place, by the rule `mut x = place` already has.
+- `units` stays locked for the whole loop, as any path behind a `mut` name is, so the body can't add or remove items or reach other elements. Nothing is copied or counted, and `unit` can't escape.
+- Positions are `int`s. A grid maps an `int` position to its own cell.
+- `IdMap`'s positions are its storage slots, and dead ones are skipped. A plain `for` still reads through `def iter(self)` with `yield`.
+
+*Why:* A get-and-set pair, like Python's `__getitem__` and `__setitem__`, copies each element out and back, and with copy-on-write an element that holds a collection would then copy on every iteration. `yield mut` stays cut: a lent place would have to stay locked across each suspension of a generator, and it can't be split for `parallel`. Positions add no new concept, never copy, and are what `parallel` splits by. Swift's `MutableCollection` works the same way, through an index and a subscript that writes in place.
+
 **A value is moved, not shared, when it isn't used again.** The compiler finds each value's last use and moves it there.
 *Why:* Then nearly every collection has one owner, so copy-on-write's check before each write passes and nothing is copied. The check is a predictable branch the compiler can hoist out of loops, and deletes entirely when ownership proves the value has one owner.
 
@@ -670,7 +696,7 @@ error NetError:
 **A string's characters are reached by code and as bytes without copying.** `"A".code()` gives `65`, `str.from_code(65)` gives `"A"` and fails with `InvalidValue` for a number that isn't a character, and `s.codes()` gives every code. `.code()` on anything but one character stops the program, like an index out of range. `s.encode()` is a view of the UTF-8 bytes, with no copy, so `s.encode().len()` is the length in bytes.
 *Why:* A lexer needs character codes and byte lengths, and strings are stored as UTF-8 already, so the bytes cost nothing.
 
-**`bytes` is binary data, a run of ints from 0 to 255.** It's a built-in type, like `str`: `.len()` gives its length, indexing and looping give ints, slicing and `+` give `bytes`, and it compares, orders and hashes. `bytes([137, 80])` makes some from a list, and a number outside 0 to 255 stops the program, like an index out of range. `text.encode()` gives text's UTF-8 bytes, and `data.decode()` gives the text back, failing with `InvalidValue` when the bytes aren't UTF-8. Bytes print as `bytes([137, 80])`, which is also how to write them; there's no literal like Python's `b"..."` yet.
+**`bytes` is binary data, a run of ints from 0 to 255.** It's a built-in type, like `str`: `.len()` gives its length, indexing and looping give ints, slicing and `+` give `bytes`, and it compares, orders and hashes. `bytes([137, 80])` makes some from a list, and a number outside 0 to 255 stops the program, like an index out of range. `text.encode()` gives text's UTF-8 bytes, and `data.decode()` gives the text back, failing with `InvalidValue` when the bytes aren't UTF-8. `data.hex()` writes them as hex digits, like `"89504e47"`, with `data.hex(" ")` putting a separator between bytes, and `bytes.fromhex(text)` reads them back, failing with `InvalidValue`, both as in Python. Bytes print as `bytes([137, 80])`, which is also how to write them; there's no literal like Python's `b"..."` yet.
 *Why:* Files, hashes and network data are bytes, and keeping them apart from `str` means text is checked once, when it's decoded. A byte out of range is a mistake in the program, while text that isn't UTF-8 comes from outside and has to be handled. Printing bytes the way they're written means a printed value can be pasted back into code.
 
 **Imports bind names exactly as in Python.** `import std.json` binds `std`, and the call is `std.json.loads(...)`. `from std import json` binds `json`, for `json.loads(...)`. `from std.json import loads` binds `loads`. A kit's own modules follow the same rule: `import game.physics` binds `game`, and `from game import physics` binds `physics`. Writing `json.loads` after `import std.json` is an error whose help suggests `from std import json`. There's no `import *`.
@@ -828,6 +854,35 @@ with net.listen(8080) as server:
 
 **Tasks change only separate pieces.** `for mut e in parallel(enemies):` gives each iteration `mut` access to its own element, checked by the same rule that makes `mut` exclusive. Results combine through reductions, like `sum(... for e in parallel(xs))`.
 
+**`parallel` splits a collection by position.** Anything with `def len` and an `int` `def []`, plus `def is_live` if it has one, splits with nothing more to write. These are the same positions `for mut` writes back through.
+```fennec
+def step(mut units: IdMap[Unit], dt: float):
+    for mut unit in parallel(units):
+        unit.pos += unit.vel * dt
+    alive = sum(1 for unit in parallel(units) if unit.health > 0)
+```
+- The work-stealing pool halves a range of positions when a thread runs out of work, down to a smallest chunk the runtime picks from the element size. Where a reduction's parts combine depends on the length alone.
+- `for mut x in parallel(xs)` gives each task a disjoint range. That's safe only if writing position `i` touches nothing but element `i`, so the compiler checks that the `mut` form of `def []` returns a place rooted in one field of `self` and indexed by `i` itself, like `return self._items[i]`. If it doesn't, `for mut` over `parallel(...)` is a compile error naming that method, and a plain `for mut` still works.
+- `list` and `Buffer` split into contiguous ranges, which also vectorize. `IdMap` is cut at its chunk boundaries, so a task's writes touch only its own chunks. `Grid` is cut at rows. `Packed` gives each task whole lists to read. `dict`, `set`, `SortedMap` and `SortedSet` are read-only in parallel, split by their own internal ranges.
+- A type with only `def iter(self)` and `yield` can't be split, since each item depends on the last. It works as a source, as below, and `for mut` over it in parallel is a compile error that says to add positions.
+
+*Why:* The positions a type already has for `def []` and `for mut` are exactly what splitting needs, and a fixed combine order falls out of splitting by length. Work-stealing libraries elsewhere have each type implement a splittable producer instead: a second interface every collection writes, whose writes the compiler can't check without lifetimes. Here a user type gets real parallelism for free, and one that can't prove separate writes still runs, in order.
+
+**What `parallel` keeps in order:**
+1. `for x in parallel(xs):` runs the body in parallel, in any order.
+2. `[f(x) for x in parallel(xs)]` runs in parallel, with results in input order.
+3. `(f(x) for x in parallel(xs))` does the same, streamed in order through a bounded window. A slow consumer makes the workers wait.
+4. Working in parallel and then going in order is (3) followed by a plain `for` loop.
+5. A generator works as a source: it's read in order, and the work runs in parallel. Pure stages feeding `parallel` may be fused into the workers by the compiler, invisibly.
+
+```fennec
+results = (simulate(seed) for seed in parallel(seeds))
+for result in results:
+    stdout.print(result)        # in input order, while later seeds still run
+```
+There's no `ordered=` option and no `map()`; comprehensions are the one form.
+*Why:* Each form already says what order it needs. A loop body has no result, a list keeps its positions, and a stream is consumed in order, so none of them needs an option. A bounded window keeps a fast producer from filling memory.
+
 **A value crosses a channel like it goes anywhere else.** It's moved at its last use, and otherwise costs one count bump. Any write copies first, so neither side sees the other's changes. `shared` handles can cross too. This replaces the earlier rule that only values with a single owner cross a channel.
 *Why:* Biased counts make it safe, so the restriction no longer buys anything.
 
@@ -881,6 +936,21 @@ total = sum(row.amount for row in rows)
 A stage used once becomes part of what uses it. A stage kept in a name that doesn't change moves to where it's used, leaving behind what it works out when it's made, and a `for` over a stage becomes a plain loop, with a yield function's body copied in. The order things happen in stays the same, so this is purely about speed. Anything that can't fuse, like a stage that's passed around, still works, by asking for each item.
 
 *Why:* Streaming lets a chain of stages read like the steps it is, handles input too big to hold, and can compile to a single loop with nothing allocated per item. Being used once is what keeps that honest: a second loop quietly finding nothing is Python's trap.
+
+**A type is loopable when it has `def iter(self) -> Iterator[T]`,** written with `yield`, so it makes its items one at a time and never builds a list. `for x in thing` calls it, and `list(thing)` makes a list when one is wanted.
+```fennec
+struct Ring:
+    slots: list[int]
+    start = 0
+
+    def iter(self) -> Iterator[int]:
+        for at in range(self.slots.len()):
+            yield self.slots[(self.start + at) % self.slots.len()]
+```
+- `for mut` over such a type is a compile error until writing back through `iter` is designed, since the items it makes are copies and a change to one would be lost. `list`, `Buffer` and `IdMap` keep `for mut`.
+- A loop over `iter` fuses into a plain loop where it can, as any stage does.
+
+*Why:* A loop shouldn't copy a collection before it starts, and a `break` should stop the work. A `for mut` that quietly lost its changes was the bug this replaces.
 
 **Raw strings are `r"..."`.** Backslashes stay as written, so a pattern reads `r"\d+"`. A raw string can't contain `"`.
 *Why:* Regular expressions are unreadable with every backslash doubled. Python has the same strings, so people and AI already write them.
@@ -1349,6 +1419,7 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 ## Still open
 
 - How a type marks that its finishing method must be called.
+- The syntax of the `mut` form of `def []`, which returns a place.
 - How replay records the order tasks reach a `shared` value or a channel.
 - How the interpreter runs a `parallel` loop over a server's connections. It runs `parallel` loops in order, which would serve one client at a time. Until it can switch tasks at a blocking call, such a program runs only in the native engines.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.

@@ -374,18 +374,13 @@ impl Resolver<'_> {
         let span = expr.span;
         match &mut expr.kind {
             ExprKind::Int(_)
+            | ExprKind::Duration(_)
             | ExprKind::Float(_)
             | ExprKind::Str(_)
             | ExprKind::Bool(_)
             | ExprKind::None
             | ExprKind::Variant(_) => {}
-            ExprKind::Name(name) => {
-                let used = name.clone();
-                self.name(&used, span);
-                if let Some(original) = self.original(&used, span) {
-                    *name = original;
-                }
-            }
+            ExprKind::Name(name) => self.name_in_place(name, span),
             ExprKind::FStr(parts) => {
                 for part in parts {
                     if let FStrPart::Expr { expr, .. } = part {
@@ -524,6 +519,15 @@ impl Resolver<'_> {
             );
         }
         Some(original)
+    }
+
+    /// A name read in an expression, given back its original spelling when it has one.
+    fn name_in_place(&mut self, name: &mut String, span: Span) {
+        let used = name.clone();
+        self.name(&used, span);
+        if let Some(original) = self.original(&used, span) {
+            *name = original;
+        }
     }
 
     fn name(&mut self, name: &str, span: Span) {

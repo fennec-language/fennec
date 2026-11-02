@@ -193,6 +193,25 @@ impl Lexer<'_> {
         }
         let text: String =
             self.source.get(start..self.offset()).unwrap_or("").chars().filter(|&c| c != '_').collect();
+        if self.peek(0).is_some_and(|c| c.is_ascii_alphabetic()) {
+            // A duration, in one part or several from the largest unit down: `1h30min`.
+            let mut parts = vec![(text, self.unit())];
+            while self.peek(0).is_some_and(|c| c.is_ascii_digit()) {
+                let part_start = self.offset();
+                self.digits();
+                if self.peek(0) == Some('.') && self.peek(1).is_some_and(|c| c.is_ascii_digit()) {
+                    self.pos += 1;
+                    self.digits();
+                }
+                let number = self.source.get(part_start..self.offset()).unwrap_or("").replace('_', "");
+                parts.push((number, self.unit()));
+            }
+            let written = self.source.get(start..self.offset()).unwrap_or("");
+            let nanos = duration(written, &parts)
+                .map_err(|(message, help)| Diagnostic::new(message, self.span(start)).with_help(help))?;
+            self.push(Tok::Duration(nanos), start);
+            return Ok(());
+        }
         let tok = if is_float {
             text.parse()
                 .map(Tok::Float)
@@ -205,6 +224,15 @@ impl Lexer<'_> {
         };
         self.push(tok, start);
         Ok(())
+    }
+
+    /// The letters of a duration's unit, like `ms`.
+    fn unit(&mut self) -> String {
+        let start = self.offset();
+        while self.peek(0).is_some_and(|c| c.is_ascii_alphabetic()) {
+            self.pos += 1;
+        }
+        self.source.get(start..self.offset()).unwrap_or("").to_owned()
     }
 
     fn digits(&mut self) {
@@ -402,6 +430,84 @@ impl Lexer<'_> {
         let spec = spec_start.and_then(|at| self.source.get(at + 1..end)).map(str::to_owned);
         let offset = Span::new(expr_start, expr_start).shifted(self.base).start;
         Ok(FPart::Expr { source, offset, spec })
+    }
+}
+
+/// The units a duration literal can end in, with how many nanoseconds each is. Minutes are
+/// `min`, so `m` is never a unit.
+const UNITS: [(&str, i128); 6] = [
+    ("ns", 1),
+    ("us", 1_000),
+    ("ms", 1_000_000),
+    ("s", 1_000_000_000),
+    ("min", 60_000_000_000),
+    ("h", 3_600_000_000_000),
+];
+
+/// How a duration is written, for help lines.
+const WRITTEN: &str =
+    "a duration ends in `ns`, `us`, `ms`, `s`, `min` or `h`, like `30s`, `1.5s`, `200ms` or `1h30min`";
+
+/// The nanoseconds a duration literal stands for, from its parts: each a number and a unit,
+/// the largest unit first. It's worked out from the digits as written, so `0.1s` is exactly
+/// 100 million nanoseconds. A problem comes back as a message and a help line.
+fn duration(written: &str, parts: &[(String, String)]) -> Result<i64, (String, String)> {
+    let too_long = || {
+        (
+            format!("`{written}` is too long for a duration"),
+            "a duration holds up to about 292 years of nanoseconds".to_owned(),
+        )
+    };
+    let mut total: i128 = 0;
+    let mut previous = i128::MAX;
+    for (number, unit) in parts {
+        if unit.is_empty() {
+            return Err((format!("`{written}` ends without a unit"), WRITTEN.to_owned()));
+        }
+        let Some(&(_, per)) = UNITS.iter().find(|(name, _)| name == unit) else {
+            let help = if unit == "m" { "minutes are `min`, like `5min`" } else { WRITTEN };
+            return Err((format!("`{written}` uses `{unit}`, which isn't a unit of time"), help.to_owned()));
+        };
+        if per >= previous {
+            return Err((
+                format!("`{written}` has its units out of order"),
+                "write each unit once, the largest first, like `1h30min`".to_owned(),
+            ));
+        }
+        previous = per;
+        let nanos = part_nanos(number, per).map_err(|whole| {
+            if whole {
+                (
+                    format!("`{written}` isn't a whole number of nanoseconds"),
+                    "a duration counts whole nanoseconds: write fewer decimal places".to_owned(),
+                )
+            } else {
+                too_long()
+            }
+        })?;
+        total = total.checked_add(nanos).ok_or_else(too_long)?;
+    }
+    i64::try_from(total).map_err(|_| too_long())
+}
+
+/// The nanoseconds in `number` of a unit `per` nanoseconds long. It fails with `true` when
+/// that isn't a whole number of nanoseconds, and `false` when it's too big.
+fn part_nanos(number: &str, per: i128) -> Result<i128, bool> {
+    let (mantissa, exponent) = match number.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().map_err(|_| false)?),
+        None => (number, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits: i128 = format!("{whole}{fraction}").parse().map_err(|_| false)?;
+    let shift = exponent - i32::try_from(fraction.len()).map_err(|_| false)?;
+    let nanos = digits.checked_mul(per).ok_or(false)?;
+    let ten = 10_i128.checked_pow(shift.unsigned_abs()).ok_or(false)?;
+    if shift >= 0 {
+        nanos.checked_mul(ten).ok_or(false)
+    } else if nanos % ten == 0 {
+        Ok(nanos / ten)
+    } else {
+        Err(true)
     }
 }
 

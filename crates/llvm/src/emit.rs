@@ -1309,6 +1309,7 @@ impl Emit<'_, '_, '_> {
                 self.regex_builtin(dest, name, args, span)
             }
             "json.dumps" | "json.loads" => self.json_builtin(dest, name, args, span),
+            buffer if buffer.starts_with("Buffer.") => self.buffer_builtin(dest, name, args, span),
             "str.len" | "str" | "str.code" | "str.join" | "str.contains" | "str.upper" | "str.lower"
             | "str.replace" | "str.find" | "str.split" => self.text_builtin(dest, name, args, span),
             "float" => {

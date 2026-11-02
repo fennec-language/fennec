@@ -1,0 +1,40 @@
+//! `std.intrinsics`: the machine operations `int` and `float` stand on, for the standard
+//! library alone.
+
+use super::Module;
+
+pub(crate) const MODULE: Module = Module {
+    name: "intrinsics",
+    names: &[
+        "int_add",
+        "int_sub",
+        "int_mul",
+        "int_floordiv",
+        "int_rem",
+        "int_neg",
+        "int_eq",
+        "int_lt",
+        "int_and",
+        "int_or",
+        "int_xor",
+        "int_not",
+        "int_shl",
+        "int_shr",
+        "int_wrapping_add",
+        "int_wrapping_sub",
+        "int_wrapping_mul",
+        "int_to_float",
+        "int_hash",
+        "float_add",
+        "float_sub",
+        "float_mul",
+        "float_div",
+        "float_neg",
+        "float_eq",
+        "float_lt",
+        "float_to_int",
+        "float_bits",
+    ],
+    source: include_str!("intrinsics.fen"),
+    gives: &[],
+};

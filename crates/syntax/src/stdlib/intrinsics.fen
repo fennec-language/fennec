@@ -1,0 +1,87 @@
+## The machine operations the standard library's `int` and `float` stand on. Each engine
+## supplies the body. Only the standard library can import this module: a program uses
+## `int` and `float`, which are written on top of it.
+
+@intrinsic
+def int_add(a: int, b: int) -> int
+
+@intrinsic
+def int_sub(a: int, b: int) -> int
+
+@intrinsic
+def int_mul(a: int, b: int) -> int
+
+@intrinsic
+def int_floordiv(a: int, b: int) -> int
+
+@intrinsic
+def int_rem(a: int, b: int) -> int
+
+@intrinsic
+def int_neg(a: int) -> int
+
+@intrinsic
+def int_eq(a: int, b: int) -> bool
+
+@intrinsic
+def int_lt(a: int, b: int) -> bool
+
+@intrinsic
+def int_and(a: int, b: int) -> int
+
+@intrinsic
+def int_or(a: int, b: int) -> int
+
+@intrinsic
+def int_xor(a: int, b: int) -> int
+
+@intrinsic
+def int_not(a: int) -> int
+
+@intrinsic
+def int_shl(a: int, by: int) -> int
+
+@intrinsic
+def int_shr(a: int, by: int) -> int
+
+@intrinsic
+def int_wrapping_add(a: int, b: int) -> int
+
+@intrinsic
+def int_wrapping_sub(a: int, b: int) -> int
+
+@intrinsic
+def int_wrapping_mul(a: int, b: int) -> int
+
+@intrinsic
+def int_to_float(a: int) -> float
+
+@intrinsic
+def int_hash(a: int) -> int
+
+@intrinsic
+def float_add(a: float, b: float) -> float
+
+@intrinsic
+def float_sub(a: float, b: float) -> float
+
+@intrinsic
+def float_mul(a: float, b: float) -> float
+
+@intrinsic
+def float_div(a: float, b: float) -> float
+
+@intrinsic
+def float_neg(a: float) -> float
+
+@intrinsic
+def float_eq(a: float, b: float) -> bool
+
+@intrinsic
+def float_lt(a: float, b: float) -> bool
+
+@intrinsic
+def float_to_int(a: float) -> int
+
+@intrinsic
+def float_bits(a: float) -> int

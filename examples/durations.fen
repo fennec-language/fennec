@@ -1,0 +1,18 @@
+# A length of time is written with its unit: `30s`, `1.5s`, `200ms`, `5min`, `2h`, `250us` or
+# `40ns`, or in parts from the largest unit down, like `1h30min`. Each is a `Duration`, a whole
+# number of nanoseconds. Minutes are `min`, never `m`.
+# Naming the type takes its import; writing a duration doesn't.
+from std.time import Duration
+
+struct Retry:
+    times = 3
+    wait = 250ms
+
+def total_wait(retry: Retry) -> Duration:
+    retry.wait * retry.times
+
+def main(stdout: Stdout):
+    frame = 16ms + 667us
+    stdout.print(frame.nanos, (1.5s).nanos, (0.1s).nanos)
+    stdout.print(5min < 2h, 90s < 1min, (2h - 30min).nanos, (1h30min - 90min).nanos)
+    stdout.print(total_wait(Retry()).nanos, total_wait(Retry(wait=1s)).nanos)

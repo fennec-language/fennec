@@ -37,6 +37,7 @@ description: What Fennec does today, what's being built next, and the design que
 
 Each of these is decided and not built.
 
+- `for mut` over user types, through `def len` and the `mut` form of `def []`.
 - `xs.pair(i, j)`, and compile errors for copies that can go stale and for a copy on every iteration of a loop.
 - `fails Name` in signatures, with one `error` listing several cases. `?` required wherever a failure passes up, narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
 - `xs.get(i)`, and `sum(xs, start=...)` replacing today's positional start.
@@ -55,6 +56,7 @@ Each of these is decided and not built.
 ## After that: concurrency and sharing
 
 - `parallel` over collections and streams, on real cores, with `limit=`. Today it compiles for reading, and runs in order.
+- User types splitting for `parallel` through their positions, and `(f(x) for x in parallel(xs))` streaming results in order.
 - `with launch(fn) as task:` for long-running tasks, and bounded channels with `send`, `pending()` and `for x in ch`.
 - One scheduler, with I/O multiplexed by the OS.
 - `shared Name:`, with methods that lock automatically.

@@ -12,6 +12,7 @@ mod intrinsics;
 mod keys;
 mod leading_dot;
 mod library;
+mod loops;
 mod mutation;
 mod names;
 mod narrowing;

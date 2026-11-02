@@ -131,6 +131,18 @@ fn text_built_with_plus_and_str_is_one_fstring() {
 }
 
 #[test]
+fn assert_is_for_tests() {
+    let source = "def heal(hp: int) -> int:\n    assert hp > 0\n    hp + 1\n";
+    assert_eq!(rules(source), ["assert-outside-tests"]);
+    let nested = "def f(n: int):\n    if n > 0:\n        match n:\n            case 1:\n                assert n == 1\n            case _:\n                pass\n";
+    assert_eq!(rules(nested), ["assert-outside-tests"], "inside blocks and cases");
+    let method = "struct Pool:\n    size: int\n\n    def check(self):\n        assert self.size > 0\n";
+    assert_eq!(rules(method), ["assert-outside-tests"]);
+    let test = "test \"adding\":\n    def twice(n: int) -> int:\n        assert n >= 0\n        n * 2\n    assert twice(2) == 4\n";
+    assert_eq!(rules(test), NONE, "a test, and the functions in it");
+}
+
+#[test]
 fn pass_is_only_for_an_empty_block() {
     assert_eq!(rules("def f():\n    pass\n"), NONE);
     let source = "def f():\n    pass\n    g()\n";

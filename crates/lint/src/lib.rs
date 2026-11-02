@@ -2,6 +2,7 @@
 //! automatic fix, which `fennec fix` makes, or can't be wrong, because it counts something or
 //! matches an exact form.
 
+mod asserts;
 mod calls;
 mod copies;
 mod costs;
@@ -59,6 +60,7 @@ pub fn lint(module: &Module, sources: &Sources) -> Vec<Lint> {
     found.extend(dead::of(module, sources));
     found.extend(loops::of(module, sources));
     found.extend(names::of(module, sources));
+    found.extend(asserts::of(module));
     found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
     found
 }

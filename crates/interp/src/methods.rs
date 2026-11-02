@@ -8,7 +8,7 @@ use fennec_syntax::{Arg, Diagnostic, Expr, Span};
 use crate::access::might_be_none;
 use crate::call::CallArg;
 use crate::eval::unhandled_result;
-use crate::interp::{Interp, TypeKind};
+use crate::interp::Interp;
 use crate::ops;
 use crate::value::Value;
 
@@ -96,9 +96,7 @@ impl Interp<'_> {
     ) -> Result<Value, Diagnostic> {
         let info = self.type_info(type_name);
         let args = self.eval_args(args)?;
-        if info.as_ref().is_some_and(|info| {
-            info.kind == TypeKind::Enum && info.def.cases.iter().any(|case| case.name == method)
-        }) {
+        if info.as_ref().is_some_and(|info| info.def.cases.iter().any(|case| case.name == method)) {
             return self.construct_variant(Some(type_name), method, args, span);
         }
         match info.and_then(|info| info.methods.get(method).cloned()) {

@@ -2674,3 +2674,66 @@ fn a_with_block_locks_its_handles_for_the_block() {
 "
     );
 }
+
+const NET_ERROR: &str = "error NetError:
+    NotFound(host: str)
+    Refused(host: str, port: int)
+    Closed
+
+def connect(host: str, port: int) -> int:
+    if host == \"\":
+        fail NetError.NotFound(host)
+    if port == 0:
+        fail NetError.Closed
+    port
+
+def described(port: int) -> str:
+    match connect(\"db\", port):
+        case Err(Refused(host, port)): f\"refused {host}:{port}\"
+        case Err(error): f\"failed: {error}\"
+        case Ok(port): f\"port {port}\"
+";
+
+#[test]
+fn an_error_with_cases_is_held_like_an_enum() {
+    let program = lowered(NET_ERROR).unwrap();
+    assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
+    let held = program.enums.iter().find(|def| def.name == "NetError").map(|def| def.cases.len());
+    assert_eq!(held, Some(3));
+    assert!(!program.errors.iter().any(|def| def.name == "NetError"));
+    assert_eq!(
+        printed(NET_ERROR, "connect").unwrap(),
+        "fn connect(_0, _1) -> result of int
+  local _0 host: str
+  local _1 port: int
+  local _2: bool
+  local _3: NetError
+  local _4: result of int
+  local _5: bool
+  local _6: NetError
+  local _7: result of int
+  local _8: result of int
+  bb0:
+    _2 = _0 == \"\"
+    branch _2 bb2 bb3
+  bb1:
+    _5 = _1 == 0
+    branch _5 bb5 bb6
+  bb2:
+    _3 = make NetError.NotFound(_0)
+    _4 = err _3
+    return _4
+  bb3:
+    jump bb1
+  bb4:
+    _8 = ok _1
+    return _8
+  bb5:
+    _6 = make NetError.Closed()
+    _7 = err _6
+    return _7
+  bb6:
+    jump bb4
+"
+    );
+}

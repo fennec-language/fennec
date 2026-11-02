@@ -8,7 +8,7 @@ use crate::call::CallArg;
 use crate::exec::Flow;
 use crate::fakes::TestWorld;
 use crate::format;
-use crate::interp::{Interp, TypeKind};
+use crate::interp::Interp;
 use crate::scope::Frame;
 use crate::value::{Capability, Value};
 
@@ -192,7 +192,9 @@ impl Interp<'_> {
         let info =
             self.type_info(name).ok_or_else(|| Diagnostic::new(format!("unknown type `{name}`"), ty.span))?;
         for _ in 0..20 {
-            let (case, fields) = if info.kind == TypeKind::Enum {
+            let (case, fields) = if info.def.cases.is_empty() {
+                (None, info.def.fields.clone())
+            } else {
                 let at = rng.below(info.def.cases.len().max(1));
                 let case = info
                     .def
@@ -200,8 +202,6 @@ impl Interp<'_> {
                     .get(at)
                     .ok_or_else(|| Diagnostic::new(format!("`{name}` has no cases"), ty.span))?;
                 (Some(case.name.clone()), case.fields.clone())
-            } else {
-                (None, info.def.fields.clone())
             };
             let mut args = Vec::new();
             for field in &fields {

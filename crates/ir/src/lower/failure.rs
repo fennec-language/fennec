@@ -13,6 +13,8 @@ use crate::{BlockId, InstKind, Operand, StructDef, Terminator, type_in};
 pub(super) fn definitions(signatures: &Signatures) -> Vec<StructDef> {
     signatures
         .error_types()
+        // An error with cases is held like an enum, with the other enums.
+        .filter(|name| signatures.enumeration(name).is_none())
         .filter_map(|name| {
             let found = signatures.error_type(name).filter(|found| !found.rules)?;
             Some(StructDef { name: name.to_owned(), fields: found.fields.clone(), shared: false })

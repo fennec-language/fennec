@@ -474,7 +474,7 @@ pub(crate) fn literal_type(default: &fennec_syntax::Expr, program: &Program) -> 
         ExprKind::Attr { object, name, optional: false } => {
             let ExprKind::Name(owner) = &object.kind else { return None };
             let info = program.type_info(owner)?;
-            let is_case = info.kind == TypeKind::Enum && info.def.cases.iter().any(|case| case.name == *name);
+            let is_case = info.def.cases.iter().any(|case| case.name == *name);
             is_case.then(|| Type::Named(owner.clone()))
         }
         _ => None,

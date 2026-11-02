@@ -33,6 +33,15 @@ jobs:
       - run: rustup target add ${{ matrix.target }}
       # `fennec build` links executables against the runtime library, shipped next to `fennec`.
       - run: cargo build --release --locked -p fennec -p fennec-runtime --target ${{ matrix.target }}
+      # A release build puts what it uses of the runtime in the program's own unit, from this.
+      - name: Build the runtime's bitcode
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          cargo rustc --release --locked -p fennec-runtime --target "$TARGET" --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
+          cp "$(ls -t target/"$TARGET"/release/deps/fennec_runtime-*.bc | head -1)" "target/$TARGET/release/libfennec_runtime.bc"
       - name: Package
         shell: bash
         env:
@@ -46,7 +55,7 @@ jobs:
             7z a "$name.zip" "$name" > /dev/null
             echo "ARCHIVE=$name.zip" >> "$GITHUB_ENV"
           else
-            cp "target/${TARGET}/release/fennec" "target/${TARGET}/release/libfennec_runtime.a" "$name/"
+            cp "target/${TARGET}/release/fennec" "target/${TARGET}/release/libfennec_runtime.a" "target/${TARGET}/release/libfennec_runtime.bc" "$name/"
             tar czf "$name.tar.gz" "$name"
             echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
           fi

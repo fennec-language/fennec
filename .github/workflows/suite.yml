@@ -45,6 +45,11 @@ jobs:
           sudo apt-get install -y -qq valgrind
       - name: Build fennec, its runtime library and the suite
         run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
+      # A release build puts what it uses of the runtime in the program's own unit, from this.
+      - name: Build the runtime's bitcode
+        run: |
+          cargo rustc --release --locked -p fennec-runtime --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
+          cp "$(ls -t target/release/deps/fennec_runtime-*.bc | head -1)" target/release/libfennec_runtime.bc
       - name: Measure every kernel against its twin
         env:
           OS: ${{ matrix.os }}

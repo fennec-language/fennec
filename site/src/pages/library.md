@@ -54,7 +54,7 @@ def main(stdout: Stdout):
 
 This works for JSON and TOML today. CSV reads and writes rows of text with `csv.loads` and `csv.dumps`, and reading it into structs is planned.
 
-**Planned:** one `Writer` and `Reader` interface that every format implements, so one generic function breaks any struct down, and `std.pack`, the default binary format: no field names on the wire, `where` ranges that shrink values, a schema hash, delta encoding and opt-in quantization, written in plain Fennec.
+**Planned:** one `Writer` and `Reader` interface that every format implements, so one generic function breaks any struct down, and `std.pack`, the default binary format: no field names on the wire, `where` ranges that shrink values, a fingerprint of the layout, delta encoding and opt-in quantization, written in plain Fennec.
 
 ## Built the same way as your code
 

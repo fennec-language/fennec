@@ -613,7 +613,7 @@ def main(stdout: Stdout):
 
 Every field is saved, private `_` ones included, and `where` rules check a value as it loads. `@skip` leaves a field out, and it needs a default so loading still builds a whole value. A key the struct doesn't have is an error unless the call says `extra=.ignore`, and `@serialize(name="uid")` renames a field when an API's name isn't yours.
 
-`std.pack` will be the default binary format: no field names on the wire, `where` ranges shrink values, a schema hash, delta encoding and opt-in quantization, all in plain Fennec. Annotations like `@serialize(name="uid")` are data read at compile time, and they never change what they're on.
+`std.pack` will be the default binary format: no field names on the wire, `where` ranges shrink values, a fingerprint of the layout, delta encoding and opt-in quantization, all in plain Fennec. Annotations like `@serialize(name="uid")` are data read at compile time, and they never change what they're on.
 
 JSON and TOML already work today, including typed reading:
 

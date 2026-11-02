@@ -647,12 +647,42 @@ There's no per-format override, like a `def json` method on a type; one `def ser
 *Why:* One mechanism covers printing and every data format, and it's how `std` types keep their internals hidden. The method is `str`, not `text`, because `text` would clash with common fields like `message.text`, while `str(x)` already means "make text of this".
 
 **`std.pack` is the default binary format,** written in plain Fennec.
-- Union members and enum cases are stored by name, as in JSON, once per file. A name table at the start of the file holds each name, and each value refers to it by a small number. Reordering or adding cases never breaks an old save, and a rename uses `@serialize(name=...)`.
-- There are no field names on the wire, and a schema hash says which shape the data has.
+- v1 is flat positional binary: little-endian, small ints in fewer bytes (varints), and no names on the wire. Union members and enum cases are written by position.
+- Every pack stream or file carries a fingerprint: a compile-time hash of the exact layout of every type reachable from what's sent, its types, fields and cases, in order. A mismatch is an error value, never misread bytes.
 - `where` ranges shrink values: a field that's `where hp >= 0 and hp <= 100` takes one byte.
 - Delta encoding is built in, and quantization is opt-in.
 
 *Why:* Saves and network messages are where games and servers feel size most, and the types already say most of what a compact format needs to know.
+
+**A protocol is a union of message types.** `net.connect` stays about bytes, and `conn.messages[GameMsg]()?` puts a typed message layer on any byte stream: TCP, later QUIC, the test fake or a file. It sends in `std.pack` and checks fingerprints when it starts.
+```fennec
+struct Move:
+    unit: Id[Unit]
+    to: Vec2
+
+struct Attack:
+    unit: Id[Unit]
+    target: Id[Unit]
+
+struct Chat:
+    text: str
+
+type GameMsg = Move | Attack | Chat
+
+def play(mut conn: Connection, mut world: World) fails NetError:
+    mut wire = conn.messages[GameMsg]()?
+    wire.send(Chat(text="hello"))?
+    for msg in wire:
+        match msg:
+            case Move(unit, to): world.move(unit, to)
+            case Attack(unit, target): world.attack(unit, target)
+            case Chat(text): world.say(text)
+```
+- A fingerprint mismatch is `NetError.ProtocolMismatch(ours, theirs)`. The program decides whether to exit, prompt an update or retry.
+- `wire.send(x)` accepts only members of the union; anything else is a compile error.
+- Receiving is `for msg in wire:` and `match`, with no handler registry.
+
+*Why:* The union already says every message a protocol has, so `match` checks that each is handled, and both sides compile the same fingerprint from the same types. Keeping the typed layer separate from the connection means one protocol runs over any byte stream.
 
 **A module is in `std` if most programs need it, it's security-sensitive, or it has to be consistent everywhere.** Everything else is a kit. Only reachable code gets compiled, so unused `std` costs nothing.
 
@@ -727,11 +757,13 @@ error NetError:
     Denied(reason: str)
     Tls(reason: str)
     Status(code: int)
+    ProtocolMismatch(ours: Fingerprint, theirs: Fingerprint)
     Other(reason: str)
 ```
 - `NotFound` is a name that didn't resolve, and `Closed` is the other side hanging up during a write. Reaching the end of what was sent isn't an error.
 - `Denied` is a narrowed `Net` refusing a host or port: "this Net can reach only `api.example.com`, so it can't reach `evil.example`".
 - `Status` is for callers that turn a response into an error, as above. The client itself never returns it.
+- `ProtocolMismatch` is a typed message layer finding that the other side was built from different message types, under `std.pack`.
 
 **A test's `Net` is a fake that never touches the network.** `net.script("GET https://api.example.com/weather", Response(status=200, body=...))` sets what a request answers, and `net.requests()` lists what was sent. `listen` and `connect` work in memory, so a test can run a server and a client against each other. `fennec test --real` uses the real network.
 *Why:* One API on every platform, shaped like the libraries people and AI already know. Blocking calls in `parallel` tasks keep server code as plain as a script, which is what the MMO's server needs.
@@ -1469,6 +1501,7 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 
 ## Still open
 
+- How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
 - How a type marks that its finishing method must be called.
 - The syntax of the `mut` form of `def []`, which returns a place.
 - How replay records the order tasks reach a `shared` value or a channel.

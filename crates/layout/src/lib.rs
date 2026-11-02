@@ -243,7 +243,9 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Str if layouts.text_headers() => Element::Text,
         Ty::Str => Element::Str,
         Ty::Obj => Element::Object,
-        // An optional's one word is a block's address, a string's too.
+        // An optional string is a string's header, all zero for `None`, when strings are held
+        // as headers. Otherwise an optional's one word is a block's address, a string's too.
+        Ty::Maybe(Block::Str) if layouts.text_headers() => Element::Maybe(Rc::new(Element::Text)),
         Ty::Maybe(Block::Str) => Element::Maybe(Rc::new(Element::Str)),
         Ty::Maybe(block) => Element::Maybe(Rc::new(describe(layouts, block.ty())?)),
         Ty::Block(id) => describe(layouts, layouts.block(id)?)?,

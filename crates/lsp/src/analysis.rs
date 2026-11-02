@@ -114,7 +114,10 @@ pub(crate) fn edited_bodies(clean: &Clean, program: &Path, overlay: &Overlay) ->
         }
     }
     drop(items);
-    let linted = findings::located(&loaded.sources, &fennec_lint::lint(&loaded.module, &loaded.sources));
+    let linted = findings::located(
+        &loaded.sources,
+        &findings::lints(&loaded.module, &loaded.sources, program.is_dir()),
+    );
     // A copy each time round a loop is a mistake too, as `fennec run` finds it.
     let diagnostics = match fennec_check::check_to_run(&mut loaded.module) {
         Ok(signatures) => {
@@ -169,7 +172,7 @@ pub(crate) fn analyze(program: &Path, overlay: &Overlay) -> Analysis {
             // A copy each time round a loop is a mistake, as `fennec check` finds it.
             diagnostics.extend(fennec_lint::implicit_copies(&costs));
             let findings = if diagnostics.is_empty() {
-                findings::of_clean(&loaded.module, &loaded.sources, &costs)
+                findings::of_clean(&loaded.module, &loaded.sources, &costs, program.is_dir())
             } else {
                 Vec::new()
             };

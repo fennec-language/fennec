@@ -71,6 +71,14 @@ pub fn lint(module: &Module, sources: &Sources) -> Vec<Lint> {
     found
 }
 
+/// What only a kit is held to, beyond `lint`: its code outside `main` and its tests doesn't
+/// stop the program with `.expect(...)`, but gives the failure back to its caller. Whether a
+/// program is a kit is up to whoever loaded it.
+#[must_use]
+pub fn kit_lints(module: &Module) -> Vec<Lint> {
+    asserts::in_kit(module)
+}
+
 /// Every explicit `copy` that changes nothing, in a module that checks. Finding them checks the
 /// whole program again for each `copy`, so they're asked for where the whole program is checked
 /// anyway, apart from `lint`.

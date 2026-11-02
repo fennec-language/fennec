@@ -161,12 +161,13 @@ def as_type(expr: Expr) -> TypeExpr?:
                 case .Name(name):
                     mut args = []
                     match index.kind:
-                        case .Tuple(items):
-                            for item in items:
-                                found = as_type(item)
-                                if found is None:
-                                    return None
-                                args.append(found)
+                        # `dict[str, int]` has two types; `list[(int, int)]` has one, a tuple,
+                        # whose span starts at its `(` rather than at its first item.
+                        case .Tuple(items) if items.len() > 0 and items[0].span.start == index.span.start:
+                            found = as_types(items)
+                            if found is None:
+                                return None
+                            args = found
                         case _:
                             found = as_type(index)
                             if found is None:
@@ -174,4 +175,19 @@ def as_type(expr: Expr) -> TypeExpr?:
                             args.append(found)
                     TypeExpr(name=name, args=args, optional=False, span=expr.span)
                 case _: None
+        case .Tuple(items):
+            found = as_types(items)
+            if found is None:
+                return None
+            TypeExpr(name="tuple", args=found, optional=False, span=expr.span)
         case _: None
+
+
+def as_types(items: list[Expr]) -> list[TypeExpr]?:
+    mut types = []
+    for item in items:
+        found = as_type(item)
+        if found is None:
+            return None
+        types.append(found)
+    types

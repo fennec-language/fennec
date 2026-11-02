@@ -200,7 +200,7 @@ struct Loop {
 }
 
 /// The capabilities, whose methods the engines provide.
-const CAPABILITIES: [&str; 7] = ["Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy"];
+const CAPABILITIES: [&str; 8] = ["Stdout", "Fs", "Clock", "Args", "Stdin", "Process", "Entropy", "Net"];
 
 /// What's known about the whole program.
 struct Context<'a> {

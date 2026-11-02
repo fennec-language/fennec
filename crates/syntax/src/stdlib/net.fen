@@ -1,0 +1,50 @@
+## `std.net`: the network, through the `Net` capability, which `main` names like `Fs`. Every
+## call waits until it's done, with no `async`: a server gives each connection its own
+## `parallel` task. `net.connect(host, port)` gives a `Connection` and `net.listen(port)` a
+## `Server`, each used in a `with` block that closes it. Connecting gives up after 30 seconds
+## unless `timeout=` says otherwise. In a test, `Net` is a fake that never touches the
+## network: the test's own servers are at `localhost`, and its clients reach them in memory.
+## Nothing else runs while a test waits, so a test's server is done once no connection is
+## waiting.
+
+## A failure of the network: a host that isn't there, a refused connection, a timeout, or the
+## other side hanging up.
+error NetError:
+    reason: str
+
+## One end of a TCP connection. Its methods, written in Rust: `read(n)` gives up to `n` bytes,
+## or empty bytes once the other side is done; `read_line()` gives the next line without its
+## ending, or `None` at the end; `write(data)` sends `bytes` or a `str`; and `close()`. Reads
+## wait as long as it takes, unless given `timeout=`.
+struct Connection:
+    _handle: int
+    ## The other side's address, like `"127.0.0.1:52811"`.
+    peer: str
+
+    ## Each line it's sent, until the other side is done or the connection fails. To tell
+    ## those apart, call `read_line()` instead.
+    def lines(self) -> Iterator[str]:
+        while True:
+            line = self.read_line() else None
+            if line is None: return
+            yield line
+
+    def del(self):
+        self.close()
+
+## A TCP port being listened on. Looping over it gives each connection as it arrives, and
+## `accept()` waits for the next one.
+struct Server:
+    _handle: int
+    ## The port it listens on: the one asked for, or the one the system picked for port 0.
+    port: int
+
+    ## Each connection as it arrives, until the server is closed or fails.
+    def iter(self) -> Iterator[Connection]:
+        while True:
+            conn = self.accept() else None
+            if conn is None: return
+            yield conn
+
+    def del(self):
+        self.close()

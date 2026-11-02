@@ -1,0 +1,80 @@
+# decision: `std.net` is shaped like Python's `socket` and `requests`, and every call blocks.
+
+# `std.net` reaches the network through the `Net` capability. Every call waits until it's
+# done. In a test, `Net` is a fake: the test's own servers are at `localhost`, and its
+# clients reach them in memory, so a test can play both sides.
+from std.net import NetError
+from std.time import Duration
+
+def reason[T](found: Result[T, NetError]) -> str:
+    match found:
+        case Err(error):
+            error.reason
+        case _:
+            "it worked"
+
+test "a line goes there and back"(net: Net):
+    with net.listen(9000)? as server:
+        with net.connect("localhost", 9000)? as client:
+            client.write("hello\n")?
+            with server.accept()? as conn:
+                assert conn.read_line()? == "hello"
+                conn.write("hello yourself\n")?
+            assert client.read_line()? == "hello yourself"
+            assert client.read_line()? is None
+
+test "lines gives each line until the other side is done"(net: Net):
+    with net.listen(9000)? as server:
+        client = net.connect("localhost", 9000)?
+        assert client.peer == "localhost:9000"
+        client.write("one\ntwo\n")?
+        client.close()
+        with server.accept()? as conn:
+            assert list(conn.lines()) == ["one", "two"]
+
+test "looping over a server gives each connection as it comes"(net: Net):
+    with net.listen(0)? as server:
+        first = net.connect("localhost", server.port)?
+        second = net.connect("localhost", server.port)?
+        first.write("first\n")?
+        second.write("second\n")?
+        mut heard = list[str]()
+        for conn in server:
+            heard.append(conn.read_line()? else "")
+            if heard.len() == 2: break
+        assert heard == ["first", "second"]
+
+test "a server gives each connection its own task"(net: Net):
+    with net.listen(9000)? as server:
+        for name in ["ash", "kit"]:
+            client = net.connect("localhost", 9000)?
+            client.write(f"{name}\n")?
+            client.close()
+        # In a test, a server's loop ends once no connection is waiting.
+        heard = [list(conn.lines()) for conn in parallel(server)]
+        assert heard == [["ash"], ["kit"]]
+
+test "bytes go as they are"(net: Net):
+    with net.listen(9000)? as server:
+        with net.connect("localhost", 9000, timeout=Duration.seconds(5.0))? as client:
+            client.write(bytes([0, 255, 10, 7]))?
+            with server.accept()? as conn:
+                assert conn.read(2)? == bytes([0, 255])
+                assert conn.read(10)? == bytes([10, 7])
+
+test "failures are NetError values"(net: Net):
+    assert reason(net.connect("localhost", 9001)) == "`localhost` refused a connection on port 9001"
+    assert reason(net.connect("example.com", 80)).startswith("the test's fake `Net` reaches only")
+    with net.listen(9000)? as _:
+        assert reason(net.listen(9000)) == "port 9000 is already in use"
+
+def main(stdout: Stdout, net: Net):
+    # Port 0 lets the system pick a free port. One task can play both sides, since a small
+    # write waits only until the system has it.
+    with net.listen(0)? as server:
+        with net.connect("127.0.0.1", server.port)? as client:
+            client.write("ping\n".encode())?
+            with server.accept()? as conn:
+                stdout.print(conn.read_line()?)
+                conn.write("pong\n")?
+            stdout.print(client.read_line()?)

@@ -241,6 +241,14 @@ fn bytes_method(name: &str) -> Option<Method> {
     })
 }
 
+/// Whether a method waits on the network, so it takes `timeout=`, a `Duration`.
+fn waits_on_network(type_name: &str, name: &str) -> bool {
+    matches!(
+        (type_name, name),
+        ("Net", "connect") | ("Connection", "read" | "read_line") | ("Server", "accept")
+    )
+}
+
 /// Methods of capabilities, and of standard library types that are written in Rust.
 fn named_method(type_name: &str, name: &str) -> Option<Method> {
     Some(match (type_name, name) {
@@ -282,8 +290,22 @@ impl FnCx<'_> {
             );
             self.mut_place(object, &what);
         }
-        let named: &[&str] = if name == "sort" { &["key"] } else { &[] };
+        let named: &[&str] = match ty.type_name() {
+            _ if name == "sort" => &["key"],
+            Some(owner) if waits_on_network(owner, name) => &["timeout"],
+            _ => &[],
+        };
         let plain = self.builtin_args(name, args, named, &method.receives, span);
+        if name == "write"
+            && *ty == Type::named("Connection")
+            && let [(data, at)] = plain.as_slice()
+            && !matches!(data, Type::Str | Type::Bytes | Type::Unknown | Type::Var(_))
+        {
+            self.error(
+                mismatch("what's written", &Type::Bytes, data, *at)
+                    .with_help("a connection sends `bytes`, or a `str` as its UTF-8 bytes"),
+            );
+        }
         if name == "run" && *ty == Type::named("Process") && plain.len() != 2 {
             let message =
                 "`run` takes the program, then its arguments as a list, never one string a shell would split";
@@ -342,6 +364,11 @@ impl FnCx<'_> {
                 }
                 Some("key") => {}
                 Some("start") if named.contains(&"start") => start = Some((ty, arg.value.span)),
+                Some("timeout") if named.contains(&"timeout") => {
+                    if !self.checker.fits(&Type::named("Duration"), &ty) {
+                        self.error(mismatch("`timeout`", &Type::named("Duration"), &ty, arg.value.span));
+                    }
+                }
                 Some("indent") if named.contains(&"indent") => {
                     if !self.checker.fits(&Type::Int, &ty) {
                         self.error(mismatch("`indent`", &Type::Int, &ty, arg.value.span));

@@ -194,13 +194,13 @@ fn builtins_need_values_not_results() {
 }
 
 const NET_ERROR: &str =
-    "error NetError:\n    NotFound(host: str)\n    Refused(host: str, port: int)\n    Closed\n\n";
+    "error DialError:\n    NotFound(host: str)\n    Refused(host: str, port: int)\n    Closed\n\n";
 
 #[test]
 fn an_error_with_cases_fails_and_is_matched_like_an_enum() {
     let text = format!(
         "{NET_ERROR}def connect(host: str, port: int) -> int:\n    if host == \"\":\n        \
-         fail NetError.NotFound(host)\n    if port == 0:\n        fail NetError.Closed\n    port\n\n\
+         fail DialError.NotFound(host)\n    if port == 0:\n        fail DialError.Closed\n    port\n\n\
          def described(port: int) -> str:\n    match connect(\"db\", port):\n        \
          case Err(Refused(host, port)): f\"refused {{host}}:{{port}}\"\n        \
          case Err(NotFound(host)): f\"no {{host}}\"\n        case Err(error): f\"failed: {{error}}\"\n        \
@@ -213,19 +213,19 @@ fn an_error_with_cases_fails_and_is_matched_like_an_enum() {
 fn an_error_with_cases_is_made_from_one_and_matched_whole() {
     let in_main = |body: &str| problems(&format!("{NET_ERROR}def main(stdout: Stdout):\n{body}"));
     assert_eq!(
-        in_main("    problem = NetError(host=\"x\")\n    stdout.print(problem)\n"),
-        ["`NetError` has cases, so pick one of its cases @ NetError(host=\"x\")"]
+        in_main("    problem = DialError(host=\"x\")\n    stdout.print(problem)\n"),
+        ["`DialError` has cases, so pick one of its cases @ DialError(host=\"x\")"]
     );
     assert_eq!(
-        in_main("    problem = NetError.Refused(\"x\", 1)\n    stdout.print(problem.host)\n"),
-        ["`NetError` has cases, so its fields depend on its case @ problem.host"]
+        in_main("    problem = DialError.Refused(\"x\", 1)\n    stdout.print(problem.host)\n"),
+        ["`DialError` has cases, so its fields depend on its case @ problem.host"]
     );
     assert_eq!(
         in_main(
-            "    problem = NetError.Closed\n    match problem:\n        case Closed: stdout.print(\"closed\")\n        \
+            "    problem = DialError.Closed\n    match problem:\n        case Closed: stdout.print(\"closed\")\n        \
              case NotFound(host): stdout.print(host)\n"
         ),
-        ["this `match` doesn't handle `NetError.Refused` @ problem"]
+        ["this `match` doesn't handle `DialError.Refused` @ problem"]
     );
     assert_eq!(
         problems("error LoadError:\n    path: str\n    NotFound(path: str)\n"),

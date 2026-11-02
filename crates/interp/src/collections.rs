@@ -62,6 +62,10 @@ impl Interp<'_> {
                 span,
             ));
         }
+        // Waiting on the network takes `timeout=`.
+        if let Value::Capability(Capability::Net) = receiver {
+            return self.net_method(method, args, span);
+        }
         let args = plain(args, method, span)?;
         match (receiver, method, args.as_slice()) {
             (Value::Int(n), "abs", []) => {

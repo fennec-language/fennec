@@ -103,6 +103,7 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
                 fennec_layout::Cap::Stdin => 4,
                 fennec_layout::Cap::Process => 5,
                 fennec_layout::Cap::Entropy => 6,
+                fennec_layout::Cap::Net => 7,
             }),
             _ => None,
         };

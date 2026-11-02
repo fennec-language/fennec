@@ -206,6 +206,9 @@ impl Interp<'_> {
             ("reversed", Some(items), None, None) => {
                 Ok(Value::list(self.iterate(items, span)?.into_iter().rev().collect()))
             }
+            // The interpreter runs a `parallel` loop in order. A stream, like a server's
+            // connections, is passed on as it is, so the loop takes each item as it comes.
+            ("parallel", Some(items @ (Value::Generator(_) | Value::Instance(_))), None, None) => Ok(items),
             ("list" | "parallel", Some(items), None, None) => Ok(Value::list(self.iterate(items, span)?)),
             ("set", None, None, None) => Ok(Value::Set(Rc::default())),
             ("set", Some(items), None, None) => {

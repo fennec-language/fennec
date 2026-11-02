@@ -2675,16 +2675,16 @@ fn a_with_block_locks_its_handles_for_the_block() {
     );
 }
 
-const NET_ERROR: &str = "error NetError:
+const DIAL_ERROR: &str = "error DialError:
     NotFound(host: str)
     Refused(host: str, port: int)
     Closed
 
 def connect(host: str, port: int) -> int:
     if host == \"\":
-        fail NetError.NotFound(host)
+        fail DialError.NotFound(host)
     if port == 0:
-        fail NetError.Closed
+        fail DialError.Closed
     port
 
 def described(port: int) -> str:
@@ -2696,21 +2696,21 @@ def described(port: int) -> str:
 
 #[test]
 fn an_error_with_cases_is_held_like_an_enum() {
-    let program = lowered(NET_ERROR).unwrap();
+    let program = lowered(DIAL_ERROR).unwrap();
     assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
-    let held = program.enums.iter().find(|def| def.name == "NetError").map(|def| def.cases.len());
+    let held = program.enums.iter().find(|def| def.name == "DialError").map(|def| def.cases.len());
     assert_eq!(held, Some(3));
-    assert!(!program.errors.iter().any(|def| def.name == "NetError"));
+    assert!(!program.errors.iter().any(|def| def.name == "DialError"));
     assert_eq!(
-        printed(NET_ERROR, "connect").unwrap(),
+        printed(DIAL_ERROR, "connect").unwrap(),
         "fn connect(_0, _1) -> result of int
   local _0 host: str
   local _1 port: int
   local _2: bool
-  local _3: NetError
+  local _3: DialError
   local _4: result of int
   local _5: bool
-  local _6: NetError
+  local _6: DialError
   local _7: result of int
   local _8: result of int
   bb0:
@@ -2720,7 +2720,7 @@ fn an_error_with_cases_is_held_like_an_enum() {
     _5 = _1 == 0
     branch _5 bb5 bb6
   bb2:
-    _3 = make NetError.NotFound(_0)
+    _3 = make DialError.NotFound(_0)
     _4 = err _3
     return _4
   bb3:
@@ -2729,7 +2729,7 @@ fn an_error_with_cases_is_held_like_an_enum() {
     _8 = ok _1
     return _8
   bb5:
-    _6 = make NetError.Closed()
+    _6 = make DialError.Closed()
     _7 = err _6
     return _7
   bb6:

@@ -150,6 +150,15 @@ impl Interp<'_> {
             start(&generator, span)?;
             return Ok(Items::Generated(generator));
         }
+        // A type's own `iter` is asked for each item in turn, so a loop over one that goes on
+        // forever, like a server's, gets its items as they come.
+        if let Value::Instance(instance) = &value
+            && let Some(iter) =
+                self.type_info(&instance.type_name).and_then(|info| info.methods.get("iter").cloned())
+        {
+            let items = self.call_with_values(&iter, vec![value.clone()], span)?;
+            return self.items_of(items, span);
+        }
         Ok(Items::Listed(self.entries(value, span)?.into_iter()))
     }
 

@@ -882,6 +882,21 @@ A stage used once becomes part of what uses it. A stage kept in a name that does
 
 *Why:* Streaming lets a chain of stages read like the steps it is, handles input too big to hold, and can compile to a single loop with nothing allocated per item. Being used once is what keeps that honest: a second loop quietly finding nothing is Python's trap.
 
+**A type is loopable when it has `def iter(self) -> Iterator[T]`,** written with `yield`, so it makes its items one at a time and never builds a list. `for x in thing` calls it, and `list(thing)` makes a list when one is wanted.
+```fennec
+struct Ring:
+    slots: list[int]
+    start = 0
+
+    def iter(self) -> Iterator[int]:
+        for at in range(self.slots.len()):
+            yield self.slots[(self.start + at) % self.slots.len()]
+```
+- `for mut` over such a type is a compile error until writing back through `iter` is designed, since the items it makes are copies and a change to one would be lost. `list`, `Buffer` and `IdMap` keep `for mut`.
+- A loop over `iter` fuses into a plain loop where it can, as any stage does.
+
+*Why:* A loop shouldn't copy a collection before it starts, and a `break` should stop the work. A `for mut` that quietly lost its changes was the bug this replaces.
+
 **Raw strings are `r"..."`.** Backslashes stay as written, so a pattern reads `r"\d+"`. A raw string can't contain `"`.
 *Why:* Regular expressions are unreadable with every backslash doubled. Python has the same strings, so people and AI already write them.
 

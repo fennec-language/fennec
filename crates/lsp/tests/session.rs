@@ -552,3 +552,50 @@ fn completion_after_a_bare_dot_offers_enum_cases_and_a_type_offers_its_own() {
     let offered = labels(&editor.at("textDocument/completion", "src/main.fen", &typing, "Mood.\n", 5));
     assert_eq!(offered, ["Calm", "Angry"]);
 }
+
+/// The labels of the signatures offered, and which parameter is marked.
+fn signatures(help: &Json) -> (Vec<String>, Option<f64>) {
+    let all = help.get("signatures").and_then(Json::as_array).unwrap_or(&[]);
+    let labels = all.iter().filter_map(|shape| shape.get("label")?.as_str().map(str::to_owned)).collect();
+    let active = match help.get("activeParameter") {
+        Some(Json::Number(at)) => Some(*at),
+        _ => None,
+    };
+    (labels, active)
+}
+
+#[test]
+fn signature_help_shows_what_a_call_takes_and_marks_the_argument() {
+    let mut editor = Editor::new("signature-help").unwrap();
+    let typing = MAIN.replace("hit(fighter, 3)", "hit(fighter, ");
+    editor.open("src/main.fen", &typing);
+    let help = editor.at("textDocument/signatureHelp", "src/main.fen", &typing, "hit(fighter, ", 13);
+    assert_eq!(signatures(&help), (vec!["hit(fighter: Fighter, power: int) -> int".to_owned()], Some(1.0)));
+    let doc = help
+        .get("signatures")
+        .and_then(Json::as_array)
+        .and_then(|all| all[0].at(&["documentation", "value"]));
+    assert_eq!(doc, Some(&Json::string("How much a hit does,\ndoubled.")));
+    let typing = MAIN.replace("hit(fighter, 3)", "hit(power=2, ");
+    editor.change("src/main.fen", &typing);
+    let help = editor.at("textDocument/signatureHelp", "src/main.fen", &typing, "power=2", 6);
+    assert_eq!(signatures(&help).1, Some(1.0), "a keyword argument marks the parameter it names");
+    let typing = MAIN.replace("Fighter(name=\"Kit\")", "Fighter(name=\"Kit\", )");
+    editor.change("src/main.fen", &typing);
+    let help = editor.at("textDocument/signatureHelp", "src/main.fen", &typing, "\", )", 3);
+    assert_eq!(signatures(&help), (vec!["Fighter(name: str, health = 100)".to_owned()], Some(1.0)));
+    assert_eq!(editor.at("textDocument/signatureHelp", "src/main.fen", &typing, "damage =", 0), Json::Null);
+}
+
+#[test]
+fn signature_help_for_a_method_comes_from_the_objects_type() {
+    let mut editor = Editor::new("signature-methods").unwrap();
+    let typing = MAIN.replace("fighter.describe()", "fighter.name.startswith(");
+    editor.open("src/main.fen", &typing);
+    let help = editor.at("textDocument/signatureHelp", "src/main.fen", &typing, "startswith(", 11);
+    assert_eq!(signatures(&help), (vec!["startswith(prefix: str) -> bool".to_owned()], Some(0.0)));
+    let typing = MAIN.replace("fighter.describe()", "fighter.describe(");
+    editor.change("src/main.fen", &typing);
+    let help = editor.at("textDocument/signatureHelp", "src/main.fen", &typing, "describe(", 9);
+    assert_eq!(signatures(&help).0, ["describe() -> str"]);
+}

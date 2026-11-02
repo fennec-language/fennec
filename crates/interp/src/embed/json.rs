@@ -100,6 +100,10 @@ mod tests {
         assert_eq!(temp(read), Value::Ok(Rc::new(Value::list(vec![Value::Int(5), Value::Int(6)]))));
         let untyped = super::loads(string("[true]"), 0, 0, 0);
         assert!(matches!(temp(untyped), Value::Ok(_)));
+        let failed = super::loads(string("[1, 2"), string("list[int]"), 0, 0);
+        assert!(matches!(temp(failed), Value::Err(_)));
+        let error = super::super::temps::error_of(failed);
+        assert!(matches!(temp(error), Value::Instance(_)), "{:?}", temp(error));
         finish();
     }
 

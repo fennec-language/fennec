@@ -621,6 +621,18 @@ pub mod temps {
         })
     }
 
+    /// The error inside a failed result, as a new temporary, or the value itself when it
+    /// isn't one: `unwrap`'s other side.
+    pub extern "C" fn error_of(value: i64) -> i64 {
+        with(|state| {
+            let inner = match state.raw(value) {
+                Value::Err(inner) => inner.as_ref().clone(),
+                other => other,
+            };
+            state.push(inner)
+        })
+    }
+
     /// The failed result `fail error` gives back.
     pub extern "C" fn err(error: i64, start: i64, end: i64) -> i64 {
         attempt(|state: &mut State| {

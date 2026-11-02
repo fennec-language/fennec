@@ -231,9 +231,14 @@ fn str_method(name: &str) -> Option<Method> {
     })
 }
 
-/// `data.decode()` reads UTF-8 text, and fails on bytes that aren't.
+/// `data.decode()` reads UTF-8 text, and fails on bytes that aren't. `data.hex()` writes
+/// each byte as two hex digits, with `sep` between bytes if it's given.
 fn bytes_method(name: &str) -> Option<Method> {
-    (name == "decode").then(|| reads(&[], Type::result(Type::Str, Type::named("InvalidValue"))))
+    Some(match name {
+        "decode" => reads(&[], Type::result(Type::Str, Type::named("InvalidValue"))),
+        "hex" => reads(&[Type::Str], Type::Str).optional(1),
+        _ => return None,
+    })
 }
 
 /// Methods of capabilities, and of standard library types that are written in Rust.
@@ -545,6 +550,21 @@ impl FnCx<'_> {
             }
             _ => Type::Unknown,
         }
+    }
+
+    /// `bytes.fromhex(text)`: the bytes that hex digits spell, which fails for text that isn't
+    /// pairs of them.
+    pub(crate) fn bytes_from_hex(&mut self, args: &[Arg], span: Span) -> Type {
+        let plain = self.builtin_args("fromhex", args, &[], &[], span);
+        match plain.as_slice() {
+            [(text, at)] => {
+                if !self.checker.fits(&Type::Str, text) {
+                    self.error(mismatch("the hex digits", &Type::Str, text, *at));
+                }
+            }
+            _ => self.error(wrong_args("fromhex", span)),
+        }
+        Type::result(Type::Bytes, Type::named("InvalidValue"))
     }
 
     /// `str.from_code(n)`: the character with a code, which fails for a number that isn't one.

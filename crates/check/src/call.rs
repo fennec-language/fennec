@@ -34,13 +34,21 @@ struct Target<'a> {
 const MUT_ARG: &str = "only a name, or a field or item of one, can be passed with `mut`";
 
 impl FnCx<'_> {
+    /// Whether this is one of the functions on built-in types, `str.from_code(n)` and
+    /// `bytes.fromhex(text)`.
+    fn is_built_in_function(&self, object: &Expr, name: &str) -> bool {
+        matches!(&object.kind, ExprKind::Name(owner) if self.lookup(owner).is_none()
+            && matches!((owner.as_str(), name), ("str", "from_code") | ("bytes", "fromhex")))
+    }
+
+    fn built_in_function(&mut self, name: &str, args: &[Arg], span: Span) -> Type {
+        if name == "from_code" { self.char_from_code(args, span) } else { self.bytes_from_hex(args, span) }
+    }
+
     pub(crate) fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> Type {
         match &callee.kind {
-            ExprKind::Attr { object, name, .. }
-                if name == "from_code"
-                    && matches!(&object.kind, ExprKind::Name(type_name) if type_name == "str" && self.lookup(type_name).is_none()) =>
-            {
-                return self.char_from_code(args, span);
+            ExprKind::Attr { object, name, .. } if self.is_built_in_function(object, name) => {
+                return self.built_in_function(name, args, span);
             }
             ExprKind::Attr { object, name, optional } => {
                 return match self.module_member(object, name, callee.span) {

@@ -25,3 +25,19 @@ def main(stdout: Stdout):
             stdout.print("decoded", text)
         case InvalidValue(_):
             stdout.print("the header isn't text")
+
+test "bytes are written and read as hex, as in Python":
+    header = bytes([137, 80, 78, 71])
+    assert header.hex() == "89504e47"
+    assert header.hex(" ") == "89 50 4e 47"
+    assert bytes().hex() == ""
+    assert bytes.fromhex("89504E47")? == header
+    assert bytes.fromhex("89 50 4e 47")? == header
+
+test "fromhex fails on text that isn't pairs of hex digits":
+    for text in ["8", "zz", "8 9"]:
+        match bytes.fromhex(text):
+            case Err(error):
+                assert error.message.startswith("`fromhex` needs two hex digits for each byte")
+            case Ok(_):
+                assert False

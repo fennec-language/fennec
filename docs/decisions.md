@@ -474,7 +474,7 @@ def write[T, W: Writer](x: T, mut out: W):
 ```
 - `fields(T)` gives a struct's fields, each with its name, type and value. `cases(T)` gives an enum's cases. `*Cs` is a list of types, as in `world.query(Position, Velocity)`. `if T is int:` is decided at compile time.
 - Each set of types gets its own specialized copy, whatever the build.
-- There are no macros, no `derive` and no generating code from text. There's no I/O at compile time, and no new types can be invented.
+- There are no macros, no `derive` and no generating code from text. There's no I/O at compile time beyond `embed`, which reads a file that's part of the build, and no new types can be invented.
 - New declarations, like a client struct from an API schema, come from separate programs that write `.fen` files.
 
 *Why:* It covers serialization, SQL rows, CLI parsing, ECS queries and test helpers, and the checker sees ordinary code. With no I/O, builds stay deterministic and cacheable, and a kit can't run anything on your machine while it compiles, which closes a real supply-chain hole.
@@ -992,6 +992,27 @@ There's no `ordered=` option and no `map()`; comprehensions are the one form.
 **A module can hold constants.** `KEYWORDS = {"def", "if", "else"}` at the top level is an immutable name, computed when compiling from literals, collections and calls to functions that take no capabilities. There's still no `mut` at the top level, so there's no global state. UPPER_CASE is a convention the lint suggests, not a rule.
 *Why:* A table rebuilt inside a function on every call is what people write only when the language leaves them no choice. A constant is computed once, before the program runs.
 
+**Constants are computed at compile time when they can be,** with no syntax to ask for it: no `comptime` and no `const fn`. A top-level constant built only from literals and pure functions, which take no capabilities, is evaluated while compiling and baked into the program.
+```fennec
+from std.math import PI, sin
+
+SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]    # one full turn
+```
+- Evaluation has a build-time budget. A constant that goes over it is computed at startup instead, with a hint naming it.
+- It applies only to top-level constants.
+
+*Why:* Purity is already known from capabilities, so the compiler can tell what to evaluate without the programmer marking anything. It covers what other systems languages need `const fn` or macros for, and Fennec has no macros.
+
+**`embed("path")` gives a file's bytes, baked in at build time.**
+```fennec
+MAP = embed("assets/level1.bin")
+```
+- The path is relative to the source file, and a missing file is a compile error.
+- No `Fs` capability is needed, since the file is an input to the build, not something the program reads when it runs.
+- A Den package may embed only files inside its own folder.
+
+*Why:* Games ship levels, shaders and fonts inside the binary. This is what other systems languages use an `include_bytes!` macro for, and here it's one function.
+
 **Durations have literals:** `30s`, `1.5s`, `200ms`, `16ms`, `5min`, `2h`. The units are exactly `ns`, `us`, `ms`, `s`, `min` and `h`. Minutes are `min`, never `m`, so a duration can't be read as meters. Durations are the only unit literals: there's no `kb`, `px` or `deg`.
 ```fennec
 clock.sleep(16ms)
@@ -1038,7 +1059,7 @@ A stage used once becomes part of what uses it. A stage kept in a name that does
 
 *Why:* Streaming lets a chain of stages read like the steps it is, handles input too big to hold, and can compile to a single loop with nothing allocated per item. Being used once is what keeps that honest: a second loop quietly finding nothing is Python's trap.
 
-**A type is loopable when it has `def iter(self) -> Iterator[T]`,** written with `yield`, so it makes its items one at a time and never builds a list. `for x in thing` calls it, and `list(thing)` makes a list when one is wanted.
+**A type is loopable when it has `def iter(self) -> Iterator[T]`,** written with `yield`, so it makes its items one at a time and never builds a list. `for x in thing` calls it, and `list(thing)` makes a list when one is wanted. The standard library's own collections loop this way too.
 ```fennec
 struct Ring:
     slots: list[int]

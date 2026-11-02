@@ -116,7 +116,7 @@ struct Program:
         # A program's own type replaces a standard library type of the same name, methods too.
         if not prelude:
             methods = f"{type_def.name}."
-            for key in self.functions.keys():
+            for key in copy(self.functions).keys():
                 if self.functions[key].prelude and key.startswith(methods):
                     self.functions.pop(key)
         for method in type_def.methods:

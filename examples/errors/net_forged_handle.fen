@@ -1,0 +1,5 @@
+from std.net import Connection
+
+def main(stdout: Stdout):
+    conn = Connection(_handle=1, peer="x")
+    stdout.print(conn.peer)

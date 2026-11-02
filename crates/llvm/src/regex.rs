@@ -25,14 +25,30 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A `Regex`'s pattern, borrowed for a call.
-    fn pattern(&mut self, regex: &Operand) -> Result<String, String> {
+    fn pattern(&mut self, regex: &Operand, made: &mut Vec<(String, String)>) -> Result<String, String> {
         let (block, kind) = self.operand(regex)?;
-        let (offset, _) = self.field(&kind, "pattern")?;
+        let (offset, held) = self.field(&kind, "pattern")?;
         let fields = self.fields_at(&block, &kind);
         let at = self.offset(&fields, offset);
-        let pattern = self.temp();
-        self.line(&format!("{pattern} = load ptr, ptr {at}"));
+        let (pattern, text) = (self.temp(), self.text_of(&held));
+        self.line(&format!("{pattern} = load {text}, ptr {at}"));
+        if !self.headers() {
+            return Ok(pattern);
+        }
+        let (pattern, owned) = self.text_block(&pattern);
+        made.push((pattern.clone(), owned));
         Ok(pattern)
+    }
+
+    /// A string operand as a block, as [`Self::pattern`] gives one.
+    fn regex_text(&mut self, operand: &Operand, made: &mut Vec<(String, String)>) -> Result<String, String> {
+        let (value, _) = self.operand(operand)?;
+        if !self.headers() {
+            return Ok(value);
+        }
+        let (block, owned) = self.text_block(&value);
+        made.push((block.clone(), owned));
+        Ok(block)
     }
 
     pub(crate) fn regex_builtin(
@@ -42,29 +58,46 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        let mut made = Vec::new();
+        let result = self.regex_builtin_on(dest, name, args, span, &mut made);
+        for (block, owned) in &made {
+            self.let_go_text_block(block, owned);
+        }
+        result
+    }
+
+    fn regex_builtin_on(
+        &mut self,
+        dest: Option<LocalId>,
+        name: &str,
+        args: &[Operand],
+        span: Span,
+        made: &mut Vec<(String, String)>,
+    ) -> Result<(), String> {
         let dest = dest.ok_or("no result")?;
         let arg = |at: usize| args.get(at).ok_or_else(|| "no argument".to_owned());
         let (from, to) = (i64::from(span.start), i64::from(span.end));
         if name == "is_regex" || name == "re.is_regex" {
-            let (pattern, _) = self.operand(arg(0)?)?;
+            let pattern = self.regex_text(arg(0)?, made)?;
             self.declare("declare i8 @fennec_regex_is_valid(ptr) nounwind");
             let (valid, bit) = (self.temp(), self.temp());
             self.line(&format!("{valid} = call i8 @fennec_regex_is_valid(ptr {pattern})"));
             self.line(&format!("{bit} = icmp ne i8 {valid}, 0"));
             return self.assign(dest, &bit);
         }
-        let pattern = self.pattern(arg(0)?)?;
-        let (whole, _) = self.operand(arg(1)?)?;
+        let pattern = self.pattern(arg(0)?, made)?;
+        let whole = self.regex_text(arg(1)?, made)?;
         match name {
             "Regex.replace" => {
-                let (with, _) = self.operand(arg(2)?)?;
+                let with = self.regex_text(arg(2)?, made)?;
                 self.declare("declare ptr @fennec_regex_replace(ptr, ptr, ptr, i64, i64) nounwind");
-                let made = self.temp();
+                let replaced = self.temp();
                 self.line(&format!(
-                    "{made} = call ptr @fennec_regex_replace(ptr {pattern}, ptr {whole}, ptr {with}, i64 {from}, i64 {to})"
+                    "{replaced} = call ptr @fennec_regex_replace(ptr {pattern}, ptr {whole}, ptr {with}, i64 {from}, i64 {to})"
                 ));
                 self.leave_if_failed();
-                self.assign(dest, &made)
+                let replaced = self.text_value(&replaced);
+                self.assign(dest, &replaced)
             }
             "Regex.split" => {
                 let strings = self.element_number(ListItem::Str);
@@ -233,14 +266,19 @@ impl Emit<'_, '_, '_> {
         })?;
         let made = self.new_block(id)?;
         let fields = self.offset(&made, FIELDS);
-        for (offset, value, text) in [
-            (text_at, &text, "ptr"),
+        let (text, text_type) = if self.headers() {
+            (self.text_from_block(&text), crate::headers::HEADER)
+        } else {
+            (text, "ptr")
+        };
+        for (offset, value, ty) in [
+            (text_at, &text, text_type),
             (start_at, &start, "i64"),
             (end_at, &end, "i64"),
             (groups_at, &caught, "ptr"),
         ] {
             let at = self.offset(&fields, offset);
-            self.line(&format!("store {text} {value}, ptr {at}"));
+            self.line(&format!("store {ty} {value}, ptr {at}"));
         }
         Ok(made)
     }
@@ -264,9 +302,14 @@ impl Emit<'_, '_, '_> {
             at.to_owned()
         };
         self.line(&format!("store i64 {number}, ptr {base}"));
-        if let (Some(value), Some((_, offset, _))) = (value, fields.first()) {
+        if let (Some(value), Some((_, offset, held))) = (value, fields.first()) {
             let place = self.offset(&base, *offset);
-            self.line(&format!("store ptr {value}, ptr {place}"));
+            if held.as_ref() == Some(&Kind::Str) && self.headers() {
+                let header = self.text_from_block(value);
+                self.line(&format!("store {} {header}, ptr {place}", crate::headers::HEADER));
+            } else {
+                self.line(&format!("store ptr {value}, ptr {place}"));
+            }
         }
         Ok(())
     }

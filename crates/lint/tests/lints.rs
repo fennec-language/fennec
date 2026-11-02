@@ -572,6 +572,33 @@ fn a_loop_that_only_adds_is_a_sum() {
 }
 
 #[test]
+fn a_loop_that_stops_at_the_first_match_is_any() {
+    let source = "def f(ps: list[P]) -> bool:\n    mut found = False\n    for p in ps:\n        if p.health <= 0:\n            found = True\n            break\n    found\n";
+    assert_eq!(rules(source), ["manual-builtin"]);
+    assert_eq!(
+        fixed(source),
+        "def f(ps: list[P]) -> bool:\n    mut found = any(p.health <= 0 for p in ps)\n    found\n"
+    );
+    let every = "def f(ps: list[P]) -> bool:\n    mut found = False\n    for p in ps:\n        if check(p):\n            found = True\n    found\n";
+    assert_eq!(rules(every), NONE, "without `break` it checks every item, and `any` stops at the first");
+    let read = "def f(ps: list[P]) -> bool:\n    mut found = False\n    for p in ps:\n        if found or p.dead:\n            found = True\n            break\n    found\n";
+    assert_eq!(rules(read), NONE, "the loop reads the flag");
+}
+
+#[test]
+fn a_loop_that_keeps_the_largest_is_max() {
+    let source = "def f(xs: list[int]) -> int:\n    mut best = xs[0]\n    for x in xs[1:]:\n        if x > best:\n            best = x\n    best\n";
+    assert_eq!(rules(source), ["manual-builtin"]);
+    assert_eq!(fixed(source), "def f(xs: list[int]) -> int:\n    mut best = max(xs)\n    best\n");
+    let smallest = "def f(words: list[str]) -> str:\n    mut first = words[0]\n    for word in words:\n        if first > word:\n            first = word\n    first\n";
+    assert_eq!(fixed(smallest), "def f(words: list[str]) -> str:\n    mut first = min(words)\n    first\n");
+    let floats = source.replace("list[int]", "list[float]").replace("-> int", "-> float");
+    assert_eq!(rules(&floats), NONE, "`max` and `>` order NaN differently");
+    let elsewhere = "def f(xs: list[int], ys: list[int]) -> int:\n    mut best = xs[0]\n    for y in ys:\n        if y > best:\n            best = y\n    best\n";
+    assert_eq!(rules(elsewhere), NONE, "it starts from another list");
+}
+
+#[test]
 fn a_counted_while_is_a_for() {
     let source = "def f(n: int):\n    mut i = 0\n    while i < n:\n        g(i)\n        i += 1\n";
     assert_eq!(rules(source), ["counted-while"]);

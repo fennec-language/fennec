@@ -1,0 +1,5 @@
+def main(stdout: Stdout):
+    mut names = ["ash", "kit"]
+    for name in names:
+        names.append(name.upper())
+    stdout.print(names)

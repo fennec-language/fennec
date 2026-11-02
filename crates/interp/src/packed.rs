@@ -57,8 +57,15 @@ impl Element {
             Element::Struct { fields, .. } => fields.iter().map(|(_, field)| field.words()).sum(),
             Element::Enum { words, .. } => *words,
             Element::Text => 3,
+            element if element.is_optional_text() => 3,
             _ => 1,
         }
+    }
+
+    /// Whether this is an optional string held as a string's header, where all three words
+    /// zero means `None`: no real string is that, since the empty string is inline.
+    pub fn is_optional_text(&self) -> bool {
+        matches!(self, Element::Maybe(inner) if **inner == Element::Text)
     }
 }
 
@@ -131,6 +138,10 @@ fn unpack_item<'w>(element: &Element, words: &mut dyn Iterator<Item = &'w u64>) 
         Element::Int => Value::Int(i64::from_ne_bytes(word(words).to_ne_bytes())),
         Element::Float => Value::Float(f64::from_bits(word(words))),
         Element::Bool => Value::Bool(word(words) != 0),
+        element if element.is_optional_text() => {
+            words.take(3).for_each(drop);
+            Value::None
+        }
         Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
             word(words);
             Value::None

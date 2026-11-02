@@ -508,9 +508,9 @@ impl Emit<'_, '_, '_> {
             if !fresh {
                 self.retain_value(&value, &held);
             }
-            let old = self.temp();
-            self.line(&format!("{old} = load ptr, ptr {at}{ITEM_ACCESS}"));
-            self.line(&format!("store ptr {value}, ptr {at}{ITEM_ACCESS}"));
+            let (old, text) = (self.temp(), self.text_of(&held));
+            self.line(&format!("{old} = load {text}, ptr {at}{ITEM_ACCESS}"));
+            self.line(&format!("store {text} {value}, ptr {at}{ITEM_ACCESS}"));
             self.release_kind(&old, &held);
         } else {
             self.release_inline(&held, &at);

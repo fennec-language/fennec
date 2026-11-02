@@ -18,6 +18,15 @@ impl Emit<'_, '_, '_> {
         temp
     }
 
+    /// A literal as a string value: its header when strings are held as headers, and its
+    /// block's address otherwise.
+    pub(crate) fn literal_value(&mut self, text: &str) -> String {
+        if self.headers() {
+            return self.literal_header(text);
+        }
+        self.literal(text)
+    }
+
     /// The address of a literal's block, filled in when the program starts.
     pub(crate) fn literal(&mut self, text: &str) -> String {
         let name = format!("l_{}", fennec_blake3::hash(text.as_bytes()).to_hex());
@@ -122,9 +131,15 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{wide} = zext i1 {value} to i8"));
                 self.line(&format!("call void @fennec_print_bool(i8 {wide})"));
             }
-            Kind::Str => {
+            Kind::TextBlock => {
                 self.declare("declare void @fennec_str_print(ptr) nounwind");
                 self.line(&format!("call void @fennec_str_print(ptr {value})"));
+            }
+            Kind::Str => {
+                self.declare("declare void @fennec_str_print(ptr) nounwind");
+                self.on_blocks([value], |emit, [block]| {
+                    emit.line(&format!("call void @fennec_str_print(ptr {block})"));
+                });
             }
             Kind::List(_) | Kind::Boxed(_) | Kind::Dict(..) => {
                 self.declare("declare i64 @fennec_mark() nounwind");
@@ -283,6 +298,7 @@ impl Emit<'_, '_, '_> {
                     self.declare("declare ptr @fennec_float_text(double) nounwind");
                     self.line(&format!("{temp} = call ptr @fennec_float_text(double {value})"));
                 }
+                Kind::Str if self.headers() => return Ok(self.owned_text_block(&value)),
                 Kind::Str => {
                     self.retain(&value);
                     return Ok(value);
@@ -396,6 +412,7 @@ impl Emit<'_, '_, '_> {
                 made
             }
         };
+        let value = self.text_value(&value);
         self.assign(dest, &value)
     }
 
@@ -582,7 +599,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `==` on two strings: the same block, different lengths and short ones decide it here.
-    fn same_text(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+    pub(crate) fn same_text(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
         self.declare("declare i8 @fennec_box_equal(ptr, ptr) nounwind");
         self.module.add_helper(
             "fen_same_text",
@@ -663,6 +680,7 @@ impl Emit<'_, '_, '_> {
         self.start_block(&joined);
         let one = self.temp();
         self.line(&format!("{one} = phi ptr [ {from_table}, %{table_end} ], [ {counted}, %{runtime_end} ]"));
+        let one = self.text_value(&one);
         self.assign(dest, &one)
     }
 
@@ -690,13 +708,14 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = call ptr @fennec_float_text(double {held})"));
             }
             Kind::Str => {
-                self.retain(&held);
+                self.retain_value(&held, &Kind::Str);
                 return self.assign(dest, &held);
             }
             other => {
                 return Err(format!("it calls `str` on a {other:?}, which this backend doesn't take yet"));
             }
         }
+        let temp = self.text_value(&temp);
         self.assign(dest, &temp)
     }
 
@@ -713,7 +732,13 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare i64 @fennec_float(double) nounwind");
                 self.line(&format!("{handle} = call i64 @fennec_float(double {held})"));
             }
-            Kind::Str | Kind::List(_) | Kind::Boxed(_) => {
+            Kind::Str => {
+                self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
+                self.on_blocks([&held], |emit, [block]| {
+                    emit.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
+                });
+            }
+            Kind::List(_) | Kind::Boxed(_) => {
                 self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {held})"));
             }
@@ -740,10 +765,42 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        let mut made = Vec::new();
+        let result = self.text_builtin_on(dest, name, args, span, &mut made);
+        for (block, owned) in &made {
+            self.let_go_text_block(block, owned);
+        }
+        result
+    }
+
+    /// A string operand as a block: with headers, one made for this call is kept in `made`, to
+    /// be let go of after.
+    fn block_operand(
+        &mut self,
+        operand: &Operand,
+        made: &mut Vec<(String, String)>,
+    ) -> Result<String, String> {
+        let (value, kind) = self.operand(operand)?;
+        if kind != Kind::Str || !self.headers() {
+            return Ok(value);
+        }
+        let (block, owned) = self.text_block(&value);
+        made.push((block.clone(), owned));
+        Ok(block)
+    }
+
+    fn text_builtin_on(
+        &mut self,
+        dest: Option<LocalId>,
+        name: &str,
+        args: &[Operand],
+        span: Span,
+        made: &mut Vec<(String, String)>,
+    ) -> Result<(), String> {
         let first = args.first();
         match name {
             "str.len" => {
-                let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let text = self.block_operand(first.ok_or("no argument")?, made)?;
                 let (at, length) = (self.temp(), self.temp());
                 self.line(&format!("{at} = getelementptr inbounds i8, ptr {text}, i64 {TEXT_CHARS}"));
                 self.line(&format!("{length} = load i64, ptr {at}{LENGTH_ACCESS}"));
@@ -753,7 +810,7 @@ impl Emit<'_, '_, '_> {
             "str.code" => {
                 // One byte of ASCII is its own code; anything else goes to the runtime, which
                 // also fails as the interpreter does for a string that isn't one character.
-                let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let text = self.block_operand(first.ok_or("no argument")?, made)?;
                 let bytes_at = self.offset(&text, TEXT_BYTES.unsigned_abs());
                 let (bytes, one) = (self.temp(), self.temp());
                 self.line(&format!("{bytes} = load i64, ptr {bytes_at}{LENGTH_ACCESS}"));
@@ -782,13 +839,13 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest.ok_or("no result")?, &code)
             }
             "str.contains" => {
-                let (text, _) = self.operand(first.ok_or("no argument")?)?;
-                let (part, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                let text = self.block_operand(first.ok_or("no argument")?, made)?;
+                let part = self.block_operand(args.get(1).ok_or("no argument")?, made)?;
                 let found = self.string_binary(BinOp::In, (&part, &text))?;
                 self.assign(dest.ok_or("no result")?, &found)
             }
             "str.join" => {
-                let (separator, _) = self.operand(first.ok_or("no argument")?)?;
+                let separator = self.block_operand(first.ok_or("no argument")?, made)?;
                 let (list, kind) = self.operand(args.get(1).ok_or("no argument")?)?;
                 // Pieces kept as the string they're joined into are that string.
                 if kind == Kind::Str {
@@ -798,24 +855,26 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare ptr @fennec_str_join(ptr, ptr) nounwind");
                 let temp = self.temp();
                 self.line(&format!("{temp} = call ptr @fennec_str_join(ptr {separator}, ptr {list})"));
+                let temp = self.text_value(&temp);
                 self.assign(dest.ok_or("no result")?, &temp)
             }
             // The runtime's, running the interpreter's own code: a new block owned once.
             "str.upper" | "str.lower" | "str.replace" => {
                 let mut texts = Vec::with_capacity(args.len());
                 for arg in args {
-                    texts.push(format!("ptr {}", self.operand(arg)?.0));
+                    texts.push(format!("ptr {}", self.block_operand(arg, made)?));
                 }
                 let symbol = name.replace('.', "_");
                 let params = vec!["ptr"; texts.len()].join(", ");
                 self.declare(&format!("declare ptr @fennec_{symbol}({params}) nounwind"));
-                let made = self.temp();
-                self.line(&format!("{made} = call ptr @fennec_{symbol}({})", texts.join(", ")));
-                self.assign(dest.ok_or("no result")?, &made)
+                let new = self.temp();
+                self.line(&format!("{new} = call ptr @fennec_{symbol}({})", texts.join(", ")));
+                let new = self.text_value(&new);
+                self.assign(dest.ok_or("no result")?, &new)
             }
             "str.find" => {
-                let (text, _) = self.operand(first.ok_or("no argument")?)?;
-                let (part, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+                let text = self.block_operand(first.ok_or("no argument")?, made)?;
+                let part = self.block_operand(args.get(1).ok_or("no argument")?, made)?;
                 self.declare("declare i64 @fennec_str_find(ptr, ptr) nounwind");
                 let at = self.temp();
                 self.line(&format!("{at} = call i64 @fennec_str_find(ptr {text}, ptr {part})"));
@@ -838,9 +897,9 @@ impl Emit<'_, '_, '_> {
             }
             // With no separator, on runs of spaces. An empty one fails, as in the interpreter.
             "str.split" => {
-                let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let text = self.block_operand(first.ok_or("no argument")?, made)?;
                 let separator = match args.get(1) {
-                    Some(separator) => self.operand(separator)?.0,
+                    Some(separator) => self.block_operand(separator, made)?,
                     None => "null".to_owned(),
                 };
                 self.declare("declare ptr @fennec_str_split(ptr, ptr, i64, i64) nounwind");

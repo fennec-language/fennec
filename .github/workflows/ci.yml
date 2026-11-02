@@ -94,10 +94,14 @@ jobs:
     name: Test (${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
+    # A merge group leaves out macOS. GitHub's macOS runners are short, and a job no runner
+    # takes is cancelled after about 15 minutes ("not acquired by Runner"), which knocks the
+    # pull request out of the queue. The pull request ran on macOS already, up to date with
+    # main as the ruleset requires, and the push to main runs it again.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: ${{ fromJSON(github.event_name == 'merge_group' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -406,15 +410,43 @@ jobs:
     if: always()
     needs: [changes, lint, test, coverage, deny, site, workflows, budgets, bench, asan, parked-sanitizers]
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
     steps:
       - name: Every job succeeded
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          NEEDS: ${{ toJSON(needs) }}
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          for result in $RESULTS; do
+          failed=0
+          while read -r job result; do
             [ "$result" = success ] && continue
             [ "$result" = skipped ] && [ "$DOCS_ONLY" = true ] && continue
-            echo "a job finished with: $result"
-            exit 1
-          done
+            if [ "$job" = test ] && [ "$result" != skipped ]; then
+              # `test` has one result for its whole matrix, so each OS's job is looked at.
+              # The one exception, on pull requests only: GitHub's macOS runners are short, and
+              # a macOS job no runner ever took (cancelled, with no runner and no steps) is a
+              # warning rather than a failure. A macOS job that ran and failed still fails, and
+              # so does every other OS and every push to main. The fields are split on `|`,
+              # since tabs would run together where the runner is empty.
+              while IFS='|' read -r name conclusion runner steps; do
+                [ "$conclusion" = success ] && continue
+                if [ "$EVENT" = pull_request ] && [ "$name" = "Test (macos-latest)" ] \
+                  && [ "$conclusion" = cancelled ] && [ -z "$runner" ] && [ "$steps" = 0 ]; then
+                  echo "::warning::$name never got a runner, so it doesn't count; the push to main runs it again"
+                  continue
+                fi
+                echo "$name finished with: $conclusion"
+                failed=1
+              done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
+                --jq '.jobs[] | select(.name | startswith("Test (")) | [.name, (.conclusion // "unfinished"), (.runner_name // ""), (.steps | length | tostring)] | join("|")')
+              continue
+            fi
+            echo "$job finished with: $result"
+            failed=1
+          done < <(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<< "$NEEDS")
+          exit "$failed"

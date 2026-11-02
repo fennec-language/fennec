@@ -40,13 +40,13 @@ struct Units:
     _live = Buffer[bool]()
 
     def len(self) -> int:
-        self._items.len()
+        return self._items.len()
 
     def is_live(self, i: int) -> bool:
-        self._live[i]
+        return self._live[i]
 
-    def [](mut self, i: int) -> Unit:      # the `mut` form: a place in `_items`
-        self._items[i]
+    def [](mut self, i: int) -> Unit:      # the `mut` form: returns a place in `_items`
+        return self._items[i]
 
 def step(mut units: Units, dt: float):
     for mut unit in units:

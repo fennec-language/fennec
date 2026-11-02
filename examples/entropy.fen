@@ -1,4 +1,4 @@
-# decision: Secure randomness is a capability, `Entropy`.
+# decision: Secure randomness is a capability, `Entropy`,
 
 # `Entropy` gives secure random bytes from the operating system, and unpredictable seeds for
 # `Random`. In a test it's a fake whose bytes are fixed, so the test repeats exactly.

@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: suite-report
+  group: suite-borrowed
   cancel-in-progress: false
 
 env:
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     steps:

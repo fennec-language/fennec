@@ -158,10 +158,10 @@ This replaces IEEE comparison operators, and the rule that a struct with a float
 *Why:* Code that reads the time says so in its parameters, and can be handed a fixed clock instead.
 
 **`Random` is a seeded value.** `Random(seed=42)` draws the same numbers in the same order on every machine. It's SplitMix64, done in integer math, and `random_int(seed, n, low, high)`, imported from `std.random`, gives the `n`th number of a seed's sequence without keeping a generator. Seeding from the OS comes through `Entropy`, below.
+*Why:* A seed is all a replay or a lockstep peer needs to see the same numbers. Drawing by position also suits procedural generation, where each chunk of a world takes numbers from its own index.
 
 **Secure randomness is a capability, `Entropy`,** handed to `main` like the others. `entropy.bytes(n)` gives `n` secure random bytes from the operating system, and `entropy.seed()` gives an unpredictable seed for `Random(seed=...)`. Tests receive a fake `Entropy` with fixed output, so they stay repeatable. Hashing, HMAC and other pure cryptography need no capability, since they read nothing from outside.
 *Why:* Randomness comes in through a capability, like every source of nondeterminism, and `Random` stays a plain seeded value.
-*Why:* A seed is all a replay or a lockstep peer needs to see the same numbers. Drawing by position also suits procedural generation, where each chunk of a world takes numbers from its own index.
 
 **Any run can be recorded and replayed exactly.** Every source of nondeterminism comes in through a capability: time, randomness, files, the network and input. So the runtime can record exactly what came through and replay the run bit for bit with `fennec replay`. The order tasks reach a `shared` value or a channel is the one source outside this, and how replay records it is still open.
 *Why:* A player's crash report becomes a replay file that runs again exactly. The determinism rules above make it almost free.

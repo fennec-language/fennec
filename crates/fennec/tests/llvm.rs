@@ -72,7 +72,7 @@ fn both_built(name: &str, source: &str, how: &[&str]) -> std::io::Result<(Outcom
     let built = fennec(&args, &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = outcome(&Command::new(&executable).output()?);
-    let jit = outcome(&fennec(&["run", &program], &dir)?);
+    let jit = outcome(&fennec(&["run", "--jit", &program], &dir)?);
     std::fs::remove_dir_all(&dir)?;
     Ok((ours, jit))
 }

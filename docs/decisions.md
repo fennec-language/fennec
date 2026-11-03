@@ -460,8 +460,16 @@ def merge[T: Ordered & Hashable](a: list[T], b: list[T]) -> list[T]:
 struct Pool[T]:
 interface Container[T]:
 ```
-Type arguments are inferred at calls; `largest[int](xs)` is allowed when they can't be. This replaces the earlier shorthand where an interface in a parameter's type, `list[Shape]`, meant "any one type that fits". Writing that now is an error, with a fix to `[T: Shape]`.
+Type arguments are inferred at calls; `largest[int](xs)` is allowed when they can't be. This replaces the earlier shorthand where an interface inside a parameter's type, `list[Shape]`, meant "any one type that fits". Writing that now is an error, with a fix to `[T: Shape]`.
 *Why:* `T` lets the type flow through, so `largest(enemies)` gives back an `Enemy`, and it relates parameters to each other. There's one way to write it, and it's Python's. In Python, Java, C# and Go, `list[Shape]` means a list of mixed types dispatched at run time, so the shorthand would have misled exactly the people and models Fennec is written for.
+
+**A parameter typed with an interface is resolved at compile time.** Each call is specialized to the type it passes, with no hidden dispatch or boxing.
+```fennec
+def describe(shape: Shape) -> str:
+    return f"area {shape.area()}"
+```
+An interface inside another type, like `list[Shape]`, stays an error, as above.
+*Why:* A signature can name what it needs and still cost what a direct call costs, and a reader never has to wonder whether a call goes through a table.
 
 **Generic code is checked once, and errors name the missing piece.** A generic body may use only what its bounds promise, so errors never surface at an instantiation. A call with a type that doesn't fit says what's missing and the nearest match: "`Rock` isn't a `Shape`: it has no `area(self) -> f32`. Its `area` returns `int`."
 
@@ -1336,7 +1344,7 @@ tools = { path = "../tools" }
 **There's one backend: LLVM, with per-function `-O3` and a function-level cache.** `fennec run` makes real binaries in the store. Whole-program work happens only in `--release`. There's no hot reload in the plan, and no tiering.
 *Why:* What people run is what ships, so a first benchmark shows real speed. The cache is what makes it fast to edit, and one backend is less to maintain and keep in agreement.
 
-**Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.** Until then, `fennec run` and `fennec build` use it.
+**LLVM becomes the default backend once about 90% of examples build natively, which retires Cranelift.** The interpreter then stays only for the REPL and as the test reference. Refusing to build and building natively stay the only two outcomes. Until then, `fennec run` uses the cached LLVM build, with a one-line note and then the JIT where LLVM can't build the program, and the interpreter for what the JIT can't compile. `fennec build` and `fennec test` still use the JIT's compiler, Cranelift, and `fennec build --llvm` asks for LLVM. This replaces the rule that Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
 
 **The tree-walking interpreter stays simple and correct, not fast.** It runs the REPL, the playground, compile-time evaluation and the sandbox, and it's the reference the JIT is tested against: every example must give the same output on both.
 

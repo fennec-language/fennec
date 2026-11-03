@@ -115,6 +115,49 @@ impl Counter {
     }
 }
 
+/// The cache misses a program makes: its data reads and writes that miss the first-level data
+/// cache, and everything that misses the last level, data and instructions both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Misses {
+    pub d1: u64,
+    pub ll: u64,
+}
+
+/// The caches cachegrind simulates: 32 KiB first-level caches and an 8 MiB last level, with
+/// 64-byte lines. They're fixed, so the counts don't depend on which machine runs them.
+const CACHES: [&str; 3] = ["--I1=32768,8,64", "--D1=32768,8,64", "--LL=8388608,16,64"];
+
+/// The cache misses a program makes on `CACHES`, from cachegrind's simulation, which is as
+/// repeatable as its instruction count. None without Valgrind.
+pub fn cache_misses(program: &Program) -> Option<Misses> {
+    if !valgrind_available() {
+        return None;
+    }
+    let input = program.input().ok()?;
+    let output = Command::new("valgrind")
+        .args(["--tool=cachegrind", "--cache-sim=yes", "--cachegrind-out-file=/dev/null"])
+        .args(CACHES)
+        .arg(&program.command)
+        .args(&program.args)
+        .stdin(input)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let report = String::from_utf8_lossy(&output.stderr);
+    Some(Misses { d1: summary_count(&report, "D1  misses:")?, ll: summary_count(&report, "LL misses:")? })
+}
+
+/// The total on one of cachegrind's summary lines, `==1== D1  misses:   1,234  ( 1,000 rd + 234 wr)`.
+fn summary_count(report: &str, label: &str) -> Option<u64> {
+    let line = report.lines().find(|line| line.contains(label))?;
+    let after = line.split_once(label)?.1;
+    let total = after.split('(').next()?;
+    let digits: String = total.chars().filter(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 /// The instruction count in a `perf stat -x,` report: the first field of the line for the event.
 fn instructions(report: &str) -> Option<u64> {
     report.lines().find(|line| line.contains("instructions"))?.split(',').next()?.trim().parse().ok()
@@ -148,7 +191,7 @@ pub fn median<T: Copy + Ord>(values: &mut [T], mean: fn(T, T) -> T) -> Option<T>
 
 #[cfg(test)]
 mod tests {
-    use super::{apple_count, instructions, median, valgrind_count};
+    use super::{apple_count, instructions, median, summary_count, valgrind_count};
 
     #[test]
     fn perf_reports_give_their_instruction_count() {
@@ -156,6 +199,16 @@ mod tests {
         assert_eq!(instructions(report), Some(1_234_567_890));
         assert_eq!(instructions("<not supported>,,instructions:u,0,100.00,,\n"), None);
         assert_eq!(instructions(""), None);
+    }
+
+    #[test]
+    fn cachegrind_reports_give_their_cache_misses() {
+        let report = "==7== D1  misses:        12,345  (    10,000 rd   +     2,345 wr)\n\
+                      ==7== LLd misses:         1,000  (       900 rd   +       100 wr)\n\
+                      ==7== LL misses:          1,234  (     1,100 rd   +       134 wr)\n";
+        assert_eq!(summary_count(report, "D1  misses:"), Some(12_345));
+        assert_eq!(summary_count(report, "LL misses:"), Some(1_234));
+        assert_eq!(summary_count(report, "LLi misses:"), None);
     }
 
     #[test]

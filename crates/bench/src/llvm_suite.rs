@@ -25,6 +25,7 @@ use crate::kernels::Kernel;
 use crate::measure::{Counter, Overflow, Program};
 use crate::other_twins::Language;
 use crate::startup::Startups;
+use fennec_count::Misses;
 
 /// How far a side's median run may be from its best, as a share of the best, before the kernel
 /// is called noisy.
@@ -52,6 +53,8 @@ struct Row {
     dev: Option<f64>,
     /// How long the release and dev builds took, each from an empty Fennec home, in seconds.
     builds: (Option<f64>, Option<f64>),
+    /// The LLVM build's and the Rust twin's cache misses, where Valgrind can simulate them.
+    misses: (Option<Misses>, Option<Misses>),
 }
 
 /// How a kernel did against one of its other twins.
@@ -79,6 +82,7 @@ impl Row {
             best: (None, None),
             dev: None,
             builds: (None, None),
+            misses: (None, None),
         }
     }
 }
@@ -196,6 +200,7 @@ fn measured(kernel: &Kernel, llvm: &Program, twin: &Program, counter: Option<&Co
         let ratio = rust as f64 / mine.max(1) as f64;
         row.instructions = Some(ratio * 100.0);
     }
+    row.misses = (fennec_count::cache_misses(llvm), fennec_count::cache_misses(twin));
     row
 }
 
@@ -263,6 +268,27 @@ fn geomean(values: impl Iterator<Item = f64>) -> Option<f64> {
     (count > 0).then(|| (sum / f64::from(count)).exp())
 }
 
+/// A count, short: `1.2M`, `34.5k` or `678`.
+fn short(count: u64) -> String {
+    #[expect(clippy::cast_precision_loss, reason = "shown to one decimal place")]
+    let value = count as f64;
+    if count >= 1_000_000 {
+        format!("{:.1}M", value / 1e6)
+    } else if count >= 1_000 {
+        format!("{:.1}k", value / 1e3)
+    } else {
+        count.to_string()
+    }
+}
+
+/// One kind of cache miss for the LLVM build and the twin, as `ours / Rust's`.
+fn both(misses: (Option<Misses>, Option<Misses>), kind: fn(Misses) -> u64) -> String {
+    match misses {
+        (Some(ours), Some(rust)) => format!("{} / {}", short(kind(ours)), short(kind(rust))),
+        _ => "-".to_owned(),
+    }
+}
+
 /// Seconds as whole milliseconds, for build times.
 fn millis(seconds: Option<f64>) -> String {
     seconds.map_or_else(|| "-".to_owned(), |seconds| format!("{:.0} ms", seconds * 1000.0))
@@ -285,11 +311,11 @@ fn slowest(rows: &[Row]) -> Option<(&str, f64)> {
 /// The table, then the geometric means and the slowest kernel.
 fn table(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String {
     let mut text = format!("## LLVM against Rust, Go and Java on {}\n\n", platform());
-    text.push_str("| kernel | instructions % | best time % | median time % | spread | dev best time % | release build | dev build |");
+    text.push_str("| kernel | instructions % | D1 misses, ours / Rust's | LL misses, ours / Rust's | best time % | median time % | spread | dev best time % | release build | dev build |");
     for language in Language::ALL {
         let _ = write!(text, " {0} kernel % ≈ | {0} whole run % |", language.name());
     }
-    text.push_str(" |\n|---|---:|---:|---:|---:|---:|---:|---:|");
+    text.push_str(" |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     text.push_str(&"---:|---:|".repeat(Language::ALL.len()));
     text.push_str("---|\n");
     for row in rows {
@@ -312,9 +338,11 @@ fn table(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String
             if row.problem.is_some() { "-".to_owned() } else { format!("{:.0}%", row.spread * 100.0) };
         let _ = writeln!(
             text,
-            "| {} | {} | {} | {} | {spread} | {} | {} | {} |{others} {note} |",
+            "| {} | {} | {} | {} | {} | {} | {spread} | {} | {} | {} |{others} {note} |",
             row.name,
             percent(row.instructions),
+            both(row.misses, |misses| misses.d1),
+            both(row.misses, |misses| misses.ll),
             percent(row.time),
             percent(row.median),
             percent(row.dev),
@@ -325,7 +353,11 @@ fn table(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String
     text.push_str(&means(rows, counter, startups));
     text.push_str(
         "\n\nEach is the overflow-checked Rust twin's count or time over LLVM's, so 100 matches Rust and \
-         higher is faster. Times are each side's best and median of runs that take turns. Spread is \
+         higher is faster. D1 and LL misses are counts, not percentages: each side's misses in the \
+         first-level data cache, and in the last level, data and instructions both, from cachegrind \
+         simulating fixed caches (32 KiB first level, 8 MiB last level, 64-byte lines), as \
+         repeatable as its instruction counts. Times are each side's best and median of runs that \
+         take turns. Spread is \
          how far a median run is from the best, on the side where it's farther. Dev is the build \
          `fennec build --llvm` makes without `--release`, cached a function at a time, raced \
          against the twin the same way. Each build's time is from an empty Fennec home, so no \
@@ -406,6 +438,22 @@ fn best_ms(row: &Row) -> Json {
     Json::Object(fields)
 }
 
+/// The cache misses, for the history: `{"fennec": {"d1": …, "ll": …}, "rust": {…}}`, or null
+/// where they weren't simulated.
+fn misses_json(misses: (Option<Misses>, Option<Misses>)) -> Json {
+    let side = |misses: Option<Misses>| {
+        misses.map_or(Json::Null, |misses| {
+            #[expect(clippy::cast_precision_loss, reason = "miss counts are far below 2^52")]
+            let (d1, ll) = (misses.d1 as f64, misses.ll as f64);
+            Json::object([("d1", Json::Number(d1)), ("ll", Json::Number(ll))])
+        })
+    };
+    match misses {
+        (None, None) => Json::Null,
+        (ours, rust) => Json::object([("fennec", side(ours)), ("rust", side(rust))]),
+    }
+}
+
 /// Each language's startup in milliseconds, for the history.
 fn startup_json(startups: &Startups) -> Json {
     let ms = |seconds: Option<f64>| number(seconds.map(|seconds| seconds * 1000.0));
@@ -429,6 +477,7 @@ fn json(rows: &[Row], startups: &Startups) -> Json {
             ("problem", row.problem.as_ref().map_or(Json::Null, |problem| Json::string(problem.as_str()))),
             ("best_ms", best_ms(row)),
             ("dev", number(row.dev)),
+            ("misses", misses_json(row.misses)),
             ("release_build_ms", number(row.builds.0.map(|seconds| seconds * 1000.0))),
             ("dev_build_ms", number(row.builds.1.map(|seconds| seconds * 1000.0))),
         ]);

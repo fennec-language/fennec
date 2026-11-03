@@ -1,0 +1,6 @@
+# A small arena game split over several files.
+name = "arena"
+version = "0.1.0"
+fennec = "0.0.1"
+
+[dependencies]

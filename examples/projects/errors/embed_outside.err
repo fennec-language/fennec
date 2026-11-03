@@ -1,0 +1,7 @@
+error: `../../cycle.err` is outside this kit's folder
+ --> examples/projects/errors/embed_outside/src/main.fen:2:9
+  |
+2 | NOTES = embed("../../cycle.err")
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: a kit embeds only files inside its own folder, so it still builds wherever it's shared; move the file into the kit

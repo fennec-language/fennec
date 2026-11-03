@@ -119,6 +119,7 @@ fn is_literal(value: &Expr) -> bool {
         | ExprKind::Float(_)
         | ExprKind::Duration(_)
         | ExprKind::Str(_)
+        | ExprKind::Bytes(_)
         | ExprKind::Bool(_)
         | ExprKind::None => true,
         ExprKind::Unary { op: UnaryOp::Neg, expr } => {
@@ -161,6 +162,7 @@ impl Writer<'_> {
             }
             Value::Float(value) => ExprKind::Float(*value),
             Value::Str(text) => ExprKind::Str(text.to_string()),
+            Value::Bytes(data) => ExprKind::Bytes(data.to_vec().into()),
             Value::List(items) if !items.is_empty() => ExprKind::List(self.all(items)?),
             Value::Packed(packed) => return self.literal(&packed.unpack()),
             Value::Tuple(items) => ExprKind::Tuple(self.all(items)?),

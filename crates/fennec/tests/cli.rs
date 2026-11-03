@@ -557,6 +557,22 @@ fn llvm_ready_for_run() -> bool {
         && runtime.is_file()
 }
 
+/// A conversion to the type a value has already gives it back, on the JIT and in the
+/// interpreter. The linter takes these out of the examples, since they change nothing.
+#[test]
+fn conversions_to_what_a_value_is_already_give_it_back() {
+    let dir = scratch("same-type").unwrap();
+    let program = dir.join("same_type.fen");
+    let source = "def main(stdout: Stdout):\n    name = \"fox\"\n    half = 0.5\n    seven = 7\n    \
+                  stdout.print(str(name), float(half), int(seven), float(-0.0))\n";
+    std::fs::write(&program, source).unwrap();
+    for engine in ["--jit", "--interp"] {
+        let output = fennec(&["run", engine, program.to_str().unwrap()], "").unwrap();
+        assert_eq!(text(&output.stdout), "fox 0.5 7 -0.0\n", "{engine}: {}", text(&output.stderr));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A program that fails while running, or returns normally, gives `fennec run` the same exit
 /// code whichever way it runs: through LLVM, on the JIT, or in the interpreter.
 #[test]
@@ -906,6 +922,7 @@ fn check_and_lint_say_the_same_in_json() {
 #[derive(Debug, Default, PartialEq)]
 struct LoadProblem {
     errors: Option<usize>,
+    fixable: Option<usize>,
     rule: Option<String>,
     /// The file's last part.
     file: Option<String>,
@@ -924,8 +941,10 @@ fn load_problem(path: &Path) -> std::io::Result<LoadProblem> {
     let number = |key: &str| found?.get(key)?.as_usize();
     Ok(LoadProblem {
         errors: report.get("errors").and_then(fennec_lsp::Json::as_usize),
+        fixable: report.get("fixable").and_then(fennec_lsp::Json::as_usize),
         rule: words("rule"),
-        file: words("file").and_then(|file| file.rsplit('/').next().map(str::to_owned)),
+        file: words("file")
+            .and_then(|file| Path::new(&file).file_name().map(|name| name.to_string_lossy().into_owned())),
         line: number("line"),
         column: number("column"),
         message: words("message"),
@@ -946,6 +965,7 @@ fn check_json_gives_what_stops_a_load_a_place_and_its_help() {
         LoadProblem { help: None, ..found },
         LoadProblem {
             errors: Some(1),
+            fixable: Some(0),
             rule: some("load"),
             file: some("game.fen"),
             line: Some(1),
@@ -961,6 +981,13 @@ fn check_json_gives_what_stops_a_load_a_place_and_its_help() {
     assert!(found.line.is_some(), "{found:?}");
     assert!(found.message.as_deref().is_some_and(|message| !message.contains("-->")), "{found:?}");
 
+    std::fs::write(&program, "MAP = embed(\"not_there.bin\")\n\ndef main():\n    pass\n").unwrap();
+    let found = load_problem(&program).unwrap();
+    assert_eq!((found.errors, &found.rule, &found.file), (Some(1), &some("load"), &some("game.fen")));
+    assert_eq!((found.line, found.column), (Some(1), Some(7)));
+    assert_eq!(found.message, some("there's no file `not_there.bin` to embed"));
+    assert!(found.help.as_deref().is_some_and(|help| help.ends_with("not_there.bin")), "{found:?}");
+
     let kit = dir.join("kit");
     std::fs::create_dir_all(kit.join("src")).unwrap();
     std::fs::write(kit.join("kit.toml"), "name = \"demo\"\nversoin = \"0.1.0\"\n").unwrap();
@@ -969,6 +996,7 @@ fn check_json_gives_what_stops_a_load_a_place_and_its_help() {
         found,
         LoadProblem {
             errors: Some(3),
+            fixable: Some(0),
             rule: some("load"),
             file: some("kit.toml"),
             line: Some(2),

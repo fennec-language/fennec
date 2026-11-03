@@ -79,6 +79,7 @@ fn literal(value: &Expr) -> Option<Operand> {
         ExprKind::Float(value) => Some(Operand::Float(*value)),
         ExprKind::Bool(value) => Some(Operand::Bool(*value)),
         ExprKind::Str(value) => Some(Operand::Str(value.clone())),
+        ExprKind::Bytes(data) => Some(Operand::Bytes(data.clone())),
         ExprKind::Unary { op: UnaryOp::Neg, expr } => match expr.kind {
             ExprKind::Int(value) => value.checked_neg().map(Operand::Int),
             ExprKind::Float(value) => Some(Operand::Float(-value)),

@@ -105,7 +105,7 @@ fn counted(function: &Function, local: LocalId) -> bool {
 fn counted_operand(function: &Function, operand: &Operand) -> bool {
     match operand {
         Operand::Local(local) => counted(function, *local),
-        Operand::Str(_) | Operand::None => true,
+        Operand::Str(_) | Operand::Bytes(_) | Operand::None => true,
         Operand::Int(_) | Operand::Float(_) | Operand::Bool(_) => false,
     }
 }

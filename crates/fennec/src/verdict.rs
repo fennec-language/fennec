@@ -51,7 +51,39 @@ pub(crate) fn kit_files(path: &str, state: Option<&KitState>) -> Option<Vec<KitF
         return None;
     }
     let paths = fennec_kit::kit_paths(dir)?;
-    paths.into_iter().map(|(module, path)| kit_file(module, &path, state)).collect()
+    let mut files: Vec<KitFile> =
+        paths.into_iter().map(|(module, path)| kit_file(module, &path, state)).collect::<Option<_>>()?;
+    // Which files `embed` reads is only known from reading the kit, so it's what was last noted.
+    // Any edit that changes that changes a module, which is seen anyway.
+    let noted = state.into_iter().flat_map(|state| state.files.keys());
+    for module in noted.filter(|module| module.starts_with(fennec_kit::EMBEDDED)) {
+        let path = Path::new(module.trim_start_matches(fennec_kit::EMBEDDED));
+        files.push(kit_file(module.clone(), path, state).unwrap_or_else(|| KitFile {
+            module: module.clone(),
+            text: fennec_blake3::hash(b"a file that embed read, which is gone"),
+            size: 0,
+            changed_at: 0,
+        }));
+    }
+    Some(files)
+}
+
+/// A kit's files, with the files a program loaded from it has just read through `embed`. Each is
+/// noted with the hash of what was read, so an edit made since is seen next time, however close.
+pub(crate) fn with_embedded(files: &[KitFile], program: &Program) -> Vec<KitFile> {
+    let mut all = files.to_vec();
+    for file in &program.embedded {
+        let module = fennec_kit::embedded_name(&file.path);
+        all.retain(|known| known.module != module);
+        let metadata = std::fs::metadata(&file.path).ok();
+        let changed_at = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |since| since.as_nanos());
+        let size = metadata.map_or(0, |metadata| metadata.len());
+        all.push(KitFile { module, text: file.data.hash(), size, changed_at });
+    }
+    all
 }
 
 /// Whether a kit's files have the text they had when `state` was noted.
@@ -112,7 +144,7 @@ pub(crate) fn plan(
             changed.push(file.module.clone());
         }
     }
-    if changed.iter().any(|module| module == "kit.toml") {
+    if changed.iter().any(|module| module == "kit.toml" || module.starts_with(fennec_kit::EMBEDDED)) {
         return None;
     }
     let dir = Path::new(path);
@@ -165,7 +197,7 @@ pub(crate) fn remember(
             cache.store_file_rows(file.text, rows)?;
         }
     }
-    cache.store_kit_state(name, BUILD, files)
+    cache.store_kit_state(name, BUILD, &with_embedded(files, program))
 }
 
 /// Forgets what's remembered, since a test failed.

@@ -1359,6 +1359,7 @@ impl Emit<'_, '_, '_> {
             "result.expect" => self.expect(dest, args, span),
             "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
             "random.random_int" | "random.random_float" => self.random_builtin(dest, name, args, span),
+            parallel if parallel.starts_with("parallel.") => self.parallel_builtin(dest, name, args, span),
             // A list of a list's items is the list, shared until one changes.
             "parallel" | "list"
                 if args.len() == 1

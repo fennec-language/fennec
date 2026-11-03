@@ -115,13 +115,17 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures)
     let name = passed_name(path);
     let text = fingerprint(program.sources.files());
     if cache.read("checked", &name).is_none_or(|passed| passed != text.as_bytes()) {
-        if let Err(diagnostics) = crate::copy_rule::check_to_run(&mut program.module.clone()) {
+        if let Err(diagnostics) = crate::copy_rule::check_rules(&mut program.module.clone()) {
             return Err(reject(&program, &diagnostics));
         }
         // A cache that can't be written only means checking all of it again next time.
         let _ = cache.write("checked", &name, text.as_bytes());
     }
     fennec_build::keep_what_main_reaches(&mut program.module);
+    // The image keeps the constants as worked out while compiling, so a cached run skips that.
+    if let Err(diagnostics) = crate::copy_rule::bake(&mut program.module) {
+        return Err(reject(&program, &diagnostics));
+    }
     if let Some(files) = &files {
         crate::image::store(path, &cache, files, &program.module);
     }

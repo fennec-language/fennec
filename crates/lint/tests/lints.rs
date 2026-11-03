@@ -225,6 +225,29 @@ fn a_parameter_nothing_reads_goes_with_its_arguments() {
     assert!(!all_rules(read_inside).contains(&"unused-param"), "read in a comprehension");
 }
 
+/// What a kit is held to beyond `lint`.
+fn kit_rules(source: &str) -> Vec<&'static str> {
+    let mut sources = Sources::new();
+    let base = sources.add("game.fen", source);
+    let Ok(module) = parse_at(source, base) else { return vec!["it doesn't parse"] };
+    fennec_lint::kit_lints(&module).iter().map(|lint| lint.rule).collect()
+}
+
+#[test]
+fn a_kit_gives_failures_back_rather_than_expecting() {
+    let source = "def load(text: str) -> int:\n    int(text).expect(\"it's a number\")\n\nstruct Save:\n    level: int\n\n    def parsed(self, text: str) -> int:\n        def inner() -> int:\n            int(text).expect(\"a number\")\n        inner()\n";
+    assert_eq!(
+        kit_rules(source),
+        ["expect-in-kit", "expect-in-kit"],
+        "a function, and one nested in a method"
+    );
+    let main = "def main(stdout: Stdout):\n    stdout.print(int(\"1\").expect(\"it's a number\"))\n\ntest \"parses\":\n    assert int(\"2\").expect(\"a number\") == 2\n";
+    assert_eq!(kit_rules(main), Vec::<&str>::new(), "`main` and tests decide for the program");
+    let own = "struct Check:\n    ok: bool\n\n    def expect(self, why: str) -> bool:\n        self.ok\n\ndef f(check: Check) -> bool:\n    check.expect(\"fine\")\n";
+    assert_eq!(kit_rules(own), Vec::<&str>::new(), "a method of its own named `expect`");
+    assert_eq!(all_rules(source).iter().filter(|rule| **rule == "expect-in-kit").count(), 0, "only a kit");
+}
+
 #[test]
 fn pass_is_only_for_an_empty_block() {
     assert_eq!(rules("def f():\n    pass\n"), NONE);

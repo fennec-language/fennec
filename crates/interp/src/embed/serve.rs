@@ -52,8 +52,13 @@ thread_local! {
     static REGISTRY: RefCell<Option<Registry>> = const { RefCell::new(None) };
     /// The token the next connection on this thread gets.
     static NEXT_TOKEN: Cell<usize> = const { Cell::new(0) };
-    /// When the wait a task is about to park on gives up, for its worker to read.
-    static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// What the wait a task is about to park on waits for, and when it gives up, for its
+    /// worker to read.
+    static PARKING: Cell<Option<(Interest, Option<Instant>)>> = const { Cell::new(None) };
+    /// For tests: wakes every parked task each time its worker polls, as a storm of readiness
+    /// it doesn't wait for would, like a socket that keeps saying it's writable.
+    #[cfg(test)]
+    static WAKE_ALL: Cell<bool> = const { Cell::new(false) };
     /// What a connection reads into, shared by the thread's tasks, which run one at a time and
     /// never park while reading: so a parked task holds no buffer of its own.
     static BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -101,6 +106,25 @@ impl Failure {
     }
 }
 
+/// How long a call may wait in all, and so when it gives up: fixed when the call starts, so
+/// waking early to find the socket still not ready doesn't put it off.
+#[derive(Clone, Copy)]
+struct Until {
+    timeout: Option<Duration>,
+    deadline: Option<Instant>,
+}
+
+impl Until {
+    fn after(timeout: Option<Duration>) -> Until {
+        Until { timeout, deadline: timeout.map(|timeout| Instant::now() + timeout) }
+    }
+
+    /// How long is left, for a wait that blocks its thread.
+    fn left(self) -> Option<Duration> {
+        self.deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+}
+
 /// What waiting on a socket came to.
 #[derive(Debug, PartialEq, Eq)]
 enum Waited {
@@ -134,6 +158,7 @@ impl Conn {
 
     /// Up to `count` bytes, empty at the end.
     pub fn read(&mut self, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
+        let until = Until::after(timeout);
         if !self.ahead.is_empty() {
             let taken = self.ahead.len().min(count);
             return Ok(self.ahead.drain(..taken).collect());
@@ -143,7 +168,7 @@ impl Conn {
             match read_onto(&mut self.stream, &mut bytes, count) {
                 Ok(_) => return Ok(bytes),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(Interest::READABLE, timeout, "read")?;
+                    self.wait(Interest::READABLE, until, "read")?;
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
@@ -153,6 +178,7 @@ impl Conn {
 
     /// The next line, without its line ending, or `None` at the end.
     pub fn read_line(&mut self, timeout: Option<Duration>) -> Result<Option<Vec<u8>>, Failure> {
+        let until = Until::after(timeout);
         loop {
             if let Some(end) = self.ahead.iter().position(|byte| *byte == b'\n') {
                 let mut line: Vec<u8> = self.ahead.drain(..=end).collect();
@@ -167,7 +193,7 @@ impl Conn {
                 Ok(0) => return Ok(Some(std::mem::take(&mut self.ahead))),
                 Ok(_) => {}
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(Interest::READABLE, timeout, "read_line")?;
+                    self.wait(Interest::READABLE, until, "read_line")?;
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
@@ -187,7 +213,7 @@ impl Conn {
                 Ok(0) => return Err(Failure::Closed),
                 Ok(written) => data = data.get(written..).unwrap_or_default(),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                    self.wait(Interest::WRITABLE, None, "write")?;
+                    self.wait(Interest::WRITABLE, Until::after(None), "write")?;
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => return Err(Failure::of(&error)),
@@ -198,38 +224,33 @@ impl Conn {
 
     /// Waits until the socket may be ready for `interest`: parked, when this is a task on an
     /// I/O worker and the runtime's state isn't borrowed, and blocking the thread otherwise.
-    fn wait(
-        &mut self,
-        interest: Interest,
-        timeout: Option<Duration>,
-        call: &'static str,
-    ) -> Result<(), Failure> {
+    fn wait(&mut self, interest: Interest, until: Until, call: &'static str) -> Result<(), Failure> {
+        // A wait woken early, to find the socket still not ready, gives up once its time's up.
+        if until.deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+            return Err(Failure::TimedOut(until.timeout.unwrap_or_default()));
+        }
         let waited = if self.registered && !super::state_is_borrowed() {
-            DEADLINE.set(timeout.map(|timeout| Instant::now() + timeout));
+            PARKING.set(Some((interest, until.deadline)));
             match fennec_parked::park(u64::try_from(self.token.0).unwrap_or(0)) {
                 Some(Wake::Ready(TIMED_OUT)) => Waited::TimedOut,
                 Some(Wake::Cancelled) => Waited::Cancelled,
                 Some(Wake::Ready(_)) => Waited::Ready,
-                None => self.block(interest, timeout, call)?,
+                None => self.block(interest, until, call)?,
             }
         } else {
-            self.block(interest, timeout, call)?
+            self.block(interest, until, call)?
         };
         match waited {
             Waited::Ready => Ok(()),
-            Waited::TimedOut => Err(Failure::TimedOut(timeout.unwrap_or_default())),
+            Waited::TimedOut => Err(Failure::TimedOut(until.timeout.unwrap_or_default())),
             Waited::Cancelled => Err(Failure::Cancelled),
         }
     }
 
     /// Waits on a poll of its own, blocking the thread: counted, and said once per call in a
     /// dev build.
-    fn block(
-        &mut self,
-        interest: Interest,
-        timeout: Option<Duration>,
-        call: &'static str,
-    ) -> Result<Waited, Failure> {
+    fn block(&mut self, interest: Interest, until: Until, call: &'static str) -> Result<Waited, Failure> {
+        let timeout = until.left();
         BLOCKED_WAITS.fetch_add(1, Ordering::Relaxed);
         warn_once(call);
         let mut poll = Poll::new().map_err(|error| Failure::of(&error))?;
@@ -314,7 +335,7 @@ struct Worker {
     inbox: Arc<Inbox>,
     scheduler: Scheduler,
     /// The task parked on each connection's token, and when its wait gives up.
-    waiting: HashMap<usize, (TaskId, Option<Instant>)>,
+    waiting: HashMap<usize, (TaskId, Interest, Option<Instant>)>,
     ready: VecDeque<(TaskId, Wake)>,
     served: Served,
 }
@@ -362,7 +383,8 @@ impl Worker {
             match self.scheduler.resume(task, wake) {
                 Step::Parked(token) => {
                     let token = usize::try_from(token).unwrap_or(usize::MAX);
-                    self.waiting.insert(token, (task, DEADLINE.take()));
+                    let (interest, deadline) = PARKING.take().unwrap_or((Interest::READABLE, None));
+                    self.waiting.insert(token, (task, interest, deadline));
                 }
                 Step::Done(0) | Step::Unknown => {}
                 Step::Done(_) => {
@@ -376,14 +398,29 @@ impl Worker {
 
     /// How long until the soonest wait gives up.
     fn timeout(&self) -> Option<Duration> {
-        let soonest = self.waiting.values().filter_map(|(_, deadline)| *deadline).min()?;
+        let soonest = self.waiting.values().filter_map(|(_, _, deadline)| *deadline).min()?;
         Some(soonest.saturating_duration_since(Instant::now()))
     }
 
-    /// Wakes the tasks whose sockets are ready, and those whose waits have timed out.
+    /// Wakes the tasks whose sockets are ready for what they wait for, and those whose waits
+    /// have timed out. An event for something else, like a socket ready to write to while its
+    /// task waits to read, leaves the task parked: woken, it would only find it would block
+    /// and wait again.
     fn wake(&mut self, events: &Events) {
         for event in events {
-            if let Some((task, _)) = self.waiting.remove(&event.token().0) {
+            let token = event.token().0;
+            let wanted = self.waiting.get(&token).is_some_and(|(_, interest, _)| {
+                let gone = event.is_error() || event.is_read_closed() || event.is_write_closed();
+                gone || (interest.is_readable() && event.is_readable())
+                    || (interest.is_writable() && event.is_writable())
+            });
+            if wanted && let Some((task, ..)) = self.waiting.remove(&token) {
+                self.ready.push_back((task, Wake::Ready(READY)));
+            }
+        }
+        #[cfg(test)]
+        if WAKE_ALL.get() {
+            for (task, ..) in std::mem::take(&mut self.waiting).into_values() {
                 self.ready.push_back((task, Wake::Ready(READY)));
             }
         }
@@ -391,11 +428,11 @@ impl Worker {
         let expired: Vec<usize> = self
             .waiting
             .iter()
-            .filter(|(_, (_, deadline))| deadline.is_some_and(|deadline| deadline <= now))
+            .filter(|(_, (_, _, deadline))| deadline.is_some_and(|deadline| deadline <= now))
             .map(|(token, _)| *token)
             .collect();
         for token in expired {
-            if let Some((task, _)) = self.waiting.remove(&token) {
+            if let Some((task, ..)) = self.waiting.remove(&token) {
                 self.ready.push_back((task, Wake::Ready(TIMED_OUT)));
             }
         }

@@ -2499,3 +2499,40 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// `?` in `main`, which then gives back a result: going on when it's `Ok`.
+#[test]
+fn a_main_giving_back_a_result_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "main_gives_back",
+        r#"def number(text: str) -> int:
+    int(text)?
+
+def main(stdout: Stdout):
+    stdout.print(number("12")?)
+    stdout.print("still here")
+"#,
+    )
+}
+
+/// `?` in `main` on an error fails the program, saying so at `main`.
+#[test]
+fn a_main_giving_back_an_error_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "main_gives_back_an_error",
+        r#"def number(text: str) -> int:
+    int(text)?
+
+def main(stdout: Stdout):
+    stdout.print("first")
+    stdout.print(number("twelve")?)
+    stdout.print("never")
+"#,
+    )
+}

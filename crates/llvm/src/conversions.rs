@@ -116,6 +116,16 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             }
             ("sorted", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.sorted_chars(dest, text)),
+            ("SoaList", [], []) => dest.and_then(|dest| {
+                let Kind::List(item) = self.kind_of(dest)?.clone() else {
+                    return Err("a `SoaList` that isn't a list".to_owned());
+                };
+                let list = self.new_list(item, "0");
+                self.assign(dest, &list)
+            }),
+            ("main.result", [result], [Some(Kind::Boxed(_) | Kind::Enum(_))]) => {
+                self.main_result(result, span)
+            }
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),
@@ -192,6 +202,32 @@ impl Emit<'_, '_, '_> {
         } else {
             let place = self.offset(at, offset);
             self.store_field(&field, message, &place, "");
+        }
+        Ok(())
+    }
+
+    /// Fails the program if what `main` gave back is an error, as the runtime says it.
+    fn main_result(&mut self, result: &Operand, span: Span) -> Result<(), String> {
+        let (value, kind) = self.operand(result)?;
+        let block = if let Kind::Enum(id) = kind {
+            let block = self.new_block(id)?;
+            let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+            self.store_field(&kind, &value, &fields, "");
+            self.retain_inline(&kind, &fields);
+            Some(block)
+        } else {
+            None
+        };
+        let crossing = block.as_deref().unwrap_or(&value);
+        self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
+        self.declare("declare void @fennec_main_result(i64, i64, i64) nounwind");
+        let handle = self.temp();
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {crossing})"));
+        self.line(&format!("call void @fennec_main_result(i64 {handle}, i64 {from}, i64 {to})"));
+        self.leave_if_failed();
+        if let Some(block) = block {
+            self.release(&block);
         }
         Ok(())
     }

@@ -94,6 +94,40 @@ pub fn layouts_of(program: &Program) -> Layouts {
     laid_out(program, Some(&first))
 }
 
+/// A `main` that gives back a result is run by one that doesn't, which fails the program if the
+/// result is an error, as the interpreter does at `main`'s own place in the source.
+pub fn wrap_main(program: &mut Program, span: fennec_syntax::Span) {
+    let Some(main) = program.functions.iter_mut().find(|function| function.name == "main") else { return };
+    if main.returns == fennec_check::Type::Unit {
+        return;
+    }
+    "main.given_back".clone_into(&mut main.name);
+    let (returns, params) = (main.returns.clone(), main.params);
+    let mut locals: Vec<fennec_ir::Local> = main.locals.iter().take(params).cloned().collect();
+    let result = fennec_ir::LocalId(params);
+    locals.push(fennec_ir::Local { name: None, ty: returns, copied: false });
+    let args = (0..params).map(|at| fennec_ir::Operand::Local(fennec_ir::LocalId(at))).collect();
+    let call = fennec_ir::InstKind::Call { dest: Some(result), function: "main.given_back".to_owned(), args };
+    let check = fennec_ir::InstKind::Builtin {
+        dest: None,
+        name: "main.result".to_owned(),
+        args: vec![fennec_ir::Operand::Local(result)],
+        changes: false,
+    };
+    program.functions.push(fennec_ir::Function {
+        name: "main".to_owned(),
+        params,
+        mut_params: Vec::new(),
+        returns: fennec_check::Type::Unit,
+        locals,
+        blocks: vec![fennec_ir::Block {
+            insts: vec![fennec_ir::Inst { kind: call, span }, fennec_ir::Inst { kind: check, span }],
+            end: fennec_ir::Terminator::Return(None),
+        }],
+        counts: Vec::new(),
+    });
+}
+
 fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
     let fields = |fields: &[(String, fennec_check::Type)]| {
         fields.iter().map(|(name, ty)| (name.clone(), kinds::canon_in(blocks, ty), None)).collect::<Vec<_>>()

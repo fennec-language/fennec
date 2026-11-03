@@ -226,7 +226,7 @@ fn emitted(reached: &fennec_syntax::Module, traced: bool) -> Result<Emitted, Str
     let checked =
         fennec_check::check(reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
-    let lowered = fennec_ir::lower_with(reached, &checked, fennec_ir::Options { outline_parallel: true });
+    let mut lowered = fennec_ir::lower_with(reached, &checked, fennec_ir::Options { outline_parallel: true });
     if !lowered.not_lowered.is_empty() {
         let skipped: Vec<String> = lowered
             .not_lowered
@@ -242,6 +242,11 @@ fn emitted(reached: &fennec_syntax::Module, traced: bool) -> Result<Emitted, Str
     {
         return Err(format!("the IR isn't sound: {}", problems.join("; ")));
     }
+    let main_at = reached.items.iter().find_map(|item| match item {
+        fennec_syntax::Item::Function(def) if def.name == "main" => Some(def.span),
+        _ => None,
+    });
+    fennec_llvm::wrap_main(&mut lowered, main_at.unwrap_or_default());
     let cpu = if BASELINE.load(std::sync::atomic::Ordering::Relaxed) {
         fennec_llvm::Cpu::Baseline
     } else {

@@ -87,12 +87,16 @@ fn whose_block() -> String {
 /// string literal: its count never gets near zero, so a thread needn't count it at all, and a
 /// body using one on every iteration costs nothing here. `%immortal` says so.
 fn immortal() -> String {
-    format!("  %held = load i64, ptr %block{HEADER_ACCESS}\n  %immortal = icmp uge i64 %held, {IMMORTAL}\n")
+    format!(
+        "  %held = load atomic i64, ptr %block monotonic, align 8{HEADER_ACCESS}\n  %immortal = icmp uge i64 %held, {IMMORTAL}\n"
+    )
 }
 
 /// The start of every shim: on a thread whose failure flag isn't known yet, a worker running
 /// its first range, asks the runtime where this thread's flag is and how deep its stack goes,
-/// and notes its number. The program's thread has all three from `fennec_entry`.
+/// and notes its number. The program's thread has all three from `fennec_entry`. Everything else
+/// reads these as never changing, so the range runs in a function that's never inlined here: no
+/// such read can move above these stores.
 const READY: &str = "entry:\n  %known = load ptr, ptr @fennec_failed\n  %fresh = icmp eq ptr %known, null\n  \
     br i1 %fresh, label %ready, label %run\nready:\n  \
     %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  \
@@ -140,13 +144,17 @@ impl Shape {
             ),
         };
         let into = if matches!(self, Shape::Into) { "  %into = inttoptr i64 %out to ptr\n" } else { "" };
+        let params = format!("i64 %env, i64 %from, i64 %to, i64 %thread{extra}");
+        let running = format!("@\"{}.run\"", name.trim_start_matches('@'));
         format!(
-            "define internal i64 {name}(i64 %env, i64 %from, i64 %to, i64 %thread{extra}) #0 {{\n{READY}  \
+            "define internal i64 {running}({params}) noinline #0 {{\nentry:\n  \
              %closure = inttoptr i64 %env to ptr\n{into}  %code_at = getelementptr inbounds i8, ptr %closure, i64 {CODE}\n  \
              %code = load ptr, ptr %code_at\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  \
              {call} %code(ptr %closure, i64 %from, i64 %to{args}, ptr swifterror %failed)\n{keep}  \
              %held = load ptr, ptr %failed\n  %bad = icmp ne ptr %held, null\n  %result = zext i1 %bad to i64\n  \
-             ret i64 %result\n}}\n\n"
+             ret i64 %result\n}}\n\n\
+             define internal i64 {name}({params}) #0 {{\n{READY}  \
+             %result = call i64 {running}(i64 %env, i64 %from, i64 %to, i64 %thread{extra})\n  ret i64 %result\n}}\n\n"
         )
     }
 }

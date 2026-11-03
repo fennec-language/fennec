@@ -121,8 +121,8 @@ impl Layouts {
             enums: HashMap::new(),
             definitions: definitions.iter().map(|(name, def)| (name.as_str(), def)).collect(),
         };
-        // Strings are held as headers only once the backend that reads them does.
-        let text_headers = std::env::var_os("FENNEC_INLINE_TEXT").is_some();
+        // `FENNEC_INLINE_TEXT=0` holds strings as blocks again, in case headers show a problem.
+        let text_headers = std::env::var_os("FENNEC_INLINE_TEXT").is_none_or(|set| set != "0");
         let mut layouts = Layouts {
             one_word_optionals: true,
             native_buffers: true,
@@ -680,7 +680,8 @@ mod tests {
         let layout = layouts.get(id).unwrap();
         let types: Vec<Ty> = layout.fields.iter().map(|field| field.ty).collect();
         assert_eq!(types, [Ty::Str, Ty::List(ListItem::Int), Ty::List(ListItem::Str), Ty::Int]);
-        assert_eq!(layout.size, 32);
+        // The string is its three-word header.
+        assert_eq!(layout.size, 48);
     }
 
     #[test]

@@ -12,8 +12,7 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 }
 
 fn ready() -> bool {
-    std::env::var_os("FENNEC_UNDER_MUTANTS").is_none()
-        && fennec_llvm::Tools::find().is_ok()
+    fennec_llvm::Tools::find().is_ok()
         && runtime_built()
         // Coverage builds `fennec` in a folder of its own, where no runtime library is built.
         && crate::executables::runtime_beside_fennec()

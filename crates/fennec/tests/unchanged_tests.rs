@@ -421,8 +421,7 @@ fn a_doc_example_in_a_kit_sees_what_its_file_sees_and_a_run_does_not_need_it() {
 /// library, and a run under coverage has `fennec` somewhere without one. CI's Linux and Windows jobs
 /// set `FENNEC_EXPECT_LLVM`, so these tests can't quietly stop running there.
 fn llvm_here() -> bool {
-    let ready = std::env::var_os("FENNEC_UNDER_MUTANTS").is_none()
-        && fennec_llvm::Tools::find().is_ok()
+    let ready = fennec_llvm::Tools::find().is_ok()
         && crate::executables::runtime_built()
         && crate::executables::runtime_beside_fennec();
     let expected = std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty());

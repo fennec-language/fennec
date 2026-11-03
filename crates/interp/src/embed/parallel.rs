@@ -323,6 +323,29 @@ mod tests {
         finish();
     }
 
+    /// Fails for an empty range: a sum's range reads its first item before anything else.
+    extern "C" fn not_empty(_env: i64, from: i64, to: i64, _thread: i64, partial: &mut i64) -> i64 {
+        *partial = 0;
+        i64::from(from >= to)
+    }
+
+    #[test]
+    fn a_reduction_never_gives_a_range_no_positions() {
+        let leaf = crate::builtins::REDUCE_LEAF;
+        for length in [1, 2, 3, leaf - 1, leaf, leaf + 1, 2 * leaf + 1, 3 * leaf + 7, 100_000] {
+            let run = super::Run::new(leaf);
+            assert_eq!(run.reduce((0, length), (not_empty, add, 0)), Some(0), "{length} items");
+        }
+        // An empty list runs no range at all, leaving the start as it is.
+        begin();
+        let list = lists::new(0, 0);
+        let mut result = 5;
+        assert_eq!(super::parallel_reduce(list, not_empty, add, 0, &mut result), 0);
+        assert_eq!(result, 5);
+        heap::free(list);
+        finish();
+    }
+
     /// `sum(1.0 / float(n + 1) for n in parallel(range(ITEMS)))`'s bits, on a pool of `threads`.
     fn harmonic_on(threads: usize) -> u64 {
         let reduced = super::pool::on_threads(threads, || {

@@ -214,6 +214,10 @@ impl Heap {
     /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
     /// rare enough to give back.
     fn recycle(&mut self, block: Box<[u64]>) {
+        // Under AddressSanitizer every freed block is given back, for it to watch.
+        if cfg!(feature = "sanitize") {
+            return;
+        }
         match self.spare.get_mut(block.len()) {
             Some(spare) if spare.len() < SPARE_BLOCKS => spare.push(block),
             Some(_) => {}

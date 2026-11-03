@@ -28,6 +28,9 @@ workspace = true
 # and each thread's queue of blocks to free. Programs with no tasks link a runtime without
 # them, so they pay nothing (decisions.md: "Programs with no tasks compile the check away").
 threads = ["dep:rayon-core", "dep:fennec-parked", "dep:mio"]
+# For AddressSanitizer runs only: a freed block is given back at once rather than kept for
+# reuse, so ASan poisons it and holds it in quarantine, and native code that touches it fails.
+sanitize = []
 
 [dev-dependencies]
 rayon-core.workspace = true

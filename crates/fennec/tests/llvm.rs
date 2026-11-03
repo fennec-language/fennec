@@ -1964,6 +1964,73 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A constant that isn't written out is worked out once. Reading it this often would take minutes
+/// if each read worked it out again.
+#[test]
+fn a_constant_is_worked_out_once() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def slow() -> int:\n    mut total = 0\n    for i in range(2000000):\n        total += i\n    total\n\n\
+                  SLOW = slow()\n\ndef main(stdout: Stdout):\n    mut seen = 0\n    for i in range(300000):\n        \
+                  seen += SLOW + i\n    stdout.print(seen)\n";
+    let dir = folder("constant_once")?;
+    let program = dir.join("once.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("once"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours.0, "599999744999850000\n");
+    Ok(())
+}
+
+/// A constant keeps its value whatever a read does with what it was given.
+#[test]
+fn each_read_of_a_constant_has_its_own_value() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Point:
+    x: int
+    tags: list[str]
+
+enum Shape:
+    Dot
+    Named(words: list[str])
+
+WORDS = ["a", "b"]
+LENGTHS = {word: word.len() for word in WORDS}
+ORIGIN = Point(x=0, tags=["start"])
+NAMED = Shape.Named(words=["n"])
+TEXT = f"{WORDS[0]} and a long tail of text"
+
+def changed() -> list[str]:
+    mut mine = WORDS
+    mine.append("c")
+    mine[0] = "z"
+    mine
+
+def main(stdout: Stdout):
+    stdout.print(changed(), changed(), WORDS)
+    mut counts = LENGTHS
+    counts["new"] = 3
+    stdout.print(counts, LENGTHS)
+    mut point = ORIGIN
+    point.x = 5
+    point.tags.append("moved")
+    stdout.print(point, ORIGIN)
+    match NAMED:
+        case .Named(words):
+            stdout.print(words.len())
+        case .Dot:
+            pass
+    stdout.print(NAMED, TEXT, TEXT.len())
+"#;
+    same_as_the_jit("constant_reads", source)
+}
+
 /// Conversions and small builtins: floats to ints, `PI`, `range` and `reversed` as lists, and a
 /// dict's or set's keys as a list.
 #[test]

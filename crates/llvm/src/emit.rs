@@ -1256,6 +1256,15 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = {word} i64 {a}, {b}"));
                 temp
             }
+            BinOp::ShiftLeft | BinOp::ShiftRight => {
+                let outside = self.temp();
+                self.line(&format!("{outside} = icmp uge i64 {b}, 64"));
+                self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span);
+                let word = if op == BinOp::ShiftLeft { "shl" } else { "ashr" };
+                let temp = self.temp();
+                self.line(&format!("{temp} = {word} i64 {a}, {b}"));
+                temp
+            }
             BinOp::Pow => {
                 self.declare("declare i64 @fennec_int_power(i64, i64, i64, i64) nounwind");
                 let (from, to) = (i64::from(span.start), i64::from(span.end));
@@ -1490,7 +1499,9 @@ impl Emit<'_, '_, '_> {
             "list.append" => self.append(args),
             "result.expect" => self.expect(dest, args, span),
             "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
-            "random.random_int" | "random.random_float" => self.random_builtin(dest, name, args, span),
+            "random.random_int" | "random.random_float" | "random_choice" | "random.random_choice" => {
+                self.random_builtin(dest, name, args, span)
+            }
             parallel if parallel.starts_with("parallel.") => self.parallel_builtin(dest, name, args, span),
             // A list of a list's items is the list, shared until one changes.
             "parallel" | "list"
@@ -1663,6 +1674,11 @@ impl Emit<'_, '_, '_> {
                     (UnaryOp::Neg, Kind::Float) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = fneg double {value}"));
+                        temp
+                    }
+                    (UnaryOp::BitNot, Kind::Int) => {
+                        let temp = self.temp();
+                        self.line(&format!("{temp} = xor i64 {value}, -1"));
                         temp
                     }
                     (UnaryOp::Not, Kind::Bool) => {

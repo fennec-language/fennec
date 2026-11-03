@@ -105,6 +105,10 @@ impl Emit<'_, '_, '_> {
             }),
             ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
             ("assert.sides", [left, right], _) => self.assert_sides(left, right, span),
+            ("list.sort", [Operand::Local(list)], _) => self.sorted(*list, &Operand::Local(*list)),
+            ("list.sort.key", [Operand::Local(list), key], _) => {
+                self.sorted_by(*list, &Operand::Local(*list), key, span)
+            }
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),

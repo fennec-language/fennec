@@ -1579,6 +1579,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "max.key"
                     | "min.key"
                     | "list.remove"
+                    | "main.result"
                     | "Regex.replace"
                     | "Regex.split"
                     | "Regex.find_all"

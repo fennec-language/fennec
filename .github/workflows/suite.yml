@@ -64,15 +64,27 @@ jobs:
         run: |
           cargo rustc --release --locked -p fennec-runtime --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
           cp "$(find target/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime.bc
+      # The runtime with threads, for `parallel`, on its own so the others don't get `threads` too.
+      - name: Build the runtime with threads, and its bitcode
+        run: |
+          cargo rustc --release --locked -p fennec-runtime --features threads --target-dir target/threads --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
+          cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
+          cp "$(find target/threads/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_threads.bc
       - name: Measure every kernel against its twin
         env:
           OS: ${{ matrix.os }}
         run: ./target/release/fennec-bench llvm-suite --runs 10 --json "suite-$OS.json"
+      - name: Measure parallel against rayon
+        env:
+          OS: ${{ matrix.os }}
+        run: ./target/release/fennec-bench parallel --runs 10 --markdown "suite-parallel-$OS.md"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: suite-${{ matrix.os }}
-          path: suite-*.json
+          path: |
+            suite-*.json
+            suite-parallel-*.md
           if-no-files-found: ignore
 
   report:
@@ -164,6 +176,13 @@ jobs:
                 "Kernel time is what each program measured itself with a monotonic clock when run with --time, from the start of its work to its last line; "
                 "Java's is its second run, after one to warm its JIT up. Startup is each language's hello-world's best run.")
           TABLE
+      - name: Parallel against rayon, for each machine
+        run: |
+          shopt -s nullglob
+          for section in runs/suite-parallel-*.md; do
+            cat "$section" >> "$GITHUB_STEP_SUMMARY"
+            echo >> "$GITHUB_STEP_SUMMARY"
+          done
       # Only main's own runs join the history, one line per machine.
       - name: Add the run to the history
         if: github.event_name == 'push'

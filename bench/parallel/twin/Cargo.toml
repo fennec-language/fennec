@@ -1,0 +1,30 @@
+# The twins of the kernels in `bench/parallel`. Not part of the workspace: rayon is here only to
+# be measured against, pinned so a change in the numbers is a change in Fennec.
+[package]
+name = "fennec-parallel-twins"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "ecs"
+path = "ecs.rs"
+
+[[bin]]
+name = "ecs_plain"
+path = "ecs_plain.rs"
+
+[dependencies]
+# The version that runs on rayon-core 1.13, the one Fennec's own pool uses.
+rayon = "=1.11.0"
+
+# As the suite's Rust twins are built, overflow checks on, with the whole program in one unit.
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+overflow-checks = true
+debug-assertions = false

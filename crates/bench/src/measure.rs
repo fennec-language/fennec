@@ -92,7 +92,7 @@ const OPTIMIZED: [&str; 8] =
 /// it, and matching what the JIT uses. Cranelift emits VEX instructions on x86-64, which is
 /// worth about 20 points on `mandelbrot` against a twin built for the baseline. On 64-bit Arm
 /// the baseline already has what the JIT uses.
-fn twin_cpu() -> &'static [&'static str] {
+pub(crate) fn twin_cpu() -> &'static [&'static str] {
     if cfg!(target_arch = "x86_64") { &["-C", "target-cpu=x86-64-v3"] } else { &[] }
 }
 

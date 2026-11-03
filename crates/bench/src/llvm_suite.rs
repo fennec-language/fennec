@@ -29,7 +29,7 @@ use fennec_count::Misses;
 
 /// How far a side's median run may be from its best, as a share of the best, before the kernel
 /// is called noisy.
-const NOISY: f64 = 0.05;
+pub(crate) const NOISY: f64 = 0.05;
 
 /// What one kernel came to.
 struct Row {
@@ -103,7 +103,7 @@ fn sorted(times: &[Duration]) -> Vec<f64> {
 
 /// The best of some times, their median, and their spread: how far the median is from the best,
 /// as a share of the best.
-fn summary(times: &[Duration]) -> (f64, f64, f64) {
+pub(crate) fn summary(times: &[Duration]) -> (f64, f64, f64) {
     let seconds = sorted(times);
     let best = seconds.first().copied().unwrap_or(0.0);
     let middle = seconds.get(seconds.len() / 2).copied().unwrap_or(0.0);

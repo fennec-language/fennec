@@ -3,6 +3,7 @@
 //! with a big stack and reports what happened the way `fennec run` does.
 
 use std::cell::RefCell;
+use std::fmt::Write as _;
 use std::io::Write;
 
 use fennec_syntax::Sources;
@@ -28,6 +29,8 @@ thread_local! {
     static SOURCES: RefCell<Option<Sources>> = const { RefCell::new(None) };
     /// The text of each string literal native code asks for by number.
     static LITERALS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The numbers of the tests a test executable has left to run, the next one last.
+    static TESTS: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The next eight bytes of the program the executable carries.
@@ -39,6 +42,22 @@ pub extern "C" fn image(word: i64) {
 /// address its stack may grow to. Prints what it printed, and the failure if it failed.
 /// Gives back the process's exit code.
 pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
+    let bytes = program_handed_over(length, stop);
+    let ran = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn_scoped(scope, || execute(entry, &bytes))
+            .map(std::thread::ScopedJoinHandle::join)
+    });
+    match ran {
+        Ok(Ok((output, failure))) => report(&output, &failure),
+        Ok(Err(_)) => report(b"", "error: the program stopped unexpectedly\n"),
+        Err(err) => report(b"", &format!("error: couldn't start the program's thread: {err}\n")),
+    }
+}
+
+/// The program handed over, `length` bytes of it, ready for workers to start from.
+fn program_handed_over(length: i64, stop: fn(i32)) -> Vec<u8> {
     let _ = STOP.set(stop);
     super::write_kept_output_on_panic();
     let mut bytes = IMAGE.take();
@@ -51,16 +70,51 @@ pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
             let _ = super::start(&module, tables, crate::Inputs { live: true, ..crate::Inputs::default() });
         }
     }));
-    let ran = std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .stack_size(STACK_BYTES)
-            .spawn_scoped(scope, || execute(entry, &bytes))
-            .map(std::thread::ScopedJoinHandle::join)
-    });
-    match ran {
-        Ok(Ok((output, failure))) => report(&output, &failure),
-        Ok(Err(_)) => report(b"", "error: the program stopped unexpectedly\n"),
-        Err(err) => report(b"", &format!("error: couldn't start the program's thread: {err}\n")),
+    bytes
+}
+
+/// Starts running a test executable's tests: those whose numbers are its arguments, in turn. A
+/// failure stays for `test_done` to say, rather than ending the program.
+pub fn tests_start() {
+    SOURCES.take();
+    let mut numbers: Vec<i64> = std::env::args().skip(1).filter_map(|number| number.parse().ok()).collect();
+    numbers.reverse();
+    TESTS.set(numbers);
+}
+
+/// The number of the next test to run, or -1 when they've all run.
+pub fn next_test_number() -> i64 {
+    TESTS.with_borrow_mut(Vec::pop).unwrap_or(-1)
+}
+
+/// Says what the test just run did, on standard output as soon as it's done, in a line `fennec
+/// test` reads, so a crash loses only the tests not yet run. Tests here take nothing, so nothing
+/// else writes there.
+pub fn test_done(number: i64) {
+    let line = test_line(number, super::next_test().as_ref());
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "{line}").and_then(|()| out.flush());
+}
+
+/// What a test did, as a line: its number, and for a failure where it is, its message and its
+/// help, in hexadecimal so that anything can be in them.
+fn test_line(number: i64, failure: Option<&fennec_syntax::Diagnostic>) -> String {
+    let hex = |text: &str| {
+        let mut hex = String::with_capacity(text.len() * 2);
+        for byte in text.bytes() {
+            let _ = write!(hex, "{byte:02x}");
+        }
+        hex
+    };
+    match failure {
+        None => format!("{number} ok"),
+        Some(failure) => format!(
+            "{number} failed {} {} {} {}",
+            failure.span.start,
+            failure.span.end,
+            hex(&failure.message),
+            hex(failure.help.as_deref().unwrap_or(""))
+        ),
     }
 }
 

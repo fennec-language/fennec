@@ -111,6 +111,14 @@ with kernel time, and shows each language's startup, a hello-world's best run fr
 that prints something else is noted, and doesn't fail the run. Where a toolchain isn't
 installed, its column is left out.
 
+## `parallel` against rayon
+
+`fennec-bench parallel` measures `bench/parallel/ecs.fen`, which runs on threads, by wall clock at 1, 2, 4 and 8 threads, beside a twin using rayon. The same kernel without `parallel`, `ecs_plain.fen`, runs beside plain Rust with no rayon, so the table says what `parallel` costs on one thread as well as what it gives on many.
+
+- It's outside the locked suite, which counts instructions a thread at a time, and has no targets. Being slow never fails it: only printing something other than the twin does.
+- The twins are a small cargo project of their own in `bench/parallel/twin`, with rayon pinned in its lock file. rayon is there only to be measured against: Fennec's pool uses `rayon-core`, the same version the twin's rayon runs on.
+- It needs the runtime with threads next to `fennec`, as `libfennec_runtime_threads.a` and `.bc`. CI builds them in `suite.yml`, and each machine's table joins the suite's report.
+
 ## Pinning targets
 
 The twins beside the kernels are idiomatic code for the same work, in Rust, fully optimized: `opt-level=3`, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. The CPU level is fixed, so a target doesn't depend on which machine pinned it, and matches what the JIT uses: `x86-64-v3` on x86-64 and the baseline on 64-bit Arm. Each targets file says which compiler pinned it. `regex`'s twin runs on `crates/re`, the engine behind `std.re`. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.

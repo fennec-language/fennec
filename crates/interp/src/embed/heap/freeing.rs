@@ -232,6 +232,7 @@ pub(in crate::embed) fn measure_part(part: u8, address: usize) {
         }
         2 => {
             if let Some(block) = state.heap.spare.get_mut(4).and_then(Vec::pop) {
+                state.heap.spare_words -= block.len();
                 state.heap.recycle(std::hint::black_box(block));
             } else {
                 let block = state.heap.fresh(4);
@@ -273,5 +274,44 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
     };
     if last {
         free_block(state, address);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::embed::{Tables, finish, start, with};
+
+    /// Frees `count` blocks of `words` words at once, as a program dropping a big structure does.
+    fn free_many(count: usize, words: usize) {
+        with(|state| {
+            let blocks: Vec<_> = (0..count).map(|_| state.heap.fresh(words)).collect();
+            for block in blocks {
+                state.heap.recycle(block);
+            }
+        });
+    }
+
+    #[test]
+    fn what_a_heap_keeps_for_reuse_stays_under_its_limit_however_much_is_freed() {
+        let module = fennec_syntax::Module { items: Vec::new() };
+        start(&module, Tables::default(), crate::Inputs::default()).unwrap();
+        for words in [4, 5, 16, 100] {
+            free_many(400_000, words);
+            with(|state| {
+                let kept: usize =
+                    state.heap.spare.iter().enumerate().map(|(size, blocks)| size * blocks.len()).sum();
+                assert_eq!(kept, state.heap.spare_words);
+                assert!(kept <= super::super::SPARE_TOTAL_WORDS, "{kept} words kept");
+                assert!(kept > 0, "nothing's kept for reuse");
+            });
+        }
+        // A block taken back out counts as gone, so the limit is what's kept now, not ever.
+        with(|state| {
+            let before = state.heap.spare_words;
+            let block = state.heap.fresh(4);
+            assert_eq!(block.len(), 4);
+            assert_eq!(state.heap.spare_words, before - 4);
+        });
+        finish();
     }
 }

@@ -1332,6 +1332,9 @@ tools = { path = "../tools" }
 **On x86-64, native code is built for `x86-64-v3` (AVX2, FMA and BMI) by default, and `--cpu baseline` builds for the first x86-64 processors.** On 64-bit Arm the baseline already has what's wanted, so nothing changes there.
 *Why:* It's the level the JIT already uses and the benchmark twins are built for, so comparisons are fair, and nearly every x86 machine since 2013 has it. Those older than that still get a working build by asking for one.
 
+**A release build optimizes what it uses of the runtime together with the program, so runtime calls can inline.** The runtime's own LLVM bitcode ships beside `fennec`, and a release links only the runtime's C parts (mimalloc and the compiler's helpers) afterwards. Development builds are unchanged.
+*Why:* It takes about 1.3% off a kernel's instructions on Arm, up to 4%, for release builds that take about 20 seconds instead of one, which release builds can afford.
+
 Every build and the language server share one build engine and store, described under Builds.
 
 ## Builds

@@ -81,10 +81,24 @@ pub(crate) fn costs(module: &Module, checked: &Checked) -> Vec<fennec_ir::Findin
     fennec_ir::costs(&fennec_ir::lower(&resolved, &signatures))
 }
 
+/// What the linter finds in a program as `fennec lint` does, with what only a kit is held to.
+pub(crate) fn lints(module: &Module, sources: &Sources, kit: bool) -> Vec<Lint> {
+    let mut found = fennec_lint::lint(module, sources);
+    if kit {
+        found.extend(fennec_lint::kit_lints(module));
+    }
+    found
+}
+
 /// Everything there is to show beyond mistakes, for a program with none: what the linter
 /// finds, then what may copy or allocate, as `fennec lint` shows them.
-pub(crate) fn of_clean(module: &Module, sources: &Sources, costs: &[fennec_ir::Finding]) -> Vec<Located> {
-    let mut lints = fennec_lint::lint(module, sources);
+pub(crate) fn of_clean(
+    module: &Module,
+    sources: &Sources,
+    costs: &[fennec_ir::Finding],
+    kit: bool,
+) -> Vec<Located> {
+    let mut lints = lints(module, sources, kit);
     lints.extend(fennec_lint::needless_copies(module, sources));
     lints.extend(fennec_lint::costs(costs));
     located(sources, &lints)

@@ -71,3 +71,33 @@ fn a_for_mut_over_parallel_and_its_kin_run_as_parallel_calls_natively() -> std::
     assert!(counts.contains("parallel_calls 4"), "{counts}");
     Ok(())
 }
+
+/// A sum whose range fails partway, with enough items to be split into several ranges: the
+/// program stops there, printing nothing more, as the interpreter does.
+const FAILING: &str = "\
+def main(stdout: Stdout):
+    xs = [n for n in range(100_000)]
+    stdout.print(sum(100 // (77_777 - x) for x in parallel(xs)) > 0)
+    stdout.print(\"after\")
+";
+
+#[test]
+fn a_range_that_fails_stops_the_program_natively_as_the_interpreter_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-fails-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("fails.fen");
+    std::fs::write(&program, FAILING)?;
+    let (source, executable) = (program.to_string_lossy().into_owned(), dir.join("fails"));
+    let built = fennec(&["build", "--llvm", &source, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    let interpreted = fennec(&["run", "--interp", &source], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!ran.status.success());
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
+    assert_eq!(String::from_utf8_lossy(&ran.stderr), String::from_utf8_lossy(&interpreted.stderr));
+    Ok(())
+}

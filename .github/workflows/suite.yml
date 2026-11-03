@@ -15,8 +15,11 @@ on:
 permissions:
   contents: read
 
+# Main's runs take turns, since each adds to the history. A group keeps only its newest
+# waiting run, so a dispatched run, which adds nothing to the history, gets a group of its own
+# and is never dropped for one of main's.
 concurrency:
-  group: suite-report
+  group: suite-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'report' }}
   cancel-in-progress: false
 
 env:

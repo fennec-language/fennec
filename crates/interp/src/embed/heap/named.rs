@@ -1,5 +1,5 @@
 //! Values a backend lays out as ordinary structs and enums, but the interpreter holds as
-//! values of their own: an optional held as an enum, an `Id` and an `IdMap`. Reading a block
+//! values of their own: an optional held as an enum, a result, an `Id` and an `IdMap`. Reading a block
 //! turns these into what the interpreter holds, and writing one turns them back.
 
 use std::rc::Rc;
@@ -11,6 +11,11 @@ use crate::value::{Id, IdMap, Instance, Slot, Value};
 /// An optional held as an enum, with cases `None` and `Some(value)`.
 fn is_option(name: &str) -> bool {
     name.starts_with("Option[")
+}
+
+/// A result held as an enum, with cases `Ok(value)` and `Err(error)`.
+fn is_result(name: &str) -> bool {
+    name.starts_with("Result[")
 }
 
 /// An `IdMap` laid out as its items, each slot's generation, and how many are live. A
@@ -29,7 +34,9 @@ pub(in crate::embed) fn packable(element: &Element) -> bool {
         Element::Struct { name, fields } => {
             !name.starts_with('(') && name.as_ref() != "Id" && !is_id_map(name) && all(fields)
         }
-        Element::Enum { name, cases, .. } => !is_option(name) && cases.iter().all(|(_, fields)| all(fields)),
+        Element::Enum { name, cases, .. } => {
+            !is_option(name) && !is_result(name) && cases.iter().all(|(_, fields)| all(fields))
+        }
         _ => false,
     }
 }
@@ -41,6 +48,13 @@ pub(super) fn interpreted(name: &str, value: Value) -> Value {
         return match instance.case.as_deref() {
             Some("Some") => instance.field("value").cloned().unwrap_or(Value::None),
             _ => Value::None,
+        };
+    }
+    if is_result(name) {
+        let held = Rc::new(instance.fields.first().map_or(Value::Unit, |(_, held)| held.clone()));
+        return match instance.case.as_deref() {
+            Some("Err") => Value::Err(held),
+            _ => Value::Ok(held),
         };
     }
     if name == "Id" {
@@ -114,6 +128,24 @@ pub(super) fn write_named(
                     write(state, inner, value, words)
                 }
                 (_, None) => None,
+            };
+            words.resize(start + size, 0);
+            written.into()
+        }
+        (Element::Enum { name, cases, words: size }, Value::Ok(held) | Value::Err(held))
+            if is_result(name) =>
+        {
+            let wanted = if matches!(value, Value::Err(_)) { "Err" } else { "Ok" };
+            let Some((case, (_, fields))) =
+                cases.iter().enumerate().find(|(_, (case, _))| case.as_ref() == wanted)
+            else {
+                return Written::Failed;
+            };
+            let start = words.len();
+            words.push(u64::try_from(case).unwrap_or(0));
+            let written = match fields.first() {
+                Some((_, inner)) => write(state, inner, held, words),
+                None => Some(()),
             };
             words.resize(start + size, 0);
             written.into()

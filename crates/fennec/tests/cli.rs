@@ -531,8 +531,60 @@ fn run_takes_a_kits_folder_in_either_engine() {
         let output = fennec(args, "").unwrap();
         assert!(output.status.success(), "{}", text(&output.stderr));
         assert_eq!(text(&output.stdout), expected);
-        assert_eq!(text(&output.stderr), "", "the JIT shouldn't need the interpreter for the whole program");
+        // LLVM doesn't take arena yet, so where LLVM can build at all, `run` says why in one
+        // line before the JIT runs it, and the JIT shouldn't need the interpreter for the whole
+        // program.
+        let said = text(&output.stderr);
+        let llvm_here = llvm_ready_for_run();
+        let expected_note = args.len() == 2 && llvm_here;
+        assert_eq!(said.lines().count(), usize::from(expected_note), "{said}");
+        assert!(
+            !expected_note
+                || said.starts_with("note: running this with the JIT, since LLVM can't build it: `main`"),
+            "{said}"
+        );
     }
+}
+
+/// Whether `fennec run` builds through LLVM here: not on Windows, LLVM's tools are found, and
+/// the runtime library is beside the `fennec` these tests run, which is where `fennec run`
+/// looks. Under coverage, `fennec` is built somewhere else, without one.
+fn llvm_ready_for_run() -> bool {
+    let runtime = Path::new(env!("CARGO_BIN_EXE_fennec")).with_file_name("libfennec_runtime.a");
+    !cfg!(windows)
+        && fennec_llvm::Tools::find().is_ok()
+        && crate::executables::runtime_built()
+        && runtime.is_file()
+}
+
+/// A program that fails while running, or returns normally, gives `fennec run` the same exit
+/// code whichever way it runs: through LLVM, on the JIT, or in the interpreter.
+#[test]
+fn run_exits_the_same_way_whichever_engine_runs_it() {
+    let dir = scratch("exit-codes").unwrap();
+    let failing = dir.join("failing.fen");
+    std::fs::write(
+        &failing,
+        "def at(n: int) -> int:\n    [1][n]\n\ndef main(stdout: Stdout):\n    stdout.print(at(1))\n",
+    )
+    .unwrap();
+    let fine = dir.join("fine.fen");
+    std::fs::write(&fine, "def main(stdout: Stdout):\n    stdout.print(1)\n").unwrap();
+    for (program, succeeds) in [(&failing, false), (&fine, true)] {
+        let path = program.to_str().unwrap();
+        let codes: Vec<Option<i32>> =
+            [&["run", "--no-test", path][..], &["run", "--jit", path], &["run", "--interp", path]]
+                .iter()
+                .map(|args| fennec(args, "").unwrap().status.code())
+                .collect();
+        let expected = Some(i32::from(!succeeds));
+        assert_eq!(codes, [expected; 3], "{path}: through LLVM where it can, the JIT, then the interpreter");
+    }
+    if llvm_ready_for_run() {
+        let output = fennec(&["run", "--no-test", failing.to_str().unwrap()], "").unwrap();
+        assert!(!text(&output.stderr).contains("note: running this with the JIT"), "LLVM built it");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

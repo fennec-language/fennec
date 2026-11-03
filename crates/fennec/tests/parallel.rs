@@ -559,8 +559,6 @@ def main(stdout: Stdout):
     mut total = 0
     # Blocks of about the same size, let go of between calls, with characters in different
     # places, so a worker trusting where it got to in the last one reads the wrong thing.
-    # The first round of each leaves its count out: a worker's first read of a character that
-    # isn't ASCII compares wrongly in the first call that reads it, which is its own bug.
     for round in range(12):
         kind = round % 3
         mut found = 0
@@ -573,8 +571,7 @@ def main(stdout: Stdout):
         else:
             text = mixed(size // 2)
             found = count(text, "é", xs)
-        if round >= 3:
-            total += found
+        total += found
     stdout.print(total)
 "#;
 
@@ -589,6 +586,6 @@ fn a_worker_forgets_where_it_got_to_in_a_string_when_its_range_ends() -> std::io
     let ran = Command::new(&places).env("FENNEC_THREADS", "4").output()?;
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "279999\n");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "373332\n");
     Ok(())
 }

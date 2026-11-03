@@ -16,11 +16,13 @@
 //! fennec-bench budgets [--fennec PATH] [--runs N] [--files N]
 //! fennec-bench llvm-suite [--fennec PATH] [--runs N] [--kernels DIR] [--json PATH]
 //! fennec-bench parallel [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
+//! fennec-bench realworld [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
 //! ```
 //!
 //! `budgets` measures something else: see the `budgets` module. `llvm-suite` compares what
 //! `fennec build --llvm --release` makes with the Rust twins: see the `llvm_suite` module.
-//! `parallel` compares `parallel` with rayon, by threads: see the `parallel` module.
+//! `parallel` compares `parallel` with rayon, by threads: see the `parallel` module. `realworld`
+//! compares programs using the standard library with Rust using crates: see the `realworld` module.
 #![expect(clippy::print_stdout, reason = "the suite prints its table")]
 #![expect(clippy::print_stderr, reason = "the suite reports failures")]
 
@@ -31,6 +33,7 @@ mod machine;
 mod measure;
 mod other_twins;
 mod parallel;
+mod realworld;
 mod report;
 mod startup;
 mod targets;
@@ -101,9 +104,15 @@ fn llvm_suite(mut args: impl Iterator<Item = String>) -> std::result::Result<boo
     llvm_suite::run(&fennec, &kernels, runs, json.as_deref())
 }
 
-fn parallel(mut args: impl Iterator<Item = String>) -> std::result::Result<(), String> {
-    let (mut fennec, mut runs, mut dir) =
-        (PathBuf::from("target/release/fennec"), 10, PathBuf::from("bench/parallel"));
+/// What takes a section of the suite's report, from its folder of kernels.
+type Section = fn(&Path, &Path, usize, Option<&Path>) -> std::result::Result<(), String>;
+
+fn report_section(
+    mut args: impl Iterator<Item = String>,
+    dir: &str,
+    section: Section,
+) -> std::result::Result<(), String> {
+    let (mut fennec, mut runs, mut dir) = (PathBuf::from("target/release/fennec"), 10, PathBuf::from(dir));
     let mut markdown = None;
     while let Some(flag) = args.next() {
         let value = args.next().ok_or_else(|| format!("`{flag}` needs a value"))?;
@@ -117,13 +126,18 @@ fn parallel(mut args: impl Iterator<Item = String>) -> std::result::Result<(), S
             _ => return Err(format!("unknown option `{flag}`")),
         }
     }
-    parallel::run(&fennec, &dir, runs, markdown.as_deref())
+    section(&fennec, &dir, runs, markdown.as_deref())
 }
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|first| first == "parallel") {
-        return match parallel(args.into_iter().skip(1)) {
+    let section: Option<(&str, Section)> = match args.first().map(String::as_str) {
+        Some("parallel") => Some(("bench/parallel", parallel::run)),
+        Some("realworld") => Some(("bench/realworld", realworld::run)),
+        _ => None,
+    };
+    if let Some((dir, section)) = section {
+        return match report_section(args.into_iter().skip(1), dir, section) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
                 eprintln!("error: {message}");

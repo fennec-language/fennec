@@ -198,11 +198,13 @@ impl Heap {
     /// executable's string literals.
     pub(crate) fn adopt(&mut self, statics: &mut Vec<Box<[u64]>>) {
         self.statics += statics.len();
-        let counts = self.counts;
+        let (counts, made) = (self.counts, self.made.len());
         for block in statics.drain(..) {
             self.insert(block);
         }
         self.counts = counts;
+        // They stay this thread's for the whole run, so a range never hands them over.
+        self.made.truncate(made);
     }
 
     /// A zeroed block of `words` words, reusing a freed one when there is one.

@@ -387,6 +387,85 @@ fn a_lookup_that_would_mean_something_else_stays() {
     }
 }
 
+/// `self-compare`'s messages in a source.
+fn self_compares(source: &str) -> Vec<String> {
+    let mut sources = Sources::new();
+    let base = sources.add("game.fen", source);
+    let Ok(module) = parse_at(source, base) else { return vec!["it doesn't parse".to_owned()] };
+    assert!(fennec_check::check_typed(&module).is_ok(), "it has to check to say anything: {source}");
+    fennec_lint::self_compares(&module, &sources).iter().map(|lint| lint.message().to_owned()).collect()
+}
+
+#[test]
+fn comparing_a_value_with_itself_is_a_mistake() {
+    for (ty, op, always) in [
+        ("int", "==", "True"),
+        ("str", "!=", "False"),
+        ("bool", "==", "True"),
+        // `==` treats NaN as equal to NaN, so this doesn't find one.
+        ("float", "!=", "False"),
+    ] {
+        let source = format!("def f(amount: {ty}) -> bool:\n    amount {op} amount\n");
+        assert_eq!(self_compares(&source), [format!("`amount {op} amount` is always {always}")], "{source}");
+    }
+    let field = "struct Unit:\n    size: int\n\ndef f(unit: Unit) -> bool:\n    unit.size == unit.size\n";
+    assert_eq!(self_compares(field), ["`unit.size == unit.size` is always True"]);
+}
+
+#[test]
+fn comparing_what_may_differ_says_nothing() {
+    for source in [
+        "def f(one: int, other: int) -> bool:\n    one == other\n",
+        "struct Unit:\n    size: int\n    cost: int\n\ndef f(unit: Unit) -> bool:\n    unit.size == unit.cost\n",
+        // A call may give something else the second time.
+        "def next_one() -> int:\n    1\n\ndef f() -> bool:\n    next_one() == next_one()\n",
+        // A type of its own may mean anything by `==`.
+        "struct Odd:\n    size: int\n\n    def ==(self, other: Odd) -> bool:\n        False\n\ndef f(odd: Odd) -> bool:\n    odd == odd\n",
+        // An optional is something else, and so is any other comparison.
+        "def f(maybe: int?) -> bool:\n    maybe == maybe\n",
+        "def f(amount: int) -> bool:\n    amount <= amount\n",
+    ] {
+        assert_eq!(self_compares(source), Vec::<String>::new(), "{source}");
+    }
+}
+
+#[test]
+fn a_pub_item_says_what_it_is_for() {
+    let missing = |source: &str| all_rules(source).iter().filter(|rule| **rule == "missing-doc").count();
+    for source in [
+        "pub def spawn() -> int:\n    1\n",
+        "pub struct Unit:\n    size: int\n",
+        "pub enum Mood:\n    Calm\n",
+        "pub error Lost:\n    reason: str\n",
+        "pub interface Named:\n    def name(self) -> str\n",
+        "pub type Size = int\n",
+        "pub LIMIT = 8\n",
+        // Nothing but a `##` line just above it counts.
+        "# A plain comment.\npub def spawn() -> int:\n    1\n",
+        "## A comment on nothing.\n\npub def spawn() -> int:\n    1\n",
+    ] {
+        assert_eq!(missing(source), 1, "{source}");
+    }
+    let inside = "## A unit.\npub struct Unit:\n    pub size: int\n\n    pub def grown(self) -> int:\n        self.size + 1\n";
+    assert_eq!(missing(inside), 2, "its field and its method");
+}
+
+#[test]
+fn a_private_item_or_one_with_a_doc_says_nothing() {
+    for source in [
+        "def spawn() -> int:\n    1\n",
+        "struct Unit:\n    size: int\n",
+        "## Spawns one.\npub def spawn() -> int:\n    1\n",
+        "## Spawns one.\n## It's always the same one.\npub def spawn() -> int:\n    1\n",
+        "## Spawns one.\n@inline\npub def spawn() -> int:\n    1\n",
+        "## A unit.\npub struct Unit:\n    ## How big it is.\n    pub size: int\n\n    ## How big it would be.\n    pub def grown(self) -> int:\n        self.size + 1\n",
+        // `pub` inside text says nothing.
+        "def spawn() -> str:\n    \"pub def\"\n",
+    ] {
+        assert!(!all_rules(source).contains(&"missing-doc"), "{source}");
+    }
+}
+
 #[test]
 fn an_item_nothing_uses_goes_with_its_doc() {
     let source = "## Says hello.\ndef greet() -> str:\n    \"hi\"\n\n## A spare.\nstruct Spare:\n    size: int\n\n    def grow(self) -> int:\n        self.size + 1\n\ndef main(stdout: Stdout):\n    stdout.print(greet())\n";

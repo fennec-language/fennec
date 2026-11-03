@@ -78,6 +78,10 @@ jobs:
         env:
           OS: ${{ matrix.os }}
         run: ./target/release/fennec-bench parallel --runs 10 --markdown "suite-parallel-$OS.md"
+      - name: Measure real programs against Rust with crates
+        env:
+          OS: ${{ matrix.os }}
+        run: ./target/release/fennec-bench realworld --runs 10 --markdown "suite-realworld-$OS.md"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -85,6 +89,7 @@ jobs:
           path: |
             suite-*.json
             suite-parallel-*.md
+            suite-realworld-*.md
           if-no-files-found: ignore
 
   report:
@@ -176,10 +181,10 @@ jobs:
                 "Kernel time is what each program measured itself with a monotonic clock when run with --time, from the start of its work to its last line; "
                 "Java's is its second run, after one to warm its JIT up. Startup is each language's hello-world's best run.")
           TABLE
-      - name: Parallel against rayon, for each machine
+      - name: Parallel against rayon and real programs against Rust with crates, for each machine
         run: |
           shopt -s nullglob
-          for section in runs/suite-parallel-*.md; do
+          for section in runs/suite-parallel-*.md runs/suite-realworld-*.md; do
             cat "$section" >> "$GITHUB_STEP_SUMMARY"
             echo >> "$GITHUB_STEP_SUMMARY"
           done

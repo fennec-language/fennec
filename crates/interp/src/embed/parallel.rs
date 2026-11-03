@@ -41,6 +41,9 @@ const CHUNK_BYTES: usize = 16 * 1024;
 
 /// How many positions a range is split down to, for items of `words` words.
 fn chunk(words: usize) -> usize {
+    if pool::stressed() {
+        return 1;
+    }
     (CHUNK_BYTES / (8 * words.max(1))).max(1)
 }
 
@@ -268,6 +271,11 @@ mod pool {
 
     /// Without threads, there are no workers to set up.
     pub fn set_worker_setup(_setup: Box<dyn Fn() + Send + Sync>) {}
+
+    /// Without threads, there's no pool to test.
+    pub(super) fn stressed() -> bool {
+        false
+    }
 
     /// Without threads, native code only runs on the program's thread, whose limit it has.
     pub fn stack_limit() -> usize {

@@ -70,8 +70,9 @@ const THREAD_GLOBAL: &str = "@fennec_thread = external dso_local thread_local(in
 /// Where a block's shape word is, whose top 16 bits say which thread made it.
 const SHAPE: u32 = 8;
 const OWNER_SHIFT: u32 = 48;
-/// The owner count of a block that's never freed, the runtime's `heap::IMMORTAL`, or more.
-const IMMORTAL: u64 = 1 << 48;
+/// An owner count only a block that's never freed has: half the runtime's `heap::IMMORTAL`, as
+/// its own thread's retains and releases move its count either way from there.
+const IMMORTAL: u64 = 1 << 47;
 
 /// The start of a function about a block's owners: `%owner` is the thread that made `%block`, and
 /// `%mine` says whether that's this one.

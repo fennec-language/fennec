@@ -19,7 +19,7 @@ description: Fennec's plan for speed, one LLVM backend with a function-level cac
 - **LLVM for everything,** with per-function `-O3`. There's no separate development engine, no tiering and no hot reload.
 - **`fennec run` makes real binaries** in a store, so what you try is what you ship.
 - **Whole-program optimization only in `--release`.** It's the one step that sees everything at once, so it's the one step you opt into.
-- **Cranelift goes away** when LLVM becomes the default, once about 90% of examples build natively. A program either builds natively or is refused.
+- **LLVM becomes the default** once about 90% of examples build natively. A program either builds natively or is refused. Removing Cranelift also takes a native `fennec test` harness and Windows linking.
 
 ## The plan: one store
 

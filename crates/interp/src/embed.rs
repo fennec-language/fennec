@@ -150,11 +150,46 @@ struct Output(Rc<RefCell<Vec<u8>>>, bool);
 /// How much output is kept before a live run writes it.
 const LIVE_OUTPUT: usize = 1 << 13;
 
+impl Output {
+    /// Writes the first `length` bytes kept, in one go, so nothing another thread writes lands
+    /// among them.
+    fn write_out(&self, length: usize) -> std::io::Result<()> {
+        let mut kept = self.0.borrow_mut();
+        write_whole(kept.get(..length).unwrap_or_default())?;
+        kept.drain(..length);
+        Ok(())
+    }
+}
+
+/// Where a live run's output goes: the process's standard output, one call at a time.
+#[cfg(not(test))]
+fn write_whole(bytes: &[u8]) -> std::io::Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(bytes)?;
+    stdout.flush()
+}
+
+/// What live runs have written, in tests, in the order they wrote it.
+#[cfg(test)]
+static WRITTEN: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+#[expect(clippy::unnecessary_wraps, reason = "it stands for the real one, which can fail")]
+fn write_whole(bytes: &[u8]) -> std::io::Result<()> {
+    WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend_from_slice(bytes);
+    Ok(())
+}
+
 impl Write for Output {
+    /// Keeps what's printed, and once a live run has kept enough, writes it up to the last whole
+    /// line, as one print comes here in pieces and threads share the output.
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0.borrow_mut().extend_from_slice(bytes);
         if self.1 && self.0.borrow().len() >= LIVE_OUTPUT {
-            self.flush()?;
+            let lines = self.0.borrow().iter().rposition(|byte| *byte == b'\n');
+            if let Some(last) = lines {
+                self.write_out(last + 1)?;
+            }
         }
         Ok(bytes.len())
     }
@@ -164,11 +199,27 @@ impl Write for Output {
         if !self.1 {
             return Ok(());
         }
-        let mut stdout = std::io::stdout();
-        stdout.write_all(&self.0.borrow())?;
-        self.0.borrow_mut().clear();
-        stdout.flush()
+        let length = self.0.borrow().len();
+        self.write_out(length)
     }
+}
+
+thread_local! {
+    /// This thread's runtime's output, for writing it before the thread waits, whatever else of
+    /// the runtime is borrowed then.
+    static OUTPUT: RefCell<Option<Output>> = const { RefCell::new(None) };
+}
+
+/// Writes what this thread has printed and kept. Output comes out as it's printed, and is only
+/// kept to save writing it line by line, so this is called before anything that can wait, and
+/// before anything else on another thread is to come after it. A failure to write stays for the
+/// next print to report, as there's nothing here to pass it to.
+pub(crate) fn write_kept_output() {
+    OUTPUT.with_borrow_mut(|output| {
+        if let Some(output) = output {
+            let _ = output.flush();
+        }
+    });
 }
 
 struct State {
@@ -236,6 +287,7 @@ fn capability(kind: i64) -> Capability {
 /// run's.
 pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Result<(), Diagnostic> {
     let output = Output(Rc::default(), inputs.live);
+    OUTPUT.set(Some(output.clone()));
     let mut interp = Interp::with_output(Box::new(output.clone()))?;
     interp.give(inputs);
     interp.load(module)?;

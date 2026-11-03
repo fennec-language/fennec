@@ -106,10 +106,12 @@ pub(super) fn range_starts(lent: Option<Arc<Table>>) {
 }
 
 /// Ends a range on a worker: it lets go of the blocks lent for the call, and of the text it
-/// kept of them, as the same addresses may hold other strings by its next range. Gives back how
-/// it changed their owners, and what it printed, which this worker has nowhere to write.
+/// kept of them, as the same addresses may hold other strings by its next range. Writes what it
+/// printed, so it all comes before what the calling thread prints next. Gives back how it changed
+/// their owners, and what it printed if this worker's runtime doesn't write it.
 #[cfg(any(test, feature = "threads"))]
 pub(super) fn range_ends() -> (Vec<(u64, i64)>, Vec<u8>) {
+    super::write_kept_output();
     super::with(|state| {
         if state.heap.lent.take().is_some() {
             state.heap.texts.get_mut().clear();

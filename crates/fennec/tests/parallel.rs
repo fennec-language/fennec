@@ -327,17 +327,20 @@ fn bodies_on_workers_use_the_calling_thread_s_blocks_as_the_interpreter_does() -
     Ok(())
 }
 
-/// A body that prints, on enough items to run on workers.
+/// A body that prints twice, each print in pieces, on enough items to run on workers, with text
+/// long enough that workers write many times during the loop.
 const PRINTS: &str = "\
 def main(stdout: Stdout):
-    words = [f\"line {n} of a text long enough to be held in a block of its own\" for n in range(10_000)]
+    words = [f\"text long enough to be held in a block of its own, {n}\" for n in range(50_000)]
+    stdout.print(\"before\")
     for word in parallel(words):
-        stdout.print(word)
+        stdout.print(\"first\", word, word.len())
+        stdout.print(\"second\", word, word.len())
     stdout.print(\"after\")
 ";
 
 #[test]
-fn what_a_body_prints_on_workers_all_comes_out_in_whole_lines() -> std::io::Result<()> {
+fn what_bodies_print_on_workers_all_comes_out_whole_and_in_order_within_each_body() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
@@ -346,16 +349,31 @@ fn what_a_body_prints_on_workers_all_comes_out_in_whole_lines() -> std::io::Resu
     let prints = build_on_threads(&dir, PRINTS, "prints")?;
     let source = dir.join("prints.fen").to_string_lossy().into_owned();
     let interpreted = fennec(&["run", "--interp", &source], &dir)?;
-    let ran = Command::new(&prints).env("FENNEC_THREADS", "4").output()?;
+    let ran = Command::new(&prints).env("FENNEC_THREADS", "8").output()?;
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
-    // `for x in parallel(xs)` runs in any order, so its lines come in any order, each whole.
-    let sorted = |text: &[u8]| {
-        let mut lines: Vec<String> = String::from_utf8_lossy(text).lines().map(str::to_owned).collect();
+    // Bodies run in any order and print in real call order, so this compares lines, sorted: none
+    // lost and none mixed with another.
+    let text = String::from_utf8_lossy(&ran.stdout);
+    let sorted = |text: &str| {
+        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
         lines.sort();
         lines
     };
-    assert_eq!(sorted(&ran.stdout), sorted(&interpreted.stdout));
-    assert!(String::from_utf8_lossy(&ran.stdout).ends_with("after\n"));
+    assert_eq!(sorted(&text), sorted(&String::from_utf8_lossy(&interpreted.stdout)));
+    // What's printed before and after the loop comes before and after all of the loop's output.
+    assert!(text.starts_with("before\n"), "{}", text.lines().next().unwrap_or_default());
+    assert!(text.ends_with("after\n"), "{}", text.lines().next_back().unwrap_or_default());
+    // Each body's first print comes before its second.
+    let mut seen = std::collections::HashSet::new();
+    for line in text.lines() {
+        match line.split_once(' ') {
+            Some(("first", rest)) => {
+                seen.insert(rest);
+            }
+            Some(("second", rest)) => assert!(seen.contains(rest), "second before first: {line}"),
+            _ => {}
+        }
+    }
     Ok(())
 }

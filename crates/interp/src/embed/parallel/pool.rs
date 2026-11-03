@@ -99,6 +99,8 @@ pub(super) fn install<R: Send>(call: &super::Run, words: usize, run: impl FnOnce
         NESTED.set(outer);
         return result;
     }
+    // What this thread printed comes before anything the ranges print.
+    super::super::write_kept_output();
     *call.lent.write().unwrap_or_else(PoisonError::into_inner) = Some(super::super::threads::lend());
     let result = pool.install(run);
     if let Some(lent) = call.lent.write().unwrap_or_else(PoisonError::into_inner).take() {

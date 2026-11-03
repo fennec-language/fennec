@@ -300,19 +300,35 @@ impl Heap {
 
     pub(crate) fn block(&self, address: u64) -> Option<&[u64]> {
         let at = usize::try_from(address).ok()?;
-        self.blocks.get(at).or_else(|| self.lent.as_ref()?.get(at))
+        let own = self.blocks.get(at);
+        if super::threads::ON && own.is_none() {
+            return self.lent_block(at);
+        }
+        own
+    }
+
+    /// A block lent for the `parallel` call this thread is running a range of, if it's one.
+    #[cold]
+    #[inline(never)]
+    fn lent_block(&self, at: usize) -> Option<&[u64]> {
+        self.lent.as_ref()?.get(at)
     }
 
     /// Whether `block`, the block at `address`, has one owner and is this thread's to change: a
     /// lent block never is, however many owners it has.
     pub(super) fn is_alone(&self, address: u64, block: &[u64]) -> bool {
         block.first() == Some(&1)
-            && (self.lent.is_none() || usize::try_from(address).is_ok_and(|at| self.blocks.get(at).is_some()))
+            && (!super::threads::ON
+                || self.lent.is_none()
+                || usize::try_from(address).is_ok_and(|at| self.blocks.get(at).is_some()))
     }
 
     /// Notes that this thread's range changed a lent block's owners by `by`, when it's a lent
     /// block, for the thread that lent it to apply when the call ends.
     pub(super) fn change_lent_owners(&mut self, address: u64, by: i64) -> bool {
+        if !super::threads::ON {
+            return false;
+        }
         let lent = self
             .lent
             .as_ref()

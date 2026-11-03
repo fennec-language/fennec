@@ -46,7 +46,8 @@ pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
     let program = std::sync::Arc::new(bytes.clone());
     super::parallel::set_worker_setup(Box::new(move || {
         if let Some(Image { module, tables, .. }) = Image::from_bytes(&program) {
-            let _ = super::start(&module, tables, crate::Inputs::default());
+            // What it prints goes straight out: `parallel`'s output follows real call order.
+            let _ = super::start(&module, tables, crate::Inputs { live: true, ..crate::Inputs::default() });
         }
     }));
     let ran = std::thread::scope(|scope| {

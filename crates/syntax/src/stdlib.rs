@@ -103,6 +103,90 @@ pub fn prelude_to_run() -> Result<&'static [crate::Module], crate::Diagnostic> {
     }
 }
 
+/// The standard library's core as the engines run it: what's there without an import, the
+/// errors and the built-in types' methods. Parsed once for the whole process.
+pub fn core_to_run() -> Result<&'static [crate::Module], crate::Diagnostic> {
+    static CORE_RUN: std::sync::OnceLock<Result<Vec<crate::Module>, crate::Diagnostic>> =
+        std::sync::OnceLock::new();
+    let made = CORE_RUN.get_or_init(|| {
+        CORE.into_iter().map(|(name, source)| parse_module(name, source).map(to_run)).collect()
+    });
+    match made {
+        Ok(modules) => Ok(modules),
+        Err(diagnostic) => Err(diagnostic.clone()),
+    }
+}
+
+/// One module of the standard library as the engines run it, like [`prelude_to_run`]'s, parsed
+/// the first time it's asked for, so a program pays only for the modules it uses. `None` for a
+/// module with no code written in Fennec, or no module of that name.
+pub fn module_to_run(name: &str) -> Result<Option<&'static crate::Module>, crate::Diagnostic> {
+    static RUN: std::sync::OnceLock<Vec<std::sync::OnceLock<Result<crate::Module, crate::Diagnostic>>>> =
+        std::sync::OnceLock::new();
+    let Some(at) = MODULES.iter().position(|module| module.name == name && !module.source.is_empty()) else {
+        return Ok(None);
+    };
+    let all = RUN.get_or_init(|| MODULES.iter().map(|_| std::sync::OnceLock::new()).collect());
+    let Some(slot) = all.get(at) else { return Ok(None) };
+    match slot.get_or_init(|| parse_alone(at)) {
+        Ok(module) => Ok(Some(module)),
+        Err(diagnostic) => Err(diagnostic.clone()),
+    }
+}
+
+/// The module at `at` in `MODULES`, parsed and its functions qualified as `parse_prelude` does
+/// for all of them: which needs only its own functions' names and those of the modules it
+/// imports, so only those are parsed with it.
+fn parse_alone(at: usize) -> Result<crate::Module, crate::Diagnostic> {
+    let Some(this) = MODULES.get(at) else {
+        return Err(crate::Diagnostic::new("no such module", crate::Span::default()));
+    };
+    let module = parse_module(this.name, this.source)?;
+    let imports = imported_modules(&module);
+    let mut set = vec![(this.name, module)];
+    for name in imports {
+        if name != this.name
+            && let Some(other) = MODULES.iter().find(|other| other.name == name && !other.source.is_empty())
+        {
+            set.push((other.name, parse_module(other.name, other.source)?));
+        }
+    }
+    qualify_functions(&mut set);
+    let (_, module) = set.swap_remove(0);
+    Ok(to_run(module))
+}
+
+/// The std modules a module imports, by name.
+fn imported_modules(module: &crate::Module) -> Vec<&'static str> {
+    let imports = module.items.iter().filter_map(|item| match item {
+        Item::Import(import) => crate::std_import(import).ok(),
+        _ => None,
+    });
+    imports
+        .flatten()
+        .map(|imported| match imported {
+            Imported::Module { module, .. } | Imported::Name { module, .. } => module,
+        })
+        .collect()
+}
+
+/// A parsed module of the standard library as the engines run it: its typed empty collections
+/// made plain ones.
+fn to_run(mut module: crate::Module) -> crate::Module {
+    crate::visit::exprs_mut(&mut module, &mut |expr| {
+        if is_typed_empty(expr) {
+            crate::visit::empty_collection(expr);
+        }
+    });
+    module
+}
+
+/// The std module that provides a type, constant or function by its name, like `time` for
+/// `Duration`: for engines that load modules as they're used.
+pub fn module_providing(name: &str) -> Option<&'static str> {
+    MODULES.iter().find(|module| module.names.contains(&name)).map(|module| module.name)
+}
+
 /// Whether an expression makes an empty collection with its types written: `list[int]()`.
 fn is_typed_empty(expr: &crate::Expr) -> bool {
     let ExprKind::Call { callee, args } = &expr.kind else { return false };
@@ -220,6 +304,21 @@ mod tests {
             }
         });
         assert_eq!(typed_empties(std::slice::from_ref(&module)), 0);
+    }
+
+    #[test]
+    fn a_module_parsed_alone_is_what_parsing_the_whole_library_makes_of_it() {
+        let whole = super::prelude_to_run().unwrap();
+        let core = super::core_to_run().unwrap();
+        assert_eq!(whole.get(..core.len()), Some(core));
+        let alone: Vec<&crate::Module> =
+            super::MODULES.iter().filter_map(|module| super::module_to_run(module.name).unwrap()).collect();
+        assert_eq!(alone.len() + core.len(), whole.len());
+        for (alone, whole) in alone.iter().zip(&whole[core.len()..]) {
+            assert_eq!(*alone, whole);
+        }
+        assert_eq!(super::module_to_run("no such module").unwrap(), None);
+        assert_eq!(super::module_providing("Duration"), Some("time"));
     }
 
     #[test]

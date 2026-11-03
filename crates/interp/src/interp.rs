@@ -136,6 +136,9 @@ pub struct Interp<'out> {
     pub(crate) reading: crate::formats::Reading,
     /// The methods the standard library gives built-in types, like `str`'s `def *`, by type.
     pub(crate) built_in_methods: HashMap<String, HashMap<String, Rc<Callable>>>,
+    /// The standard library's modules loaded so far. Only the core is loaded to start with; a
+    /// module is loaded when something imports it or the runtime makes one of its types.
+    std_loaded: std::collections::HashSet<&'static str>,
 }
 
 /// Runs `module`'s `main`, writing what it prints to `out`.
@@ -179,8 +182,9 @@ impl<'out> Interp<'out> {
             given: crate::inputs::Inputs::default().into(),
             reading: crate::formats::Reading::default(),
             built_in_methods: HashMap::new(),
+            std_loaded: std::collections::HashSet::new(),
         };
-        for module in fennec_syntax::prelude_to_run()? {
+        for module in fennec_syntax::core_to_run()? {
             interp.load_with(module, &InPlace)?;
         }
         interp.prelude_imports = std::mem::take(&mut interp.imports);
@@ -254,6 +258,11 @@ impl<'out> Interp<'out> {
                     let (modules, functions) = prelude::check_import(import)?;
                     self.modules.extend(modules);
                     self.imports.extend(functions);
+                    for imported in fennec_syntax::std_import(import)? {
+                        let (fennec_syntax::Imported::Module { module, .. }
+                        | fennec_syntax::Imported::Name { module, .. }) = imported;
+                        self.load_std(module)?;
+                    }
                 }
                 Item::Test(test) => {
                     if !test.bench {
@@ -275,6 +284,33 @@ impl<'out> Interp<'out> {
             }
         }
         Ok(statements)
+    }
+
+    /// Loads a module of the standard library, once, as the prelude's own code: what it imports
+    /// goes with the prelude's imports, not the program's.
+    fn load_std(&mut self, name: &'static str) -> Result<(), Diagnostic> {
+        if !self.std_loaded.insert(name) {
+            return Ok(());
+        }
+        let Some(module) = fennec_syntax::module_to_run(name)? else { return Ok(()) };
+        let imports = std::mem::replace(&mut self.imports, std::mem::take(&mut self.prelude_imports));
+        let modules = std::mem::replace(&mut self.modules, std::mem::take(&mut self.prelude_modules));
+        let loaded = self.load_with(module, &InPlace);
+        self.prelude_imports = std::mem::replace(&mut self.imports, imports);
+        self.prelude_modules = std::mem::replace(&mut self.modules, modules);
+        loaded.map(drop)
+    }
+
+    /// Loads the standard library module that provides a type the runtime is about to make,
+    /// like `Instant` from `clock.now()`, when nothing has imported it yet.
+    pub(crate) fn load_std_providing(&mut self, name: &str) -> Result<(), Diagnostic> {
+        if self.types.contains_key(name) {
+            return Ok(());
+        }
+        match fennec_syntax::module_providing(name) {
+            Some(module) => self.load_std(module),
+            None => Ok(()),
+        }
     }
 
     /// Adds an extension's methods to its type, as if they were written in its declaration.

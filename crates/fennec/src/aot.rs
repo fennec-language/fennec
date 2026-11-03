@@ -195,8 +195,7 @@ fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled
             .iter()
             .map(|skipped| format!("`{}` isn't lowered yet: {}", skipped.function, skipped.why))
             .collect();
-        return Err(skipped.join("
-"));
+        return Err(skipped.join("\n"));
     }
     let runtime = Runtime::for_program(&lowered);
     let cpu = if BASELINE.load(std::sync::atomic::Ordering::Relaxed) {

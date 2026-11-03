@@ -28,7 +28,7 @@ description: What Fennec does today, what's being built next, and the design que
 ## Next: speed and builds
 
 - One backend: LLVM, with per-function `-O3` and a function-level cache. Whole-program work happens only in `--release`.
-- LLVM becomes the default once about 90% of examples build natively, and that retires Cranelift. A program either builds natively or is refused.
+- LLVM becomes the default once about 90% of examples build natively, and that retires Cranelift. A program either builds natively or is refused, and refused examples go on a tracked list that must reach zero.
 - One content store per machine, with results named by hash and no `target` folders. `fennec run` makes real binaries in it.
 - A shared cache that only trusted builds can write to, and a clean rebuild in CI to check it against.
 - A tiny launcher that fetches the compiler a kit asks for. Pinned compilers never change by themselves.

@@ -117,7 +117,7 @@ with launch(physics_loop) as physics:
     code: `$ fennec run
 # per-function -O3 through LLVM,
 # each function cached by content`,
-    body: 'What you run is what ships. Whole-program work comes only with `--release`. Today `fennec run` compiles with Cranelift, and the LLVM backend handles part of the language.',
+    body: 'What you run is what ships. Whole-program work comes only with `--release`. Today `fennec run` uses this build where LLVM can, and says so when the JIT stands in, since the LLVM backend handles part of the language.',
   },
 ];
 ---

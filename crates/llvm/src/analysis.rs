@@ -63,6 +63,9 @@ pub(crate) struct Analysis {
     pub(crate) slice_keys: HashMap<usize, SliceKey>,
     /// The slice and its copy, which are never made.
     pub(crate) unmade: HashSet<usize>,
+    /// A string's character compared at once with a one-byte ASCII literal and used for nothing
+    /// else: the string and the index. The comparison reads the byte where it is.
+    pub(crate) char_compares: HashMap<usize, (Operand, Operand)>,
     /// Locals standing for a list that a `for` loop goes through while changing only the item
     /// it's on: a copy of the list would say the same, and cost a whole list.
     aliases: HashMap<usize, LocalId>,
@@ -401,6 +404,7 @@ fn analyze(
         field_of: HashMap::new(),
         slice_keys: HashMap::new(),
         unmade: HashSet::new(),
+        char_compares: HashMap::new(),
         aliases: HashMap::new(),
         reservations: HashMap::new(),
         zero_filled: HashSet::new(),
@@ -471,12 +475,47 @@ fn analyze(
     known.below.retain(|local, _| facts.range_in(LocalId(*local), 0).is_some_and(|range| range.0 >= 0));
     find_reservations(function, &stepped, &mut known);
     find_slice_keys(function, &mut known);
+    find_char_compares(function, &mut known);
     find_unmade_enumerates(function, &mut known);
     known
 }
 
 /// `d.get(text[a:b])` and `d[text[a:b]] = v`, with the slice used for nothing else and what it
 /// was made from unchanged after: the runtime finds and adds those bytes where they are.
+/// Finds `text[at] == "c"` and `!=`: a string's character, read once, by the comparison right
+/// after it, with a literal of one ASCII byte.
+fn find_char_compares(function: &Function, known: &mut Analysis) {
+    for block in &function.blocks {
+        for pair in block.insts.windows(2) {
+            let [read, compare] = pair else { continue };
+            let InstKind::GetIndex { dest, object: object @ Operand::Local(text), index } = &read.kind else {
+                continue;
+            };
+            let InstKind::Binary { op: BinOp::Eq | BinOp::NotEq, lhs, rhs, .. } = &compare.kind else {
+                continue;
+            };
+            let literal = match (lhs, rhs) {
+                (Operand::Local(local), Operand::Str(literal))
+                | (Operand::Str(literal), Operand::Local(local))
+                    if local == dest =>
+                {
+                    literal
+                }
+                _ => continue,
+            };
+            if function.locals.get(text.0).map(|local| &local.ty) == Some(&Type::Str)
+                && literal.len() == 1
+                && literal.is_ascii()
+                && known.reads.get(dest.0) == Some(&1)
+                && known.writes.get(dest.0) == Some(&1)
+            {
+                known.char_compares.insert(dest.0, (object.clone(), index.clone()));
+                known.unmade.insert(dest.0);
+            }
+        }
+    }
+}
+
 fn find_slice_keys(function: &Function, known: &mut Analysis) {
     let insts: Vec<&InstKind> =
         function.blocks.iter().flat_map(|block| &block.insts).map(|inst| &inst.kind).collect();

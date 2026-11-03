@@ -1015,6 +1015,17 @@ impl Emit<'_, '_, '_> {
             let found = self.dict_contains(op, lhs, rhs)?;
             return self.assign(dest, &found);
         }
+        let char_read = [lhs, rhs].into_iter().find_map(|side| match side {
+            Operand::Local(local) => {
+                self.known.char_compares.get(&local.0).map(|read| (*local, read.clone()))
+            }
+            _ => None,
+        });
+        if let (Some((read, (text, at))), Some(Operand::Str(literal))) =
+            (char_read, [lhs, rhs].into_iter().find(|side| matches!(side, Operand::Str(_))))
+        {
+            return self.char_compare(dest, op, (read, &text, &at), literal, span);
+        }
         let (a, kind) = self.operand(lhs)?;
         let (b, _) = self.operand(rhs)?;
         let value = match kind {
@@ -1518,7 +1529,7 @@ impl Emit<'_, '_, '_> {
     fn inst(&mut self, inst: &InstKind, span: Span, block: usize) -> Result<(), String> {
         match inst {
             // Used only as a key the runtime finds where it is.
-            InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
+            InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. } | InstKind::GetIndex { dest, .. }
                 if self.known.unmade.contains(&dest.0) =>
             {
                 Ok(())
@@ -1666,7 +1677,8 @@ impl Emit<'_, '_, '_> {
     /// returns, so it doesn't still count as an owner when the next line changes what it read.
     fn let_go_after(&mut self, inst: &InstKind) {
         // A slice never made leaves what it's of to the lookups that read it in its place.
-        if let InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. } = inst
+        if let InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. } | InstKind::GetIndex { dest, .. } =
+            inst
             && self.known.unmade.contains(&dest.0)
         {
             return;

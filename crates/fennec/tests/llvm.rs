@@ -1388,3 +1388,24 @@ fn strings_let_go_of_match_the_jit() -> std::io::Result<()> {
 "#,
     )
 }
+
+/// A result prints as the interpreter writes it, `Ok(...)` or `Err(...)`, alone or in a list.
+#[test]
+fn results_print_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "results_print",
+        r#"def check(n: int) -> Result[int, str]:
+    if n > 0:
+        return Ok(n)
+    Err("not positive")
+
+def main(stdout: Stdout):
+    stdout.print(check(3), check(-1))
+    results = [check(1), check(0)]
+    stdout.print(results)
+"#,
+    )
+}

@@ -229,7 +229,7 @@ fn byte_of_char(
 /// found. So reading a string in order takes a step for each character.
 fn place_of_char(state: &mut State, address: i64, wanted: usize) -> Option<usize> {
     let at = usize::try_from(address).ok()?;
-    let cursor = state.heap.cursor;
+    let cursor = state.heap.cursor();
     let block = state.heap.block(u64::try_from(address).ok()?)?;
     let (length, chars) = lengths(block);
     let chars = usize::try_from(chars).ok()?;
@@ -259,7 +259,7 @@ fn place_of_char(state: &mut State, address: i64, wanted: usize) -> Option<usize
         }
         char_at -= 1;
     }
-    state.heap.cursor = super::heap::Cursor { address: at, chars: wanted, bytes: place };
+    state.heap.set_cursor(super::heap::Cursor { address: at, chars: wanted, bytes: place });
     Some(place)
 }
 

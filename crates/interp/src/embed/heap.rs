@@ -70,7 +70,7 @@ pub(crate) struct Heap {
     /// Strings' text as the interpreter holds it, made once per block.
     pub(super) texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
     /// Where a string that isn't ASCII was last read.
-    pub(super) cursor: Cursor,
+    cursor: Cursor,
     /// Generators let go partway, waiting for what closes what they hold.
     abandoning: Vec<u64>,
     /// Blocks waiting to be freed and a freed block's children, kept to save making them anew.
@@ -311,12 +311,22 @@ impl Heap {
         }
     }
 
+    /// Where a string that isn't ASCII was last read.
+    pub(super) fn cursor(&self) -> Cursor {
+        self.cursor
+    }
+
     /// Forgets where a string was last read, when that block goes: its address can come back
     /// as another string. Only what may be a string comes here, so other blocks don't pay.
     pub(super) fn forget_place(&mut self, address: u64) {
         if usize::try_from(address).is_ok_and(|at| self.cursor.address == at) {
-            self.cursor = Cursor::default();
+            self.set_cursor(Cursor::default());
         }
+    }
+
+    pub(super) fn set_cursor(&mut self, cursor: Cursor) {
+        self.cursor = cursor;
+        self.blocks.note_place(cursor.address);
     }
 
     pub(crate) fn block(&self, address: u64) -> Option<&[u64]> {

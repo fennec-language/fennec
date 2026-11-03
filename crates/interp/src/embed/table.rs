@@ -28,6 +28,9 @@ pub(super) struct Table {
     /// Blocks too short to have a place of their own.
     short: HashMap<usize, Box<[u64]>, BuildHasherDefault<AddressHasher>>,
     len: usize,
+    /// The block the heap's kept a place in. A block can't leave while the heap still has one,
+    /// as its address could come back as another string, and a wrong place gives no failure.
+    place_in: usize,
 }
 
 /// An address's region, page in it, and place in the page. A 32-bit address space is one
@@ -127,7 +130,18 @@ impl Table {
         }
     }
 
+    /// Says which block the heap's keeping a place in, or 0 for none.
+    pub(super) fn note_place(&mut self, address: usize) {
+        self.place_in = address;
+    }
+
     pub(super) fn remove(&mut self, address: usize) -> Option<Box<[u64]>> {
+        debug_assert_ne!(address, self.place_in, "a string left with its place still kept");
+        self.remove_any(address)
+    }
+
+    /// `remove` for what can't yet tell whether this is a string, and so forgets its place after.
+    pub(super) fn remove_any(&mut self, address: usize) -> Option<Box<[u64]>> {
         let removed = match slot_mut(&mut self.regions, address) {
             Some(slot) => slot.take(),
             None => self.short.remove(&address),
@@ -142,6 +156,29 @@ impl Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "a string left with its place still kept")]
+    #[cfg(debug_assertions)]
+    fn a_block_cant_leave_while_a_place_is_kept_in_it() {
+        let mut table = Table::default();
+        let block: Box<[u64]> = vec![1, 2, 3, 4].into_boxed_slice();
+        let at = block.as_ptr().addr();
+        table.insert(block);
+        table.note_place(at);
+        table.remove(at);
+    }
+
+    #[test]
+    fn a_block_can_leave_once_its_place_is_forgotten() {
+        let mut table = Table::default();
+        let block: Box<[u64]> = vec![1, 2, 3, 4].into_boxed_slice();
+        let at = block.as_ptr().addr();
+        table.insert(block);
+        table.note_place(at);
+        table.note_place(0);
+        assert!(table.remove(at).is_some());
+    }
 
     #[test]
     fn finds_each_block_only_by_its_own_address() {

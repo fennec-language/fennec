@@ -178,7 +178,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `part in text` for two headers, which makes no block for either.
-    fn headers_contain(&mut self, op: BinOp, (part, text): (&str, &str)) -> String {
+    pub(crate) fn headers_contain(&mut self, part: &str, text: &str) -> String {
         self.declare("declare i8 @fennec_text_contains(i64, i64, i64, i64, i64, i64) nounwind");
         let [t0, t1, t2] = [0, 1, 2].map(|at| self.header_word(text, at));
         let [p0, p1, p2] = [0, 1, 2].map(|at| self.header_word(part, at));
@@ -187,12 +187,7 @@ impl Emit<'_, '_, '_> {
             "{found} = call i8 @fennec_text_contains(i64 {t0}, i64 {t1}, i64 {t2}, i64 {p0}, i64 {p1}, i64 {p2})"
         ));
         self.line(&format!("{bit} = trunc i8 {found} to i1"));
-        if op == BinOp::In {
-            return bit;
-        }
-        let flipped = self.temp();
-        self.line(&format!("{flipped} = xor i1 {bit}, true"));
-        flipped
+        bit
     }
 
     /// Runs `body` with strings as blocks: each header given as its block, or a block made for
@@ -289,7 +284,6 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{result} = icmp {cc} i64 {ordering}, 0"));
                 Ok(result)
             }
-            BinOp::In | BinOp::NotIn => Ok(self.headers_contain(op, (a, b))),
             _ => self.on_blocks([a, b], |emit, [x, y]| emit.string_binary(op, (&x, &y))),
         }
     }

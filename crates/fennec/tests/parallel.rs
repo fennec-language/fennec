@@ -421,6 +421,120 @@ fn what_was_printed_before_a_failure_comes_out() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Each character read from a string has a block for the whole run, made by the first thread to
+/// read it. A worker's first read of one, and every later read in that call, has to find it.
+const FIRST_READS: &str = "\
+def count(text: str, wanted: str, xs: list[int]) -> int:
+    sum(1 if text[x] == wanted else 0 for x in parallel(xs))
+
+def main(stdout: Stdout):
+    xs = [n for n in range(6_000)]
+    accented = \"é\" * 6_000
+    wide = \"日\" * 6_000
+    stdout.print(count(accented, \"é\", xs), count(accented, \"é\", xs))
+    stdout.print(count(wide, \"日\", xs), count(wide, \"日\", xs))
+";
+
+#[test]
+fn a_character_first_read_on_a_worker_is_found_by_every_range() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-first-reads-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let reads = build_on_threads(&dir, FIRST_READS, "reads")?;
+    let ran = Command::new(&reads).env("FENNEC_THREADS", "4").output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "6000 6000\n6000 6000\n");
+    Ok(())
+}
+
+/// A body on workers over text that isn't ASCII, in the ways a program reads text.
+const NON_ASCII: &str = "\
+struct City:
+    name: str
+    size: int
+
+def first(text: str) -> str:
+    text[0]
+
+def main(stdout: Stdout):
+    names = [\"Zürich\", \"São Paulo\", \"東京\", \"Kraków\", \"Århus\", \"plain\"]
+    cities = [City(names[n % 6] + f\" {n}\", n) for n in range(600)]
+    firsts = [first(city.name) for city in parallel(cities)]
+    stdout.print(firsts[0], firsts[1], firsts[2], firsts[3], firsts[4], firsts[5])
+    stdout.print(sum(city.name.len() for city in parallel(cities)))
+    stdout.print(sum(1 if \"ü\" in city.name else 0 for city in parallel(cities)))
+    upper = [city.name.upper() + \"!\" for city in parallel(cities)]
+    stdout.print(upper[0], upper[1], upper[2], upper[599])
+    pieces = [city.name[1:3] for city in parallel(cities)]
+    stdout.print(pieces[0], pieces[1], pieces[2], pieces[3])
+    counts = {name: 0 for name in names}
+    stdout.print(sum(1 if names[city.size % 6] in counts else 0 for city in parallel(cities)))
+    mut changing = [City(city.name, city.size) for city in cities]
+    for mut city in parallel(changing):
+        city.name = city.name + \"é\"
+    stdout.print(changing[0].name, changing[2].name, changing[599].name)
+    for city in parallel(cities):
+        stdout.print(city.name)
+";
+
+/// What a program printed, its lines sorted: bodies run and print in any order.
+fn sorted_lines(text: &[u8]) -> Vec<String> {
+    let mut lines: Vec<String> = String::from_utf8_lossy(text).lines().map(str::to_owned).collect();
+    lines.sort();
+    lines
+}
+
+/// `source`, built with the runtime that has threads, against the interpreter on every thread
+/// count, each item on a worker in a range of its own.
+fn matches_the_interpreter_on_workers(dir: &Path, name: &str, source: &str) -> std::io::Result<()> {
+    let built = build_on_threads(dir, source, name)?;
+    let path = dir.join(format!("{name}.fen")).to_string_lossy().into_owned();
+    let interpreted = fennec(&["run", "--interp", &path], dir)?;
+    for threads in ["1", "2", "4", "8"] {
+        let ran = Command::new(&built)
+            .env("FENNEC_THREADS", threads)
+            .env("FENNEC_PARALLEL_STRESS", "1")
+            .output()?;
+        assert_eq!(ran.status.code(), interpreted.status.code(), "{name} on {threads} threads");
+        assert_eq!(
+            sorted_lines(&ran.stdout),
+            sorted_lines(&interpreted.stdout),
+            "{name} on {threads} threads"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-stress-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    for (name, source) in [("non_ascii", NON_ASCII), ("lent", LENT_BLOCKS), ("prints", PRINTS)] {
+        matches_the_interpreter_on_workers(&dir, name, source)?;
+    }
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let mut covered = Vec::new();
+    for entry in std::fs::read_dir(examples)? {
+        let path = entry?.path();
+        let source = std::fs::read_to_string(&path).unwrap_or_default();
+        let name = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+        // A server's example needs a network, and is covered by what it calls.
+        if source.contains("parallel(") && !source.contains("Net") {
+            matches_the_interpreter_on_workers(&dir, &name, &source)?;
+            covered.push(name);
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    assert!(covered.len() >= 3, "only {covered:?} use `parallel`");
+    Ok(())
+}
+
 /// Strings of one size with their characters in different places, let go of between calls, so a
 /// later one can have the address of an earlier one. A worker reading the caller's string keeps
 /// where it got to, and has to forget that when the range ends.

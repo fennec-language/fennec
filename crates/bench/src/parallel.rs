@@ -101,9 +101,10 @@ fn shown(side: &Side) -> String {
 /// each of `threaded` is Fennec's and rayon's at a number of threads.
 fn section(plain: &[Side; 2], threaded: &[[Side; 2]]) -> String {
     let [ours_plain, rust_plain] = plain;
-    let cores = std::thread::available_parallelism().map_or(0, std::num::NonZero::get);
+    let (cpu, cores) = (crate::machine::cpu(), crate::machine::cores());
     let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
-    let mut text = format!("## Parallel: `{KERNEL}` against rayon, on {os} {arch} with {cores} cores\n\n");
+    let mut text =
+        format!("## Parallel: `{KERNEL}` against rayon, on {os} {arch}, {cpu} with {cores} cores\n\n");
     text += "| threads | Fennec | speedup | rayon | speedup | Fennec's speed, % of rayon's |\n";
     text += "|---|---:|---:|---:|---:|---:|\n";
     let percent = |rust: f64, ours: f64| if ours > 0.0 { rust / ours * 100.0 } else { 0.0 };

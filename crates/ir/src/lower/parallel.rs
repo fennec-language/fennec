@@ -334,27 +334,28 @@ impl Lowering<'_> {
             }
             Runs::Sum(elem, ty) => {
                 // The first item starts the partial, so a range adds only what's in it, as the
-                // runtime's tree does.
-                let first = self.declare(name, item.clone());
-                self.emit(
-                    InstKind::GetIndex {
-                        dest: first,
-                        object: Operand::Local(held),
-                        index: Operand::Local(from),
-                    },
-                    span,
-                );
-                let started = self.expr(elem)?;
+                // runtime's tree does. One loop, not the first item and then a loop over the
+                // rest: what's in `elem` is lowered once, so what it lifts is lifted once. A
+                // range is never empty, so the partial is always set.
                 let total = self.temporary(ty.clone());
-                self.emit(InstKind::Copy { dest: total, value: started }, span);
-                let next = self.temporary(Type::Int);
-                let (lhs, rhs) = (Operand::Local(from), Operand::Int(1));
-                self.emit(InstKind::Binary { dest: next, op: BinOp::Add, lhs, rhs }, span);
-                let counting = each(Operand::Local(next));
-                self.counting(counting, span, |lowering| {
+                self.counting(each(Operand::Local(from)), span, |lowering| {
                     let value = lowering.expr(elem)?;
+                    let at = lowering.at()?;
+                    let first = lowering.temporary(Type::Bool);
+                    let (lhs, rhs) = (Operand::Local(at), Operand::Local(from));
+                    lowering.emit(InstKind::Binary { dest: first, op: BinOp::Eq, lhs, rhs }, span);
+                    let (starts, adds, joined) =
+                        (lowering.new_block(), lowering.new_block(), lowering.new_block());
+                    let cond = Operand::Local(first);
+                    lowering.finish(crate::Terminator::Branch { cond, then: starts, otherwise: adds });
+                    lowering.current = starts;
+                    lowering.emit(InstKind::Copy { dest: total, value: value.clone() }, span);
+                    lowering.finish(crate::Terminator::Jump(joined));
+                    lowering.current = adds;
                     let lhs = Operand::Local(total);
                     lowering.emit(InstKind::Binary { dest: total, op: BinOp::Add, lhs, rhs: value }, span);
+                    lowering.finish(crate::Terminator::Jump(joined));
+                    lowering.current = joined;
                     Ok(())
                 })?;
                 self.finish(crate::Terminator::Return(Some(Operand::Local(total))));

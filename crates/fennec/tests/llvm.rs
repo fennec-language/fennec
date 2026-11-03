@@ -87,6 +87,20 @@ fn outcome(output: &Output) -> Outcome {
     )
 }
 
+/// `str` of what's text already. The linter takes these out of the examples, since they change
+/// nothing, so it's here they're run. This backend doesn't take `int`, or `float` of a float,
+/// yet, so `cli.rs` runs those on the other engines.
+#[test]
+fn str_of_text_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "str_of_text",
+        "def main(stdout: Stdout):\n    name = \"fox\"\n    stdout.print(str(name), str(\"\"))\n",
+    )
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {

@@ -248,6 +248,61 @@ fn a_kit_gives_failures_back_rather_than_expecting() {
     assert_eq!(all_rules(source).iter().filter(|rule| **rule == "expect-in-kit").count(), 0, "only a kit");
 }
 
+/// How many conversions change nothing in a program, and the program with them taken out.
+fn needless_conversions(source: &str) -> (usize, String) {
+    let mut sources = Sources::new();
+    let base = sources.add("game.fen", source);
+    let Ok(module) = parse_at(source, base) else { return (0, "it doesn't parse".to_owned()) };
+    let found = fennec_lint::needless_conversions(&module, &sources);
+    let diagnostics: Vec<_> = found.iter().map(|lint| lint.diagnostic.clone()).collect();
+    (found.len(), apply_fixes(source, 0, &diagnostics).unwrap_or_else(|| source.to_owned()))
+}
+
+#[test]
+fn a_conversion_to_what_a_value_is_already_goes() {
+    let text = "def f(name: str, n: int, x: float) -> str:\n    a = str(name)\n    b = int(n)\n    c = float(x)\n    f\"{a}{b}{c}\"\n";
+    assert_eq!(
+        needless_conversions(text),
+        (3, "def f(name: str, n: int, x: float) -> str:\n    a = name\n    b = n\n    c = x\n    f\"{a}{b}{c}\"\n".to_owned())
+    );
+    let shown = "def f(n: int) -> str:\n    f\"{str(n)} left\"\n";
+    assert_eq!(
+        needless_conversions(shown),
+        (1, "def f(n: int) -> str:\n    f\"{n} left\"\n".to_owned()),
+        "an f-string shows anything"
+    );
+    let bracketed = "def f(a: str, b: str) -> int:\n    str(a + b).len()\n";
+    assert_eq!(
+        needless_conversions(bracketed),
+        (1, "def f(a: str, b: str) -> int:\n    (a + b).len()\n".to_owned())
+    );
+    let converts = "def f(n: int, x: float) -> str:\n    y = int(x)\n    str(n + y)\n";
+    assert_eq!(needless_conversions(converts).0, 0, "these change what the value is");
+    let formatted = "def f(n: float) -> str:\n    f\"{str(n):>8}\"\n";
+    assert_eq!(needless_conversions(formatted).0, 0, "a format reads the text, not the number");
+    let own = "def str(n: int) -> int:\n    n + 1\n\ndef f(n: int) -> int:\n    str(n)\n";
+    assert_eq!(needless_conversions(own).0, 0, "the program's own `str`");
+}
+
+#[test]
+fn a_conversion_that_makes_a_value_of_a_names_own_stays() {
+    let named = "def f(s: str) -> str:\n    mut y = str(s)\n    y += \"!\"\n    y\n";
+    assert_eq!(needless_conversions(named).0, 0, "`mut y = s` would make `y` stand for `s`");
+    let in_a_case = "def f(s: str, n: int) -> str:\n    match n:\n        case 1:\n            mut y = str(s)\n            y += \"!\"\n            y\n        case _:\n            s\n";
+    assert_eq!(needless_conversions(in_a_case).0, 0, "in a case of a `match` too");
+    let copied = "def f(s: list[int], n: int) -> list[int]:\n    match n:\n        case 1:\n            mut y = copy(s)\n            y.append(1)\n            y\n        case _:\n            s\n";
+    assert_eq!(needless_copies(copied).0, 0, "`needless-copy` leaves it too");
+    let test_body = "test \"a name of its own\":\n    s = \"a\"\n    mut y = str(s)\n    y += \"!\"\n    assert s == \"a\"\n";
+    assert_eq!(needless_conversions(test_body).0, 0, "in a test too");
+    let in_a_loop = "def f(n: int) -> int:\n    mut h = \"a\"\n    mut total = 0\n    for _ in range(n):\n        k = str(h)\n        h += \"b\"\n        total += k.len()\n    total\n";
+    let (count, fixed) = needless_conversions(in_a_loop);
+    assert_eq!(
+        (count, fixed),
+        (1, in_a_loop.replace("str(h)", "h")),
+        "text changes without a copy each pass"
+    );
+}
+
 #[test]
 fn pass_is_only_for_an_empty_block() {
     assert_eq!(rules("def f():\n    pass\n"), NONE);

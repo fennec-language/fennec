@@ -1212,6 +1212,9 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (object, kind) = self.operand(object)?;
+        if matches!(kind, Kind::Struct(_) | Kind::Boxed(_)) {
+            return self.tuple_slice(dest, (&object, &kind), start);
+        }
         let lowest = i64::MIN.to_string();
         let start =
             start.map(|start| self.operand(start)).transpose()?.map_or_else(|| lowest.clone(), |held| held.0);

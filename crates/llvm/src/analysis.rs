@@ -1405,7 +1405,8 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 break;
             }
         }
-        if name != "enumerate" || !steady || known.writes.get(made.0) != Some(&1) {
+        let of_text = function.locals.get(list.0).is_some_and(|local| local.ty == Type::Str);
+        if name != "enumerate" || of_text || !steady || known.writes.get(made.0) != Some(&1) {
             continue;
         }
         // The result and the copies of it, each written once.

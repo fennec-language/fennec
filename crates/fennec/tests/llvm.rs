@@ -2536,3 +2536,24 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// Slices of tuples, with what they hold kept by both, and `enumerate` of a string.
+#[test]
+fn tuple_slices_and_enumerated_text_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "tuple_slices",
+        r#"def main(stdout: Stdout):
+    numbers = (1, 2, 3)
+    stdout.print(numbers[1:], numbers[-2:-1], numbers[:2])
+    held = (1, "a string long enough to be held in a block", [1, 2], 2.5)
+    part = held[1:3]
+    stdout.print(part, held)
+    for at, letter in enumerate("héllo"):
+        stdout.print(at, letter)
+    stdout.print(enumerate("ab"))
+"#,
+    )
+}

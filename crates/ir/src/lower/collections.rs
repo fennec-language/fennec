@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use fennec_check::Type;
-use fennec_syntax::{CompKind, Expr, ExprKind, Span, Stmt, StmtKind, fuse};
+use fennec_syntax::{CompKind, Expr, ExprKind, Span, Stmt, StmtKind, UnaryOp, fuse};
 
 use super::lists::Over;
 use super::{Lowered, Lowering, Tail};
@@ -131,8 +131,16 @@ impl Lowering<'_> {
     ) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
         let object = self.expr(object)?;
-        let start = start.map(|bound| self.expr(bound)).transpose()?;
-        let end = end.map(|bound| self.expr(bound)).transpose()?;
+        // A bound counting from the back stays a number, as a tuple's has to be known.
+        let mut bound = |bound: &Expr| match &bound.kind {
+            ExprKind::Unary { op: UnaryOp::Neg, expr } => match expr.kind {
+                ExprKind::Int(at) => Ok(Operand::Int(-at)),
+                _ => self.expr(bound),
+            },
+            _ => self.expr(bound),
+        };
+        let start = start.map(&mut bound).transpose()?;
+        let end = end.map(&mut bound).transpose()?;
         let dest = self.temporary(ty);
         self.emit(InstKind::Slice { dest, object, start, end }, expr.span);
         Ok(Operand::Local(dest))

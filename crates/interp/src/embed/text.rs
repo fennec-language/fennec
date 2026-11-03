@@ -118,6 +118,23 @@ pub extern "C" fn block(a: u64, b: u64, c: u64) -> i64 {
     })
 }
 
+/// A header's bytes where they are: in its own words when it's inline, and in its block otherwise.
+fn bytes_of<'a>(state: &'a State, words: &'a [u64; 3]) -> (&'a [u64], usize) {
+    match block_of(words) {
+        Some(address) => super::strings::bytes_in_block(state, address.cast_signed()),
+        None => (&words[..], usize::from(tag(words) & !INLINE).min(INLINE_BYTES)),
+    }
+}
+
+/// `fennec_text_contains(text, part)`: `part in text` for two headers, each three words, which
+/// copies neither.
+pub extern "C" fn contains(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) -> i8 {
+    with(|state| {
+        let (text, part) = ([a, b, c], [d, e, f]);
+        i8::from(super::strings::bytes_contain(bytes_of(state, &text), bytes_of(state, &part)))
+    })
+}
+
 /// `fennec_text_of(address)`: the header of a string's block, taking over the owner given.
 /// Text of 23 bytes or fewer comes back inline, letting go of the block.
 pub extern "C" fn of(address: i64) -> Text {
@@ -279,6 +296,81 @@ mod tests {
             heap::free(done);
         }
         assert_eq!(live(), before);
+        finish();
+    }
+
+    /// Bytes packed eight to a word as a string's are, with `after` in the unused bytes past them,
+    /// which a search must never read as text.
+    fn packed(text: &str, after: u8) -> Vec<u64> {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.resize(text.len().div_ceil(8).max(1) * 8, after);
+        bytes.chunks(8).map(|word| u64::from_le_bytes(word.try_into().unwrap())).collect()
+    }
+
+    #[test]
+    fn looking_for_bytes_in_place_agrees_with_str_on_every_place_and_size() {
+        let texts = [
+            "",
+            "a",
+            "abcdefgh",
+            "abcdefghi",
+            "the quick brown fox jumps over the lazy dog",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+            "été à la plage, déjà vu, naïve — 日本語のテキスト",
+        ];
+        for text in texts {
+            let words = packed(text, b'z');
+            let places: Vec<usize> = text.char_indices().map(|(at, _)| at).chain([text.len()]).collect();
+            for (from, start) in places.iter().enumerate() {
+                for end in places.iter().skip(from) {
+                    let part = &text[*start..*end];
+                    let found = super::super::strings::bytes_contain(
+                        (&words, text.len()),
+                        (&packed(part, b'q'), part.len()),
+                    );
+                    assert!(found, "`{part}` in `{text}`");
+                }
+            }
+            for part in [
+                "z",
+                "zz",
+                "q",
+                "é!",
+                "aab!",
+                "abcdefgh!",
+                "the quick brown fox!",
+                "aaaaaaaaaaaaaaaaac",
+                "h z",
+            ] {
+                let found = super::super::strings::bytes_contain(
+                    (&words, text.len()),
+                    (&packed(part, b'q'), part.len()),
+                );
+                assert_eq!(found, text.contains(part), "`{part}` in `{text}`");
+            }
+        }
+    }
+
+    #[test]
+    fn looking_in_headers_makes_no_blocks_and_sees_inline_and_block_strings() {
+        begin();
+        let before = live();
+        let long = "a string long enough that it can only be held in a block";
+        let in_block = with(|state| Some(super::header(state, long))).unwrap();
+        let [a, b, c] = in_block;
+        let holds = |part: &str| {
+            let [d, e, f] = super::inline(part.as_bytes());
+            super::contains(a, b, c, d, e, f) != 0
+        };
+        assert!(holds("only") && holds("") && holds("long enough"));
+        assert!(!holds("nowhere"));
+        let [a, b, c] = super::inline(b"short");
+        let [d, e, f] = in_block;
+        assert_eq!(super::contains(a, b, c, d, e, f), 0, "a long string isn't in a short one");
+        // Nothing past an inline string's bytes counts, like the tag in its last byte.
+        let [d, e, f] = super::inline(b"\0");
+        assert_eq!(super::contains(a, b, c, d, e, f), 0);
+        assert_eq!(live(), before + 1);
         finish();
     }
 

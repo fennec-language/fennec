@@ -1,0 +1,13 @@
+## An example in a doc comment is a test: `fennec test` runs it, and it fails like one.
+
+## How many points a level is worth.
+##
+## ```
+## assert points(1) == 10
+## assert points(3) == 30
+## ```
+def points(level: int) -> int:
+    level * 10
+
+def main(stdout: Stdout):
+    stdout.print(points(2))

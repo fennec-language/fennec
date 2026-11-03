@@ -1,5 +1,5 @@
-//! `fennec test`: checks a program, then runs its `test` blocks. For a kit, that's the tests in
-//! every file under `src`. It prints each failure and a line of totals, and lists the tests
+//! `fennec test`: checks a program, then runs its `test` blocks and the examples in its `##`
+//! doc comments. For a kit, that's the tests in every file under `src`. It prints each failure and a line of totals, and lists the tests
 //! that pass only for `--verbose`, so that passing tests cost an agent nothing to read.
 //!
 //! A test that passed is run again only when something it depends on changed: the test
@@ -124,7 +124,7 @@ pub(crate) fn test(path: &str, options: Options) -> ExitCode {
 
 /// What to run, from all of a program: what has changed since each test last passed.
 fn whole_program(path: &str, results: &Results) -> Result<Plan, ExitCode> {
-    let Some(mut program) = crate::load(path, fennec_kit::Entry::Everything) else {
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Tests) else {
         return Err(ExitCode::FAILURE);
     };
     let signatures = match crate::copy_rule::check_and_resolve(&mut program.module) {

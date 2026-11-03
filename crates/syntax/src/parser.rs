@@ -36,6 +36,19 @@ pub fn parse_repl(source: &str) -> Result<Module, Diagnostic> {
     Parser::new(lex(source, 0)?).module(true)
 }
 
+/// Parses statements standing alone, like the code in a doc example. They're indented as they
+/// are in `source`, and their spans start at byte `base`.
+pub(crate) fn parse_statements_at(source: &str, base: u32) -> Result<Vec<Stmt>, Diagnostic> {
+    let mut parser = Parser::new(lex(source, base)?);
+    parser.eat(&Tok::Newline);
+    parser.eat(&Tok::Indent);
+    let mut stmts = Vec::new();
+    while !parser.eat(&Tok::Dedent) && !parser.at(&Tok::Eof) {
+        stmts.push(parser.stmt()?);
+    }
+    Ok(stmts)
+}
+
 pub(crate) struct Parser {
     tokens: Vec<Token>,
     pos: usize,

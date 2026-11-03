@@ -87,22 +87,13 @@ impl Emit<'_, '_, '_> {
     /// Adds a value, already owned, to the end of the list at `place`.
     fn push(&mut self, place: &str, held: &Kind, value: &str) {
         self.declare("declare ptr @fennec_list_grow(ptr) nounwind");
-        let (list, count, length, room, alone, fits, ready, longer) = (
-            self.temp(),
-            self.temp(),
-            self.temp(),
-            self.temp(),
-            self.temp(),
-            self.temp(),
-            self.temp(),
-            self.temp(),
-        );
+        let (list, length, room, fits, ready, longer) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{list} = load ptr, ptr {place}"));
-        self.line(&format!("{count} = load i64, ptr {list}{HEADER_ACCESS}"));
         let (length_at, room_at) = (self.offset(&list, 16), self.offset(&list, 24));
         self.line(&format!("{length} = load i64, ptr {length_at}{LENGTH_ACCESS}"));
         self.line(&format!("{room} = load i64, ptr {room_at}{HEADER_ACCESS}"));
-        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        let alone = self.alone(&list);
         self.line(&format!("{fits} = icmp ult i64 {length}, {room}"));
         self.line(&format!("{ready} = and i1 {alone}, {fits}"));
         let (quick, grow, done) = (self.label("quick"), self.label("grow"), self.label("pushed"));

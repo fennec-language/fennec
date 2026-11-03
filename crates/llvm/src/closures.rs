@@ -24,11 +24,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{none} = icmp eq ptr {closure}, null"));
         self.line(&format!("br i1 {none}, label %{done}, label %{held}"));
         self.start_block(&held);
-        let (count, fewer, gone) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!("{count} = load i64, ptr {closure}"));
-        self.line(&format!("{fewer} = add i64 {count}, -1"));
-        self.line(&format!("store i64 {fewer}, ptr {closure}"));
-        self.line(&format!("{gone} = icmp eq i64 {fewer}, 0"));
+        let gone = self.owner_gone(closure);
         self.line(&format!("br i1 {gone}, label %{last}, label %{done}"));
         self.start_block(&last);
         let (at, code) = (self.temp(), self.temp());
@@ -127,7 +123,7 @@ impl Emit<'_, '_, '_> {
                 };
                 let _ = write!(
                     release,
-                    "{block}  %o{at} = load i64, ptr %h{at}\n  %n{at} = add i64 %o{at}, -1\n  store i64 %n{at}, ptr %h{at}\n  %z{at} = icmp eq i64 %n{at}, 0\n  br i1 %z{at}, label %free{at}, label %kept{at}\nfree{at}:\n{free}  br label %kept{at}\nkept{at}:\n"
+                    "{block}  %z{at} = call i1 @fen_owner_gone(ptr %h{at})\n  br i1 %z{at}, label %free{at}, label %kept{at}\nfree{at}:\n{free}  br label %kept{at}\nkept{at}:\n"
                 );
             }
             offset += kind.size(layouts);
@@ -155,6 +151,7 @@ impl Emit<'_, '_, '_> {
         self.module.add_helper(&code, thunk);
         if held.iter().any(Kind::counted) {
             self.declare("declare void @fennec_free(ptr) nounwind");
+            self.owner_gone_helper();
         }
         self.declare("declare void @free(ptr) nounwind");
         let drop = format!(

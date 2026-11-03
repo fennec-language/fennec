@@ -15,10 +15,12 @@
 //! fennec-bench pin [--fennec PATH] [--kernels DIR] [--targets DIR]
 //! fennec-bench budgets [--fennec PATH] [--runs N] [--files N]
 //! fennec-bench llvm-suite [--fennec PATH] [--runs N] [--kernels DIR] [--json PATH]
+//! fennec-bench parallel [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
 //! ```
 //!
 //! `budgets` measures something else: see the `budgets` module. `llvm-suite` compares what
 //! `fennec build --llvm --release` makes with the Rust twins: see the `llvm_suite` module.
+//! `parallel` compares `parallel` with rayon, by threads: see the `parallel` module.
 #![expect(clippy::print_stdout, reason = "the suite prints its table")]
 #![expect(clippy::print_stderr, reason = "the suite reports failures")]
 
@@ -27,6 +29,7 @@ mod kernels;
 mod llvm_suite;
 mod measure;
 mod other_twins;
+mod parallel;
 mod report;
 mod startup;
 mod targets;
@@ -97,8 +100,36 @@ fn llvm_suite(mut args: impl Iterator<Item = String>) -> std::result::Result<boo
     llvm_suite::run(&fennec, &kernels, runs, json.as_deref())
 }
 
+fn parallel(mut args: impl Iterator<Item = String>) -> std::result::Result<(), String> {
+    let (mut fennec, mut runs, mut dir) =
+        (PathBuf::from("target/release/fennec"), 10, PathBuf::from("bench/parallel"));
+    let mut markdown = None;
+    while let Some(flag) = args.next() {
+        let value = args.next().ok_or_else(|| format!("`{flag}` needs a value"))?;
+        match flag.as_str() {
+            "--fennec" => fennec = PathBuf::from(&value),
+            "--runs" => {
+                runs = value.parse().map_err(|_| format!("`{flag}` needs a number, not `{value}`"))?;
+            }
+            "--dir" => dir = PathBuf::from(&value),
+            "--markdown" => markdown = Some(PathBuf::from(&value)),
+            _ => return Err(format!("unknown option `{flag}`")),
+        }
+    }
+    parallel::run(&fennec, &dir, runs, markdown.as_deref())
+}
+
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|first| first == "parallel") {
+        return match parallel(args.into_iter().skip(1)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.first().is_some_and(|first| first == "llvm-suite") {
         return match llvm_suite(args.into_iter().skip(1)) {
             Ok(true) => ExitCode::SUCCESS,

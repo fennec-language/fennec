@@ -3,7 +3,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 fn fennec(args: &[&str], stdin: &str) -> std::io::Result<Output> {
     fennec_in(&repo(), args, stdin)
@@ -1385,8 +1385,10 @@ fn peak_is_under(program: &Path, limit_kb: u64) -> Result<(), String> {
         if let Some(status) = child.try_wait().map_err(|err| err.to_string())? {
             return if status.success() { Ok(()) } else { Err(format!("it failed: {status}")) };
         }
-        let rss =
-            Command::new("ps").args(["-o", "rss=", "-p", &pid]).output().map_err(|err| err.to_string())?;
+        let rss = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid])
+            .output()
+            .map_err(|err| err.to_string())?;
         let used: u64 = text(&rss.stdout).trim().parse().unwrap_or(0);
         if used > limit_kb {
             child.kill().ok();

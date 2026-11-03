@@ -66,13 +66,14 @@ fn words_of(image: &[u8]) -> Vec<u64> {
     words
 }
 
-/// The module. `bytes` is the program as the runtime reads it.
-pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) -> Result<String, String> {
-    let main =
-        program.functions.iter().find(|function| function.name == "main").ok_or("there's no `main`")?;
-    if main.returns != fennec_check::Type::Unit {
-        return Err("`main` gives back a value, which this backend doesn't take yet".to_owned());
-    }
+/// What a module for a program starts with: what every function reads by symbol, and the
+/// program's bytes, in words, as it gives back how many there are.
+fn start_of(
+    program: &Program,
+    shared: &Shared,
+    image: &Image,
+    bytes: &[u8],
+) -> Result<(String, usize), String> {
     let mut out = String::from(crate::header()?);
     // A program running `parallel` keeps a stack limit and a failure flag for each thread.
     let local = if crate::parallel::uses_parallel(program) { "thread_local(initialexec) " } else { "" };
@@ -92,7 +93,94 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     let shown: Vec<String> = words.iter().map(|word| format!("i64 {word}")).collect();
     let count = words.len();
     let _ = writeln!(out, "@fennec_image = private constant [{count} x i64] [{}]\n", shown.join(", "));
-    out += "declare void @fennec_aot_image(i64)\ndeclare i32 @fennec_aot_run(ptr, i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\n\n";
+    out += "declare void @fennec_aot_image(i64)\ndeclare i64 @fennec_aot_failed_flag()\ndeclare i64 @fennec_aot_literal(i64)\ndeclare i64 @fennec_aot_ascii()\n\n";
+    Ok((out, count))
+}
+
+/// `fennec_entry` up to where it runs the program, setting what functions read. Gives back what
+/// it needs defined after it: what closes a generator let go partway.
+fn setup(out: &mut String, program: &Program, shared: &Shared, image: &Image) -> String {
+    *out += "define void @fennec_entry(i64 %limit) {\n  store i64 %limit, ptr @fennec_stack_limit\n  %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  store ptr %flag_at, ptr @fennec_failed\n  %ascii = call i64 @fennec_aot_ascii()\n  %ascii_at = inttoptr i64 %ascii to ptr\n  store ptr %ascii_at, ptr @fennec_ascii\n";
+    for (number, symbol) in shared.literals.keys().enumerate() {
+        let _ = writeln!(
+            out,
+            "  %l{number} = call i64 @fennec_aot_literal(i64 {number})\n  %a{number} = inttoptr i64 %l{number} to ptr\n  store ptr %a{number}, ptr @\"{symbol}\""
+        );
+    }
+    // What closes a generator let go partway, by its shape, for those that are ever made.
+    let mut thunks = String::new();
+    for def in &program.generators {
+        let Some(abandon) = &def.abandon else { continue };
+        let shape = format!("h_{}", def.name);
+        let Some((_, number)) = image.elements.iter().find(|(symbol, _)| *symbol == shape) else { continue };
+        let thunk = format!("@\"t_{}\"", def.name);
+        let _ = writeln!(out, "  call void @fennec_set_abandon(i64 {number}, ptr {thunk})");
+        let _ = writeln!(
+            thunks,
+            "declare swiftcc void {code}(ptr, ptr swifterror)\ndefine internal void {thunk}(i64 %g) {{\n  %at = inttoptr i64 %g to ptr\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  call swiftcc void {code}(ptr %at, ptr swifterror %failed)\n  ret void\n}}\n",
+            code = crate::emit::symbol(abandon)
+        );
+    }
+    if !thunks.is_empty() {
+        thunks += "declare void @fennec_set_abandon(i64, ptr)\n";
+    }
+    thunks
+}
+
+/// The C `main`: hands the runtime the program's bytes, then has it run with this call.
+fn c_main(count: usize, run: &str) -> String {
+    format!(
+        "define i32 @main(i32 %argc, ptr %argv) {{\nstart:\n  br label %head\nhead:\n  %at = phi i64 [ 0, %start ], [ %next, %word ]\n  %more = icmp ult i64 %at, {count}\n  br i1 %more, label %word, label %done\nword:\n  %place = getelementptr [{count} x i64], ptr @fennec_image, i64 0, i64 %at\n  %value = load i64, ptr %place\n  call void @fennec_aot_image(i64 %value)\n  %next = add i64 %at, 1\n  br label %head\ndone:\n  %code = call i32 {run}\n  ret i32 %code\n}}"
+    )
+}
+
+/// The module for an executable that runs the functions `tests`, which take nothing and give
+/// back nothing, by their numbers there. `bytes` is the program as the runtime reads it.
+pub fn tests_entry(
+    program: &Program,
+    shared: &Shared,
+    image: &Image,
+    bytes: &[u8],
+    tests: &[String],
+) -> Result<String, String> {
+    let (mut out, count) = start_of(program, shared, image, bytes)?;
+    out += "declare i32 @fennec_aot_run_tests(ptr, ptr, i64, i64)\n\n";
+    let thunks = setup(&mut out, program, shared, image);
+    out += "  ret void\n}\n\n";
+    out += &thunks;
+    let can_fail = crate::analysis::whole(program).can_fail;
+    let mut cases = String::new();
+    let mut blocks = String::new();
+    for (number, test) in tests.iter().enumerate() {
+        let code = crate::emit::symbol(test);
+        let flagged = can_fail.contains(test.as_str());
+        let (types, args) = if flagged { ("ptr swifterror", "ptr swifterror %failed") } else { ("", "") };
+        let _ = writeln!(out, "declare swiftcc void {code}({types})");
+        let _ = write!(cases, " i64 {number}, label %test{number}");
+        let _ = writeln!(blocks, "test{number}:\n  call swiftcc void {code}({args})\n  br label %done");
+    }
+    let _ = writeln!(
+        out,
+        "\ndefine void @fennec_run_test(i64 %number) {{\nstart:\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  switch i64 %number, label %done [{cases} ]\n{blocks}done:\n  ret void\n}}\n"
+    );
+    let run = format!(
+        "@fennec_aot_run_tests(ptr @fennec_entry, ptr @fennec_run_test, i64 {}, i64 {})",
+        tests.len(),
+        bytes.len()
+    );
+    out += &c_main(count, &run);
+    Ok(out)
+}
+
+/// The module. `bytes` is the program as the runtime reads it.
+pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) -> Result<String, String> {
+    let main =
+        program.functions.iter().find(|function| function.name == "main").ok_or("there's no `main`")?;
+    if main.returns != fennec_check::Type::Unit {
+        return Err("`main` gives back a value, which this backend doesn't take yet".to_owned());
+    }
+    let (mut out, count) = start_of(program, shared, image, bytes)?;
+    out += "declare i32 @fennec_aot_run(ptr, i64)\n\n";
     let flagged = crate::analysis::whole(program).can_fail.contains("main");
     // Each capability `main` takes is the runtime's whole one of its kind.
     let mut args = Vec::with_capacity(main.params + 1);
@@ -128,30 +216,7 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
         types.push("ptr swifterror".to_owned());
     }
     let _ = writeln!(out, "declare swiftcc void @\"f_main\"({})\n", types.join(", "));
-    out += "define void @fennec_entry(i64 %limit) {\n  store i64 %limit, ptr @fennec_stack_limit\n  %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  store ptr %flag_at, ptr @fennec_failed\n  %ascii = call i64 @fennec_aot_ascii()\n  %ascii_at = inttoptr i64 %ascii to ptr\n  store ptr %ascii_at, ptr @fennec_ascii\n";
-    for (number, symbol) in shared.literals.keys().enumerate() {
-        let _ = writeln!(
-            out,
-            "  %l{number} = call i64 @fennec_aot_literal(i64 {number})\n  %a{number} = inttoptr i64 %l{number} to ptr\n  store ptr %a{number}, ptr @\"{symbol}\""
-        );
-    }
-    // What closes a generator let go partway, by its shape, for those that are ever made.
-    let mut thunks = String::new();
-    for def in &program.generators {
-        let Some(abandon) = &def.abandon else { continue };
-        let shape = format!("h_{}", def.name);
-        let Some((_, number)) = image.elements.iter().find(|(symbol, _)| *symbol == shape) else { continue };
-        let thunk = format!("@\"t_{}\"", def.name);
-        let _ = writeln!(out, "  call void @fennec_set_abandon(i64 {number}, ptr {thunk})");
-        let _ = writeln!(
-            thunks,
-            "declare swiftcc void {code}(ptr, ptr swifterror)\ndefine internal void {thunk}(i64 %g) {{\n  %at = inttoptr i64 %g to ptr\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  call swiftcc void {code}(ptr %at, ptr swifterror %failed)\n  ret void\n}}\n",
-            code = crate::emit::symbol(abandon)
-        );
-    }
-    if !thunks.is_empty() {
-        thunks += "declare void @fennec_set_abandon(i64, ptr)\n";
-    }
+    let mut thunks = setup(&mut out, program, shared, image);
     if flagged {
         out += "  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n";
     }
@@ -161,10 +226,6 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
     }
     let _ = writeln!(out, "  call swiftcc void @\"f_main\"({})\n  ret void\n}}\n", args.join(", "));
     out += &thunks;
-    let _ = writeln!(
-        out,
-        "define i32 @main(i32 %argc, ptr %argv) {{\nstart:\n  br label %head\nhead:\n  %at = phi i64 [ 0, %start ], [ %next, %word ]\n  %more = icmp ult i64 %at, {count}\n  br i1 %more, label %word, label %done\nword:\n  %place = getelementptr [{count} x i64], ptr @fennec_image, i64 0, i64 %at\n  %value = load i64, ptr %place\n  call void @fennec_aot_image(i64 %value)\n  %next = add i64 %at, 1\n  br label %head\ndone:\n  %code = call i32 @fennec_aot_run(ptr @fennec_entry, i64 {})\n  ret i32 %code\n}}",
-        bytes.len()
-    );
+    out += &c_main(count, &format!("@fennec_aot_run(ptr @fennec_entry, i64 {})", bytes.len()));
     Ok(out)
 }

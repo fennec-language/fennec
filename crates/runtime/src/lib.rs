@@ -294,6 +294,17 @@ pub extern "C" fn fennec_aot_run(entry: extern "C" fn(i64), length: i64) -> i32 
     aot::run(entry, length, stop)
 }
 
+/// Runs a test executable's tests: its `main` calls this.
+#[unsafe(no_mangle)]
+pub extern "C" fn fennec_aot_run_tests(
+    entry: extern "C" fn(i64),
+    run_test: extern "C" fn(i64),
+    count: i64,
+    length: i64,
+) -> i32 {
+    aot::run_tests(entry, run_test, count, length, stop)
+}
+
 /// Ends the process now, for a failure in cleanup that nothing can pass on.
 fn stop(code: i32) {
     unsafe extern "C" {

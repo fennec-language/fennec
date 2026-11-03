@@ -269,3 +269,15 @@ fn only_the_error_fails_names_can_escape() {
         ["`fails` names an error, but `Point` is a Point @ Point"]
     );
 }
+
+#[test]
+fn a_result_passed_on_adds_its_errors_to_the_functions() {
+    let program = "error Bad:\n    why: str\n\nerror Worse:\n    why: str\n\ndef inner(n: int) -> int:\n    \
+                   if n < 0:\n        fail Bad(why=\"neg\")\n    n\n\ndef outer(n: int) -> int:\n    if n > 9:\n        \
+                   fail Worse(why=\"big\")\n    inner(n)\n";
+    let errors = fennec_check::Type::Errors(vec!["Bad".to_owned(), "Worse".to_owned()]);
+    assert_eq!(
+        crate::returns(program, "outer"),
+        Ok(fennec_check::Type::Result(Box::new(fennec_check::Type::Int), Box::new(errors)))
+    );
+}

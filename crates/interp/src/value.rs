@@ -105,15 +105,53 @@ impl Instance {
     }
 }
 
+/// A function's definition: the standard library's, held where it was parsed once for the
+/// whole process, or a program's own. The standard library's isn't copied for each runtime.
+#[derive(Clone, Debug)]
+pub(crate) enum Def {
+    Std(&'static FnDef),
+    Own(Rc<FnDef>),
+}
+
+impl std::ops::Deref for Def {
+    type Target = FnDef;
+
+    fn deref(&self) -> &FnDef {
+        match self {
+            Def::Std(def) => def,
+            Def::Own(def) => def,
+        }
+    }
+}
+
 /// A function: top-level, nested (with the names it captured), or a method.
 #[derive(Debug)]
 pub(crate) struct Callable {
-    pub(crate) def: Rc<FnDef>,
+    pub(crate) def: Def,
     pub(crate) captured: Vec<(String, Value)>,
+    /// Whether it can fail and whether it's a generator, worked out the first time it's asked,
+    /// so loading a function the program never calls costs nothing more.
+    effects: std::cell::OnceCell<(bool, bool)>,
+}
+
+impl Callable {
+    pub(crate) fn new(def: Def, captured: Vec<(String, Value)>) -> Callable {
+        Callable { def, captured, effects: std::cell::OnceCell::new() }
+    }
+
+    fn effects(&self) -> (bool, bool) {
+        *self.effects.get_or_init(|| crate::scan::body_effects(&self.def.body))
+    }
+
     /// Whether it can fail: its body contains `fail` or `?`.
-    pub(crate) fallible: bool,
+    pub(crate) fn fallible(&self) -> bool {
+        self.effects().0
+    }
+
     /// Whether it's a generator: its body contains `yield`.
-    pub(crate) generator: bool,
+    pub(crate) fn generator(&self) -> bool {
+        self.effects().1
+    }
 }
 
 /// An arrow function, with the names it could see when it was created.

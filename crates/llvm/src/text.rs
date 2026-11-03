@@ -409,7 +409,7 @@ impl Emit<'_, '_, '_> {
                     self.start_block(&inline);
                     let out = self.place_for_text();
                     self.line(&format!("store {} zeroinitializer, ptr {out}", crate::headers::HEADER));
-                    self.copy_pieces(&out, &pieces, &sizes);
+                    self.copy_pieces(&out, &pieces, &sizes, true);
                     let (tag, byte, tag_at, made) = (self.temp(), self.temp(), self.temp(), self.temp());
                     self.line(&format!("{tag} = or i64 {bytes}, 128"));
                     self.line(&format!("{byte} = trunc i64 {tag} to i8"));
@@ -424,7 +424,7 @@ impl Emit<'_, '_, '_> {
                 let made = self.temp();
                 self.line(&format!("{made} = call ptr @fennec_str_with_room(i64 {bytes})"));
                 let start = self.offset(&made, TEXT.unsigned_abs());
-                self.copy_pieces(&start, &pieces, &sizes);
+                self.copy_pieces(&start, &pieces, &sizes, false);
                 let (bytes_at, chars_at) = (
                     self.offset(&made, TEXT_BYTES.unsigned_abs()),
                     self.offset(&made, TEXT_CHARS.unsigned_abs()),
@@ -461,15 +461,20 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &value)
     }
 
-    /// Copies an f-string's pieces' bytes one after another from `start`.
-    fn copy_pieces(&mut self, start: &str, pieces: &[(String, bool)], sizes: &[String]) {
+    /// Copies an f-string's pieces' bytes one after another from `start`, each `small`, of 24
+    /// bytes at most, if they're going in a header.
+    fn copy_pieces(&mut self, start: &str, pieces: &[(String, bool)], sizes: &[String], small: bool) {
         let mut at = "0".to_owned();
         for ((piece, _), size) in pieces.iter().zip(sizes) {
             let (to, from, after) = (self.temp(), self.offset(piece, TEXT.unsigned_abs()), self.temp());
             self.line(&format!("{to} = getelementptr inbounds i8, ptr {start}, i64 {at}"));
-            self.line(&format!(
-                "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {from}, i64 {size}, i1 false)"
-            ));
+            if small {
+                self.small_copy(&to, &from, size);
+            } else {
+                self.line(&format!(
+                    "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {from}, i64 {size}, i1 false)"
+                ));
+            }
             self.line(&format!("{after} = add i64 {at}, {size}"));
             at = after;
         }

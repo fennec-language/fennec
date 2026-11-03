@@ -19,9 +19,9 @@
 //! applies those changes (`settle`), freeing what they took the last owner from.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 #[cfg(any(test, feature = "threads"))]
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 #[cfg(any(test, feature = "threads"))]
@@ -82,36 +82,26 @@ fn remote<T>(f: impl FnOnce(&mut HashMap<u16, Vec<u64>>) -> T) -> T {
     f(queues.get_or_insert_with(HashMap::new))
 }
 
-/// The table of the thread waiting for a `parallel` call, for its ranges to read.
-#[cfg(any(test, feature = "threads"))]
-static LENT: RwLock<Option<Arc<Table>>> = RwLock::new(None);
-
 /// Lends this thread's blocks to the ranges of the call it's about to wait for.
 #[cfg(any(test, feature = "threads"))]
-pub(super) fn lend() {
-    super::with(|state| {
-        let table = std::mem::take(&mut state.heap.blocks);
-        *LENT.write().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(table));
-    });
+pub(super) fn lend() -> Arc<Table> {
+    super::with(|state| Arc::new(std::mem::take(&mut state.heap.blocks)))
 }
 
 /// Takes this thread's blocks back, the call over. Every range has let go of them by now; if
 /// one somehow hadn't, they're kept where this thread can read them, as native code still
 /// points at them.
 #[cfg(any(test, feature = "threads"))]
-pub(super) fn take_back() {
-    let lent = LENT.write().unwrap_or_else(PoisonError::into_inner).take();
-    super::with(|state| match lent.map(Arc::try_unwrap) {
-        Some(Ok(table)) => state.heap.blocks = table,
-        Some(Err(table)) => state.heap.lent = Some(table),
-        None => {}
+pub(super) fn take_back(lent: Arc<Table>) {
+    super::with(|state| match Arc::try_unwrap(lent) {
+        Ok(table) => state.heap.blocks = table,
+        Err(table) => state.heap.lent = Some(table),
     });
 }
 
 /// Starts a range on a worker: it can read the blocks lent for the call.
 #[cfg(any(test, feature = "threads"))]
-pub(super) fn range_starts() {
-    let lent = LENT.read().unwrap_or_else(PoisonError::into_inner).clone();
+pub(super) fn range_starts(lent: Option<Arc<Table>>) {
     super::with(|state| state.heap.lent = lent);
 }
 

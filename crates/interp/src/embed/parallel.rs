@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use fennec_syntax::Diagnostic;
 
@@ -66,6 +66,8 @@ struct Run {
     stop: AtomicUsize,
     /// The failure from the lowest range that failed, by where it starts.
     failure: Mutex<Option<(usize, Diagnostic)>>,
+    /// The calling thread's blocks, lent to the ranges while it waits, when they're on the pool.
+    lent: RwLock<Option<Arc<super::table::Table>>>,
     /// What each range made on a worker that outlives it, for the calling thread to adopt.
     made: Mutex<Vec<Box<[u64]>>>,
     /// How the ranges changed the owners of the calling thread's blocks, for it to apply.
@@ -81,6 +83,7 @@ impl Run {
             caller: super::threads::index(),
             stop: AtomicUsize::new(usize::MAX),
             failure: Mutex::new(None),
+            lent: RwLock::new(None),
             made: Mutex::new(Vec::new()),
             owners: Mutex::new(HashMap::new()),
             printed: Mutex::new(Vec::new()),
@@ -104,7 +107,7 @@ impl Run {
     /// Starts a range on this thread, giving back where what it makes starts.
     fn range_starts(&self) -> usize {
         if super::threads::index() != self.caller {
-            pool::range_starts();
+            pool::range_starts(self.lent.read().unwrap_or_else(PoisonError::into_inner).clone());
         }
         super::threads::made_so_far()
     }
@@ -212,7 +215,7 @@ pub extern "C" fn parallel_for(list: i64, body: Body, env: i64) -> i64 {
     let Some((length, words)) = with(|state| extent(state, list)) else { return 0 };
     let run = Run::new(chunk(words));
     let leaf = |from: usize, to: usize, thread: i64| body(env, number(from), number(to), thread);
-    pool::install(length * words, || run.each((0, length), &leaf));
+    pool::install(&run, length * words, || run.each((0, length), &leaf));
     run.finish()
 }
 
@@ -225,7 +228,7 @@ pub extern "C" fn parallel_map(list: i64, body: MapBody, env: i64, element: i64)
     let out = super::lists::new(element, number(length));
     let run = Run::new(chunk(words));
     let leaf = |from: usize, to: usize, thread: i64| body(env, number(from), number(to), thread, out);
-    pool::install(length * words, || run.each((0, length), &leaf));
+    pool::install(&run, length * words, || run.each((0, length), &leaf));
     if run.finish() != 0 {
         super::heap::free(out);
         return 0;
@@ -252,7 +255,7 @@ pub extern "C" fn parallel_reduce(
     // A reduction's leaves depend on the length alone, so the interpreter, which doesn't know
     // native items' sizes, combines in the same order.
     let run = Run::new(crate::builtins::REDUCE_LEAF);
-    let reduced = pool::install(length * words, || run.reduce((0, length), (body, combine, env)));
+    let reduced = pool::install(&run, length * words, || run.reduce((0, length), (body, combine, env)));
     if let Some(reduced) = reduced {
         *result = reduced;
     }
@@ -272,7 +275,7 @@ mod pool {
     }
 
     /// Without threads, nothing is lent, so ranges have nothing to read or hand back.
-    pub(super) fn range_starts() {}
+    pub(super) fn range_starts(_lent: Option<std::sync::Arc<crate::embed::table::Table>>) {}
 
     pub(super) fn range_ends() -> (Vec<(u64, i64)>, Vec<u8>) {
         (Vec::new(), Vec::new())
@@ -280,7 +283,7 @@ mod pool {
 
     pub(super) fn settle(_changes: std::collections::HashMap<u64, i64>) {}
 
-    pub(super) fn install<R>(_words: usize, run: impl FnOnce() -> R) -> R {
+    pub(super) fn install<R>(_run: &super::Run, _words: usize, run: impl FnOnce() -> R) -> R {
         run()
     }
 
@@ -316,9 +319,10 @@ mod tests {
 
     use fennec_syntax::{Diagnostic, Span};
 
-    use super::super::{State, Tables, attempt, finish, heap, lists, start, with};
+    use super::super::{State, Tables, attempt, finish, heap, lists, start, strings, threads, with};
     use crate::packed::Element;
     use crate::value::Value;
+    use std::sync::atomic::Ordering;
 
     fn tables() -> Tables {
         Tables {
@@ -454,7 +458,7 @@ mod tests {
         let made = std::mem::take(&mut *MADE.lock().unwrap());
         assert_eq!(made.len(), 2);
         // The ranges ran on the pool's workers, not on this thread.
-        let here = i64::from(super::super::threads::index());
+        let here = i64::from(threads::index());
         assert!(made.iter().all(|(_, _, thread)| *thread != here), "{made:?}");
         for (from, name, _) in made {
             let read = with(|state| Some(heap::read_block(state, name.cast_unsigned()))).unwrap();
@@ -463,5 +467,101 @@ mod tests {
         }
         assert_eq!(with(|state| state.heap.live()), before);
         finish();
+    }
+
+    /// How many of a test's ranges ran.
+    static RANGES: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// Runs on a worker: `env` is a string the calling thread made, read and joined to itself
+    /// through the runtime, and given two owners more and one fewer, leaving one more.
+    extern "C" fn uses_lent(env: i64, _from: i64, _to: i64, thread: i64) -> i64 {
+        assert_ne!(thread, 0, "on a worker");
+        let joined = strings::concat(env, env);
+        let read = with(|state| Some(heap::read_block(state, joined.cast_unsigned()))).unwrap();
+        assert_eq!(read, Value::str(&TEXT.repeat(2)));
+        heap::free(joined);
+        // It's copied to change it, as this thread doesn't hold it alone, whatever its count.
+        with(|state| {
+            let block = state.heap.block(env.cast_unsigned()).unwrap();
+            assert!(!state.heap.is_alone(env.cast_unsigned(), block));
+        });
+        threads::retain_shared(env, 0);
+        threads::retain_shared(env, 0);
+        threads::release_shared(env, 0);
+        RANGES.fetch_add(1, Ordering::Relaxed);
+        0
+    }
+
+    const TEXT: &str = "a string long enough to be held in a block of its own";
+
+    fn string_block() -> i64 {
+        with(|state| heap::text_address(state, TEXT))
+    }
+
+    /// The calling thread's table holds its blocks again, and a block's count is right.
+    #[test]
+    fn ranges_read_lent_blocks_and_their_owner_changes_are_applied_when_the_call_ends() {
+        begin();
+        RANGES.store(0, Ordering::Relaxed);
+        let text = string_block();
+        let list = lists::new(0, ITEMS);
+        assert_eq!(super::parallel_for(list, uses_lent, text), 0);
+        let ranges = u64::try_from(RANGES.load(Ordering::Relaxed)).unwrap();
+        assert!(ranges > 1);
+        let count =
+            with(|state| state.heap.block(text.cast_unsigned()).and_then(|block| block.first().copied()));
+        assert_eq!(count, Some(1 + ranges));
+        // It's this thread's again: what the runtime holds of it, and that it's its alone.
+        for _ in 0..ranges {
+            with(|state| heap::release(state, text.cast_unsigned()));
+        }
+        with(|state| {
+            let block = state.heap.block(text.cast_unsigned()).unwrap();
+            assert!(state.heap.is_alone(text.cast_unsigned(), block));
+        });
+        heap::free(text);
+        heap::free(list);
+        finish();
+    }
+
+    /// Takes the one owner `env`'s block has, on the worker running the range at position 0.
+    extern "C" fn lets_go(env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        if from == 0 {
+            threads::release_shared(env, 0);
+        }
+        0
+    }
+
+    #[test]
+    fn a_block_ranges_take_the_last_owner_of_is_freed_when_the_call_ends() {
+        begin();
+        let before = with(|state| state.heap.live());
+        let text = string_block();
+        let list = lists::new(0, ITEMS);
+        assert_eq!(super::parallel_for(list, lets_go, text), 0);
+        assert!(with(|state| state.heap.block(text.cast_unsigned()).is_none()));
+        heap::free(list);
+        assert_eq!(with(|state| state.heap.live()), before);
+        finish();
+    }
+
+    extern "C" fn prints(env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        strings::print(env);
+        RANGES.fetch_add(1, Ordering::Relaxed);
+        0
+    }
+
+    #[test]
+    fn what_a_range_prints_on_a_worker_reaches_the_calling_thread() {
+        begin();
+        RANGES.store(0, Ordering::Relaxed);
+        let text = string_block();
+        let list = lists::new(0, ITEMS);
+        assert_eq!(super::parallel_for(list, prints, text), 0);
+        let ranges = usize::try_from(RANGES.load(Ordering::Relaxed)).unwrap();
+        heap::free(list);
+        heap::free(text);
+        let (output, _, _) = finish();
+        assert_eq!(String::from_utf8(output).unwrap(), TEXT.repeat(ranges));
     }
 }

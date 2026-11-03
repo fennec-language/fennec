@@ -5,7 +5,7 @@
 //! thread adopts when the call ends.
 
 use std::cell::Cell;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, PoisonError};
 
 /// Below this many words of items, a loop isn't worth threads, and its ranges run on the
 /// calling thread.
@@ -90,7 +90,7 @@ pub(super) fn on_threads<R: Send>(threads: usize, run: impl FnOnce() -> R + Send
 /// Runs a call's ranges: on the pool when there are enough words of items to be worth it and
 /// workers can have runtimes, and on the calling thread otherwise. A worker's own call stays on
 /// that worker, which can't lend its blocks while it keeps working.
-pub(super) fn install<R: Send>(words: usize, run: impl FnOnce() -> R + Send) -> R {
+pub(super) fn install<R: Send>(call: &super::Run, words: usize, run: impl FnOnce() -> R + Send) -> R {
     let pool = (words >= SEQUENTIAL_WORDS && SETUP.get().is_some()).then(pool).flatten();
     let Some(pool) = pool else { return run() };
     if WORKER.get() {
@@ -99,15 +99,17 @@ pub(super) fn install<R: Send>(words: usize, run: impl FnOnce() -> R + Send) -> 
         NESTED.set(outer);
         return result;
     }
-    super::super::threads::lend();
+    *call.lent.write().unwrap_or_else(PoisonError::into_inner) = Some(super::super::threads::lend());
     let result = pool.install(run);
-    super::super::threads::take_back();
+    if let Some(lent) = call.lent.write().unwrap_or_else(PoisonError::into_inner).take() {
+        super::super::threads::take_back(lent);
+    }
     result
 }
 
 /// Starts a range on a worker, with the blocks lent for the call to read.
-pub(super) fn range_starts() {
-    super::super::threads::range_starts();
+pub(super) fn range_starts(lent: Option<std::sync::Arc<crate::embed::table::Table>>) {
+    super::super::threads::range_starts(lent);
 }
 
 /// Ends a range on a worker, giving back how it changed lent blocks' owners and what it printed.

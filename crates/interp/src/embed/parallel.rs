@@ -269,9 +269,9 @@ mod stream;
 
 pub use stream::{parallel_stream, stream_end, stream_next};
 
-pub use pool::{set_worker_setup, stack_limit};
 #[cfg(any(test, feature = "threads"))]
 pub use pool::{has_worker_setup, run_worker_setup};
+pub use pool::{set_worker_setup, stack_limit};
 
 #[cfg(test)]
 mod tests {

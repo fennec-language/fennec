@@ -32,7 +32,10 @@ const CODE: u32 = 8;
 /// and failure flag for each thread.
 pub fn uses_parallel(program: &Program) -> bool {
     program.functions.iter().chain(&program.constants).flat_map(|function| &function.blocks).any(|block| {
-        block.insts.iter().any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if name.starts_with("parallel.")))
+        block
+            .insts
+            .iter()
+            .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if name.starts_with("parallel.")))
     })
 }
 

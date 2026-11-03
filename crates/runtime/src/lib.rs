@@ -11,8 +11,8 @@
 )]
 
 use fennec_interp::embed::{
-    aot, capabilities, checks, dicts, eval, heap, io, json, lists, names, numbers, objects, parallel, regex, serve,
-    strings, temps, text, threads,
+    aot, capabilities, checks, dicts, eval, heap, io, json, lists, names, numbers, objects, parallel, regex,
+    serve, strings, temps, text, threads,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the

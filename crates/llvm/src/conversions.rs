@@ -438,7 +438,7 @@ impl Emit<'_, '_, '_> {
             Kind::Struct(id) | Kind::Enum(id) => {
                 let id = *id;
                 let words = self.layout_of(id)?.size / 8;
-                if words <= 1 && self.inline_blocks(held).is_empty() {
+                if words <= 1 && !self.holds_inline(held) {
                     let word = self.temp();
                     self.line(&format!("{word} = load i64, ptr {value}"));
                     (word, Passed::Nothing)

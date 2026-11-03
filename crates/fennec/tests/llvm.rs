@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 74;
+const BUILDING_EXAMPLES: usize = 79;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -2112,6 +2112,8 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
         ("alone_ceil", "ceil(1e300 * 1e300)"),
         ("alone_round", "round(1e300 * 1e300)"),
         ("alone_range", "range(0, 1, 0)"),
+        ("alone_max", "max(empty)"),
+        ("alone_min", "min(empty)"),
     ] {
         same_message_as_the_jit(
             name,
@@ -2119,6 +2121,8 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
                 "from std.math import ceil, floor
 
 def main(stdout: Stdout):
+    empty: list[int] = []
+    stdout.print(empty.len())
     stdout.print({call})
 "
             ),

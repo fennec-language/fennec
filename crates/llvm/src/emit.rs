@@ -93,11 +93,20 @@ pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared, Layouts), String> {
 
 /// `emit`, for a level of processor.
 pub fn emit_for(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+    emit_with(program, cpu, false)
+}
+
+/// `emit_for`, with each function setting a flag that says it ran, for a test to say what it ran.
+pub fn emit_traced(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+    emit_with(program, cpu, true)
+}
+
+fn emit_with(program: &Program, cpu: Cpu, traced: bool) -> Result<(Vec<Unit>, Shared, Layouts), String> {
     let header = crate::header()?;
     let attributes = attributes(cpu);
     let everything = whole(program);
     let layouts = crate::layouts_of(program);
-    let mut shared = Shared::default();
+    let mut shared = Shared { traced, ..Shared::default() };
     let mut units = Vec::with_capacity(program.functions.len());
     // Every module of a program agrees, since what it declares has to match what's defined.
     let threads = crate::parallel::uses_parallel(program);
@@ -377,6 +386,7 @@ impl<'p> Module<'_, 'p> {
             next: 0,
             current: "entry".to_owned(),
             failed,
+            leaves: std::cell::Cell::new(false),
             needs_prop: false,
             start,
             start_symbol,
@@ -394,9 +404,22 @@ impl<'p> Module<'_, 'p> {
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
             (emit.allocas, emit.out, emit.cold, emit.failed, emit.needs_prop);
+        // Leaving a function that says it can't fail would be undefined, so it's refused here.
+        if failed == "unreachable" && (needs_prop || emit.leaves.get()) {
+            return Err(format!(
+                "`{}` fails where the backend worked out that it can't, which is a bug in it",
+                function.name
+            ));
+        }
         let _ =
             writeln!(self.bodies, "define {linkage}swiftcc {ret} {name}({params}) #{attributes} {{\nentry:");
         self.bodies += &allocas;
+        if self.shared.traced {
+            let flag = format!("@\"ran_{}\"", function.name);
+            self.declares.insert(format!("{flag} = external dso_local global i8"));
+            let _ = writeln!(self.bodies, "  store i8 1, ptr {flag}");
+            self.shared.ran.insert(function.name.clone());
+        }
         self.bodies += &out;
         self.bodies += &cold;
         if needs_prop {
@@ -421,6 +444,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// The block being written.
     pub(crate) current: String,
     failed: String,
+    /// Whether a way out for a failure was written.
+    leaves: std::cell::Cell<bool>,
     needs_prop: bool,
     start: u32,
     start_symbol: String,
@@ -932,6 +957,7 @@ impl Emit<'_, '_, '_> {
 
     /// How a function leaves when it has failed.
     pub(crate) fn failed_exit(&self) -> String {
+        self.leaves.set(true);
         self.failed.clone()
     }
 
@@ -950,7 +976,7 @@ impl Emit<'_, '_, '_> {
         self.start_block(&ok);
         self.declare("declare void @fennec_fail(i64, i64, i64) #1");
         let (place, args) = self.span_values(&fail, span);
-        let failed = self.failed.clone();
+        let failed = self.failed_exit();
         let _ =
             writeln!(self.cold, "{fail}:\n{place}  call void @fennec_fail(i64 {code}, {args})\n  {failed}");
     }

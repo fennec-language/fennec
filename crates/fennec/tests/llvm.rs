@@ -223,6 +223,120 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Reading a string that isn't ASCII goes on from where the last read got to, so reading it in
+/// order takes a step for each character. A place kept for a string that's since moved, grown or
+/// been let go of, with its address used again, would give a wrong character and no failure.
+const CHARACTER_PLACES: &str = r#"def long_text() -> str:
+    mut parts = ["héllo wörld "]
+    for i in range(40):
+        parts.append(f"ça {i} 日本語 🦊 ")
+    "".join(parts)
+
+def show_all(text: str) -> str:
+    mut out = []
+    for at in range(text.len()):
+        out.append(text[at])
+    "".join(out)
+
+def main(stdout: Stdout):
+    text = long_text()
+    stdout.print(text.len(), show_all(text) == text)
+    # Backward, forward, jumps, ends, negative.
+    mut seen = []
+    mut back = text.len() - 1
+    while back >= 0:
+        seen.append(text[back])
+        back -= 1
+    stdout.print(seen[0], seen[1], seen[seen.len() - 1], seen.len())
+    stdout.print(text[0], text[1], text[-1], text[-2], text[5], text[100], text[3], text[text.len() - 1])
+    mut jumps = []
+    for at in [0, 200, 1, 199, 50, 51, 49, -1, -200, 7]:
+        jumps.append(text[at])
+    stdout.print(jumps)
+    # Slices: every way of bounding one, inside, past the ends, empty, backward.
+    stdout.print(text[:5], text[5:], text[1:6], text[-5:], text[:-200], text[-3:-1], text[3:3], text[9:2])
+    stdout.print(text[0:100000], text[-100000:3], text[200:205], text[205:200], text[:].len())
+    mut pieces = []
+    mut piece_at = 0
+    while piece_at < text.len():
+        pieces.append(text[piece_at:piece_at + 3])
+        piece_at += 37
+    stdout.print(pieces)
+    # A one-character slice of each width.
+    stdout.print(text[1:2], "日本語"[1:2], "🦊x"[0:1], "a🦊"[1:], "é"[0:1], "é"[1:])
+    # Two strings in turn, each with its own place.
+    other = "ñandú " * 30
+    mut turns = []
+    mut turn = 0
+    while turn < 60:
+        turns.append(text[turn])
+        turns.append(other[turn])
+        turn += 7
+    stdout.print(turns)
+    # A string growing in place while it's read.
+    mut grown = "é"
+    for i in range(200):
+        grown += "ü" if i % 3 == 0 else "a"
+        if grown[-1] != grown[grown.len() - 1]:
+            stdout.print("wrong")
+    stdout.print(grown.len(), grown[100], grown[-1], grown[150:153])
+    # Strings let go of, their addresses free for new ones with other text.
+    for round in range(200):
+        made = f"é{round} ümläut ümläut ümläut ümläut ümläut"
+        last = made[made.len() - 1]
+        middle = made[10]
+        if last != "t":
+            stdout.print("wrong", round, last)
+        if round % 50 == 0:
+            stdout.print(middle, made[2:6])
+    # A block moved by `+=`, read at the same place before and after, past and before the cursor.
+    mut moved = "é" * 3
+    mut before = moved[2]
+    for i in range(300):
+        moved += "日"
+        before = moved[moved.len() - 2]
+    stdout.print(moved.len(), before, moved[1], moved[2], moved[3], moved[299], moved[-1], moved[1:4])
+    # The address of a string let go of, used by another with different text, at the same place.
+    mut wrong = 0
+    for round in range(400):
+        first = "ab" * 20 + f"é{round}" + "日本" * 20
+        at_first = first[42]
+        second = "é" * 30 + f"x{round}" + "ü" * 30
+        at_second = second[42]
+        if at_first != "0" and at_first != "1" and at_first != "2" and at_first != "3" and at_first != "é" and at_first != "4" and at_first != "5" and at_first != "6" and at_first != "7" and at_first != "8" and at_first != "9" and at_first != "日" and at_first != "本":
+            wrong += 1
+        if at_second != "ü":
+            wrong += 1
+    stdout.print(wrong)
+    # Inline strings, read directly, and the same text as a block.
+    short = "日本é"
+    stdout.print(short[0], short[1], short[2], short[-1], short[1:], short[:1], short.len())
+    # Other things on non-ASCII text.
+    stdout.print(text[:20].upper(), text[3:9].find("w"), text[:8] + "é", f"{text[:4]}!", text[:4] == "héll", text[1] == "é")
+    stdout.print(text[100000])
+"#;
+
+#[test]
+fn reading_a_string_that_isnt_ascii_finds_the_right_character() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit("character_places", CHARACTER_PLACES)
+}
+
+/// Reading and slicing a long string in order, one accented letter in it. How long this takes
+/// is held by the `json_unicode` kernel; a test this size says only that it's right.
+#[test]
+fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "character_steps",
+        "def main(stdout: Stdout):\n    text = \"é\" + \"a\" * 3000\n    mut found = 0\n    for at in range(text.len()):\n        if text[at] == \"a\":\n            found += 1\n    mut pieces = 0\n    for at in range(text.len() - 3):\n        pieces += text[at:at + 3].len()\n    stdout.print(found, pieces)\n",
+    )
+}
+
 /// A program changing `for mut` items in every way a body can, and leaving in every way.
 const FOR_MUT_ITEMS: &str = r#"error Bad:
     why: str
@@ -2244,4 +2358,31 @@ def main(stdout: Stdout):
         stdout.print(item else "missing")
 "#,
     )
+}
+
+/// A failure in a function with nothing else in it that can fail still says what went wrong.
+#[test]
+fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, call) in [
+        ("alone_int", "int(1e300 * 1e300)"),
+        ("alone_floor", "floor(1e300 * 1e300)"),
+        ("alone_ceil", "ceil(1e300 * 1e300)"),
+        ("alone_round", "round(1e300 * 1e300)"),
+        ("alone_range", "range(0, 1, 0)"),
+    ] {
+        same_message_as_the_jit(
+            name,
+            &format!(
+                "from std.math import ceil, floor
+
+def main(stdout: Stdout):
+    stdout.print({call})
+"
+            ),
+        )?;
+    }
+    Ok(())
 }

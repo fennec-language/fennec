@@ -1685,6 +1685,14 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         InstKind::Unary { dest, op: UnaryOp::Neg, value } => {
             function.type_of(value) == Some(Type::Int) && !known.is_safe(*dest)
         }
+        // A capability's method runs in the runtime, which can fail it, as when it's narrowed.
+        InstKind::Builtin { args, .. }
+            if args.first().and_then(|first| function.type_of(first)).is_some_and(
+                |ty| matches!(&ty, Type::Named(name) if fennec_layout::Cap::named(name).is_some()),
+            ) =>
+        {
+            true
+        }
         InstKind::Builtin { name, .. } => {
             matches!(
                 name.as_str(),
@@ -1706,6 +1714,11 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "result.expect"
                     | "dict.pop"
                     | "random.random_int"
+                    | "int"
+                    | "math.floor"
+                    | "math.ceil"
+                    | "round"
+                    | "range"
                     | "Regex.replace"
                     | "Regex.split"
                     | "Regex.find_all"

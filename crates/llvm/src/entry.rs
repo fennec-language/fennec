@@ -147,10 +147,23 @@ pub fn tests_entry(
     tests: &[String],
 ) -> Result<String, String> {
     let (mut out, count) = start_of(program, shared, image, bytes)?;
-    out += "declare i32 @fennec_aot_run(ptr, i64)\ndeclare void @fennec_aot_tests_start()\ndeclare i64 @fennec_aot_next_test()\ndeclare void @fennec_aot_test_done(i64)\n\n";
+    out += "declare i32 @fennec_aot_run(ptr, i64)\ndeclare void @fennec_aot_tests_start()\ndeclare i64 @fennec_aot_next_test()\ndeclare void @fennec_aot_test_ran(i64)\ndeclare void @fennec_aot_test_done(i64)\n\n";
+    // The flag each function sets when it runs, in the order `Shared::ran` lists them.
+    let flags: Vec<String> = shared.ran.iter().map(|name| format!("@\"ran_{name}\"")).collect();
+    for flag in &flags {
+        let _ = writeln!(out, "{flag} = dso_local global i8 0");
+    }
+    let table: Vec<String> = flags.iter().map(|flag| format!("ptr {flag}")).collect();
+    let many = flags.len();
+    let _ = writeln!(out, "@fennec_ran_flags = private constant [{many} x ptr] [{}]\n", table.join(", "));
+    // Says which flags the test just run set, clearing them for the next one.
+    let _ = writeln!(
+        out,
+        "define internal void @fennec_report_ran() {{\nstart:\n  br label %head\nhead:\n  %at = phi i64 [ 0, %start ], [ %next, %step ]\n  %more = icmp ult i64 %at, {many}\n  br i1 %more, label %read, label %done\nread:\n  %place = getelementptr [{many} x ptr], ptr @fennec_ran_flags, i64 0, i64 %at\n  %flag = load ptr, ptr %place\n  %value = load i8, ptr %flag\n  %set = icmp ne i8 %value, 0\n  br i1 %set, label %seen, label %step\nseen:\n  store i8 0, ptr %flag\n  call void @fennec_aot_test_ran(i64 %at)\n  br label %step\nstep:\n  %next = add i64 %at, 1\n  br label %head\ndone:\n  ret void\n}}\n"
+    );
     let thunks = setup(&mut out, program, shared, image);
     // The runtime says which tests to run, and hears how each went.
-    out += "  call void @fennec_aot_tests_start()\n  br label %next\nnext:\n  %number = call i64 @fennec_aot_next_test()\n  %more = icmp sge i64 %number, 0\n  br i1 %more, label %run, label %end\nrun:\n  call void @fennec_run_test(i64 %number)\n  call void @fennec_aot_test_done(i64 %number)\n  br label %next\nend:\n  ret void\n}\n\n";
+    out += "  call void @fennec_aot_tests_start()\n  br label %next\nnext:\n  %number = call i64 @fennec_aot_next_test()\n  %more = icmp sge i64 %number, 0\n  br i1 %more, label %run, label %end\nrun:\n  call void @fennec_run_test(i64 %number)\n  call void @fennec_report_ran()\n  call void @fennec_aot_test_done(i64 %number)\n  br label %next\nend:\n  ret void\n}\n\n";
     out += &thunks;
     let can_fail = crate::analysis::whole(program).can_fail;
     let mut cases = String::new();

@@ -1034,6 +1034,80 @@ fn check_json_gives_what_stops_a_load_a_place_and_its_help() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A kit whose `Parser` gets `step` from a file that only extends it.
+fn kit_with_an_extension(name: &str, imports: &str) -> std::io::Result<PathBuf> {
+    let kit = scratch(name)?;
+    std::fs::create_dir_all(kit.join("src/parser"))?;
+    std::fs::write(kit.join("kit.toml"), "name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")?;
+    std::fs::write(kit.join("src/parser/core.fen"), "struct Parser:\n    at = 0\n")?;
+    std::fs::write(
+        kit.join("src/parser/step.fen"),
+        "from parser.core import Parser\n\nextend Parser:\n    def step(self) -> int:\n        self.at + 1\n",
+    )?;
+    std::fs::write(
+        kit.join("src/main.fen"),
+        format!(
+            "from parser.core import Parser\n{imports}\ndef main(stdout: Stdout):\n    stdout.print(Parser().step())\n"
+        ),
+    )?;
+    Ok(kit)
+}
+
+#[test]
+fn a_run_says_which_file_has_a_missing_methods_extension() {
+    let kit = kit_with_an_extension("extension_missing", "").unwrap();
+    let path = kit.to_string_lossy().into_owned();
+    let output = fennec(&["run", "--no-test", &path], "").unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let shown = text(&output.stderr);
+    assert!(shown.contains("`Parser` has no method `step`"), "{shown}");
+    assert!(
+        shown.contains("`step` is in an `extend` in ")
+            && shown.contains("which this program doesn't import: add `import parser.step`"),
+        "{shown}"
+    );
+    assert!(shown.contains("parser/step.fen"), "{shown}");
+
+    // `check` and `lint` say what a run would, with the same help.
+    for command in ["check", "lint"] {
+        let output = fennec(&[command, &path], "").unwrap();
+        assert_eq!(output.status.code(), Some(1), "{command}");
+        let shown = text(&output.stderr);
+        assert!(shown.contains("`Parser` has no method `step`"), "{command}: {shown}");
+        assert!(shown.contains("add `import parser.step`"), "{command}: {shown}");
+    }
+    let output = fennec(&["check", "--json", &path], "").unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report = fennec_lsp::Json::parse(text(&output.stdout).trim()).unwrap_or(fennec_lsp::Json::Null);
+    let found = report.at(&["diagnostics"]).and_then(fennec_lsp::Json::as_array).and_then(<[_]>::first);
+    let words = |key: &str| found.and_then(|item| item.get(key)).and_then(fennec_lsp::Json::as_str);
+    assert!(words("file").is_some_and(|file| file.ends_with("main.fen")), "{found:?}");
+    assert!(words("help").is_some_and(|help| help.contains("add `import parser.step`")), "{found:?}");
+
+    // Doing what it says works, and the linter leaves the import that does it alone.
+    let kit = kit_with_an_extension("extension_imported", "import parser.step\n").unwrap();
+    let path = kit.to_string_lossy().into_owned();
+    let output = fennec(&["run", "--no-test", &path], "").unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "1\n");
+    let linted = fennec(&["lint", &path], "").unwrap();
+    assert!(linted.status.success(), "{}", text(&linted.stderr));
+    let checked = fennec(&["check", &path], "").unwrap();
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
+
+    // A file nothing imports doesn't matter if nothing needs what it adds.
+    let kit = kit_with_an_extension("extension_unneeded", "").unwrap();
+    let main = "from parser.core import Parser\n\ndef main(stdout: Stdout):\n    stdout.print(Parser().at)\n";
+    std::fs::write(kit.join("src/main.fen"), main).unwrap();
+    let checked = fennec(&["check", &kit.to_string_lossy()], "").unwrap();
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
+
+    // A kit with no `main` has no run to differ from.
+    std::fs::remove_file(kit.join("src/main.fen")).unwrap();
+    let checked = fennec(&["check", &kit.to_string_lossy()], "").unwrap();
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
+}
+
 #[test]
 fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     let dir = scratch("lint").unwrap();

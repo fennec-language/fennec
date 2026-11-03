@@ -31,6 +31,8 @@ thread_local! {
     static LITERALS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// The numbers of the tests a test executable has left to run, the next one last.
     static TESTS: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
+    /// The numbers of the flags set by the test just run.
+    static RAN: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The next eight bytes of the program the executable carries.
@@ -87,18 +89,25 @@ pub fn next_test_number() -> i64 {
     TESTS.with_borrow_mut(Vec::pop).unwrap_or(-1)
 }
 
+/// Notes that the test just run set the flag with this number: its function ran.
+pub fn test_ran(flag: i64) {
+    RAN.with_borrow_mut(|ran| ran.push(flag));
+}
+
 /// Says what the test just run did, on standard output as soon as it's done, in a line `fennec
 /// test` reads, so a crash loses only the tests not yet run. Tests here take nothing, so nothing
 /// else writes there.
 pub fn test_done(number: i64) {
-    let line = test_line(number, super::next_test().as_ref());
+    let ran: Vec<String> = RAN.take().iter().map(ToString::to_string).collect();
+    let line = test_line(number, super::next_test().as_ref(), &ran);
     let mut out = std::io::stdout();
     let _ = writeln!(out, "{line}").and_then(|()| out.flush());
 }
 
-/// What a test did, as a line: its number, and for a failure where it is, its message and its
-/// help, in hexadecimal so that anything can be in them.
-fn test_line(number: i64, failure: Option<&fennec_syntax::Diagnostic>) -> String {
+/// What a test did, as a line: its number, and what it ran if it passed, as the numbers of the
+/// flags that were set, or for a failure where it is, its message and its help, in hexadecimal so
+/// that anything can be in them.
+fn test_line(number: i64, failure: Option<&fennec_syntax::Diagnostic>, ran: &[String]) -> String {
     let hex = |text: &str| {
         let mut hex = String::with_capacity(text.len() * 2);
         for byte in text.bytes() {
@@ -107,7 +116,7 @@ fn test_line(number: i64, failure: Option<&fennec_syntax::Diagnostic>) -> String
         hex
     };
     match failure {
-        None => format!("{number} ok"),
+        None => format!("{number} ok {}", ran.join(",")),
         Some(failure) => format!(
             "{number} failed {} {} {} {}",
             failure.span.start,

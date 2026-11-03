@@ -161,6 +161,7 @@ impl Emit<'_, '_, '_> {
         let base = if let Some(boxed) = &boxed {
             self.offset(boxed, crate::lists::FIELDS_OFFSET)
         } else {
+            self.release_held(dest)?;
             let (slot, text) = (self.slot(dest), self.text_of(&kind));
             self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
             slot
@@ -262,29 +263,36 @@ impl Emit<'_, '_, '_> {
         self.assign_memory_owned(dest, &to)
     }
 
-    /// Fails the program if what `main` gave back is an error, as the runtime says it.
+    /// Fails the program if what `main` gave back is an error, as the runtime says it. Only then
+    /// does the result cross to the runtime.
     fn main_result(&mut self, result: &Operand, span: Span) -> Result<(), String> {
         let (value, kind) = self.operand(result)?;
+        let (err_case, _) = self.case_of(&kind, "Err")?;
+        let fields = self.fields_at(&value, &kind);
+        let (case, failed) = (self.temp(), self.temp());
+        self.line(&format!("{case} = load i64, ptr {fields}"));
+        self.line(&format!("{failed} = icmp eq i64 {case}, {err_case}"));
+        let (bad, fine) = (self.label("main_failed"), self.label("main_done"));
+        self.line(&format!("br i1 {failed}, label %{bad}, label %{fine}"));
+        self.start_block(&bad);
         let block = if let Kind::Enum(id) = kind {
             let block = self.new_block(id)?;
             let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
             self.store_field(&kind, &value, &fields, "");
             self.retain_inline(&kind, &fields);
-            Some(block)
+            block
         } else {
-            None
+            value
         };
-        let crossing = block.as_deref().unwrap_or(&value);
         self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
         self.declare("declare void @fennec_main_result(i64, i64, i64) nounwind");
         let handle = self.temp();
         let (from, to) = (i64::from(span.start), i64::from(span.end));
-        self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {crossing})"));
+        self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
         self.line(&format!("call void @fennec_main_result(i64 {handle}, i64 {from}, i64 {to})"));
         self.leave_if_failed();
-        if let Some(block) = block {
-            self.release(&block);
-        }
+        self.line(&format!("br label %{fine}"));
+        self.start_block(&fine);
         Ok(())
     }
 

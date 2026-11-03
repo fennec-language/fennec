@@ -498,6 +498,8 @@ with launch(physics_loop) as physics:
 
 Channels are bounded ring buffers with `send`, `pending()` and `for x in ch`. You choose what a full one does when you make it: `.Wait`, the default, `.DropOldest` or `.Fail`. The rule of thumb is that a long-running loop should never wait on another, since deadlock needs someone waiting.
 
+Event channels are planned too, for many listeners each reading at its own pace. Their exact API isn't decided yet.
+
 ## Sharing
 
 **Planned.** Most programs share nothing. For the few things that really are shared, like a cache or a server's stats, `shared Name:` is Fennec's one reference type. Its methods lock automatically: `mut self` writes and `self` reads.
@@ -650,6 +652,8 @@ def main(stdout: Stdout):
 ```
 
 Every change happens in one visible place, which also makes replays and networking simpler.
+
+Functions are still values you can pass and store, as callbacks, dicts of handlers, or the routes a web kit might take with `router.get("/users", list_users)`. The whole program is compiled, so every function such a value could hold is known at compile time, and choosing one at run time is a branch. There's no `dyn` and no code the compiler hasn't seen. Use a function value for one answer now, and a channel for many parties later.
 
 ## Capabilities
 

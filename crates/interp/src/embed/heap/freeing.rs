@@ -111,7 +111,8 @@ fn free_block(state: &mut State, address: u64) {
             continue;
         }
         // Only a string has a place kept in it, and that's forgotten below, once it's known to be one.
-        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove_any(at)) else {
+        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove_any(at))
+        else {
             continue;
         };
         let shape = shape_word(&block).unwrap_or(u64::MAX);

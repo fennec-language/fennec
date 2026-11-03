@@ -295,6 +295,9 @@ mod tests {
     fn what_a_heap_keeps_for_reuse_stays_under_its_limit_however_much_is_freed() {
         let module = fennec_syntax::Module { items: Vec::new() };
         start(&module, Tables::default(), crate::Inputs::default()).unwrap();
+        // Blocks of four words fill the limit exactly, and all of it gets used.
+        free_many(400_000, 4);
+        with(|state| assert_eq!(state.heap.spare_words, super::super::SPARE_TOTAL_WORDS));
         for words in [4, 5, 16, 100] {
             free_many(400_000, words);
             with(|state| {

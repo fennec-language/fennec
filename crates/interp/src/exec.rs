@@ -108,6 +108,11 @@ impl Interp<'_> {
             StmtKind::If { branches, otherwise } => self.if_stmt(branches, otherwise.as_deref()),
             StmtKind::While { cond, body } => self.while_loop(cond, body),
             StmtKind::For { names, is_mut, iter, body } => self.for_loop(names, *is_mut, iter, body),
+            // The `mut` form of `def []` says where its item is.
+            StmtKind::Return(Some(value)) if self.naming_place == Some(self.depth) => {
+                self.named_place = self.place(value)?;
+                Ok(Flow::Return(Value::Unit))
+            }
             StmtKind::Return(value) => {
                 Ok(Flow::Return(value.as_ref().map_or(Ok(Value::Unit), |value| self.eval(value))?))
             }
@@ -379,7 +384,13 @@ impl Interp<'_> {
                 None
             };
             let source = self.eval(iter)?;
-            (self.items_of(source, iter.span)?, place, None)
+            let items = match &place {
+                Some(place) if self.has_positions(&source) => {
+                    self.position_items(source, place, iter.span)?
+                }
+                _ => self.items_of(source, iter.span)?,
+            };
+            (items, place, None)
         };
         loop {
             let (key, flow) = if let Some(key) = inside.take() {

@@ -464,6 +464,9 @@ struct Parser:
             if not self.eat_punct(","):
                 break
         self.expect_punct(")")?
+        # `def [](mut self, i)` is the `mut` form, which a type can have beside `def [](self, i)`.
+        if name == "[]" and params.len() > 0 and params[0].is_self and params[0].is_mut:
+            name = "[]mut"
         mut ret = None
         mut arrow = None
         if self.eat_punct("->"):

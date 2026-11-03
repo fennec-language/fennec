@@ -1526,6 +1526,198 @@ fn short_copies_match_the_jit() -> std::io::Result<()> {
 /// dict's or set's keys as a list.
 #[test]
 fn conversions_match_the_jit() -> std::io::Result<()> {
+
+/// A program holding enums with strings and lists in every way: each case's blocks are owned by
+/// whatever holds the enum.
+const ENUMS_HOLDING_BLOCKS: &str = r#"enum Token:
+    Blank
+    Word(text: str)
+    Num(value: int)
+    Many(items: list[int], label: str)
+
+enum First:
+    Named(name: str)
+    Count(value: int)
+
+struct Holder:
+    token: Token
+    tag: str
+    size: int
+
+struct Person:
+    name: str
+    age: int
+
+enum Wrap:
+    Empty
+    Who(person: Person)
+    Inner(token: Token)
+
+def word(text: str) -> Token:
+    Token.Word(text)
+
+def describe(token: Token) -> str:
+    match token:
+        case .Blank:
+            "blank"
+        case .Word(text):
+            f"word {text}"
+        case .Num(value):
+            f"num {value}"
+        case .Many(items, label):
+            f"{label}: {items.len()} items, first {items[0]}"
+
+def replace(mut token: Token, text: str):
+    token = Token.Word(text)
+
+def pick(at: int) -> Token?:
+    if at == 0:
+        return None
+    if at == 1:
+        return Token.Word("a string long enough that it can't be held inline")
+    if at == 2:
+        return Token.Word("short")
+    Token.Many([at], "label")
+
+def someone(at: int) -> Person?:
+    if at == 0:
+        return None
+    Person("somebody with a name long enough to be a block of its own", at)
+
+def main(stdout: Stdout):
+    long = "a string long enough that it can't be held inline"
+    tokens = [Token.Blank, word("short"), word(long), Token.Num(7), Token.Many([1, 2, 3], long)]
+    for token in tokens:
+        stdout.print(describe(token))
+        stdout.print(token)
+    # Copies, and changes after copying.
+    mut a = word(long + "!")
+    b = a
+    a = Token.Num(1)
+    stdout.print(describe(a), describe(b))
+    mut c = copy(b)
+    replace(mut c, "changed")
+    stdout.print(describe(b), describe(c))
+    # Reassigning in a loop lets go of what it held.
+    mut last = Token.Blank
+    for at in range(1000):
+        last = word(f"a long string number {at} that doesn't fit inline")
+    stdout.print(describe(last))
+    # Equality.
+    same = [word(long) == word(long), word("x") == word("x"), word("x") == word("y"),
+        word("x") != Token.Num(1), Token.Blank == Token.Blank, Token.Num(1) == Token.Num(1),
+        Token.Many([1], "a") == Token.Many([1], "a"), Token.Many([1], "a") == Token.Many([2], "a"),
+        word(long[0:30]) == word(long[0:30])]
+    stdout.print(same)
+    # In structs and lists.
+    held = Holder(word(long), "tag", 3)
+    other = held
+    stdout.print(describe(held.token), held == other, held.tag)
+    stdout.print(held)
+    mut list_of = [word("one")]
+    for at in range(100):
+        list_of.append(word(f"item number {at} long enough not to be held inline"))
+    list_of[0] = Token.Num(9)
+    popped = list_of.pop()
+    stdout.print(list_of.len(), describe(list_of[0]), describe(list_of[50]), describe(popped))
+    # First case holding a string, moved out and let go of at the end.
+    mut first = First.Named(long)
+    moved = first
+    first = First.Named("other")
+    stdout.print(first, moved)
+    # A struct inside a case, and an enum inside a case.
+    wrap = Wrap.Who(Person(long, 3))
+    wrapped = [wrap, Wrap.Empty, Wrap.Inner(word(long))]
+    for item in wrapped:
+        stdout.print(item)
+    stdout.print(wrapped[0] == wrap, wrapped[2] == wrap)
+    # Optionals of them.
+    for at in range(4):
+        found = pick(at)
+        stdout.print(found)
+        if found is not None:
+            stdout.print(describe(found))
+    mut picked = pick(1)
+    for at in range(100):
+        picked = pick(at % 4)
+    stdout.print(picked)
+    who = someone(1)
+    stdout.print(who)
+"#;
+
+/// The same enums read and written as JSON, and as what a result holds.
+const ENUMS_IN_JSON_AND_RESULTS: &str = r#"from std import json
+
+
+enum Token:
+    Blank
+    Word(text: str)
+    Num(value: int)
+
+enum Failure:
+    Plain
+    Why(reason: str)
+
+enum Shape:
+    Empty
+    Circle(radius: float)
+    Rect(w: float, h: float)
+
+struct Person:
+    name: str
+    age: int
+
+struct Doc:
+    token: Token
+    tokens: list[Token]
+    name: str
+
+def get(at: int) -> Result[int, Failure]:
+    if at == 0:
+        return Err(Failure.Why("a reason long enough to be held as a block of its own"))
+    if at == 1:
+        return Err(Failure.Plain)
+    Ok(at)
+
+def main(stdout: Stdout):
+    long = "a string long enough that it can't be held inline"
+    # Results holding them.
+    for at in range(3):
+        match get(at):
+            case Ok(value):
+                stdout.print("ok", value)
+            case Err(failure):
+                stdout.print("err", failure)
+    # JSON of them.
+    d = Doc(Token.Word(long), [Token.Blank, Token.Num(2), Token.Word("x")], long)
+    text = json.dumps(d)
+    stdout.print(text)
+    back = json.loads[Doc](text) else Doc(Token.Blank, [], "")
+    stdout.print(back == d, back)
+    token = json.loads[Token](json.dumps(Token.Word(long))) else Token.Blank
+    stdout.print(token)
+    tokens = json.loads[list[Token]](json.dumps(d.tokens)) else []
+    stdout.print(tokens)
+    # An expected result whose error is one.
+    stdout.print(get(5).expect("five is fine"))
+    # Enums that hold numbers only, printed.
+    stdout.print(Shape.Circle(1.5), Shape.Empty, [Shape.Rect(1.0, 2.0)])
+    stdout.print(f"{Shape.Rect(1.0, 2.0)}")
+"#;
+
+/// Everything that holds, copies, compares or shows an enum in place, in every case.
+#[test]
+fn enums_holding_blocks_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("enums_holding_blocks", ENUMS_HOLDING_BLOCKS)?;
+    same_as_the_jit("enums_in_json_and_results", ENUMS_IN_JSON_AND_RESULTS)
+}
+
+/// `parallel` puts items back by their case, letting go of what each item held.
+#[test]
+fn parallel_loops_over_enums_holding_blocks_match_the_jit() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -1547,6 +1739,34 @@ def main(stdout: Stdout):
     copied = set(seen)
     seen.add(5)
     stdout.print(seen, copied)
+
+        "parallel_enums",
+        r#"enum Token:
+    Blank
+    Word(text: str)
+    Many(items: list[int], label: str)
+
+def describe(token: Token) -> str:
+    match token:
+        case .Blank:
+            "blank"
+        case .Word(text):
+            text
+        case .Many(items, label):
+            f"{label} {items.len()}"
+
+def main(stdout: Stdout):
+    long = "a string long enough that it can't be held inline"
+    mut tokens = [Token.Word(long), Token.Blank, Token.Many([1, 2], long), Token.Word("short")]
+    for mut item in parallel(tokens):
+        item = Token.Word("changed, and long enough that it can't be held inline")
+    stdout.print(tokens)
+    stdout.print([describe(item) for item in parallel(tokens)])
+    mut more = [Token.Word(long + "!") for at in range(200)]
+    for mut item in parallel(more):
+        if describe(item).len() > 10:
+            item = Token.Blank
+    stdout.print(more[0], more[199], sum(describe(item).len() for item in parallel(more)))
 "#,
     )
 }
@@ -1569,6 +1789,12 @@ fn a_float_too_big_for_an_int_fails_like_the_jit() -> std::io::Result<()> {
 /// Optional strings going into a list, whose items hold an optional as an enum.
 #[test]
 fn optional_strings_in_lists_match_the_jit() -> std::io::Result<()> {
+
+/// What's written whole through a `mut` parameter belongs to the caller's local, and what `pop`
+/// and `remove_where` take out of a list keeps or loses the owners the list had. A string made
+/// for the call has no other owner, so an owner too few frees it while it's still in use.
+#[test]
+fn in_place_values_keep_their_owners_through_mut_params_and_pops() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -1589,4 +1815,89 @@ def main(stdout: Stdout):
         stdout.print(item else "missing")
 "#,
     )
+}
+
+        "in_place_owners",
+        r#"struct Person:
+    name: str
+    age: int
+
+enum Token:
+    Blank
+    Word(text: str)
+
+def rename(mut person: Person, name: str):
+    person = Person(name, 2)
+
+def set_person(mut person: Person, other: Person):
+    person = other
+
+def set_token(mut token: Token, other: Token):
+    token = other
+
+def retext(mut token: Token, text: str):
+    token = Token.Word(text)
+
+def main(stdout: Stdout):
+    long = "a string long enough that it can't be held inline"
+    mut total = 0
+    for at in range(2000):
+        mut person = Person(long, 1)
+        rename(mut person, long + "!")
+        keep = Person(long + "?", 3)
+        total += person.name.len()
+        set_person(mut person, keep)
+        total += person.name.len() + keep.name.len()
+        mut token = Token.Word(long)
+        retext(mut token, long + "!")
+        other = Token.Word(long + "?")
+        same = token == other
+        set_token(mut token, other)
+        mut people = [Person(long + "a", 1), Person(long + "b", 2), Person(long + "c", 3)]
+        gone = people.pop()
+        first = people.pop(0)
+        people.pop()
+        mut tokens = [Token.Word(long + "a"), Token.Blank, Token.Word(long + "b"), Token.Word(long + "c")]
+        last = tokens.pop()
+        early = tokens.pop(0)
+        tokens.pop(0)
+        tokens.remove_where((item) => item == Token.Blank)
+        total += gone.name.len() + first.name.len() + people.len() + tokens.len()
+        if same or last == early:
+            total += 1
+    stdout.print(total)
+"#,
+    )
+}
+
+/// Keys are hashed and compared by their words, so one holding a string can't be: two equal
+/// strings can be two blocks. Native code turns those dicts down, and the JIT takes them.
+#[test]
+fn keys_holding_strings_go_to_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Person:
+    name: str
+    age: int
+
+def main(stdout: Stdout):
+    mut by_person: dict[Person, int] = {}
+    by_person[Person("a string long enough that it can't be held inline", 1)] = 1
+    stdout.print(by_person.len())
+"#;
+    let dir = folder("keys_holding_strings")?;
+    let program = dir.join("keys_holding_strings.fen");
+    std::fs::write(&program, source)?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("out"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &output.to_string_lossy()], &dir)?;
+    assert!(!built.status.success());
+    assert!(String::from_utf8_lossy(&built.stderr).contains("Dict(Named(\"Person\"), Int)"));
+    let ran = fennec(&["run", &program], &dir)?;
+    assert!(ran.status.success());
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n");
+    let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+    assert!(said.starts_with("note: running this with the JIT, since LLVM can't build it: `main`"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }

@@ -451,7 +451,7 @@ pub extern "C" fn add_slice(dict: i64, text: i64, from: i64, to: i64, value: i64
         if !matches!(key_word, Word::Str | Word::Text) {
             return None;
         }
-        let unique = block.first() == Some(&1);
+        let unique = state.heap.is_alone(at, block);
         if let (true, (Probe::Found(entry), _)) = (unique, find_text(state, block, (&bytes, chars))?) {
             let word = value_place(block, layout(state, block)?, entry)?;
             let value = u64::from_ne_bytes(value.to_ne_bytes());
@@ -683,7 +683,7 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     let hash = hash_key(state, layout.key, key);
     let slots = usize::try_from(*block.get(4)?).ok()? + 1;
     let used = usize::try_from(*block.get(3)?).ok()?;
-    let shared = block.first() != Some(&1);
+    let shared = !state.heap.is_alone(at, block);
     if shared || used >= capacity(slots) {
         let (shape, live) = (shape_word(block)?, entries(block, layout.width));
         if shared {
@@ -734,16 +734,14 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
 fn retain_entry(state: &mut State, layout: Layout, entry: &[u64]) {
     let held = [key_block(layout.key, key_of(entry)), layout.value.owned().then(|| value_of(entry))];
     for address in held.into_iter().flatten() {
-        if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
-            *count += 1;
-        }
+        super::heap::retain(state, address);
     }
 }
 
 /// A block only one owner holds, taking over the owner `at` had.
 fn unshared(state: &mut State, at: u64) -> Option<u64> {
     let block = state.heap.block(at)?;
-    if block.first() == Some(&1) {
+    if state.heap.is_alone(at, block) {
         return Some(at);
     }
     let layout = layout(state, block)?;

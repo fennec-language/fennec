@@ -198,7 +198,10 @@ impl<'p> Emit<'_, '_, 'p> {
         let (number, fields) = self.case_of(&kind, "Err")?;
         let (_, offset, held) = fields.into_iter().find(|(name, ..)| name == "error").ok_or("no error")?;
         let held = held.ok_or("an error this backend doesn't take yet")?;
-        if !matches!(held, Kind::Boxed(_) | Kind::Str | Kind::List(_) | Kind::Dict(..) | Kind::Struct(_)) {
+        if !matches!(
+            held,
+            Kind::Boxed(_) | Kind::Str | Kind::List(_) | Kind::Dict(..) | Kind::Struct(_) | Kind::Enum(_)
+        ) {
             return Err(format!(
                 "it expects a result whose error is a {held:?}, which this backend doesn't take yet"
             ));
@@ -216,7 +219,7 @@ impl<'p> Emit<'_, '_, 'p> {
         let at = self.offset(&fields_at, offset);
         let (error, handle, text, message) = (self.temp(), self.temp(), self.temp(), self.temp());
         // An error in place goes across as a block made of it.
-        if let Kind::Struct(id) = held {
+        if let Kind::Struct(id) | Kind::Enum(id) = held {
             let block = self.new_block(id)?;
             let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
             self.store_field(&held, &at, &fields, "");

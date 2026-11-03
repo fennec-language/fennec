@@ -73,9 +73,7 @@ fn held_blocks(element: &Element, words: &[u64]) -> Vec<u64> {
 /// holds them too.
 fn retain_items(state: &mut State, element: &Element, words: &[u64]) {
     for address in held_blocks(element, words) {
-        if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
-            *count += 1;
-        }
+        super::heap::retain(state, address);
     }
 }
 
@@ -160,7 +158,7 @@ fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i6
     let stride = element.words();
     let count = usize::try_from(*block.get(2)?).ok()?;
     let room = usize::try_from(*block.get(3)?).ok()?;
-    let shared = block.first() != Some(&1);
+    let shared = !state.heap.is_alone(address, block);
     let wanted = if count + more > room { grown_room(count, more) } else { room }.max(least);
     let address = if shared || wanted > room {
         let kept = items(block, stride).to_vec();

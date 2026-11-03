@@ -202,8 +202,14 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{text} = call ptr @fennec_float_text(double {value})"));
                 Ok(text)
             }
-            // Holding strings or lists, it's written by the runtime, from a block made of it.
-            Kind::Struct(id) if !self.inline_blocks(kind).is_empty() => {
+            // Holding strings or lists, or an enum's fields, it's written by the runtime, from a
+            // block made of it.
+            Kind::Struct(id) | Kind::Enum(id)
+                if self.holds_inline(kind)
+                    || self.module.layouts.get(*id).is_some_and(|layout| {
+                        layout.cases.iter().flatten().any(|case| !case.fields.is_empty())
+                    }) =>
+            {
                 let block = self.new_block(*id)?;
                 let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
                 self.store_field(kind, value, &fields, "");
@@ -257,12 +263,6 @@ impl Emit<'_, '_, '_> {
                 let layouts = self.module.layouts;
                 let layout = layouts.get(*id).ok_or("no such layout")?;
                 let cases = layout.cases.as_ref().ok_or("an enum with no cases")?;
-                if cases.iter().any(|case| !case.fields.is_empty()) {
-                    return Err(
-                        "it formats an enum whose cases hold values, which this backend doesn't take yet"
-                            .to_owned(),
-                    );
-                }
                 let tag = self.temp();
                 self.line(&format!("{tag} = load i64, ptr {value}"));
                 let mut text = self.literal(&format!(

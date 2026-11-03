@@ -209,3 +209,22 @@ def main(stdout: Stdout):
     assert_eq!(lifted(&program).len(), 0);
     assert_eq!(parallel_calls(function_named(&program, "left").unwrap()).len(), 0);
 }
+
+#[test]
+fn what_a_sum_s_item_lifts_is_lifted_once() -> Result<(), String> {
+    // A `parallel` and an arrow function inside the item of a `parallel` sum.
+    let source = "\
+def twice(f: (int) -> int, n: int) -> int:
+    f(f(n))
+
+def total(grids: list[list[int]]) -> int:
+    sum(sum(twice(n => n + 1, cell) for cell in parallel(row)) for row in parallel(grids))
+";
+    let program = lowered(source, Options { outline_parallel: true })?;
+    let mut names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
+    names.sort_unstable();
+    let count = names.len();
+    names.dedup();
+    assert_eq!(names.len(), count, "a function is there twice: {names:?}");
+    Ok(())
+}

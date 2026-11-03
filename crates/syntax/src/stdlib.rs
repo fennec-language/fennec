@@ -206,6 +206,10 @@ fn parse_prelude() -> Result<Vec<crate::Module>, crate::Diagnostic> {
     }
     qualify_functions(&mut modules);
     parsed.extend(modules.into_iter().map(|(_, module)| module));
+    let interfaces = crate::visit::interface_names(&parsed);
+    for module in &mut parsed {
+        crate::visit::interface_params(module, &interfaces);
+    }
     Ok(parsed)
 }
 

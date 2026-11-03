@@ -69,13 +69,16 @@ impl Interp<'_> {
                     .with_help("use `.get(key)`, which gives None instead")
             }),
             (Value::Instance(instance), _) => {
-                let method = self
-                    .type_info(&instance.type_name)
-                    .and_then(|info| info.methods.get("[]").cloned())
-                    .ok_or_else(|| {
-                        Diagnostic::new(format!("`{}` can't be indexed", instance.type_name), span)
-                            .with_help("define `def [](self, index: ...)` to index it")
-                    })?;
+                let info = self.type_info(&instance.type_name);
+                if info.as_ref().is_some_and(|info| {
+                    !info.methods.contains_key("[]") && info.methods.contains_key("[]mut")
+                }) {
+                    return self.read_position(value, at, span);
+                }
+                let method = info.and_then(|info| info.methods.get("[]").cloned()).ok_or_else(|| {
+                    Diagnostic::new(format!("`{}` can't be indexed", instance.type_name), span)
+                        .with_help("define `def [](self, index: ...)` to index it")
+                })?;
                 self.call_with_values(&method, vec![value.clone(), at], span)
             }
             _ => ops::index(&value, &at, span),
@@ -93,6 +96,9 @@ impl Interp<'_> {
         value: Value,
         span: Span,
     ) -> Result<Vec<(Option<Value>, Value)>, Diagnostic> {
+        if self.has_positions(&value) {
+            return self.position_entries(value, span);
+        }
         let keyless = |items: &[Value]| items.iter().map(|item| (None, item.clone())).collect();
         Ok(match value {
             Value::List(items) => {

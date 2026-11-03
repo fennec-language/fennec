@@ -370,14 +370,18 @@ impl Emit<'_, '_, '_> {
         let length_at = self.offset(&list, 16);
         self.line(&format!("store i64 {last}, ptr {length_at}"));
         let value = self.item_value(&list, &held, &last);
+        // What's popped keeps the owners the list had for it.
         match dest {
-            Some(dest) if held.in_memory() => self.assign_memory(dest, &value, ""),
+            Some(dest) if held.in_memory() => self.assign_memory_owned(dest, &value),
             Some(dest) => self.assign(dest, &value),
             None if held.counted() => {
                 self.release_kind(&value, &held);
                 Ok(())
             }
-            None => Ok(()),
+            None => {
+                self.release_inline(&held, &value);
+                Ok(())
+            }
         }
     }
 
@@ -398,11 +402,13 @@ impl Emit<'_, '_, '_> {
         let (index, _) = self.operand(at)?;
         let position = self.position(&list, &index, span);
         let value = self.item_value(&list, &held, &position);
-        // A struct in the list is copied out before what's after it moves over it.
-        if let Some(dest) = dest
-            && held.in_memory()
-        {
-            self.assign_memory(dest, &value, "")?;
+        // A struct in the list is copied out before what's after it moves over it, with the
+        // owners the list had for it.
+        if held.in_memory() {
+            match dest {
+                Some(dest) => self.assign_memory_owned(dest, &value)?,
+                None => self.release_inline(&held, &value),
+            }
         }
         let length = self.list_length(&list);
         let (next, last, moved, size) = (self.temp(), self.temp(), self.temp(), self.temp());
@@ -418,7 +424,7 @@ impl Emit<'_, '_, '_> {
         let length_at = self.offset(&list, 16);
         self.line(&format!("store i64 {last}, ptr {length_at}"));
         match dest {
-            Some(_) if held.in_memory() => Ok(()),
+            _ if held.in_memory() => Ok(()),
             Some(dest) => self.assign(dest, &value),
             None if held.counted() => {
                 self.release_kind(&value, &held);
@@ -454,6 +460,7 @@ impl Emit<'_, '_, '_> {
         if held.counted() {
             self.release_kind(&value, &held);
         }
+        self.release_inline(&held, &value);
         self.line(&format!("br label %{next}"));
         self.start_block(&keep);
         let (place_number, later) = (self.temp(), self.temp());

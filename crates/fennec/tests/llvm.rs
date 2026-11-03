@@ -2246,3 +2246,75 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// A failed `assert` says all the JIT does, each side as the interpreter shows it.
+#[test]
+fn a_failed_assert_says_what_the_jit_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let setup = "struct Point:
+    x: int
+    label: str
+
+struct Plain:
+    x: int
+    y: float
+
+struct Shown:
+    x: int
+
+    def str(self, mut out: StrWriter):
+        out.write(\"its own text\")
+
+enum Light:
+    Red
+    Green
+
+def seen(present: bool) -> int?:
+    if present:
+        return 3
+    None
+
+def named(present: bool) -> str?:
+    if present:
+        return \"hi\"
+    None
+";
+    for (number, condition) in [
+        "1 + 1 == 3",
+        "2 > 3",
+        "2.5 <= 1.5",
+        "True != True",
+        "\"a\\nb\" == \"c\\\"d\"",
+        "[1].len() >= 2",
+        "\"q\" in [\"a\"]",
+        "Plain(x=1, y=2.0) == Plain(x=2, y=2.0)",
+        "Point(x=1, label=\"p\") == Point(x=2, label=\"q\")",
+        "Shown(x=1) != Shown(x=1)",
+        "Light.Red == Light.Green",
+        "seen(True) is None",
+        "seen(False) is not None",
+        "named(True) is None",
+        "named(False) is not None",
+        "seen(True) == seen(False)",
+        "3 in [1, 2]",
+        "1 not in [1, 2]",
+        "\"z\" in {\"a\": 1}",
+        "\"z\" in \"abc\"",
+        "False",
+        "1 == 1 and 1 == 2",
+        "not True",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let source =
+            format!("{setup}\ndef main(stdout: Stdout):\n    stdout.print(1)\n    assert {condition}\n");
+        let ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code)) =
+            both(&format!("assert_{number}"), &source)?;
+        assert_eq!((&ours_out, ours_code), (&jit_out, jit_code), "{condition}");
+        assert_eq!(ours_err, jit_err, "{condition}");
+    }
+    Ok(())
+}

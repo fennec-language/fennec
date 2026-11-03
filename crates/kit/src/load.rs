@@ -177,7 +177,7 @@ fn read_manifest(root: &Path, shown_root: &str) -> Result<Manifest, Problems> {
 }
 
 /// Every `.fen` file under `dir`, as module paths.
-fn find_modules(dir: &Path, prefix: &mut Vec<String>, found: &mut Vec<Vec<String>>) {
+pub(crate) fn find_modules(dir: &Path, prefix: &mut Vec<String>, found: &mut Vec<Vec<String>>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -429,6 +429,13 @@ impl<'a> Loader<'a> {
             .flat_map(|file| file.module.items)
             .filter(|item| !matches!(item, Item::Import(import) if !is_std(import)))
             .collect();
-        Ok(Program { module: Module { items }, sources: self.sources, manifest, embedded: self.embedded })
+        let kit_src = manifest.as_ref().map(|_| (self.src, self.shown_src));
+        Ok(Program {
+            module: Module { items },
+            sources: self.sources,
+            manifest,
+            embedded: self.embedded,
+            kit_src,
+        })
     }
 }

@@ -1034,6 +1034,50 @@ fn check_json_gives_what_stops_a_load_a_place_and_its_help() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A kit whose `Parser` gets `step` from a file that only extends it.
+fn kit_with_an_extension(name: &str, imports: &str) -> std::io::Result<PathBuf> {
+    let kit = scratch(name)?;
+    std::fs::create_dir_all(kit.join("src/parser"))?;
+    std::fs::write(kit.join("kit.toml"), "name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")?;
+    std::fs::write(kit.join("src/parser/core.fen"), "struct Parser:\n    at = 0\n")?;
+    std::fs::write(
+        kit.join("src/parser/step.fen"),
+        "from parser.core import Parser\n\nextend Parser:\n    def step(self) -> int:\n        self.at + 1\n",
+    )?;
+    std::fs::write(
+        kit.join("src/main.fen"),
+        format!(
+            "from parser.core import Parser\n{imports}\ndef main(stdout: Stdout):\n    stdout.print(Parser().step())\n"
+        ),
+    )?;
+    Ok(kit)
+}
+
+#[test]
+fn a_run_says_which_file_has_a_missing_methods_extension() {
+    let kit = kit_with_an_extension("extension_missing", "").unwrap();
+    let path = kit.to_string_lossy().into_owned();
+    let output = fennec(&["run", "--no-test", &path], "").unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let shown = text(&output.stderr);
+    assert!(shown.contains("`Parser` has no method `step`"), "{shown}");
+    assert!(
+        shown.contains("`step` is in an `extend` in ")
+            && shown.contains("which this program doesn't import: add `import parser.step`"),
+        "{shown}"
+    );
+    assert!(shown.contains("parser/step.fen"), "{shown}");
+
+    // Doing what it says works, and the linter leaves the import that does it alone.
+    let kit = kit_with_an_extension("extension_imported", "import parser.step\n").unwrap();
+    let path = kit.to_string_lossy().into_owned();
+    let output = fennec(&["run", "--no-test", &path], "").unwrap();
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(text(&output.stdout), "1\n");
+    let linted = fennec(&["lint", &path], "").unwrap();
+    assert!(linted.status.success(), "{}", text(&linted.stderr));
+}
+
 #[test]
 fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     let dir = scratch("lint").unwrap();

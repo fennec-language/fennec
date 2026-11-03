@@ -1867,3 +1867,54 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         .collect();
     Whole { functions, analyses, can_fail, generators, settles, lengths, builders, needs, constants }
 }
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    const TYPES: &str = "struct Unit:\n    tags: list[int]\n    hp: int\n\nstruct World:\n    units: list[Unit]\n    log: list[int]\n\nerror Bad:\n    why: str\n\ndef total(units: list[Unit]) -> int:\n    units.len()\n\ndef size(world: World) -> int:\n    world.log.len()\n\n";
+
+    /// Whether the `unit` of a function called `go` is taken out for its loop's whole body.
+    fn taken(body: &str) -> Result<bool, String> {
+        let source = format!("{TYPES}{body}");
+        let module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false);
+        let at = function.locals.iter().position(|local| local.name.as_deref() == Some("unit"));
+        Ok(known.taken_over_loop(LocalId(at.ok_or("no `unit`")?)))
+    }
+
+    #[test]
+    fn a_for_mut_item_is_taken_on_every_way_out_of_its_body() -> Result<(), String> {
+        for body in [
+            "def go(mut units: list[Unit]):\n    for mut unit in units:\n        unit.tags.append(1)\n",
+            "def go(mut units: list[Unit]):\n    for mut unit in units:\n        if unit.hp == 0:\n            continue\n        unit.tags.append(1)\n        if unit.hp == 1:\n            break\n        unit.hp = 2\n",
+            "def go(mut units: list[Unit]) -> int:\n    for mut unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            return unit.tags.len()\n    0\n",
+            "def go(mut units: list[Unit]) -> int fails Bad:\n    for mut unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            fail Bad(\"no\")\n    0\n",
+            "def go(mut world: World):\n    for mut unit in world.units:\n        unit.tags.append(1)\n",
+            "def go(mut world: World):\n    for mut unit in world.units:\n        world.log.append(unit.hp)\n        unit.tags.append(1)\n",
+        ] {
+            assert!(taken(body)?, "not taken: {body}");
+        }
+        Ok(())
+    }
+
+    /// The list's place is out of date while the body runs, so a body that could read it isn't
+    /// taken: reading a stale address gives a wrong answer and no failure.
+    #[test]
+    fn a_for_mut_item_is_not_taken_when_the_body_can_read_its_list() -> Result<(), String> {
+        for body in [
+            "def go(mut units: list[Unit]):\n    for mut unit in units:\n        unit.tags.append(units[0].hp)\n",
+            "def go(mut units: list[Unit]):\n    for mut unit in units:\n        unit.hp += units.len()\n",
+            "def go(mut units: list[Unit]):\n    for mut unit in units:\n        unit.hp += total(units)\n",
+            "def go(mut world: World):\n    for mut unit in world.units:\n        unit.hp += world.units.len()\n",
+            "def go(mut world: World):\n    for mut unit in world.units:\n        unit.hp += size(world)\n",
+            "def go(units: list[Unit]) -> int:\n    mut found = 0\n    for unit in units:\n        found += unit.hp\n    found\n",
+        ] {
+            assert!(!taken(body)?, "taken: {body}");
+        }
+        Ok(())
+    }
+}

@@ -46,7 +46,7 @@ struct Checker:
             function = entry.function
             names = generic_names(self.program.generics_of(entry))
             for param in function.params:
-                self.check_written(param.ty, names)
+                self.check_param(param.ty, names)
             self.check_written(function.ret, names)
             self.check_bounds(function.generics)
         for name, interface in self.program.interfaces.items():
@@ -54,7 +54,7 @@ struct Checker:
                 # A method's own type parameters are types inside it, beside `Self`.
                 own = ["Self"] + generic_names(method.generics)
                 for param in method.params:
-                    self.check_written(param.ty, own)
+                    self.check_param(param.ty, own)
                 self.check_written(method.ret, own)
         for name, info in self.program.types.items():
             if not info.prelude:
@@ -101,6 +101,15 @@ struct Checker:
             default = field.default
             if field.ty is None and default is not None:
                 self.check_written(made_type(default), generics)
+
+    ## A parameter's type. An interface alone is fine here, since each call gives it a type of
+    ## its own.
+    def check_param(mut self, written: TypeExpr?, generics: list[str]):
+        if written is None:
+            return
+        by_itself = written.args.len() == 0 and not written.optional
+        if not by_itself or written.name in generics or not self.program.is_interface(written.name):
+            self.check_written(written, generics)
 
     def check_written(mut self, written: TypeExpr?, generics: list[str]):
         if written is None:

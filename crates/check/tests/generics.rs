@@ -73,7 +73,7 @@ fn types_can_be_written_in_brackets_when_nothing_shows_them() {
         def main(stdout: Stdout):
             stdout.print(make())
             numbers: list[int] = make()
-            stdout.print(make[str](), make[int, str]())
+            stdout.print(make[str]())
     ";
     assert_eq!(problems(program), ["can't tell what `T` is in this call @ make()"]);
 }
@@ -122,7 +122,7 @@ fn an_interface_is_not_a_type() {
     ";
     assert_eq!(with_shapes(program), ["`Shape` is an interface, not a type @ Shape"]);
     assert_eq!(
-        helps(&format!("{SHAPES}\ndef f(shape: Shape):\n    pass\n")),
+        helps(&format!("{SHAPES}\ndef f(shape: list[Shape]):\n    pass\n")),
         [
             "take a type parameter that fits it, like `def f[T: Shape](items: list[T])`, or use an enum for a mix of types"
         ]
@@ -477,4 +477,107 @@ fn an_interfaces_generic_method_needs_a_generic_method_to_fit() {
             "`Plain` isn't a `Source`: it has no `field[T](mut self, at: int) -> T?`. Its `field` returns an int? @ read(mut plain)"
         ]
     );
+}
+
+const AREAS: &str = "interface Shape:
+    def area(self) -> float
+
+struct Square:
+    side = 1.0
+
+    def area(self) -> float:
+        self.side * self.side
+
+";
+
+#[test]
+fn a_parameter_typed_by_an_interface_takes_any_type_that_fits_it() {
+    let text = format!(
+        "{AREAS}def total(first: Shape, second: Shape) -> float:\n    first.area() + second.area()\n\n\
+         def main(stdout: Stdout):\n    stdout.print(total(Square(), Square(side=2.0)))\n"
+    );
+    assert_eq!(problems(&text), Vec::<String>::new());
+    let text = format!(
+        "{AREAS}def main(stdout: Stdout):\n    stdout.print(total(5))\n\ndef total(first: Shape) -> float:\n    first.area()\n"
+    );
+    assert_eq!(problems(&text), ["an int isn't a `Shape`: it has no `area(self) -> float` @ total(5)"]);
+    let text = format!("{AREAS}def size(shape: Shape) -> float:\n    shape.side\n");
+    assert_eq!(problems(&text), ["`Shape` has no field `side` @ shape.side"]);
+}
+
+#[test]
+fn an_interfaces_method_can_take_an_interface() {
+    let saver = "interface Saver:\n    def save(self, shape: Shape) -> float\n\n\
+                 struct Doubler:\n    def save(self, shape: Shape) -> float:\n        shape.area() * 2.0\n\n\
+                 struct Written:\n    def save[S: Shape](self, shape: S) -> float:\n        shape.area()\n\n\
+                 def keep(saver: Saver, shape: Shape) -> float:\n    saver.save(shape)\n\n";
+    let text = format!(
+        "{AREAS}{saver}def main(stdout: Stdout):\n    stdout.print(keep(Doubler(), Square()), keep(Written(), Square()))\n"
+    );
+    assert_eq!(problems(&text), Vec::<String>::new());
+    let text = format!("{AREAS}{saver}def bad(saver: Saver) -> float:\n    saver.save(5)\n");
+    assert_eq!(problems(&text), ["an int isn't a `Shape`: it has no `area(self) -> float` @ saver.save(5)"]);
+}
+
+#[test]
+fn a_method_cant_ask_more_of_its_type_parameters_than_the_interface_does() {
+    let text = format!(
+        "{AREAS}interface Keeper:\n    def keep[T](self, value: T) -> float\n\n\
+         struct Picky:\n    def keep[T: Shape](self, value: T) -> float:\n        value.area()\n\n\
+         def hold[K: Keeper](keeper: K) -> float:\n    keeper.keep(1)\n\n\
+         def main(stdout: Stdout):\n    stdout.print(hold(Picky()))\n"
+    );
+    assert_eq!(
+        problems(&text),
+        [
+            "`Picky` isn't a `Keeper`: it has no `keep[T](self, value: T) -> float`. Its `keep` asks more of its type parameters @ hold(Picky())"
+        ]
+    );
+}
+
+#[test]
+fn brackets_only_name_the_type_parameters_that_are_written() {
+    let shown = "def show[T](label: T, shape: Shape) -> float:\n    shape.area()\n\n";
+    let text =
+        format!("{AREAS}{shown}def main(stdout: Stdout):\n    stdout.print(show[str](\"x\", Square()))\n");
+    assert_eq!(problems(&text), Vec::<String>::new());
+    let text = format!(
+        "{AREAS}{shown}def main(stdout: Stdout):\n    stdout.print(show[str, Square](\"x\", Square()))\n"
+    );
+    assert_eq!(
+        problems(&text),
+        ["`show` takes 1 type in brackets, but this gives 2 @ show[str, Square](\"x\", Square())"]
+    );
+    let text = "def one[T](value: T) -> T:\n    value\n\ndef main(stdout: Stdout):\n    stdout.print(one[int, str](1))\n";
+    assert_eq!(problems(text), ["`one` takes 1 type in brackets, but this gives 2 @ one[int, str](1)"]);
+}
+
+#[test]
+fn an_interface_is_only_a_parameters_type_by_itself() {
+    for written in [
+        "def f(shape: Shape?):\n    pass\n",
+        "def f(shapes: list[Shape]):\n    pass\n",
+        "def f(shape: Square) -> Shape:\n    shape\n",
+        "struct Holder:\n    shape: Shape\n",
+    ] {
+        let found = problems(&format!("{AREAS}{written}"));
+        assert!(
+            found.iter().any(|problem| problem.starts_with("`Shape` is an interface, not a type")),
+            "{found:?}"
+        );
+    }
+}
+
+#[test]
+fn a_programs_own_type_can_be_named_like_a_library_interface() {
+    let library = fennec_syntax::prelude_modules().unwrap_or_default();
+    let interfaces = fennec_syntax::visit::interface_names(library.iter());
+    let name =
+        interfaces.iter().find(|name| !fennec_syntax::visit::BUILT_IN_INTERFACES.contains(&name.as_str()));
+    let Some(name) = name else { return };
+    let text = format!(
+        "struct {name}:\n    width = 3\n\ndef wide(given: {name}) -> int:\n    given.width\n\n\
+         def main(stdout: Stdout):\n    stdout.print(wide({name}()))\n"
+    );
+    assert_eq!(problems(&text), Vec::<String>::new());
 }

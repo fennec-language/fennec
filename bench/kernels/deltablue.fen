@@ -319,11 +319,8 @@ def projection_test(size: int) -> int:
         total += planner.variables[target].value
     total
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     mut total = 0
     for _ in range(100):
         total += chain_test(100) + projection_test(100)
     stdout.print(total)
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

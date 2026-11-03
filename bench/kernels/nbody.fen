@@ -47,8 +47,7 @@ def advance(mut bodies: list[Body], dt: float):
         bodies[i].y += dt * bodies[i].vy
         bodies[i].z += dt * bodies[i].vz
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     pi = 3.141592653589793
     solar_mass = 4.0 * pi * pi
     days = 365.24
@@ -105,5 +104,3 @@ def main(stdout: Stdout, clock: Clock, args: Args):
     for _ in range(200_000):
         advance(mut bodies, 0.01)
     stdout.print(f"{energy(bodies):.9f}")
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

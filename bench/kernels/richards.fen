@@ -205,8 +205,7 @@ def simulate() -> (int, int):
     scheduler.schedule()
     (scheduler.queued, scheduler.holds)
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     mut queued = 0
     mut holds = 0
     for _ in range(25):
@@ -214,5 +213,3 @@ def main(stdout: Stdout, clock: Clock, args: Args):
         queued = one
         holds = other
     stdout.print(queued, holds)
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

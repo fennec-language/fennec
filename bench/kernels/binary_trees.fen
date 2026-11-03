@@ -15,8 +15,7 @@ def count(tree: Tree) -> int:
         case .Node(left, right):
             1 + count(left) + count(right)
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     longest = build(14)
     mut total = 0
     mut depth = 4
@@ -25,5 +24,3 @@ def main(stdout: Stdout, clock: Clock, args: Args):
             total += count(build(depth))
         depth += 4
     stdout.print(total, count(longest))
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

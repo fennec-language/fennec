@@ -1,7 +1,6 @@
 ## Sorting: the built-in sort on ints and on strings, and a sort by key.
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     mut seed = 42
     mut numbers = []
     for _ in range(300_000):
@@ -12,5 +11,3 @@ def main(stdout: Stdout, clock: Clock, args: Args):
     words = [f"fox{n % 100000}" for n in numbers[:50_000]]
     alphabetical = sorted(words)
     stdout.print(ordered[0], ordered[150_000], by_digit[0], by_digit[150_000], alphabetical[25_000])
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

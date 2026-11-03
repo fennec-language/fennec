@@ -15,8 +15,7 @@ def counted(dna: str, size: int) -> dict[str, int]:
         counts[piece] = (counts.get(piece) else 0) + 1
     counts
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     dna = sequence(100_000)
     for size in [1, 2]:
         counts = counted(dna, size)
@@ -24,5 +23,3 @@ def main(stdout: Stdout, clock: Clock, args: Args):
             stdout.print(piece, -negative)
     for piece in ["ggt", "ggta", "ggtatt", "ggtattttaatt", "ggtattttaatttatagt"]:
         stdout.print((counted(dna, piece.len()).get(piece) else 0), piece)
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

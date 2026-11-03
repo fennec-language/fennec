@@ -20,8 +20,7 @@ def times(v: list[float], transpose: bool) -> list[float]:
 def times_transposed(v: list[float]) -> list[float]:
     times(times(v, False), True)
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     n = 100
     mut u = [1.0 for _ in range(n)]
     mut v = [0.0 for _ in range(n)]
@@ -34,5 +33,3 @@ def main(stdout: Stdout, clock: Clock, args: Args):
         vbv += u[i] * v[i]
         vv += v[i] * v[i]
     stdout.print(f"{sqrt(vbv / vv):.9f}")
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

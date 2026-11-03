@@ -11,8 +11,7 @@ def iterations(cr: float, ci: float, limit: int) -> int:
         zr = zr2 - zi2 + cr
     limit
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     size = 400
     mut total = 0
     mut inside = 0
@@ -25,5 +24,3 @@ def main(stdout: Stdout, clock: Clock, args: Args):
             if count == 100:
                 inside += 1
     stdout.print(total, inside)
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

@@ -12,8 +12,5 @@ def count_primes(limit: int) -> int:
                 multiple += n
     count
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     stdout.print(count_primes(5_000_000))
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

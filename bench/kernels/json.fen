@@ -120,8 +120,7 @@ def document(records: int) -> str:
     parts.append("]")
     "".join(parts)
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     text = document(300)
     mut total = 0
     for _ in range(40):
@@ -131,5 +130,3 @@ def main(stdout: Stdout, clock: Clock, args: Args):
         printed(value, mut out)
         total += "".join(out).len()
     stdout.print(text.len(), total)
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

@@ -11,8 +11,7 @@ def sequence(length: int) -> str:
         letters.append("acgt"[seed * 4 // 139968])
     "".join(letters)
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     dna = sequence(50_000)
     patterns = [
         "agggtaaa|tttaccct",
@@ -34,5 +33,3 @@ def main(stdout: Stdout, clock: Clock, args: Args):
         text = Regex(pattern).expect("the pattern is valid").replace(text, with_text)
     stdout.print(text.len())
     stdout.print(Regex("ta+c").replace(dna, "x").len())
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

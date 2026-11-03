@@ -4,8 +4,5 @@ def fib(n: int) -> int:
     if n < 2: return n
     fib(n - 1) + fib(n - 2)
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     stdout.print(fib(35))
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

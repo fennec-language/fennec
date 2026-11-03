@@ -18,8 +18,7 @@ struct Particle:
             self.velocity.y = -self.velocity.y * 0.9
             self.bounces += 1
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     mut particles = []
     for i in range(2000):
         position = Vec2(x=float(i), y=float(i % 50))
@@ -34,5 +33,3 @@ def main(stdout: Stdout, clock: Clock, args: Args):
         bounces += particle.bounces
         height += particle.position.y
     stdout.print(bounces, f"{height:.6f}")
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

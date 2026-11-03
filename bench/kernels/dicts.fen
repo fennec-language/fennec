@@ -1,11 +1,8 @@
 ## Counting keys in a dict: hashing and lookups.
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     mut counts: dict[int, int] = {}
     for i in range(2_000_000):
         key = i * 7919 % 10_007
         counts[key] = (counts.get(key) else 0) + 1
     stdout.print(counts.len(), counts[0], counts[10_006])
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

@@ -150,6 +150,32 @@ fn build(
     Err(said.lines().next().unwrap_or("it didn't build").trim_start_matches("error: ").to_owned())
 }
 
+/// The header of every kernel's `main`, which is the last thing in its file.
+const KERNEL_MAIN: &str = "def main(stdout: Stdout):\n";
+
+/// A kernel that takes `--time` as its twins do, written to `out_dir`: its `main` also takes
+/// the clock and the arguments, notes when it starts, and with any argument prints
+/// `kernel-ns N` last, from the clock. It's added here rather than written in the kernel, so
+/// the kernel stays exactly the code its targets and the JIT's fallback check hold it to: the
+/// clock and the arguments aren't native under the JIT. None for a kernel whose `main` isn't
+/// written that way, or isn't last, which is then timed only as a whole run.
+fn timed_copy(source: &str, out_dir: &Path, name: &str) -> Option<String> {
+    let text = std::fs::read_to_string(source).ok()?;
+    let at = text.find(KERNEL_MAIN)?;
+    let body = text.get(at + KERNEL_MAIN.len()..)?;
+    if body.lines().any(|line| !line.is_empty() && !line.starts_with(' ')) {
+        return None;
+    }
+    let timed = format!(
+        "{}def main(stdout: Stdout, clock: Clock, args: Args):\n    started = clock.now()\n{}\n    if args.len() > 0:\n        stdout.print(\"kernel-ns\", (clock.now() - started).nanos)\n",
+        text.get(..at)?,
+        body.trim_end()
+    );
+    let path = out_dir.join(format!("{name}.timed.fen"));
+    std::fs::write(&path, timed).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
 /// What one side's runs took: each whole run, and the kernel's own time each run said.
 #[derive(Default)]
 struct Times {
@@ -581,9 +607,13 @@ pub(crate) fn run(
     let mut rows = Vec::new();
     for kernel in &kernels {
         let Some(source) = kernel.single_file() else { continue };
+        // Built from a copy that times its own work, as the twins do; its twins are found
+        // beside the kernel itself.
+        let timed = timed_copy(source, &out_dir, &kernel.name);
+        let built_from = timed.as_deref().unwrap_or(source);
         let executable = out_dir.join(format!("{}.llvm", kernel.name));
         let home = |which: &str| out_dir.join(format!("home-{}-{which}", kernel.name));
-        let release = build(fennec, source, &executable, true, Some(&home("release")));
+        let release = build(fennec, built_from, &executable, true, Some(&home("release")));
         let row = match release.map(|took| (executable, took)) {
             Err(problem) => {
                 let mut row = Row::new(&kernel.name);
@@ -596,7 +626,7 @@ pub(crate) fn run(
                 let mut row = measured(kernel, &llvm, &twin, counter.as_ref(), runs);
                 row.builds.0 = Some(release_build);
                 if row.problem.is_none() {
-                    dev_build(&mut row, kernel, (fennec, source), &twin, &home("dev"), (&out_dir, runs));
+                    dev_build(&mut row, kernel, (fennec, built_from), &twin, &home("dev"), (&out_dir, runs));
                     let racing = Racing { llvm: &llvm, out_dir: &out_dir, runs };
                     row.others = installed
                         .iter()
@@ -629,7 +659,7 @@ pub(crate) fn run(
 mod tests {
     use std::time::Duration;
 
-    use super::{geomean, kernel_time, summary};
+    use super::{geomean, kernel_time, summary, timed_copy};
 
     #[test]
     fn the_best_run_counts_and_the_spread_is_how_far_the_median_is_from_it() {
@@ -646,6 +676,31 @@ mod tests {
         assert_eq!(printed, "9227465\n");
         assert_eq!(took, Some(Duration::from_nanos(1500)));
         assert_eq!(kernel_time("1 2\n"), ("1 2\n".to_owned(), None), "run without --time");
+    }
+
+    #[test]
+    fn a_kernel_is_built_from_a_copy_that_times_its_main() {
+        let dir = std::env::temp_dir().join(format!("fennec-timed-copy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let kernel = dir.join("k.fen");
+        std::fs::write(
+            &kernel,
+            "def f() -> int:\n    1\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n",
+        )
+        .unwrap();
+        let copy = timed_copy(kernel.to_str().unwrap(), &dir, "k").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(copy).unwrap(),
+            "def f() -> int:\n    1\n\ndef main(stdout: Stdout, clock: Clock, args: Args):\n    started = clock.now()\n    \
+             stdout.print(f())\n    if args.len() > 0:\n        stdout.print(\"kernel-ns\", (clock.now() - started).nanos)\n"
+        );
+        std::fs::write(
+            &kernel,
+            "def main(stdout: Stdout):\n    stdout.print(1)\n\ndef later() -> int:\n    2\n",
+        )
+        .unwrap();
+        assert_eq!(timed_copy(kernel.to_str().unwrap(), &dir, "k"), None, "main isn't last");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -99,11 +99,13 @@ built the way anyone would build them, `go build` and `javac`, with nothing tune
 against the LLVM build the same way, by best time. The workflow installs Go 1.26 and Temurin
 Java 25. Each comparison has two numbers. The whole run is each program from start to exit;
 Java's includes the JVM starting and its JIT warming up, as it does for anyone running the
-program. Kernel time is what each program says its own work took: every kernel and twin,
-Fennec's included, takes `--time`, and then prints one more line, `kernel-ns N`, from a
-monotonic clock started at the beginning of its work. Java runs its work once first, to warm
-its JIT up, and times the second run. Without `--time`, each does the same work and prints
-the same thing as ever, so counting instructions and pinning are unchanged. The report leads
+program. Kernel time is what each program says its own work took: with `--time`, it prints
+one more line, `kernel-ns N`, from a monotonic clock started at the beginning of its work.
+The Rust, Go and Java twins take `--time` themselves; Java runs its work once first, to warm
+its JIT up, and times the second run. A Fennec kernel stays as it is, since the JIT doesn't
+run the clock or the arguments natively and the fallback check holds kernels to that: the
+suite builds it from a copy whose `main` adds the same two lines. Without `--time`, each does
+the same work and prints the same thing as ever. The report leads
 with kernel time, and shows each language's startup, a hello-world's best run from
 `bench/startup/empty.*`, beside it. Rust is still the twin the LLVM backend is held to: a Go or Java twin
 that prints something else is noted, and doesn't fail the run. Where a toolchain isn't

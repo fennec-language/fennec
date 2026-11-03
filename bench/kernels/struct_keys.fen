@@ -4,12 +4,9 @@ struct Cell:
     x: int
     y: int
 
-def main(stdout: Stdout, clock: Clock, args: Args):
-    started = clock.now()
+def main(stdout: Stdout):
     mut seen: dict[Cell, int] = {}
     for i in range(500_000):
         cell = Cell(x=i * 31 % 101, y=i * 17 % 103)
         seen[cell] = (seen.get(cell) else 0) + 1
     stdout.print(seen.len(), seen[Cell(x=0, y=0)])
-    if args.len() > 0:
-        stdout.print("kernel-ns", (clock.now() - started).nanos)

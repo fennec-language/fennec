@@ -464,5 +464,11 @@ fn a_broken_invariant_a_dropped_parked_task_or_a_panic_stops_the_process() {
         let printed = String::from_utf8_lossy(&ran.stderr);
         assert!(!ran.status.success(), "{how}: the process went on");
         assert!(printed.contains(said), "{how}: {printed}");
+        // Where a panic unwinds, the task catches it and stops the process with a message of its
+        // own. With `panic=abort`, as release builds have, the panic itself stops the process,
+        // with its own message, which every build prints.
+        if how.starts_with("a task panics") && cfg!(panic = "unwind") {
+            assert!(printed.contains("a parked task panicked"), "{how}: {printed}");
+        }
     }
 }

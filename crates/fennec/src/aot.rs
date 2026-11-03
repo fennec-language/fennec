@@ -137,6 +137,36 @@ pub(crate) fn build_llvm(path: &str, output: Option<&str>, release: bool) -> Exi
     }
 }
 
+/// Builds an executable that runs the functions `tests` of a module with everything else trimmed
+/// away, through LLVM's cached dev build.
+pub(crate) fn tests_executable(
+    module: &fennec_syntax::Module,
+    tests: &[String],
+    output: &Path,
+) -> Result<(), String> {
+    let emitted = emitted(module)?;
+    let image_of = |image: &mut fennec_llvm::Image| {
+        fennec_interp::embed::codec::Image {
+            module: module.clone(),
+            // `fennec test` renders a failure itself.
+            sources: fennec_syntax::Sources::new(),
+            tables: std::mem::take(&mut image.tables),
+            literals: image.literals.clone(),
+        }
+        .to_bytes()
+    };
+    let Compiled { objects, runtime, .. } =
+        compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
+            fennec_llvm::tests_entry(lowered, shared, image, bytes, tests)
+        })?;
+    link_objects(&objects, output, runtime, false).map(|_| ())
+}
+
+/// Whether LLVM has text for a trimmed program, or why not, without compiling any of it.
+pub(crate) fn takes(module: &fennec_syntax::Module) -> Result<(), String> {
+    emitted(module).map(|_| ())
+}
+
 /// What building an executable through LLVM did.
 pub(crate) struct Built {
     /// How many functions the program has, and how many weren't in the cache.
@@ -181,14 +211,20 @@ struct Compiled {
     runtime: Runtime,
 }
 
-/// Lowers what the program reaches and compiles it.
-fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled, String> {
-    let mut reached = program.module.clone();
-    fennec_build::keep_what_main_reaches(&mut reached);
+/// A trimmed program LLVM has text for.
+struct Emitted {
+    lowered: fennec_ir::Program,
+    units: Vec<fennec_llvm::Unit>,
+    shared: fennec_llvm::Shared,
+    layouts: fennec_llvm::Layouts,
+}
+
+/// Lowers a trimmed program and writes its text, or says why LLVM can't.
+fn emitted(reached: &fennec_syntax::Module) -> Result<Emitted, String> {
     let checked =
-        fennec_check::check(&reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
+        fennec_check::check(reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
-    let lowered = fennec_ir::lower_with(&reached, &checked, fennec_ir::Options { outline_parallel: true });
+    let lowered = fennec_ir::lower_with(reached, &checked, fennec_ir::Options { outline_parallel: true });
     if !lowered.not_lowered.is_empty() {
         let skipped: Vec<String> = lowered
             .not_lowered
@@ -204,23 +240,52 @@ fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled
     {
         return Err(format!("the IR isn't sound: {}", problems.join("; ")));
     }
-    let runtime = Runtime::for_program(&lowered);
     let cpu = if BASELINE.load(std::sync::atomic::Ordering::Relaxed) {
         fennec_llvm::Cpu::Baseline
     } else {
         fennec_llvm::Cpu::Usual
     };
     let (units, shared, layouts) = fennec_llvm::emit_for(&lowered, cpu)?;
+    Ok(Emitted { lowered, units, shared, layouts })
+}
+
+/// Lowers what the program reaches and compiles it.
+fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled, String> {
+    let mut reached = program.module.clone();
+    fennec_build::keep_what_main_reaches(&mut reached);
+    let emitted = emitted(&reached)?;
+    let image_of = |image: &mut fennec_llvm::Image| {
+        fennec_interp::embed::codec::Image {
+            module: program.module.clone(),
+            sources: program.sources.clone(),
+            tables: std::mem::take(&mut image.tables),
+            literals: image.literals.clone(),
+        }
+        .to_bytes()
+    };
+    compile_emitted(&emitted, release, image_of, |lowered, shared, image, bytes| {
+        fennec_llvm::entry(lowered, shared, image, bytes)
+    })
+}
+
+/// Compiles what LLVM has text for, with the module made fresh each build from `entry_of`.
+fn compile_emitted(
+    emitted: &Emitted,
+    release: bool,
+    image_of: impl Fn(&mut fennec_llvm::Image) -> Vec<u8>,
+    entry_of: impl Fn(
+        &fennec_ir::Program,
+        &fennec_llvm::Shared,
+        &fennec_llvm::Image,
+        &[u8],
+    ) -> Result<String, String>,
+) -> Result<Compiled, String> {
+    let Emitted { lowered, units, shared, layouts } = emitted;
+    let runtime = Runtime::for_program(lowered);
     let tools = fennec_llvm::Tools::find()?;
-    let mut image = fennec_llvm::Image::of(&layouts, &shared)?;
-    let bytes = fennec_interp::embed::codec::Image {
-        module: program.module.clone(),
-        sources: program.sources.clone(),
-        tables: std::mem::take(&mut image.tables),
-        literals: image.literals.clone(),
-    }
-    .to_bytes();
-    let entry = fennec_llvm::entry(&lowered, &shared, &image, &bytes)?;
+    let mut image = fennec_llvm::Image::of(layouts, shared)?;
+    let bytes = image_of(&mut image);
+    let entry = entry_of(lowered, shared, &image, &bytes)?;
     let home = fennec_build::fennec_home();
     let cache = home
         .as_deref()
@@ -228,9 +293,9 @@ fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled
         .map(fennec_build::Cache::new);
     let work = std::env::temp_dir().join(format!("fennec-llvm-{}", std::process::id()));
     let built = if release {
-        fennec_llvm::compile_whole(&tools, &units, &entry, &work, runtime_bitcode(runtime).as_deref())
+        fennec_llvm::compile_whole(&tools, units, &entry, &work, runtime_bitcode(runtime).as_deref())
     } else {
-        fennec_llvm::compile(&tools, &units, &entry, cache.as_ref(), &work)
+        fennec_llvm::compile(&tools, units, &entry, cache.as_ref(), &work)
     };
     // `FENNEC_LLVM_KEEP` leaves the modules' text to look at.
     if std::env::var_os("FENNEC_LLVM_KEEP").is_none() {

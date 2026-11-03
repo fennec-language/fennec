@@ -63,8 +63,10 @@ pub const EMBEDDED: &str = "embed:";
 pub enum Entry {
     /// `main` and what it imports, for running.
     Main,
-    /// Every file of the kit, for running all of its tests.
+    /// Every file of the kit.
     Everything,
+    /// Every file of the kit, with the examples in its doc comments as tests, for running them.
+    Tests,
 }
 
 /// Loads a program from a `.fen` file, or from a kit's folder or any folder inside it.
@@ -102,6 +104,11 @@ pub fn load_modules(dir: &Path, shown_as: &str, modules: &[String]) -> Result<Pr
     load::kit_modules(dir, shown_as, modules, &Overlay::new())
 }
 
+/// Like `load_modules`, with the examples in the doc comments of what's loaded as tests.
+pub fn load_modules_to_test(dir: &Path, shown_as: &str, modules: &[String]) -> Result<Program, Problems> {
+    load::kit_modules_to_test(dir, shown_as, modules)
+}
+
 /// Like `load_modules`, reading the files in `overlay` from it rather than from disk.
 pub fn load_modules_with(
     dir: &Path,
@@ -122,7 +129,7 @@ pub fn load_with(path: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
     if path.is_dir() {
         load::kit(path, shown_as, entry, overlay)
     } else {
-        load::file(path, shown_as, overlay)
+        load::file(path, shown_as, entry, overlay)
     }
 }
 

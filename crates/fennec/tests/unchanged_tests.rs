@@ -301,3 +301,118 @@ fn a_new_file_and_a_new_test_are_noticed() {
     assert_eq!(test_kit(&dir).unwrap().status.code(), Some(1));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// `double` with a doc comment holding the given example.
+fn documented(example: &str) -> String {
+    format!(
+        "## Doubles a number.\n##\n## ```\n{example}## ```\ndef double(x: int) -> int:\n    x * 2\n\n\
+         test \"doubling\":\n    assert double(2) == 4\n"
+    )
+}
+
+#[test]
+fn a_doc_example_runs_as_a_test_and_can_fail() {
+    let dir = scratch("doc-example").unwrap();
+    let game = dir.join("game.fen");
+    std::fs::write(&game, documented("## assert double(4) == 8\n")).unwrap();
+    let passing = run_tests(&dir, &[]).unwrap();
+    assert_eq!(stdout(&passing), "2 passed, 0 failed\n", "{}", String::from_utf8_lossy(&passing.stderr));
+
+    std::fs::write(&game, documented("## assert double(4) == 9\n")).unwrap();
+    let failing = run_tests(&dir, &[]).unwrap();
+    assert!(!failing.status.success(), "a failing example fails the run");
+    let said = format!("{}{}", stdout(&failing), String::from_utf8_lossy(&failing.stderr));
+    assert!(said.contains("1 passed, 1 failed"), "{said}");
+    assert!(said.contains("doc example 1 in"), "it says which: {said}");
+    assert!(said.contains("game.fen:4"), "it points at the example's line: {said}");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_doc_example_runs_again_only_when_it_or_what_it_ran_changes() {
+    let dir = scratch("doc-example-cache").unwrap();
+    let game = dir.join("game.fen");
+    let source = documented("## assert double(4) == 8\n");
+    std::fs::write(&game, &source).unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &[]).unwrap()), "2 passed, 0 failed\n");
+    assert_eq!(stdout(&run_tests(&dir, &[]).unwrap()), "2 passed, 0 failed (0 run, 2 unchanged)\n");
+
+    std::fs::write(&game, source.replace("Doubles a number.", "Twice a number.")).unwrap();
+    assert_eq!(
+        stdout(&run_tests(&dir, &[]).unwrap()),
+        "2 passed, 0 failed (0 run, 2 unchanged)\n",
+        "only the words changed"
+    );
+
+    let edited = source.replace("double(4) == 8", "double(5) == 10");
+    std::fs::write(&game, &edited).unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &[]).unwrap()), "2 passed, 0 failed (1 run, 1 unchanged)\n");
+
+    std::fs::write(&game, edited.replace("x * 2", "x + x")).unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &[]).unwrap()), "2 passed, 0 failed\n", "both ran `double`");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn only_a_closed_fence_of_fennec_in_a_doc_comment_is_an_example() {
+    let dir = scratch("doc-example-kinds").unwrap();
+    let game = dir.join("game.fen");
+    let write = |doc: &str| {
+        let source = format!(
+            "{doc}def double(x: int) -> int:\n    x * 2\n\ntest \"doubling\":\n    assert double(2) == 4\n"
+        );
+        std::fs::write(&game, source)
+    };
+    // Another language is only text, whatever it holds.
+    write("## ```json\n## not fennec at all\n## ```\n").unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &["--all"]).unwrap()), "1 passed, 0 failed\n");
+    // A fence named for Fennec runs, and so does one that's indented with what it documents.
+    write("## ```fennec\n## assert double(1) == 2\n## ```\n").unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &["--all"]).unwrap()), "2 passed, 0 failed\n");
+    // A plain comment isn't a doc comment.
+    write("# ```\n# assert False\n# ```\n").unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &["--all"]).unwrap()), "1 passed, 0 failed\n");
+    // Code that can't run is a mistake rather than something to skip.
+    write("## ```\n## assert (\n## ```\n").unwrap();
+    assert!(!run_tests(&dir, &["--all"]).unwrap().status.success());
+    write("## ```\n## assert missing == 1\n## ```\n").unwrap();
+    assert!(!run_tests(&dir, &["--all"]).unwrap().status.success());
+    // As is a fence that's never closed, which would otherwise hide what's in it.
+    write("## ```\n## assert False\n").unwrap();
+    let unclosed = run_tests(&dir, &["--all"]).unwrap();
+    assert!(!unclosed.status.success());
+    assert!(String::from_utf8_lossy(&unclosed.stderr).contains("never closed"));
+    // Text that looks like one in a string, or a comment after code, isn't one.
+    let text = "def words() -> str:\n    \"## ```\" ## ```\n\ntest \"words\":\n    assert words() != \"\"\n";
+    std::fs::write(&game, text).unwrap();
+    let in_a_string = run_tests(&dir, &["--all"]).unwrap();
+    assert_eq!(
+        stdout(&in_a_string),
+        "1 passed, 0 failed\n",
+        "{}",
+        String::from_utf8_lossy(&in_a_string.stderr)
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_doc_example_in_a_kit_sees_what_its_file_sees_and_a_run_does_not_need_it() {
+    let dir = kit_with_tests("doc-example-kit").unwrap();
+    let helpers = dir.join("src/maths.fen");
+    let text = std::fs::read_to_string(&helpers).unwrap();
+    let documented = format!(
+        "{text}\n## A private helper's example.\n##\n## ```\n## assert hidden() == 3\n## ```\ndef hidden() -> int:\n    3\n"
+    );
+    std::fs::write(&helpers, documented).unwrap();
+    let first = test_kit(&dir).unwrap();
+    let said = stdout(&first);
+    assert!(
+        first.status.success() && said.contains("0 failed"),
+        "{said}{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let again = test_kit(&dir).unwrap();
+    assert!(stdout(&again).contains("(0 run,"), "{}", stdout(&again));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

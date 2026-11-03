@@ -278,7 +278,7 @@ pub(crate) fn reject(program: &fennec_kit::Program, diagnostics: &[fennec_syntax
 
 /// A problem, saying which file has a missing method when a file the run didn't load has it. A run
 /// loads `main` and what it imports, so nothing else brings in a file that only extends a type.
-fn with_extension(
+pub(crate) fn with_extension(
     program: &fennec_kit::Program,
     diagnostic: &fennec_syntax::Diagnostic,
 ) -> fennec_syntax::Diagnostic {

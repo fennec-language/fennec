@@ -1068,6 +1068,22 @@ fn a_run_says_which_file_has_a_missing_methods_extension() {
     );
     assert!(shown.contains("parser/step.fen"), "{shown}");
 
+    // `check` and `lint` say what a run would, with the same help.
+    for command in ["check", "lint"] {
+        let output = fennec(&[command, &path], "").unwrap();
+        assert_eq!(output.status.code(), Some(1), "{command}");
+        let shown = text(&output.stderr);
+        assert!(shown.contains("`Parser` has no method `step`"), "{command}: {shown}");
+        assert!(shown.contains("add `import parser.step`"), "{command}: {shown}");
+    }
+    let output = fennec(&["check", "--json", &path], "").unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report = fennec_lsp::Json::parse(text(&output.stdout).trim()).unwrap_or(fennec_lsp::Json::Null);
+    let found = report.at(&["diagnostics"]).and_then(fennec_lsp::Json::as_array).and_then(<[_]>::first);
+    let words = |key: &str| found.and_then(|item| item.get(key)).and_then(fennec_lsp::Json::as_str);
+    assert!(words("file").is_some_and(|file| file.ends_with("main.fen")), "{found:?}");
+    assert!(words("help").is_some_and(|help| help.contains("add `import parser.step`")), "{found:?}");
+
     // Doing what it says works, and the linter leaves the import that does it alone.
     let kit = kit_with_an_extension("extension_imported", "import parser.step\n").unwrap();
     let path = kit.to_string_lossy().into_owned();
@@ -1076,6 +1092,20 @@ fn a_run_says_which_file_has_a_missing_methods_extension() {
     assert_eq!(text(&output.stdout), "1\n");
     let linted = fennec(&["lint", &path], "").unwrap();
     assert!(linted.status.success(), "{}", text(&linted.stderr));
+    let checked = fennec(&["check", &path], "").unwrap();
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
+
+    // A file nothing imports doesn't matter if nothing needs what it adds.
+    let kit = kit_with_an_extension("extension_unneeded", "").unwrap();
+    let main = "from parser.core import Parser\n\ndef main(stdout: Stdout):\n    stdout.print(Parser().at)\n";
+    std::fs::write(kit.join("src/main.fen"), main).unwrap();
+    let checked = fennec(&["check", &kit.to_string_lossy()], "").unwrap();
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
+
+    // A kit with no `main` has no run to differ from.
+    std::fs::remove_file(kit.join("src/main.fen")).unwrap();
+    let checked = fennec(&["check", &kit.to_string_lossy()], "").unwrap();
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
 }
 
 #[test]

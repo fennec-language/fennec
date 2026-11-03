@@ -767,7 +767,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `str(value)`.
-    pub(crate) fn text_of_value(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+    pub(crate) fn text_of_value(&mut self, dest: LocalId, value: &Operand, span: Span) -> Result<(), String> {
         let (held, kind) = self.operand(value)?;
         let temp = self.temp();
         match kind {
@@ -783,8 +783,10 @@ impl Emit<'_, '_, '_> {
                 self.retain_value(&held, &Kind::Str);
                 return self.assign(dest, &held);
             }
-            other => {
-                return Err(format!("it calls `str` on a {other:?}, which this backend doesn't take yet"));
+            _ => {
+                let text = self.piece(value, None, span)?;
+                let text = self.text_value(&text);
+                return self.assign(dest, &text);
             }
         }
         let temp = self.text_value(&temp);
@@ -894,7 +896,7 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{length} = load i64, ptr {at}{LENGTH_ACCESS}"));
                 self.assign(dest.ok_or("no result")?, &length)
             }
-            "str" => self.text_of_value(dest.ok_or("no result")?, first.ok_or("no argument")?),
+            "str" => self.text_of_value(dest.ok_or("no result")?, first.ok_or("no argument")?, span),
             "str.code" => {
                 // One byte of ASCII is its own code; anything else goes to the runtime, which
                 // also fails as the interpreter does for a string that isn't one character.

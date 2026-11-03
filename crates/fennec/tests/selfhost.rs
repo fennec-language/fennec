@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Small sources that reach the lexer's error paths and edge cases.
 const LEX_CASES: &[(&str, &str)] = &[
@@ -306,7 +306,7 @@ fn selfhost(work: &Path, mode: &str, corpus: &[PathBuf], engine: &[&str]) -> Res
     for path in corpus {
         let _ = writeln!(inputs, "{mode} {}", path.display());
     }
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fennec"))
+    let mut child = crate::executables::fennec_command()
         .arg("run")
         .args(engine)
         .arg(repo().join("selfhost"))

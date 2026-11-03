@@ -2,7 +2,7 @@
 //! text stays the same, which must never change what a program does or what's rejected.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 const SOURCE: &str = "def used() -> int:\n    41 + 1\n\ndef unused() -> int:\n    2\n\n\
     def main(stdout: Stdout):\n    stdout.print(used())\n";
@@ -20,7 +20,7 @@ fn scratch(name: &str) -> std::io::Result<PathBuf> {
 
 /// Runs a program with the cache in `home` and the environment of a person's machine.
 fn run(home: &Path, program: &Path) -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_fennec"))
+    crate::executables::fennec_command()
         .arg("run")
         .arg(program)
         .env("FENNEC_HOME", home)
@@ -96,7 +96,7 @@ fn a_failing_test_stops_the_run_until_its_fixed_or_skipped() {
         assert!(said.contains("✗ doubling") && said.contains("--no-test"), "{said}");
     }
 
-    let skipped = Command::new(env!("CARGO_BIN_EXE_fennec"))
+    let skipped = crate::executables::fennec_command()
         .args(["run", "--no-test"])
         .arg(&game)
         .env("FENNEC_HOME", &home)
@@ -134,7 +134,7 @@ fn the_interpreter_and_the_benchmarks_flag_dont_run_tests() {
     let (home, game) = (dir.join("home"), dir.join("game.fen"));
     std::fs::write(&game, TESTED.replace("x * 2", "x * 3")).unwrap();
     for flag in ["--interp", "--jit"] {
-        let ran = Command::new(env!("CARGO_BIN_EXE_fennec"))
+        let ran = crate::executables::fennec_command()
             .args(["run", flag])
             .arg(&game)
             .env("FENNEC_HOME", &home)
@@ -262,7 +262,7 @@ fn a_parameter_named_like_a_constant_is_the_parameter() {
     let game = dir.join("game.fen");
     std::fs::write(&game, source).unwrap();
     for engine in ["--no-test", "--interp"] {
-        let ran = Command::new(env!("CARGO_BIN_EXE_fennec"))
+        let ran = crate::executables::fennec_command()
             .args(["run", engine])
             .arg(&game)
             .env("FENNEC_HOME", dir.join("home"))

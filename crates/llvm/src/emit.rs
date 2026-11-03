@@ -1554,9 +1554,10 @@ impl Emit<'_, '_, '_> {
             "json.dumps" | "json.loads" | "toml.dumps" | "toml.loads" => {
                 self.json_builtin(dest, name, args, span)
             }
-            named if ["json.dumps.", "json.loads.", "toml.dumps.", "toml.loads."]
-                .iter()
-                .any(|format| named.starts_with(format)) =>
+            named
+                if ["json.dumps.", "json.loads.", "toml.dumps.", "toml.loads."]
+                    .iter()
+                    .any(|format| named.starts_with(format)) =>
             {
                 self.std_call(dest, name, args, span)
             }

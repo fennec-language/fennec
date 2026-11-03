@@ -1543,6 +1543,8 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         {
             true
         }
+        InstKind::Builtin { name, .. } if name.starts_with("crypto.") => true,
+        InstKind::Builtin { name, .. } if name.starts_with("json.") || name.starts_with("toml.") => true,
         InstKind::Builtin { name, .. } => {
             matches!(
                 name.as_str(),

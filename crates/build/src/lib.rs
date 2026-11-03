@@ -20,7 +20,7 @@ pub use cache::{Cache, Cleanup, DEFAULT_CAP, VERSION};
 pub use changes::{Change, Kind, changes};
 pub use functions::{CompiledFunction, FunctionKey, Relocation, decode_pack, encode_pack};
 pub use reach::test_keys;
-pub use reached::keep_what_main_reaches;
+pub use reached::{keep_what_functions_reach, keep_what_main_reaches};
 pub use snapshot::{FileRecord, Run, Snapshot};
 pub use store::{fennec_home, load, save};
 pub use traced::{TestGraph, TestRecord};

@@ -29,6 +29,8 @@ pub(crate) struct Options {
     verbose: bool,
     /// Keep standard output for the program that runs next, and say nothing if all is well.
     before_a_run: bool,
+    /// Run what LLVM can build through LLVM.
+    llvm: bool,
 }
 
 /// Which tests run, and what they get.
@@ -55,6 +57,7 @@ impl Options {
                 "--all" => {}
                 "--verbose" | "-v" => options.verbose = true,
                 "--real" => options.run = Run::Real,
+                "--llvm" => options.llvm = true,
                 flag if flag.starts_with("--") => return None,
                 written if path.is_none() => path = Some(written),
                 _ => return None,
@@ -175,8 +178,20 @@ fn run_plan(
     let graph = TestGraph::of(&program.module, env!("FENNEC_BUILD"));
     let cache = results.machine_code();
     let cache = cache.as_ref().map(|(cache, program)| (cache, program.as_str()));
+    let mut outcomes = Vec::new();
+    let mut wanted = wanted;
+    let mut failed_through_llvm = Vec::new();
+    if options.llvm && crate::aot::llvm_ready() {
+        let through_llvm = crate::llvm_tests::run(&program.module, &wanted);
+        if let Some(why) = through_llvm.refused.as_deref().and_then(|why| why.lines().next()) {
+            eprintln!("note: some tests run another way, since LLVM can't build what they reach: {why}");
+        }
+        outcomes = through_llvm.outcomes;
+        wanted = through_llvm.left;
+        failed_through_llvm = through_llvm.failed;
+    }
     let mut native = fennec_jit::run_tests(&program.module, &signatures, &wanted, cache);
-    let mut outcomes = std::mem::take(&mut native.outcomes);
+    outcomes.append(&mut native.outcomes);
     if !native.left.is_empty() {
         match interpreted(&program.module, &native.left, options.run == Run::Real) {
             Ok(more) => outcomes.extend(more),
@@ -186,6 +201,7 @@ fn run_plan(
             }
         }
     }
+    disagreed(&mut outcomes, failed_through_llvm);
     // Workers finish in any order, and a report reads in the order the tests are written.
     let place = |name: &str| graph.tests().position(|test| test == name);
     outcomes.sort_by_key(|outcome| place(&outcome.name));
@@ -234,6 +250,21 @@ fn run_plan(
     let passed = outcomes.len() + unchanged.len() - failed;
     say_totals(options, (passed, failed), (outcomes.len(), unchanged.len()));
     if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+}
+
+/// A test that failed through LLVM and passed the other way is a bug in one of them, so it fails.
+fn disagreed(
+    outcomes: &mut [fennec_interp::TestOutcome],
+    failed_through_llvm: Vec<(String, fennec_syntax::Diagnostic)>,
+) {
+    for (name, failure) in failed_through_llvm {
+        if let Some(outcome) =
+            outcomes.iter_mut().find(|outcome| outcome.name == name && outcome.failure.is_none())
+        {
+            let message = format!("this test fails through LLVM and passes on the JIT: {}", failure.message);
+            outcome.failure = Some(fennec_syntax::Diagnostic { message, ..failure });
+        }
+    }
 }
 
 /// The line of totals, or when a program runs next, nothing unless a test failed.

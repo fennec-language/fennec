@@ -22,7 +22,13 @@ struct Node {
 
 /// Removes everything `main` can't reach from `module`, tests included.
 pub fn keep_what_main_reaches(module: &mut Module) {
-    let nodes: Vec<Option<Node>> = module.items.iter().map(node).collect();
+    keep_what_functions_reach(module, &|name| name == "main");
+}
+
+/// Removes everything that the functions `is_start` names can't reach from `module`, tests
+/// included.
+pub fn keep_what_functions_reach(module: &mut Module, is_start: &dyn Fn(&str) -> bool) {
+    let nodes: Vec<Option<Node>> = module.items.iter().map(|item| node(item, is_start)).collect();
     let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
     let mut by_member: HashMap<&str, Vec<usize>> = HashMap::new();
     for (at, node) in nodes.iter().enumerate() {
@@ -51,12 +57,12 @@ pub fn keep_what_main_reaches(module: &mut Module) {
 }
 
 /// What an item adds to the graph. A test adds nothing, so it's never kept.
-fn node(item: &Item) -> Option<Node> {
+fn node(item: &Item, is_start: &dyn Fn(&str) -> bool) -> Option<Node> {
     let mut node = Node::default();
     match item {
         Item::Function(def) => {
             node.names.push(def.name.clone());
-            node.root = def.name == "main";
+            node.root = is_start(&def.name);
             node.uses.function(def);
         }
         Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {

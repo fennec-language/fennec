@@ -180,9 +180,8 @@ impl Emit<'_, '_, '_> {
         for field in fields {
             match Kind::from_ty(self.module.layouts, field.ty) {
                 Some(inner @ Kind::Struct(_)) => {
-                    found.extend(
-                        self.inline_parts(&inner).into_iter().map(|part| part.shifted(field.offset)),
-                    );
+                    found
+                        .extend(self.inline_parts(&inner).into_iter().map(|part| part.shifted(field.offset)));
                 }
                 Some(Kind::Enum(id)) if !self.case_parts(id).is_empty() => {
                     found.push(InlinePart::Enum(field.offset, id));
@@ -272,8 +271,7 @@ impl Emit<'_, '_, '_> {
             .collect();
         let block = if matches!(kind, Kind::Boxed(_)) { Some(self.new_block(id)?) } else { None };
         // Holding blocks, it's made beside what the local holds, which may be read for it.
-        let beside =
-            (block.is_none() && self.holds_inline(&kind)).then(|| self.place_for(&kind));
+        let beside = (block.is_none() && self.holds_inline(&kind)).then(|| self.place_for(&kind));
         let base = match (&block, &beside) {
             (Some(block), _) => self.offset(block, FIELDS_OFFSET),
             (None, Some(place)) => place.clone(),
@@ -689,12 +687,7 @@ impl Emit<'_, '_, '_> {
 
     /// `==` on two enums in place: their words, one by one, or their cases' fields if they hold
     /// blocks, whose words can differ when what they hold doesn't.
-    pub(crate) fn same_enums(
-        &mut self,
-        op: BinOp,
-        id: u32,
-        (a, b): (&str, &str),
-    ) -> Result<String, String> {
+    pub(crate) fn same_enums(&mut self, op: BinOp, id: u32, (a, b): (&str, &str)) -> Result<String, String> {
         let same = if self.case_parts(id).is_empty() {
             let words = self.module.layouts.get(id).map_or(0, |layout| layout.size / 8);
             let mut same = "true".to_owned();
@@ -722,7 +715,8 @@ impl Emit<'_, '_, '_> {
     /// Whether two enums at these addresses are in the same case with the same fields.
     fn same_cases(&mut self, id: u32, (a, b): (&str, &str)) -> Result<String, String> {
         let layouts = self.module.layouts;
-        let cases = layouts.get(id).and_then(|layout| layout.cases.as_ref()).ok_or("the cases of a struct")?;
+        let cases =
+            layouts.get(id).and_then(|layout| layout.cases.as_ref()).ok_or("the cases of a struct")?;
         let (x_tag, y_tag, same_tag) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{x_tag} = load i64, ptr {a}"));
         self.line(&format!("{y_tag} = load i64, ptr {b}"));

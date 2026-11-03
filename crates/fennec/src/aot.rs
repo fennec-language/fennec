@@ -120,7 +120,7 @@ pub(crate) fn build_llvm(path: &str, output: Option<&str>, release: bool) -> Exi
     let output = output.map_or_else(|| default_output(path, &program), PathBuf::from);
     let started = Instant::now();
     match llvm_objects(&program, release) {
-        Ok(Objects { objects, total, fresh, runtime }) => {
+        Ok(Compiled { objects, total, fresh, runtime }) => {
             let compiled = started.elapsed();
             // A release built with the runtime's bitcode has its Rust inside already.
             let runtime_in = release && runtime_bitcode(runtime).is_some();
@@ -148,7 +148,7 @@ pub(crate) fn build_llvm(path: &str, output: Option<&str>, release: bool) -> Exi
 }
 
 /// What compiling a program with LLVM gives.
-struct Objects {
+struct Compiled {
     objects: Vec<Vec<u8>>,
     /// How many functions there are.
     total: usize,
@@ -159,7 +159,7 @@ struct Objects {
 }
 
 /// Lowers what the program reaches and compiles it.
-fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Objects, String> {
+fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled, String> {
     let mut reached = program.module.clone();
     fennec_build::keep_what_main_reaches(&mut reached);
     let checked =
@@ -202,7 +202,7 @@ fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Objects,
         let _ = std::fs::remove_dir_all(&work);
     }
     let built = built?;
-    Ok(Objects { objects: built.objects, total: units.len(), fresh: built.compiled, runtime })
+    Ok(Compiled { objects: built.objects, total: units.len(), fresh: built.compiled, runtime })
 }
 
 /// Links object files with the runtime library, giving back how long linking took. When the

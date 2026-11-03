@@ -357,7 +357,9 @@ impl Lowerer<'_, '_> {
             Operand::Int(value) => Ok(self.int(*value)),
             Operand::Float(value) => Ok(self.b.ins().f64const(*value)),
             Operand::Bool(value) => Ok(self.b.ins().iconst(types::I8, i64::from(*value))),
-            Operand::Str(_) | Operand::None => Err(internal("a value the IR path doesn't take", span)),
+            Operand::Str(_) | Operand::Bytes(_) | Operand::None => {
+                Err(internal("a value the IR path doesn't take", span))
+            }
         }
     }
 }
@@ -368,6 +370,8 @@ fn operand_type(operand: &Operand, vars: &Locals, span: Span) -> Result<Ty, Diag
         Operand::Int(_) => Ok(Ty::Int),
         Operand::Float(_) => Ok(Ty::Float),
         Operand::Bool(_) => Ok(Ty::Bool),
-        Operand::Str(_) | Operand::None => Err(internal("a value the IR path doesn't take", span)),
+        Operand::Str(_) | Operand::Bytes(_) | Operand::None => {
+            Err(internal("a value the IR path doesn't take", span))
+        }
     }
 }

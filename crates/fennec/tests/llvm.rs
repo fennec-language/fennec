@@ -87,6 +87,20 @@ fn outcome(output: &Output) -> Outcome {
     )
 }
 
+/// `str` of what's text already. The linter takes these out of the examples, since they change
+/// nothing, so it's here they're run. This backend doesn't take `int`, or `float` of a float,
+/// yet, so `cli.rs` runs those on the other engines.
+#[test]
+fn str_of_text_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "str_of_text",
+        "def main(stdout: Stdout):\n    name = \"fox\"\n    stdout.print(str(name), str(\"\"))\n",
+    )
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -1480,5 +1494,30 @@ def main(stdout: Stdout):
     stdout.print(sum(u.h for u in us), sum(u.h for u in us if u.h > 0.0))
     stdout.print(sum((u.h for u in us), start=1.0), sum(1 if u.h > 0.0 else 0 for u in us))
 ",
+    )
+}
+
+/// Short strings made by every path that copies bytes into a header, at every length that fits
+/// and just past it, in ASCII and not.
+#[test]
+fn short_copies_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "short_copies",
+        r#"def main(stdout: Stdout):
+    for letters in ["abcdefghijklmnopqrstuvwxyz0123456789", "héllo wörld ünï çà ñé ßø åæ"]:
+        for size in range(27):
+            part = letters[:size]
+            other = letters[3:3 + size]
+            stdout.print(size, part, other, part + "!", "!" + part, part + other, f"[{part}]", f"{size}:{part}")
+            padded = f"  {part}  "
+            stdout.print(padded.strip(), padded.lstrip(), padded.rstrip(), part.strip() == part)
+    mut grown = "a block long enough that it isn't a header at all: "
+    for size in range(27):
+        grown += "x" * size
+    stdout.print(grown, grown.len())
+"#,
     )
 }

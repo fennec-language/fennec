@@ -557,6 +557,22 @@ fn llvm_ready_for_run() -> bool {
         && runtime.is_file()
 }
 
+/// A conversion to the type a value has already gives it back, on the JIT and in the
+/// interpreter. The linter takes these out of the examples, since they change nothing.
+#[test]
+fn conversions_to_what_a_value_is_already_give_it_back() {
+    let dir = scratch("same-type").unwrap();
+    let program = dir.join("same_type.fen");
+    let source = "def main(stdout: Stdout):\n    name = \"fox\"\n    half = 0.5\n    seven = 7\n    \
+                  stdout.print(str(name), float(half), int(seven), float(-0.0))\n";
+    std::fs::write(&program, source).unwrap();
+    for engine in ["--jit", "--interp"] {
+        let output = fennec(&["run", engine, program.to_str().unwrap()], "").unwrap();
+        assert_eq!(text(&output.stdout), "fox 0.5 7 -0.0\n", "{engine}: {}", text(&output.stderr));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A program that fails while running, or returns normally, gives `fennec run` the same exit
 /// code whichever way it runs: through LLVM, on the JIT, or in the interpreter.
 #[test]

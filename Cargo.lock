@@ -495,6 +495,9 @@ dependencies = [
 [[package]]
 name = "fennec-syntax"
 version = "0.0.1"
+dependencies = [
+ "fennec-blake3",
+]
 
 [[package]]
 name = "fennec-wasm"

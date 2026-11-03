@@ -220,6 +220,26 @@ fn test_kit(dir: &Path) -> std::io::Result<Output> {
 }
 
 #[test]
+fn an_edit_to_an_embedded_file_runs_only_the_tests_that_use_it() {
+    let dir = kit_with_tests("kit_embed").unwrap();
+    std::fs::write(dir.join("src/data.bin"), [1]).unwrap();
+    let uses = "DATA = embed(\"data.bin\")\n\ntest \"the data\":\n    assert DATA.len() == 1\n";
+    std::fs::write(dir.join("src/with_data.fen"), uses).unwrap();
+    assert_eq!(stdout(&test_kit(&dir).unwrap()), "3 passed, 0 failed\n");
+    assert_eq!(stdout(&test_kit(&dir).unwrap()), "3 passed, 0 failed (0 run, 3 unchanged)\n");
+
+    std::fs::write(dir.join("src/data.bin"), [2]).unwrap();
+    assert_eq!(stdout(&test_kit(&dir).unwrap()), "3 passed, 0 failed (1 run, 2 unchanged)\n");
+    assert_eq!(stdout(&test_kit(&dir).unwrap()), "3 passed, 0 failed (0 run, 3 unchanged)\n");
+
+    std::fs::write(dir.join("src/data.bin"), [2, 3]).unwrap();
+    let failed = test_kit(&dir).unwrap();
+    assert_eq!(failed.status.code(), Some(1));
+    assert_eq!(stdout(&failed), "  ✗ the data\n2 passed, 1 failed (1 run, 2 unchanged)\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn an_edit_to_a_body_runs_only_what_ran_it_across_files() {
     let dir = kit_with_tests("kit_body").unwrap();
     assert_eq!(stdout(&test_kit(&dir).unwrap()), "2 passed, 0 failed\n");

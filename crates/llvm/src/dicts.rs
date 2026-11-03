@@ -106,8 +106,21 @@ impl Emit<'_, '_, '_> {
 
     /// The address of a key's entry, or zero.
     fn find(&mut self, dict: &str, word: Word, key: &str) -> String {
+        // A key held as a header is found by its bytes here, as a slice's are: its inline bytes
+        // are zero after its length, as a block's text is, so they hash the same.
         if word == Word::Str && self.headers() {
-            return self.find_header(dict, key, i64::from(ENTRY_VALUE));
+            self.string_slice_helpers();
+            let (bytes, length) = (self.header_bytes(key), self.header_byte_length(key));
+            let (mixed, high, folded, hash, entry) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{mixed} = call i64 @fen_slice_hash(ptr {bytes}, i64 {length})"));
+            self.line(&format!("{high} = lshr i64 {mixed}, 29"));
+            self.line(&format!("{folded} = xor i64 {mixed}, {high}"));
+            self.line(&format!("{hash} = lshr i64 {folded}, 1"));
+            self.line(&format!(
+                "{entry} = call ptr @fen_find_slice(ptr {dict}, ptr {bytes}, i64 {length}, i64 {hash})"
+            ));
+            return entry;
         }
         let hash = self.hash(word, key);
         let (name, key_type) = match word {
@@ -366,7 +379,7 @@ impl Emit<'_, '_, '_> {
         };
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let optional = self.kind_of(dest)?.clone();
-        if matches!(optional, Kind::Maybe(_)) {
+        if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
             let key = self.key_value(key, key_word)?;
             let entry = self.find(&dict, key_word, &key);
             self.remember_entry(&looked_up, &entry);
@@ -433,16 +446,30 @@ impl Emit<'_, '_, '_> {
 
     /// Where the value of the key that's the slice `text[from:to]` is, or null. In ASCII text a
     /// character is a byte, so the slice's bytes are hashed as a stored key's are and looked up
-    /// right here; other text asks the runtime.
+    /// right here; other text asks the runtime, as does an inline header.
     fn slice_value_at(&mut self, dict: &str, [text, from, to]: &[String; 3]) -> String {
         self.string_slice_helpers();
+        let (here, there, joined) = (self.label("ascii"), self.label("other"), self.label("looked"));
+        let header = self.headers().then(|| text.clone());
+        let text = &match &header {
+            Some(header) => {
+                let in_block = self.header_in_block(header);
+                let block_path = self.label("slice_block");
+                self.line(&format!("br i1 {in_block}, label %{block_path}, label %{there}, !prof !8"));
+                self.start_block(&block_path);
+                let first = self.header_word(header, 0);
+                let block = self.temp();
+                self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+                block
+            }
+            None => text.clone(),
+        };
         let (bytes_at, chars_at) =
             (self.offset(text, TEXT_BYTES.unsigned_abs()), self.offset(text, TEXT_CHARS.unsigned_abs()));
         let (length, chars, ascii) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{length} = load i64, ptr {bytes_at}"));
         self.line(&format!("{chars} = load i64, ptr {chars_at}"));
         self.line(&format!("{ascii} = icmp eq i64 {length}, {chars}"));
-        let (here, there, joined) = (self.label("ascii"), self.label("other"), self.label("looked"));
         self.line(&format!("br i1 {ascii}, label %{here}, label %{there}, !prof !8"));
         self.start_block(&here);
         // Slicing's clamping: a missing end, then from the end if negative, then within.
@@ -478,14 +505,18 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{joined}"));
         self.start_block(&there);
         self.declare("declare ptr @fennec_dict_find_slice(ptr, ptr, i64, i64) nounwind");
-        let asked = self.temp();
-        self.line(&format!(
-            "{asked} = call ptr @fennec_dict_find_slice(ptr {dict}, ptr {text}, i64 {from}, i64 {to})"
-        ));
+        let asked = self.on_blocks([header.as_deref().unwrap_or(text)], |emit, [text]| {
+            let asked = emit.temp();
+            emit.line(&format!(
+                "{asked} = call ptr @fennec_dict_find_slice(ptr {dict}, ptr {text}, i64 {from}, i64 {to})"
+            ));
+            asked
+        });
+        let there_end = self.current.clone();
         self.line(&format!("br label %{joined}"));
         self.start_block(&joined);
         let value_at = self.temp();
-        self.line(&format!("{value_at} = phi ptr [ {found}, %{here_end} ], [ {asked}, %{there} ]"));
+        self.line(&format!("{value_at} = phi ptr [ {found}, %{here_end} ], [ {asked}, %{there_end} ]"));
         value_at
     }
 
@@ -550,7 +581,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{done}"));
         self.start_block(&found);
         let optional = self.kind_of(dest)?.clone();
-        if matches!(optional, Kind::Maybe(_)) {
+        if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
             self.read_into(dest, &value_kind, &value_at, "")?;
         } else {
             let (number, fields) = self.case_of(&optional, "Some")?;
@@ -615,10 +646,13 @@ impl Emit<'_, '_, '_> {
         // finds one that's there, in a dict something else holds.
         let word = self.dict_word(&value_kind, &held, !fresh);
         self.declare("declare ptr @fennec_dict_add_new_slice(ptr, ptr, i64, i64, i64) nounwind");
-        let changed = self.temp();
-        self.line(&format!(
-            "{changed} = call ptr @fennec_dict_add_new_slice(ptr {dict}, ptr {text}, i64 {from}, i64 {to}, i64 {word})"
-        ));
+        let changed = self.on_blocks([text.as_str()], |emit, [text]| {
+            let changed = emit.temp();
+            emit.line(&format!(
+                "{changed} = call ptr @fennec_dict_add_new_slice(ptr {dict}, ptr {text}, i64 {from}, i64 {to}, i64 {word})"
+            ));
+            changed
+        });
         self.line(&format!("store ptr {changed}, ptr {place}"));
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
@@ -670,6 +704,10 @@ impl Emit<'_, '_, '_> {
         };
         match dest {
             Some(dest) if self.kind_of(dest)? == &value_kind => self.assign(dest, &value),
+            // An optional string is the same header.
+            Some(dest) if value_kind == Kind::Str && *self.kind_of(dest)? == Kind::MaybeText => {
+                self.assign(dest, &value)
+            }
             Some(dest) => {
                 // Given where an optional's wanted.
                 let optional = self.kind_of(dest)?.clone();
@@ -697,7 +735,6 @@ impl Emit<'_, '_, '_> {
     /// `dict.get(key, default)`, or `dict.get(key)` as an optional.
     pub(crate) fn dict_get(&mut self, dest: LocalId, args: &[Operand]) -> Result<(), String> {
         if let [dict, Operand::Local(key)] = args
-            && !self.headers()
             && let Some(sliced) = self.known.slice_keys.get(&key.0).cloned()
         {
             return self.slice_get(dest, (dict, &Operand::Local(*key)), &sliced);

@@ -104,7 +104,7 @@ jobs:
               ours, rust = misses.get("fennec"), misses.get("rust")
               return f"{short(ours[kind])} / {short(rust[kind])}" if ours and rust else "-"
           # A machine that can't count instructions, like a hosted Mac, gets no column for them.
-          keys = {run["platform"]: [key for key in ("instructions", "time", "median")
+          keys = {run["platform"]: [key for key in ("instructions", "time", "kernel", "median")
                                     if key != "instructions" or any(k.get(key) is not None for k in run["kernels"])]
                   for run in runs}
           # Cache misses show only for a machine that simulated them, beside its instructions.
@@ -118,8 +118,8 @@ jobs:
           label = {"instructions": "instructions %", "time": "best time %", "median": "median %",
                    "d1": "D1 misses, ours / Rust's", "ll": "LL misses, ours / Rust's",
                    "dev": "dev best time %", "release_build_ms": "release build ms", "dev_build_ms": "dev build ms",
-                   "go_kernel": "Go kernel % ≈", "go": "Go whole run %",
-                   "java_kernel": "Java kernel % ≈", "java": "Java whole run %"}
+                   "kernel": "kernel time %", "go_kernel": "Go kernel time %", "go": "Go whole run %",
+                   "java_kernel": "Java kernel time %", "java": "Java whole run %"}
           header = ["kernel"]
           for run in runs:
               header += [f"{label[key]} ({run['platform']})" for key in keys[run["platform"]]]
@@ -144,7 +144,7 @@ jobs:
           print()
           for run in runs:
               counted = f"{shown(run['instructions'])}% by instructions, " if run["instructions"] is not None else ""
-              others = "".join(f"; against {language} roughly {shown(run.get(key + '_kernel'))}% by kernel time, "
+              others = "".join(f"; against {language} {shown(run.get(key + '_kernel'))}% by kernel time, "
                                f"{shown(run[key])}% by whole run"
                                for key, language in (("go", "Go"), ("java", "Java")) if run.get(key) is not None)
               names = {"fennec": "Fennec", "rust": "Rust", "go": "Go", "java": "Java"}
@@ -161,8 +161,8 @@ jobs:
                 "Dev is `fennec build --llvm` without `--release`, cached a function at a time; each build's time is from an empty Fennec home. "
                 "The Go and Java columns are each twin's best time over LLVM's, the same way. "
                 "Whole run is each program from start to exit; Java's whole runs include the JVM starting and its JIT warming up. "
-                "Kernel ≈ takes each language's startup, a hello-world's best run, off its whole run first, so it's only roughly the kernel's time; "
-                "it's left out where either side's kernel took less time than its startup, and Java's still includes the JIT warming up.")
+                "Kernel time is what each program measured itself with a monotonic clock when run with --time, from the start of its work to its last line; "
+                "Java's is its second run, after one to warm its JIT up. Startup is each language's hello-world's best run.")
           TABLE
       # Only main's own runs join the history, one line per machine.
       - name: Add the run to the history

@@ -1,4 +1,6 @@
 // Richards, the Java twin of richards.fen.
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.util.ArrayList;
 
 public class richards {
@@ -259,7 +261,7 @@ public class richards {
         return new long[] {scheduler.queued, scheduler.holds};
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         long queued = 0;
         long holds = 0;
         for (int i = 0; i < 25; i++) {
@@ -267,6 +269,18 @@ public class richards {
             queued = result[0];
             holds = result[1];
         }
-        System.out.println(queued + " " + holds);
+        out.println(queued + " " + holds);
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

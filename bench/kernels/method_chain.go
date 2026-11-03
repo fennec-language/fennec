@@ -1,7 +1,11 @@
 // Chained method calls on small structs, the Go twin of method_chain.fen.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"time"
+)
 
 type Complex struct {
 	re, im float64
@@ -31,6 +35,7 @@ func iterations(c Complex, limit int64) int64 {
 }
 
 func main() {
+	started := time.Now()
 	size := 500
 	var total int64
 	for y := 0; y < size; y++ {
@@ -41,4 +46,7 @@ func main() {
 		}
 	}
 	fmt.Println(total)
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

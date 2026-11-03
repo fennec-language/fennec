@@ -4,7 +4,9 @@ package main
 import (
 	"fmt"
 	"iter"
+	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -108,6 +110,7 @@ func firstOver(limit, over int64) int64 {
 }
 
 func main() {
+	started := time.Now()
 	src := makeLines(20_000)
 	var result int64
 	for round := int64(0); round < 40; round++ {
@@ -121,4 +124,7 @@ func main() {
 		result += firstOver(1_000, 990-round)
 	}
 	fmt.Println(result)
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

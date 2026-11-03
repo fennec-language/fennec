@@ -1,7 +1,11 @@
 // Binary trees, the Go twin of binary_trees.fen.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"time"
+)
 
 // Tree is a leaf when both children are nil, and a node otherwise.
 type Tree struct {
@@ -23,6 +27,7 @@ func count(tree *Tree) int64 {
 }
 
 func main() {
+	started := time.Now()
 	most := 14
 	longest := build(most)
 	var total int64
@@ -32,4 +37,7 @@ func main() {
 		}
 	}
 	fmt.Printf("%d %d\n", total, count(longest))
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

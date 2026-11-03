@@ -54,6 +54,7 @@ fn first_over(limit: i64, over: i64) -> i64 {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let src = make_lines(20_000);
     let mut result = 0;
     for round in 0..40 {
@@ -63,4 +64,7 @@ fn main() {
         result += first_over(1_000, 990 - round);
     }
     println!("{result}");
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

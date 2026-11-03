@@ -404,10 +404,14 @@ fn projection_test(size: i64) -> i64 {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let size = std::hint::black_box(100);
     let mut total = 0;
     for _ in 0..100 {
         total += chain_test(size as usize) + projection_test(size);
     }
     println!("{total}");
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

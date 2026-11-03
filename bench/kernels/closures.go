@@ -1,7 +1,11 @@
 // Closures, the Go twin of closures.fen.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"time"
+)
 
 func applyAll(values []int64, change func(int64) int64) int64 {
 	var sum int64
@@ -16,6 +20,7 @@ func twice(value int64, change func(int64) int64) int64 {
 }
 
 func main() {
+	started := time.Now()
 	count := int64(10_000)
 	values := make([]int64, 0, count)
 	for i := int64(0); i < count; i++ {
@@ -30,4 +35,7 @@ func main() {
 		})
 	}
 	fmt.Println(total)
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

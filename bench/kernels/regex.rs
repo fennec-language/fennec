@@ -28,6 +28,7 @@ fn replaced(pattern: &str, text: &str, with: &str) -> String {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let dna = sequence(std::hint::black_box(50_000));
     let patterns = [
         "agggtaaa|tttaccct",
@@ -45,4 +46,7 @@ fn main() {
     }
     println!("{}", text.len());
     println!("{}", replaced("ta+c", &dna, "x").len());
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

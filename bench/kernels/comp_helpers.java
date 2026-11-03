@@ -1,4 +1,6 @@
 // Iterators that call helper functions, the Java twin of comp_helpers.fen.
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.util.Arrays;
 import java.util.Locale;
 
@@ -27,7 +29,7 @@ public class comp_helpers {
         return times(times(v, false), true);
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         int n = 100;
         double[] u = new double[n];
         Arrays.fill(u, 1.0);
@@ -44,6 +46,18 @@ public class comp_helpers {
         for (double x : v) {
             vv += x * x;
         }
-        System.out.println(String.format(Locale.ROOT, "%.9f", Math.sqrt(vbv / vv)));
+        out.println(String.format(Locale.ROOT, "%.9f", Math.sqrt(vbv / vv)));
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

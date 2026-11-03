@@ -4,10 +4,13 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"os"
 	"slices"
+	"time"
 )
 
 func main() {
+	started := time.Now()
 	var seed int64 = 42
 	numbers := make([]int64, 0, 300_000)
 	for i := 0; i < 300_000; i++ {
@@ -24,4 +27,7 @@ func main() {
 	}
 	slices.Sort(words)
 	fmt.Printf("%d %d %d %d %s\n", ordered[0], ordered[150_000], byDigit[0], byDigit[150_000], words[25_000])
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

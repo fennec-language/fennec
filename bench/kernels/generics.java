@@ -1,4 +1,6 @@
 // Generic code over an interface, the Java twin of generics.fen.
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -49,7 +51,7 @@ public class generics {
         return best;
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         int count = 5000;
         ArrayList<Circle> circles = new ArrayList<>();
         ArrayList<Square> squares = new ArrayList<>();
@@ -65,6 +67,18 @@ public class generics {
             sum += total(circles, by) + total(squares, by);
         }
         Circle biggest = largest(circles, (a, b) -> a.radius() > b.radius());
-        System.out.println(String.format(Locale.ROOT, "%.3f", sum) + " " + biggest.radius());
+        out.println(String.format(Locale.ROOT, "%.3f", sum) + " " + biggest.radius());
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

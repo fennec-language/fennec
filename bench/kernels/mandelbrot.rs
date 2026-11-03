@@ -14,6 +14,7 @@ fn iterations(cr: f64, ci: f64, limit: i64) -> i64 {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let size = std::hint::black_box(400);
     let (mut total, mut inside) = (0, 0);
     for y in 0..size {
@@ -28,4 +29,7 @@ fn main() {
         }
     }
     println!("{total} {inside}");
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

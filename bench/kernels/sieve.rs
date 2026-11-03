@@ -17,5 +17,9 @@ fn count_primes(limit: usize) -> i64 {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     println!("{}", count_primes(std::hint::black_box(5_000_000)));
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

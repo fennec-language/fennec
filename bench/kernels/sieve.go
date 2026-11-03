@@ -1,7 +1,11 @@
 // The sieve of Eratosthenes, the Go twin of sieve.fen.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"time"
+)
 
 func countPrimes(limit int) int64 {
 	composite := make([]int64, limit+1)
@@ -18,5 +22,9 @@ func countPrimes(limit int) int64 {
 }
 
 func main() {
+	started := time.Now()
 	fmt.Println(countPrimes(5_000_000))
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

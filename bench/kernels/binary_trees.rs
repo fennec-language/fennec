@@ -20,6 +20,7 @@ fn count(tree: &Tree) -> i64 {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let most = std::hint::black_box(14);
     let longest = build(most);
     let mut total = 0;
@@ -31,4 +32,7 @@ fn main() {
         depth += 4;
     }
     println!("{total} {}", count(&longest));
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

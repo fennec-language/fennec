@@ -1,4 +1,6 @@
 // DeltaBlue, the Java twin of deltablue.fen.
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.util.ArrayList;
 
 public class deltablue {
@@ -411,12 +413,24 @@ public class deltablue {
         return total;
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         long size = 100;
         long total = 0;
         for (int i = 0; i < 100; i++) {
             total += chainTest((int) size) + projectionTest(size);
         }
-        System.out.println(total);
+        out.println(total);
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

@@ -1,8 +1,7 @@
 //! What starting a program costs in each language, from a hello-world in each one beside the
-//! kernels, `bench/startup/empty.*`, built the same way as the kernels and their twins. Taking
-//! it off a kernel's whole run leaves roughly what its kernel took, which matters most for
-//! Java, where starting the JVM can take longer than a short kernel does. It's only roughly:
-//! the rest of a run, its JIT warming up included, stays in.
+//! kernels, `bench/startup/empty.*`, built the same way as the kernels and their twins. It's
+//! shown beside the kernels' times, since a short kernel's whole run is mostly its startup,
+//! Java's above all.
 
 use std::path::Path;
 
@@ -56,29 +55,4 @@ pub(crate) fn measure(
         })
         .collect();
     Startups { fennec: fennec_startup, rust, others }
-}
-
-/// Roughly how fast a kernel ran against a twin, with each side's startup taken off its best
-/// run, as a percentage of the twin's speed. Only where each side's kernel took at least as
-/// long as its own startup: below that, what's left after taking startup off is mostly noise.
-pub(crate) fn kernel_speed(ours: f64, our_startup: f64, theirs: f64, their_startup: f64) -> Option<f64> {
-    let (ours, theirs) = (ours - our_startup, theirs - their_startup);
-    (ours >= our_startup && theirs >= their_startup && ours > 0.0).then(|| theirs / ours * 100.0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::kernel_speed;
-
-    #[test]
-    fn startup_comes_off_both_sides() {
-        let speed = kernel_speed(0.012, 0.002, 0.100, 0.040).unwrap_or(0.0);
-        assert!((speed - 600.0).abs() < 1e-9, "{speed}");
-        assert_eq!(
-            kernel_speed(0.012, 0.002, 0.060, 0.040),
-            None,
-            "Java's kernel took less than its startup"
-        );
-        assert_eq!(kernel_speed(0.002, 0.003, 0.200, 0.040), None, "faster than its own startup");
-    }
 }

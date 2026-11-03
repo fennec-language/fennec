@@ -4,7 +4,9 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
 	"strconv"
+	"time"
 )
 
 func a(i, j int) float64 {
@@ -32,6 +34,7 @@ func timesTransposed(v []float64) []float64 {
 }
 
 func main() {
+	started := time.Now()
 	n := 400
 	u := make([]float64, n)
 	for i := range u {
@@ -50,4 +53,7 @@ func main() {
 		vv += x * x
 	}
 	fmt.Println(strconv.FormatFloat(math.Sqrt(vbv/vv), 'f', 9, 64))
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

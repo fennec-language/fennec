@@ -1,5 +1,7 @@
 // JSON, the Java twin of json.fen.
 
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -160,17 +162,29 @@ public class json {
         return text.toString();
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         String text = document(300);
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
         long total = 0;
         for (int round = 0; round < 40; round++) {
             Reader reader = new Reader(bytes);
             Json value = reader.value();
-            StringBuilder out = new StringBuilder();
-            printed(value, out);
-            total += out.length();
+            StringBuilder written = new StringBuilder();
+            printed(value, written);
+            total += written.length();
         }
-        System.out.println(bytes.length + " " + total);
+        out.println(bytes.length + " " + total);
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

@@ -89,8 +89,11 @@ fennec-reference = { path = "crates/reference" }
 fennec-syntax = { path = "crates/syntax" }
 
 # Day-to-day builds skip debug info: they build and link faster, and errors still name a line.
+# Light optimization: most of a test run is the compiler itself, so this runs them about three
+# times as fast for a little more compile time. Overflow checks and debug assertions stay on.
 [profile.dev]
 debug = false
+opt-level = 1
 
 [profile.release]
 lto = true

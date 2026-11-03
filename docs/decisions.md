@@ -517,10 +517,15 @@ def report(shapes: list[Shape], stdout: Stdout):
 
 *Why:* Mixed lists stay fast and unboxed, and they read like a Python type hint. Unions add nothing new to learn beyond `is` and `match`.
 
-**There's no run-time open set.** There are no boxed, dynamically dispatched interface values, and that's a hard no. Every type is known at compile time, since the whole program is compiled, Den packages included, and plugins loaded at run time aren't a thing.
+**There's no run-time open set.** There are no boxed, dynamically dispatched interface values, and that's a hard no. Every type is known at compile time, since the whole program is compiled, Den packages included, and plugins or scripts loaded at run time aren't a thing.
 *Why:* The goal is as many facts as possible about a program at compile time.
 
-**Mixed types are a union or an `enum`; kinds other kits add go through function values.** A list that holds different existing types is a list of a union, `list[Circle | Square]`, and a list of new cases is a list of an enum. Either way each element is inline with a one-byte tag, and `match` compiles to a jump table. Other kits add kinds through a struct with function fields, all compiled into the one program, and a call through a function value is the only run-time dispatch a program can ask for.
+**Mixed types are a union or an `enum`; kinds other kits add go through function values.** A list that holds different existing types is a list of a union, `list[Circle | Square]`, and a list of new cases is a list of an enum. Either way each element is inline with a one-byte tag, and `match` compiles to a jump table. Other kits add kinds through a struct with function fields, all compiled into the one program.
+
+**Function values stay, and they're closed.** `router.get("/users", list_users)`, callbacks and dicts of handlers are all allowed. The whole program is compiled, so every function a value could hold is known at compile time, and choosing one at run time is a branch. There's no `dyn` and no unknown code. How such a call compiles is engineering, not a language rule.
+*Why:* Routes, callbacks and dispatch tables are ordinary code, and none of them needs anything the compiler hasn't seen.
+
+**A program makes two kinds of closed run-time call.** One goes through a function value. The other resumes a generator that's been passed around, since which generator it is can depend on the run. The compiler knows every target of both. This corrects the entry that called a function value the only run-time dispatch.
 
 **`Self` in an interface's method means the type that fits it.** `interface Signed: def abs(self) -> Self` says `abs` returns the same type it's called on: a `Money` for a `Money`.
 
@@ -931,6 +936,8 @@ commands = Channel[Cmd](size=1024)
 latest = Channel[Snapshot](size=1, when_full=.DropOldest)
 ```
 *Why:* A bounded buffer pushes back instead of growing without limit, and a one-slot channel is how a renderer always gets the newest frame.
+
+**Event channels will be added, for many listeners,** each reading at its own pace. A function value is for one answer now, and a channel is for many parties later. The exact API isn't decided yet.
 
 **A long-running loop should never wait on another.** It takes what's waiting, does its work and publishes. Waiting belongs to simple consumers at the end of a one-way chain.
 *Why:* Deadlock needs someone waiting, so two loops that never wait can't deadlock.
@@ -1349,7 +1356,7 @@ tools = { path = "../tools" }
 **There's one backend: LLVM, with per-function `-O3` and a function-level cache.** `fennec run` makes real binaries in the store. Whole-program work happens only in `--release`. There's no hot reload in the plan, and no tiering.
 *Why:* What people run is what ships, so a first benchmark shows real speed. The cache is what makes it fast to edit, and one backend is less to maintain and keep in agreement.
 
-**LLVM becomes the default backend once about 90% of examples build natively, which retires Cranelift.** The interpreter is then out of `fennec run` and `fennec build`, and refusing to build and building natively stay the only two outcomes. Until then, `fennec run` uses the cached LLVM build, with a one-line note and then the JIT where LLVM can't build the program, and the interpreter for what the JIT can't compile. `fennec build` and `fennec test` still use the JIT's compiler, Cranelift, and `fennec build --llvm` asks for LLVM. This replaces the rule that Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
+**LLVM becomes the default backend once about 90% of examples build natively.** The interpreter is then out of `fennec run` and `fennec build`, and refusing to build and building natively stay the only two outcomes. Removing Cranelift also requires a native `fennec test` harness and Windows linking. Until then, `fennec run` uses the cached LLVM build, with a one-line note and then the JIT where LLVM can't build the program, and the interpreter for what the JIT can't compile. `fennec build` and `fennec test` still use the JIT's compiler, Cranelift, and `fennec build --llvm` asks for LLVM. This replaces the rule that Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
 
 **The tree-walking interpreter is kept for now, simple and correct, not fast.** It runs the REPL, the playground, compile-time evaluation and the sandbox, and it's the test reference. The goal is to drop it as soon as we can, and what replaces each of its jobs, a test reference included, gets decided at that point.
 
@@ -1432,7 +1439,7 @@ def scale(mut xs: list[f32], factor: f32):
 ```
 Plain loops and `parallel(...)` loops are still vectorized automatically where LLVM can. `Simd` is for when you want a guarantee.
 
-**GPU access is a capability, `Gpu`,** passed to `main` like `Fs`. A kit gets the GPU only if it's handed one, and a sandboxed script only if its host grants it.
+**GPU access is a capability, `Gpu`,** passed to `main` like `Fs`. A kit gets the GPU only if it's handed one.
 
 **`GpuBuffer[T]` is GPU memory.** It holds numbers, `f16`, `bf16`, `Simd` values, or structs made only of those. `gpu.upload(xs)` and `gpu.download(buffer)` move data. Fennec values never point into GPU memory, so the CPU and the GPU can't race over data.
 
@@ -1533,10 +1540,13 @@ The JIT loads them when the program runs, and release builds link them. The C st
 
 ## Sandboxing
 
-**Capabilities are the sandbox's policy in every engine.** A script can do only what the capabilities passed to its `main` allow, and sandboxed code can't use `extern` or `unsafe`. A host can show what a script asks for before running it: "this script wants `Net` and read access to `data/`".
+**No program runs scripts inside itself.** A program can't load and run sandboxed code at run time. Sandboxes exist only for tools, like Den tests and MCP snippets. This removes the earlier idea of a host running sandboxed scripts.
+*Why:* A script loaded at run time is code the compiler never saw, which is the open set Fennec has already ruled out.
+
+**Capabilities are the sandbox's policy in every engine.** Sandboxed code can do only what the capabilities passed to its `main` allow, and it can't use `extern` or `unsafe`. A tool can show what a snippet asks for before running it: "this snippet wants `Net` and read access to `data/`".
 *Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
 
-**The interpreter runs untrusted scripts, with limits.** It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground, the REPL and AI-written scripts, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
+**The interpreter runs untrusted code for those tools, with limits.** It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground, the REPL and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
 
 **Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
 *Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.
@@ -1577,6 +1587,7 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 - How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
 - How a type marks that its finishing method must be called.
 - The syntax of the `mut` form of `def []`, which returns a place.
+- The exact API of event channels.
 - How replay records the order tasks reach a `shared` value or a channel.
 - How the interpreter runs a `parallel` loop over a server's connections. It runs `parallel` loops in order, which would serve one client at a time. Until it can switch tasks at a blocking call, such a program runs only in the native engines.
 - Whether kits can define their own annotations, like `@get("/todos/{id}")` on a plain function, so a router can build its table at compile time.

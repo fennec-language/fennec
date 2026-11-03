@@ -1,0 +1,5 @@
+# The file has to be there when the program is built.
+MAP = embed("not_there.bin")
+
+def main(stdout: Stdout):
+    stdout.print(MAP.len())

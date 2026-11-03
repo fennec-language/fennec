@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use fennec_syntax::{Diagnostic, Import, Item, Module, Sources, Span};
 
-use crate::{Entry, Manifest, Overlay, Problems, Program, manifest, scope};
+use crate::{Embedded, Entry, Manifest, Overlay, Problems, Program, embed, manifest, scope};
 
 /// A parsed file of a program.
 pub(crate) struct File {
@@ -24,7 +24,7 @@ pub(crate) fn is_std(import: &Import) -> bool {
 /// Loads a single `.fen` file. Its imports resolve against its own folder.
 pub(crate) fn file(path: &Path, shown_as: &str, overlay: &Overlay) -> Result<Program, Problems> {
     let src = path.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let mut loader = Loader::new(src, folder_prefix(Path::new(shown_as).parent()), overlay);
+    let mut loader = Loader::new(src, folder_prefix(Path::new(shown_as).parent()), None, overlay);
     let name = path.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     loader.visit(&name, path, shown_as.to_owned(), None);
     loader.finish(None)
@@ -39,7 +39,7 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
     };
     let manifest = read_manifest(&root, &shown_root).map_err(Problems::unplaced)?;
     let src = root.join("src");
-    let mut loader = Loader::new(src.clone(), format!("{shown_root}src/"), overlay);
+    let mut loader = Loader::new(src.clone(), format!("{shown_root}src/"), Some(&root), overlay);
     let main = src.join("main.fen");
     if main.is_file() || overlay.contains_key(&main) {
         loader.visit("main", &main, format!("{shown_root}src/main.fen"), None);
@@ -99,7 +99,7 @@ pub(crate) fn kit_modules(
         return Err(Problems::unplaced("error: this isn't in a kit\n".to_owned()));
     };
     let manifest = read_manifest(&root, &shown_root).map_err(Problems::unplaced)?;
-    let mut loader = Loader::new(root.join("src"), format!("{shown_root}src/"), overlay);
+    let mut loader = Loader::new(root.join("src"), format!("{shown_root}src/"), Some(&root), overlay);
     let modules: Vec<Vec<String>> =
         modules.iter().map(|module| module.split('.').map(str::to_owned).collect()).collect();
     loader.parse_ahead(modules.clone());
@@ -207,6 +207,9 @@ struct Loader<'a> {
     src: PathBuf,
     /// How `src` is shown before a module's path.
     shown_src: String,
+    /// The folder of the kit being loaded, which `embed` can't reach out of. A single file has none.
+    root: Option<PathBuf>,
+    embedded: Vec<Embedded>,
     sources: Sources,
     files: Vec<File>,
     seen: HashSet<String>,
@@ -220,11 +223,13 @@ struct Loader<'a> {
 }
 
 impl<'a> Loader<'a> {
-    fn new(src: PathBuf, shown_src: String, overlay: &'a Overlay) -> Self {
+    fn new(src: PathBuf, shown_src: String, root: Option<&Path>, overlay: &'a Overlay) -> Self {
         Loader {
             overlay,
             src,
             shown_src,
+            root: root.map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())),
+            embedded: Vec::new(),
             sources: Sources::new(),
             files: Vec::new(),
             seen: HashSet::new(),
@@ -283,13 +288,16 @@ impl<'a> Loader<'a> {
                 }
             }
         };
-        let module = match parsed {
+        let mut module = match parsed {
             Ok(module) => module,
             Err(diagnostic) => {
                 self.errors.push(diagnostic);
                 return;
             }
         };
+        let place =
+            embed::Place { file: real, shown: &shown, root: self.root.as_deref(), overlay: self.overlay };
+        embed::read_files(&mut module, &place, &mut self.embedded, &mut self.errors);
         let imports: Vec<(Vec<String>, Span)> = module
             .items
             .iter()
@@ -379,6 +387,6 @@ impl<'a> Loader<'a> {
             .flat_map(|file| file.module.items)
             .filter(|item| !matches!(item, Item::Import(import) if !is_std(import)))
             .collect();
-        Ok(Program { module: Module { items }, sources: self.sources, manifest })
+        Ok(Program { module: Module { items }, sources: self.sources, manifest, embedded: self.embedded })
     }
 }

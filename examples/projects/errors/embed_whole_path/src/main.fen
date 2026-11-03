@@ -1,0 +1,3 @@
+# A path starts from the folder the file is in, so a kit builds wherever it's moved to.
+def main(stdout: Stdout):
+    stdout.print(embed("/level.bin").len())

@@ -876,6 +876,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(_) => Kind::Float,
             Operand::Bool(_) => Kind::Bool,
             Operand::Str(_) => Kind::Str,
+            Operand::Bytes(_) => return Err(crate::emit::BYTES.to_owned()),
             Operand::None => Kind::Unit,
         })
     }

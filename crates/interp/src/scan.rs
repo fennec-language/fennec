@@ -122,6 +122,7 @@ fn expr_effects(expr: &Expr, effects: &mut Effects) {
             }
         }
         ExprKind::Int(_)
+        | ExprKind::Bytes(_)
         | ExprKind::Duration(_)
         | ExprKind::Float(_)
         | ExprKind::Str(_)

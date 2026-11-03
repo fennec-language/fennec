@@ -239,6 +239,11 @@ mod pool {
     /// Without threads, there are no workers to set up.
     pub fn set_worker_setup(_setup: Box<dyn Fn() + Send + Sync>) {}
 
+    /// Without threads, native code only runs on the program's thread, whose limit it has.
+    pub fn stack_limit() -> usize {
+        0
+    }
+
     pub(super) fn install<R>(_words: usize, run: impl FnOnce() -> R) -> R {
         run()
     }
@@ -264,7 +269,7 @@ mod stream;
 
 pub use stream::{parallel_stream, stream_end, stream_next};
 
-pub use pool::set_worker_setup;
+pub use pool::{set_worker_setup, stack_limit};
 #[cfg(any(test, feature = "threads"))]
 pub use pool::{has_worker_setup, run_worker_setup};
 

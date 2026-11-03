@@ -24,6 +24,26 @@ pub(crate) fn runtime_built() -> bool {
     })
 }
 
+/// The runtime library with `threads`, which `fennec build` takes for a program that uses
+/// `parallel` when `FENNEC_THREADS_RUNTIME=1` asks, next to `fennec` as
+/// `libfennec_runtime_threads.a`. It's built in a folder of its own, since Cargo puts the same
+/// file name in place for both, once a run as `runtime_built` does.
+pub(crate) fn threads_runtime_built() -> bool {
+    static BUILT: OnceLock<bool> = OnceLock::new();
+    *BUILT.get_or_init(|| {
+        let Some(folder) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent() else { return false };
+        let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+        let built = Command::new(env!("CARGO"))
+            .args(["build", "--quiet", "-p", "fennec-runtime", "--features", "threads", "--target-dir"])
+            .arg(folder.join("threads"))
+            .args((profile == "release").then_some("--release"))
+            .status()
+            .is_ok_and(|status| status.success());
+        let library = folder.join("threads").join(profile).join("libfennec_runtime.a");
+        built && fs::copy(library, folder.join("libfennec_runtime_threads.a")).is_ok()
+    })
+}
+
 /// Whether mutation testing is running the tests (CI's mutation jobs set
 /// `FENNEC_UNDER_MUTANTS`). Building the runtime library and linking every example takes
 /// longer than its time limit for a whole run, so these tests stand aside there. Every

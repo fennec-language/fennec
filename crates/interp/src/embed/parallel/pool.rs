@@ -11,6 +11,13 @@ use std::sync::OnceLock;
 /// calling thread.
 const SEQUENTIAL_WORDS: usize = 4096;
 
+/// Each worker's stack. Only what it touches is ever real memory.
+const WORKER_STACK_BYTES: usize = 64 << 20;
+
+/// How deep native code on a worker may go, below where the worker starts: the rest of its
+/// stack is room for the runtime it calls.
+const WORKER_NATIVE_BYTES: usize = 48 << 20;
+
 /// What a worker does before its first range: start a runtime of its own, holding the
 /// program. An executable gives it when it starts; with none, every loop runs on the calling
 /// thread.
@@ -21,6 +28,8 @@ static POOL: OnceLock<Option<rayon_core::ThreadPool>> = OnceLock::new();
 thread_local! {
     /// Whether this thread is one of the pool's workers.
     static WORKER: Cell<bool> = const { Cell::new(false) };
+    /// The lowest address native code on this worker may grow its stack to, or 0 off the pool.
+    static LIMIT: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Gives what each worker runs before its first range. The first one given is kept.
@@ -29,7 +38,10 @@ pub fn set_worker_setup(setup: Box<dyn Fn() + Send + Sync>) {
 }
 
 fn builder() -> rayon_core::ThreadPoolBuilder {
-    rayon_core::ThreadPoolBuilder::new().thread_name(|at| format!("fennec-worker-{at}")).start_handler(|_| {
+    let builder = rayon_core::ThreadPoolBuilder::new().thread_name(|at| format!("fennec-worker-{at}"));
+    builder.stack_size(WORKER_STACK_BYTES).start_handler(|_| {
+        let here = 0_u8;
+        LIMIT.set(std::ptr::from_ref(&here).addr().saturating_sub(WORKER_NATIVE_BYTES));
         super::super::threads::take_index();
         WORKER.set(true);
         if let Some(setup) = SETUP.get() {
@@ -51,8 +63,20 @@ pub fn run_worker_setup() {
     }
 }
 
+/// The lowest address native code on this thread may grow its stack to, when it's one of the
+/// pool's workers, and 0 otherwise.
+pub fn stack_limit() -> usize {
+    LIMIT.get()
+}
+
+/// How many workers `FENNEC_THREADS` asks for, or 0 for as many as there are cores (or as
+/// `RAYON_NUM_THREADS` says).
+fn threads_wanted() -> usize {
+    std::env::var("FENNEC_THREADS").ok().and_then(|threads| threads.trim().parse().ok()).unwrap_or(0)
+}
+
 fn pool() -> Option<&'static rayon_core::ThreadPool> {
-    POOL.get_or_init(|| builder().build().ok()).as_ref()
+    POOL.get_or_init(|| builder().num_threads(threads_wanted()).build().ok()).as_ref()
 }
 
 /// Runs `run` on a pool of its own with `threads` workers, set up as the shared pool's are.

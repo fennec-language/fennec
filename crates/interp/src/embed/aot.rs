@@ -146,6 +146,12 @@ pub extern "C" fn failed_flag() -> i64 {
     i64::try_from(super::failed_flag()).unwrap_or(0)
 }
 
+/// The lowest address native code on this thread may grow its stack to, for a worker of
+/// `parallel`'s pool: 0 on any other thread.
+pub extern "C" fn stack_limit() -> i64 {
+    i64::try_from(super::parallel::stack_limit()).unwrap_or(0)
+}
+
 /// Where the table of one-character ASCII strings is.
 pub extern "C" fn ascii() -> i64 {
     with(|state: &mut State| {

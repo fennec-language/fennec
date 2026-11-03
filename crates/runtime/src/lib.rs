@@ -277,6 +277,7 @@ export! {
     fennec_capability_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::call(a0, a1, a2, a3, a4);
     fennec_aot_image(a0: i64) => aot::image(a0);
     fennec_aot_failed_flag() -> i64 => aot::failed_flag();
+    fennec_aot_stack_limit() -> i64 => aot::stack_limit();
     fennec_aot_ascii() -> i64 => aot::ascii();
     fennec_aot_literal(a0: i64) -> i64 => aot::literal(a0);
 }

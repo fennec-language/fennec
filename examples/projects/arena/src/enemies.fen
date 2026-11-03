@@ -2,10 +2,12 @@
 
 from std.math import Vec3
 
+## How much of a threat an enemy is.
 pub enum Rank:
     Grunt
     Boss
 
+    ## The rank's name, as a message shows it.
     pub def label(self) -> str:
         match self:
             case .Grunt:
@@ -13,15 +15,19 @@ pub enum Rank:
             case .Boss:
                 "boss"
 
+## One enemy in the arena.
 pub struct Enemy:
+    ## What messages call it.
     pub name: str
     position: Vec3
     rank = Rank.Grunt
     health = 100
 
+    ## A line saying who it is, where it is and how healthy.
     pub def describe(self) -> str:
         f"{self.name} ({self.rank.label()}) at {self.position.x} with {self.health} health"
 
+## A new enemy of the lowest rank.
 pub def spawn(name: str, position: Vec3, health: int) -> Enemy:
     Enemy(name=name, position=position, health=health)
 

@@ -10,7 +10,6 @@ use crate::Lint;
 
 /// What's declared and could be `pub`, as its kind, name and where it is.
 fn declared(module: &Module) -> Vec<(&'static str, &str, Span)> {
-    let mut found = Vec::new();
     fn add_methods<'m>(defs: &'m [FnDef], found: &mut Vec<(&'static str, &'m str, Span)>) {
         found.extend(defs.iter().map(|def| ("method", def.name.as_str(), def.span)));
     }
@@ -19,6 +18,7 @@ fn declared(module: &Module) -> Vec<(&'static str, &str, Span)> {
         found.extend(def.fields.iter().map(|field| ("field", field.name.as_str(), field.span)));
         add_methods(&def.methods, found);
     }
+    let mut found = Vec::new();
     for item in &module.items {
         match item {
             Item::Function(def) => found.push(("function", def.name.as_str(), def.span)),

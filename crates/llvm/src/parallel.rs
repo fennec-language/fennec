@@ -17,12 +17,10 @@ use std::fmt::Write as _;
 use fennec_ir::{LocalId, Operand};
 use fennec_syntax::Span;
 
+use crate::closures::CODE;
 use crate::emit::{Emit, ITEM_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::lists::list_item;
-
-/// Where a closure's code is, as `closures` lays one out.
-const CODE: u32 = 8;
 
 /// What a range's closure gives back, which says which shim runs it.
 #[derive(Clone, Copy)]
@@ -210,18 +208,11 @@ impl Emit<'_, '_, '_> {
             );
             return name.to_owned();
         }
+        // Where the sum is, worked out in the combine itself from the function's start, a
+        // constant, since a combine runs on any thread.
         let label = self.label("sum");
-        let (text, _) = self.span_values(&label, span);
-        for line in text.lines() {
-            self.line(line.trim());
-        }
-        let (at, name) =
-            (format!("@\"fen_parallel_span.{label}\""), format!("@\"fen_parallel_add_int.{label}\""));
-        self.module.add_helper(&at, format!("{at} = internal global [2 x i64] zeroinitializer\n"));
-        let end_at = self.temp();
-        self.line(&format!("store i64 %a{label}, ptr {at}"));
-        self.line(&format!("{end_at} = getelementptr inbounds i64, ptr {at}, i64 1"));
-        self.line(&format!("store i64 %b{label}, ptr {end_at}"));
+        let (where_, args) = self.span_values("span", span);
+        let name = format!("@\"fen_parallel_add_int.{}.{label}\"", self.function.name);
         self.declare("declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)");
         self.declare("declare void @fennec_fail(i64, i64, i64) #1");
         let mut text =
@@ -231,8 +222,7 @@ impl Emit<'_, '_, '_> {
             "  %pair = call {{ i64, i1 }} @llvm.sadd.with.overflow.i64(i64 %a, i64 %b)\n  \
              %sum = extractvalue {{ i64, i1 }} %pair, 0\n  %bad = extractvalue {{ i64, i1 }} %pair, 1\n  \
              br i1 %bad, label %overflow, label %fine\nfine:\n  store i64 %sum, ptr %out\n  ret i64 0\n\
-             overflow:\n  %start = load i64, ptr {at}\n  %end_at = getelementptr inbounds i64, ptr {at}, i64 1\n  \
-             %end = load i64, ptr %end_at\n  call void @fennec_fail(i64 1, i64 %start, i64 %end)\n  ret i64 1\n}}\n\n"
+             overflow:\n{where_}  call void @fennec_fail(i64 1, {args})\n  ret i64 1\n}}\n\n"
         );
         self.module.add_helper(&name, text);
         name
@@ -251,15 +241,24 @@ impl Emit<'_, '_, '_> {
         let ((place, _), (value, value_kind)) = (self.operand(at)?, self.operand(value)?);
         let memory = item.memory(self.module.layouts);
         let slot = self.item_address(&held, &memory, &place);
+        // What was there is let go only once the new item is in, which may be the same item,
+        // held by nothing else while it's put back.
+        let mut old = Vec::new();
         if back {
             if item.in_memory() {
-                self.release_inline(&item, &slot);
+                for (offset, held) in self.inline_blocks(&item) {
+                    let (place, block, text) = (self.offset(&slot, offset), self.temp(), self.text_of(&held));
+                    self.line(&format!("{block} = load {text}, ptr {place}"));
+                    old.push((block, held));
+                }
             } else if item.counted() {
-                let old = self.load_field(&item, &slot, ITEM_ACCESS);
-                self.release_kind(&old, &item);
+                old.push((self.load_field(&item, &slot, ITEM_ACCESS), item.clone()));
             }
         }
         self.put_item(&item, &value_kind, &value, &slot);
+        for (block, held) in old {
+            self.release_kind(&block, &held);
+        }
         Ok(())
     }
 }

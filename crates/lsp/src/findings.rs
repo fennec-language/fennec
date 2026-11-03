@@ -101,6 +101,7 @@ pub(crate) fn of_clean(
     let mut lints = lints(module, sources, kit);
     lints.extend(fennec_lint::needless_copies(module, sources));
     lints.extend(fennec_lint::needless_conversions(module, sources));
+    lints.extend(fennec_lint::double_lookups(module, sources));
     lints.extend(fennec_lint::costs(costs));
     located(sources, &lints)
 }

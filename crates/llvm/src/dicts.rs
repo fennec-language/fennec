@@ -325,12 +325,11 @@ impl Emit<'_, '_, '_> {
             None => String::new(),
         };
         self.declare("declare ptr @fennec_dict_set(ptr, i64, i64) nounwind");
-        let (dict, count, alone) = (self.temp(), self.temp(), self.temp());
+        let dict = self.temp();
         let (quick, change, slow, done) =
             (self.label("quick"), self.label("change"), self.label("slow"), self.label("done"));
         self.line(&format!("{dict} = load ptr, ptr {place}"));
-        self.line(&format!("{count} = load i64, ptr {dict}"));
-        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        let alone = self.alone(&dict);
         self.line(&format!("br i1 {alone}, label %{quick}, label %{slow}"));
         self.start_block(&quick);
         // With the dict alone, it's the same block the lookup searched, unchanged since.
@@ -688,16 +687,15 @@ impl Emit<'_, '_, '_> {
         let (held, fresh) = self.value_for(value, &value_kind)?;
         let sliced = self.slice_place(key)?;
         let [text, from, to] = sliced.clone();
-        let (dict, count) = (self.temp(), self.temp());
+        let dict = self.temp();
         self.line(&format!("{dict} = load ptr, ptr {place}"));
         // A key that's there, in a dict nothing else holds, just gets its new value.
         let value_at = match found {
             Some(value_at) => value_at,
             None => self.slice_value_at(&dict, key_word, &sliced),
         };
-        self.line(&format!("{count} = load i64, ptr {dict}"));
-        let (alone, there, quick) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        let alone = self.alone(&dict);
+        let (there, quick) = (self.temp(), self.temp());
         self.line(&format!("{there} = icmp ne ptr {value_at}, null"));
         self.line(&format!("{quick} = and i1 {alone}, {there}"));
         let (change, add, done) = (self.label("change"), self.label("add"), self.label("stored"));

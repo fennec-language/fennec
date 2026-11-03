@@ -126,6 +126,10 @@ pub struct Interp<'out> {
     clock: bool,
     /// What the capabilities of the test that's running reach, with no test running.
     pub(crate) world: Option<crate::fakes::TestWorld>,
+    /// The call depth of a `mut` form of `def []` being asked which place it names. Its `return`
+    /// leaves that place in `named_place` instead of giving a value.
+    pub(crate) naming_place: Option<usize>,
+    pub(crate) named_place: Option<crate::place::Place>,
     /// The sockets the program has open, by their handles.
     pub(crate) sockets: crate::stdlib::net::Sockets,
     /// What tests get when they name a capability.
@@ -177,6 +181,8 @@ impl<'out> Interp<'out> {
             files: true,
             clock: true,
             world: None,
+            naming_place: None,
+            named_place: None,
             sockets: crate::stdlib::net::Sockets::default(),
             test_capabilities: crate::fakes::TestCapabilities::Fakes,
             given: crate::inputs::Inputs::default().into(),

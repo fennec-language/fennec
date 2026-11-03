@@ -129,8 +129,9 @@ fn stmt_mentions(stmt: &Stmt, mentions: &mut Mentions) {
         | StmtKind::With { value, body, .. } => {
             expr(value, mentions);
             block(body, mentions);
-            // A `for` loop over a value calls its `iter`; a `with` block, its `del`.
-            mentions.members.extend(["iter".to_owned(), "del".to_owned()]);
+            // A `for` loop over a value calls its `iter`, or over positions its `len` and
+            // `is_live`; a `with` block, its `del`.
+            mentions.members.extend(["iter", "len", "is_live", "del"].map(str::to_owned));
         }
         StmtKind::Def(def) => block(&def.body, mentions),
         StmtKind::Break | StmtKind::Continue | StmtKind::Pass => {}
@@ -215,8 +216,8 @@ fn expr(value: &Expr, mentions: &mut Mentions) {
             expr(object, mentions);
         }
         ExprKind::Index { object, index } => {
-            // Indexing a value may use its type's `def []` or `def []=`.
-            mentions.members.extend(["[]".to_owned(), "[]=".to_owned()]);
+            // Indexing a value may use its type's `def []`, its `mut` form or `def []=`.
+            mentions.members.extend(["[]".to_owned(), "[]mut".to_owned(), "[]=".to_owned()]);
             all_boxed(&[object, index], mentions);
         }
         ExprKind::Slice { object, start, end } => {

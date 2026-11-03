@@ -13,6 +13,11 @@ struct Deque[T]:
     def len(self) -> int:
         self.count
 
+    ## The item at a position, counting from the front, which `for mut` changes where it is.
+    def [](mut self, at: int) -> T:
+        assert 0 <= at and at < self.count
+        return self.slots[(self.head + at) % self.slots.len()]
+
     ## `item in deque`, looking from the front.
     def in(self, item: T) -> bool:
         for at in range(self.count):
@@ -950,6 +955,10 @@ struct Grid[T]:
     ## How many cells it has.
     def len(self) -> int:
         self.width * self.height
+
+    ## The cell at a position, row by row, which `for mut` changes where it is.
+    def [](mut self, at: int) -> T:
+        return self._cells[at]
 
     ## Prints its items: `Grid([[1, 2], [3, 4]])`.
     def str(self, mut out: StrWriter):

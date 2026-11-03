@@ -1069,7 +1069,7 @@ struct Ring:
         for at in range(self.slots.len()):
             yield self.slots[(self.start + at) % self.slots.len()]
 ```
-- `for mut` over such a type is a compile error until writing back through `iter` is designed, since the items it makes are copies and a change to one would be lost. `list`, `Buffer` and `IdMap` keep `for mut`.
+- `for mut` over a type with only `iter` is a compile error that says to add positions, since the items it makes are copies and a change to one would be lost. `list`, `Buffer` and `IdMap` keep `for mut`.
 - A loop over `iter` fuses into a plain loop where it can, as any stage does.
 
 *Why:* A loop shouldn't copy a collection before it starts, and a `break` should stop the work. A `for mut` that quietly lost its changes was the bug this replaces.

@@ -573,6 +573,12 @@ impl Parser {
             }
         }
         self.expect_p(Punct::RParen)?;
+        // `def [](mut self, i)` is the `mut` form, which a type can have beside `def [](self, i)`.
+        let name = if name == "[]" && params.first().is_some_and(|first| first.is_self && first.is_mut) {
+            "[]mut".to_owned()
+        } else {
+            name
+        };
         let arrow = self.eat_p(Punct::Arrow).then(|| self.prev_span());
         let ret = if arrow.is_some() { Some(self.type_expr()?) } else { None };
         // `fails` is a word only here, after the parameters and any return type.

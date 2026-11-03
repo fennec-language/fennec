@@ -1483,10 +1483,10 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
-        if let Some(done) = self.loop_builtin(dest, name, args, span) {
+        if let Some(done) = self.conversion(dest, name, args, span) {
             return done;
         }
-        if let Some(done) = self.conversion(dest, name, args, span) {
+        if let Some(done) = self.loop_builtin(dest, name, args, span) {
             return done;
         }
         let first = args.first();

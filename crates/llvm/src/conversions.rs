@@ -109,6 +109,13 @@ impl Emit<'_, '_, '_> {
             ("list.sort.key", [Operand::Local(list), key], _) => {
                 self.sorted_by(*list, &Operand::Local(*list), key, span)
             }
+            ("list.clear", [Operand::Local(list)], _) => {
+                let owned = self.unshared(*list);
+                self.declare("declare void @fennec_list_clear(ptr) nounwind");
+                self.line(&format!("call void @fennec_list_clear(ptr {owned})"));
+                Ok(())
+            }
+            ("sorted", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.sorted_chars(dest, text)),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),
@@ -187,6 +194,20 @@ impl Emit<'_, '_, '_> {
             self.store_field(&field, message, &place, "");
         }
         Ok(())
+    }
+
+    /// `sorted(text)`: a list of its characters, in order.
+    fn sorted_chars(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
+        let (text, _) = self.operand(text)?;
+        self.on_blocks([&text], |emit, [block]| {
+            let list = emit.chars_list(&block);
+            emit.declare("declare ptr @fennec_list_sorted(ptr, i64) nounwind");
+            let sorted = emit.temp();
+            let how = fennec_interp::embed::lists::SORT_STRINGS;
+            emit.line(&format!("{sorted} = call ptr @fennec_list_sorted(ptr {list}, i64 {how})"));
+            emit.release(&list);
+            emit.assign(dest, &sorted)
+        })
     }
 
     /// `set(text)`: a set of its characters.

@@ -61,10 +61,11 @@ pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
 pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
     library_parses()?;
     let names = own_type_names(module);
-    if names.is_empty() {
-        return checker::Checker::new(module).run(false);
-    }
     let mut renamed = module.clone();
+    hide_interface_params(&mut renamed);
+    if names.is_empty() {
+        return checker::Checker::new(&renamed).run(false).map_err(|problems| as_written(problems, &names));
+    }
     fennec_syntax::rename::rename_types(&mut renamed, &names);
     checker::Checker::new(&renamed).run(false).map_err(|problems| as_written(problems, &names))
 }
@@ -106,13 +107,55 @@ fn as_written(mut problems: Vec<Diagnostic>, names: &BTreeMap<String, String>) -
                 fix.text = fix.text.replace(checked, written);
             }
         }
+        problem.message = without_hidden(&problem.message);
+        problem.help = problem.help.take().map(|help| without_hidden(&help));
     }
     problems
+}
+
+/// Text with each hidden type parameter shown as the interface it stands for: `Shape'1` as
+/// `Shape`.
+fn without_hidden(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let after_word = shown.chars().last().is_some_and(char::is_alphanumeric);
+        if c == '\'' && after_word && chars.peek().is_some_and(char::is_ascii_digit) {
+            while chars.peek().is_some_and(char::is_ascii_digit) {
+                chars.next();
+            }
+            continue;
+        }
+        shown.push(c);
+    }
+    shown
+}
+
+/// Gives each parameter typed by an interface a hidden type parameter bound by it, the
+/// program's own interfaces and the standard library's alike.
+fn hide_interface_params(module: &mut Module) {
+    let library = fennec_syntax::prelude_modules().unwrap_or_default();
+    let mut interfaces = fennec_syntax::visit::interface_names(library.iter().chain([&*module]));
+    // A program's own type with an interface's name is that type.
+    for item in &module.items {
+        match item {
+            fennec_syntax::Item::TypeAlias { name, .. } => {
+                interfaces.remove(name);
+            }
+            item => {
+                if let Some(name) = declared_type(item) {
+                    interfaces.remove(name);
+                }
+            }
+        }
+    }
+    fennec_syntax::visit::interface_params(module, &interfaces);
 }
 
 /// Gives a program's types that share a name with a library type the names they're checked
 /// under, in place, for a module about to run.
 fn own_types_apart(module: &mut Module) -> BTreeMap<String, String> {
+    hide_interface_params(module);
     let names = own_type_names(module);
     fennec_syntax::rename::rename_types(module, &names);
     names

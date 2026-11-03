@@ -538,7 +538,7 @@ impl Emit<'_, '_, '_> {
             let _ = writeln!(self.allocas, "  %l{at} = alloca {text}");
             if kind.counted() && text == "ptr" {
                 let _ = writeln!(self.allocas, "  store ptr null, ptr %l{at}");
-            } else if kind.counted() || !self.inline_blocks(kind).is_empty() {
+            } else if kind.counted() || self.holds_inline(kind) {
                 let _ = writeln!(self.allocas, "  store {text} zeroinitializer, ptr %l{at}");
             }
         }
@@ -555,7 +555,11 @@ impl Emit<'_, '_, '_> {
                 self.retain_inline(kind, &format!("%l{at}"));
             } else if text != "void" {
                 if self.owns(local) {
-                    self.retain(&format!("%p{at}"));
+                    if matches!(kind, Kind::Closure(..)) {
+                        self.retain_closure(&format!("%p{at}"));
+                    } else {
+                        self.retain(&format!("%p{at}"));
+                    }
                 }
                 self.line(&format!("store {text} %p{at}, ptr %l{at}"));
             }
@@ -732,6 +736,10 @@ impl Emit<'_, '_, '_> {
             self.retain_text(value);
             return;
         }
+        if matches!(kind, Kind::Closure(..)) {
+            self.retain_closure(value);
+            return;
+        }
         if !matches!(kind, Kind::Maybe(_)) {
             self.retain(value);
             return;
@@ -799,6 +807,11 @@ impl Emit<'_, '_, '_> {
 
     /// One more owner for a block.
     pub(crate) fn retain(&mut self, block: &str) {
+        if self.module.threads {
+            self.retain_helper();
+            self.line(&format!("call void @fen_retain(ptr {block})"));
+            return;
+        }
         let (count, more) = (self.temp(), self.temp());
         self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
         self.line(&format!("{more} = add i64 {count}, 1"));
@@ -808,6 +821,12 @@ impl Emit<'_, '_, '_> {
     /// Whether a block has one owner, so changing it in place changes nobody else's. Every
     /// such question native code asks of a block comes here.
     pub(crate) fn alone(&mut self, block: &str) -> String {
+        if self.module.threads {
+            self.alone_helper();
+            let alone = self.temp();
+            self.line(&format!("{alone} = call i1 @fen_alone(ptr {block})"));
+            return alone;
+        }
         let (count, alone) = (self.temp(), self.temp());
         self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
         self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
@@ -817,6 +836,12 @@ impl Emit<'_, '_, '_> {
     /// Takes one owner off a block that has one, giving back whether that was the last. With
     /// [`Self::retain`] and [`Self::alone`], everything native code does to a block's count.
     pub(crate) fn owner_gone(&mut self, block: &str) -> String {
+        if self.module.threads {
+            self.owner_gone_helper();
+            let gone = self.temp();
+            self.line(&format!("{gone} = call i1 @fen_owner_gone(ptr {block})"));
+            return gone;
+        }
         let (count, fewer, gone) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
         self.line(&format!("{fewer} = add i64 {count}, -1"));
@@ -828,6 +853,9 @@ impl Emit<'_, '_, '_> {
     /// Defines `@fen_retain`, which gives a block one more owner as [`Self::retain`] does, for
     /// helpers written as text to call.
     pub(crate) fn retain_helper(&mut self) {
+        if self.module.threads {
+            return self.counted_retain_helper();
+        }
         self.module.add_helper(
             "fen_retain",
             format!(
@@ -839,6 +867,9 @@ impl Emit<'_, '_, '_> {
     /// Defines `@fen_owner_gone`, which takes an owner off a block as [`Self::owner_gone`] does,
     /// for helpers written as text to call.
     pub(crate) fn owner_gone_helper(&mut self) {
+        if self.module.threads {
+            return self.counted_owner_gone_helper();
+        }
         self.module.add_helper(
             "fen_owner_gone",
             format!(
@@ -960,7 +991,7 @@ impl Emit<'_, '_, '_> {
         let kind = self.kind_of(dest)?.clone();
         let text = self.text_of(&kind);
         let (held, slot) = (self.temp(), self.slot(dest));
-        let owner = self.owns_inline(dest);
+        let owner = self.keeps_inline(dest);
         if owner {
             self.release_inline(&kind, &slot);
         }
@@ -978,7 +1009,7 @@ impl Emit<'_, '_, '_> {
         let kind = self.kind_of(dest)?.clone();
         let text = self.text_of(&kind);
         let (held, slot) = (self.temp(), self.slot(dest));
-        if self.owns_inline(dest) {
+        if self.keeps_inline(dest) {
             self.release_inline(&kind, &slot);
         } else {
             // Nothing here owns them, so they're let go of now.
@@ -992,9 +1023,26 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
-    /// Whether a local holds an inline struct with blocks in it, and owns them.
+    /// Lets go of what a local's inline struct or enum holds, before it's written over in place.
+    pub(crate) fn release_held(&mut self, dest: LocalId) -> Result<(), String> {
+        if self.keeps_inline(dest) {
+            let (kind, slot) = (self.kind_of(dest)?.clone(), self.slot(dest));
+            self.release_inline(&kind, &slot);
+        }
+        Ok(())
+    }
+
+    /// Whether what's written to a local stays owned there: by the local, or for a `mut`
+    /// parameter by whatever it was called with.
+    fn keeps_inline(&self, local: LocalId) -> bool {
+        self.owns_inline(local)
+            || (self.is_mut_param(local)
+                && self.kinds.get(local.0).is_some_and(|kind| self.holds_inline(kind)))
+    }
+
+    /// Whether a local holds an inline struct or enum with blocks in it, and owns them.
     pub(crate) fn owns_inline(&self, local: LocalId) -> bool {
-        self.kinds.get(local.0).is_some_and(|kind| !self.inline_blocks(kind).is_empty())
+        self.kinds.get(local.0).is_some_and(|kind| self.holds_inline(kind))
             && !self.is_mut_param(local)
             && !self.is_lent(local)
             && self.known.alias(local).is_none()
@@ -1098,7 +1146,7 @@ impl Emit<'_, '_, '_> {
             },
             Kind::Str => self.string_binary(op, (&a, &b))?,
             Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
-            Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b)),
+            Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b))?,
             Kind::Struct(id) => self.compare_structs(op, id, (&a, &b))?,
             Kind::Boxed(id) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
                 self.compare_boxed(op, id, (&a, &b))?

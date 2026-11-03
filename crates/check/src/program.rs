@@ -380,8 +380,7 @@ impl Program {
     }
 }
 
-/// The interfaces every type that can fits automatically.
-pub(crate) const BUILT_IN_INTERFACES: [&str; 4] = ["Eq", "Hashable", "Ordered", "Format"];
+pub(crate) use fennec_syntax::visit::BUILT_IN_INTERFACES;
 
 pub(crate) const BUILT_IN_TYPES: [&str; 26] = [
     "int", "float", "bool", "str", "bytes", "None", "nothing", "list", "SoaList", "Buffer", "set", "dict",

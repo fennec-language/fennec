@@ -79,6 +79,9 @@ fn start_of(
     let local = if crate::parallel::uses_parallel(program) { "thread_local(initialexec) " } else { "" };
     let _ = writeln!(out, "@fennec_stack_limit = dso_local {local}global i64 0");
     let _ = writeln!(out, "@fennec_failed = dso_local {local}global ptr null");
+    if crate::parallel::uses_parallel(program) {
+        out += "@fennec_thread = dso_local thread_local(initialexec) global i64 0\n";
+    }
     out += "@fennec_ascii = dso_local global ptr null\n";
     for (symbol, start) in &shared.starts {
         let _ = writeln!(out, "@\"{symbol}\" = dso_local constant i64 {start}");

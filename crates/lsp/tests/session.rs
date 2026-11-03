@@ -349,6 +349,20 @@ fn members_are_found_while_the_program_has_mistakes() {
 }
 
 #[test]
+fn a_parameter_typed_by_an_interface_shows_the_interface() {
+    let text = "interface Shape:\n    def area(self) -> float\n\nstruct Square:\n    def area(self) -> float:\n        1.0\n\n\
+                def total(shape: Shape) -> float:\n    held = shape\n    held.area()\n\n\
+                def main(stdout: Stdout):\n    stdout.print(total(Square()))\n";
+    let mut editor = Editor::new("interface_params").unwrap();
+    editor.open("src/main.fen", text);
+    let shown = |hover: &Json| hover.at(&["contents", "value"]).and_then(Json::as_str).unwrap().to_owned();
+    let total = editor.at("textDocument/hover", "src/main.fen", text, "total(Square", 0);
+    assert_eq!(shown(&total), "```fennec\ndef total(shape: Shape) -> float\n```");
+    let held = editor.at("textDocument/hover", "src/main.fen", text, "held.area", 0);
+    assert_eq!(shown(&held), "```fennec\nheld: Shape\n```");
+}
+
+#[test]
 fn hovers_show_signatures_docs_and_what_names_hold() {
     let mut editor = Editor::new("hovers").unwrap();
     editor.open("src/main.fen", MAIN);

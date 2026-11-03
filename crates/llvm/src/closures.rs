@@ -24,7 +24,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{none} = icmp eq ptr {closure}, null"));
         self.line(&format!("br i1 {none}, label %{done}, label %{held}"));
         self.start_block(&held);
-        let gone = self.owner_gone(closure);
+        let gone = self.closure_gone(closure);
         self.line(&format!("br i1 {gone}, label %{last}, label %{done}"));
         self.start_block(&last);
         let (at, code) = (self.temp(), self.temp());
@@ -121,9 +121,14 @@ impl Emit<'_, '_, '_> {
                 } else {
                     format!("  %h{at} = load ptr, ptr %c{at}_at\n")
                 };
+                let gone = if matches!(kind, Kind::Closure(..)) && self.module.threads {
+                    "@fen_closure_gone"
+                } else {
+                    "@fen_owner_gone"
+                };
                 let _ = write!(
                     release,
-                    "{block}  %z{at} = call i1 @fen_owner_gone(ptr %h{at})\n  br i1 %z{at}, label %free{at}, label %kept{at}\nfree{at}:\n{free}  br label %kept{at}\nkept{at}:\n"
+                    "{block}  %z{at} = call i1 {gone}(ptr %h{at})\n  br i1 %z{at}, label %free{at}, label %kept{at}\nfree{at}:\n{free}  br label %kept{at}\nkept{at}:\n"
                 );
             }
             offset += kind.size(layouts);
@@ -152,6 +157,7 @@ impl Emit<'_, '_, '_> {
         if held.iter().any(Kind::counted) {
             self.declare("declare void @fennec_free(ptr) nounwind");
             self.owner_gone_helper();
+            self.closure_helpers();
         }
         self.declare("declare void @free(ptr) nounwind");
         let drop = format!(

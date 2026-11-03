@@ -255,3 +255,168 @@ fn a_parallel_program_built_after_a_plain_one_shares_no_cached_module_that_disag
     assert_eq!(String::from_utf8_lossy(&ran_second.stdout), "99990000\n");
     Ok(())
 }
+
+/// Runtime calls in bodies on workers, over blocks the calling thread made, in every way a body
+/// can use them: strings and dicts passed to the runtime, things kept past the call, a closure
+/// made outside, a lent list copied before it's changed, `for mut` replacing strings, and
+/// `parallel` inside `parallel`.
+const LENT_BLOCKS: &str = "\
+struct Tag:
+    name: str
+    n: int
+
+def shout(word: str) -> str:
+    word + \"!\"
+
+def over(f: (str) -> str, words: list[str]) -> list[str]:
+    [f(word) for word in parallel(words)]
+
+def grown(base: list[int], n: int) -> int:
+    mut copy = base
+    copy.append(n)
+    copy.len()
+
+def main(stdout: Stdout):
+    words = [f\"a word long enough to be held in a block of its own, {n}\" for n in range(20_000)]
+    longer = [word + \"!\" for word in parallel(words)]
+    stdout.print(longer[0], longer[19_999], words[7])
+    called = [shout(word) for word in parallel(words)]
+    stdout.print(called[1], sum(word.len() for word in parallel(called)))
+    same = [word for word in parallel(words)]
+    stdout.print(same[3], same[19_998])
+    counts = {word: n for n, word in enumerate(words)}
+    stdout.print(sum(counts[word] for word in parallel(words)))
+    suffix = \"? and long enough to be a block of its own\"
+    asked = over(word => word + suffix, words)
+    stdout.print(asked[11])
+    pairs = [[word, word] for word in parallel(words)]
+    stdout.print(pairs[5][1], pairs.len())
+    base = [1, 2, 3]
+    numbers = [n for n in range(20_000)]
+    stdout.print(sum(grown(base, n) for n in parallel(numbers)), base.len())
+    mut tags = [Tag(f\"a name long enough to be held in a block of its own, {n}\", n) for n in range(20_000)]
+    for mut tag in parallel(tags):
+        if tag.n % 2 == 0:
+            tag.name = tag.name + \"*\"
+        tag.n += 1
+    stdout.print(tags[0].name, tags[1].name, tags[19_999].n)
+    grids = [[n * m for m in range(100)] for n in range(2_000)]
+    stdout.print(sum(sum(cell for cell in parallel(row)) for row in parallel(grids)))
+";
+
+#[test]
+fn bodies_on_workers_use_the_calling_thread_s_blocks_as_the_interpreter_does() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-lent-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let lent = build_on_threads(&dir, LENT_BLOCKS, "lent")?;
+    let source = dir.join("lent.fen").to_string_lossy().into_owned();
+    let interpreted = fennec(&["run", "--interp", &source], &dir)?;
+    for threads in ["1", "2", "4", "8"] {
+        let ran = Command::new(&lent).env("FENNEC_THREADS", threads).output()?;
+        assert!(ran.status.success(), "{threads} threads: {}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            String::from_utf8_lossy(&interpreted.stdout),
+            "{threads} threads"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A body that prints twice, each print in pieces, on enough items to run on workers, with text
+/// long enough that workers write many times during the loop.
+const PRINTS: &str = "\
+def main(stdout: Stdout):
+    words = [f\"text long enough to be held in a block of its own, {n}\" for n in range(50_000)]
+    stdout.print(\"before\")
+    for word in parallel(words):
+        stdout.print(\"first\", word, word.len())
+        stdout.print(\"second\", word, word.len())
+    stdout.print(\"after\")
+";
+
+#[test]
+fn what_bodies_print_on_workers_all_comes_out_whole_and_in_order_within_each_body() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-prints-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let prints = build_on_threads(&dir, PRINTS, "prints")?;
+    let source = dir.join("prints.fen").to_string_lossy().into_owned();
+    let interpreted = fennec(&["run", "--interp", &source], &dir)?;
+    let ran = Command::new(&prints).env("FENNEC_THREADS", "8").output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    // Bodies run in any order and print in real call order, so this compares lines, sorted: none
+    // lost and none mixed with another.
+    let text = String::from_utf8_lossy(&ran.stdout);
+    let sorted = |text: &str| {
+        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        lines.sort();
+        lines
+    };
+    assert_eq!(sorted(&text), sorted(&String::from_utf8_lossy(&interpreted.stdout)));
+    // What's printed before and after the loop comes before and after all of the loop's output.
+    assert!(text.starts_with("before\n"), "{}", text.lines().next().unwrap_or_default());
+    assert!(text.ends_with("after\n"), "{}", text.lines().next_back().unwrap_or_default());
+    // Each body's first print comes before its second.
+    let mut seen = std::collections::HashSet::new();
+    for line in text.lines() {
+        match line.split_once(' ') {
+            Some(("first", rest)) => {
+                seen.insert(rest);
+            }
+            Some(("second", rest)) => assert!(seen.contains(rest), "second before first: {line}"),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// A program that fails with an error nothing handles, having printed lines just before: in a
+/// body on workers, or on the main thread.
+const FAILS_ON_A_WORKER: &str = "\
+def main(stdout: Stdout):
+    stdout.print(\"before the loop\")
+    xs = [n for n in range(100_000)]
+    for x in parallel(xs):
+        stdout.print(\"line\", x)
+        stdout.print(10 // (77_777 - x))
+    stdout.print(\"after the loop\")
+";
+
+const FAILS_ON_THE_MAIN_THREAD: &str = "\
+def main(stdout: Stdout):
+    xs = [1, 0]
+    stdout.print(\"printed just before\")
+    stdout.print(10 // xs[1])
+";
+
+#[test]
+fn what_was_printed_before_a_failure_comes_out() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-failing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let on_worker = build_on_threads(&dir, FAILS_ON_A_WORKER, "on_worker")?;
+    let on_main = build_on_threads(&dir, FAILS_ON_THE_MAIN_THREAD, "on_main")?;
+    let (worker, main) =
+        (Command::new(&on_worker).env("FENNEC_THREADS", "4").output()?, Command::new(&on_main).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!worker.status.success());
+    let text = String::from_utf8_lossy(&worker.stdout);
+    assert!(text.starts_with("before the loop\n"), "{text}");
+    assert!(text.lines().any(|line| line == "line 77777"), "the failing body's line is missing");
+    assert!(!text.contains("after the loop"), "ran on past the failure");
+    assert!(String::from_utf8_lossy(&worker.stderr).contains("division by zero"));
+    assert!(!main.status.success());
+    assert_eq!(String::from_utf8_lossy(&main.stdout), "printed just before\n");
+    assert!(String::from_utf8_lossy(&main.stderr).contains("division by zero"));
+    Ok(())
+}

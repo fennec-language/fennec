@@ -94,7 +94,7 @@ fn grow_by(state: &mut State, text: i64, added: &[u64], extra: usize, extra_char
     let (length, chars) = (usize::try_from(*block.get(2)?).ok()?, *block.get(3)?);
     let total = length + extra;
     let needed = TEXT_HEADER_WORDS + total.div_ceil(8).max(1);
-    let fits = block.first() == Some(&1) && block.len() >= needed;
+    let fits = state.heap.is_alone(at, block) && block.len() >= needed;
     if fits {
         let block = state.heap.block_mut(at)?;
         put_words(block, length, added, extra);

@@ -101,6 +101,62 @@ fn str_of_text_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// `fail` and `?` leave a `for mut` loop as `return` does: the item it's on is written back first.
+#[test]
+fn failing_out_of_a_for_mut_loop_writes_the_item_back() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let shared = r#"error Bad:
+    why: str
+
+struct Unit:
+    tags: list[int]
+    hp: int
+
+def maybe(at: int) -> int:
+    if at == 1:
+        fail Bad("from a call")
+    at
+
+def by_fail(mut units: list[Unit], at: int) -> int:
+    for mut unit in units:
+        unit.tags.append(at)
+        unit.hp += 1
+        if unit.hp == 2:
+            fail Bad("stop")
+    0
+
+def by_try(mut units: list[Unit]) -> int:
+    for mut unit in units:
+        unit.tags.append(8)
+        unit.hp += maybe(unit.hp)?
+    0
+
+def main(stdout: Stdout):
+    mut units = [Unit([1], 0), Unit([2], 1), Unit([3], 5)]
+    stdout.print(by_fail(mut units, 9) else -1, units)
+    mut others = [Unit([1], 0), Unit([2], 1), Unit([3], 5)]
+    stdout.print(by_try(mut others) else -2, others)
+"#;
+    same_as_the_jit("failing_out_of_for_mut", shared)?;
+    // Out of two loops at once. The JIT stops here with "expected an int", so this one's held to
+    // what the interpreter prints.
+    let nested = "error Bad:\n    why: str\n\ndef nested(mut grid: list[list[int]]) -> int:\n    for mut row in grid:\n        for mut cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(mut grid) else -3, grid)\n";
+    let dir = folder("failing_out_of_two_loops")?;
+    let program = dir.join("two_loops.fen");
+    std::fs::write(&program, nested)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("two_loops"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours, interpreted);
+    assert_eq!(ours.0, "-3 [[2, 3], [5, 7], [9]]\n");
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {

@@ -108,9 +108,10 @@ pub(crate) enum Kind {
     /// The address of a string's block, which something owns; or its 24-byte header, when the
     /// layouts hold strings as headers.
     Str,
-    /// A string as its block's address where strings are otherwise headers: how a dict, or a
-    /// one-word optional, holds one.
+    /// A string as its block's address where strings are otherwise headers: how a dict holds one.
     TextBlock,
+    /// An optional string where strings are headers: a header, all zero for `None`.
+    MaybeText,
     /// The address of a dict's or set's block, which something owns, by what it holds.
     Dict(Word, Word),
     /// The address of a closure, which something owns: what it takes, and gives back.
@@ -152,7 +153,7 @@ impl Kind {
             Ty::List(item) => Kind::List(item),
             Ty::Str => Kind::Str,
             Ty::Dict(key, value) => Kind::Dict(key, value),
-            Ty::Maybe(Block::Str) if layouts.text_headers() => Kind::Maybe(Box::new(Kind::TextBlock)),
+            Ty::Maybe(Block::Str) if layouts.text_headers() => Kind::MaybeText,
             Ty::Maybe(block) => Kind::Maybe(Box::new(Kind::from_ty(layouts, block.ty())?)),
             // A list's item that's a block of its own: what that block is.
             Ty::Block(id) => Kind::from_ty(layouts, layouts.block(id)?)?,
@@ -168,6 +169,7 @@ impl Kind {
                 | Kind::List(_)
                 | Kind::Str
                 | Kind::TextBlock
+                | Kind::MaybeText
                 | Kind::Boxed(_)
                 | Kind::Dict(..)
                 | Kind::Closure(..)
@@ -196,6 +198,7 @@ impl Kind {
             Kind::Float => "double".to_owned(),
             Kind::Unit => "void".to_owned(),
             Kind::Str if layouts.text_headers() => crate::headers::HEADER.to_owned(),
+            Kind::MaybeText => crate::headers::HEADER.to_owned(),
             Kind::Cap
             | Kind::List(_)
             | Kind::Str
@@ -218,6 +221,7 @@ impl Kind {
             Kind::Unit => 0,
             Kind::Struct(id) | Kind::Enum(id) => layouts.get(*id).map_or(0, |layout| layout.size),
             Kind::Str if layouts.text_headers() => 3 * WORD,
+            Kind::MaybeText => 3 * WORD,
             _ => WORD,
         }
     }

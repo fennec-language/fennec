@@ -127,7 +127,8 @@ pub(crate) fn builders<'p>(
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind
                     && let Some(theirs) = kept.get(callee.as_str())
                 {
-                    for &param in theirs {
+                    let params = functions.get(callee.as_str()).map_or(0, |target| target.params);
+                    for &param in theirs.iter().filter(|at| **at < params) {
                         let gives =
                             matches!(args.get(param), Some(Operand::Local(local)) if is_kept(local.0));
                         if !gives {

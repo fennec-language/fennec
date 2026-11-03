@@ -374,7 +374,7 @@ impl Emit<'_, '_, '_> {
             Some(dest) if held.in_memory() => self.assign_memory(dest, &value, ""),
             Some(dest) => self.assign(dest, &value),
             None if held.counted() => {
-                self.release(&value);
+                self.release_kind(&value, &held);
                 Ok(())
             }
             None => Ok(()),
@@ -421,7 +421,7 @@ impl Emit<'_, '_, '_> {
             Some(_) if held.in_memory() => Ok(()),
             Some(dest) => self.assign(dest, &value),
             None if held.counted() => {
-                self.release(&value);
+                self.release_kind(&value, &held);
                 Ok(())
             }
             None => Ok(()),
@@ -452,7 +452,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br i1 {gone}, label %{drop}, label %{keep}"));
         self.start_block(&drop);
         if held.counted() {
-            self.release(&value);
+            self.release_kind(&value, &held);
         }
         self.line(&format!("br label %{next}"));
         self.start_block(&keep);
@@ -510,7 +510,7 @@ impl Emit<'_, '_, '_> {
         let dest = dest.ok_or("no result")?;
         let (text, _) = self.operand(args.first().ok_or("no argument")?)?;
         if self.headers() {
-            return self.on_blocks([&text], |emit, [block]| emit.text_by_bytes_of(dest, name, args, &block));
+            return self.header_by_bytes(dest, name, args, &text);
         }
         self.text_by_bytes_of(dest, name, args, &text)
     }
@@ -638,8 +638,11 @@ impl Emit<'_, '_, '_> {
                     "str.rstrip" => 2,
                     _ => 0,
                 };
-                let stripped = self.on_blocks([&text], |emit, [block]| emit.strip_text(&block, which));
-                let stripped = self.text_value(&stripped);
+                if self.headers() {
+                    let stripped = self.header_strip(&text, which);
+                    return self.assign(dest, &stripped);
+                }
+                let stripped = self.strip_text(&text, which);
                 self.assign(dest, &stripped)
             }),
             _ => return None,

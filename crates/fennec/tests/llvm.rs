@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 36;
+const BUILDING_EXAMPLES: usize = 49;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
@@ -1300,6 +1300,28 @@ fn string_methods_the_runtime_runs_match_the_jit() -> std::io::Result<()> {
     for w in words:
         stdout.print(w.upper(), w.lower(), w.replace("l", "L"), w.find("l"), w.find(""))
     stdout.print("a b  c".split(), "a,b,,c".split(","), "".split(), "xyx".split("y"))
+"#,
+    )
+}
+
+/// Strings let go of where nothing takes them, and a `str?` from a dict of strings.
+#[test]
+fn strings_let_go_of_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "strings_let_go_of",
+        r#"def main(stdout: Stdout):
+    mut parts = ["a", "a much longer string than a header holds", "b", "c"]
+    parts.pop()
+    parts.pop(0)
+    parts.remove_where((s) => s.len() > 10)
+    stdout.print(parts)
+    names: dict[str, str] = {"one": "uno", "long": "a value longer than twenty-three bytes"}
+    for key in ["one", "long", "none"]:
+        found: str? = names.get(key)
+        stdout.print(found else "missing")
 "#,
     )
 }

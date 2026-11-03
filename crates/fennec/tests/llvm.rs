@@ -1482,3 +1482,28 @@ def main(stdout: Stdout):
 ",
     )
 }
+
+/// Short strings made by every path that copies bytes into a header, at every length that fits
+/// and just past it, in ASCII and not.
+#[test]
+fn short_copies_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "short_copies",
+        r#"def main(stdout: Stdout):
+    for letters in ["abcdefghijklmnopqrstuvwxyz0123456789", "héllo wörld ünï çà ñé ßø åæ"]:
+        for size in range(27):
+            part = letters[:size]
+            other = letters[3:3 + size]
+            stdout.print(size, part, other, part + "!", "!" + part, part + other, f"[{part}]", f"{size}:{part}")
+            padded = f"  {part}  "
+            stdout.print(padded.strip(), padded.lstrip(), padded.rstrip(), part.strip() == part)
+    mut grown = "a block long enough that it isn't a header at all: "
+    for size in range(27):
+        grown += "x" * size
+    stdout.print(grown, grown.len())
+"#,
+    )
+}

@@ -223,6 +223,152 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A program changing `for mut` items in every way a body can, and leaving in every way.
+const FOR_MUT_ITEMS: &str = r#"error Bad:
+    why: str
+
+struct Unit:
+    tags: list[int]
+    name: str
+    hp: int
+
+struct World:
+    units: list[Unit]
+    log: list[int]
+    turn: int
+
+enum Token:
+    Blank
+    Word(text: str)
+    Many(items: list[int])
+
+def total(units: list[Unit]) -> int:
+    sum(unit.hp for unit in units)
+
+def by_fail(mut units: list[Unit]) -> int:
+    for mut unit in units:
+        unit.tags.append(9)
+        unit.hp += 1
+        if unit.hp == 2:
+            fail Bad("stop")
+    0
+
+def by_return(mut units: list[Unit]) -> int:
+    for mut unit in units:
+        unit.tags.append(8)
+        if unit.hp == 1:
+            return unit.tags.len()
+    -1
+
+def grow(mut units: list[Unit], by: int):
+    for mut unit in units:
+        unit.tags.append(by)
+        unit.name += "!"
+
+def step(mut world: World):
+    for mut unit in world.units:
+        world.log.append(unit.hp)
+        unit.tags.append(world.turn)
+    world.turn += 1
+
+def make() -> list[Unit]:
+    [Unit([1], "first name long enough not to be inline", 0), Unit([2], "b", 1), Unit([3], "c", 5)]
+
+def main(stdout: Stdout):
+    # Copies taken before the loop keep what they had.
+    mut units = make()
+    shared = units
+    kept = copy(units)
+    item = units[0]
+    tags = units[0].tags
+    for mut unit in units:
+        unit.tags.append(unit.hp)
+    stdout.print(units, shared, kept, item, tags)
+    # Ways out.
+    mut a = make()
+    stdout.print(by_fail(mut a) else -1, a)
+    mut b = make()
+    stdout.print(by_return(mut b), b)
+    mut c = make()
+    for mut unit in c:
+        if unit.hp == 0:
+            continue
+        unit.tags.append(4)
+        if unit.hp == 1:
+            break
+        unit.hp = 100
+    stdout.print(c)
+    # The list read in the body sees what was written back so far.
+    mut d = make()
+    for mut unit in d:
+        unit.tags.append(d[0].tags.len())
+        unit.hp += d.len() + total(d)
+    stdout.print(d)
+    # A copy of the item, or of what it holds, made inside.
+    mut e = make()
+    mut seen: list[Unit] = []
+    mut held: list[list[int]] = []
+    for mut unit in e:
+        seen.append(unit)
+        held.append(unit.tags)
+        unit.hp += 1
+    stdout.print(e, seen, held)
+    # Replaced whole, and given away.
+    mut f = make()
+    for mut unit in f:
+        unit = Unit([7], "whole new value long enough not to be inline", unit.hp)
+    stdout.print(f)
+    # Through a function, and a field.
+    mut g = make()
+    grow(mut g, 6)
+    grow(mut g, 7)
+    stdout.print(g)
+    mut w = World(make(), [], 3)
+    step(mut w)
+    other = w
+    step(mut w)
+    stdout.print(w, other)
+    # Nested.
+    mut grid = [[1, 2], [3], []]
+    for mut row in grid:
+        row.append(row.len())
+        for mut cell in row:
+            cell *= 2
+    stdout.print(grid)
+    # Strings and enums as items.
+    mut words = ["a", "a string long enough not to be held inline"]
+    for mut word in words:
+        word += "!"
+    stdout.print(words)
+    mut lists = [[1], [2, 3]]
+    before = lists[1]
+    for mut one in lists:
+        one.append(9)
+    stdout.print(lists, before)
+    # Emptied in the body, then grown.
+    mut h = make()
+    for mut unit in h:
+        unit.tags = []
+        unit.tags.append(1)
+    stdout.print(h)
+"#;
+
+/// A `for mut` item is taken out for the whole of the body, so what it holds changes in place.
+/// What's shared, and a body that reads the list, see what they should.
+#[test]
+fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("for_mut_items", FOR_MUT_ITEMS)?;
+    let counts = counts_of(
+        "for_mut_counts",
+        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for mut unit in units:\n            unit.tags.append(round)\n            if round % 2 == 0:\n                unit.hp += 1\n    stdout.print(units[0].tags.len())\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {

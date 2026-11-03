@@ -56,6 +56,8 @@ pub(crate) struct Analysis {
     /// Locals taking a field of a list's item out to change it, put back through the same place
     /// read again: `root.list[index].field`, as the root, the list's field and the index.
     path_taken: HashMap<usize, (LocalId, Vec<String>, Operand)>,
+    /// `for mut` items taken out for the whole of the loop's body.
+    loop_taken: HashSet<usize>,
     /// Locals written once, from a field of another: which, and the field.
     field_of: HashMap<usize, (LocalId, String)>,
     /// A slice of a string used only as a dict's key: the string and where it starts and ends.
@@ -400,6 +402,7 @@ fn analyze(
         taken: HashSet::new(),
         items_taken: HashMap::new(),
         path_taken: HashMap::new(),
+        loop_taken: HashSet::new(),
         field_of: HashMap::new(),
         slice_keys: HashMap::new(),
         unmade: HashSet::new(),
@@ -416,6 +419,7 @@ fn analyze(
     find_live_borrows(function, changes, &mut known);
     find_path_takes(function, &mut known);
     find_aliases(function, &mut known);
+    find_loop_takes(function, &mut known);
     find_last_copies(function, &mut known);
     // A copy shares its source, unless the source is never read again, and a block put inside
     // something else is shared by that.
@@ -1027,6 +1031,149 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
     }
 }
 
+/// `for mut item in list`: the item is read at the top of the body and written back on every way
+/// out of it, which are other blocks, so `find_borrows` doesn't see it. Taking it means what it
+/// holds has one owner while the body runs, so changing that changes it in place. The list's
+/// place is out of date meanwhile, so nothing may read it on any path to a write-back. A failure
+/// the runtime stops on leaves with no write-back, but nothing can catch it and read the list.
+fn find_loop_takes(function: &Function, known: &mut Analysis) {
+    for (start, block) in function.blocks.iter().enumerate() {
+        for (at, inst) in block.insts.iter().enumerate() {
+            let InstKind::GetIndex { dest, object: Operand::Local(from), index } = &inst.kind else {
+                continue;
+            };
+            let is_list = matches!(function.locals.get(from.0).map(|local| &local.ty), Some(Type::List(_)));
+            if !is_list
+                || dest == from
+                || known.writes.get(dest.0) != Some(&1)
+                || known.taken.contains(&dest.0)
+                || known.borrowed.contains(&dest.0)
+            {
+                continue;
+            }
+            let Some((root, path)) = written_back_to(function, *dest, index) else { continue };
+            if comes_from(function, known, *from, (root, &path))
+                && stays_apart(function, known, (start, at + 1), (*dest, *from, index), (root, &path))
+            {
+                known.taken.insert(dest.0);
+                known.items_taken.insert(dest.0, (root, path));
+                known.loop_taken.insert(dest.0);
+            }
+        }
+    }
+}
+
+/// Where a local read from a list at `index` is written back to, when that's one place.
+fn written_back_to(function: &Function, item: LocalId, index: &Operand) -> Option<(LocalId, Vec<String>)> {
+    let mut home: Option<(LocalId, &Vec<String>)> = None;
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        if let InstKind::SetIndex { object, path, index: at, value: Operand::Local(put) } = &inst.kind
+            && *put == item
+        {
+            if at != index || home.is_some_and(|(root, known)| root != *object || known != path) {
+                return None;
+            }
+            home = Some((*object, path));
+        }
+    }
+    home.map(|(root, path)| (root, path.clone()))
+}
+
+/// Whether a list being read is the one at this place: a loop's copy that's the list itself,
+/// read from the local or from one of its fields.
+fn comes_from(
+    function: &Function,
+    known: &Analysis,
+    list: LocalId,
+    (root, path): (LocalId, &[String]),
+) -> bool {
+    let whole = known.alias(list).unwrap_or(list);
+    match path {
+        [] => whole == root,
+        [field] => known.writes.get(whole.0) == Some(&1)
+            && function.blocks.iter().flat_map(|block| &block.insts).any(|inst| {
+                matches!(&inst.kind, InstKind::GetField { dest, object: Operand::Local(from), field: name }
+                        if *dest == whole && *from == root && name == field)
+            }),
+        _ => false,
+    }
+}
+
+/// Whether, on every path from here, the item gets written back before anything could read the
+/// place it came from, and every read of the item is on those paths.
+fn stays_apart(
+    function: &Function,
+    known: &Analysis,
+    from: (usize, usize),
+    (item, list, index): (LocalId, LocalId, &Operand),
+    (root, path): (LocalId, &[String]),
+) -> bool {
+    let whole = known.alias(list).unwrap_or(list);
+    let is_back = |inst: &InstKind| matches!(inst, InstKind::SetIndex { value: Operand::Local(put), .. } if *put == item);
+    // Another field of what holds the list is apart from it.
+    let other_field = |inst: &InstKind| match (inst, path.first()) {
+        (InstKind::GetField { object: Operand::Local(held), field, .. }, Some(first)) => {
+            *held == root && field != first
+        }
+        (
+            InstKind::SetField { object, path: at, .. } | InstKind::SetIndex { object, path: at, .. },
+            Some(first),
+        ) => *object == root && at.first().is_some_and(|field| field != first),
+        _ => false,
+    };
+    let mut reads = 0_u32;
+    let mut seen = HashSet::new();
+    let mut waiting = vec![from];
+    while let Some((at, first)) = waiting.pop() {
+        let Some(block) = function.blocks.get(at) else { return false };
+        let mut written_back = false;
+        for inst in block.insts.get(first..).unwrap_or_default() {
+            let (mut read_here, mut written_here) = (Vec::new(), Vec::new());
+            visit(&inst.kind, |operand| read_here.push(operand.clone()), |local| written_here.push(local));
+            for operand in &read_here {
+                if *operand == Operand::Local(item) {
+                    reads += 1;
+                }
+            }
+            if is_back(&inst.kind) {
+                written_back = true;
+                break;
+            }
+            let reads_home =
+                [root, list, whole].iter().any(|held| read_here.contains(&Operand::Local(*held)));
+            let writes = |local: LocalId| written_here.contains(&local);
+            if (reads_home && !other_field(&inst.kind))
+                || writes(root)
+                || writes(list)
+                || writes(whole)
+                || writes(item)
+                || matches!(index, Operand::Local(local) if writes(*local))
+            {
+                return false;
+            }
+        }
+        if written_back {
+            continue;
+        }
+        match &block.end {
+            Terminator::Jump(_) | Terminator::Branch { .. } => {
+                if matches!(&block.end, Terminator::Branch { cond, .. } if *cond == Operand::Local(item)) {
+                    return false;
+                }
+                for target in block.end.targets() {
+                    if seen.insert(target.0) {
+                        waiting.push((target.0, 0));
+                    }
+                }
+            }
+            Terminator::Unreachable => {}
+            // Leaving with the item not written back.
+            _ => return false,
+        }
+    }
+    known.reads.get(item.0) == Some(&reads)
+}
+
 /// Whether an instruction reads a local.
 fn reads_local(inst: &InstKind, local: LocalId) -> bool {
     let mut found = false;
@@ -1287,6 +1434,11 @@ impl Analysis {
     }
 
     /// Where the list is that a local took an item out of.
+    /// Whether a local is a `for mut` item taken out for the whole of the loop's body.
+    pub(crate) fn taken_over_loop(&self, local: LocalId) -> bool {
+        self.loop_taken.contains(&local.0)
+    }
+
     /// Where a field taken out of a list's item to change goes back: the root, the path to the
     /// list from it, and the index.
     pub(crate) fn path_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>, Operand)> {

@@ -26,6 +26,7 @@ impl Interp<'_> {
         args: Vec<CallArg>,
         span: Span,
     ) -> Result<Value, Diagnostic> {
+        self.load_std_providing(type_name)?;
         match (type_name, args.as_slice()) {
             ("IdMap", []) => return Ok(Value::IdMap(Rc::default())),
             ("SoaList", []) => return Ok(Value::list(Vec::new())),
@@ -59,6 +60,9 @@ impl Interp<'_> {
         args: Vec<CallArg>,
         span: Span,
     ) -> Result<Value, Diagnostic> {
+        if let Some(name) = enum_name {
+            self.load_std_providing(name)?;
+        }
         let owners: Vec<String> = if let Some(name) = enum_name {
             vec![name.to_owned()]
         } else {

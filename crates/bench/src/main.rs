@@ -27,6 +27,7 @@
 mod budgets;
 mod kernels;
 mod llvm_suite;
+mod machine;
 mod measure;
 mod other_twins;
 mod parallel;

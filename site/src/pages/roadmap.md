@@ -21,14 +21,14 @@ description: What Fennec does today, what's being built next, and the design que
 - Tables: `IdMap`, `Id` and `Tree`, and `SortedMap` on a B-tree.
 - A type checker that runs before every program and test.
 - The first standard library: `math`, `game`, `layout`, `path`, `json`, `toml`, `collections`, `random`, `time` and `re`.
-- Native code: `fennec run` and `fennec build` compile with Cranelift, and every example gives exactly the interpreter's output. `fennec build --llvm` handles part of the language.
+- Native code: `fennec run` uses a cached LLVM build, and says so in one line when LLVM can't build a program yet and the JIT runs it instead. `fennec build` compiles with Cranelift, and `fennec build --llvm` handles part of the language. Every example gives exactly the interpreter's output.
 - Function-level caching of checked and compiled code, shared across runs.
 - Every example in the repository's `examples/` folder is a test, including its error messages, and the [language reference](/reference/) is generated from them.
 
 ## Next: speed and builds
 
 - One backend: LLVM, with per-function `-O3` and a function-level cache. Whole-program work happens only in `--release`.
-- Cranelift goes away when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
+- LLVM becomes the default once about 90% of examples build natively, and that retires Cranelift. A program either builds natively or is refused, and refused examples go on a tracked list that must reach zero.
 - One content store per machine, with results named by hash and no `target` folders. `fennec run` makes real binaries in it.
 - A shared cache that only trusted builds can write to, and a clean rebuild in CI to check it against.
 - A tiny launcher that fetches the compiler a kit asks for. Pinned compilers never change by themselves.

@@ -178,7 +178,7 @@ impl Checker {
                 })
                 .collect();
             let signatures =
-                Signatures { functions, structs, enums, errors, locals, types: Types::default() };
+                Signatures { functions, structs, enums, errors, locals, ..Signatures::default() };
             let types = Types { functions: self.typed };
             return Ok(Checked {
                 signatures,

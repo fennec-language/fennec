@@ -96,6 +96,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) builders: HashMap<&'p str, HashSet<usize>>,
     /// The field paths of `mut` parameters each function's callers make alone before calling.
     pub(crate) needs: HashMap<&'p str, Vec<FieldPath>>,
+    /// The functions that give a constant's value, which keep it after the first time.
+    pub(crate) constants: HashSet<&'p str>,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments, and a
@@ -1698,5 +1700,13 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
     let lengths = summarized(&functions, &analyses, Tracked::Lengths);
     let needs = needed(program, &functions, &analyses);
     let builders = crate::builders::builders(program, &functions);
-    Whole { functions, analyses, can_fail, generators, settles, lengths, builders, needs }
+    let constants = every()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.insts)
+        .filter_map(|inst| match &inst.kind {
+            InstKind::Constant { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    Whole { functions, analyses, can_fail, generators, settles, lengths, builders, needs, constants }
 }

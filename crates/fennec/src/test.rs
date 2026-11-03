@@ -181,14 +181,16 @@ fn run_plan(
     let mut outcomes = Vec::new();
     let mut wanted = wanted;
     let mut failed_through_llvm = Vec::new();
+    let mut ran_through_llvm = HashMap::new();
     if options.llvm && crate::aot::llvm_ready() {
-        let through_llvm = crate::llvm_tests::run(&program.module, &wanted);
+        let through_llvm = crate::llvm_tests::run(&program.module, &wanted, &|name| graph.defines(name));
         if let Some(why) = through_llvm.refused.as_deref().and_then(|why| why.lines().next()) {
             eprintln!("note: some tests run another way, since LLVM can't build what they reach: {why}");
         }
         outcomes = through_llvm.outcomes;
         wanted = through_llvm.left;
         failed_through_llvm = through_llvm.failed;
+        ran_through_llvm = through_llvm.ran;
     }
     let mut native = fennec_jit::run_tests(&program.module, &signatures, &wanted, cache);
     outcomes.append(&mut native.outcomes);
@@ -221,7 +223,7 @@ fn run_plan(
                 if options.verbose {
                     println!("  ✓ {}{cases}", outcome.name);
                 }
-                let ran = native.ran.remove(&outcome.name);
+                let ran = native.ran.remove(&outcome.name).or_else(|| ran_through_llvm.remove(&outcome.name));
                 passing.extend(record_of((&graph, &program, &modules), &outcome.name, ran));
             }
             Some(diagnostic) => {

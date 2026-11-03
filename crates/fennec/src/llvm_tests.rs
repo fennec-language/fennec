@@ -6,6 +6,7 @@
 //! since the other way says more about why, like what each side of an `assert` was. If it passes
 //! there, the two disagree, which is reported as a failure rather than hidden.
 
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
 
 use fennec_interp::TestOutcome;
@@ -22,6 +23,92 @@ pub(crate) struct LlvmTests {
     pub(crate) failed: Vec<(String, Diagnostic)>,
     /// Why LLVM wouldn't build some of them, the first it said.
     pub(crate) refused: Option<String>,
+    /// The program functions each test that passed ran, by their keys, for the tests that's known
+    /// for.
+    pub(crate) ran: HashMap<String, Vec<String>>,
+}
+
+/// Functions the IR may fuse into what uses them, which then has no flag of its own to set: a
+/// generator, wherever it's written. They count as having run, for every test.
+fn fusible(module: &Module) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut add = |owner: Option<&str>, def: &FnDef| {
+        if fennec_syntax::fuse::has_yield(&def.body) {
+            found.push(owner.map_or_else(|| def.name.clone(), |owner| format!("{owner}.{}", def.name)));
+        }
+    };
+    for item in &module.items {
+        match item {
+            Item::Function(def) => add(None, def),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                def.methods.iter().for_each(|method| add(Some(&def.name), method));
+            }
+            Item::Extend(extension) => {
+                extension.methods.iter().for_each(|method| add(Some(&extension.name), method));
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// The program functions a test ran, by their keys, from the functions that set their flags, or
+/// None if one can't be put down to a definition. Then the test depends on all it can reach, since
+/// a function missed here is a test skipped wrongly.
+fn traced(
+    flagged: &[&str],
+    fused: &[String],
+    defines: &dyn Fn(&str) -> bool,
+    prelude: &HashSet<String>,
+) -> Option<Vec<String>> {
+    let mut ran: Vec<String> = fused.to_vec();
+    for name in flagged {
+        if name.starts_with("__test_") {
+            continue;
+        }
+        // A copy of a generic function for one type, or a function written inside another, is
+        // part of the definition around it.
+        let plain = name.split('[').next().unwrap_or(name);
+        let mut known = plain;
+        while !defines(known) {
+            match known.rsplit_once('.') {
+                Some((around, _)) => known = around,
+                None => break,
+            }
+        }
+        if defines(known) {
+            ran.push(known.to_owned());
+        } else if !prelude.contains(plain) {
+            return None;
+        }
+    }
+    ran.sort();
+    ran.dedup();
+    Some(ran)
+}
+
+/// What the standard library defines, whose functions Fennec's build stands for in a test's key.
+fn prelude_functions() -> HashSet<String> {
+    let mut names = HashSet::new();
+    for library in fennec_syntax::prelude_modules().unwrap_or_default() {
+        for item in &library.items {
+            match item {
+                Item::Function(def) => {
+                    names.insert(def.name.clone());
+                }
+                Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                    names.extend(def.methods.iter().map(|method| format!("{}.{}", def.name, method.name)));
+                }
+                Item::Extend(extension) => {
+                    names.extend(
+                        extension.methods.iter().map(|method| format!("{}.{}", extension.name, method.name)),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    names
 }
 
 /// What each test's function is named, by its number.
@@ -94,12 +181,25 @@ fn from_hex(text: &str) -> Option<String> {
     String::from_utf8(bytes?).ok()
 }
 
-/// A line a test executable wrote: which test, and how it failed if it did.
-fn read_line(line: &str) -> Option<(usize, Option<Diagnostic>)> {
+/// What a test executable said about one test: its number, how it failed if it did, and the
+/// numbers of the flags it set.
+type TestLine = (usize, Option<Diagnostic>, Vec<usize>);
+
+/// Reads a line a test executable wrote.
+fn read_line(line: &str) -> Option<TestLine> {
     let mut words = line.split(' ');
     let number = words.next()?.parse().ok()?;
     match words.next()? {
-        "ok" => Some((number, None)),
+        "ok" => {
+            let ran: Option<Vec<usize>> = words
+                .next()
+                .unwrap_or("")
+                .split(',')
+                .filter(|at| !at.is_empty())
+                .map(|at| at.parse().ok())
+                .collect();
+            Some((number, None, ran?))
+        }
         "failed" => {
             let start = words.next()?.parse().ok()?;
             let end = words.next()?.parse().ok()?;
@@ -107,7 +207,7 @@ fn read_line(line: &str) -> Option<(usize, Option<Diagnostic>)> {
             let help = from_hex(words.next().unwrap_or(""))?;
             let failure = Diagnostic::new(message, Span { start, end });
             let failure = if help.is_empty() { failure } else { failure.with_help(help) };
-            Some((number, Some(failure)))
+            Some((number, Some(failure), Vec::new()))
         }
         _ => None,
     }
@@ -121,8 +221,34 @@ fn test_failure(failure: Diagnostic) -> Diagnostic {
     }
 }
 
-/// Runs the tests of a checked `module` named in `wanted` that LLVM can take.
-pub(crate) fn run(module: &Module, wanted: &[String]) -> LlvmTests {
+/// Runs a test executable in worker processes, each with its share of `tests` tests, giving back
+/// what each wrote.
+fn run_workers(work: &std::path::Path, tests: usize) -> Vec<String> {
+    let workers = std::thread::available_parallelism().map_or(1, usize::from).min(tests);
+    let shares: Vec<Vec<String>> = (0..workers)
+        .map(|worker| {
+            (0..tests).filter(|number| number % workers == worker).map(|number| number.to_string()).collect()
+        })
+        .collect();
+    std::thread::scope(|scope| {
+        let running: Vec<_> = shares
+            .iter()
+            .map(|share| {
+                scope.spawn(move || {
+                    Command::new(work)
+                        .args(share)
+                        .output()
+                        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+                })
+            })
+            .collect();
+        running.into_iter().filter_map(|worker| worker.join().ok()?.ok()).collect()
+    })
+}
+
+/// Runs the tests of a checked `module` named in `wanted` that LLVM can take. `defines` says
+/// whether the program defines a function by a name.
+pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> bool) -> LlvmTests {
     let mut result = LlvmTests::default();
     let mut plain = Vec::new();
     let tests = module.items.iter().filter_map(|item| match item {
@@ -153,43 +279,31 @@ pub(crate) fn run(module: &Module, wanted: &[String]) -> LlvmTests {
         std::process::id(),
         std::env::consts::EXE_SUFFIX
     ));
-    let built = crate::aot::tests_executable(&trimmed_for(module, &taken), &names, &work);
-    if let Err(why) = built {
-        result.left.extend(taken.iter().map(|test| test.name.clone()));
-        result.refused.get_or_insert(why);
-        return result;
-    }
-    let workers = std::thread::available_parallelism().map_or(1, usize::from).min(taken.len());
-    let shares: Vec<Vec<String>> = (0..workers)
-        .map(|worker| {
-            (0..taken.len())
-                .filter(|number| number % workers == worker)
-                .map(|number| number.to_string())
-                .collect()
-        })
-        .collect();
-    let ran: Vec<String> = std::thread::scope(|scope| {
-        let running: Vec<_> = shares
-            .iter()
-            .map(|share| {
-                let work = &work;
-                scope.spawn(move || {
-                    Command::new(work)
-                        .args(share)
-                        .output()
-                        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-                })
-            })
-            .collect();
-        running.into_iter().filter_map(|worker| worker.join().ok()?.ok()).collect()
-    });
+    let flags = match crate::aot::tests_executable(&trimmed_for(module, &taken), &names, &work) {
+        Ok(flags) => flags,
+        Err(why) => {
+            result.left.extend(taken.iter().map(|test| test.name.clone()));
+            result.refused.get_or_insert(why);
+            return result;
+        }
+    };
+    let fused = fusible(module);
+    let prelude = prelude_functions();
+    let ran = run_workers(&work, taken.len());
     let _ = std::fs::remove_file(&work);
     let mut seen = vec![false; taken.len()];
-    for (number, failure) in ran.iter().flat_map(|output| output.lines()).filter_map(read_line) {
+    for (number, failure, set) in ran.iter().flat_map(|output| output.lines()).filter_map(read_line) {
         let (Some(test), Some(done)) = (taken.get(number), seen.get_mut(number)) else { continue };
         *done = true;
         match failure {
-            None => result.outcomes.push(TestOutcome { name: test.name.clone(), failure: None, cases: 1 }),
+            None => {
+                let flagged: Vec<&str> =
+                    set.iter().filter_map(|at| flags.get(*at)).map(String::as_str).collect();
+                if let Some(ran) = traced(&flagged, &fused, defines, &prelude) {
+                    result.ran.insert(test.name.clone(), ran);
+                }
+                result.outcomes.push(TestOutcome { name: test.name.clone(), failure: None, cases: 1 });
+            }
             Some(failure) => {
                 result.left.push(test.name.clone());
                 result.failed.push((test.name.clone(), test_failure(failure)));

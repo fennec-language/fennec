@@ -63,6 +63,11 @@ impl TestGraph {
         })
     }
 
+    /// Whether a function by this name is defined in the program.
+    pub fn defines(&self, function: &str) -> bool {
+        self.by_key.contains_key(&format!("def {function}"))
+    }
+
     /// Every function a test can reach, by the keys the compiler knows them by.
     pub fn reach(&self, test: &str) -> Vec<String> {
         self.graph

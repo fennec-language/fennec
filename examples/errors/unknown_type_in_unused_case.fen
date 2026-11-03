@@ -1,0 +1,6 @@
+# A case's field types are checked whether or not anything uses the case, as a struct's are.
+enum Unused:
+    A(x: Nope)
+
+def main(stdout: Stdout):
+    stdout.print(1)

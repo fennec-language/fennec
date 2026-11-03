@@ -384,7 +384,12 @@ fn slowest(rows: &[Row]) -> Option<(&str, f64)> {
 
 /// The table, then the geometric means and the slowest kernel.
 fn table(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String {
-    let mut text = format!("## LLVM against Rust, Go and Java on {}\n\n", platform());
+    let mut text = format!(
+        "## LLVM against Rust, Go and Java on {}, {} with {} cores\n\n",
+        platform(),
+        crate::machine::cpu(),
+        crate::machine::cores()
+    );
     text.push_str("| kernel | instructions % | D1 misses, ours / Rust's | LL misses, ours / Rust's | best time % | kernel time % | median time % | spread | dev best time % | release build | dev build |");
     for language in Language::ALL {
         let _ = write!(text, " {0} kernel time % | {0} whole run % |", language.name());
@@ -572,6 +577,8 @@ fn json(rows: &[Row], startups: &Startups) -> Json {
     });
     Json::object([
         ("platform", Json::string(platform())),
+        ("cpu", Json::string(crate::machine::cpu())),
+        ("cores", Json::number(crate::machine::cores())),
         ("commit", Json::string(std::env::var("GITHUB_SHA").unwrap_or_default())),
         ("instructions", number(geomean(rows.iter().filter_map(|row| row.instructions)))),
         ("time", number(geomean(rows.iter().filter_map(|row| row.time)))),

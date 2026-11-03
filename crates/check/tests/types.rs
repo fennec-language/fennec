@@ -361,3 +361,40 @@ fn a_field_can_be_named_by_a_keyword() {
     let empty: [&str; 0] = [];
     assert_eq!(problems(text), empty);
 }
+
+#[test]
+fn every_case_field_is_checked_whether_anything_uses_the_case_or_not() {
+    let program = "
+        enum Unused:
+            A(x: Nope)
+            B(y: list[Gone])
+
+        enum Holder[T]:
+            Full(item: T)
+            Odd(other: U)
+
+        error Failed:
+            Missing(what: Absent)
+    ";
+    assert_eq!(
+        problems(&crate::dedent(program)),
+        [
+            "`Nope` isn't a type @ Nope",
+            "`Gone` isn't a type @ Gone",
+            "`U` isn't a type @ U",
+            "`Absent` isn't a type @ Absent",
+        ]
+    );
+}
+
+#[test]
+fn a_case_field_default_has_to_fit_its_type() {
+    let program = "
+        enum Unused:
+            A(x: int = \"text\")
+            B(y: int = 1)
+    ";
+    let found = problems(&crate::dedent(program));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found.iter().all(|problem| problem.contains("`x`")), "{found:?}");
+}

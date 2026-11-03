@@ -105,10 +105,20 @@ fn a_range_that_fails_stops_the_program_natively_as_the_interpreter_does() -> st
     Ok(())
 }
 
-/// A `for mut` over strings long enough to be blocks, changing some and putting the rest back
-/// as they were: each one put back is the list's own, held by nothing else on the way.
+/// A `for mut` over structs holding strings long enough to be blocks, and one over such strings,
+/// changing some items and putting the rest back as they were. A struct's string is put back
+/// held by nothing but the list, so letting go of the old item first freed it.
 const PUT_BACK: &str = "\
+struct Tag:
+    name: str
+    n: int
+
 def main(stdout: Stdout):
+    mut tags = [Tag(f\"a name long enough to be held in a block of its own, {n}\", n) for n in range(5_000)]
+    for mut tag in parallel(tags):
+        if tag.n % 2 == 0:
+            tag.n += 1
+    stdout.print(tags[0].name, tags[1].name, tags[4_999].name, tags[2].n)
     mut words = [f\"a word long enough to be held in a block of its own, {n}\" for n in range(5_000)]
     for mut word in parallel(words):
         if word.len() % 2 == 0:

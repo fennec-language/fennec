@@ -13,6 +13,7 @@ fib 0
 generators 0
 generics 0
 json 0
+json_unicode 0
 k_nucleotide 3
 mandelbrot 0
 method_chain 0

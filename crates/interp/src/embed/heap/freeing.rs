@@ -42,6 +42,7 @@ fn free_waiting(state: &mut State) {
 pub extern "C" fn free_text(address: i64) {
     let freed = with(|state| {
         let at = usize::try_from(address).ok()?;
+        state.heap.forget_place(u64::try_from(at).unwrap_or(0));
         let block = state.heap.blocks.remove(at)?;
         if !is_text(state, &block) {
             state.heap.blocks.insert(block);
@@ -109,15 +110,23 @@ fn free_block(state: &mut State, address: u64) {
         if crate::embed::threads::held_elsewhere(address) {
             continue;
         }
-        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove(at)) else {
+        // Only a string has a place kept in it, and that's forgotten below, once it's known to be one.
+        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove_any(at))
+        else {
             continue;
         };
         let shape = shape_word(&block).unwrap_or(u64::MAX);
+        debug_assert!(
+            shape == state.tables.str_shape
+                || usize::try_from(address).is_ok_and(|at| state.heap.cursor().address != at),
+            "a place was kept in something that isn't a string"
+        );
         if is_abandoned(state, &block) {
             keep_abandoned(state, address, block);
             continue;
         }
         if shape == state.tables.str_shape {
+            state.heap.forget_place(address);
             if !state.heap.texts.get_mut().is_empty() {
                 forget_text(state, address);
             }

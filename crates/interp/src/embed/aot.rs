@@ -103,6 +103,11 @@ pub(super) fn counts_line(counts: &heap::Counts) -> String {
         "copies {} copied_bytes {} largest_copy {} allocations {} allocated_bytes {}",
         counts.copies, counts.copied_bytes, counts.largest_copy, counts.allocations, counts.allocated_bytes
     );
+    // `parallel` calls native code made, when there were any.
+    let line = match super::parallel::calls() {
+        0 => line,
+        calls => format!("{line} parallel_calls {calls}"),
+    };
     // Network waits that blocked a thread rather than parking a task, when there were any.
     #[cfg(any(test, feature = "threads"))]
     let line = match super::serve::blocked_waits() {

@@ -115,6 +115,15 @@ impl Lowerer<'_, '_> {
     }
 
     pub(super) fn stmt(&mut self, stmt: &Stmt) -> Result<(), Diagnostic> {
+        // A `for mut` over `parallel(xs)` changes the items of `xs` where they are, and running
+        // its iterations in order is a correct way to run it.
+        if let StmtKind::For { names, is_mut: true, iter, body } = &stmt.kind
+            && let Some(items) = parallel_items(iter)
+        {
+            let kind =
+                StmtKind::For { names: names.clone(), is_mut: true, iter: items.clone(), body: body.clone() };
+            return self.stmt(&Stmt { kind, span: stmt.span });
+        }
         self.now.last_try = Self::last_try_in(stmt);
         match &stmt.kind {
             StmtKind::Expr(expr) => {
@@ -746,4 +755,12 @@ impl Lowerer<'_, '_> {
         self.dirty = true;
         self.close_scope()
     }
+}
+
+/// What a `for` goes over when it's `parallel(xs)` with one plain argument: `xs`.
+fn parallel_items(iter: &Expr) -> Option<&Expr> {
+    let ExprKind::Call { callee, args } = &iter.kind else { return None };
+    let ExprKind::Name(name) = &callee.kind else { return None };
+    let [first] = args.as_slice() else { return None };
+    (name == "parallel" && first.name.is_none() && !first.is_mut).then_some(&first.value)
 }

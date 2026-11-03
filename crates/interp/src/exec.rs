@@ -362,6 +362,9 @@ impl Interp<'_> {
         iter: &Expr,
         body: &[Stmt],
     ) -> Result<Flow, Diagnostic> {
+        // A `for mut` over `parallel(xs)` changes the items of `xs` where they are; running its
+        // iterations in order, as the interpreter does, is a correct way to run them.
+        let iter = if is_mut { parallel_items(iter).unwrap_or(iter) } else { iter };
         let (mut items, place, mut inside) = if self.is_resuming()
             && let Some(Position::For { items, place, key }) = self.resume_at()
         {
@@ -448,4 +451,12 @@ pub(crate) fn check_error(value: &Value, span: Span) -> Result<(), Diagnostic> {
                 .with_help("declare error types with `error`, like `error NotFound:`"))
         }
     }
+}
+
+/// What a `for` goes over when it's `parallel(xs)` with one plain argument: `xs`.
+fn parallel_items(iter: &Expr) -> Option<&Expr> {
+    let ExprKind::Call { callee, args } = &iter.kind else { return None };
+    let ExprKind::Name(name) = &callee.kind else { return None };
+    let [first] = args.as_slice() else { return None };
+    (name == "parallel" && first.name.is_none() && !first.is_mut).then_some(&first.value)
 }

@@ -44,6 +44,7 @@ mod idmaps;
 mod json;
 mod kinds;
 mod lists;
+mod parallel;
 mod random;
 mod regex;
 mod text;

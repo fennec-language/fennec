@@ -115,6 +115,7 @@ pub(super) fn range_ends() -> (Vec<(u64, i64)>, Vec<u8>) {
     super::with(|state| {
         if state.heap.lent.take().is_some() {
             state.heap.texts.get_mut().clear();
+            state.heap.cursor = super::heap::Cursor::default();
         }
         (state.heap.lent_owners.drain().collect(), state.output.0.take())
     })

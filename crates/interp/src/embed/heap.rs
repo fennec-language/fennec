@@ -51,6 +51,15 @@ impl Hasher for AddressHasher {
     }
 }
 
+/// A place in a string's text: its `chars`th character starts `bytes` bytes in. Reading a
+/// string in order goes on from the last place rather than counting from its start.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Cursor {
+    pub(super) address: usize,
+    pub(super) chars: usize,
+    pub(super) bytes: usize,
+}
+
 /// Every live block, by its address, and freed blocks kept for reuse, by size.
 #[derive(Default)]
 pub(crate) struct Heap {
@@ -60,6 +69,8 @@ pub(crate) struct Heap {
     statics: usize,
     /// Strings' text as the interpreter holds it, made once per block.
     pub(super) texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
+    /// Where a string that isn't ASCII was last read.
+    pub(super) cursor: Cursor,
     /// Generators let go partway, waiting for what closes what they hold.
     abandoning: Vec<u64>,
     /// Blocks waiting to be freed and a freed block's children, kept to save making them anew.
@@ -273,6 +284,7 @@ impl Heap {
     pub(crate) fn hand_over(&mut self, since: usize) -> Vec<Box<[u64]>> {
         let mut handed = Vec::new();
         for address in self.made.split_off(since.min(self.made.len())) {
+            self.forget_place(address);
             let lives = self.block(address).and_then(<[u64]>::first).is_some_and(|count| *count < IMMORTAL);
             if lives && let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at))
             {
@@ -293,8 +305,17 @@ impl Heap {
     /// Takes a block out of the heap for reuse, leaving the blocks it refers to as they are:
     /// for a block whose contents moved to a new one.
     pub(super) fn discard(&mut self, address: u64) {
+        self.forget_place(address);
         if let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at)) {
             self.recycle(block);
+        }
+    }
+
+    /// Forgets where a string was last read, when that block goes: its address can come back
+    /// as another string. Only what may be a string comes here, so other blocks don't pay.
+    pub(super) fn forget_place(&mut self, address: u64) {
+        if usize::try_from(address).is_ok_and(|at| self.cursor.address == at) {
+            self.cursor = Cursor::default();
         }
     }
 

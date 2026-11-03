@@ -47,6 +47,7 @@ pub extern "C" fn free_text(address: i64) {
             state.heap.blocks.insert(block);
             return None;
         }
+        state.heap.forget_place(u64::try_from(at).unwrap_or(0));
         let texts = state.heap.texts.get_mut();
         if !texts.is_empty() {
             texts.remove(&at);
@@ -118,6 +119,7 @@ fn free_block(state: &mut State, address: u64) {
             continue;
         }
         if shape == state.tables.str_shape {
+            state.heap.forget_place(address);
             if !state.heap.texts.get_mut().is_empty() {
                 forget_text(state, address);
             }

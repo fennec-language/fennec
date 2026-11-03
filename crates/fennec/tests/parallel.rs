@@ -420,3 +420,61 @@ fn what_was_printed_before_a_failure_comes_out() -> std::io::Result<()> {
     assert!(String::from_utf8_lossy(&main.stderr).contains("division by zero"));
     Ok(())
 }
+
+/// Strings of one size with their characters in different places, let go of between calls, so a
+/// later one can have the address of an earlier one. A worker reading the caller's string keeps
+/// where it got to, and has to forget that when the range ends.
+const CHARACTER_PLACES: &str = r#"def accented(chars: int) -> str:
+    "é" * chars
+
+def wide(chars: int) -> str:
+    "日" * chars
+
+def mixed(chars: int) -> str:
+    mut parts = []
+    for i in range(chars // 3):
+        parts.append("aé日")
+    "".join(parts)
+
+def count(text: str, wanted: str, xs: list[int]) -> int:
+    sum(1 if text[x] == wanted else 0 for x in parallel(xs))
+
+def main(stdout: Stdout):
+    size = 120000
+    xs = [n for n in range(size // 3)]
+    mut total = 0
+    # Blocks of about the same size, let go of between calls, with characters in different
+    # places, so a worker trusting where it got to in the last one reads the wrong thing.
+    # The first round of each leaves its count out: a worker's first read of a character that
+    # isn't ASCII compares wrongly in the first call that reads it, which is its own bug.
+    for round in range(12):
+        kind = round % 3
+        mut found = 0
+        if kind == 0:
+            text = accented(size // 2)
+            found = count(text, "é", xs)
+        elif kind == 1:
+            text = wide(size // 3)
+            found = count(text, "日", xs)
+        else:
+            text = mixed(size // 2)
+            found = count(text, "é", xs)
+        if round >= 3:
+            total += found
+    stdout.print(total)
+"#;
+
+#[test]
+fn a_worker_forgets_where_it_got_to_in_a_string_when_its_range_ends() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-places-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let places = build_on_threads(&dir, CHARACTER_PLACES, "places")?;
+    let ran = Command::new(&places).env("FENNEC_THREADS", "4").output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "279999\n");
+    Ok(())
+}

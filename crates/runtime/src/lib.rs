@@ -286,23 +286,15 @@ export! {
     fennec_aot_stack_limit() -> i64 => aot::stack_limit();
     fennec_aot_ascii() -> i64 => aot::ascii();
     fennec_aot_literal(a0: i64) -> i64 => aot::literal(a0);
+    fennec_aot_tests_start() => aot::tests_start();
+    fennec_aot_next_test() -> i64 => aot::next_test_number();
+    fennec_aot_test_done(a0: i64) => aot::test_done(a0);
 }
 
 /// Runs a compiled executable's program: its `main` calls this.
 #[unsafe(no_mangle)]
 pub extern "C" fn fennec_aot_run(entry: extern "C" fn(i64), length: i64) -> i32 {
     aot::run(entry, length, stop)
-}
-
-/// Runs a test executable's tests: its `main` calls this.
-#[unsafe(no_mangle)]
-pub extern "C" fn fennec_aot_run_tests(
-    entry: extern "C" fn(i64),
-    run_test: extern "C" fn(i64),
-    count: i64,
-    length: i64,
-) -> i32 {
-    aot::run_tests(entry, run_test, count, length, stop)
 }
 
 /// Ends the process now, for a failure in cleanup that nothing can pass on.

@@ -147,9 +147,10 @@ pub fn tests_entry(
     tests: &[String],
 ) -> Result<String, String> {
     let (mut out, count) = start_of(program, shared, image, bytes)?;
-    out += "declare i32 @fennec_aot_run_tests(ptr, ptr, i64, i64)\n\n";
+    out += "declare i32 @fennec_aot_run(ptr, i64)\ndeclare void @fennec_aot_tests_start()\ndeclare i64 @fennec_aot_next_test()\ndeclare void @fennec_aot_test_done(i64)\n\n";
     let thunks = setup(&mut out, program, shared, image);
-    out += "  ret void\n}\n\n";
+    // The runtime says which tests to run, and hears how each went.
+    out += "  call void @fennec_aot_tests_start()\n  br label %next\nnext:\n  %number = call i64 @fennec_aot_next_test()\n  %more = icmp sge i64 %number, 0\n  br i1 %more, label %run, label %end\nrun:\n  call void @fennec_run_test(i64 %number)\n  call void @fennec_aot_test_done(i64 %number)\n  br label %next\nend:\n  ret void\n}\n\n";
     out += &thunks;
     let can_fail = crate::analysis::whole(program).can_fail;
     let mut cases = String::new();
@@ -166,12 +167,7 @@ pub fn tests_entry(
         out,
         "\ndefine void @fennec_run_test(i64 %number) {{\nstart:\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  switch i64 %number, label %done [{cases} ]\n{blocks}done:\n  ret void\n}}\n"
     );
-    let run = format!(
-        "@fennec_aot_run_tests(ptr @fennec_entry, ptr @fennec_run_test, i64 {}, i64 {})",
-        tests.len(),
-        bytes.len()
-    );
-    out += &c_main(count, &run);
+    out += &c_main(count, &format!("@fennec_aot_run(ptr @fennec_entry, i64 {})", bytes.len()));
     Ok(out)
 }
 

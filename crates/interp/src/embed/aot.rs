@@ -29,6 +29,8 @@ thread_local! {
     static SOURCES: RefCell<Option<Sources>> = const { RefCell::new(None) };
     /// The text of each string literal native code asks for by number.
     static LITERALS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The numbers of the tests a test executable has left to run, the next one last.
+    static TESTS: RefCell<Vec<i64>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The next eight bytes of the program the executable carries.
@@ -71,50 +73,27 @@ fn program_handed_over(length: i64, stop: fn(i32)) -> Vec<u8> {
     bytes
 }
 
-/// Runs a test executable's tests: those whose numbers are its arguments, each by calling
-/// `run_test` with its number, one after another. What each did goes to standard output as soon
-/// as it's done, in a line `fennec test` reads, so a crash loses only the tests not yet run. Tests
-/// here take nothing, so nothing else writes there.
-pub fn run_tests(
-    entry: extern "C" fn(i64),
-    run_test: extern "C" fn(i64),
-    count: i64,
-    length: i64,
-    stop: fn(i32),
-) -> i32 {
-    let bytes = program_handed_over(length, stop);
-    let ran = std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .stack_size(STACK_BYTES)
-            .spawn_scoped(scope, || execute_tests(entry, run_test, count, &bytes))
-            .map(std::thread::ScopedJoinHandle::join)
-    });
-    i32::from(!matches!(ran, Ok(Ok(true))))
+/// Starts running a test executable's tests: those whose numbers are its arguments, in turn. A
+/// failure stays for `test_done` to say, rather than ending the program.
+pub fn tests_start() {
+    SOURCES.take();
+    let mut numbers: Vec<i64> = std::env::args().skip(1).filter_map(|number| number.parse().ok()).collect();
+    numbers.reverse();
+    TESTS.set(numbers);
 }
 
-/// Runs the tests asked for on the current thread, saying whether the runtime started.
-fn execute_tests(entry: extern "C" fn(i64), run_test: extern "C" fn(i64), count: i64, bytes: &[u8]) -> bool {
-    let Some(Image { module, tables, literals, .. }) = Image::from_bytes(bytes) else { return false };
-    if super::start(&module, tables, crate::Inputs::default()).is_err() {
-        return false;
-    }
-    LITERALS.set(literals);
-    let here = 0_u8;
-    let limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
-    entry(i64::try_from(limit).unwrap_or(0));
+/// The number of the next test to run, or -1 when they've all run.
+pub fn next_test_number() -> i64 {
+    TESTS.with_borrow_mut(Vec::pop).unwrap_or(-1)
+}
+
+/// Says what the test just run did, on standard output as soon as it's done, in a line `fennec
+/// test` reads, so a crash loses only the tests not yet run. Tests here take nothing, so nothing
+/// else writes there.
+pub fn test_done(number: i64) {
+    let line = test_line(number, super::next_test().as_ref());
     let mut out = std::io::stdout();
-    for number in std::env::args().skip(1).filter_map(|number| number.parse::<i64>().ok()) {
-        if !(0..count).contains(&number) {
-            continue;
-        }
-        run_test(number);
-        let line = test_line(number, super::next_test().as_ref());
-        if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
-            return false;
-        }
-    }
-    super::finish();
-    true
+    let _ = writeln!(out, "{line}").and_then(|()| out.flush());
 }
 
 /// What a test did, as a line: its number, and for a failure where it is, its message and its

@@ -198,6 +198,58 @@ pub extern "C" fn index(address: i64, at: i64, start: i64, end: i64) -> i64 {
     byte.map_or(0, |byte| char_at(address, byte))
 }
 
+/// `text[at]` as a header, for native code holding strings as headers: no block is made for the
+/// character, as one of four bytes or fewer is always inline, and the block's found only once.
+pub extern "C" fn index_text(address: i64, at: i64, start: i64, end: i64) -> super::text::Text {
+    attempt(|state: &mut State| {
+        let found = u64::try_from(address).ok().and_then(|address| state.heap.block(address));
+        let block =
+            found.filter(|block| super::heap::is_text(state, block)).ok_or_else(|| lost(start, end))?;
+        let (length, chars) = lengths(block);
+        let count = i64::try_from(chars).map_err(|_| lost(start, end))?;
+        let wanted = if at < 0 { at + count } else { at };
+        let Ok(wanted) = usize::try_from(wanted).map(|wanted| wanted.min(usize::MAX - 1)) else {
+            return out_of_range(state, address, at, (start, end)).map(|()| super::text::Text::default());
+        };
+        if wanted >= usize::try_from(chars).unwrap_or(0) {
+            return out_of_range(state, address, at, (start, end)).map(|()| super::text::Text::default());
+        }
+        let words = block.get(TEXT_HEADER_WORDS..).unwrap_or_default();
+        let known = state.heap.cursor();
+        let kept =
+            (known.address == usize::try_from(address).unwrap_or(0)).then_some((known.chars, known.bytes));
+        let place = if length == usize::try_from(chars).unwrap_or(0) {
+            wanted
+        } else {
+            walk_to_char(words, (length, usize::try_from(chars).unwrap_or(0)), kept, wanted)
+        };
+        let byte = |at: usize| words.get(at / 8).and_then(|word| word.to_le_bytes().get(at % 8).copied());
+        let lead = byte(place).ok_or_else(|| lost(start, end))?;
+        let width: u8 = match lead {
+            0xF0.. => 4,
+            0xE0.. => 3,
+            0xC0.. => 2,
+            _ => 1,
+        };
+        let mut first = 0_u64;
+        for offset in 0..usize::from(width) {
+            first |= u64::from(byte(place + offset).unwrap_or(0)) << (offset * 8);
+        }
+        if length != usize::try_from(chars).unwrap_or(0) {
+            let address = usize::try_from(address).unwrap_or(0);
+            state.heap.set_cursor(super::heap::Cursor { address, chars: wanted, bytes: place });
+        }
+        Ok(super::text::Text { words: super::text::inline_word(first, width) })
+    })
+}
+
+/// The failure for an index past either end of a string, as the interpreter's says it.
+fn out_of_range(state: &State, address: i64, at: i64, (start, end): (i64, i64)) -> Result<(), Diagnostic> {
+    let whole = text(state, address).ok_or_else(|| lost(start, end))?;
+    crate::ops::index(&Value::str(&whole), &Value::Int(at), span(start, end))?;
+    Err(lost(start, end))
+}
+
 /// Where the `at`th character starts, in bytes, reading none of the text for ASCII. An index
 /// past either end fails as the interpreter's does.
 fn byte_of_char(
@@ -229,17 +281,31 @@ fn byte_of_char(
 /// found. So reading a string in order takes a step for each character.
 fn place_of_char(state: &mut State, address: i64, wanted: usize) -> Option<usize> {
     let at = usize::try_from(address).ok()?;
-    let cursor = state.heap.cursor();
+    let known = state.heap.cursor();
     let block = state.heap.block(u64::try_from(address).ok()?)?;
     let (length, chars) = lengths(block);
     let chars = usize::try_from(chars).ok()?;
     let words = block.get(TEXT_HEADER_WORDS..)?;
+    let kept = (known.address == at).then_some((known.chars, known.bytes));
+    let place = walk_to_char(words, (length, chars), kept, wanted);
+    state.heap.set_cursor(super::heap::Cursor { address: at, chars: wanted, bytes: place });
+    Some(place)
+}
+
+/// Where a character starts in a string's words, from the nearest of its start, its end and a
+/// place already known.
+fn walk_to_char(
+    words: &[u64],
+    (length, chars): (usize, usize),
+    kept: Option<(usize, usize)>,
+    wanted: usize,
+) -> usize {
     let byte =
         |place: usize| words.get(place / 8).and_then(|word| word.to_le_bytes().get(place % 8).copied());
     // Every byte but a continuation byte starts a character.
     let continues = |place: usize| byte(place).is_some_and(|byte| byte & 0xC0 == 0x80);
     let mut here = (0_usize, 0_usize);
-    for known in [(chars, length), if cursor.address == at { (cursor.chars, cursor.bytes) } else { (0, 0) }] {
+    for known in [Some((chars, length)), kept].into_iter().flatten() {
         if known.0.abs_diff(wanted) < here.0.abs_diff(wanted) {
             here = known;
         }
@@ -253,14 +319,13 @@ fn place_of_char(state: &mut State, address: i64, wanted: usize) -> Option<usize
         char_at += 1;
     }
     while char_at > wanted {
-        place -= 1;
+        place = place.saturating_sub(1);
         while place > 0 && continues(place) {
             place -= 1;
         }
         char_at -= 1;
     }
-    state.heap.set_cursor(super::heap::Cursor { address: at, chars: wanted, bytes: place });
-    Some(place)
+    place
 }
 
 /// A new string with the characters `from..to` of one that isn't ASCII, Python's clamping and
@@ -668,4 +733,83 @@ pub extern "C" fn split(address: i64, separator: i64, start: i64, end: i64) -> i
         let element = super::text::string_element(state);
         super::lists::write_list(state, &element, &parts).ok_or_else(|| lost(start, end))
     })
+}
+
+#[cfg(test)]
+mod place_tests {
+    use std::rc::Rc;
+
+    use super::super::text::inline_bytes;
+    use super::super::{Tables, finish, heap, start, with};
+    use super::{index_text, slice};
+    use crate::packed::Element;
+
+    fn begin() {
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
+    }
+
+    fn character(text: i64, at: i64) -> String {
+        let bytes = inline_bytes(&index_text(text, at, 0, 0).words).unwrap_or_default();
+        String::from_utf8(bytes).unwrap_or_default()
+    }
+
+    fn kept() -> (usize, usize, usize) {
+        with(|state| {
+            let cursor = state.heap.cursor();
+            (cursor.address, cursor.chars, cursor.bytes)
+        })
+    }
+
+    #[test]
+    fn reading_keeps_the_place_it_got_to_and_finds_each_character_from_it() {
+        begin();
+        let wide = "a\u{e9}b\u{65e5}c\u{1f98a}d long enough to have a block of its own";
+        let text = with(|state| heap::text_address(state, wide));
+        let at = usize::try_from(text).unwrap();
+        let all: Vec<char> = wide.chars().collect();
+        for (number, expected) in all.iter().enumerate().rev() {
+            assert_eq!(character(text, i64::try_from(number).unwrap()), expected.to_string());
+        }
+        for (number, expected) in wide.chars().enumerate() {
+            assert_eq!(character(text, i64::try_from(number).unwrap()), expected.to_string());
+            let place = wide.char_indices().nth(number).map(|(place, _)| place).unwrap();
+            assert_eq!(kept(), (at, number, place));
+        }
+        assert_eq!(character(text, -1), wide.chars().last().unwrap().to_string());
+        finish();
+    }
+
+    #[test]
+    fn a_place_is_forgotten_only_when_its_own_string_goes() {
+        begin();
+        let wide = "\u{e9} a string long enough to have a block of its own";
+        let text = with(|state| heap::text_address(state, wide));
+        let other =
+            with(|state| heap::text_address(state, "\u{e9} another one, also with a block of its own"));
+        character(text, 5);
+        let at = usize::try_from(text).unwrap();
+        // Letting go of another string leaves it.
+        heap::free_text(other);
+        assert_eq!(kept().0, at);
+        heap::free_text(text);
+        assert_eq!(kept(), (0, 0, 0));
+        finish();
+    }
+
+    #[test]
+    fn a_slice_of_a_string_that_isnt_ascii_is_counted_in_characters() {
+        begin();
+        let wide = "a\u{e9}b\u{65e5}c\u{1f98a}d long enough to have a block of its own";
+        let text = with(|state| heap::text_address(state, wide));
+        let part = slice(text, 1, 6, 0, 0);
+        with(|state| {
+            assert_eq!(super::text(state, part).as_deref(), Some("\u{e9}b\u{65e5}c\u{1f98a}"));
+        });
+        let tail = slice(text, -3, i64::MIN, 0, 0);
+        with(|state| assert_eq!(super::text(state, tail).as_deref(), Some("own")));
+        let empty = slice(text, 5, 2, 0, 0);
+        with(|state| assert_eq!(super::text(state, empty).as_deref(), Some("")));
+        finish();
+    }
 }

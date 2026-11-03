@@ -97,15 +97,26 @@ jobs:
               print("## Suite report\n\nNo machine finished measuring.")
               sys.exit()
           shown = lambda value: "-" if value is None else f"{value:.0f}"
+          def short(count):
+              return f"{count / 1e6:.1f}M" if count >= 1e6 else f"{count / 1e3:.1f}k" if count >= 1e3 else f"{count:.0f}"
+          def missed(kernel, kind):
+              misses = kernel.get("misses") or {}
+              ours, rust = misses.get("fennec"), misses.get("rust")
+              return f"{short(ours[kind])} / {short(rust[kind])}" if ours and rust else "-"
           # A machine that can't count instructions, like a hosted Mac, gets no column for them.
           keys = {run["platform"]: [key for key in ("instructions", "time", "median")
                                     if key != "instructions" or any(k.get(key) is not None for k in run["kernels"])]
                   for run in runs}
+          # Cache misses show only for a machine that simulated them, beside its instructions.
+          for run in runs:
+              if any(k.get("misses") for k in run["kernels"]):
+                  keys[run["platform"]][1:1] = ["d1", "ll"]
           # Go's and Java's columns show only for a machine that measured them.
           for run in runs:
               keys[run["platform"]] += [key for key in ("dev", "release_build_ms", "dev_build_ms", "go_kernel", "go", "java_kernel", "java")
                                         if any(k.get(key) is not None for k in run["kernels"])]
           label = {"instructions": "instructions %", "time": "best time %", "median": "median %",
+                   "d1": "D1 misses, ours / Rust's", "ll": "LL misses, ours / Rust's",
                    "dev": "dev best time %", "release_build_ms": "release build ms", "dev_build_ms": "dev build ms",
                    "go_kernel": "Go kernel % ≈", "go": "Go whole run %",
                    "java_kernel": "Java kernel % ≈", "java": "Java whole run %"}
@@ -120,7 +131,8 @@ jobs:
               cells, notes = [name], []
               for run in runs:
                   kernel = next((k for k in run["kernels"] if k["name"] == name), {})
-                  cells += [shown(kernel.get(key)) for key in keys[run["platform"]]]
+                  cells += [missed(kernel, key) if key in ("d1", "ll") else shown(kernel.get(key))
+                            for key in keys[run["platform"]]]
                   if kernel.get("problem"):
                       notes.append(f"{run['platform']}: {kernel['problem']}")
                   elif kernel.get("noisy"):
@@ -145,6 +157,7 @@ jobs:
           print("\nEach is the overflow-checked Rust twin's count or time over LLVM's: 100 matches Rust, higher is faster. "
                 "Each side runs ten times, taking turns, and its best and median runs are shown. "
                 "Noisy means a median run was more than 5% slower than the best. "
+                "D1 and LL misses are counts for each side, from cachegrind simulating fixed caches (32 KiB first level, 8 MiB last level, 64-byte lines). "
                 "Dev is `fennec build --llvm` without `--release`, cached a function at a time; each build's time is from an empty Fennec home. "
                 "The Go and Java columns are each twin's best time over LLVM's, the same way. "
                 "Whole run is each program from start to exit; Java's whole runs include the JVM starting and its JIT warming up. "

@@ -193,3 +193,19 @@ fn without_the_option_nothing_is_lifted_and_lowering_is_unchanged() {
     assert_eq!(lifted(&plain).len(), 0);
     assert_eq!(parallel_calls(function_named(&plain, "scale").unwrap()).len(), 0);
 }
+
+#[test]
+fn a_sum_with_an_if_adds_into_a_name_of_its_own_and_stays_an_ordinary_loop() {
+    // Lowered as a loop adding into a name from outside it, which a range would only change a
+    // copy of.
+    let source = "\
+def left(xs: list[int], above: int) -> int:
+    sum(x for x in parallel(xs) if x > above)
+
+def main(stdout: Stdout):
+    stdout.print(left([1, 5, 9], 4))
+";
+    let program = lowered(source, OUTLINED).unwrap();
+    assert_eq!(lifted(&program).len(), 0);
+    assert_eq!(parallel_calls(function_named(&program, "left").unwrap()).len(), 0);
+}

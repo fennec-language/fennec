@@ -8,6 +8,7 @@ mod limits;
 mod lint_fixes;
 mod llvm;
 mod lsp;
+mod parallel;
 mod projects;
 mod reached_runs;
 mod selfhost;

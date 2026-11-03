@@ -221,6 +221,9 @@ impl Lowering<'_> {
         body: &[Stmt],
         span: Span,
     ) -> Lowered<()> {
+        // A `for mut` over `parallel(xs)` changes the items of `xs` where they are, and running
+        // its iterations in order is a correct way to run it.
+        let iter = if is_mut { super::parallel::parallel_items(iter).unwrap_or(iter) } else { iter };
         if !is_mut && let Some(expansion) = self.expanded(names, iter, body) {
             return self.fused(expansion);
         }

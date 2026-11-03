@@ -35,7 +35,7 @@ use super::{Lowered, Lowering, Tail};
 use crate::{InstKind, LocalId, Operand};
 
 /// What a loop goes over when it's `parallel(xs)` with one plain argument: `xs`.
-fn parallel_items(iter: &Expr) -> Option<&Expr> {
+pub(super) fn parallel_items(iter: &Expr) -> Option<&Expr> {
     let ExprKind::Call { callee, args } = &iter.kind else { return None };
     let ExprKind::Name(name) = &callee.kind else { return None };
     let [first] = args.as_slice() else { return None };
@@ -67,6 +67,16 @@ fn tries(body: &[Stmt]) -> bool {
     let mut written = body.to_vec();
     visit::in_stmts(&mut written, &mut |seen| found |= matches!(seen.kind, ExprKind::Try { .. }));
     found
+}
+
+/// The names an assignment writes through: `a` for `a`, `a.x` and `a[i]`, each of a tuple's.
+fn assigned_roots<'e>(target: &'e Expr, roots: &mut Vec<&'e str>) {
+    match &target.kind {
+        ExprKind::Name(name) => roots.push(name),
+        ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => assigned_roots(object, roots),
+        ExprKind::Tuple(items) => items.iter().for_each(|item| assigned_roots(item, roots)),
+        _ => {}
+    }
 }
 
 /// What a lifted value makes: a list of each item's, or their sum from a start, `0` or `0.0`
@@ -106,18 +116,18 @@ impl Lowering<'_> {
         let (true, [name], true) = (self.context.options.outline_parallel, names, liftable(body)) else {
             return None;
         };
-        // A `for mut` loop's `parallel(xs)` is just `xs` once checked, which the checker notes.
-        // Its body changes its item, and the loop changes the list, which has to be a local.
-        let (items, item) = if is_mut {
-            let ExprKind::Name(list) = &iter.kind else { return None };
-            self.lookup(list)?;
-            match self.type_at(iter.span) {
-                Some(Type::List(item)) if self.context.signatures.parallel_items(iter.span) => (iter, *item),
-                _ => return None,
-            }
-        } else {
-            self.parallel_list(iter)?
-        };
+        // The checker keeps a written body to its own item and names, but a loop the lowering
+        // makes up, like a filtered sum's, may add into a name from outside it, which a range
+        // would only change a copy of.
+        if self.writes_outside(body, name) {
+            return None;
+        }
+        let (items, item) = self.parallel_list(iter)?;
+        // A `for mut` body changes its item, and the loop changes the list, which has to be a
+        // local here.
+        if is_mut && !matches!(&items.kind, ExprKind::Name(list) if self.lookup(list).is_some()) {
+            return None;
+        }
         let lifted = self.lift(name, (items, item), &Runs::Body(body, is_mut), span);
         Some(lifted.map(|(list, range)| {
             let args = vec![list, range];
@@ -162,6 +172,25 @@ impl Lowering<'_> {
             self.emit(call, expr.span);
             Ok(Operand::Local(dest))
         }))
+    }
+
+    /// Whether `body` assigns to a name from outside it other than `item`, at any depth.
+    fn writes_outside(&self, body: &[Stmt], item: &str) -> bool {
+        body.iter().any(|stmt| match &stmt.kind {
+            StmtKind::Assign { target, .. } => {
+                let mut roots = Vec::new();
+                assigned_roots(target, &mut roots);
+                roots.iter().any(|root| *root != item && self.lookup(root).is_some())
+            }
+            StmtKind::If { branches, otherwise } => {
+                branches.iter().any(|(_, block)| self.writes_outside(block, item))
+                    || otherwise.as_deref().is_some_and(|block| self.writes_outside(block, item))
+            }
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                self.writes_outside(body, item)
+            }
+            _ => false,
+        })
     }
 
     /// The list `parallel(xs)` goes over and the type of its items, when `iter` is that.
@@ -345,7 +374,9 @@ impl Lowering<'_> {
             None => Operand::Local(self.lookup(name).ok_or("a range's item has no name")?),
         };
         let args = vec![Operand::Local(list), Operand::Local(at), value];
-        self.emit(InstKind::Builtin { dest: None, name: builtin.to_owned(), args, changes: true }, span);
+        // Not marked as changing the list: it writes in place, on purpose, where a change would
+        // copy a list something else also holds, which the runtime's list and the loop's are.
+        self.emit(InstKind::Builtin { dest: None, name: builtin.to_owned(), args, changes: false }, span);
         Ok(())
     }
 }

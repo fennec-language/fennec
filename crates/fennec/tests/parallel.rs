@@ -62,9 +62,12 @@ fn a_for_mut_over_parallel_and_its_kin_run_as_parallel_calls_natively() -> std::
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output()?;
     let interpreted = fennec(&["run", "--interp", &source], &dir)?;
+    // `fennec run` takes LLVM's dev build where it can, so it runs the same calls.
+    let run = fennec(&["run", &source], &dir)?;
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
     assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&interpreted.stdout));
     // The `for mut`, the comprehension, the sum and the loop over `take`'s list: four calls, not
     // ordinary loops.
     let counts = String::from_utf8_lossy(&ran.stderr);

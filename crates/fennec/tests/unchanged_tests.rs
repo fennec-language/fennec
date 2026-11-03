@@ -416,3 +416,161 @@ fn a_doc_example_in_a_kit_sees_what_its_file_sees_and_a_run_does_not_need_it() {
     assert!(stdout(&again).contains("(0 run,"), "{}", stdout(&again));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Whether `fennec test --llvm` can build through LLVM here: it needs the tools and the runtime
+/// library, and a run under coverage has `fennec` somewhere without one. CI's Linux jobs set
+/// `FENNEC_EXPECT_LLVM`, so these tests can't quietly stop running there.
+fn llvm_here() -> bool {
+    let ready = !cfg!(windows)
+        && std::env::var_os("FENNEC_UNDER_MUTANTS").is_none()
+        && fennec_llvm::Tools::find().is_ok()
+        && crate::executables::runtime_built()
+        && Path::new(env!("CARGO_BIN_EXE_fennec")).with_file_name("libfennec_runtime.a").is_file();
+    let expected = std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty());
+    assert!(ready || !expected, "LLVM's tools or the runtime library aren't here");
+    ready
+}
+
+#[test]
+fn tests_through_llvm_pass_and_fail_as_they_do_on_the_jit() {
+    if !llvm_here() {
+        return;
+    }
+    let dir = scratch("llvm-tests").unwrap();
+    let game = dir.join("game.fen");
+    let source = |wrong: &str| {
+        format!(
+            "struct Unit:\n    size: int\n\ndef grown(unit: Unit) -> int:\n    unit.size + 1\n\n\
+             ## An example.\n##\n## ```\n## assert double(2) == 4\n## ```\ndef double(x: int) -> int:\n    x * 2\n\n\
+             test \"struct\":\n    assert grown(Unit(size=1)) == 2\n\n\
+             test \"list\":\n    numbers = [1, 2, 3]\n    assert sum(numbers) == 6\n\n\
+             test \"may fail\":\n    assert double(2) == {wrong}\n\n\
+             test \"takes a capability\" (stdout: Stdout):\n    stdout.print(1)\n\n\
+             test \"any\" for x: int:\n    assert double(x) == x + x\n"
+        )
+    };
+    std::fs::write(&game, source("4")).unwrap();
+    let passing = run_tests(&dir, &["--all", "--llvm"]).unwrap();
+    assert_eq!(stdout(&passing), "6 passed, 0 failed\n", "{}", String::from_utf8_lossy(&passing.stderr));
+
+    std::fs::write(&game, source("5")).unwrap();
+    let jit = run_tests(&dir, &["--all"]).unwrap();
+    let llvm = run_tests(&dir, &["--all", "--llvm"]).unwrap();
+    assert_eq!(stdout(&llvm), stdout(&jit));
+    assert_eq!(String::from_utf8_lossy(&llvm.stderr), String::from_utf8_lossy(&jit.stderr));
+    assert!(!llvm.status.success());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_test_llvm_cannot_build_runs_another_way() {
+    if !llvm_here() {
+        return;
+    }
+    let dir = scratch("llvm-tests-refused").unwrap();
+    let game = dir.join("game.fen");
+    // LLVM doesn't take a dict of lists yet. When it does, this still has to pass.
+    let text = "def lengths() -> dict[str, list[int]]:\n    {\"a\": [1, 2]}\n\ntest \"plain\":\n    assert 1 + 1 == 2\n\n\
+                test \"a dict of lists\":\n    assert lengths()[\"a\"].len() == 2\n";
+    std::fs::write(&game, text).unwrap();
+    let ran = run_tests(&dir, &["--all", "--llvm"]).unwrap();
+    assert_eq!(stdout(&ran), "2 passed, 0 failed\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// What `fennec test` says about a program, without the note about tests LLVM couldn't build.
+fn tested(program: &Path, args: &[&str], home: &Path) -> std::io::Result<(String, String)> {
+    let output = crate::executables::fennec_command()
+        .arg("test")
+        .args(args)
+        .arg(program)
+        .env("FENNEC_HOME", home)
+        .env_remove("CI")
+        .output()?;
+    let said = String::from_utf8_lossy(&output.stderr);
+    let kept: Vec<&str> = said.lines().filter(|line| !line.starts_with("note: ")).collect();
+    Ok((String::from_utf8_lossy(&output.stdout).into_owned(), kept.join("\n")))
+}
+
+/// The functions each test ran, as `fennec test` kept them for a program.
+fn kept_ran(
+    home: &Path,
+    program: &Path,
+) -> std::io::Result<std::collections::HashMap<String, Option<Vec<String>>>> {
+    let absolute = std::fs::canonicalize(program)?.display().to_string();
+    let records = fennec_build::Cache::new(home).test_records(&absolute);
+    Ok(records.into_iter().map(|(name, record)| (name, record.ran)).collect())
+}
+
+/// Every example with tests says the same whichever way its tests run. And a wrong "unchanged" is
+/// a test skipped that should have run, so everything the JIT says a test ran, LLVM has to say too.
+#[test]
+fn every_example_tested_through_llvm_says_and_traces_what_it_does_on_the_jit() {
+    if !llvm_here() {
+        return;
+    }
+    let home = std::env::temp_dir().join(format!("fennec-unchanged-llvm-examples-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let (mut programs, mut compared, mut traced) = (0, 0, 0);
+    for entry in std::fs::read_dir(&examples).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|ext| ext != "fen") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        if !source.lines().any(|line| line.trim_start().starts_with("test \"")) {
+            continue;
+        }
+        programs += 1;
+        let on_the_jit = tested(&path, &["--all"], &home).unwrap();
+        let jit = kept_ran(&home, &path).unwrap();
+        let through_llvm = tested(&path, &["--all", "--llvm"], &home).unwrap();
+        let llvm = kept_ran(&home, &path).unwrap();
+        assert_eq!(through_llvm, on_the_jit, "{} says something else through LLVM", path.display());
+        for (test, ran) in &jit {
+            let Some(ran) = ran else { continue };
+            compared += 1;
+            let Some(Some(ran_through_llvm)) = llvm.get(test) else { continue };
+            traced += 1;
+            let missing: Vec<_> = ran.iter().filter(|name| !ran_through_llvm.contains(name)).collect();
+            assert!(
+                missing.is_empty(),
+                "{}: `{test}` ran {missing:?} on the JIT, and LLVM doesn't say so",
+                path.display()
+            );
+        }
+    }
+    println!("{programs} examples, {traced} of {compared} tests' traces compared");
+    assert!(programs > 20, "only {programs} examples have tests");
+    assert!(traced > 20, "only {traced} of {compared} tests were compared");
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// As on the JIT, a test isn't run again for a change to code it never reached.
+#[test]
+fn only_what_a_test_ran_through_llvm_can_make_it_run_again() {
+    if !llvm_here() {
+        return;
+    }
+    let dir = scratch("llvm-ran").unwrap();
+    let game = dir.join("game.fen");
+    let source = |untaken: &str, taken: &str| {
+        format!(
+            "def untaken() -> int:\n    {untaken}\n\ndef taken() -> int:\n    {taken}\n\n\
+             def choose(x: int) -> int:\n    if x > 1000000:\n        return untaken()\n    taken()\n\n\
+             test \"small\":\n    assert choose(0) >= 1\n"
+        )
+    };
+    std::fs::write(&game, source("1", "1")).unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &["--llvm"]).unwrap()), "1 passed, 0 failed\n");
+    std::fs::write(&game, source("2", "1")).unwrap();
+    assert_eq!(
+        stdout(&run_tests(&dir, &["--llvm"]).unwrap()),
+        "1 passed, 0 failed (0 run, 1 unchanged)\n",
+        "it never ran `untaken`"
+    );
+    std::fs::write(&game, source("2", "2")).unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &["--llvm"]).unwrap()), "1 passed, 0 failed\n", "it ran `taken`");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -51,15 +51,16 @@ mod regex;
 mod text;
 mod uniqueness;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fennec_interp::embed::dicts::Word;
 use fennec_ir::{EnumDef, Program};
-use fennec_layout::{Layouts, ListItem, Written, generator_definition};
+use fennec_layout::{ListItem, Written, generator_definition};
 
 pub use build::{Built, Tools, compile, compile_whole, sanitizing};
-pub use emit::{Cpu, Unit, emit, emit_for};
-pub use entry::{Image, entry};
+pub use emit::{Cpu, Unit, emit, emit_for, emit_traced};
+pub use entry::{Image, entry, tests_entry};
+pub use fennec_layout::Layouts;
 pub use parallel::uses_parallel;
 
 /// What functions' text leaves to the module made fresh each build.
@@ -77,6 +78,11 @@ pub struct Shared {
     pub shapes: BTreeMap<String, u32>,
     /// Each kind of dict's symbol for its shape's number, and what it holds.
     pub dicts: BTreeMap<String, (Word, Word)>,
+    /// Whether each function sets a flag saying it ran, for a test to say what it ran. A function
+    /// copied into its caller sets it too, since the flag comes along with its body.
+    pub traced: bool,
+    /// The functions that have a flag.
+    pub ran: BTreeSet<String>,
 }
 
 /// The layouts of everything a program defines, generic types' copies included, and of the

@@ -31,6 +31,14 @@ fn section(kernels: &[(&str, [Side; 2])]) -> String {
     text
 }
 
+/// Whether a kernel printed what its twin did.
+fn agree(name: &str, printed: &str, want: &str) -> Result<(), String> {
+    if printed == want {
+        return Ok(());
+    }
+    Err(format!("`{name}` printed `{}`, and its twin `{}`", printed.trim(), want.trim()))
+}
+
 /// Runs the section. It fails only for a kernel that doesn't build or prints the wrong thing.
 pub(crate) fn run(fennec: &Path, dir: &Path, runs: usize, markdown: Option<&Path>) -> Result<(), String> {
     let out = Path::new(OUT_DIR);
@@ -43,10 +51,7 @@ pub(crate) fn run(fennec: &Path, dir: &Path, runs: usize, markdown: Option<&Path
     }
     for _ in 0..runs {
         for (name, [ours, rust]) in &mut kernels {
-            let (printed, want) = (ours.run()?, rust.run()?);
-            if printed != want {
-                return Err(format!("`{name}` printed `{}`, and its twin `{}`", printed.trim(), want.trim()));
-            }
+            agree(name, &ours.run()?, &rust.run()?)?;
         }
     }
     let text = section(&kernels);
@@ -59,7 +64,7 @@ pub(crate) fn run(fennec: &Path, dir: &Path, runs: usize, markdown: Option<&Path
 
 #[cfg(test)]
 mod tests {
-    use super::{Side, section};
+    use super::{Side, agree, section};
     use std::time::Duration;
 
     fn side(millis: u64) -> Side {
@@ -72,5 +77,18 @@ mod tests {
     fn the_section_shows_each_kernel_against_its_twin() {
         let text = section(&[("json_typed", [side(200), side(50)])]);
         assert!(text.contains("| `json_typed` | 200 ms | 50 ms | 25 |"), "{text}");
+    }
+
+    #[test]
+    fn a_kernel_with_no_time_to_compare_shows_no_speed() {
+        let text = section(&[("json_typed", [side(0), side(50)])]);
+        assert!(text.contains("| `json_typed` | 0 ms | 50 ms | 0 |"), "{text}");
+    }
+
+    #[test]
+    fn a_kernel_has_to_print_what_its_twin_does() {
+        assert_eq!(agree("json_typed", "1 2\n", "1 2\n"), Ok(()));
+        let wrong = agree("json_typed", "1 2\n", "1 3\n");
+        assert_eq!(wrong, Err("`json_typed` printed `1 2`, and its twin `1 3`".to_owned()));
     }
 }

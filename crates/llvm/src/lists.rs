@@ -293,8 +293,8 @@ impl Emit<'_, '_, '_> {
     }
 
     pub(crate) fn get_field(&mut self, dest: LocalId, object: &Operand, field: &str) -> Result<(), String> {
-        if let Some((root, list_field, index)) = self.known.path_home(dest).cloned() {
-            return self.take_from_item(dest, (root, &list_field, &index), field);
+        if let Some((root, list_path, index)) = self.known.path_home(dest).cloned() {
+            return self.take_from_item(dest, (root, &list_path, &index), field);
         }
         let (base, kind) = self.operand(object)?;
         // A field taken out to change: its count only means something if what holds it is alone.
@@ -312,16 +312,17 @@ impl Emit<'_, '_, '_> {
         self.read_into(dest, &held, &at, access)
     }
 
-    /// `root.list[index].field`, taken out to change and put back: the root, the list and the
-    /// item are each made alone first, so the field's one owner is the item it goes back to.
+    /// `root.list[index].field` or `list[index].field`, taken out to change and put back: the
+    /// root, the list and the item are each made alone first, so the field's one owner is the
+    /// item it goes back to.
     fn take_from_item(
         &mut self,
         dest: LocalId,
-        (root, list_field, index): (LocalId, &str, &Operand),
+        (root, list_path, index): (LocalId, &[String], &Operand),
         field: &str,
     ) -> Result<(), String> {
-        let list = self.alone_list(root, &[list_field.to_owned()])?;
-        let item_kind = self.place_kind(root, &[list_field.to_owned()])?;
+        let list = self.alone_list(root, list_path)?;
+        let item_kind = self.place_kind(root, list_path)?;
         let Kind::List(item) = item_kind else { return Err("an item of something else".to_owned()) };
         let held = self.item_kind(item)?;
         if !matches!(held, Kind::Boxed(_) | Kind::Struct(_)) {
@@ -347,7 +348,10 @@ impl Emit<'_, '_, '_> {
         }
         let at = self.item_address(&list, "ptr", &position);
         let block = match item_step(index_operand) {
-            Some(step) => self.alone_along((root, &[list_field.to_owned(), step]), &at, "fennec_unshare"),
+            Some(step) => {
+                let along: Vec<String> = list_path.iter().cloned().chain([step]).collect();
+                self.alone_along((root, &along), &at, "fennec_unshare")
+            }
             None => self.alone_at(&at, "fennec_unshare"),
         };
         let (offset, inner) = self.field(&held, field)?;

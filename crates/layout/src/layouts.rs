@@ -511,6 +511,8 @@ fn set_ty(layouts: &Layouts, item: &Type) -> Ty {
 fn key_word(layouts: &Layouts, key: &Type) -> Option<Word> {
     match key {
         Type::Int => Some(Word::Int),
+        // A string key is held in the entry as its header, when strings are headers.
+        Type::Str if layouts.text_headers() => Some(Word::Text),
         Type::Str => Some(Word::Str),
         Type::Named(name) => {
             let id = layouts.id(name)?;

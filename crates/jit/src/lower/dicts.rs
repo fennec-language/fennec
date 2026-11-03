@@ -33,7 +33,8 @@ pub(super) fn word_ty(word: Word) -> Ty {
         Word::Int => Ty::Int,
         Word::Float => Ty::Float,
         Word::Bool => Ty::Bool,
-        Word::Str => Ty::Str,
+        // The JIT's layouts hold strings as blocks, so it never meets a key held as a header.
+        Word::Str | Word::Text => Ty::Str,
         Word::Nothing => Ty::Unit,
         Word::Plain(id) => Ty::Struct(id),
     }
@@ -741,7 +742,7 @@ impl Lowerer<'_, '_> {
         match word {
             Word::Float => self.b.ins().bitcast(types::I64, MemFlagsData::new(), value),
             Word::Bool => self.b.ins().uextend(types::I64, value),
-            Word::Int | Word::Str | Word::Nothing | Word::Plain(_) => value,
+            Word::Int | Word::Str | Word::Text | Word::Nothing | Word::Plain(_) => value,
         }
     }
 
@@ -750,7 +751,7 @@ impl Lowerer<'_, '_> {
         match word {
             Word::Float => self.b.ins().bitcast(types::F64, MemFlagsData::new(), bits),
             Word::Bool => self.b.ins().ireduce(types::I8, bits),
-            Word::Int | Word::Str | Word::Nothing | Word::Plain(_) => bits,
+            Word::Int | Word::Str | Word::Text | Word::Nothing | Word::Plain(_) => bits,
         }
     }
 }

@@ -537,15 +537,13 @@ fn run_takes_a_kits_folder_in_either_engine() {
     }
 }
 
-/// Whether `fennec run` builds through LLVM here: not on Windows, LLVM's tools are found, and
+/// Whether `fennec run` builds through LLVM here: LLVM's tools are found, and
 /// the runtime library is beside the `fennec` these tests run, which is where `fennec run`
 /// looks. Under coverage, `fennec` is built somewhere else, without one.
 fn llvm_ready_for_run() -> bool {
-    let runtime = Path::new(env!("CARGO_BIN_EXE_fennec")).with_file_name("libfennec_runtime.a");
-    !cfg!(windows)
-        && fennec_llvm::Tools::find().is_ok()
+    fennec_llvm::Tools::find().is_ok()
         && crate::executables::runtime_built()
-        && runtime.is_file()
+        && crate::executables::runtime_beside_fennec()
 }
 
 /// A conversion to the type a value has already gives it back, on the JIT and in the

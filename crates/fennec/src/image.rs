@@ -30,17 +30,17 @@ pub(crate) fn load(path: &str, cache: &Cache) -> Option<Program> {
     }
     let bytes = cache.read("run-image", &image_name(path))?;
     let module = Module::decode(&mut Reader::new(&bytes))?;
-    Some(Program { module, sources: Sources::new(), manifest: None })
+    Some(Program { module, sources: Sources::new(), manifest: None, embedded: Vec::new() })
 }
 
 /// Keeps a kit's program as it was cut down, before anything was checked. `state` is what the kit
 /// looked like before it was read, so an edit made since is seen next time.
-pub(crate) fn store(path: &str, cache: &Cache, files: &[KitFile], module: &Module) {
+pub(crate) fn store(path: &str, cache: &Cache, files: &[KitFile], program: &Program) {
     let mut writer = Writer::default();
-    module.encode(&mut writer);
+    program.module.encode(&mut writer);
     // A cache that can't be written only means reading the kit again next time.
     if cache.write("run-image", &image_name(path), &writer.into_bytes()).is_ok() {
-        let _ = cache.store_kit_state(&name_of(path), BUILD, files);
+        let _ = cache.store_kit_state(&name_of(path), BUILD, &crate::verdict::with_embedded(files, program));
     }
 }
 

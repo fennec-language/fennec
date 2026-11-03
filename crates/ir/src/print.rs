@@ -123,6 +123,7 @@ impl fmt::Display for Operand {
             Operand::Float(value) => write!(f, "{value:?}"),
             Operand::Bool(value) => write!(f, "{value}"),
             Operand::Str(value) => write!(f, "{value:?}"),
+            Operand::Bytes(data) => write!(f, "bytes({}, {})", data.0.len(), data.hash()),
             Operand::None => write!(f, "none"),
         }
     }

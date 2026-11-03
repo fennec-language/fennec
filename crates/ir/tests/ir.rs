@@ -29,6 +29,22 @@ fn printed(source: &str, name: &str) -> Result<String, String> {
 }
 
 #[test]
+fn embedded_bytes_are_a_constant_operand_named_by_their_hash() {
+    let data = fennec_syntax::Blob::from(vec![1, 2, 3]);
+    let mut module = fennec_syntax::parse("def blob() -> bytes:\n    \"here\"\n").unwrap();
+    fennec_syntax::visit::exprs_mut(&mut module, &mut |expr| {
+        if matches!(expr.kind, fennec_syntax::ExprKind::Str(_)) {
+            expr.kind = fennec_syntax::ExprKind::Bytes(data.clone());
+        }
+    });
+    let checked = fennec_check::check_and_resolve(&mut module).unwrap();
+    let program = lower(&module, &checked);
+    validate(&program).unwrap();
+    let function = program.functions.iter().find(|function| function.name == "blob").unwrap();
+    assert!(function.to_string().contains(&format!("bytes(3, {})", data.hash())), "{function}");
+}
+
+#[test]
 fn operators_and_tail_values() {
     let source = "def lerp(a: float, b: float, t: float) -> float:\n    a + (b - a) * t\n";
     assert_eq!(

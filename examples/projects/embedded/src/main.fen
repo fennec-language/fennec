@@ -1,0 +1,16 @@
+# `embed` gives a file's bytes, read when the program is built, so the program holds them and
+# takes no `Fs` capability to have them. A kit can embed anything inside its own folder, not
+# only what's in src.
+from levels.first import size
+
+NAME = embed("../assets/name.txt")
+START = NAME[0:3]
+
+def main(stdout: Stdout):
+    stdout.print(size())
+    stdout.print(NAME.len())
+    stdout.print(START.len())
+    stdout.print(embed("levels/first.bin").len() == size())
+
+test "the name is all there":
+    assert NAME.len() == 6

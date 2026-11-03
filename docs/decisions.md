@@ -51,6 +51,17 @@ world.selected = copy(world.units[i])    # a separate copy, on purpose
 Immutable local snapshots stay allowed, and so does sharing that never changes.
 *Why:* This is the mistake people and AI trained on references will make. It compiles and looks right, then one side silently stops updating. The error asks which was meant.
 
+**A write that goes nowhere is a compile error.** That's a local that's changed and then never read, returned or passed on:
+```fennec
+def heal(hero: Hero):
+    mut healed = copy(hero)
+    healed.health += 10          # error: `healed` is changed, then never read, returned or passed on
+```
+- Writing through a name for a place isn't this case. `mut unit = world.units[id]` edits the table, so the write has gone somewhere.
+- It doesn't catch a copy that's read afterwards. Print `healed.health` at the end of `heal` and it compiles, while the caller's `hero` stays as it was.
+
+*Why:* A change that goes nowhere is a bug.
+
 **Cut from the first version, and each can be added later without breaking anything:**
 - `yield mut` helpers that lend a place. `world.units[id].health -= 10` covers most cases.
 - Inferring which fields a helper touches, so the rest of a struct stays usable across the call. Passing `mut world.units` works today.

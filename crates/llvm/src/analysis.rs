@@ -681,13 +681,17 @@ fn find_live_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, 
                 | InstKind::GetCaseField { dest, value: Operand::Local(from), .. } => (*dest, *from),
                 _ => continue,
             };
-            let id_map = matches!(function.locals.get(source.0).map(|local| &local.ty), Some(Type::IdMap(_)));
+            let source_ty = function.locals.get(source.0).map(|local| &local.ty);
+            let id_map = matches!(source_ty, Some(Type::IdMap(_)));
+            // A string's character is a string of its own, made by the indexing, not one held
+            // inside what it came from, so there's nothing to borrow.
+            let text = matches!(source_ty, Some(Type::Str));
             if known.writes.get(dest.0) != Some(&1)
                 || dest == source
                 || known.borrowed.contains(&dest.0)
                 || known.taken.contains(&dest.0)
                 || dest.0 < function.params
-                || (id_map && matches!(&inst.kind, InstKind::GetIndex { .. }))
+                || ((id_map || text) && matches!(&inst.kind, InstKind::GetIndex { .. }))
             {
                 continue;
             }

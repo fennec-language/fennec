@@ -17,7 +17,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fennec_lsp::Json;
 
@@ -48,6 +48,10 @@ struct Row {
     others: Vec<Versus>,
     /// The best whole runs, in seconds: the LLVM build's and the Rust twin's.
     best: (Option<f64>, Option<f64>),
+    /// The cached dev build's best time as a percentage of the twin's speed.
+    dev: Option<f64>,
+    /// How long the release and dev builds took, each from an empty Fennec home, in seconds.
+    builds: (Option<f64>, Option<f64>),
 }
 
 /// How a kernel did against one of its other twins.
@@ -73,6 +77,8 @@ impl Row {
             problem: None,
             others: Language::ALL.iter().map(|_| Versus::default()).collect(),
             best: (None, None),
+            dev: None,
+            builds: (None, None),
         }
     }
 }
@@ -101,13 +107,33 @@ fn speed(rust: f64, mine: f64) -> Option<f64> {
 /// Builds a kernel through LLVM into `out_dir`, or says why it doesn't build.
 pub(crate) fn built(fennec: &Path, source: &str, out_dir: &Path, name: &str) -> Result<PathBuf, String> {
     let executable = out_dir.join(format!("{name}.llvm"));
-    let output = Command::new(fennec)
-        .args(["build", "--llvm", "--release", source, "-o"])
-        .arg(&executable)
-        .output()
-        .map_err(|err| format!("couldn't run {}: {err}", fennec.display()))?;
+    build(fennec, source, &executable, true, None).map(|_| executable)
+}
+
+/// Builds a kernel through LLVM to `executable`, a release build or the cached dev one, and
+/// says how long that took. With `home`, it builds with a Fennec home of its own, empty, so
+/// nothing another kernel's build cached can speed it up.
+fn build(
+    fennec: &Path,
+    source: &str,
+    executable: &Path,
+    release: bool,
+    home: Option<&Path>,
+) -> Result<f64, String> {
+    let mut command = Command::new(fennec);
+    command
+        .args(["build", "--llvm"])
+        .args(release.then_some("--release"))
+        .args([source, "-o"])
+        .arg(executable);
+    if let Some(home) = home {
+        command.env("FENNEC_HOME", home);
+    }
+    let started = Instant::now();
+    let output = command.output().map_err(|err| format!("couldn't run {}: {err}", fennec.display()))?;
+    let took = started.elapsed().as_secs_f64();
     if output.status.success() {
-        return Ok(executable);
+        return Ok(took);
     }
     let said = String::from_utf8_lossy(&output.stderr);
     Err(said.lines().next().unwrap_or("it didn't build").trim_start_matches("error: ").to_owned())
@@ -173,6 +199,27 @@ fn measured(kernel: &Kernel, llvm: &Program, twin: &Program, counter: Option<&Co
     row
 }
 
+/// The kernel built the cached dev way, timed building from an empty `home` and raced against
+/// its Rust twin. A dev build that doesn't build, or prints something else, is noted.
+fn dev_build(
+    row: &mut Row,
+    kernel: &Kernel,
+    (fennec, source): (&Path, &str),
+    twin: &Program,
+    home: &Path,
+    (out_dir, runs): (&Path, usize),
+) {
+    let executable = out_dir.join(format!("{}.dev", kernel.name));
+    let raced = build(fennec, source, &executable, false, Some(home)).and_then(|took| {
+        row.builds.1 = Some(took);
+        race(kernel, &Program { command: executable, args: Vec::new(), stdin: None }, twin, runs)
+    });
+    match raced {
+        Ok((ours, theirs)) => row.dev = speed(summary(&theirs).0, summary(&ours).0),
+        Err(problem) => row.problem = Some(format!("dev build: {problem}")),
+    }
+}
+
 /// A kernel against its twin in `language`, if it has one and the language is installed, with
 /// `startups`, ours then theirs, taken off for the kernel's own time.
 /// What every race of one kernel shares: its LLVM build, where twins are built, and how many
@@ -216,6 +263,11 @@ fn geomean(values: impl Iterator<Item = f64>) -> Option<f64> {
     (count > 0).then(|| (sum / f64::from(count)).exp())
 }
 
+/// Seconds as whole milliseconds, for build times.
+fn millis(seconds: Option<f64>) -> String {
+    seconds.map_or_else(|| "-".to_owned(), |seconds| format!("{:.0} ms", seconds * 1000.0))
+}
+
 fn percent(value: Option<f64>) -> String {
     value.map_or_else(|| "-".to_owned(), |value| format!("{value:.0}"))
 }
@@ -233,11 +285,11 @@ fn slowest(rows: &[Row]) -> Option<(&str, f64)> {
 /// The table, then the geometric means and the slowest kernel.
 fn table(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String {
     let mut text = format!("## LLVM against Rust, Go and Java on {}\n\n", platform());
-    text.push_str("| kernel | instructions % | best time % | median time % | spread |");
+    text.push_str("| kernel | instructions % | best time % | median time % | spread | dev best time % | release build | dev build |");
     for language in Language::ALL {
         let _ = write!(text, " {0} kernel % ≈ | {0} whole run % |", language.name());
     }
-    text.push_str(" |\n|---|---:|---:|---:|---:|");
+    text.push_str(" |\n|---|---:|---:|---:|---:|---:|---:|---:|");
     text.push_str(&"---:|---:|".repeat(Language::ALL.len()));
     text.push_str("---|\n");
     for row in rows {
@@ -260,18 +312,24 @@ fn table(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String
             if row.problem.is_some() { "-".to_owned() } else { format!("{:.0}%", row.spread * 100.0) };
         let _ = writeln!(
             text,
-            "| {} | {} | {} | {} | {spread} |{others} {note} |",
+            "| {} | {} | {} | {} | {spread} | {} | {} | {} |{others} {note} |",
             row.name,
             percent(row.instructions),
             percent(row.time),
-            percent(row.median)
+            percent(row.median),
+            percent(row.dev),
+            millis(row.builds.0),
+            millis(row.builds.1)
         );
     }
     text.push_str(&means(rows, counter, startups));
     text.push_str(
         "\n\nEach is the overflow-checked Rust twin's count or time over LLVM's, so 100 matches Rust and \
          higher is faster. Times are each side's best and median of runs that take turns. Spread is \
-         how far a median run is from the best, on the side where it's farther.\n\nThe Go and Java \
+         how far a median run is from the best, on the side where it's farther. Dev is the build \
+         `fennec build --llvm` makes without `--release`, cached a function at a time, raced \
+         against the twin the same way. Each build's time is from an empty Fennec home, so no \
+         cache helps it.\n\nThe Go and Java \
          columns compare best times the same way. Whole run is each program from start to exit. \
          Kernel ≈ takes each language's startup off its whole run first: startup is the best run of \
          a hello-world in that language, so this is only roughly the kernel's time, and it's left out \
@@ -288,12 +346,14 @@ fn means(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String
     let instructions = geomean(rows.iter().filter_map(|row| row.instructions));
     let time = geomean(rows.iter().filter_map(|row| row.time));
     let median = geomean(rows.iter().filter_map(|row| row.median));
+    let dev = geomean(rows.iter().filter_map(|row| row.dev));
     let _ = write!(
         text,
-        "\nGeometric mean: {}% by instructions, {}% by best time, {}% by median time.",
+        "\nGeometric mean: {}% by instructions, {}% by best time, {}% by median time, and the dev build {}% by best time.",
         percent(instructions),
         percent(time),
-        percent(median)
+        percent(median),
+        percent(dev)
     );
     if let Some((name, speed)) = slowest(rows) {
         let _ = write!(text, " Slowest: {name}, at {speed:.0}% of its twin's speed.");
@@ -368,6 +428,9 @@ fn json(rows: &[Row], startups: &Startups) -> Json {
             ("noisy", Json::Bool(row.problem.is_none() && row.spread > NOISY)),
             ("problem", row.problem.as_ref().map_or(Json::Null, |problem| Json::string(problem.as_str()))),
             ("best_ms", best_ms(row)),
+            ("dev", number(row.dev)),
+            ("release_build_ms", number(row.builds.0.map(|seconds| seconds * 1000.0))),
+            ("dev_build_ms", number(row.builds.1.map(|seconds| seconds * 1000.0))),
         ]);
         let Json::Object(mut fields) = fields else { return fields };
         for (language, versus) in Language::ALL.iter().zip(&row.others) {
@@ -386,6 +449,7 @@ fn json(rows: &[Row], startups: &Startups) -> Json {
         ("time", number(geomean(rows.iter().filter_map(|row| row.time)))),
         ("median", number(geomean(rows.iter().filter_map(|row| row.median)))),
         ("slowest", slowest(rows).map_or(Json::Null, |(name, _)| Json::string(name))),
+        ("dev", number(geomean(rows.iter().filter_map(|row| row.dev)))),
         ("go", number(geomean(rows.iter().filter_map(|row| row.others.first()?.time)))),
         ("java", number(geomean(rows.iter().filter_map(|row| row.others.get(1)?.time)))),
         ("go_kernel", number(geomean(rows.iter().filter_map(|row| row.others.first()?.kernel)))),
@@ -414,17 +478,22 @@ pub(crate) fn run(
     let mut rows = Vec::new();
     for kernel in &kernels {
         let Some(source) = kernel.single_file() else { continue };
-        let row = match built(fennec, source, &out_dir, &kernel.name) {
+        let executable = out_dir.join(format!("{}.llvm", kernel.name));
+        let home = |which: &str| out_dir.join(format!("home-{}-{which}", kernel.name));
+        let release = build(fennec, source, &executable, true, Some(&home("release")));
+        let row = match release.map(|took| (executable, took)) {
             Err(problem) => {
                 let mut row = Row::new(&kernel.name);
                 row.problem = Some(format!("doesn't build: {problem}"));
                 row
             }
-            Ok(executable) => {
+            Ok((executable, release_build)) => {
                 let twin = kernel.twin(fennec, &out_dir, Overflow::Checked)?;
                 let llvm = Program { command: executable, args: Vec::new(), stdin: None };
                 let mut row = measured(kernel, &llvm, &twin, counter.as_ref(), runs);
+                row.builds.0 = Some(release_build);
                 if row.problem.is_none() {
+                    dev_build(&mut row, kernel, (fennec, source), &twin, &home("dev"), (&out_dir, runs));
                     row.others = installed
                         .iter()
                         .zip(&startups.others)

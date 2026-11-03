@@ -2417,3 +2417,54 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// What std's runtime calls give back: hashes, TOML and JSON with its names respelled.
+#[test]
+fn std_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "std_calls",
+        r#"import std.crypto as crypto
+import std.json as json
+import std.toml as toml
+
+struct Tool:
+    main_weapon: str
+    uses: int
+
+error Wrapped:
+    why: str
+
+error Inner:
+    what: str
+
+def inner(n: int) -> int:
+    if n > 1: fail Inner(what="too many")
+    n
+
+def outer(n: int) -> int:
+    inner(n)? from Wrapped(why="inner failed")
+
+def main(stdout: Stdout):
+    stdout.print(crypto.sha256("abc"), crypto.blake3("abc"))
+    stdout.print(crypto.keyed_blake3("0000000000000000000000000000000000000000000000000000000000000000", "abc") else "no")
+    stdout.print(crypto.equal("a", "a"), crypto.equal("a", "b"))
+    tool = Tool(main_weapon="bow", uses=3)
+    stdout.print(json.dumps(tool, names=.camel_case), json.dumps(tool, names=.kebab_case))
+    stdout.print(toml.dumps(tool) else "no")
+    match toml.loads[Tool]("main_weapon = \"axe\"\nuses = 2\n"):
+        case Ok(read):
+            stdout.print(read)
+        case Err(error):
+            stdout.print(error.message)
+    match toml.loads[Tool]("not toml"):
+        case Ok(read):
+            stdout.print(read)
+        case Err(error):
+            stdout.print(error.message)
+    stdout.print(outer(1) else -1, outer(2) else -1)
+"#,
+    )
+}

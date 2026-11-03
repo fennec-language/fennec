@@ -1525,7 +1525,16 @@ impl Emit<'_, '_, '_> {
             | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
             }
-            "json.dumps" | "json.loads" => self.json_builtin(dest, name, args, span),
+            "json.dumps" | "json.loads" | "toml.dumps" | "toml.loads" => {
+                self.json_builtin(dest, name, args, span)
+            }
+            "json.dumps.names" | "toml.dumps.names" => self.std_call(dest, name, args, span),
+            crypto if crypto.starts_with("crypto.") => self.std_call(dest, name, args, span),
+            "error.with_cause" => {
+                // Nothing reads what caused an error yet, so the wrapper is all there is.
+                let wrapper = first.ok_or("no argument")?;
+                self.copy(dest.ok_or("no result")?, wrapper)
+            }
             buffer if buffer.starts_with("Buffer.") => self.buffer_builtin(dest, name, args, span),
             "str.len" | "str" | "str.code" | "str.join" | "str.contains" | "str.upper" | "str.lower"
             | "str.replace" | "str.find" | "str.split" => self.text_builtin(dest, name, args, span),

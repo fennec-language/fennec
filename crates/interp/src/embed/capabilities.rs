@@ -137,6 +137,41 @@ pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64)
     })
 }
 
+/// Runs one of std's functions written in the runtime, with the last `count` temporaries handed
+/// in as its arguments. `name` is a string block with its full name, with any named arguments
+/// on the end as a call writes them, like `json.dumps.names`, which come last.
+pub extern "C" fn std_call(name: i64, count: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let at = span(start, end);
+        let written = u64::try_from(name)
+            .ok()
+            .and_then(|address| state.heap.block(address))
+            .filter(|block| super::heap::is_text(state, block))
+            .map(super::heap::block_text)
+            .ok_or_else(|| Diagnostic::new("the native code lost a function's name", at))?;
+        let mut parts: Vec<&str> = written.split('.').collect();
+        let mut named = Vec::new();
+        while parts.len() > 2 {
+            named.extend(parts.pop());
+        }
+        let function = parts.join(".");
+        let module = crate::stdlib::module_of(&function)
+            .ok_or_else(|| Diagnostic::new(format!("no function `{function}` in std"), at))?;
+        let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
+        let given = state.inputs.split_off(state.inputs.len() - count);
+        let mut args: Vec<_> =
+            given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
+        // Named ones are last, in the order the name has them.
+        named.reverse();
+        let first_named = args.len().saturating_sub(named.len());
+        for (arg, name) in args.iter_mut().skip(first_named).zip(named) {
+            arg.name = Some(name.to_owned());
+        }
+        let result = (module.call)(&mut state.interp, &function, args, at)?;
+        Ok(state.push(result))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;

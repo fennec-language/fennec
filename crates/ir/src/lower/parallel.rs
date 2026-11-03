@@ -16,8 +16,17 @@
 //!   fixed tree, so it's the same bit for bit however many threads run, and the same as the
 //!   interpreter.
 //!
-//! `put` and `put_back` write a position the backend knows only this range writes, so they
-//! change the list in place, never copying it.
+//! `put` and `put_back` write the list in place, never copying it, yet say `changes: false`.
+//! That's sound only because the list is the call's alone before any range runs (the runtime
+//! makes `put`'s list new, and `parallel.own` makes `put_back`'s the loop's own) and the
+//! runtime's ranges never overlap, so no position is written twice and nothing else holds the
+//! list to see the write. A backend has to treat them as these stores, not as changes it may
+//! make a copy for.
+//!
+//! A sum's range starts its partial from its first item, reading `xs[from]` before anything
+//! else, so it must never be given an empty range. The runtime never does:
+//! `fennec_parallel_reduce` gives back the start at once for an empty list, and splits only
+//! ranges longer than a leaf, at their middle, so each half holds at least one position.
 //!
 //! This is done only when the backend asks (`Options::outline_parallel`), and only where the
 //! lifted function can hold what's written: a body that leaves the loop early or the function,

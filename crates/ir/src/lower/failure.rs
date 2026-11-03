@@ -161,18 +161,18 @@ impl Lowering<'_> {
         Ok(Operand::Local(dest))
     }
 
-    /// Leaves the function with an error.
-    fn return_error(&mut self, error: Operand, span: Span) {
+    /// Leaves the function with an error, as any way of leaving does: `for mut` loops write their
+    /// items back, and `with` blocks clean up.
+    fn return_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
         let dest = self.temporary(self.returns.clone());
         self.emit(InstKind::MakeErr { dest, error }, span);
-        self.finish(Terminator::Return(Some(Operand::Local(dest))));
+        self.leave(Some(Operand::Local(dest)), span)
     }
 
     /// `fail error`.
     pub(super) fn fail(&mut self, error: &Expr, span: Span) -> Lowered<()> {
         let error = self.expr(error)?;
-        self.return_error(error, span);
-        Ok(())
+        self.return_error(error, span)
     }
 
     /// `value?`, and `value? from wrapper`: leaves the function if it's an error, and gives
@@ -205,7 +205,7 @@ impl Lowering<'_> {
             self.emit(InstKind::Builtin { dest: Some(dest), name, args, changes: false }, span);
             passed = Operand::Local(dest);
         }
-        self.return_error(passed, span);
+        self.return_error(passed, span)?;
         self.current = present;
         if *ok == Type::Unit {
             return Ok(None);

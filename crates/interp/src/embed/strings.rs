@@ -314,7 +314,7 @@ pub extern "C" fn compare(a: i64, b: i64) -> i64 {
 
 /// A string's bytes where they are: the words holding them, packed eight to a word, and how many
 /// there are. Nothing, for an address that isn't a string's block.
-pub(super) fn bytes_in_block<'s>(state: &'s State, address: i64) -> (&'s [u64], usize) {
+pub(super) fn bytes_in_block(state: &State, address: i64) -> (&[u64], usize) {
     u64::try_from(address)
         .ok()
         .and_then(|address| state.heap.block(address))

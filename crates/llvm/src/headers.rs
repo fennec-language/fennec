@@ -180,11 +180,11 @@ impl Emit<'_, '_, '_> {
     /// `part in text` for two headers, which makes no block for either.
     fn headers_contain(&mut self, op: BinOp, (part, text): (&str, &str)) -> String {
         self.declare("declare i8 @fennec_text_contains(i64, i64, i64, i64, i64, i64) nounwind");
-        let [a, b, c] = [0, 1, 2].map(|at| self.header_word(text, at));
-        let [d, e, f] = [0, 1, 2].map(|at| self.header_word(part, at));
+        let [t0, t1, t2] = [0, 1, 2].map(|at| self.header_word(text, at));
+        let [p0, p1, p2] = [0, 1, 2].map(|at| self.header_word(part, at));
         let (found, bit) = (self.temp(), self.temp());
         self.line(&format!(
-            "{found} = call i8 @fennec_text_contains(i64 {a}, i64 {b}, i64 {c}, i64 {d}, i64 {e}, i64 {f})"
+            "{found} = call i8 @fennec_text_contains(i64 {t0}, i64 {t1}, i64 {t2}, i64 {p0}, i64 {p1}, i64 {p2})"
         ));
         self.line(&format!("{bit} = trunc i8 {found} to i1"));
         if op == BinOp::In {

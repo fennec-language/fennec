@@ -128,9 +128,9 @@ fn bytes_of<'a>(state: &'a State, words: &'a [u64; 3]) -> (&'a [u64], usize) {
 
 /// `fennec_text_contains(text, part)`: `part in text` for two headers, each three words, which
 /// copies neither.
-pub extern "C" fn contains(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) -> i8 {
+pub extern "C" fn contains(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u64) -> i8 {
     with(|state| {
-        let (text, part) = ([a, b, c], [d, e, f]);
+        let (text, part) = ([t0, t1, t2], [p0, p1, p2]);
         i8::from(super::strings::bytes_contain(bytes_of(state, &text), bytes_of(state, &part)))
     })
 }
@@ -323,11 +323,9 @@ mod tests {
             let places: Vec<usize> = text.char_indices().map(|(at, _)| at).chain([text.len()]).collect();
             for (from, start) in places.iter().enumerate() {
                 for end in places.iter().skip(from) {
-                    let part = &text[*start..*end];
-                    let found = super::super::strings::bytes_contain(
-                        (&words, text.len()),
-                        (&packed(part, b'q'), part.len()),
-                    );
+                    let part = text.get(*start..*end).unwrap();
+                    let found =
+                        strings::bytes_contain((&words, text.len()), (&packed(part, b'q'), part.len()));
                     assert!(found, "`{part}` in `{text}`");
                 }
             }
@@ -342,10 +340,7 @@ mod tests {
                 "aaaaaaaaaaaaaaaaac",
                 "h z",
             ] {
-                let found = super::super::strings::bytes_contain(
-                    (&words, text.len()),
-                    (&packed(part, b'q'), part.len()),
-                );
+                let found = strings::bytes_contain((&words, text.len()), (&packed(part, b'q'), part.len()));
                 assert_eq!(found, text.contains(part), "`{part}` in `{text}`");
             }
         }
@@ -357,19 +352,16 @@ mod tests {
         let before = live();
         let long = "a string long enough that it can only be held in a block";
         let in_block = with(|state| Some(super::header(state, long))).unwrap();
-        let [a, b, c] = in_block;
-        let holds = |part: &str| {
-            let [d, e, f] = super::inline(part.as_bytes());
-            super::contains(a, b, c, d, e, f) != 0
+        let found = |text: [u64; 3], part: [u64; 3]| {
+            super::contains(text[0], text[1], text[2], part[0], part[1], part[2]) != 0
         };
+        let holds = |part: &str| found(in_block, super::inline(part.as_bytes()));
         assert!(holds("only") && holds("") && holds("long enough"));
         assert!(!holds("nowhere"));
-        let [a, b, c] = super::inline(b"short");
-        let [d, e, f] = in_block;
-        assert_eq!(super::contains(a, b, c, d, e, f), 0, "a long string isn't in a short one");
+        let short = super::inline(b"short");
+        assert!(!found(short, in_block), "a long string isn't in a short one");
         // Nothing past an inline string's bytes counts, like the tag in its last byte.
-        let [d, e, f] = super::inline(b"\0");
-        assert_eq!(super::contains(a, b, c, d, e, f), 0);
+        assert!(!found(short, super::inline(b"\0")));
         assert_eq!(live(), before + 1);
         finish();
     }

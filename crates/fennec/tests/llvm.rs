@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 49;
+const BUILDING_EXAMPLES: usize = 54;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -1519,5 +1519,49 @@ fn short_copies_match_the_jit() -> std::io::Result<()> {
         grown += "x" * size
     stdout.print(grown, grown.len())
 "#,
+    )
+}
+
+/// Conversions and small builtins: floats to ints, `PI`, `range` and `reversed` as lists, and a
+/// dict's or set's keys as a list.
+#[test]
+fn conversions_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "conversions",
+        r#"from std.math import PI, ceil, floor
+
+def main(stdout: Stdout):
+    for x in [2.5, -2.5, 3.5, 0.49, -0.51, 7.0]:
+        stdout.print(int(x), round(x), floor(x), ceil(x), x.abs())
+    stdout.print(PI > 3.14, PI < 3.15)
+    stdout.print(range(5), range(2, 6), range(10, 0, -3), range(0, 10, 4), range(3, 3), range(5, 0))
+    stdout.print(sorted(range(4), key=(n) => -n), range(-3, 3, 2))
+    stdout.print(reversed([1, 2, 3]), reversed(["a", "b long enough to be a block of its own", "c"]))
+    counts = {"b": 2, "a": 1, "c": 3}
+    stdout.print(list(counts), list({3, 1, 2}))
+    mut seen: set[int] = set()
+    seen.add(4)
+    copied = set(seen)
+    seen.add(5)
+    stdout.print(seen, copied)
+"#,
+    )
+}
+
+/// A float outside an int's range doesn't become one.
+#[test]
+fn a_float_too_big_for_an_int_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "float_too_big",
+        "def main(stdout: Stdout):
+    huge = 1e300
+    stdout.print(int(huge * huge / huge))
+",
     )
 }

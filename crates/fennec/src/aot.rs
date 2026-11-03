@@ -189,8 +189,14 @@ fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled
         fennec_check::check(&reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
     let lowered = fennec_ir::lower_with(&reached, &checked, fennec_ir::Options { outline_parallel: true });
-    if let Some(skipped) = lowered.not_lowered.first() {
-        return Err(format!("`{}` isn't lowered yet: {}", skipped.function, skipped.why));
+    if !lowered.not_lowered.is_empty() {
+        let skipped: Vec<String> = lowered
+            .not_lowered
+            .iter()
+            .map(|skipped| format!("`{}` isn't lowered yet: {}", skipped.function, skipped.why))
+            .collect();
+        return Err(skipped.join("
+"));
     }
     let runtime = Runtime::for_program(&lowered);
     let cpu = if BASELINE.load(std::sync::atomic::Ordering::Relaxed) {

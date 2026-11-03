@@ -297,6 +297,15 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &dict)
     }
 
+    /// `set()`: a new set with nothing in it.
+    pub(crate) fn empty_set(&mut self, dest: LocalId) -> Result<(), String> {
+        let Kind::Dict(key, value) = self.kind_of(dest)?.clone() else {
+            return Err("it makes a set this backend doesn't take yet".to_owned());
+        };
+        let dict = self.new_dict(key, value, "0");
+        self.assign(dest, &dict)
+    }
+
     /// `dict[key] = value` on the dict at `place`. Changing a key's value in a dict nothing else
     /// holds happens here, and everything else in the runtime.
     pub(crate) fn dict_store(
@@ -930,12 +939,21 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry_at}, i64 {}",
             entry_value(key_word)
         ));
-        let key_value = self.dict_part(&key_kind, &key_at);
-        let value_value = self.dict_part(&value_kind, &value_at);
+        // A set's entries hold no value, so only what's wanted is read.
         match what {
-            "keys" => self.put_item(&item_kind, &key_kind, &key_value, &place),
-            "values" => self.put_item(&item_kind, &value_kind, &value_value, &place),
-            _ => self.put_pair(&item_kind, &place, [(&key_kind, &key_value), (&value_kind, &value_value)])?,
+            "keys" => {
+                let key_value = self.dict_part(&key_kind, &key_at);
+                self.put_item(&item_kind, &key_kind, &key_value, &place);
+            }
+            "values" => {
+                let value_value = self.dict_part(&value_kind, &value_at);
+                self.put_item(&item_kind, &value_kind, &value_value, &place);
+            }
+            _ => {
+                let key_value = self.dict_part(&key_kind, &key_at);
+                let value_value = self.dict_part(&value_kind, &value_at);
+                self.put_pair(&item_kind, &place, [(&key_kind, &key_value), (&value_kind, &value_value)])?;
+            }
         }
         let next_place = self.temp();
         self.line(&format!("{next_place} = add i64 {place_number}, 1"));

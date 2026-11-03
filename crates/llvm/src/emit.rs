@@ -901,7 +901,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Calls the runtime's failure and leaves the function when `bad` holds.
-    fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
+    pub(crate) fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
         let (fail, ok) = (self.label("fail"), self.label("ok"));
         self.line(&format!("br i1 {bad}, label %{fail}, label %{ok}, !prof !0"));
         self.start_block(&ok);
@@ -1381,6 +1381,9 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         if let Some(done) = self.loop_builtin(dest, name, args, span) {
+            return done;
+        }
+        if let Some(done) = self.conversion(dest, name, args, span) {
             return done;
         }
         let first = args.first();

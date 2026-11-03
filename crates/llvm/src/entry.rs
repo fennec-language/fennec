@@ -147,7 +147,19 @@ pub fn tests_entry(
     tests: &[String],
 ) -> Result<String, String> {
     let (mut out, count) = start_of(program, shared, image, bytes)?;
-    out += "declare i32 @fennec_aot_run_tests(ptr, ptr, i64, i64)\n\n";
+    out += "declare i32 @fennec_aot_run_tests(ptr, ptr, i64, i64, ptr, i64)\n\n";
+    // The flag each function sets when it runs, in the order `Shared::ran` lists them.
+    let flags: Vec<String> = shared.ran.iter().map(|name| format!("@\"ran_{name}\"")).collect();
+    for flag in &flags {
+        let _ = writeln!(out, "{flag} = dso_local global i8 0");
+    }
+    let table: Vec<String> = flags.iter().map(|flag| format!("ptr {flag}")).collect();
+    let _ = writeln!(
+        out,
+        "@fennec_ran_flags = private constant [{} x ptr] [{}]\n",
+        flags.len(),
+        table.join(", ")
+    );
     let thunks = setup(&mut out, program, shared, image);
     out += "  ret void\n}\n\n";
     out += &thunks;
@@ -167,9 +179,10 @@ pub fn tests_entry(
         "\ndefine void @fennec_run_test(i64 %number) {{\nstart:\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  switch i64 %number, label %done [{cases} ]\n{blocks}done:\n  ret void\n}}\n"
     );
     let run = format!(
-        "@fennec_aot_run_tests(ptr @fennec_entry, ptr @fennec_run_test, i64 {}, i64 {})",
+        "@fennec_aot_run_tests(ptr @fennec_entry, ptr @fennec_run_test, i64 {}, i64 {}, ptr @fennec_ran_flags, i64 {})",
         tests.len(),
-        bytes.len()
+        bytes.len(),
+        flags.len()
     );
     out += &c_main(count, &run);
     Ok(out)

@@ -518,3 +518,81 @@ fn every_example_tested_through_llvm_says_what_it_says_on_the_jit() {
     assert!(compared > 20, "only {compared} examples have tests");
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+/// The functions each test ran, as `fennec test` kept them for a program.
+fn kept_ran(home: &Path, program: &Path) -> std::collections::HashMap<String, Option<Vec<String>>> {
+    let absolute = std::fs::canonicalize(program).unwrap().display().to_string();
+    let records = fennec_build::Cache::new(home).test_records(&absolute);
+    records.into_iter().map(|(name, record)| (name, record.ran)).collect()
+}
+
+/// A wrong "unchanged" is a test skipped that should have run. So everything the JIT says a test
+/// ran, LLVM has to say too, for every example with tests.
+#[test]
+fn what_a_test_ran_through_llvm_covers_what_it_ran_on_the_jit() {
+    if !llvm_here() {
+        return;
+    }
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let (mut compared, mut traced) = (0, 0);
+    for entry in std::fs::read_dir(&examples).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|ext| ext != "fen") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        if !source.lines().any(|line| line.trim_start().starts_with("test \"")) {
+            continue;
+        }
+        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let home = std::env::temp_dir().join(format!("fennec-unchanged-ran-{stem}-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        tested(&path, &[], &home).unwrap();
+        let jit = kept_ran(&home, &path);
+        std::fs::remove_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        tested(&path, &["--llvm"], &home).unwrap();
+        let llvm = kept_ran(&home, &path);
+        std::fs::remove_dir_all(&home).unwrap();
+        for (test, ran) in &jit {
+            let Some(Some(ran)) = ran else { continue };
+            compared += 1;
+            let Some(Some(through_llvm)) = llvm.get(test) else { continue };
+            traced += 1;
+            let missing: Vec<_> = ran.iter().filter(|name| !through_llvm.contains(name)).collect();
+            assert!(
+                missing.is_empty(),
+                "{stem}: `{test}` ran {missing:?} on the JIT, and LLVM doesn't say so"
+            );
+        }
+    }
+    assert!(compared > 40 && traced > 20, "only {traced} of {compared} tests were compared");
+}
+
+/// As on the JIT, a test isn't run again for a change to code it never reached.
+#[test]
+fn only_what_a_test_ran_through_llvm_can_make_it_run_again() {
+    if !llvm_here() {
+        return;
+    }
+    let dir = scratch("llvm-ran").unwrap();
+    let game = dir.join("game.fen");
+    let source = |untaken: &str, taken: &str| {
+        format!(
+            "def untaken() -> int:\n    {untaken}\n\ndef taken() -> int:\n    {taken}\n\n\
+             def choose(x: int) -> int:\n    if x > 1000000:\n        return untaken()\n    taken()\n\n\
+             test \"small\":\n    assert choose(0) >= 1\n"
+        )
+    };
+    std::fs::write(&game, source("1", "1")).unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &["--llvm"]).unwrap()), "1 passed, 0 failed\n");
+    std::fs::write(&game, source("2", "1")).unwrap();
+    assert_eq!(
+        stdout(&run_tests(&dir, &["--llvm"]).unwrap()),
+        "1 passed, 0 failed (0 run, 1 unchanged)\n",
+        "it never ran `untaken`"
+    );
+    std::fs::write(&game, source("2", "2")).unwrap();
+    assert_eq!(stdout(&run_tests(&dir, &["--llvm"]).unwrap()), "1 passed, 0 failed\n", "it ran `taken`");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

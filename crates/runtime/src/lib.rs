@@ -301,8 +301,28 @@ pub extern "C" fn fennec_aot_run_tests(
     run_test: extern "C" fn(i64),
     count: i64,
     length: i64,
+    flags: *const *mut u8,
+    flag_count: i64,
 ) -> i32 {
-    aot::run_tests(entry, run_test, count, length, stop)
+    let (flags, flag_count) = (flags.expose_provenance(), usize::try_from(flag_count).unwrap_or(0));
+    let take_flags = move || {
+        let table = std::ptr::with_exposed_provenance::<*mut u8>(flags);
+        // SAFETY: the table is a constant in the executable with this many flags, each a byte of
+        // writable data that lasts as long as the process. Tests run one after another on one
+        // thread, and between tests nothing else is running to set a flag.
+        unsafe {
+            let table = std::slice::from_raw_parts(table, flag_count);
+            let set = table.iter().enumerate().filter(|(_, flag)| flag.read_volatile() != 0);
+            let set: Vec<usize> = set.map(|(at, _)| at).collect();
+            for at in &set {
+                if let Some(flag) = table.get(*at) {
+                    flag.write_volatile(0);
+                }
+            }
+            set
+        }
+    };
+    aot::run_tests(entry, run_test, count, length, &take_flags, stop)
 }
 
 /// Ends the process now, for a failure in cleanup that nothing can pass on.

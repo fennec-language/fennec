@@ -80,20 +80,27 @@ pub fn run_tests(
     run_test: extern "C" fn(i64),
     count: i64,
     length: i64,
+    take_flags: &(dyn Fn() -> Vec<usize> + Sync),
     stop: fn(i32),
 ) -> i32 {
     let bytes = program_handed_over(length, stop);
     let ran = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(STACK_BYTES)
-            .spawn_scoped(scope, || execute_tests(entry, run_test, count, &bytes))
+            .spawn_scoped(scope, || execute_tests(entry, run_test, count, take_flags, &bytes))
             .map(std::thread::ScopedJoinHandle::join)
     });
     i32::from(!matches!(ran, Ok(Ok(true))))
 }
 
 /// Runs the tests asked for on the current thread, saying whether the runtime started.
-fn execute_tests(entry: extern "C" fn(i64), run_test: extern "C" fn(i64), count: i64, bytes: &[u8]) -> bool {
+fn execute_tests(
+    entry: extern "C" fn(i64),
+    run_test: extern "C" fn(i64),
+    count: i64,
+    take_flags: &(dyn Fn() -> Vec<usize> + Sync),
+    bytes: &[u8],
+) -> bool {
     let Some(Image { module, tables, literals, .. }) = Image::from_bytes(bytes) else { return false };
     if super::start(&module, tables, crate::Inputs::default()).is_err() {
         return false;
@@ -108,7 +115,8 @@ fn execute_tests(entry: extern "C" fn(i64), run_test: extern "C" fn(i64), count:
             continue;
         }
         run_test(number);
-        let line = test_line(number, super::next_test().as_ref());
+        let ran: Vec<String> = take_flags().iter().map(ToString::to_string).collect();
+        let line = test_line(number, super::next_test().as_ref(), &ran);
         if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
             return false;
         }
@@ -117,9 +125,10 @@ fn execute_tests(entry: extern "C" fn(i64), run_test: extern "C" fn(i64), count:
     true
 }
 
-/// What a test did, as a line: its number, and for a failure where it is, its message and its
-/// help, in hexadecimal so that anything can be in them.
-fn test_line(number: i64, failure: Option<&fennec_syntax::Diagnostic>) -> String {
+/// What a test did, as a line: its number, and what it ran if it passed, as the numbers of the
+/// flags that were set, or for a failure where it is, its message and its help, in hexadecimal so
+/// that anything can be in them.
+fn test_line(number: i64, failure: Option<&fennec_syntax::Diagnostic>, ran: &[String]) -> String {
     let hex = |text: &str| {
         let mut hex = String::with_capacity(text.len() * 2);
         for byte in text.bytes() {
@@ -128,7 +137,7 @@ fn test_line(number: i64, failure: Option<&fennec_syntax::Diagnostic>) -> String
         hex
     };
     match failure {
-        None => format!("{number} ok"),
+        None => format!("{number} ok {}", ran.join(",")),
         Some(failure) => format!(
             "{number} failed {} {} {} {}",
             failure.span.start,

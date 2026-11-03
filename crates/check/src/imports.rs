@@ -73,6 +73,7 @@ impl Uses<'_> {
             self.type_expr(param.ty.as_ref());
         }
         self.type_expr(def.ret.as_ref());
+        self.type_expr(def.fails.as_ref());
         self.stmts(&def.body);
     }
 

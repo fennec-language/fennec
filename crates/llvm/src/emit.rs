@@ -341,12 +341,12 @@ impl<'p> Module<'_, 'p> {
         };
         let known = self.whole.analyses.get(function.name.as_str()).ok_or("no analysis")?;
         let mut kinds = Vec::with_capacity(function.locals.len());
-        // Held as headers, strings aren't grown in place yet, so pieces stay a list.
-        let joined = self.whole.builders.get(function.name.as_str()).filter(|_| !self.layouts.text_headers());
+        let joined = self.whole.builders.get(function.name.as_str());
+        let builder = if self.layouts.text_headers() { Kind::TextBlock } else { Kind::Str };
         for (at, local) in function.locals.iter().enumerate() {
-            // Pieces only ever joined are the string they're joined into.
+            // Pieces only ever joined are the string they're joined into, a block that grows.
             let kind = if joined.is_some_and(|locals| locals.contains(&at)) {
-                Kind::Str
+                builder.clone()
             } else {
                 self.kind(&local.ty)?
             };
@@ -705,7 +705,7 @@ impl Emit<'_, '_, '_> {
 
     /// One owner fewer for a value of this kind.
     pub(crate) fn release_kind(&mut self, value: &str, kind: &Kind) {
-        if *kind == Kind::Str && self.headers() {
+        if (*kind == Kind::Str && self.headers()) || *kind == Kind::MaybeText {
             self.release_text(value);
         } else if matches!(kind, Kind::Closure(..)) {
             self.release_closure(value);
@@ -719,7 +719,7 @@ impl Emit<'_, '_, '_> {
         if value == "null" {
             return;
         }
-        if *kind == Kind::Str && self.headers() {
+        if (*kind == Kind::Str && self.headers()) || *kind == Kind::MaybeText {
             self.retain_text(value);
             return;
         }
@@ -757,17 +757,6 @@ impl Emit<'_, '_, '_> {
         };
         self.line(&format!("store i64 {tag}, ptr {fields_at}"));
         let at = self.offset(&fields_at, offset);
-        if matches!(held, Kind::Maybe(inner) if **inner == Kind::TextBlock) {
-            // The enum holds a header: `None`'s stays zero.
-            let (some_label, done) = (self.label("text_some"), self.label("text_put"));
-            self.line(&format!("br i1 {missing}, label %{done}, label %{some_label}"));
-            self.start_block(&some_label);
-            let header = self.text_from_block(value);
-            self.line(&format!("store {} {header}, ptr {at}", crate::headers::HEADER));
-            self.line(&format!("br label %{done}"));
-            self.start_block(&done);
-            return Ok((place, true));
-        }
         self.line(&format!("store ptr {value}, ptr {at}"));
         Ok((place, true))
     }
@@ -784,6 +773,7 @@ impl Emit<'_, '_, '_> {
         }
         match kind {
             Kind::Maybe(_) => Ok(("null".to_owned(), false)),
+            Kind::MaybeText => Ok(("zeroinitializer".to_owned(), false)),
             Kind::Enum(_) => {
                 // Word 0 is which case, and `None` comes first.
                 let (at, text) = (self.label("%none"), self.text_of(kind));
@@ -1039,6 +1029,11 @@ impl Emit<'_, '_, '_> {
                 let temp = self.temp();
                 self.line(&format!("{temp} = icmp {cc} i1 {a}, {b}"));
                 temp
+            }
+            Kind::Str
+                if self.headers() && op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) =>
+            {
+                return self.header_append(dest, &a, &b);
             }
             Kind::Str if self.headers() => self.header_binary(op, (&a, &b))?,
             Kind::Str if op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) => {
@@ -1458,13 +1453,9 @@ impl Emit<'_, '_, '_> {
             Operand::None => wanted.clone(),
         };
         if from != wanted && self.headers() {
-            let as_block = |kind: &Kind| match kind {
-                Kind::TextBlock => true,
-                Kind::Maybe(inner) => **inner == Kind::TextBlock,
-                _ => false,
-            };
-            // A string held as a block, as a dict or an optional holds one, and as a header.
-            if as_block(&from) && wanted == Kind::Str {
+            let as_block = |kind: &Kind| *kind == Kind::TextBlock;
+            // A string held as a block, as a dict holds one, and as a header.
+            if as_block(&from) && matches!(wanted, Kind::Str | Kind::MaybeText) {
                 let (held, _) = self.operand(value)?;
                 let header = self.text_from_borrowed_block(&held);
                 return self.assign(dest, &header);
@@ -1527,7 +1518,7 @@ impl Emit<'_, '_, '_> {
         match inst {
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
-                if self.known.unmade.contains(&dest.0) && !self.headers() =>
+                if self.known.unmade.contains(&dest.0) =>
             {
                 Ok(())
             }
@@ -1639,7 +1630,7 @@ impl Emit<'_, '_, '_> {
         (name == "list.append"
             && *piece == made
             && self.known.used_once(made)
-            && self.kinds.get(joined.0) == Some(&Kind::Str))
+            && matches!(self.kinds.get(joined.0), Some(Kind::Str | Kind::TextBlock)))
         .then_some((*joined, parts))
     }
 
@@ -1676,7 +1667,6 @@ impl Emit<'_, '_, '_> {
         // A slice never made leaves what it's of to the lookups that read it in its place.
         if let InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. } = inst
             && self.known.unmade.contains(&dest.0)
-            && !self.headers()
         {
             return;
         }

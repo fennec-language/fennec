@@ -116,33 +116,36 @@ impl Emit<'_, '_, '_> {
         let wanted = self.kind_of(dest)?.clone();
         // A list's items hold an optional as an enum, where a local holds it as one word: what a
         // `Some` holds, and as `None` never writes that word, it's null for `None`.
-        let (kind, at, access) = if matches!(wanted, Kind::Maybe(_)) && self.is_optional(kind) {
-            let (_, fields) = self.case_of(kind, "Some")?;
-            let (_, offset, field) = fields.first().cloned().ok_or("an optional with nothing in it")?;
-            let (base, inner) = if matches!(kind, Kind::Boxed(_)) {
-                let block = self.temp();
-                self.line(&format!("{block} = load ptr, ptr {at}{access}"));
-                (self.fields_at(&block, kind), "")
+        let (kind, at, access) =
+            if matches!(wanted, Kind::Maybe(_) | Kind::MaybeText) && self.is_optional(kind) {
+                let (_, fields) = self.case_of(kind, "Some")?;
+                let (_, offset, field) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+                let (base, inner) = if matches!(kind, Kind::Boxed(_)) {
+                    let block = self.temp();
+                    self.line(&format!("{block} = load ptr, ptr {at}{access}"));
+                    (self.fields_at(&block, kind), "")
+                } else {
+                    (at.to_owned(), access)
+                };
+                // A header in the enum and in the local: `None` leaves it all zero.
+                if field == Some(Kind::Str) && wanted == Kind::MaybeText {
+                    let place = self.offset(&base, offset);
+                    let header = self.load_field(&Kind::Str, &place, inner);
+                    if !self.known.is_borrowed(dest) {
+                        self.retain_text(&header);
+                    }
+                    return self.assign(dest, &header);
+                }
+                (wanted.clone(), self.offset(&base, offset), inner)
             } else {
-                (at.to_owned(), access)
+                (kind.clone(), at.to_owned(), access)
             };
-            // A header in the enum, a block in the local: `None`'s zero header gives null.
-            if field == Some(Kind::Str) && self.headers() {
-                let place = self.offset(&base, offset);
-                let header = self.load_field(&Kind::Str, &place, inner);
-                let block = self.owned_text_block(&header);
-                return self.assign(dest, &block);
-            }
-            (wanted.clone(), self.offset(&base, offset), inner)
-        } else {
-            (kind.clone(), at.to_owned(), access)
-        };
         let (kind, at) = (&kind, at.as_str());
         if kind.in_memory() {
             return self.assign_memory(dest, at, access);
         }
         // A string a dict holds as a block, read into a local that holds a header.
-        if *kind == Kind::TextBlock && wanted == Kind::Str {
+        if *kind == Kind::TextBlock && matches!(wanted, Kind::Str | Kind::MaybeText) {
             let block = self.load_field(kind, at, access);
             let header = self.text_from_borrowed_block(&block);
             return self.assign(dest, &header);
@@ -417,6 +420,15 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn is_case(&mut self, dest: LocalId, value: &Operand, case: &str) -> Result<(), String> {
         let (base, kind) = self.operand(value)?;
+        if kind == Kind::MaybeText {
+            let none = self.header_is_none(&base);
+            if case == "None" {
+                return self.assign(dest, &none);
+            }
+            let some = self.temp();
+            self.line(&format!("{some} = xor i1 {none}, true"));
+            return self.assign(dest, &some);
+        }
         if matches!(kind, Kind::Maybe(_)) {
             let cc = if case == "None" { "eq" } else { "ne" };
             let same = self.temp();
@@ -762,6 +774,9 @@ impl Emit<'_, '_, '_> {
             return self.dict_read(dest, &list, (key, value), index, span);
         }
         if kind == Kind::Str {
+            if self.headers() {
+                return self.header_index(dest, &list, index, span);
+            }
             return self.on_blocks([&list], |emit, [block]| emit.string_index(dest, &block, index, span));
         }
         let item = list_item(&kind)?;
@@ -991,7 +1006,6 @@ impl Emit<'_, '_, '_> {
                 .find(|(dict, looked_up, _)| same_dict(*dict) && looked_up == index)
                 .map(|(_, _, entry)| entry.clone());
             if let Operand::Local(sliced) = index
-                && !self.headers()
                 && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
             {
                 return self.slice_set(&place, value_word, (&slice, found), value);
@@ -1070,6 +1084,10 @@ impl Emit<'_, '_, '_> {
         let end = end.map(|end| self.operand(end)).transpose()?.map_or(lowest, |held| held.0);
         let part = self.temp();
         match kind {
+            Kind::Str if self.headers() => {
+                let part = self.header_slice(&object, (&start, &end), span);
+                return self.assign(dest, &part);
+            }
             Kind::Str => {
                 self.declare("declare ptr @fennec_str_slice(ptr, i64, i64, i64, i64) nounwind");
                 let (from, to) = (i64::from(span.start), i64::from(span.end));
@@ -1093,13 +1111,13 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn make_list(&mut self, dest: LocalId, items: &[Operand], block: usize) -> Result<(), String> {
         // Pieces kept as the string they're joined into start as their own text.
-        if *self.kind_of(dest)? == Kind::Str {
+        if matches!(self.kind_of(dest)?, Kind::Str | Kind::TextBlock) {
             self.declare("declare ptr @fennec_str_with_room(i64) nounwind");
             let mut text = self.temp();
             self.line(&format!("{text} = call ptr @fennec_str_with_room(i64 {PIECES_ROOM})"));
             for item in items {
                 let (piece, _) = self.operand(item)?;
-                text = self.append_text(&text, &piece);
+                text = self.append_piece(&text, &piece);
             }
             return self.assign(dest, &text);
         }
@@ -1143,11 +1161,11 @@ impl Emit<'_, '_, '_> {
             return Err("it appends to a literal".to_owned());
         };
         // A piece goes on the end of the string it'll be joined into.
-        if *self.kind_of(*local)? == Kind::Str {
+        if matches!(self.kind_of(*local)?, Kind::Str | Kind::TextBlock) {
             let (piece, _) = self.operand(args.get(1).ok_or("no argument")?)?;
             let (slot, text) = (self.slot(*local), self.temp());
             self.line(&format!("{text} = load ptr, ptr {slot}"));
-            let joined = self.append_text(&text, &piece);
+            let joined = self.append_piece(&text, &piece);
             self.line(&format!("store ptr {joined}, ptr {slot}"));
             return Ok(());
         }

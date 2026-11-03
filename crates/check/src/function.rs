@@ -324,6 +324,14 @@ impl<'c> FnCx<'c> {
     pub(crate) fn check_return(&mut self, declared: &Type, actual: &Type, span: Span) {
         let actual = self.checker.settled(actual);
         let passed_through = self.fallible && matches!(actual, Type::Result(..));
+        // A result passed on as it is can fail its own ways, which become this function's too,
+        // unless `fails E` says what it fails with, which the result is checked against below.
+        if let (true, None, Type::Result(_, error)) = (passed_through, &self.fails, &actual)
+            && error.is_known()
+            && !self.errors.contains(error)
+        {
+            self.errors.push(error.as_ref().clone());
+        }
         // A result passed through has to hold what it returns, and fail only with the error
         // `fails E` names.
         if let (true, Some(own)) = (passed_through, self.fails.clone()) {

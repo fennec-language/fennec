@@ -564,4 +564,21 @@ mod tests {
         let (output, _, _) = finish();
         assert_eq!(String::from_utf8(output).unwrap(), TEXT.repeat(ranges));
     }
+
+    #[test]
+    fn what_a_thread_kept_comes_out_when_it_panics() {
+        crate::embed::write_kept_output_on_panic();
+        let panicked = std::thread::spawn(|| {
+            let inputs = crate::Inputs { live: true, ..crate::Inputs::default() };
+            start(&fennec_syntax::Module { items: Vec::new() }, Tables::default(), inputs).unwrap();
+            with(|state| {
+                let _ = crate::embed::io::write(state, "printed just before panicking\n");
+            });
+            std::panic::panic_any("panicking on purpose");
+        })
+        .join();
+        assert!(panicked.is_err());
+        let written = crate::embed::WRITTEN.lock().unwrap();
+        assert!(String::from_utf8_lossy(&written).contains("printed just before panicking\n"));
+    }
 }

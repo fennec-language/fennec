@@ -222,6 +222,30 @@ pub(crate) fn write_kept_output() {
     });
 }
 
+/// Has a panic write what the panicking thread printed and kept before it takes the program down:
+/// printing just before a crash is how people find one. Only that thread's can be reached. What
+/// other threads have kept goes with the program, as all of it does on a signal.
+fn write_kept_output_on_panic() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let earlier = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic| {
+            // A panic while the output's in use leaves it for now: it can't be read here.
+            let free = OUTPUT
+                .try_with(|output| {
+                    output
+                        .try_borrow()
+                        .is_ok_and(|kept| kept.as_ref().is_none_or(|kept| kept.0.try_borrow_mut().is_ok()))
+                })
+                .unwrap_or(false);
+            if free {
+                write_kept_output();
+            }
+            earlier(panic);
+        }));
+    });
+}
+
 struct State {
     interp: Interp<'static>,
     output: Output,

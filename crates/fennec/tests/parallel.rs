@@ -377,3 +377,46 @@ fn what_bodies_print_on_workers_all_comes_out_whole_and_in_order_within_each_bod
     }
     Ok(())
 }
+
+/// A program that fails with an error nothing handles, having printed lines just before: in a
+/// body on workers, or on the main thread.
+const FAILS_ON_A_WORKER: &str = "\
+def main(stdout: Stdout):
+    stdout.print(\"before the loop\")
+    xs = [n for n in range(100_000)]
+    for x in parallel(xs):
+        stdout.print(\"line\", x)
+        stdout.print(10 // (77_777 - x))
+    stdout.print(\"after the loop\")
+";
+
+const FAILS_ON_THE_MAIN_THREAD: &str = "\
+def main(stdout: Stdout):
+    xs = [1, 0]
+    stdout.print(\"printed just before\")
+    stdout.print(10 // xs[1])
+";
+
+#[test]
+fn what_was_printed_before_a_failure_comes_out() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-failing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let on_worker = build_on_threads(&dir, FAILS_ON_A_WORKER, "on_worker")?;
+    let on_main = build_on_threads(&dir, FAILS_ON_THE_MAIN_THREAD, "on_main")?;
+    let (worker, main) =
+        (Command::new(&on_worker).env("FENNEC_THREADS", "4").output()?, Command::new(&on_main).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!worker.status.success());
+    let text = String::from_utf8_lossy(&worker.stdout);
+    assert!(text.starts_with("before the loop\n"), "{text}");
+    assert!(text.lines().any(|line| line == "line 77777"), "the failing body's line is missing");
+    assert!(!text.contains("after the loop"), "ran on past the failure");
+    assert!(String::from_utf8_lossy(&worker.stderr).contains("division by zero"));
+    assert!(!main.status.success());
+    assert_eq!(String::from_utf8_lossy(&main.stdout), "printed just before\n");
+    assert!(String::from_utf8_lossy(&main.stderr).contains("division by zero"));
+    Ok(())
+}

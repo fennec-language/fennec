@@ -214,8 +214,9 @@ fn live_entries<const N: usize>(words: &[u64], live: &mut Vec<u64>) {
     }
 }
 
-/// Copies an entry's words, a few moves for the widths dicts have.
-fn copy_entry(to: &mut [u64], from: &[u64]) {
+/// Copies an entry's words, a few moves for the widths dicts have. Gives back whether the two
+/// were the same width, as every caller's are; nothing is copied when they aren't.
+fn copy_entry(to: &mut [u64], from: &[u64]) -> bool {
     fn fixed<const N: usize>(to: &mut [u64], from: &[u64]) -> bool {
         match (<&mut [u64; N]>::try_from(to), <&[u64; N]>::try_from(from)) {
             (Ok(to), Ok(from)) => {
@@ -229,6 +230,7 @@ fn copy_entry(to: &mut [u64], from: &[u64]) {
     if !copied && to.len() == from.len() {
         to.copy_from_slice(from);
     }
+    to.len() == from.len()
 }
 
 /// A block holding `entries`, each `width` words, owned once, with room for at least `room`
@@ -255,7 +257,8 @@ fn build(state: &mut State, shape: u64, width: usize, entries: &[u64], room: usi
         }
         let start = DICT_HEADER_WORDS + slots + at * width;
         if let Some(words) = block.get_mut(start..start + width) {
-            copy_entry(words, entry);
+            let copied = copy_entry(words, entry);
+            debug_assert!(copied, "an entry as wide as its dict's");
         }
     }
     block
@@ -547,6 +550,11 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     let mut at = u64::try_from(dict).ok()?;
     let block = state.heap.block(at)?;
     let layout = layout(state, block)?;
+    // A key of the wrong width changes nothing: it's refused before the dict grows or a slot
+    // is taken.
+    if key.len() + 2 != layout.width {
+        return None;
+    }
     let hash = hash_key(state, layout.key, key);
     let slots = usize::try_from(*block.get(4)?).ok()? + 1;
     let used = usize::try_from(*block.get(3)?).ok()?;
@@ -590,9 +598,6 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
             let (value_word, key_words) = rest.split_last_mut()?;
             *hash_word = hash;
             *value_word = value;
-            if key_words.len() != key.len() {
-                return None;
-            }
             key_words.copy_from_slice(key);
             *block.get_mut(2)? += 1;
             *block.get_mut(3)? += 1;
@@ -861,6 +866,7 @@ fn release_entry(state: &mut State, layout: Layout, entry: &[u64]) {
 /// interpreter compares dicts.
 pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
     let (Some(layout), theirs) = (layout(state, left), layout(state, right)) else { return false };
+    // Dicts of the same type always share a layout, so differing ones are never equal.
     if theirs != Some(layout) {
         return false;
     }

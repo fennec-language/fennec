@@ -44,7 +44,7 @@ fn fusible(module: &Module) -> Vec<String> {
                 def.methods.iter().for_each(|method| add(Some(&def.name), method));
             }
             Item::Extend(extension) => {
-                extension.methods.iter().for_each(|method| add(Some(&extension.name), method))
+                extension.methods.iter().for_each(|method| add(Some(&extension.name), method));
             }
             _ => {}
         }
@@ -221,6 +221,31 @@ fn test_failure(failure: Diagnostic) -> Diagnostic {
     }
 }
 
+/// Runs a test executable in worker processes, each with its share of `tests` tests, giving back
+/// what each wrote.
+fn run_workers(work: &std::path::Path, tests: usize) -> Vec<String> {
+    let workers = std::thread::available_parallelism().map_or(1, usize::from).min(tests);
+    let shares: Vec<Vec<String>> = (0..workers)
+        .map(|worker| {
+            (0..tests).filter(|number| number % workers == worker).map(|number| number.to_string()).collect()
+        })
+        .collect();
+    std::thread::scope(|scope| {
+        let running: Vec<_> = shares
+            .iter()
+            .map(|share| {
+                scope.spawn(move || {
+                    Command::new(work)
+                        .args(share)
+                        .output()
+                        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+                })
+            })
+            .collect();
+        running.into_iter().filter_map(|worker| worker.join().ok()?.ok()).collect()
+    })
+}
+
 /// Runs the tests of a checked `module` named in `wanted` that LLVM can take. `defines` says
 /// whether the program defines a function by a name.
 pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> bool) -> LlvmTests {
@@ -260,30 +285,7 @@ pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> 
     };
     let fused = fusible(module);
     let prelude = prelude_functions();
-    let workers = std::thread::available_parallelism().map_or(1, usize::from).min(taken.len());
-    let shares: Vec<Vec<String>> = (0..workers)
-        .map(|worker| {
-            (0..taken.len())
-                .filter(|number| number % workers == worker)
-                .map(|number| number.to_string())
-                .collect()
-        })
-        .collect();
-    let ran: Vec<String> = std::thread::scope(|scope| {
-        let running: Vec<_> = shares
-            .iter()
-            .map(|share| {
-                let work = &work;
-                scope.spawn(move || {
-                    Command::new(work)
-                        .args(share)
-                        .output()
-                        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-                })
-            })
-            .collect();
-        running.into_iter().filter_map(|worker| worker.join().ok()?.ok()).collect()
-    });
+    let ran = run_workers(&work, taken.len());
     let _ = std::fs::remove_file(&work);
     let mut seen = vec![false; taken.len()];
     for (number, failure, set) in ran.iter().flat_map(|output| output.lines()).filter_map(read_line) {

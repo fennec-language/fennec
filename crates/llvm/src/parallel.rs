@@ -149,8 +149,11 @@ impl Emit<'_, '_, '_> {
     /// The shim for a range's shape, written once a module.
     fn shim(&mut self, shape: Shape) -> &'static str {
         let name = shape.name();
-        self.declare(stack_limit_global(true));
-        self.declare(failed_global(true));
+        // Shims are only in programs that run `parallel`, whose modules all declare these for
+        // each thread; asking the module keeps every declaration in it alike.
+        let threads = self.module.threads;
+        self.declare(stack_limit_global(threads));
+        self.declare(failed_global(threads));
         self.declare("declare i64 @fennec_aot_failed_flag()");
         self.declare("declare i64 @fennec_aot_stack_limit()");
         self.module.add_helper(name, shape.shim());

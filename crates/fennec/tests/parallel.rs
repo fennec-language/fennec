@@ -202,3 +202,44 @@ fn a_parallel_program_built_after_a_plain_one_shares_no_cached_module_that_disag
     assert_eq!(String::from_utf8_lossy(&ran_second.stdout), "99990000\n");
     Ok(())
 }
+
+/// A `for mut` over strings long enough to be blocks, changing some and putting the rest back
+/// as they were: each one put back is the list's own, held by nothing else on the way.
+const PUT_BACK: &str = "\
+def main(stdout: Stdout):
+    mut words = [f\"a word long enough to be held in a block of its own, {n}\" for n in range(5_000)]
+    for mut word in parallel(words):
+        if word.len() % 2 == 0:
+            word = word + \"!\"
+    stdout.print(words[0], words[1], words[4_999])
+    stdout.print(sum(word.len() for word in parallel(words)))
+";
+
+#[test]
+fn items_put_back_unchanged_stay_whole_with_text_inline_or_not() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-put-back-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("words.fen");
+    std::fs::write(&program, PUT_BACK)?;
+    let source = program.to_string_lossy().into_owned();
+    let interpreted = fennec(&["run", "--interp", &source], &dir)?;
+    // Headers make a `str` item three words in place; without them it's one, a block's address.
+    for inline in ["1", "0"] {
+        let executable = dir.join(format!("words-{inline}"));
+        let built = Command::new(env!("CARGO_BIN_EXE_fennec"))
+            .args(["build", "--llvm", &source, "-o"])
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_INLINE_TEXT", inline)
+            .output()?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).output()?;
+        assert!(ran.status.success(), "inline text {inline}: {}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}

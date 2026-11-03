@@ -235,7 +235,7 @@ impl Emit<'_, '_, '_> {
         let text = self.chars_between(whole, &start, &end, span);
         let item = list_item(&groups_kind)?;
         let held = self.item_kind(item)?;
-        let (Kind::Enum(_) | Kind::Boxed(_)) = held else {
+        let (Kind::Enum(_) | Kind::Boxed(_) | Kind::MaybeText) = held else {
             return Err(format!("a `Match`'s groups are {held:?}, which this backend doesn't take yet"));
         };
         let caught = self.new_list(item, groups);
@@ -287,6 +287,15 @@ impl Emit<'_, '_, '_> {
     fn write_option(&mut self, kind: &Kind, value: Option<&str>, at: &str) -> Result<(), String> {
         if let Kind::Maybe(_) = kind {
             self.line(&format!("store ptr {}, ptr {at}", value.unwrap_or("null")));
+            return Ok(());
+        }
+        // An optional string's header, all zero for `None`.
+        if *kind == Kind::MaybeText {
+            let header = match value {
+                Some(block) => self.text_from_block(block),
+                None => "zeroinitializer".to_owned(),
+            };
+            self.line(&format!("store {} {header}, ptr {at}", crate::headers::HEADER));
             return Ok(());
         }
         let case = if value.is_some() { "Some" } else { "None" };

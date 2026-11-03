@@ -32,14 +32,16 @@ pub(crate) fn threads_runtime_built() -> bool {
     static BUILT: OnceLock<bool> = OnceLock::new();
     *BUILT.get_or_init(|| {
         let Some(folder) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent() else { return false };
+        // `target/threads`, beside the plain build's `target/debug`, as CI builds it.
+        let Some(threads) = folder.parent().map(|target| target.join("threads")) else { return false };
         let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
         let built = Command::new(env!("CARGO"))
             .args(["build", "--quiet", "-p", "fennec-runtime", "--features", "threads", "--target-dir"])
-            .arg(folder.join("threads"))
+            .arg(&threads)
             .args((profile == "release").then_some("--release"))
             .status()
             .is_ok_and(|status| status.success());
-        let library = folder.join("threads").join(profile).join("libfennec_runtime.a");
+        let library = threads.join(profile).join("libfennec_runtime.a");
         built && fs::copy(library, folder.join("libfennec_runtime_threads.a")).is_ok()
     })
 }

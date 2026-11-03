@@ -2,7 +2,8 @@ name: Suite report
 
 # Every kernel built by `fennec build --llvm --release` beside its overflow-checked Rust twin:
 # counted with Valgrind on x86 and timed on x86 and Arm, best of ten runs that take turns with
-# the twin, with the median beside it, after each push to main and on demand.
+# the twin, with the median beside it, after each push to main and on demand. Its Go and Java
+# twins are timed against it the same way, to show where Fennec stands against them.
 # One table goes on the run's summary page, and each push's numbers join `history.jsonl` on the
 # `bench-history` branch, so trends show. Nothing waits on this, and being slow never fails it:
 # only a kernel that prints something other than its twin does.
@@ -37,6 +38,16 @@ jobs:
       # No build cache: the cache action's license isn't one dependency review allows for new
       # uses, and nothing waits on this job.
       - run: rustup component add llvm-tools-preview
+      # Go's and Java's twins are built the way anyone would build them, with each language's own
+      # toolchain at a fixed version, so a change in their numbers is a change in Fennec.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          cache: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "25"
       # The runner's virtual CPU hides the counters perf reads, so Valgrind counts by simulating.
       - name: Install Valgrind
         if: runner.os == 'Linux'
@@ -87,11 +98,17 @@ jobs:
           keys = {run["platform"]: [key for key in ("instructions", "time", "median")
                                     if key != "instructions" or any(k.get(key) is not None for k in run["kernels"])]
                   for run in runs}
-          label = {"instructions": "instructions %", "time": "best time %", "median": "median %"}
+          # Go's and Java's columns show only for a machine that measured them.
+          for run in runs:
+              keys[run["platform"]] += [key for key in ("go_kernel", "go", "java_kernel", "java")
+                                        if any(k.get(key) is not None for k in run["kernels"])]
+          label = {"instructions": "instructions %", "time": "best time %", "median": "median %",
+                   "go_kernel": "Go kernel % ≈", "go": "Go whole run %",
+                   "java_kernel": "Java kernel % ≈", "java": "Java whole run %"}
           header = ["kernel"]
           for run in runs:
               header += [f"{label[key]} ({run['platform']})" for key in keys[run["platform"]]]
-          print("## Suite report: LLVM against Rust\n")
+          print("## Suite report: LLVM against Rust, Go and Java\n")
           print("| " + " | ".join(header + ["notes"]) + " |")
           print("|---" + "|---:" * (len(header) - 1) + "|---|")
           names = sorted({kernel["name"] for run in runs for kernel in run["kernels"]})
@@ -104,15 +121,30 @@ jobs:
                       notes.append(f"{run['platform']}: {kernel['problem']}")
                   elif kernel.get("noisy"):
                       notes.append(f"noisy on {run['platform']}")
+                  for key, language in (("go", "Go"), ("java", "Java")):
+                      if kernel.get(f"{key}_problem"):
+                          notes.append(f"{run['platform']} {language}: {kernel[f'{key}_problem']}")
               print("| " + " | ".join(cells + ["; ".join(notes).replace("|", "\\|")]) + " |")
           print()
           for run in runs:
               counted = f"{shown(run['instructions'])}% by instructions, " if run["instructions"] is not None else ""
+              others = "".join(f"; against {language} roughly {shown(run.get(key + '_kernel'))}% by kernel time, "
+                               f"{shown(run[key])}% by whole run"
+                               for key, language in (("go", "Go"), ("java", "Java")) if run.get(key) is not None)
+              names = {"fennec": "Fennec", "rust": "Rust", "go": "Go", "java": "Java"}
+              startup = ", ".join(f"{names.get(key, key)} {value:.1f} ms"
+                                  for key, value in (run.get("startup_ms") or {}).items() if value is not None)
+              if startup:
+                  others += f"; startup {startup}"
               print(f"- {run['platform']}: geometric mean {counted}{shown(run['time'])}% by best time, "
-                    f"{shown(run.get('median'))}% by median time; slowest {run['slowest'] or '-'}")
+                    f"{shown(run.get('median'))}% by median time{others}; slowest {run['slowest'] or '-'}")
           print("\nEach is the overflow-checked Rust twin's count or time over LLVM's: 100 matches Rust, higher is faster. "
                 "Each side runs ten times, taking turns, and its best and median runs are shown. "
-                "Noisy means a median run was more than 5% slower than the best.")
+                "Noisy means a median run was more than 5% slower than the best. "
+                "The Go and Java columns are each twin's best time over LLVM's, the same way. "
+                "Whole run is each program from start to exit; Java's whole runs include the JVM starting and its JIT warming up. "
+                "Kernel ≈ takes each language's startup, a hello-world's best run, off its whole run first, so it's only roughly the kernel's time; "
+                "it's left out where either side's kernel took less time than its startup, and Java's still includes the JIT warming up.")
           TABLE
       # Only main's own runs join the history, one line per machine.
       - name: Add the run to the history

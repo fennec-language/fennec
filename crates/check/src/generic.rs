@@ -316,8 +316,13 @@ impl FnCx<'_> {
                 default: param.default.clone(),
             })
             .collect();
-        let returns = method.ret.as_ref().map_or(Type::Unit, |ret| resolve(self, ret));
-        Signature { params, returns, can_fail: false, generator: false }
+        let value = method.ret.as_ref().map_or(Type::Unit, |ret| resolve(self, ret));
+        // `-> T fails E` gives back a `T`, or fails with an `E`.
+        let returns = match &method.fails {
+            Some(error) => Type::result(value, resolve(self, error)),
+            None => value,
+        };
+        Signature { params, returns, can_fail: method.fails.is_some(), generator: false }
     }
 
     /// The method an interface among a type parameter's bounds gives it.
@@ -350,7 +355,12 @@ fn signature_text(def: &FnDef) -> String {
     } else {
         format!("[{}]", written.iter().map(|generic| generic.name.as_str()).collect::<Vec<_>>().join(", "))
     };
-    format!("{}{generics}({}){ret}", def.name, params.join(", "))
+    let fails = def
+        .fails
+        .as_ref()
+        .map(|error| format!(" fails {}", crate::program::written(error)))
+        .unwrap_or_default();
+    format!("{}{generics}({}){ret}{fails}", def.name, params.join(", "))
 }
 
 /// A type for a message: `Rock`, or "an int".

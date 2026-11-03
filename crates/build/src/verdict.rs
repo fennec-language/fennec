@@ -33,7 +33,7 @@ fn signature(def: &FnDef) -> Hash {
     if ["Fail(", "Try {", "Yield("].iter().any(|effect| body.contains(effect)) {
         return tree_hash(def);
     }
-    tree_hash(&(&def.name, &def.generics, &def.params, &def.ret))
+    tree_hash(&(&def.name, &def.generics, &def.params, &def.ret, &def.fails))
 }
 
 /// The definitions in some items.

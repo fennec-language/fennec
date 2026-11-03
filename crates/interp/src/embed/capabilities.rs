@@ -139,8 +139,9 @@ pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64)
 
 /// Runs one of std's functions written in the runtime, with the last `count` temporaries handed
 /// in as its arguments. `name` is a string block with its full name, with any named arguments
-/// on the end as a call writes them, like `json.dumps.names`, which come last.
-pub extern "C" fn std_call(name: i64, count: i64, start: i64, end: i64) -> i64 {
+/// on the end as a call writes them, like `json.dumps.names`, which come last. `ty` is a string
+/// block with the type a `loads` was asked for, written as in the program, or 0.
+pub extern "C" fn std_call(name: i64, ty: i64, count: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let at = span(start, end);
         let written = u64::try_from(name)
@@ -167,7 +168,12 @@ pub extern "C" fn std_call(name: i64, count: i64, start: i64, end: i64) -> i64 {
         for (arg, name) in args.iter_mut().skip(first_named).zip(named) {
             arg.name = Some(name.to_owned());
         }
-        let result = (module.call)(&mut state.interp, &function, args, at)?;
+        let result = if ty == 0 {
+            (module.call)(&mut state.interp, &function, args, at)?
+        } else {
+            let wanted = super::json::type_written(state, ty, at)?;
+            state.interp.typed_loads(&function, &wanted, args, at)?
+        };
         Ok(state.push(result))
     })
 }

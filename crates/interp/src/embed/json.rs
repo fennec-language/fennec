@@ -70,6 +70,11 @@ fn loads_as(name: &'static str, text: i64, ty: i64, start: i64, end: i64) -> i64
     })
 }
 
+/// The type written out in a string block.
+pub(super) fn type_written(state: &State, ty: i64, at: Span) -> Result<fennec_syntax::TypeExpr, Diagnostic> {
+    type_named(&text_of(state, ty, at)?, at)
+}
+
 /// A type written out as in a program, like `list[Save]`.
 fn type_named(written: &str, at: Span) -> Result<fennec_syntax::TypeExpr, Diagnostic> {
     let module = fennec_syntax::parse(&format!("type Loaded = {written}\n"))?;

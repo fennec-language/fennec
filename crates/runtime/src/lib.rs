@@ -291,7 +291,7 @@ export! {
     fennec_capability_block(a0: i64) -> i64 => capabilities::block(a0);
     fennec_capability_from_value(a0: i64, a1: i64, a2: i64) -> i64 => capabilities::from_value(a0, a1, a2);
     fennec_capability_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::call(a0, a1, a2, a3, a4);
-    fennec_std_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::std_call(a0, a1, a2, a3);
+    fennec_std_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::std_call(a0, a1, a2, a3, a4);
     fennec_toml_dumps(a0: i64, a1: i64, a2: i64) -> i64 => json::toml_dumps(a0, a1, a2);
     fennec_toml_loads(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => json::toml_loads(a0, a1, a2, a3);
     fennec_aot_image(a0: i64) => aot::image(a0);

@@ -2468,3 +2468,34 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// The same value passed `mut` and not: the one without `mut` keeps what it held.
+#[test]
+fn a_value_passed_both_ways_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "passed_both_ways",
+        r#"struct Bag:
+    label: str
+    count: int
+
+def both(items: list[int], mut others: list[int]) -> int:
+    others.append(9)
+    others[0] = 7
+    items.len() * 10 + items[0]
+
+def bags(bag: Bag, mut other: Bag) -> str:
+    other.count = 5
+    other.label = "a label long enough to be held in a block"
+    f"{bag.label} {bag.count}"
+
+def main(stdout: Stdout):
+    mut twice = [1, 2]
+    stdout.print(both(twice, mut twice), twice)
+    mut bag = Bag(label="short", count=1)
+    stdout.print(bags(bag, mut bag), bag)
+"#,
+    )
+}

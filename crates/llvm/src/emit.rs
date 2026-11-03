@@ -789,7 +789,9 @@ impl Emit<'_, '_, '_> {
         let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
         self.retain_value(value, held);
         // A local holds an optional string as a header, all zero for `None`.
-        let missing = if *held == Kind::MaybeText {
+        let missing = if *held == Kind::Str {
+            "false".to_owned()
+        } else if *held == Kind::MaybeText {
             self.header_is_none(value)
         } else {
             let missing = self.temp();
@@ -820,7 +822,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn value_for(&mut self, operand: &Operand, kind: &Kind) -> Result<(String, bool), String> {
         if *operand != Operand::None {
             let (value, held) = self.operand(operand)?;
-            if matches!(held, Kind::Maybe(_) | Kind::MaybeText) && self.is_optional(kind) {
+            if matches!(held, Kind::Maybe(_) | Kind::MaybeText | Kind::Str) && self.is_optional(kind) {
                 return self.optional_as_enum(&value, &held, kind);
             }
             return Ok((value, false));
@@ -1158,6 +1160,10 @@ impl Emit<'_, '_, '_> {
                 let cc = match op {
                     BinOp::Eq => "eq",
                     BinOp::NotEq => "ne",
+                    BinOp::Lt => "ult",
+                    BinOp::LtEq => "ule",
+                    BinOp::Gt => "ugt",
+                    BinOp::GtEq => "uge",
                     other => return Err(format!("it uses {other:?} on bools")),
                 };
                 let temp = self.temp();
@@ -1188,6 +1194,7 @@ impl Emit<'_, '_, '_> {
             {
                 self.same_blocks(op, (&a, &b))
             }
+            Kind::Closure(..) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_code(op, (&a, &b)),
             Kind::List(_) if op == BinOp::Add => self.joined_lists(&a, &b),
             Kind::List(item) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
                 self.lists_in_order(op, item, (&a, &b), span)?
@@ -1405,6 +1412,7 @@ impl Emit<'_, '_, '_> {
         let returns = self.module.kind(&callee.returns)?;
         let mut shown = Vec::with_capacity(args.len() + 2);
         let mut lent = Vec::new();
+        let mut held_copies = Vec::new();
         let returned_at = if returns.in_memory() {
             let at = self.label("%ret");
             let text = self.text_of(&returns);
@@ -1428,6 +1436,21 @@ impl Emit<'_, '_, '_> {
             if fresh {
                 lent.push(value.clone());
             }
+            // Passed `mut` as well, it's changed during the call, and this one mustn't see that.
+            let changing = callee.mut_params.iter().any(|at| args.get(*at) == Some(arg));
+            let value = if changing && !fresh && kind.in_memory() {
+                let place = self.place_for(&kind);
+                self.store_field(&kind, &value, &place, "");
+                self.retain_inline(&kind, &place);
+                held_copies.push((place.clone(), kind.clone()));
+                place
+            } else {
+                if changing && !fresh && kind.counted() && !matches!(kind, Kind::Str | Kind::MaybeText) {
+                    self.retain_value(&value, &kind);
+                    lent.push(value.clone());
+                }
+                value
+            };
             if kind.in_memory() {
                 shown.push(format!("ptr {value}"));
             } else {
@@ -1462,6 +1485,9 @@ impl Emit<'_, '_, '_> {
         }
         for block in lent {
             self.release(&block);
+        }
+        for (place, kind) in held_copies {
+            self.release_inline(&kind, &place);
         }
         match (dest, returned_at) {
             (Some(dest), Some(at)) => self.assign_memory_owned(dest, &at)?,
@@ -1528,7 +1554,12 @@ impl Emit<'_, '_, '_> {
             "json.dumps" | "json.loads" | "toml.dumps" | "toml.loads" => {
                 self.json_builtin(dest, name, args, span)
             }
-            "json.dumps.names" | "toml.dumps.names" => self.std_call(dest, name, args, span),
+            named if ["json.dumps.", "json.loads.", "toml.dumps.", "toml.loads."]
+                .iter()
+                .any(|format| named.starts_with(format)) =>
+            {
+                self.std_call(dest, name, args, span)
+            }
             crypto if crypto.starts_with("crypto.") => self.std_call(dest, name, args, span),
             "error.with_cause" => {
                 // Nothing reads what caused an error yet, so the wrapper is all there is.

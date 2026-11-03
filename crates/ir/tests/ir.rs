@@ -2827,3 +2827,17 @@ fn a_type_with_its_own_str_prints_through_it() {
 "#
     );
 }
+
+#[test]
+fn a_result_passed_on_fails_every_way_its_function_can() {
+    // `outer` fails with `Worse` itself and passes on `inner`'s result, which fails with `Bad`,
+    // so it gives back a result that can fail with either.
+    let source = "error Bad:\n    why: str\n\nerror Worse:\n    why: str\n\ndef inner(n: int) -> int:\n    \
+                  if n < 0:\n        fail Bad(why=\"neg\")\n    n\n\ndef outer(n: int) -> int:\n    if n > 9:\n        \
+                  fail Worse(why=\"big\")\n    inner(n)\n";
+    let program = lowered(source).unwrap();
+    assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
+    let outer = program.functions.iter().find(|function| function.name == "outer").unwrap();
+    let errors = Type::Errors(vec!["Bad".to_owned(), "Worse".to_owned()]);
+    assert_eq!(outer.returns, Type::Result(Box::new(Type::Int), Box::new(errors)));
+}

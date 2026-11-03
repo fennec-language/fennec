@@ -100,9 +100,10 @@ jobs:
                   for run in runs}
           # Go's and Java's columns show only for a machine that measured them.
           for run in runs:
-              keys[run["platform"]] += [key for key in ("go_kernel", "go", "java_kernel", "java")
+              keys[run["platform"]] += [key for key in ("dev", "release_build_ms", "dev_build_ms", "go_kernel", "go", "java_kernel", "java")
                                         if any(k.get(key) is not None for k in run["kernels"])]
           label = {"instructions": "instructions %", "time": "best time %", "median": "median %",
+                   "dev": "dev best time %", "release_build_ms": "release build ms", "dev_build_ms": "dev build ms",
                    "go_kernel": "Go kernel % ≈", "go": "Go whole run %",
                    "java_kernel": "Java kernel % ≈", "java": "Java whole run %"}
           header = ["kernel"]
@@ -137,10 +138,11 @@ jobs:
               if startup:
                   others += f"; startup {startup}"
               print(f"- {run['platform']}: geometric mean {counted}{shown(run['time'])}% by best time, "
-                    f"{shown(run.get('median'))}% by median time{others}; slowest {run['slowest'] or '-'}")
+                    f"{shown(run.get('median'))}% by median time, dev build {shown(run.get('dev'))}%{others}; slowest {run['slowest'] or '-'}")
           print("\nEach is the overflow-checked Rust twin's count or time over LLVM's: 100 matches Rust, higher is faster. "
                 "Each side runs ten times, taking turns, and its best and median runs are shown. "
                 "Noisy means a median run was more than 5% slower than the best. "
+                "Dev is `fennec build --llvm` without `--release`, cached a function at a time; each build's time is from an empty Fennec home. "
                 "The Go and Java columns are each twin's best time over LLVM's, the same way. "
                 "Whole run is each program from start to exit; Java's whole runs include the JVM starting and its JIT warming up. "
                 "Kernel ≈ takes each language's startup, a hello-world's best run, off its whole run first, so it's only roughly the kernel's time; "

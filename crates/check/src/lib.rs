@@ -167,6 +167,8 @@ pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> 
 
 fn resolved(module: &mut Module, checked: Checked) -> Signatures {
     fennec_syntax::visit::type_fields_from_defaults(module);
+    // Where each `parallel(xs)` a `for mut` loops over now holds just `xs`.
+    let mut parallel_items = BTreeSet::new();
     if !checked.places.is_empty() {
         fennec_syntax::visit::functions_mut(module, &mut |def| {
             alias::write_in(&mut def.body, &checked.places);
@@ -206,6 +208,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
                 && let Some(items) = args.first()
             {
                 *expr = items.value.clone();
+                parallel_items.insert((expr.span.start, expr.span.end));
             }
             if checked.empty_collections.contains(&span) {
                 fennec_syntax::visit::empty_collection(expr);
@@ -219,7 +222,7 @@ fn resolved(module: &mut Module, checked: Checked) -> Signatures {
         });
     }
     fennec_syntax::fuse::stored_stages(module);
-    checked.into_signatures()
+    Signatures { parallel_items, ..checked.into_signatures() }
 }
 
 impl Checked {
@@ -352,6 +355,9 @@ pub struct Signatures {
     errors: BTreeMap<String, Struct>,
     locals: BTreeMap<String, Type>,
     types: Types,
+    /// Where a `for mut` loop's `parallel(xs)` was, which is just `xs` once resolved, so a
+    /// backend that runs `parallel` on threads can still tell (see [`Signatures::parallel_items`]).
+    parallel_items: BTreeSet<(u32, u32)>,
 }
 
 /// A struct's fields, with their types, in the order they're written.
@@ -374,6 +380,12 @@ pub struct Enum {
 }
 
 impl Signatures {
+    /// Whether the expression at `span`, what a `for mut` loops over, was written
+    /// `parallel(xs)` and is just `xs` now.
+    pub fn parallel_items(&self, span: Span) -> bool {
+        self.parallel_items.contains(&(span.start, span.end))
+    }
+
     /// Whether `==` on values of this type calls a type's own `def ==`: its own, or one of a
     /// type it holds, in a field, an enum case or a collection.
     pub fn own_equality(&self, ty: &Type) -> bool {

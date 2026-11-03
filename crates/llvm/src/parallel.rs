@@ -294,16 +294,16 @@ impl Emit<'_, '_, '_> {
         let slot = self.item_address(&held, &memory, &place);
         // What was there is let go only once the new item is in, which may be the same item,
         // held by nothing else while it's put back.
-        let mut old = Vec::new();
+        let mut old = None;
+        let mut old_inline = None;
         if back {
-            if item.in_memory() {
-                for (offset, held) in self.inline_blocks(&item) {
-                    let (place, block, text) = (self.offset(&slot, offset), self.temp(), self.text_of(&held));
-                    self.line(&format!("{block} = load {text}, ptr {place}"));
-                    old.push((block, held));
-                }
+            if self.holds_inline(&item) {
+                let (place, held) = (self.place_for(&item), self.temp());
+                self.line(&format!("{held} = load {memory}, ptr {slot}"));
+                self.line(&format!("store {memory} {held}, ptr {place}"));
+                old_inline = Some(place);
             } else if item.counted() {
-                old.push((self.load_field(&item, &slot, ITEM_ACCESS), item.clone()));
+                old = Some(self.load_field(&item, &slot, ITEM_ACCESS));
             }
         }
         if item.in_memory() {
@@ -314,8 +314,11 @@ impl Emit<'_, '_, '_> {
             let (value, value_kind) = self.operand(new)?;
             self.put_item(&item, &value_kind, &value, &slot);
         }
-        for (block, held) in old {
-            self.release_kind(&block, &held);
+        if let Some(block) = old {
+            self.release_kind(&block, &item);
+        }
+        if let Some(place) = old_inline {
+            self.release_inline(&item, &place);
         }
         Ok(())
     }

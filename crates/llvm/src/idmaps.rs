@@ -137,6 +137,7 @@ impl Emit<'_, '_, '_> {
             self.assign(dest, &block)?;
             self.offset(&block, FIELDS_OFFSET)
         } else {
+            self.release_held(dest)?;
             let (slot, memory) = (self.slot(dest), optional.memory(self.module.layouts));
             self.line(&format!("store {memory} zeroinitializer, ptr {slot}"));
             slot

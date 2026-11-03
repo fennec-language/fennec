@@ -538,7 +538,7 @@ impl Emit<'_, '_, '_> {
             let _ = writeln!(self.allocas, "  %l{at} = alloca {text}");
             if kind.counted() && text == "ptr" {
                 let _ = writeln!(self.allocas, "  store ptr null, ptr %l{at}");
-            } else if kind.counted() || !self.inline_blocks(kind).is_empty() {
+            } else if kind.counted() || self.holds_inline(kind) {
                 let _ = writeln!(self.allocas, "  store {text} zeroinitializer, ptr %l{at}");
             }
         }
@@ -960,7 +960,7 @@ impl Emit<'_, '_, '_> {
         let kind = self.kind_of(dest)?.clone();
         let text = self.text_of(&kind);
         let (held, slot) = (self.temp(), self.slot(dest));
-        let owner = self.owns_inline(dest);
+        let owner = self.keeps_inline(dest);
         if owner {
             self.release_inline(&kind, &slot);
         }
@@ -978,7 +978,7 @@ impl Emit<'_, '_, '_> {
         let kind = self.kind_of(dest)?.clone();
         let text = self.text_of(&kind);
         let (held, slot) = (self.temp(), self.slot(dest));
-        if self.owns_inline(dest) {
+        if self.keeps_inline(dest) {
             self.release_inline(&kind, &slot);
         } else {
             // Nothing here owns them, so they're let go of now.
@@ -992,9 +992,26 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
-    /// Whether a local holds an inline struct with blocks in it, and owns them.
+    /// Lets go of what a local's inline struct or enum holds, before it's written over in place.
+    pub(crate) fn release_held(&mut self, dest: LocalId) -> Result<(), String> {
+        if self.keeps_inline(dest) {
+            let (kind, slot) = (self.kind_of(dest)?.clone(), self.slot(dest));
+            self.release_inline(&kind, &slot);
+        }
+        Ok(())
+    }
+
+    /// Whether what's written to a local stays owned there: by the local, or for a `mut`
+    /// parameter by whatever it was called with.
+    fn keeps_inline(&self, local: LocalId) -> bool {
+        self.owns_inline(local)
+            || (self.is_mut_param(local)
+                && self.kinds.get(local.0).is_some_and(|kind| self.holds_inline(kind)))
+    }
+
+    /// Whether a local holds an inline struct or enum with blocks in it, and owns them.
     pub(crate) fn owns_inline(&self, local: LocalId) -> bool {
-        self.kinds.get(local.0).is_some_and(|kind| !self.inline_blocks(kind).is_empty())
+        self.kinds.get(local.0).is_some_and(|kind| self.holds_inline(kind))
             && !self.is_mut_param(local)
             && !self.is_lent(local)
             && self.known.alias(local).is_none()
@@ -1098,7 +1115,7 @@ impl Emit<'_, '_, '_> {
             },
             Kind::Str => self.string_binary(op, (&a, &b))?,
             Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
-            Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b)),
+            Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b))?,
             Kind::Struct(id) => self.compare_structs(op, id, (&a, &b))?,
             Kind::Boxed(id) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
                 self.compare_boxed(op, id, (&a, &b))?

@@ -80,6 +80,7 @@ impl Emit<'_, '_, '_> {
         let base = if let Some(block) = &block {
             self.offset(block, FIELDS_OFFSET)
         } else {
+            self.release_held(dest)?;
             let (slot, text) = (self.slot(dest), self.text_of(&kind));
             self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
             slot
@@ -140,9 +141,6 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {value})"));
             }
             Kind::Struct(id) | Kind::Enum(id) => {
-                if matches!(kind, Kind::Enum(_)) && self.holds_blocks(*id)? {
-                    return Err("it writes JSON of a value held in place that holds blocks".to_owned());
-                }
                 let block = self.new_block(*id)?;
                 let fields = self.offset(&block, FIELDS_OFFSET);
                 self.store_field(kind, value, &fields, "");
@@ -234,9 +232,6 @@ impl Emit<'_, '_, '_> {
                 ));
             }
             Kind::Struct(id) | Kind::Enum(id) => {
-                if matches!(kind, Kind::Enum(_)) && self.holds_blocks(*id)? {
-                    return Err("it reads JSON into a value held in place that holds blocks".to_owned());
-                }
                 let shape = self.shape_of(*id)?;
                 self.declare("declare ptr @fennec_box_from_value(i64, i64, i64, i64) nounwind");
                 self.line(&format!(

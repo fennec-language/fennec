@@ -20,19 +20,19 @@ const KERNEL: &str = "ecs";
 const OUT_DIR: &str = "target/bench/parallel";
 
 /// One program to time: how long each of its runs took, and which variable says its threads.
-struct Side {
+pub(crate) struct Side {
     command: PathBuf,
     threads: Option<(&'static str, usize)>,
-    times: Vec<Duration>,
+    pub(crate) times: Vec<Duration>,
 }
 
 impl Side {
-    fn new(command: PathBuf, threads: Option<(&'static str, usize)>) -> Side {
+    pub(crate) fn new(command: PathBuf, threads: Option<(&'static str, usize)>) -> Side {
         Side { command, threads, times: Vec::new() }
     }
 
     /// Runs it once, giving back what it printed.
-    fn run(&mut self) -> Result<String, String> {
+    pub(crate) fn run(&mut self) -> Result<String, String> {
         let mut command = Command::new(&self.command);
         if let Some((variable, threads)) = self.threads {
             command.env(variable, threads.to_string());
@@ -52,14 +52,19 @@ impl Side {
     }
 
     /// Its best run, in seconds, and whether the median was far from it.
-    fn best(&self) -> (f64, bool) {
+    pub(crate) fn best(&self) -> (f64, bool) {
         let (best, _, spread) = summary(&self.times);
         (best, spread > crate::llvm_suite::NOISY)
     }
 }
 
 /// Builds a kernel through LLVM, with the runtime that has threads when `threads`.
-fn built(fennec: &Path, source: &Path, executable: PathBuf, threads: bool) -> Result<PathBuf, String> {
+pub(crate) fn built(
+    fennec: &Path,
+    source: &Path,
+    executable: PathBuf,
+    threads: bool,
+) -> Result<PathBuf, String> {
     let mut command = Command::new(fennec);
     command.args(["build", "--llvm", "--release"]).arg(source).arg("-o").arg(&executable);
     if threads {
@@ -73,7 +78,7 @@ fn built(fennec: &Path, source: &Path, executable: PathBuf, threads: bool) -> Re
 }
 
 /// Builds the twins, with the suite's fixed CPU level, in their own project's locked versions.
-fn twins(dir: &Path, out: &Path) -> Result<PathBuf, String> {
+pub(crate) fn twins(dir: &Path, out: &Path) -> Result<PathBuf, String> {
     let target = std::env::current_dir().map_err(|err| err.to_string())?.join(out).join("twin");
     let mut command = Command::new("cargo");
     command
@@ -92,7 +97,7 @@ fn twins(dir: &Path, out: &Path) -> Result<PathBuf, String> {
 }
 
 /// A time, with a mark when its runs were noisy.
-fn shown(side: &Side) -> String {
+pub(crate) fn shown(side: &Side) -> String {
     let (best, noisy) = side.best();
     format!("{:.0} ms{}", best * 1000.0, if noisy { " (noisy)" } else { "" })
 }

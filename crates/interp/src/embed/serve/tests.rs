@@ -33,16 +33,53 @@ fn echo() -> Handler {
     })
 }
 
+/// What each connection's handler gave back, as they finish, for a test to wait on rather
+/// than on a clock.
+type Finished = Arc<(std::sync::Mutex<Vec<i64>>, std::sync::Condvar)>;
+
+/// `handler`, noting what it gives back for each connection in `finished`.
+fn noting(handler: Handler, finished: &Finished) -> Handler {
+    let finished = Arc::clone(finished);
+    Arc::new(move |conn: Conn| {
+        let result = handler(conn);
+        finished.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(result);
+        finished.1.notify_all();
+        result
+    })
+}
+
+/// Waits until `count` connections have finished, giving back what each gave back, in the
+/// order they finished. The bound is only there so a broken server fails the test rather than
+/// hanging it.
+fn wait_for(finished: &Finished, count: usize) -> Vec<i64> {
+    let ended = finished.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let waited = finished.1.wait_timeout_while(ended, Duration::from_secs(30), |ended| ended.len() < count);
+    // Copied out and let go before checking, so a failure here can't leave the lock poisoned
+    // for a task still running.
+    let ended = waited.map_or_else(|poisoned| poisoned.into_inner().0.clone(), |(ended, _)| ended.clone());
+    assert!(ended.len() >= count, "only {} of {count} connections finished", ended.len());
+    ended
+}
+
 /// Serves with `handler` on `workers` workers while `clients` runs, then stops.
 fn run(workers: usize, handler: &Handler, clients: impl FnOnce(SocketAddr) + Send + 'static) -> Served {
     let (listener, address) = listener();
+    let (sent, ran) = std::sync::mpsc::channel();
     let started = move |stopper: Stopper| {
         std::thread::spawn(move || {
-            clients(address);
+            // Stopped however the clients went, so a failing one fails the test rather than
+            // leaving the server running and the test hanging.
+            let went = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| clients(address)));
             stopper.stop();
+            let _ = sent.send(went);
         });
     };
-    serve(listener, workers, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>), handler, started).unwrap()
+    let served =
+        serve(listener, workers, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>), handler, started);
+    if let Ok(Err(panic)) = ran.recv() {
+        std::panic::resume_unwind(panic);
+    }
+    served.unwrap()
 }
 
 /// A client that sends `lines` and checks each comes back.
@@ -97,12 +134,19 @@ fn many_connections_wait_at_once_on_one_worker() {
 
 #[test]
 fn a_failing_connection_ends_only_its_own_task() {
-    let served = run(2, &echo(), |address| {
+    let finished = Finished::default();
+    let waited = Arc::clone(&finished);
+    let served = run(2, &noting(echo(), &finished), move |address| {
         let mut failing = std::net::TcpStream::connect(address).unwrap();
         failing.write_all(b"fail\n").unwrap();
         talk(address, &["still here".to_owned()]);
+        // Stopped only once both have finished, so neither is cancelled by the stop first.
+        wait_for(&waited, 2);
     });
     assert_eq!(served, Served { connections: 2, failed: 1 });
+    let mut ended = wait_for(&finished, 2);
+    ended.sort_unstable();
+    assert_eq!(ended, [0, 1]);
 }
 
 #[test]
@@ -116,14 +160,45 @@ fn a_wait_with_a_timeout_gives_up_while_others_go_on() {
             }
             _ => 1,
         });
-    let served = run(1, &timing_out, |address| {
+    let finished = Finished::default();
+    let waited = Arc::clone(&finished);
+    let served = run(1, &noting(timing_out, &finished), move |address| {
         let quiet = std::net::TcpStream::connect(address).unwrap();
         talk(address, &["answered".to_owned()]);
-        std::thread::sleep(Duration::from_millis(300));
+        // However coarse the clock, the quiet one gives up before it's closed or the server
+        // stops: both wait until it and the answered one have finished.
+        wait_for(&waited, 2);
         drop(quiet);
     });
-    // The quiet one timed out and failed; the other was answered.
+    // The quiet one timed out, and the other was answered, whichever finished first.
     assert_eq!(served, Served { connections: 2, failed: 1 });
+    let mut ended = wait_for(&finished, 2);
+    ended.sort_unstable();
+    assert_eq!(ended, [0, 7]);
+}
+
+#[test]
+fn a_connection_that_sends_nothing_times_out_however_often_its_task_is_woken() {
+    // Woken at every poll, as a socket that keeps saying it's writable wakes its task, a read
+    // that's never answered still gives up when its time's up, not later each time.
+    let quiet: Handler = Arc::new(|mut conn: Conn| {
+        super::WAKE_ALL.set(true);
+        let read = conn.read_line(Some(Duration::from_millis(100)));
+        super::WAKE_ALL.set(false);
+        match read {
+            Err(Failure::TimedOut(after)) if after == Duration::from_millis(100) => 7,
+            _ => 1,
+        }
+    });
+    let finished = Finished::default();
+    let waited = Arc::clone(&finished);
+    let served = run(1, &noting(quiet, &finished), move |address| {
+        let silent = std::net::TcpStream::connect(address).unwrap();
+        wait_for(&waited, 1);
+        drop(silent);
+    });
+    assert_eq!(wait_for(&finished, 1), [7]);
+    assert_eq!(served, Served { connections: 1, failed: 1 });
 }
 
 #[test]

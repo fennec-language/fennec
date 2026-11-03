@@ -26,7 +26,9 @@ mod budgets;
 mod kernels;
 mod llvm_suite;
 mod measure;
+mod other_twins;
 mod report;
+mod startup;
 mod targets;
 
 use std::path::{Path, PathBuf};

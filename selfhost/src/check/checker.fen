@@ -32,7 +32,10 @@ struct Checker:
             self.check_body(test.body, [])
         for name, info in self.program.types.items():
             if info.kind == .StructKind or not info.prelude:
-                self.check_fields(info.type_def.fields, self.program.type_params(name))
+                generics = self.program.type_params(name)
+                self.check_fields(info.type_def.fields, generics)
+                for case in info.type_def.cases:
+                    self.check_fields(case.fields, generics)
 
     ## Reports types written in signatures and interfaces that don't mean anything, and
     ## type parameters bound to something that isn't an interface.

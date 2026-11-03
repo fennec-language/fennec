@@ -1,5 +1,8 @@
-//! `fennec run`: checks a program, then runs its `main` as native code, or with the
-//! interpreter for `--interp` or for what can't be compiled yet.
+//! `fennec run`: checks a program, then runs its `main` as native code. That's the cached dev
+//! build LLVM makes, as `fennec build --llvm` does, compiled a function at a time so an edit
+//! recompiles only what it touched. Where LLVM can't build the program yet it says why, in
+//! one line, and the JIT runs it, or the interpreter what the JIT can't. `--jit` and
+//! `--interp` ask for those directly.
 
 use std::io::{BufReader, BufWriter, Write};
 use std::process::ExitCode;
@@ -9,11 +12,12 @@ use fennec_interp::Inputs;
 /// What runs a program.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Engine {
-    /// Native code, or the interpreter for what can't be compiled yet.
+    /// The LLVM dev build, or the JIT where LLVM can't build it, or the interpreter for what
+    /// neither can compile yet.
     Native,
-    /// Native code, saying when the interpreter stands in. The benchmarks ask for this.
+    /// The JIT, saying when the interpreter stands in. The benchmarks ask for this.
     NativeNoted,
-    /// Native code, without running the tests first.
+    /// As `Native`, without running the tests first.
     Untested,
     Interpreter,
 }
@@ -30,6 +34,12 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
+    if matches!(engine, Engine::Native | Engine::Untested) && !cfg!(windows) {
+        match built_and_run(&program, path, arguments) {
+            Ok(code) => return code,
+            Err(why) => eprintln!("note: running this with the JIT, since LLVM can't build it: {why}"),
+        }
+    }
     let module = &program.module;
     // Not locked: native code writes to standard output itself as the program runs.
     let mut out = BufWriter::new(std::io::stdout());
@@ -55,6 +65,34 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
             ExitCode::FAILURE
         }
     }
+}
+
+/// Builds the program through LLVM's cached dev build and runs it, handing it the arguments,
+/// this process's input and output, and its exit code. Windows can't link executables yet, so
+/// it never gets here.
+fn built_and_run(
+    program: &fennec_kit::Program,
+    path: &str,
+    arguments: &[String],
+) -> Result<ExitCode, String> {
+    // A program started from a kept image doesn't have its source, which an executable keeps
+    // to point a failure at. Its files haven't changed since, so reading them again matches.
+    let whole;
+    let program = if program.sources.files().next().is_none() {
+        let read = fennec_kit::load(std::path::Path::new(path), path, fennec_kit::Entry::Main);
+        let sources = read.map_err(|_| "its source couldn't be read again".to_owned())?.sources;
+        whole = fennec_kit::Program { module: program.module.clone(), sources, manifest: None };
+        &whole
+    } else {
+        program
+    };
+    let executable = std::env::temp_dir().join(format!("fennec-run-{}", std::process::id()));
+    crate::aot::executable(program, &executable, false)?;
+    let ran = std::process::Command::new(&executable).args(arguments).status();
+    let _ = std::fs::remove_file(&executable);
+    let status = ran.map_err(|err| format!("the program it built didn't start: {err}"))?;
+    // A program stopped by a signal has no code of its own.
+    Ok(status.code().and_then(|code| u8::try_from(code).ok()).map_or(ExitCode::FAILURE, ExitCode::from))
 }
 
 /// A failure against its source. A program started from a kept image doesn't have its source, so

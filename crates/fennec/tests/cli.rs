@@ -531,7 +531,16 @@ fn run_takes_a_kits_folder_in_either_engine() {
         let output = fennec(args, "").unwrap();
         assert!(output.status.success(), "{}", text(&output.stderr));
         assert_eq!(text(&output.stdout), expected);
-        assert_eq!(text(&output.stderr), "", "the JIT shouldn't need the interpreter for the whole program");
+        // LLVM doesn't take arena yet, so `run` says why in one line before the JIT runs it,
+        // and the JIT shouldn't need the interpreter for the whole program.
+        let said = text(&output.stderr);
+        let expected_note = args.len() == 2 && !cfg!(windows);
+        assert_eq!(said.lines().count(), usize::from(expected_note), "{said}");
+        assert!(
+            !expected_note
+                || said.starts_with("note: running this with the JIT, since LLVM can't build it: `main`"),
+            "{said}"
+        );
     }
 }
 

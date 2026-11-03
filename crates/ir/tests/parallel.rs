@@ -1,5 +1,5 @@
-//! `parallel` loops lowered for a backend that runs them on threads: each body lifted into a
-//! function of its own, only when the backend asks.
+//! `parallel` loops lowered for a backend that runs them on threads: the work for a range of
+//! positions lifted into a function of its own, only when the backend asks.
 
 use fennec_ir::{Function, InstKind, Operand, Options, Program, lower, lower_with, validate};
 
@@ -30,6 +30,17 @@ fn parallel_calls(function: &Function) -> Vec<(Vec<Operand>, bool)> {
         .collect()
 }
 
+/// The builtins a function calls, by name, in order.
+fn builtins(function: &Function) -> Vec<String> {
+    let insts = function.blocks.iter().flat_map(|block| &block.insts);
+    insts
+        .filter_map(|inst| match &inst.kind {
+            InstKind::Builtin { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn lifted(program: &Program) -> Vec<&Function> {
     program.functions.iter().filter(|function| function.name.contains(".parallel@")).collect()
 }
@@ -46,12 +57,17 @@ def main(stdout: Stdout):
 #[test]
 fn a_parallel_loop_s_body_is_lifted_into_a_function_of_its_own() {
     let program = lowered(SCALE, OUTLINED).unwrap();
-    let [body] = lifted(&program)[..] else { panic!("one body is lifted: {:?}", program.functions) };
-    // What it captures comes first, then the item.
-    assert_eq!(body.params, 3);
-    let names: Vec<_> = body.locals.iter().take(3).map(|local| local.name.as_deref()).collect();
-    assert_eq!(names, [Some("stdout"), Some("by"), Some("x")]);
-    assert_eq!(body.mut_params.len(), 0);
+    let [range] = lifted(&program)[..] else { panic!("one range is lifted: {:?}", program.functions) };
+    // What its body captures comes first, then the list, then where the range starts and ends.
+    assert_eq!(range.params, 5);
+    let names: Vec<_> = range.locals.iter().take(5).map(|local| local.name.as_deref()).collect();
+    let hidden = |name: &str| Some(format!("\0parallel.{name}"));
+    let expected =
+        [Some("stdout".to_owned()), Some("by".to_owned()), hidden("list"), hidden("from"), hidden("to")];
+    assert_eq!(names, expected.iter().map(Option::as_deref).collect::<Vec<_>>());
+    assert_eq!(range.mut_params.len(), 0);
+    // It goes through its range one position at a time, as a counted loop.
+    assert_eq!(range.counts.len(), 1, "{range}");
     // The loop is a call of `parallel.for` with the list and a closure of the body.
     let scale = function_named(&program, "scale").unwrap();
     let calls = parallel_calls(scale);
@@ -61,7 +77,7 @@ fn a_parallel_loop_s_body_is_lifted_into_a_function_of_its_own() {
     assert!(!changes);
     let closure =
         scale.blocks.iter().flat_map(|block| &block.insts).any(
-            |inst| matches!(&inst.kind, InstKind::MakeClosure { function, .. } if *function == body.name),
+            |inst| matches!(&inst.kind, InstKind::MakeClosure { function, .. } if *function == range.name),
         );
     assert!(closure, "{scale}");
 }
@@ -92,7 +108,12 @@ def main(stdout: Stdout):
     // A map takes the list and the closure; a sum those and its start, here `0.0`.
     assert_eq!(called("squares", "parallel.map"), Some(2));
     assert_eq!(called("total", "parallel.sum"), Some(3));
-    let sum = lifted(&program).into_iter().find(|body| body.name.starts_with("total.")).unwrap();
+    // A map's range takes the new list too, and puts each item's result in it.
+    let map = lifted(&program).into_iter().find(|range| range.name.starts_with("squares.")).unwrap();
+    assert_eq!(map.params, 4);
+    assert_eq!(builtins(map), ["parallel.put"]);
+    // A sum's range gives back its partial.
+    let sum = lifted(&program).into_iter().find(|range| range.name.starts_with("total.")).unwrap();
     assert_eq!(sum.returns, fennec_check::Type::Float);
 }
 
@@ -113,11 +134,40 @@ def main(stdout: Stdout):
 ";
     let program = lowered(source, OUTLINED).unwrap();
     // Only the loop written over `parallel(xs)` is lifted, though both loop over a list now.
-    let [body] = lifted(&program)[..] else { panic!("one body is lifted") };
-    assert_eq!(body.mut_params, [1]);
-    let calls = parallel_calls(function_named(&program, "grow").unwrap());
+    let [range] = lifted(&program)[..] else { panic!("one range is lifted") };
+    // Each changed item goes back where it came from.
+    assert_eq!(builtins(range), ["parallel.put_back"]);
+    let grow = function_named(&program, "grow").unwrap();
+    let calls = parallel_calls(grow);
     assert_eq!(calls.len(), 1);
     assert!(calls[0].1);
+    // The list is made the loop's own before the range holds it.
+    assert_eq!(builtins(grow).first().map(String::as_str), Some("parallel.own"), "{grow}");
+}
+
+#[test]
+fn the_list_is_worked_out_before_what_the_body_captures() {
+    // `take(mut state)` changes `state`, which the body reads: as written, the list comes
+    // first, so the body sees `state` as `take` left it.
+    let source = "\
+def take(mut state: list[int]) -> list[int]:
+    state.append(1)
+    [2, 3]
+
+def run(stdout: Stdout, mut state: list[int]):
+    for x in parallel(take(mut state)):
+        stdout.print(x, state)
+
+def main(stdout: Stdout):
+    mut state = [0]
+    run(stdout, mut state)
+";
+    let program = lowered(source, OUTLINED).unwrap();
+    let run = function_named(&program, "run").unwrap();
+    let insts: Vec<_> = run.blocks.iter().flat_map(|block| &block.insts).collect();
+    let called = insts.iter().position(|inst| matches!(&inst.kind, InstKind::Call { .. }));
+    let closure = insts.iter().position(|inst| matches!(&inst.kind, InstKind::MakeClosure { .. }));
+    assert!(called.is_some() && called < closure, "{run}");
 }
 
 #[test]

@@ -1,14 +1,23 @@
-//! `parallel(xs)` for a backend that runs it on threads. What runs for each item is lifted into
-//! a function of its own, as an arrow function is: its first parameters take what it captures,
-//! and its last the item. Then a builtin, given the list and a closure of that function, runs it
-//! over the list's positions on as many threads as the backend likes:
-//! - `for x in parallel(xs): body` becomes `parallel.for(xs, body)`. The checker has made sure
+//! `parallel(xs)` for a backend that runs it on threads. The work for a range of the list's
+//! positions is lifted into a function of its own, as an arrow function is: its first
+//! parameters take what it captures, then the list, then where the range starts and ends. The
+//! function goes through its range one position at a time, as an ordinary counted loop, so the
+//! backend compiles it like any other. Then a builtin, given the list and a closure of that
+//! function, runs it over ranges covering the list, on as many threads as the backend likes:
+//! - `for x in parallel(xs): body` becomes `parallel.for(xs, range)`. The checker has made sure
 //!   the body writes only its own item and names, so its iterations are independent. A
-//!   `for mut x` body changes its item, and `parallel.for` then changes the list, as
-//!   `list.append` does.
-//! - `[f(x) for x in parallel(xs)]` becomes `parallel.map(xs, f)`, a list of what `f` gives.
-//! - `sum(f(x) for x in parallel(xs))` becomes `parallel.sum(xs, f, start)`, which adds what `f`
-//!   gives in the runtime's fixed tree, so it's the same bit for bit however many threads run.
+//!   `for mut x` puts each changed item back where it came from, with `parallel.put_back`, and
+//!   `parallel.for` then changes the list, as `list.append` does. The list is made the loop's
+//!   own first (`parallel.own`), so the change reaches only it.
+//! - `[f(x) for x in parallel(xs)]` becomes `parallel.map(xs, range)`. The range takes the new
+//!   list too, and puts each item's result at its position, with `parallel.put`.
+//! - `sum(f(x) for x in parallel(xs))` becomes `parallel.sum(xs, range, start)`. The range gives
+//!   back its partial, folded from its first item, and the backend adds them in the runtime's
+//!   fixed tree, so it's the same bit for bit however many threads run, and the same as the
+//!   interpreter.
+//!
+//! `put` and `put_back` write a position the backend knows only this range writes, so they
+//! change the list in place, never copying it.
 //!
 //! This is done only when the backend asks (`Options::outline_parallel`), and only where the
 //! lifted function can hold what's written: a body that leaves the loop early or the function,
@@ -18,11 +27,12 @@
 use std::collections::HashMap;
 
 use fennec_check::Type;
-use fennec_syntax::{Expr, ExprKind, Span, Stmt, StmtKind, visit};
+use fennec_syntax::{BinOp, Expr, ExprKind, Span, Stmt, StmtKind, visit};
 
 use super::generics::FunctionInstance;
+use super::lists::Counting;
 use super::{Lowered, Lowering, Tail};
-use crate::{InstKind, Operand};
+use crate::{InstKind, LocalId, Operand};
 
 /// What a loop goes over when it's `parallel(xs)` with one plain argument: `xs`.
 fn parallel_items(iter: &Expr) -> Option<&Expr> {
@@ -67,12 +77,21 @@ pub(super) enum Gives<'e> {
     Sum(Option<&'e Expr>),
 }
 
-/// What a lifted function runs for its item: a loop's body, which changes its item when it's a
-/// `for mut`'s, or an expression whose value it gives back.
+/// What a range runs for each item.
 enum Runs<'e> {
+    /// A loop's body, which changes its item when it's a `for mut`'s.
     Body(&'e [Stmt], bool),
-    Value(&'e Expr, Type),
+    /// An expression whose value goes into a new list of this type of item.
+    Each(&'e Expr, Type),
+    /// An expression whose values are added up, of this type.
+    Sum(&'e Expr, Type),
 }
+
+/// The hidden names a range function has, which nothing written can name.
+const LIST: &str = "\0parallel.list";
+const FROM: &str = "\0parallel.from";
+const TO: &str = "\0parallel.to";
+const OUT: &str = "\0parallel.out";
 
 impl Lowering<'_> {
     /// `for x in parallel(xs)` over a list, lifted, when the backend asks for it and the body
@@ -100,8 +119,8 @@ impl Lowering<'_> {
             self.parallel_list(iter)?
         };
         let lifted = self.lift(name, (items, item), &Runs::Body(body, is_mut), span);
-        Some(lifted.map(|(list, closure)| {
-            let args = vec![list, closure];
+        Some(lifted.map(|(list, range)| {
+            let args = vec![list, range];
             let call =
                 InstKind::Builtin { dest: None, name: "parallel.for".to_owned(), args, changes: is_mut };
             self.emit(call, span);
@@ -120,23 +139,23 @@ impl Lowering<'_> {
         let (true, [name], None) = (self.context.options.outline_parallel, names, cond) else { return None };
         let (items, item) = self.parallel_list(iter)?;
         let ty = self.type_at(expr.span)?;
-        let each = match (&ty, gives) {
-            (Type::List(each), Gives::List) => (**each).clone(),
-            (Type::Int | Type::Float, Gives::Sum(_)) => ty.clone(),
+        let runs = match (&ty, gives) {
+            (Type::List(each), Gives::List) => Runs::Each(elem, (**each).clone()),
+            (Type::Int | Type::Float, Gives::Sum(_)) => Runs::Sum(elem, ty.clone()),
             _ => return None,
         };
-        let lifted = self.lift(name, (items, item), &Runs::Value(elem, each), expr.span);
-        Some(lifted.and_then(|(list, closure)| {
+        let lifted = self.lift(name, (items, item), &runs, expr.span);
+        Some(lifted.and_then(|(list, range)| {
             let dest = self.temporary(ty.clone());
             let (name, args) = match gives {
-                Gives::List => ("parallel.map", vec![list, closure]),
+                Gives::List => ("parallel.map", vec![list, range]),
                 Gives::Sum(start) => {
                     let start = match start {
                         Some(start) => self.expr(start)?,
                         None if ty == Type::Float => Operand::Float(0.0),
                         None => Operand::Int(0),
                     };
-                    ("parallel.sum", vec![list, closure, start])
+                    ("parallel.sum", vec![list, range, start])
                 }
             };
             let call = InstKind::Builtin { dest: Some(dest), name: name.to_owned(), args, changes: false };
@@ -154,8 +173,9 @@ impl Lowering<'_> {
         }
     }
 
-    /// Lifts what runs for each item into a function of its own, taking what it captures and
-    /// then the item named `name`: the list, and a closure of the function.
+    /// Lifts the work for a range of positions into a function of its own, taking what the
+    /// item's code captures, the list, and the range's start and end, and for a comprehension
+    /// the new list: the list, and a closure of the function.
     fn lift(
         &mut self,
         name: &str,
@@ -165,6 +185,17 @@ impl Lowering<'_> {
     ) -> Lowered<(Operand, Operand)> {
         // The list first, as it's written before the body, then what the body captures.
         let list = self.expr(items)?;
+        if let (Runs::Body(_, true), Operand::Local(_)) = (runs, &list) {
+            // Made the loop's own before the range holds it too, so changing it in place
+            // reaches only this list.
+            let own = InstKind::Builtin {
+                dest: None,
+                name: "parallel.own".to_owned(),
+                args: vec![list.clone()],
+                changes: true,
+            };
+            self.emit(own, span);
+        }
         let mut names = Vec::new();
         let mut record = |seen: &mut Expr| {
             if let ExprKind::Name(found) = &seen.kind {
@@ -176,9 +207,13 @@ impl Lowering<'_> {
                 visit::in_stmts(&mut body.to_vec(), &mut record);
                 Type::Unit
             }
-            Runs::Value(elem, each) => {
+            Runs::Each(elem, _) => {
                 visit::in_expr(&mut (*elem).clone(), &mut record);
-                each.clone()
+                Type::Unit
+            }
+            Runs::Sum(elem, ty) => {
+                visit::in_expr(&mut (*elem).clone(), &mut record);
+                ty.clone()
             }
         };
         let captures = self.captures(names, &[name]);
@@ -189,24 +224,128 @@ impl Lowering<'_> {
         for (captured, local) in &captures {
             lifted.declare(captured, self.local_type(*local));
         }
-        lifted.declare(name, item.clone());
-        lifted.scopes.push(HashMap::new());
-        let changes = match runs {
-            Runs::Body(body, changes) => {
-                lifted.stmts(body, Tail::Drop)?;
-                *changes
+        let list_ty = Type::List(Box::new(item.clone()));
+        let held = lifted.declare(LIST, list_ty.clone());
+        let (from, to) = (lifted.declare(FROM, Type::Int), lifted.declare(TO, Type::Int));
+        let mut params = vec![Type::Int, Type::Int];
+        let out = match runs {
+            Runs::Each(_, each) => {
+                let out_ty = Type::List(Box::new(each.clone()));
+                params.push(out_ty.clone());
+                Some(lifted.declare(OUT, out_ty))
             }
-            Runs::Value(elem, _) => {
-                lifted.tail_expr(elem, Tail::Return)?;
-                false
+            _ => None,
+        };
+        lifted.scopes.push(HashMap::new());
+        lifted.range_body(name, (held, item, from, to, out), runs, span)?;
+        lifted.end_function(span)?;
+        let count = captures.len() + 1 + params.len();
+        self.lifted.extend(lifted.finished(count, Vec::new()));
+        let mut held_values: Vec<(String, LocalId)> = captures;
+        let list_local = match &list {
+            Operand::Local(local) => *local,
+            other => {
+                let local = self.temporary(list_ty);
+                self.emit(InstKind::Copy { dest: local, value: other.clone() }, span);
+                local
             }
         };
-        lifted.end_function(span)?;
-        // A body that changes its item gives it back changed, as an arrow function that changes
-        // its first parameter does.
-        let mut_params = if changes { vec![captures.len()] } else { Vec::new() };
-        self.lifted.extend(lifted.finished(captures.len() + 1, mut_params));
-        let closure = self.make_closure(key, &captures, Type::Arrow(vec![item], Box::new(returns)), span);
-        Ok((list, Operand::Local(closure)))
+        held_values.push((LIST.to_owned(), list_local));
+        let range = self.make_closure(key, &held_values, Type::Arrow(params, Box::new(returns)), span);
+        Ok((Operand::Local(list_local), Operand::Local(range)))
+    }
+
+    /// The body of a range function: what `runs` says, for each position from `from` up to
+    /// `to` of the list `held`, whose items are `item`s, named `name`.
+    fn range_body(
+        &mut self,
+        name: &str,
+        (held, item, from, to, out): (LocalId, Type, LocalId, LocalId, Option<LocalId>),
+        runs: &Runs<'_>,
+        span: Span,
+    ) -> Lowered<()> {
+        let names = [name.to_owned()];
+        let each = |first: Operand| Counting {
+            names: &names,
+            first,
+            limit: Operand::Local(to),
+            down: false,
+            items: Some((held, item.clone())),
+            back: None,
+        };
+        match runs {
+            Runs::Body(body, changes) => {
+                let counting = each(Operand::Local(from));
+                self.counting(counting, span, |lowering| {
+                    // The range's own count, taken before the body, which may count loops of its own.
+                    let at = lowering.at()?;
+                    lowering.stmts(body, Tail::Drop)?;
+                    if *changes {
+                        lowering.put("parallel.put_back", (held, at), name, None, span)?;
+                    }
+                    Ok(())
+                })
+            }
+            Runs::Each(elem, _) => {
+                let out = out.ok_or("a comprehension's range has nowhere to put its items")?;
+                let counting = each(Operand::Local(from));
+                self.counting(counting, span, |lowering| {
+                    let at = lowering.at()?;
+                    lowering.put("parallel.put", (out, at), name, Some(elem), span)
+                })
+            }
+            Runs::Sum(elem, ty) => {
+                // The first item starts the partial, so a range adds only what's in it, as the
+                // runtime's tree does.
+                let first = self.declare(name, item.clone());
+                self.emit(
+                    InstKind::GetIndex {
+                        dest: first,
+                        object: Operand::Local(held),
+                        index: Operand::Local(from),
+                    },
+                    span,
+                );
+                let started = self.expr(elem)?;
+                let total = self.temporary(ty.clone());
+                self.emit(InstKind::Copy { dest: total, value: started }, span);
+                let next = self.temporary(Type::Int);
+                let (lhs, rhs) = (Operand::Local(from), Operand::Int(1));
+                self.emit(InstKind::Binary { dest: next, op: BinOp::Add, lhs, rhs }, span);
+                let counting = each(Operand::Local(next));
+                self.counting(counting, span, |lowering| {
+                    let value = lowering.expr(elem)?;
+                    let lhs = Operand::Local(total);
+                    lowering.emit(InstKind::Binary { dest: total, op: BinOp::Add, lhs, rhs: value }, span);
+                    Ok(())
+                })?;
+                self.finish(crate::Terminator::Return(Some(Operand::Local(total))));
+                Ok(())
+            }
+        }
+    }
+
+    /// The position the innermost counted loop is at.
+    fn at(&self) -> Lowered<LocalId> {
+        self.counts.last().map(|count| count.count).ok_or_else(|| "a range has no count".to_owned())
+    }
+
+    /// Puts an item at position `at` of `list`: `elem`'s value into a new list, or the item
+    /// named `name`, changed, back into its list.
+    fn put(
+        &mut self,
+        builtin: &str,
+        (list, at): (LocalId, LocalId),
+        name: &str,
+        elem: Option<&Expr>,
+        span: Span,
+    ) -> Lowered<()> {
+        let value = match elem {
+            Some(elem) => self.expr(elem)?,
+            None => Operand::Local(self.lookup(name).ok_or("a range's item has no name")?),
+        };
+        let args = vec![Operand::Local(list), Operand::Local(at), value];
+        self.emit(InstKind::Builtin { dest: None, name: builtin.to_owned(), args, changes: true }, span);
+        Ok(())
     }
 }

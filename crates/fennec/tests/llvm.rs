@@ -2114,6 +2114,7 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
         ("alone_range", "range(0, 1, 0)"),
         ("alone_max", "max(empty)"),
         ("alone_min", "min(empty)"),
+        ("alone_shift", "1 << 64"),
     ] {
         same_message_as_the_jit(
             name,
@@ -2288,6 +2289,9 @@ def named(present: bool) -> str?:
         "True != True",
         "\"a\\nb\" == \"c\\\"d\"",
         "[1].len() >= 2",
+        "[1, 2] == [1, 3]",
+        "[\"a\"] == [\"b\"]",
+        "{\"a\": 1} == {\"a\": 2}",
         "\"q\" in [\"a\"]",
         "Plain(x=1, y=2.0) == Plain(x=2, y=2.0)",
         "Point(x=1, label=\"p\") == Point(x=2, label=\"q\")",

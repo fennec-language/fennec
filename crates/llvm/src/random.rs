@@ -119,9 +119,7 @@ impl Emit<'_, '_, '_> {
         self.stop_with(&message, span);
         self.start_block(&go);
         let (pair, at, after) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!(
-            "{pair} = call {{ i64, i64 }} @fen_below(i64 {seed}, i64 {drawn}, i64 {length})"
-        ));
+        self.line(&format!("{pair} = call {{ i64, i64 }} @fen_below(i64 {seed}, i64 {drawn}, i64 {length})"));
         self.line(&format!("{at} = extractvalue {{ i64, i64 }} {pair}, 0"));
         self.line(&format!("{after} = extractvalue {{ i64, i64 }} {pair}, 1"));
         let item = self.item_value(&list, &held, &at);

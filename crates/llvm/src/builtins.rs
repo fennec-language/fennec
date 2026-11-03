@@ -312,7 +312,13 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `sorted(list, key=f)`: the keys go in a list of their own, which the runtime goes by.
-    pub(crate) fn sorted_by(&mut self, dest: LocalId, list: &Operand, key: &Operand, span: Span) -> Result<(), String> {
+    pub(crate) fn sorted_by(
+        &mut self,
+        dest: LocalId,
+        list: &Operand,
+        key: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
         let (list, _, held) = self.list_operand(list)?;
         let (keys, kind) = self.keys_of(&list, &held, key, span)?;
         let how = Self::sort_kind(&kind)?;

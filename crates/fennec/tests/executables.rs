@@ -137,7 +137,10 @@ fn failing_examples_fail_the_same_way_as_executables() {
         let Ok(executable) = build(&path, &work).unwrap() else { continue };
         built += 1;
         let ran = run(&executable).unwrap();
-        let interpreted = Command::new(env!("CARGO_BIN_EXE_fennec")).arg("run").arg(&path).output().unwrap();
+        // `fennec run` runs an executable itself where LLVM builds the program, so the
+        // interpreter is what an executable's failure is held to.
+        let interpreted =
+            Command::new(env!("CARGO_BIN_EXE_fennec")).args(["run", "--interp"]).arg(&path).output().unwrap();
         assert!(!ran.status.success(), "{name} should fail");
         assert_eq!(
             String::from_utf8_lossy(&ran.stderr),

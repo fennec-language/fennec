@@ -849,6 +849,69 @@ fn net_reaches_native_code_as_its_own_kind() -> std::io::Result<()> {
     same_as_the_jit("net_kind", source)
 }
 
+/// Reads of a field or item kept without an owner while nothing can change what they came
+/// from: across calls, in loops, through a `match`'s fields. One returned, stored, kept past a
+/// change, or copied out still takes an owner. `FENNEC_COUNTS` shows no copies.
+#[test]
+fn borrowed_reads_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"enum Tree:
+    Leaf
+    Node(left: Tree, right: Tree)
+
+struct Item:
+    name: str
+    tags: list[str]
+    weight: int
+
+struct Shelf:
+    items: list[Item]
+    log: list[str]
+
+    def weight_of(self, at: int) -> int:
+        self.items[at].weight
+
+    def names(mut self, mut into: list[str]):
+        for at in range(self.items.len()):
+            item = self.items[at]
+            if self.weight_of(at) > 1:
+                for tag in item.tags:
+                    into.append(tag)
+            into.append(item.name)
+
+    def first_tags(self) -> list[str]:
+        self.items[0].tags
+
+    def relabel(mut self):
+        tags = self.items[0].tags
+        self.items[0] = Item(name="new", tags=["x"], weight=9)
+        self.log.append(tags[0])
+
+def size(tree: Tree) -> int:
+    match tree:
+        case .Leaf:
+            1
+        case .Node(left, right):
+            1 + size(left) + size(right)
+
+def main(stdout: Stdout):
+    mut shelf = Shelf(items=[Item(name="fox", tags=["a", "b"], weight=2), Item(name="kit", tags=["c"], weight=1)], log=[])
+    mut seen: list[str] = []
+    shelf.names(mut seen)
+    kept = shelf.first_tags()
+    shelf.relabel()
+    stdout.print(seen, kept, shelf.items[0].name, shelf.log)
+    tree = Tree.Node(left=Tree.Node(left=Tree.Leaf, right=Tree.Leaf), right=Tree.Leaf)
+    stdout.print(size(tree))
+"#;
+    same_as_the_jit("borrowed", source)?;
+    let counts = counts_of("borrowed", source)?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    Ok(())
+}
+
 /// `list.insert` at the front, the middle and the end, of numbers and of strings, then past the
 /// end, which fails as the interpreter says.
 #[test]
@@ -1322,6 +1385,27 @@ fn strings_let_go_of_match_the_jit() -> std::io::Result<()> {
     for key in ["one", "long", "none"]:
         found: str? = names.get(key)
         stdout.print(found else "missing")
+"#,
+    )
+}
+
+/// A result prints as the interpreter writes it, `Ok(...)` or `Err(...)`, alone or in a list.
+#[test]
+fn results_print_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "results_print",
+        r#"def check(n: int) -> Result[int, str]:
+    if n > 0:
+        return Ok(n)
+    Err("not positive")
+
+def main(stdout: Stdout):
+    stdout.print(check(3), check(-1))
+    results = [check(1), check(0)]
+    stdout.print(results)
 "#,
     )
 }

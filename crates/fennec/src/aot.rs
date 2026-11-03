@@ -118,33 +118,56 @@ pub(crate) fn build_llvm(path: &str, output: Option<&str>, release: bool) -> Exi
         return ExitCode::FAILURE;
     }
     let output = output.map_or_else(|| default_output(path, &program), PathBuf::from);
-    let started = Instant::now();
-    match llvm_objects(&program, release) {
-        Ok(Compiled { objects, total, fresh, runtime }) => {
-            let compiled = started.elapsed();
-            // A release built with the runtime's bitcode has its Rust inside already.
-            let runtime_in = release && runtime_bitcode(runtime).is_some();
-            match link_objects(&objects, &output, runtime, runtime_in) {
-                Ok(linked) => {
-                    println!(
-                        "🦊 built {} with LLVM: compiled {fresh} of {total} functions in {} ms, linked in {} ms",
-                        output.display(),
-                        compiled.as_millis(),
-                        linked.as_millis(),
-                    );
-                    ExitCode::SUCCESS
-                }
-                Err(message) => {
-                    eprintln!("error: {message}");
-                    ExitCode::FAILURE
-                }
-            }
+    match executable(&program, &output, release) {
+        Ok(built) => {
+            println!(
+                "🦊 built {} with LLVM: compiled {} of {} functions in {} ms, linked in {} ms",
+                output.display(),
+                built.fresh,
+                built.total,
+                built.compiled.as_millis(),
+                built.linked.as_millis(),
+            );
+            ExitCode::SUCCESS
         }
         Err(message) => {
             eprintln!("error: {message}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// What building an executable through LLVM did.
+pub(crate) struct Built {
+    /// How many functions the program has, and how many weren't in the cache.
+    total: usize,
+    fresh: usize,
+    compiled: std::time::Duration,
+    linked: std::time::Duration,
+}
+
+/// Whether this machine can build through LLVM at all: its tools are there, and the runtime
+/// library is beside `fennec`. Without them, nothing about the program is the reason.
+pub(crate) fn llvm_ready() -> bool {
+    !cfg!(windows) && fennec_llvm::Tools::find().is_ok() && runtime_library(Runtime::Plain).is_ok()
+}
+
+/// Builds a checked program through LLVM to `output`, or says why LLVM can't: a function it
+/// doesn't take yet, or a tool or library that isn't there.
+pub(crate) fn executable(
+    program: &fennec_kit::Program,
+    output: &Path,
+    release: bool,
+) -> Result<Built, String> {
+    let started = Instant::now();
+    let Compiled { objects, total, fresh, runtime } = llvm_objects(program, release)?;
+    let compiled = started.elapsed();
+    // A release built with the runtime's bitcode has its Rust inside already.
+    let runtime_in = release && runtime_bitcode(runtime).is_some();
+    // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
+    // taking another way.
+    let linked = link_objects(&objects, output, runtime, runtime_in)?;
+    Ok(Built { total, fresh, compiled, linked })
 }
 
 /// What compiling a program with LLVM gives.

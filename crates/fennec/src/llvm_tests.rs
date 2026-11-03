@@ -148,7 +148,11 @@ pub(crate) fn run(module: &Module, wanted: &[String]) -> LlvmTests {
         return result;
     }
     let names: Vec<String> = (0..taken.len()).map(function_name).collect();
-    let work = std::env::temp_dir().join(format!("fennec-tests-{}", std::process::id()));
+    let work = std::env::temp_dir().join(format!(
+        "fennec-tests-{}{}",
+        std::process::id(),
+        std::env::consts::EXE_SUFFIX
+    ));
     let built = crate::aot::tests_executable(&trimmed_for(module, &taken), &names, &work);
     if let Err(why) = built {
         result.left.extend(taken.iter().map(|test| test.name.clone()));

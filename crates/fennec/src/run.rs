@@ -70,9 +70,8 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
 }
 
 /// Builds the program through LLVM's cached dev build and runs it, handing it the arguments,
-/// this process's input and output, and its exit code. Windows can't link executables yet,
-/// and a machine without LLVM's tools or the runtime library can't either, so neither gets
-/// here.
+/// this process's input and output, and its exit code. A machine without LLVM's tools, the
+/// runtime library or a linker can't, so it doesn't get here.
 fn built_and_run(
     program: &fennec_kit::Program,
     path: &str,
@@ -94,7 +93,11 @@ fn built_and_run(
     } else {
         program
     };
-    let executable = std::env::temp_dir().join(format!("fennec-run-{}", std::process::id()));
+    let executable = std::env::temp_dir().join(format!(
+        "fennec-run-{}{}",
+        std::process::id(),
+        std::env::consts::EXE_SUFFIX
+    ));
     crate::aot::executable(program, &executable, false)?;
     let ran = std::process::Command::new(&executable).args(arguments).status();
     let _ = std::fs::remove_file(&executable);

@@ -54,12 +54,12 @@ impl Hasher for AddressHasher {
 /// Every live block, by its address, and freed blocks kept for reuse, by size.
 #[derive(Default)]
 pub(crate) struct Heap {
-    blocks: super::table::Table,
+    pub(super) blocks: super::table::Table,
     spare: Vec<Vec<Box<[u64]>>>,
     /// How many of the blocks live for the whole run.
     statics: usize,
     /// Strings' text as the interpreter holds it, made once per block.
-    texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
+    pub(super) texts: RefCell<HashMap<usize, Rc<str>, BuildHasherDefault<AddressHasher>>>,
     /// Generators let go partway, waiting for what closes what they hold.
     abandoning: Vec<u64>,
     /// Blocks waiting to be freed and a freed block's children, kept to save making them anew.
@@ -79,6 +79,11 @@ pub(crate) struct Heap {
     made: Vec<u64>,
     /// How many words each shape's blocks take, by the shape's number.
     sizes: Vec<usize>,
+    /// On a worker running a range, the blocks of the thread that made the `parallel` call,
+    /// which is waiting for it: read here, and never written (see `threads`).
+    pub(super) lent: Option<std::sync::Arc<super::table::Table>>,
+    /// How this worker's range has changed the owners of lent blocks, for that thread to apply.
+    pub(super) lent_owners: HashMap<u64, i64, BuildHasherDefault<AddressHasher>>,
     /// Words copied out of one block on the way to another, kept to save making them anew.
     pub(super) scratch: Vec<u64>,
 }
@@ -294,7 +299,44 @@ impl Heap {
     }
 
     pub(crate) fn block(&self, address: u64) -> Option<&[u64]> {
-        self.blocks.get(usize::try_from(address).ok()?)
+        let at = usize::try_from(address).ok()?;
+        let own = self.blocks.get(at);
+        if super::threads::ON && own.is_none() {
+            return self.lent_block(at);
+        }
+        own
+    }
+
+    /// A block lent for the `parallel` call this thread is running a range of, if it's one.
+    #[cold]
+    #[inline(never)]
+    fn lent_block(&self, at: usize) -> Option<&[u64]> {
+        self.lent.as_ref()?.get(at)
+    }
+
+    /// Whether `block`, the block at `address`, has one owner and is this thread's to change: a
+    /// lent block never is, however many owners it has.
+    pub(super) fn is_alone(&self, address: u64, block: &[u64]) -> bool {
+        block.first() == Some(&1)
+            && (!super::threads::ON
+                || self.lent.is_none()
+                || usize::try_from(address).is_ok_and(|at| self.blocks.get(at).is_some()))
+    }
+
+    /// Notes that this thread's range changed a lent block's owners by `by`, when it's a lent
+    /// block, for the thread that lent it to apply when the call ends.
+    pub(super) fn change_lent_owners(&mut self, address: u64, by: i64) -> bool {
+        if !super::threads::ON {
+            return false;
+        }
+        let lent = self
+            .lent
+            .as_ref()
+            .is_some_and(|lent| usize::try_from(address).is_ok_and(|at| lent.get(at).is_some()));
+        if lent {
+            *self.lent_owners.entry(address).or_default() += by;
+        }
+        lent
     }
 
     pub(super) fn block_mut(&mut self, address: u64) -> Option<&mut [u64]> {
@@ -601,19 +643,22 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
 pub extern "C" fn unshare(address: i64) -> i64 {
     with(|state| {
         let address = u64::try_from(address).unwrap_or(0);
-        let Some(block) = state.heap.block_mut(address) else { return 0 };
-        if let Some(count) = block.first_mut() {
-            *count = count.saturating_sub(1);
-        }
+        let Some(block) = state.heap.block(address) else { return 0 };
         let mut copy: Box<[u64]> = block.into();
+        // The block copied loses an owner, in its count, or for its lender to take off.
+        if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
+            *count = count.saturating_sub(1);
+        } else {
+            state.heap.change_lent_owners(address, -1);
+        }
         if let Some(count) = copy.first_mut() {
             *count = 1;
         }
+        // The copy is this thread's, whoever made what it was copied from.
+        mark_owner(&mut copy, state.heap.owner_bits);
         state.heap.counts.copied(copy.len());
         for child in children(state, &copy) {
-            if let Some(count) = state.heap.block_mut(child).and_then(|child| child.first_mut()) {
-                *count += 1;
-            }
+            retain(state, child);
         }
         state.heap.insert(copy)
     })
@@ -637,6 +682,8 @@ pub extern "C" fn to_value(address: i64) -> i64 {
 pub(super) fn retain(state: &mut State, address: u64) {
     if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
         *count += 1;
+    } else {
+        state.heap.change_lent_owners(address, 1);
     }
 }
 

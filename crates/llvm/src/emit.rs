@@ -555,7 +555,11 @@ impl Emit<'_, '_, '_> {
                 self.retain_inline(kind, &format!("%l{at}"));
             } else if text != "void" {
                 if self.owns(local) {
-                    self.retain(&format!("%p{at}"));
+                    if matches!(kind, Kind::Closure(..)) {
+                        self.retain_closure(&format!("%p{at}"));
+                    } else {
+                        self.retain(&format!("%p{at}"));
+                    }
                 }
                 self.line(&format!("store {text} %p{at}, ptr %l{at}"));
             }
@@ -732,6 +736,10 @@ impl Emit<'_, '_, '_> {
             self.retain_text(value);
             return;
         }
+        if matches!(kind, Kind::Closure(..)) {
+            self.retain_closure(value);
+            return;
+        }
         if !matches!(kind, Kind::Maybe(_)) {
             self.retain(value);
             return;
@@ -799,6 +807,11 @@ impl Emit<'_, '_, '_> {
 
     /// One more owner for a block.
     pub(crate) fn retain(&mut self, block: &str) {
+        if self.module.threads {
+            self.retain_helper();
+            self.line(&format!("call void @fen_retain(ptr {block})"));
+            return;
+        }
         let (count, more) = (self.temp(), self.temp());
         self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
         self.line(&format!("{more} = add i64 {count}, 1"));
@@ -808,6 +821,12 @@ impl Emit<'_, '_, '_> {
     /// Whether a block has one owner, so changing it in place changes nobody else's. Every
     /// such question native code asks of a block comes here.
     pub(crate) fn alone(&mut self, block: &str) -> String {
+        if self.module.threads {
+            self.alone_helper();
+            let alone = self.temp();
+            self.line(&format!("{alone} = call i1 @fen_alone(ptr {block})"));
+            return alone;
+        }
         let (count, alone) = (self.temp(), self.temp());
         self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
         self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
@@ -817,6 +836,12 @@ impl Emit<'_, '_, '_> {
     /// Takes one owner off a block that has one, giving back whether that was the last. With
     /// [`Self::retain`] and [`Self::alone`], everything native code does to a block's count.
     pub(crate) fn owner_gone(&mut self, block: &str) -> String {
+        if self.module.threads {
+            self.owner_gone_helper();
+            let gone = self.temp();
+            self.line(&format!("{gone} = call i1 @fen_owner_gone(ptr {block})"));
+            return gone;
+        }
         let (count, fewer, gone) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
         self.line(&format!("{fewer} = add i64 {count}, -1"));
@@ -828,6 +853,9 @@ impl Emit<'_, '_, '_> {
     /// Defines `@fen_retain`, which gives a block one more owner as [`Self::retain`] does, for
     /// helpers written as text to call.
     pub(crate) fn retain_helper(&mut self) {
+        if self.module.threads {
+            return self.counted_retain_helper();
+        }
         self.module.add_helper(
             "fen_retain",
             format!(
@@ -839,6 +867,9 @@ impl Emit<'_, '_, '_> {
     /// Defines `@fen_owner_gone`, which takes an owner off a block as [`Self::owner_gone`] does,
     /// for helpers written as text to call.
     pub(crate) fn owner_gone_helper(&mut self) {
+        if self.module.threads {
+            return self.counted_owner_gone_helper();
+        }
         self.module.add_helper(
             "fen_owner_gone",
             format!(

@@ -369,3 +369,75 @@ fn native_code_serves_a_server_the_interpreter_opened() {
     assert_eq!(super::net_serve(server, echo_body, 0), 1);
     finish();
 }
+
+/// What a live runtime has written, as text.
+fn written() -> String {
+    let written = super::super::WRITTEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    String::from_utf8_lossy(&written).into_owned()
+}
+
+/// Waits until `line` has been written. The bound is only there so a broken server fails the test
+/// rather than hanging it.
+fn wait_for_written(line: &str) {
+    let started = std::time::Instant::now();
+    while !written().contains(line) {
+        assert!(started.elapsed() < Duration::from_secs(30), "`{line}` wasn't written: {}", written());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Prints the first line a connection sends, waits for a second, and prints that: so its first
+/// print has to come out while it's parked.
+fn printing() -> Handler {
+    Arc::new(|mut conn: Conn| {
+        while let Ok(Some(line)) = conn.read_line(None) {
+            super::super::with(|state| {
+                let _ = super::super::io::write(state, &format!("{}\n", String::from_utf8_lossy(&line)));
+            });
+        }
+        0
+    })
+}
+
+#[test]
+fn what_a_parked_task_printed_comes_out_while_another_task_runs() {
+    let (listener, address) = listener();
+    let setup: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
+        let inputs = crate::Inputs { live: true, ..crate::Inputs::default() };
+        let tables = super::super::Tables::default();
+        super::super::start(&fennec_syntax::Module { items: Vec::new() }, tables, inputs).unwrap();
+    });
+    // This thread is one of the workers, and runs no setup of its own.
+    setup();
+    let clients = move || {
+        let mut parked = std::net::TcpStream::connect(address).unwrap();
+        parked.write_all(b"from the parked task\n").unwrap();
+        // It's written with this connection still open, its task parked for its next line.
+        wait_for_written("from the parked task\n");
+        let mut other = std::net::TcpStream::connect(address).unwrap();
+        other.write_all(b"from the other task\n").unwrap();
+        wait_for_written("from the other task\n");
+        // One task's prints stay in order, whatever comes between them.
+        parked.write_all(b"from the parked task, later\n").unwrap();
+        wait_for_written("from the parked task, later\n");
+    };
+    let (sent, ran) = std::sync::mpsc::channel();
+    let started = move |stopper: Stopper| {
+        std::thread::spawn(move || {
+            let went = std::panic::catch_unwind(std::panic::AssertUnwindSafe(clients));
+            stopper.stop();
+            let _ = sent.send(went);
+        });
+    };
+    let served = serve(listener, 2, &setup, &printing(), started).unwrap();
+    super::super::finish();
+    if let Ok(Err(panic)) = ran.recv() {
+        std::panic::resume_unwind(panic);
+    }
+    assert_eq!(served.failed, 0);
+    let text = written();
+    let (first, later) =
+        (text.find("from the parked task\n").unwrap(), text.find("from the parked task, later\n").unwrap());
+    assert!(first < text.find("from the other task\n").unwrap());
+    assert!(first < later);
+}

@@ -2099,3 +2099,30 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// A failure in a function with nothing else in it that can fail still says what went wrong.
+#[test]
+fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, call) in [
+        ("alone_int", "int(1e300 * 1e300)"),
+        ("alone_floor", "floor(1e300 * 1e300)"),
+        ("alone_ceil", "ceil(1e300 * 1e300)"),
+        ("alone_round", "round(1e300 * 1e300)"),
+        ("alone_range", "range(0, 1, 0)"),
+    ] {
+        same_message_as_the_jit(
+            name,
+            &format!(
+                "from std.math import ceil, floor
+
+def main(stdout: Stdout):
+    stdout.print({call})
+"
+            ),
+        )?;
+    }
+    Ok(())
+}

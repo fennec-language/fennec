@@ -386,6 +386,7 @@ impl<'p> Module<'_, 'p> {
             next: 0,
             current: "entry".to_owned(),
             failed,
+            leaves: std::cell::Cell::new(false),
             needs_prop: false,
             start,
             start_symbol,
@@ -403,6 +404,13 @@ impl<'p> Module<'_, 'p> {
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
             (emit.allocas, emit.out, emit.cold, emit.failed, emit.needs_prop);
+        // Leaving a function that says it can't fail would be undefined, so it's refused here.
+        if failed == "unreachable" && (needs_prop || emit.leaves.get()) {
+            return Err(format!(
+                "`{}` fails where the backend worked out that it can't, which is a bug in it",
+                function.name
+            ));
+        }
         let _ =
             writeln!(self.bodies, "define {linkage}swiftcc {ret} {name}({params}) #{attributes} {{\nentry:");
         self.bodies += &allocas;
@@ -436,6 +444,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// The block being written.
     pub(crate) current: String,
     failed: String,
+    /// Whether a way out for a failure was written.
+    leaves: std::cell::Cell<bool>,
     needs_prop: bool,
     start: u32,
     start_symbol: String,
@@ -947,6 +957,7 @@ impl Emit<'_, '_, '_> {
 
     /// How a function leaves when it has failed.
     pub(crate) fn failed_exit(&self) -> String {
+        self.leaves.set(true);
         self.failed.clone()
     }
 
@@ -965,7 +976,7 @@ impl Emit<'_, '_, '_> {
         self.start_block(&ok);
         self.declare("declare void @fennec_fail(i64, i64, i64) #1");
         let (place, args) = self.span_values(&fail, span);
-        let failed = self.failed.clone();
+        let failed = self.failed_exit();
         let _ =
             writeln!(self.cold, "{fail}:\n{place}  call void @fennec_fail(i64 {code}, {args})\n  {failed}");
     }

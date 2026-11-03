@@ -149,13 +149,62 @@ impl Lowering<'_> {
         Ok(Operand::Local(flipped))
     }
 
+    /// A value as printing shows it: when its type writes its own text with `def str`, that
+    /// text, from a `StrWriter` the method fills. Any other value as it is, for printing to
+    /// show as it always has.
+    pub(super) fn shown(&mut self, expr: &Expr) -> Lowered<Operand> {
+        let Some(held) = self.type_at(expr.span) else { return self.expr(expr) };
+        let writer = Type::Named("StrWriter".to_owned());
+        let Some(function) = self.own_str(&held) else {
+            // Native code prints a struct's fields itself, which would miss their own text.
+            if self.holds_own_str(&held, &mut Vec::new()) {
+                return Err(format!("it prints a {held}, which holds a value with its own `def str`"));
+            }
+            return self.expr(expr);
+        };
+        let value = self.expr(expr)?;
+        let out = self.make("StrWriter", &[], expr.span)?;
+        self.emit(InstKind::Call { dest: None, function, args: vec![value, out.clone()] }, expr.span);
+        let (text, _) = self
+            .resolve("StrWriter.text", &[Some(writer)], None)
+            .ok_or("it prints a value with its own `def str`, but `StrWriter.text` isn't there")?;
+        let dest = self.temporary(Type::Str);
+        self.emit(InstKind::Call { dest: Some(dest), function: text, args: vec![out] }, expr.span);
+        Ok(Operand::Local(dest))
+    }
+
+    /// The `def str` a type writes its own text with, if it has one.
+    fn own_str(&self, held: &Type) -> Option<String> {
+        let key = format!("{}.str", owner_name(held)?);
+        let writer = Type::Named("StrWriter".to_owned());
+        self.resolve(&key, &[Some(held.clone()), Some(writer)], None).map(|(function, _)| function)
+    }
+
+    /// Whether a struct holds, in a field or a field's field, a value whose type has its own
+    /// `def str`. `seen` are the structs looked at already.
+    fn holds_own_str(&self, held: &Type, seen: &mut Vec<String>) -> bool {
+        let name = match held {
+            Type::Optional(inner) => return self.holds_own_str(inner, seen),
+            Type::Tuple(items) => return items.iter().any(|item| self.holds_own_str(item, seen)),
+            Type::Named(name) | Type::Generic(name, _) => name,
+            _ => return false,
+        };
+        if seen.contains(name) {
+            return false;
+        }
+        seen.push(name.clone());
+        let Ok(fields) = self.struct_fields(&held.to_string()) else { return false };
+        fields.iter().any(|(_, ty)| self.own_str(ty).is_some() || self.holds_own_str(ty, seen))
+    }
+
     pub(super) fn format(&mut self, parts: &[FStrPart], span: Span) -> Lowered<Operand> {
         let mut lowered = Vec::with_capacity(parts.len());
         for part in parts {
             lowered.push(match part {
                 FStrPart::Text(text) => FormatPart::Text(text.clone()),
                 FStrPart::Expr { expr, spec } => {
-                    FormatPart::Value { value: self.expr(expr)?, spec: spec.clone() }
+                    let value = if spec.is_none() { self.shown(expr)? } else { self.expr(expr)? };
+                    FormatPart::Value { value, spec: spec.clone() }
                 }
             });
         }

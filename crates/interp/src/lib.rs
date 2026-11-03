@@ -35,6 +35,7 @@ mod testing;
 mod types;
 mod value;
 
+pub use constants::{Baked, bake_constants};
 pub use format::float as format_float;
 pub use inputs::Inputs;
 pub use interp::{Interp, run};

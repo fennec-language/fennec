@@ -189,8 +189,7 @@ impl Interp<'_> {
                 FStrPart::Text(literal) => text.push_str(literal),
                 FStrPart::Expr { expr, spec } => {
                     let value = self.eval(expr)?;
-                    let piece = format::with_spec(&value, spec.as_deref().unwrap_or(""))
-                        .map_err(|message| Diagnostic::new(message, expr.span))?;
+                    let piece = self.shown_spec(&value, spec.as_deref().unwrap_or(""), expr.span)?;
                     text.push_str(&piece);
                 }
             }

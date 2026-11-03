@@ -206,7 +206,7 @@ fn sorted_places(state: &State, keys: &[u64], kind: i64) -> Vec<usize> {
             let words = usize::try_from(length).unwrap_or(0).div_ceil(8);
             (block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + words).unwrap_or_default(), length)
         };
-        let mut order: Vec<(&[u64], u64, usize)> = keys
+        let order: Vec<(&[u64], u64, usize)> = keys
             .iter()
             .enumerate()
             .map(|(place, key)| {
@@ -214,12 +214,7 @@ fn sorted_places(state: &State, keys: &[u64], kind: i64) -> Vec<usize> {
                 (words, length, place)
             })
             .collect();
-        order.sort_unstable_by(|a, b| {
-            let bytes =
-                a.0.iter().map(|word| word.swap_bytes()).cmp(b.0.iter().map(|word| word.swap_bytes()));
-            bytes.then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2))
-        });
-        return order.into_iter().map(|(_, _, place)| place).collect();
+        return text_places(order);
     }
     // Each key and its place packed in one number that orders the same way, so sorting
     // compares one number instead of a pair.
@@ -277,6 +272,18 @@ fn sorted_ints(state: &mut State, list: u64) -> Option<i64> {
     Some(state.heap.insert(block))
 }
 
+/// The places of texts, each its words, which are zero after its end, its length and its
+/// place, in sorted order. Words read big end first order the same as the bytes in them, and
+/// the shorter of two that match so far has zeros left, so its length settles it; the place
+/// breaks ties, which keeps the sort stable.
+fn text_places(mut order: Vec<(&[u64], u64, usize)>) -> Vec<usize> {
+    order.sort_unstable_by(|a, b| {
+        let bytes = a.0.iter().map(|word| word.swap_bytes()).cmp(b.0.iter().map(|word| word.swap_bytes()));
+        bytes.then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2))
+    });
+    order.into_iter().map(|(_, _, place)| place).collect()
+}
+
 /// A new list owned once of a list of numbers' or strings' items in order.
 pub extern "C" fn sorted(list: i64, kind: i64) -> i64 {
     with(|state| {
@@ -305,9 +312,22 @@ fn sorted_texts(state: &mut State, list: u64) -> Option<i64> {
         usize::try_from(shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
             .ok()?;
     let headers = items(block, 3).to_vec();
-    let texts = super::text::texts(state, &headers);
-    let mut order: Vec<usize> = (0..texts.len()).collect();
-    order.sort_by(|a, b| texts.get(*a).cmp(&texts.get(*b)));
+    // An inline string's words with byte 23 cleared are zero after its end, as a block's are.
+    let cleared: Vec<[u64; 3]> =
+        headers.as_chunks::<3>().0.iter().map(|&[a, b, c]| [a, b, c & (u64::MAX >> 8)]).collect();
+    let texts =
+        headers.as_chunks::<3>().0.iter().zip(&cleared).enumerate().map(|(place, (header, inline))| {
+            let [.., tag_word] = *header;
+            let (words, length): (&[u64], u64) = if let Some(address) = super::text::block_of(header) {
+                let block = state.heap.block(address).unwrap_or_default();
+                (block.get(TEXT_HEADER_WORDS..).unwrap_or_default(), block.get(2).copied().unwrap_or(0))
+            } else {
+                (inline, (tag_word >> 56) & 0x7f)
+            };
+            let used = usize::try_from(length).unwrap_or(0).div_ceil(8);
+            (words.get(..used).unwrap_or_default(), length, place)
+        });
+    let order = text_places(texts.collect());
     let words: Vec<u64> = order
         .iter()
         .flat_map(|place| headers.get(place * 3..place * 3 + 3).unwrap_or_default())

@@ -98,7 +98,13 @@ impl Scheduler {
         NEXT.set(task + 1);
         let coroutine = Coroutine::with_stack(stack, move |yielder: &current::TaskYielder, _first: Wake| {
             current::enter(task, yielder);
-            body()
+            // A panic can't unwind out of a task's stack, and on Windows trying ends the process
+            // with no word of why. So it's caught here, on the task's own stack, and stops the
+            // process with a message, its own already printed, in every build and on every OS.
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+                Ok(result) => result,
+                Err(_) => current::stop("a parked task panicked"),
+            }
         });
         self.tasks.insert(task, Task { coroutine, stack: bounds, cancelled: false });
         Ok(task)

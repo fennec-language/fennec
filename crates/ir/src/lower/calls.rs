@@ -113,6 +113,10 @@ impl Lowering<'_> {
                     ExprKind::Lambda { params, body } if name == "IdMap.modify" => {
                         self.arrow(&arg.value, params, body, true)?
                     }
+                    // What's printed, or made text, through a type's own `def str`.
+                    _ if matches!(name.as_str(), "Stdout.print" | "Stdout.write" | "str") => {
+                        self.shown(&arg.value)?
+                    }
                     _ => self.expr(&arg.value)?,
                 };
                 match &arg.name {

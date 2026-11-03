@@ -2803,3 +2803,27 @@ fn in_calls_a_types_own_in() {
 "
     );
 }
+
+/// Printing a value whose type has its own `def str` calls it on a fresh `StrWriter` and uses
+/// what it wrote, so native code never prints such a value from its fields.
+#[test]
+fn a_type_with_its_own_str_prints_through_it() {
+    let source = "struct Point:\n    x: int\n\n    def str(self, mut out: StrWriter):\n        out.value(self.x)\n\ndef label(p: Point) -> str:\n    f\"at {p}\"\n";
+    assert_eq!(
+        printed(source, "label").unwrap(),
+        r#"fn label(_0) -> str
+  local _0 p: Point
+  local _1: list[str]
+  local _2: StrWriter
+  local _3: str
+  local _4: str
+  bb0:
+    _1 = []
+    _2 = make StrWriter(_1)
+    call Point.str(_0, _2)
+    _3 = call StrWriter.text(_2)
+    _4 = format "at " {_3}
+    return _4
+"#
+    );
+}

@@ -1,0 +1,4 @@
+## Hello, world: what starting a program costs, before any kernel runs.
+
+def main(stdout: Stdout):
+    stdout.print("hello")

@@ -13,7 +13,7 @@ def main(stdout: Stdout):
     stdout.print(f"{1} {2.5} {True} {False} {-7} {name} {1 + 2}")
     stdout.print(f"{3.14159:.2f} {1234567:,} {name}", f"{{braces}} {2 ** 10}")
     stdout.print(f"{[1, 2]} {Point(x=1, y=2.0)} {(1, 2)} {{}}", f"{label(4)}{label(5)}")
-    stdout.print(str(5), str(-5), str(2.5), str(True), str(name), str([1]), str(Point(x=0, y=0.5)))
+    stdout.print(str(5), str(-5), str(2.5), str(True), name, str([1]), str(Point(x=0, y=0.5)))
     stdout.print(label(10).len(), str(12345).len(), f"é{name}é".len())
 
     mut built = ""

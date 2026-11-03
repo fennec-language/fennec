@@ -17,6 +17,7 @@ pub(crate) fn fix(path: &str) -> ExitCode {
         let Err(diagnostics) = fennec_check::check(&program.module) else {
             let mut lints = fennec_lint::lint(&program.module, &program.sources);
             lints.extend(fennec_lint::needless_copies(&program.module, &program.sources));
+            lints.extend(fennec_lint::needless_conversions(&program.module, &program.sources));
             let diagnostics: Vec<_> = lints.into_iter().map(|lint| lint.diagnostic).collect();
             let changed = program.sources.fixed(&diagnostics);
             if changed.is_empty() {

@@ -10,7 +10,7 @@ def checked(n: int):
 
 def main(stdout: Stdout):
     # Converting between numbers. `int` truncates toward zero.
-    stdout.print(float(2), float(0.5), int(2.9), int(-2.9), int(-9223372036854775808.0), int(7))
+    stdout.print(float(2), 0.5, int(2.9), int(-2.9), int(-9223372036854775808.0), 7)
     # Text might not be a number, so reading one can fail with an `InvalidValue`.
     stdout.print(float("2.5"), float(" 1e3 ") else 0.0, int(" 42 ") else 0, int("4x2") else -1)
     match int("twelve"):

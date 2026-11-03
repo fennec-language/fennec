@@ -73,6 +73,7 @@ fn linted(path: &str, json: bool) -> ExitCode {
     };
     let mut found = fennec_lint::lint(&program.module, &program.sources);
     found.extend(fennec_lint::needless_copies(&program.module, &program.sources));
+    found.extend(fennec_lint::needless_conversions(&program.module, &program.sources));
     if program.manifest.is_some() {
         found.extend(fennec_lint::kit_lints(&program.module));
     }

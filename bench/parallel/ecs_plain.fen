@@ -1,0 +1,53 @@
+# `ecs.fen` without `parallel`: the same ticks over the same units, one after another. It adds
+# up the world's health in a loop, as LLVM doesn't take a float `sum` over a generator yet.
+struct Unit:
+    x: float
+    y: float
+    vx: float
+    vy: float
+    health: float
+
+SIZE = 1000.0
+NEAR = 400.0
+
+# A number from 0.0 up to `top` for each `n`, the same on every machine.
+def spread(n: int, top: float) -> float:
+    float((n * 7919 + 104729) % 100003) / 100003.0 * top
+
+def step(mut units: list[Unit], hazards: list[(float, float)], dt: float):
+    for mut unit in units:
+        unit.x += unit.vx * dt
+        unit.y += unit.vy * dt
+        if unit.x < 0.0 or unit.x > SIZE:
+            unit.vx = -unit.vx
+        if unit.y < 0.0 or unit.y > SIZE:
+            unit.vy = -unit.vy
+        mut nearest = SIZE * SIZE * 4.0
+        for hx, hy in hazards:
+            dx = unit.x - hx
+            dy = unit.y - hy
+            far = dx * dx + dy * dy
+            if far < nearest:
+                nearest = far
+        if nearest < NEAR:
+            unit.health -= 1.0
+
+def main(stdout: Stdout):
+    count = 200_000
+    mut units = [
+        Unit(
+            spread(n, SIZE),
+            spread(n * 3, SIZE),
+            spread(n * 5, 20.0) - 10.0,
+            spread(n * 7, 20.0) - 10.0,
+            100.0,
+        ) for n in range(count)
+    ]
+    hazards = [(spread(h * 11, SIZE), spread(h * 13, SIZE)) for h in range(32)]
+    for _ in range(200):
+        step(mut units, hazards, 0.5)
+    alive = sum((1 if unit.health > 0.0 else 0) for unit in units)
+    mut health = 0.0
+    for unit in units:
+        health += unit.health
+    stdout.print(alive, health)

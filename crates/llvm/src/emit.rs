@@ -93,11 +93,20 @@ pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared, Layouts), String> {
 
 /// `emit`, for a level of processor.
 pub fn emit_for(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+    emit_with(program, cpu, false)
+}
+
+/// `emit_for`, with each function setting a flag that says it ran, for a test to say what it ran.
+pub fn emit_traced(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+    emit_with(program, cpu, true)
+}
+
+fn emit_with(program: &Program, cpu: Cpu, traced: bool) -> Result<(Vec<Unit>, Shared, Layouts), String> {
     let header = crate::header()?;
     let attributes = attributes(cpu);
     let everything = whole(program);
     let layouts = crate::layouts_of(program);
-    let mut shared = Shared::default();
+    let mut shared = Shared { traced, ..Shared::default() };
     let mut units = Vec::with_capacity(program.functions.len());
     // Every module of a program agrees, since what it declares has to match what's defined.
     let threads = crate::parallel::uses_parallel(program);
@@ -405,6 +414,12 @@ impl<'p> Module<'_, 'p> {
         let _ =
             writeln!(self.bodies, "define {linkage}swiftcc {ret} {name}({params}) #{attributes} {{\nentry:");
         self.bodies += &allocas;
+        if self.shared.traced {
+            let flag = format!("@\"ran_{}\"", function.name);
+            self.declares.insert(format!("{flag} = external dso_local global i8"));
+            let _ = writeln!(self.bodies, "  store i8 1, ptr {flag}");
+            self.shared.ran.insert(function.name.clone());
+        }
         self.bodies += &out;
         self.bodies += &cold;
         if needs_prop {

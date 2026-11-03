@@ -1,0 +1,7 @@
+error: `embed` can't take the whole path `/level.bin`
+ --> examples/projects/errors/embed_whole_path/src/main.fen:3:18
+  |
+3 |     stdout.print(embed("/level.bin").len())
+  |                  ^^^^^^^^^^^^^^^^^^^
+  |
+  = help: write the path from the folder this file is in

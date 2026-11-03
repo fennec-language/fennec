@@ -446,6 +446,9 @@ pub enum Operand {
     Float(f64),
     Bool(bool),
     Str(String),
+    /// Bytes written into the program, as `embed("path")` gives: a constant blob, shared rather
+    /// than copied, since a file can be big.
+    Bytes(fennec_syntax::Blob),
     None,
 }
 
@@ -538,6 +541,7 @@ fn type_in(locals: &[Local], operand: &Operand) -> Option<Type> {
         Operand::Float(_) => Some(Type::Float),
         Operand::Bool(_) => Some(Type::Bool),
         Operand::Str(_) => Some(Type::Str),
+        Operand::Bytes(_) => Some(Type::Bytes),
         Operand::None => Some(Type::None),
     }
 }

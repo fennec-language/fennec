@@ -6,6 +6,7 @@
 //! file. Every file is parsed at its own byte offset, so `Program::sources` can say which
 //! file a diagnostic is in.
 
+mod embed;
 mod init;
 mod load;
 mod manifest;
@@ -15,7 +16,7 @@ mod starter;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use fennec_syntax::{Diagnostic, Module, Sources};
+use fennec_syntax::{Blob, Diagnostic, Module, Sources};
 
 pub use init::{GUIDANCE, Guidance, Initialized, init};
 pub use manifest::{Manifest, valid_name};
@@ -29,7 +30,33 @@ pub struct Program {
     pub sources: Sources,
     /// The kit's `kit.toml`, when the program is a kit rather than a single file.
     pub manifest: Option<Manifest>,
+    /// The files `embed` read, since a change to one changes the program.
+    pub embedded: Vec<Embedded>,
 }
+
+/// A file `embed` read, and what it held then.
+#[derive(Clone, Debug)]
+pub struct Embedded {
+    pub path: PathBuf,
+    pub data: Blob,
+}
+
+impl Program {
+    /// The files `embed` read, by a name no module has, with a hash for their text.
+    #[must_use]
+    pub fn embedded_texts(&self) -> Vec<(String, String)> {
+        self.embedded.iter().map(|file| (embedded_name(&file.path), file.data.hash().to_hex())).collect()
+    }
+}
+
+/// How the caches name a file `embed` read, next to a kit's modules.
+#[must_use]
+pub fn embedded_name(path: &Path) -> String {
+    format!("{EMBEDDED}{}", path.display())
+}
+
+/// What starts the name of a file `embed` read.
+pub const EMBEDDED: &str = "embed:";
 
 /// Where loading starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,13 +75,20 @@ pub fn load(path: &Path, shown_as: &str, entry: Entry) -> Result<Program, String
 
 /// The text of every file a program's tests can see: all of a kit's by module name, read
 /// without parsing them, or a single file's and what it imports by path. None if they can't be read or loaded,
-/// which loading it properly will explain.
+/// which loading it properly will explain. The files `embed` reads count too, so a kit that might
+/// use it is loaded after all.
 pub fn all_texts(path: &Path) -> Option<Vec<(String, String)>> {
+    let shown = path.to_string_lossy();
     if path.is_dir() {
-        return load::kit_texts(path);
+        let mut texts = load::kit_texts(path)?;
+        if texts.iter().any(|(_, text)| text.contains("embed(")) {
+            texts.extend(load(path, &shown, Entry::Everything).ok()?.embedded_texts());
+        }
+        return Some(texts);
     }
-    let program = load(path, &path.to_string_lossy(), Entry::Everything).ok()?;
-    Some(program.sources.files().map(|(path, text)| (path.to_owned(), text.to_owned())).collect())
+    let program = load(path, &shown, Entry::Everything).ok()?;
+    let files = program.sources.files().map(|(path, text)| (path.to_owned(), text.to_owned()));
+    Some(files.chain(program.embedded_texts()).collect())
 }
 
 /// Where each file of a kit is, by module name, with the manifest as `kit.toml`. None if `dir`
@@ -97,7 +131,7 @@ pub fn load_with(path: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
 pub struct Problems {
     /// The files read before the problems were found.
     pub sources: Sources,
-    /// Problems in those files, like a parse error or an import of nothing.
+    /// Problems in those files, like a parse error, an import of nothing or a bad `kit.toml`.
     pub diagnostics: Vec<Diagnostic>,
     /// Problems with no place in a file, like a missing `kit.toml`, already rendered.
     pub unplaced: Vec<String>,

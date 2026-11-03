@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::{runtime_built, threads_runtime_built};
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
+    crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
 }
 
 fn ready() -> bool {
@@ -143,7 +143,7 @@ fn items_put_back_unchanged_stay_whole_with_text_inline_or_not() -> std::io::Res
     // Headers make a `str` item three words in place; without them it's one, a block's address.
     for inline in ["1", "0"] {
         let executable = dir.join(format!("words-{inline}"));
-        let built = Command::new(env!("CARGO_BIN_EXE_fennec"))
+        let built = crate::executables::fennec_command()
             .args(["build", "--llvm", &source, "-o"])
             .arg(&executable)
             .env("FENNEC_HOME", &dir)
@@ -191,7 +191,7 @@ fn build_on_threads(dir: &Path, source: &str, name: &str) -> std::io::Result<std
     let program = dir.join(format!("{name}.fen"));
     std::fs::write(&program, source)?;
     let executable = dir.join(name);
-    let built = Command::new(env!("CARGO_BIN_EXE_fennec"))
+    let built = crate::executables::fennec_command()
         .args(["build", "--llvm"])
         .arg(&program)
         .arg("-o")

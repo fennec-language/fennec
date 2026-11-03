@@ -326,6 +326,7 @@ struct Tree:
             case .Int(value): self.spanned(f"int {value}", span)
             case .Float(value): self.spanned(f"float {value}", span)
             case .Duration(nanos): self.spanned(f"duration {nanos}", span)
+            case .Bytes(data): self.spanned(f"bytes {data.len()}", span)
             case .Str(text): self.spanned(f"str {quoted(text)}", span)
             case .Bool(value): self.spanned(f"bool {value}", span)
             case .Nothing: self.spanned("none", span)

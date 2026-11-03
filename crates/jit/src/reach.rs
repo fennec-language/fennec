@@ -155,6 +155,14 @@ fn operator(op: BinOp, mentions: &mut Mentions) {
     }
 }
 
+fn fstr(parts: &[FStrPart], mentions: &mut Mentions) {
+    for part in parts {
+        if let FStrPart::Expr { expr: inner, .. } = part {
+            expr(inner, mentions);
+        }
+    }
+}
+
 fn expr(value: &Expr, mentions: &mut Mentions) {
     match &value.kind {
         ExprKind::Name(name) => {
@@ -164,17 +172,16 @@ fn expr(value: &Expr, mentions: &mut Mentions) {
         ExprKind::Duration(_) => {
             mentions.names.insert("Duration".to_owned());
         }
-        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {}
+        ExprKind::Int(_)
+        | ExprKind::Bytes(_)
+        | ExprKind::Float(_)
+        | ExprKind::Str(_)
+        | ExprKind::Bool(_)
+        | ExprKind::None => {}
         ExprKind::Variant(name) => {
             mentions.members.insert(name.clone());
         }
-        ExprKind::FStr(parts) => {
-            for part in parts {
-                if let FStrPart::Expr { expr: inner, .. } = part {
-                    expr(inner, mentions);
-                }
-            }
-        }
+        ExprKind::FStr(parts) => fstr(parts, mentions),
         ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => all(items, mentions),
         ExprKind::Dict(pairs) => {
             for (key, item) in pairs {

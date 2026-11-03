@@ -308,11 +308,10 @@ impl Emit<'_, '_, '_> {
             return block;
         }
         self.declare(&format!("declare ptr @{helper}(ptr) nounwind"));
-        let (block, count, alone) = (self.temp(), self.temp(), self.temp());
+        let block = self.temp();
         let (ok, shared) = (self.label("alone"), self.label("shared"));
         self.line(&format!("{block} = load ptr, ptr {place}"));
-        self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
-        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        let alone = self.alone(&block);
         let came_from = self.current.clone();
         self.line(&format!("br i1 {alone}, label %{ok}, label %{shared}, !prof !8"));
         let (copy, resolved) = (self.temp(), self.temp());
@@ -819,11 +818,10 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn check_alone(&mut self, local: LocalId) -> String {
         self.declare("declare ptr @fennec_list_unshare(ptr) nounwind");
         let slot = self.slot(local);
-        let (list, count, alone) = (self.temp(), self.temp(), self.temp());
+        let list = self.temp();
         let (ok, shared) = (self.label("alone"), self.label("shared"));
         self.line(&format!("{list} = load ptr, ptr {slot}"));
-        self.line(&format!("{count} = load i64, ptr {list}{HEADER_ACCESS}"));
-        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        let alone = self.alone(&list);
         let came_from = self.current.clone();
         self.line(&format!("br i1 {alone}, label %{ok}, label %{shared}, !prof !8"));
         let (copy, resolved) = (self.temp(), self.temp());
@@ -840,9 +838,7 @@ impl Emit<'_, '_, '_> {
     /// check of it when nothing between could have given it another.
     fn alone_from_now(&mut self, block: &str) {
         self.declare("declare void @llvm.assume(i1)");
-        let (count, one) = (self.temp(), self.temp());
-        self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
-        self.line(&format!("{one} = icmp eq i64 {count}, 1"));
+        let one = self.alone(block);
         self.line(&format!("call void @llvm.assume(i1 {one})"));
     }
 
@@ -1008,7 +1004,7 @@ impl Emit<'_, '_, '_> {
             if let Operand::Local(sliced) = index
                 && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
             {
-                return self.slice_set(&place, value_word, (&slice, found), value);
+                return self.slice_set(&place, (key, value_word), (&slice, found), value);
             }
             return self.dict_store_at(&place, (key, value_word), index, Some(value), found);
         }
@@ -1179,12 +1175,10 @@ impl Emit<'_, '_, '_> {
         let new_item = args.get(1).ok_or("no argument")?;
         self.declare("declare ptr @fennec_list_grow(ptr) nounwind");
         let slot = self.slot(*local);
-        let (list, count, length, room_at, room) =
-            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
-        let (alone, fits, ready, longer) = (self.temp(), self.temp(), self.temp(), self.temp());
+        let (list, length, room_at, room) = (self.temp(), self.temp(), self.temp(), self.temp());
+        let (fits, ready, longer) = (self.temp(), self.temp(), self.temp());
         let (quick, grow, done) = (self.label("quick"), self.label("grow"), self.label("done"));
         self.line(&format!("{list} = load ptr, ptr {slot}"));
-        self.line(&format!("{count} = load i64, ptr {list}{HEADER_ACCESS}"));
         let length_at = self.offset(&list, u32::try_from(LIST_LENGTH).unwrap_or(0));
         self.line(&format!("{length} = load i64, ptr {length_at}{LENGTH_ACCESS}"));
         self.line(&format!("{room_at} = getelementptr inbounds i8, ptr {list}, i64 {LIST_ROOM}"));
@@ -1193,7 +1187,7 @@ impl Emit<'_, '_, '_> {
         if self.known.alone_once_checked(*local) {
             self.line(&format!("{ready} = and i1 {fits}, true"));
         } else {
-            self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+            let alone = self.alone(&list);
             self.line(&format!("{ready} = and i1 {alone}, {fits}"));
         }
         self.line(&format!("br i1 {ready}, label %{quick}, label %{grow}, !prof !8"));
@@ -1302,9 +1296,7 @@ impl Emit<'_, '_, '_> {
             }
             ("Buffer.is_unique", [buffer]) => {
                 let (list, _) = self.operand(buffer)?;
-                let (count, alone) = (self.temp(), self.temp());
-                self.line(&format!("{count} = load i64, ptr {list}{HEADER_ACCESS}"));
-                self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+                let alone = self.alone(&list);
                 self.assign(dest.ok_or("no result")?, &alone)
             }
             // The runtime takes the owner over and gives back the list to keep.

@@ -38,6 +38,7 @@ impl FnCx<'_> {
             ExprKind::Int(_) => Type::Int,
             ExprKind::Float(_) => Type::Float,
             ExprKind::Duration(_) => Type::named("Duration"),
+            ExprKind::Bytes(_) => Type::Bytes,
             ExprKind::Str(_) => Type::Str,
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::None => Type::None,

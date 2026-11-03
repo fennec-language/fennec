@@ -14,6 +14,9 @@ use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
 use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
 
+/// Why a program with bytes written into it, as `embed("path")` gives, isn't taken yet.
+pub(crate) const BYTES: &str = "it uses a Bytes, which this backend doesn't take yet";
+
 /// The level of processor code is built for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Cpu {
@@ -802,6 +805,48 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i64 {more}, ptr {block}{HEADER_ACCESS}"));
     }
 
+    /// Whether a block has one owner, so changing it in place changes nobody else's. Every
+    /// such question native code asks of a block comes here.
+    pub(crate) fn alone(&mut self, block: &str) -> String {
+        let (count, alone) = (self.temp(), self.temp());
+        self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
+        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        alone
+    }
+
+    /// Takes one owner off a block that has one, giving back whether that was the last. With
+    /// [`Self::retain`] and [`Self::alone`], everything native code does to a block's count.
+    pub(crate) fn owner_gone(&mut self, block: &str) -> String {
+        let (count, fewer, gone) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
+        self.line(&format!("{fewer} = add i64 {count}, -1"));
+        self.line(&format!("store i64 {fewer}, ptr {block}{HEADER_ACCESS}"));
+        self.line(&format!("{gone} = icmp eq i64 {fewer}, 0"));
+        gone
+    }
+
+    /// Defines `@fen_retain`, which gives a block one more owner as [`Self::retain`] does, for
+    /// helpers written as text to call.
+    pub(crate) fn retain_helper(&mut self) {
+        self.module.add_helper(
+            "fen_retain",
+            format!(
+                "define internal void @fen_retain(ptr %block) #0 {{\nentry:\n  %count = load i64, ptr %block{HEADER_ACCESS}\n  %more = add i64 %count, 1\n  store i64 %more, ptr %block{HEADER_ACCESS}\n  ret void\n}}\n\n"
+            ),
+        );
+    }
+
+    /// Defines `@fen_owner_gone`, which takes an owner off a block as [`Self::owner_gone`] does,
+    /// for helpers written as text to call.
+    pub(crate) fn owner_gone_helper(&mut self) {
+        self.module.add_helper(
+            "fen_owner_gone",
+            format!(
+                "define internal i1 @fen_owner_gone(ptr %block) #0 {{\nentry:\n  %count = load i64, ptr %block{HEADER_ACCESS}\n  %fewer = add i64 %count, -1\n  store i64 %fewer, ptr %block{HEADER_ACCESS}\n  %gone = icmp eq i64 %fewer, 0\n  ret i1 %gone\n}}\n\n"
+            ),
+        );
+    }
+
     /// One owner fewer for a block, if there's a block, freeing it when that was the last.
     pub(crate) fn release(&mut self, block: &str) {
         debug_assert_eq!(COUNT, 0);
@@ -811,11 +856,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{none} = icmp eq ptr {block}, null"));
         self.line(&format!("br i1 {none}, label %{done}, label %{held}"));
         self.start_block(&held);
-        let (count, fewer, gone) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!("{count} = load i64, ptr {block}{HEADER_ACCESS}"));
-        self.line(&format!("{fewer} = add i64 {count}, -1"));
-        self.line(&format!("store i64 {fewer}, ptr {block}{HEADER_ACCESS}"));
-        self.line(&format!("{gone} = icmp eq i64 {fewer}, 0"));
+        let gone = self.owner_gone(block);
         self.line(&format!("br i1 {gone}, label %{last}, label %{done}"));
         self.start_block(&last);
         self.line(&format!("call void @fennec_free(ptr {block})"));
@@ -889,6 +930,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(value) => (float_text(*value), Kind::Float),
             Operand::Bool(value) => (value.to_string(), Kind::Bool),
             Operand::Str(text) => (self.literal_value(text), Kind::Str),
+            Operand::Bytes(_) => return Err(BYTES.to_owned()),
             Operand::None => ("null".to_owned(), Kind::Unit),
         })
     }
@@ -1457,6 +1499,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(_) => Kind::Float,
             Operand::Bool(_) => Kind::Bool,
             Operand::Str(_) => Kind::Str,
+            Operand::Bytes(_) => return Err(BYTES.to_owned()),
             Operand::None => wanted.clone(),
         };
         if from != wanted && self.headers() {

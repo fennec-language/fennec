@@ -132,6 +132,7 @@ impl Uses<'_> {
         match &expr.kind {
             ExprKind::Name(name) => self.name(name, expr.span),
             ExprKind::Int(_)
+            | ExprKind::Bytes(_)
             | ExprKind::Duration(_)
             | ExprKind::Float(_)
             | ExprKind::Str(_)

@@ -743,6 +743,12 @@ impl<'a> Lowering<'a> {
         self.written_result(expr, callee, args)
     }
 
+    /// A name's value: its local as what's known of it here, or else a constant.
+    fn read_name(&mut self, name: &str, expr: &Expr) -> Lowered<Operand> {
+        let Some(local) = self.lookup(name) else { return self.read_constant(name, expr) };
+        self.narrowed(Operand::Local(local), expr)
+    }
+
     fn expr(&mut self, expr: &Expr) -> Lowered<Operand> {
         let span = expr.span;
         if let Some((owner, case, args)) = self.built_case(expr) {
@@ -752,13 +758,11 @@ impl<'a> Lowering<'a> {
             ExprKind::Int(value) => Ok(Operand::Int(*value)),
             ExprKind::Float(value) => Ok(Operand::Float(*value)),
             ExprKind::Duration(nanos) => self.duration(*nanos, expr),
+            ExprKind::Bytes(data) => Ok(Operand::Bytes(data.clone())),
             ExprKind::Bool(value) => Ok(Operand::Bool(*value)),
             ExprKind::Str(value) => Ok(Operand::Str(value.clone())),
             ExprKind::None => Ok(Operand::None),
-            ExprKind::Name(name) => {
-                let Some(local) = self.lookup(name) else { return self.read_constant(name, expr) };
-                self.narrowed(Operand::Local(local), expr)
-            }
+            ExprKind::Name(name) => self.read_name(name, expr),
             ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs } => {
                 self.is_none(*op, lhs, rhs, span)
             }

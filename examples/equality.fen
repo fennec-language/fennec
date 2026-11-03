@@ -1,13 +1,5 @@
 from std.game import IdMap
 
-enum Light:
-    Red
-    Green
-
-enum Coin:
-    Heads
-    Tails
-
 def square(n: int) -> int:
     n * n
 

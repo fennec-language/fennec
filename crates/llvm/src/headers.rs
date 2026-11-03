@@ -294,10 +294,11 @@ impl Emit<'_, '_, '_> {
         text += "  %o = call i64 @fennec_str_compare(ptr %xb, ptr %yb)\n";
         for side in ["x", "y"] {
             text += &format!(
-                "  %{side}c = load i64, ptr %{side}b\n  %{side}d = add i64 %{side}c, -1\n  store i64 %{side}d, ptr %{side}b\n  %{side}z = icmp eq i64 %{side}d, 0\n  br i1 %{side}z, label %{side}free, label %{side}kept\n{side}free:\n  call void @fennec_free(ptr %{side}b)\n  br label %{side}kept\n{side}kept:\n"
+                "  %{side}z = call i1 @fen_owner_gone(ptr %{side}b)\n  br i1 %{side}z, label %{side}free, label %{side}kept\n{side}free:\n  call void @fennec_free(ptr %{side}b)\n  br label %{side}kept\n{side}kept:\n"
             );
         }
         text += "  ret i64 %o\n}\n\n";
+        self.owner_gone_helper();
         self.module.add_helper("fen_header_order", text);
     }
 
@@ -344,19 +345,14 @@ impl Emit<'_, '_, '_> {
             (self.label("concat_words"), self.label("concat_runtime"), self.label("concat_done"));
         self.line(&format!("br i1 {quick}, label %{words}, label %{runtime}"));
         self.start_block(&words);
-        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
         let (from_a, from_b, out) = (self.place_for_text(), self.place_for_text(), self.place_for_text());
         self.line(&format!("store {HEADER} {a}, ptr {from_a}"));
         self.line(&format!("store {HEADER} {b}, ptr {from_b}"));
         self.line(&format!("store {HEADER} zeroinitializer, ptr {out}"));
-        self.line(&format!(
-            "call void @llvm.memcpy.p0.p0.i64(ptr {out}, ptr {from_a}, i64 {a_length}, i1 false)"
-        ));
+        self.small_copy(&out, &from_a, &a_length);
         let after = self.temp();
         self.line(&format!("{after} = getelementptr inbounds i8, ptr {out}, i64 {a_length}"));
-        self.line(&format!(
-            "call void @llvm.memcpy.p0.p0.i64(ptr {after}, ptr {from_b}, i64 {b_length}, i1 false)"
-        ));
+        self.small_copy(&after, &from_b, &b_length);
         let (tag, tag_at) = (self.temp(), self.temp());
         self.line(&format!("{tag} = or i64 {total}, 128"));
         self.line(&format!("{tag_at} = getelementptr inbounds i8, ptr {out}, i64 23"));
@@ -474,12 +470,9 @@ impl Emit<'_, '_, '_> {
         let (other, done) = (self.label("char_other"), self.label("char_done"));
         self.line(&format!("br i1 {plain}, label %{done}, label %{other}"));
         self.start_block(&other);
-        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
         let out = self.place_for_text();
         self.line(&format!("store {HEADER} zeroinitializer, ptr {out}"));
-        self.line(&format!(
-            "call void @llvm.memcpy.p0.p0.i64(ptr {out}, ptr {lead_at}, i64 {size}, i1 false)"
-        ));
+        self.small_copy(&out, &lead_at, &size);
         let (tag, byte_tag, tag_at) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{tag} = or i64 {size}, 128"));
         self.line(&format!("{byte_tag} = trunc i64 {tag} to i8"));
@@ -518,9 +511,8 @@ impl Emit<'_, '_, '_> {
         let ascii = self.inline_ascii(more);
         let more_length = self.inline_length(more);
         let at = |emit: &mut Self, offset: i32| emit.offset(block, offset.unsigned_abs());
-        let (count, alone, inline, simple) = (self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{count} = load i64, ptr {block}{}", crate::emit::HEADER_ACCESS));
-        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        let alone = self.alone(block);
+        let (inline, simple) = (self.temp(), self.temp());
         self.line(&format!("{inline} = xor i1 {in_block}, true"));
         self.line(&format!("{simple} = and i1 {inline}, {ascii}"));
         let (length_at, room_at) = (at(self, TEXT_BYTES), at(self, TEXT_ROOM));
@@ -563,9 +555,7 @@ impl Emit<'_, '_, '_> {
         self.start_block(&bytes);
         let place = self.place_for_text();
         self.line(&format!("store {HEADER} {more}, ptr {place}"));
-        self.line(&format!(
-            "call void @llvm.memcpy.p0.p0.i64(ptr {to}, ptr {place}, i64 {more_length}, i1 false)"
-        ));
+        self.small_copy(&to, &place, &more_length);
         self.line(&format!("br label %{copied}"));
         self.start_block(&copied);
         self.line(&format!("store i64 {total}, ptr {length_at}"));
@@ -599,14 +589,22 @@ impl Emit<'_, '_, '_> {
         ascii
     }
 
+    /// Copies `length` bytes, 24 at most, with a few moves of whole words rather than a call:
+    /// the first and last words of the range, overlapping if they must, so nothing outside it
+    /// is read or written.
+    pub(crate) fn small_copy(&mut self, to: &str, from: &str, length: &str) {
+        self.module.add_helper(
+            "fen_small_copy",
+            "define internal void @fen_small_copy(ptr %to, ptr %from, i64 %n) #0 {\nentry:\n  %words = icmp uge i64 %n, 8\n  br i1 %words, label %wide, label %narrow\nwide:\n  %first = load i64, ptr %from, align 1\n  %back = add i64 %n, -8\n  %last_from = getelementptr inbounds i8, ptr %from, i64 %back\n  %last = load i64, ptr %last_from, align 1\n  %three = icmp ugt i64 %n, 16\n  br i1 %three, label %middle, label %ends\nmiddle:\n  %mid_from = getelementptr inbounds i8, ptr %from, i64 8\n  %mid = load i64, ptr %mid_from, align 1\n  %mid_to = getelementptr inbounds i8, ptr %to, i64 8\n  store i64 %mid, ptr %mid_to, align 1\n  br label %ends\nends:\n  store i64 %first, ptr %to, align 1\n  %last_to = getelementptr inbounds i8, ptr %to, i64 %back\n  store i64 %last, ptr %last_to, align 1\n  ret void\nnarrow:\n  %half_word = icmp uge i64 %n, 4\n  br i1 %half_word, label %halves, label %bytes\nhalves:\n  %h_first = load i32, ptr %from, align 1\n  %h_back = add i64 %n, -4\n  %h_last_from = getelementptr inbounds i8, ptr %from, i64 %h_back\n  %h_last = load i32, ptr %h_last_from, align 1\n  store i32 %h_first, ptr %to, align 1\n  %h_last_to = getelementptr inbounds i8, ptr %to, i64 %h_back\n  store i32 %h_last, ptr %h_last_to, align 1\n  ret void\nbytes:\n  %none = icmp eq i64 %n, 0\n  br i1 %none, label %done, label %some\nsome:\n  %b_first = load i8, ptr %from, align 1\n  %half = lshr i64 %n, 1\n  %b_mid_from = getelementptr inbounds i8, ptr %from, i64 %half\n  %b_mid = load i8, ptr %b_mid_from, align 1\n  %b_back = add i64 %n, -1\n  %b_last_from = getelementptr inbounds i8, ptr %from, i64 %b_back\n  %b_last = load i8, ptr %b_last_from, align 1\n  store i8 %b_first, ptr %to, align 1\n  %b_mid_to = getelementptr inbounds i8, ptr %to, i64 %half\n  store i8 %b_mid, ptr %b_mid_to, align 1\n  %b_last_to = getelementptr inbounds i8, ptr %to, i64 %b_back\n  store i8 %b_last, ptr %b_last_to, align 1\n  br label %done\ndone:\n  ret void\n}\n\n".to_owned(),
+        );
+        self.line(&format!("call void @fen_small_copy(ptr {to}, ptr {from}, i64 {length})"));
+    }
+
     /// An inline header of `length` bytes copied from `from`.
     fn inline_from(&mut self, from: &str, length: &str) -> String {
-        self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
         let out = self.place_for_text();
         self.line(&format!("store {HEADER} zeroinitializer, ptr {out}"));
-        self.line(&format!(
-            "call void @llvm.memcpy.p0.p0.i64(ptr {out}, ptr {from}, i64 {length}, i1 false)"
-        ));
+        self.small_copy(&out, from, length);
         let (tag, byte, tag_at, header) = (self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{tag} = or i64 {length}, 128"));
         self.line(&format!("{byte} = trunc i64 {tag} to i8"));
@@ -876,6 +874,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(_) => Kind::Float,
             Operand::Bool(_) => Kind::Bool,
             Operand::Str(_) => Kind::Str,
+            Operand::Bytes(_) => return Err(crate::emit::BYTES.to_owned()),
             Operand::None => Kind::Unit,
         })
     }
@@ -918,6 +917,11 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{end} = load i64, ptr {end_at}"));
         self.line(&format!("{size} = sub i64 {end}, {start}"));
         self.line(&format!("{from} = getelementptr inbounds i8, ptr {bytes}, i64 {start}"));
+        // With nothing to strip, it's the same header.
+        let (whole, part_label, all) = (self.temp(), self.label("strip_part"), self.current.clone());
+        self.line(&format!("{whole} = icmp eq i64 {size}, {length}"));
+        self.line(&format!("br i1 {whole}, label %{done}, label %{part_label}"));
+        self.start_block(&part_label);
         let piece = self.inline_from(&from, &size);
         let fast_end = self.current.clone();
         self.line(&format!("br label %{done}"));
@@ -928,7 +932,9 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
         let result = self.temp();
-        self.line(&format!("{result} = phi {HEADER} [ {piece}, %{fast_end} ], [ {other}, %{slow_end} ]"));
+        self.line(&format!(
+            "{result} = phi {HEADER} [ {text}, %{all} ], [ {piece}, %{fast_end} ], [ {other}, %{slow_end} ]"
+        ));
         result
     }
 

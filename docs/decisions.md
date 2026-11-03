@@ -984,6 +984,20 @@ for result in results:
 There's no `ordered=` option and no `map()`; comprehensions are the one form.
 *Why:* Each form already says what order it needs. A loop body has no result, a list keeps its positions, and a stream is consumed in order, so none of them needs an option. A bounded window keeps a fast producer from filling memory.
 
+**Printing inside `parallel` follows real call order.**
+- Each `print` comes out whole, with no lost lines and no text mixed within a line.
+- One task's prints stay in order. Across tasks, output follows real call order and can differ between runs.
+- Output appears when it's printed: a task writes its output before it parks or waits, and output is never held until the call ends.
+- Anything printed after the loop comes after all the loop's output.
+
+For input order, use the streamed form:
+```fennec
+for line in (render(x) for x in parallel(xs)):
+    stdout.print(line)
+```
+Tests comparing against the interpreter sort output from parallel bodies, and heavy printing from many threads shares one output. Those are the accepted costs.
+*Why:* Position order would let one long-lived connection hold back every later connection's logs, for hours and in memory with no limit. Having one rule for lists and another for connections would be worse, since the same loop would print differently by what it runs over.
+
 **A value crosses a channel like it goes anywhere else.** It's moved at its last use, and otherwise costs one count bump. Any write copies first, so neither side sees the other's changes. `shared` handles can cross too. This replaces the earlier rule that only values with a single owner cross a channel.
 *Why:* Biased counts make it safe, so the restriction no longer buys anything.
 

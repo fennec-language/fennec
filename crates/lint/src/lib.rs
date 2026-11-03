@@ -5,10 +5,12 @@
 mod asserts;
 mod calls;
 mod chains;
+mod conversions;
 mod copies;
 mod costs;
 mod dead;
 mod flow;
+mod items;
 mod loops;
 mod names;
 mod params;
@@ -67,6 +69,7 @@ pub fn lint(module: &Module, sources: &Sources) -> Vec<Lint> {
     found.extend(paths::of(sources));
     found.extend(asserts::of(module));
     found.extend(params::of(module, sources));
+    found.extend(items::of(module, sources));
     found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
     found
 }
@@ -85,6 +88,15 @@ pub fn kit_lints(module: &Module) -> Vec<Lint> {
 #[must_use]
 pub fn needless_copies(module: &Module, sources: &Sources) -> Vec<Lint> {
     copies::of(module, sources)
+}
+
+/// Every conversion to the type a value has already, in a module that checks: `str(s)` on text,
+/// `int(n)` on an int, `float(x)` on a float, and `str(x)` shown in an f-string. Like
+/// `needless_copies`, each fix is tried, so they're asked for where the whole program is checked
+/// anyway.
+#[must_use]
+pub fn needless_conversions(module: &Module, sources: &Sources) -> Vec<Lint> {
+    conversions::of(module, sources)
 }
 
 /// A hint for each place a lowered program may copy, once, and each it may allocate in code

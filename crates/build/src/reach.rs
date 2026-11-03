@@ -400,8 +400,12 @@ impl Uses {
             ExprKind::Duration(_) => {
                 self.names.insert("Duration".to_owned());
             }
-            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::None => {
-            }
+            ExprKind::Int(_)
+            | ExprKind::Bytes(_)
+            | ExprKind::Float(_)
+            | ExprKind::Str(_)
+            | ExprKind::Bool(_)
+            | ExprKind::None => {}
         }
     }
 

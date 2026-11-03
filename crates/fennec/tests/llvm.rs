@@ -11,7 +11,7 @@ use crate::executables::runtime_built;
 const BUILDING_EXAMPLES: usize = 49;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
+    crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
 }
 
 /// Whether this can run: this isn't Windows, where `fennec build` doesn't link, LLVM's tools and
@@ -72,7 +72,7 @@ fn both_built(name: &str, source: &str, how: &[&str]) -> std::io::Result<(Outcom
     let built = fennec(&args, &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ours = outcome(&Command::new(&executable).output()?);
-    let jit = outcome(&fennec(&["run", &program], &dir)?);
+    let jit = outcome(&fennec(&["run", "--jit", &program], &dir)?);
     std::fs::remove_dir_all(&dir)?;
     Ok((ours, jit))
 }
@@ -84,6 +84,20 @@ fn outcome(output: &Output) -> Outcome {
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
         output.status.code(),
+    )
+}
+
+/// `str` of what's text already. The linter takes these out of the examples, since they change
+/// nothing, so it's here they're run. This backend doesn't take `int`, or `float` of a float,
+/// yet, so `cli.rs` runs those on the other engines.
+#[test]
+fn str_of_text_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "str_of_text",
+        "def main(stdout: Stdout):\n    name = \"fox\"\n    stdout.print(str(name), str(\"\"))\n",
     )
 }
 
@@ -778,7 +792,7 @@ fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()
         let output = executable.to_string_lossy().into_owned();
         let args: Vec<&str> =
             ["build"].into_iter().chain(how.iter().copied()).chain(["-o", &output]).collect();
-        let built = Command::new(env!("CARGO_BIN_EXE_fennec"))
+        let built = crate::executables::fennec_command()
             .args(&args)
             .env("FENNEC_HOME", &dir)
             .current_dir(&proof)
@@ -1406,6 +1420,104 @@ def main(stdout: Stdout):
     stdout.print(check(3), check(-1))
     results = [check(1), check(0)]
     stdout.print(results)
+"#,
+    )
+}
+
+/// String keys held in a dict's entries as headers: every length from empty to past a header's
+/// 23 bytes, made from literals, slices, `+` and the runtime, so inline and block keys of the
+/// same text always meet as the same key.
+#[test]
+fn string_keys_in_place_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "string_keys",
+        r#"def main(stdout: Stdout):
+    letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
+    mut counts: dict[str, int] = {}
+    for size in range(31):
+        counts[letters[:size]] = size
+    held = letters[:30]
+    for size in range(31):
+        made = "".join([letters[at] for at in range(size)])
+        counts[made] = (counts.get(made) else 0) + 100
+    for word in "the quick brown fox jumps over the lazy dog and a much longer word than a header holds".split():
+        counts[word] = (counts.get(word) else 0) + 1
+    stdout.print(counts.len(), counts[""], counts["abc"], counts[held], counts[letters[:23]], counts[letters[:24]])
+    stdout.print(counts.pop("the"), counts.pop(letters[:24]), counts.len())
+    counts["the"] = 7
+    counts[letters[:24]] = 8
+    stdout.print(counts["the"], counts[letters[:24]], counts.len(), list(counts.keys())[-2:])
+    mut order: list[str] = []
+    for key in counts.keys():
+        if key.len() < 3:
+            order.append(key)
+    stdout.print(order, counts.get("missing") else -1)
+    mut seen: set[str] = {"dog"}
+    for word in ["fox", "fox", "a much longer word than a header holds", "dog"]:
+        seen.add(word)
+    stdout.print(seen.len(), "fox" in seen, "cat" in seen)
+"#,
+    )
+}
+
+/// Reading a string key a dict doesn't have fails with the key in the message.
+#[test]
+fn a_missing_string_key_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "missing_string_key",
+        r#"def main(stdout: Stdout):
+    counts: dict[str, int] = {"fox": 1}
+    stdout.print(counts["a key long enough to live in a block"])
+"#,
+    )
+}
+
+/// A float sum over a generator, whose start the checker writes in by name, as an int's isn't.
+#[test]
+fn float_sums_over_generators_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "float_sums",
+        r"struct U:
+    h: float
+
+def main(stdout: Stdout):
+    us = [U(1.5), U(2.0), U(-0.25)]
+    stdout.print(sum(u.h for u in us), sum(u.h for u in us if u.h > 0.0))
+    stdout.print(sum((u.h for u in us), start=1.0), sum(1 if u.h > 0.0 else 0 for u in us))
+",
+    )
+}
+
+/// Short strings made by every path that copies bytes into a header, at every length that fits
+/// and just past it, in ASCII and not.
+#[test]
+fn short_copies_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "short_copies",
+        r#"def main(stdout: Stdout):
+    for letters in ["abcdefghijklmnopqrstuvwxyz0123456789", "héllo wörld ünï çà ñé ßø åæ"]:
+        for size in range(27):
+            part = letters[:size]
+            other = letters[3:3 + size]
+            stdout.print(size, part, other, part + "!", "!" + part, part + other, f"[{part}]", f"{size}:{part}")
+            padded = f"  {part}  "
+            stdout.print(padded.strip(), padded.lstrip(), padded.rstrip(), part.strip() == part)
+    mut grown = "a block long enough that it isn't a header at all: "
+    for size in range(27):
+        grown += "x" * size
+    stdout.print(grown, grown.len())
 "#,
     )
 }

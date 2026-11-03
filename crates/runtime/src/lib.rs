@@ -37,6 +37,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_capability_from_value",
     "fennec_case_of",
     "fennec_dict_missing",
+    "fennec_dict_missing_header",
     "fennec_entries",
     "fennec_err",
     "fennec_expr",
@@ -69,6 +70,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_put",
     "fennec_put_item",
     "fennec_set_remove",
+    "fennec_set_remove_header",
     "fennec_spec_text",
     "fennec_stmt",
     "fennec_str_code",
@@ -220,6 +222,7 @@ export! {
     fennec_str_join(a0: i64, a1: i64) -> i64 => strings::join(a0, a1);
     fennec_list_slice(a0: i64, a1: i64, a2: i64) -> i64 => lists::slice(a0, a1, a2);
     fennec_set_remove(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) -> i64 => dicts::set_remove(a0, a1, a2, a3, a4);
+    fennec_set_remove_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i8, a5: i64, a6: i64) -> i64 => dicts::set_remove_header(a0, a1, a2, a3, a4, a5, a6);
     fennec_set_clear(a0: i64) -> i64 => dicts::set_clear(a0);
     fennec_cell_new(a0: i64) -> i64 => heap::cell_new(a0);
     fennec_cell_read(a0: i64) -> i64 => heap::cell_read(a0);
@@ -268,6 +271,7 @@ export! {
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);
     fennec_dict_set(a0: i64, a1: i64, a2: i64) -> i64 => dicts::set(a0, a1, a2);
     fennec_dict_missing(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) => dicts::missing(a0, a1, a2, a3, a4);
+    fennec_dict_missing_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i8, a5: i64, a6: i64) => dicts::missing_header(a0, a1, a2, a3, a4, a5, a6);
     fennec_str_index(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::index(a0, a1, a2, a3);
     fennec_str_slice(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => strings::slice(a0, a1, a2, a3, a4);
     fennec_str_compare(a0: i64, a1: i64) -> i64 => strings::compare(a0, a1);

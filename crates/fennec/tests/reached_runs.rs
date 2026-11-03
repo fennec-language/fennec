@@ -2,7 +2,7 @@
 //! text stays the same, which must never change what a program does or what's rejected.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 const SOURCE: &str = "def used() -> int:\n    41 + 1\n\ndef unused() -> int:\n    2\n\n\
     def main(stdout: Stdout):\n    stdout.print(used())\n";
@@ -20,7 +20,7 @@ fn scratch(name: &str) -> std::io::Result<PathBuf> {
 
 /// Runs a program with the cache in `home` and the environment of a person's machine.
 fn run(home: &Path, program: &Path) -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_fennec"))
+    crate::executables::fennec_command()
         .arg("run")
         .arg(program)
         .env("FENNEC_HOME", home)
@@ -96,7 +96,7 @@ fn a_failing_test_stops_the_run_until_its_fixed_or_skipped() {
         assert!(said.contains("✗ doubling") && said.contains("--no-test"), "{said}");
     }
 
-    let skipped = Command::new(env!("CARGO_BIN_EXE_fennec"))
+    let skipped = crate::executables::fennec_command()
         .args(["run", "--no-test"])
         .arg(&game)
         .env("FENNEC_HOME", &home)
@@ -134,7 +134,7 @@ fn the_interpreter_and_the_benchmarks_flag_dont_run_tests() {
     let (home, game) = (dir.join("home"), dir.join("game.fen"));
     std::fs::write(&game, TESTED.replace("x * 2", "x * 3")).unwrap();
     for flag in ["--interp", "--jit"] {
-        let ran = Command::new(env!("CARGO_BIN_EXE_fennec"))
+        let ran = crate::executables::fennec_command()
             .args(["run", flag])
             .arg(&game)
             .env("FENNEC_HOME", &home)
@@ -177,6 +177,80 @@ fn a_kit_started_from_what_it_kept_behaves_the_same() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A kit whose `main` prints what it embeds, with `test` added to what it holds.
+fn embedding_kit(name: &str, test: &str) -> std::io::Result<PathBuf> {
+    let dir = scratch(name)?;
+    std::fs::create_dir_all(dir.join("src"))?;
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(dir.join("kit.toml"), manifest)?;
+    std::fs::write(dir.join("src/data.bin"), [1, 2])?;
+    let main = format!(
+        "DATA = embed(\"data.bin\")\n\ndef main(stdout: Stdout):\n    stdout.print(DATA[0])\n\n{test}"
+    );
+    std::fs::write(dir.join("src/main.fen"), main)?;
+    Ok(dir)
+}
+
+#[test]
+fn an_edit_to_an_embedded_file_is_seen_by_a_kit_started_from_what_it_kept() {
+    let dir = embedding_kit("embed_image", "").unwrap();
+    let home = dir.join("home");
+    assert_eq!(stdout(&run(&home, &dir).unwrap()), "1\n");
+    // Long enough that a file's time can be told from when it was noted.
+    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    assert_eq!(stdout(&run(&home, &dir).unwrap()), "1\n");
+    assert_eq!(stdout(&run(&home, &dir).unwrap()), "1\n", "started from what it kept, bytes and all");
+
+    std::fs::write(dir.join("src/data.bin"), [7, 2]).unwrap();
+    assert_eq!(stdout(&run(&home, &dir).unwrap()), "7\n", "an edit of the same size is seen");
+
+    std::fs::remove_file(dir.join("src/data.bin")).unwrap();
+    let gone = run(&home, &dir).unwrap();
+    assert!(!gone.status.success());
+    assert!(String::from_utf8_lossy(&gone.stderr).contains("there's no file `data.bin` to embed"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_edit_to_an_embedded_file_is_seen_in_a_single_file() {
+    let dir = scratch("embed_file").unwrap();
+    let (home, game) = (dir.join("home"), dir.join("game.fen"));
+    std::fs::write(dir.join("data.bin"), [1]).unwrap();
+    std::fs::write(&game, "def main(stdout: Stdout):\n    stdout.print(embed(\"data.bin\")[0])\n").unwrap();
+    for _ in 0..2 {
+        assert_eq!(stdout(&run(&home, &game).unwrap()), "1\n");
+    }
+    std::fs::write(dir.join("data.bin"), [7]).unwrap();
+    assert_eq!(stdout(&run(&home, &game).unwrap()), "7\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_program_with_its_own_embed_function_calls_it() {
+    let dir = scratch("embed_own").unwrap();
+    let (home, game) = (dir.join("home"), dir.join("game.fen"));
+    let source = "def embed(path: str) -> int:\n    path.len()\n\n\
+        def main(stdout: Stdout):\n    stdout.print(embed(\"no such file\"))\n";
+    std::fs::write(&game, source).unwrap();
+    assert_eq!(stdout(&run(&home, &game).unwrap()), "12\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_edit_to_an_embedded_file_runs_the_tests_before_a_run_again() {
+    let test = "test \"the data\":\n    assert DATA[0] == 1\n";
+    let dir = embedding_kit("embed_tests", test).unwrap();
+    let home = dir.join("home");
+    for _ in 0..2 {
+        assert_eq!(stdout(&run(&home, &dir).unwrap()), "1\n");
+    }
+    std::fs::write(dir.join("src/data.bin"), [7, 2]).unwrap();
+    let failed = run(&home, &dir).unwrap();
+    assert!(!failed.status.success(), "{}", stdout(&failed));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A parameter named like a constant is the parameter inside its function, in every engine. Native
 /// code writes constants out where they're used, which mustn't reach a name that only looks like
 /// one. The linter's `naming-case` keeps examples from doing this, so it's checked here.
@@ -188,7 +262,7 @@ fn a_parameter_named_like_a_constant_is_the_parameter() {
     let game = dir.join("game.fen");
     std::fs::write(&game, source).unwrap();
     for engine in ["--no-test", "--interp"] {
-        let ran = Command::new(env!("CARGO_BIN_EXE_fennec"))
+        let ran = crate::executables::fennec_command()
             .args(["run", engine])
             .arg(&game)
             .env("FENNEC_HOME", dir.join("home"))

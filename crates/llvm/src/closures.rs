@@ -12,7 +12,7 @@ use crate::emit::{Emit, symbol};
 use crate::kinds::Kind;
 
 /// Where a closure's code and captured values are.
-const CODE: u32 = 8;
+pub(crate) const CODE: u32 = 8;
 const LET_GO: u32 = 16;
 const CAPTURES: u32 = 24;
 

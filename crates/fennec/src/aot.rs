@@ -136,7 +136,8 @@ fn llvm_objects(
     fennec_build::keep_what_main_reaches(&mut reached);
     let checked =
         fennec_check::check(&reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
-    let lowered = fennec_ir::lower(&reached, &checked);
+    // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
+    let lowered = fennec_ir::lower_with(&reached, &checked, fennec_ir::Options { outline_parallel: true });
     if let Some(skipped) = lowered.not_lowered.first() {
         return Err(format!("`{}` isn't lowered yet: {}", skipped.function, skipped.why));
     }

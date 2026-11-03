@@ -13,14 +13,14 @@ use crate::{FormatPart, InstKind, LocalId, Operand, Terminator};
 
 /// What a `for` loop counts through. Its names hold the count, or the item at the count,
 /// unpacked when there are several.
-struct Counting<'a> {
-    names: &'a [String],
-    first: Operand,
-    limit: Operand,
-    down: bool,
-    items: Option<(LocalId, Type)>,
+pub(super) struct Counting<'a> {
+    pub(super) names: &'a [String],
+    pub(super) first: Operand,
+    pub(super) limit: Operand,
+    pub(super) down: bool,
+    pub(super) items: Option<(LocalId, Type)>,
     /// Where each item goes back to, for a `for mut` loop.
-    back: Option<Back>,
+    pub(super) back: Option<Back>,
 }
 
 /// Where a `for mut` loop's items go back to.
@@ -221,6 +221,9 @@ impl Lowering<'_> {
         body: &[Stmt],
         span: Span,
     ) -> Lowered<()> {
+        // A `for mut` over `parallel(xs)` changes the items of `xs` where they are, and running
+        // its iterations in order is a correct way to run it.
+        let iter = if is_mut { super::parallel::parallel_items(iter).unwrap_or(iter) } else { iter };
         if !is_mut && let Some(expansion) = self.expanded(names, iter, body) {
             return self.fused(expansion);
         }
@@ -343,7 +346,7 @@ impl Lowering<'_> {
     /// Counts in a local of its own, so the loop's name is a fresh value each time around.
     /// The limit is read once. Going one step at a time, the count can't overflow, since
     /// it's short of the limit before each step.
-    fn counting<F>(&mut self, loop_of: Counting<'_>, span: Span, body: F) -> Lowered<()>
+    pub(super) fn counting<F>(&mut self, loop_of: Counting<'_>, span: Span, body: F) -> Lowered<()>
     where
         F: FnOnce(&mut Self) -> Lowered<()>,
     {

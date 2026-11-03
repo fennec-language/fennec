@@ -247,9 +247,6 @@ impl FnCx<'_> {
         if is_mut {
             let what = "`for mut` changes each item, so loop over something held in a mut name";
             self.mut_place(parallel.unwrap_or(iter), what);
-            if parallel.is_some() {
-                self.checker.parallel_changes.insert((iter.span.start, iter.span.end));
-            }
         }
         if parallel.is_some() {
             self.writes_only_its_own(body, names);

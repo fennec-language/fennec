@@ -1,0 +1,9 @@
+struct Pool:
+    items: list[int]
+
+    def [](mut self, i: str) -> int:
+        return self.items[0]
+
+def main(stdout: Stdout):
+    mut pool = Pool(items=[1])
+    stdout.print(pool["a"])

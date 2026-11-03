@@ -220,19 +220,36 @@ impl FnCx<'_> {
         if forever { Flow::exit() } else { Flow::unit() }
     }
 
-    /// `for mut` over a type looped through its own `def iter`, which makes its items one at a
-    /// time and has nowhere to write a change back, so the change would be lost.
-    fn mut_through_iter(&mut self, ty: &Type, span: fennec_syntax::Span) {
+    /// `for mut` over a type of its own goes through its positions: its `def len` and the
+    /// `mut` form of its `def []`, which gives the item's type. A type with only `def iter` makes
+    /// copies, so a change to one would be lost. `None` for any other type.
+    fn positions_item(&mut self, ty: &Type, in_parallel: bool, span: fennec_syntax::Span) -> Option<Type> {
         let ty = self.checker.settled(ty);
-        let (Type::Named(name) | Type::Generic(name, _)) = &ty else { return };
-        if self.checker.program.method(name, "iter").is_none() {
-            return;
+        let (Type::Named(name) | Type::Generic(name, _)) = &ty else { return None };
+        let give_positions = format!(
+            "give `{name}` positions: `def len(self) -> int` and the `mut` form, `def [](mut self, i: int)`"
+        );
+        let Some((key, entry)) = self.checker.program.method(name, "[]mut") else {
+            if self.checker.program.method(name, "iter").is_some() {
+                let message = format!(
+                    "`for mut` can't change the items of a `{name}`, since its `iter` makes copies of them"
+                );
+                self.error(Diagnostic::new(message, span).with_help(give_positions));
+            }
+            return None;
+        };
+        let own_items = crate::protocols::writes_one_item(&entry.def);
+        if self.checker.program.method(name, "len").is_none() {
+            let message = format!("`for mut` over a `{name}` needs its `def len`");
+            self.error(Diagnostic::new(message, span).with_help(give_positions));
+        } else if in_parallel && !own_items {
+            let message = format!(
+                "`for mut` over `parallel(...)` needs `{name}`'s `mut` form of `def []` to touch only its own item"
+            );
+            let help = "write it as `return self.field[i]`, or use a plain `for mut`";
+            self.error(Diagnostic::new(message, span).with_help(help));
         }
-        let message =
-            format!("`for mut` can't change the items of a `{name}`, since its `iter` makes copies of them");
-        let help =
-            format!("change them through a method of `{name}`, or loop with `for mut` over what it holds");
-        self.error(Diagnostic::new(message, span).with_help(help));
+        self.method_signature(&ty, &key).map(|signature| signature.returns)
     }
 
     fn for_stmt(
@@ -251,11 +268,28 @@ impl FnCx<'_> {
         if parallel.is_some() {
             self.writes_only_its_own(body, names);
         }
-        let iter_ty = self.expr(iter);
-        if is_mut {
-            self.mut_through_iter(&iter_ty, iter.span);
-        }
-        let item = self.item_type(&iter_ty, iter.span);
+        let positions = match parallel.filter(|_| is_mut) {
+            // What's split is `xs` itself, which needs no `def iter`.
+            Some(items) => {
+                let held = self.expr(items);
+                let item = self.positions_item(&held, true, items.span);
+                item.inspect(|item| self.record(iter.span, &Type::list(item.clone())))
+            }
+            None if is_mut => {
+                let held = self.peek_type(iter);
+                self.positions_item(&held, false, iter.span)
+            }
+            None => None,
+        };
+        let item = if let Some(item) = positions {
+            if parallel.is_none() {
+                self.expr(iter);
+            }
+            item
+        } else {
+            let iter_ty = self.expr(iter);
+            self.item_type(&iter_ty, iter.span)
+        };
         let before = self.snapshot();
         self.push(false);
         self.bind_names(names, &item, is_mut, (iter.span, span));

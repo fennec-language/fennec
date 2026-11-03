@@ -16,6 +16,7 @@ mod matching;
 mod operators;
 mod parallel;
 mod places;
+mod positions;
 mod structs;
 
 use std::collections::{HashMap, HashSet};
@@ -97,11 +98,8 @@ fn lower_from(
         instances: generics::Instances::default(),
         generator_defs: std::cell::RefCell::default(),
         // A library's yield methods too, which a loop over one can copy in.
-        generators: every
-            .iter()
-            .filter(|(_, def)| fuse::has_yield(&def.body))
-            .map(|(key, def)| (key.clone(), *def))
-            .collect(),
+        generators: those_where(&every, |def| fuse::has_yield(&def.body)),
+        mut_forms: those_where(&every, |def| def.name == "[]mut"),
         intrinsics: every.iter().filter(|(_, def)| is_intrinsic(def)).map(|(key, _)| key.clone()).collect(),
         options,
     };
@@ -140,6 +138,14 @@ fn lower_from(
     program.enums = enums;
     program.errors = errors;
     program
+}
+
+/// The functions in `every` that `keep` picks.
+fn those_where<'a>(
+    every: &HashMap<String, &'a FnDef>,
+    keep: impl Fn(&FnDef) -> bool,
+) -> HashMap<String, &'a FnDef> {
+    every.iter().filter(|(_, def)| keep(def)).map(|(key, def)| (key.clone(), *def)).collect()
 }
 
 /// Whether a function is one of the standard library's `@intrinsic` ones, which have no body.
@@ -257,6 +263,8 @@ struct Context<'a> {
     instances: generics::Instances,
     /// The yield functions of the module, which a loop over one can take a copy of.
     generators: HashMap<String, &'a FnDef>,
+    /// The `mut` forms of `def []`, whose places a position lowers to.
+    mut_forms: HashMap<String, &'a FnDef>,
     /// The generators lowered so far.
     generator_defs: std::cell::RefCell<Vec<crate::GeneratorDef>>,
     /// The standard library's `@intrinsic` functions, which have no body: a call to one is an

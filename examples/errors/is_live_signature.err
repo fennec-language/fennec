@@ -1,0 +1,7 @@
+error: `Pool`'s `def is_live` says whether a position holds an item
+ --> examples/errors/is_live_signature.fen:7:5
+  |
+7 |     def is_live(self, i: int) -> int:
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: write `def is_live(self, i: int) -> bool`

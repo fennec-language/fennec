@@ -1,0 +1,7 @@
+error: `for mut` over `parallel(...)` needs `Pool`'s `mut` form of `def []` to touch only its own item
+  --> examples/errors/parallel_positions_shared.fen:13:30
+   |
+13 |     for mut item in parallel(pool):
+   |                              ^^^^
+   |
+   = help: write it as `return self.field[i]`, or use a plain `for mut`

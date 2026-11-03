@@ -26,6 +26,8 @@ pub(super) struct Place {
 pub(super) enum Leaving {
     /// A `for mut` loop writes its item back to where it came from.
     Item { place: Place, item: LocalId, index: Operand },
+    /// A `for mut` loop over positions writes its item back to the place the position is.
+    Place { place: Place, item: LocalId },
     /// A `with` block calls the `del` of what it holds.
     With { resource: LocalId, cleanup: String },
     /// A `with` block gives back the locks of the `shared` handles it holds.
@@ -49,6 +51,13 @@ impl Lowering<'_> {
             ExprKind::Index { object, index } => {
                 let mut place = self.place_of(object)?;
                 let ty = self.steps_type(&place)?;
+                if let Type::Named(owner) = &ty
+                    && self.has_mut_form(owner)
+                    && self.type_at(index.span) == Some(Type::Int)
+                {
+                    let at = self.expr(index)?;
+                    return self.position_place(place, owner, at, target.span);
+                }
                 let key = self.key_type(&ty).ok_or("it changes an item of something that has none")?;
                 let lowered = self.expr(index)?;
                 place.steps.push(Step::Index(self.coerce(lowered, &key, index.span)?));
@@ -307,6 +316,9 @@ impl Lowering<'_> {
                 let mut steps = place.steps.clone();
                 steps.push(Step::Index(index.clone()));
                 self.store(place.local, &steps, Operand::Local(*item), span)
+            }
+            Leaving::Place { place, item } => {
+                self.store(place.local, &place.steps, Operand::Local(*item), span)
             }
             Leaving::With { resource, cleanup } => {
                 let args = vec![Operand::Local(*resource)];

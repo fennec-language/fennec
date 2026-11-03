@@ -118,7 +118,7 @@ impl<'a> Lowering<'a> {
             .iter()
             .filter_map(|entered| match entered {
                 Leaving::With { resource, cleanup } => Some((*resource, cleanup.clone())),
-                Leaving::Item { .. } | Leaving::Unlock { .. } => None,
+                Leaving::Item { .. } | Leaving::Place { .. } | Leaving::Unlock { .. } => None,
             })
             .collect();
         if let Some(generating) = &mut self.generating {

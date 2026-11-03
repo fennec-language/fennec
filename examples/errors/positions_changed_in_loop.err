@@ -1,0 +1,8 @@
+error: `pool` changes while a loop goes over it
+  --> examples/errors/positions_changed_in_loop.fen:17:9
+   |
+17 |         pool.add(item)
+   |         ^^^^^^^^^^^^^^
+   |
+   = help: loop over `copy(pool)`, or collect the changes and make them after the loop
+   = note: the loop is at examples/errors/positions_changed_in_loop.fen:15:21

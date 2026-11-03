@@ -481,6 +481,7 @@ impl Emit<'_, '_, '_> {
         self.copy(dest, &Operand::None)?;
         self.line(&format!("br label %{done}"));
         self.start_block(&found);
+        self.release_held(dest)?;
         let (slot, memory) = (self.slot(dest), optional.memory(self.module.layouts));
         self.line(&format!("store {memory} zeroinitializer, ptr {slot}"));
         self.line(&format!("store i64 {number}, ptr {slot}"));
@@ -659,6 +660,7 @@ impl Emit<'_, '_, '_> {
         } else {
             let (number, fields) = self.case_of(&optional, "Some")?;
             let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+            self.release_held(dest)?;
             let (slot, memory) = (self.slot(dest), optional.memory(self.module.layouts));
             self.line(&format!("store {memory} zeroinitializer, ptr {slot}"));
             self.line(&format!("store i64 {number}, ptr {slot}"));
@@ -797,6 +799,7 @@ impl Emit<'_, '_, '_> {
                 }
                 let (number, fields) = self.case_of(&optional, "Some")?;
                 let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
+                self.release_held(dest)?;
                 let (slot, memory) = (self.slot(dest), optional.memory(self.module.layouts));
                 self.line(&format!("store {memory} zeroinitializer, ptr {slot}"));
                 self.line(&format!("store i64 {number}, ptr {slot}"));

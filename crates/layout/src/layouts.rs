@@ -180,7 +180,7 @@ impl Layouts {
                 let mut placed = Vec::with_capacity(cases.len());
                 let mut size = WORD;
                 for (case, fields) in cases {
-                    let (fields, end) = place(fields, WORD, false)?;
+                    let (fields, end) = place(fields, WORD, true)?;
                     size = size.max(end);
                     placed.push(Case { name: case.clone(), fields });
                 }
@@ -402,6 +402,16 @@ impl Layouts {
         self.in_place.text_headers
     }
 
+    /// Whether a plain struct or enum holds a block anywhere, in a field or a case.
+    fn holds_counted(&self, id: u32) -> bool {
+        let Some(layout) = self.get(id) else { return false };
+        let cases = layout.cases.iter().flatten().flat_map(|case| &case.fields);
+        layout.fields.iter().chain(cases).any(|field| match field.ty {
+            Ty::Struct(inner) => self.holds_counted(inner),
+            ty => ty.counted(),
+        })
+    }
+
     /// The type a `Ty::Block` names.
     #[must_use]
     pub fn block(&self, id: u32) -> Option<Ty> {
@@ -517,7 +527,8 @@ fn key_word(layouts: &Layouts, key: &Type) -> Option<Word> {
         Type::Named(name) => {
             let id = layouts.id(name)?;
             layouts.get(id).filter(|layout| !layout.boxed)?;
-            Some(Word::Plain(id))
+            // Keys are compared and hashed by their words, which only numbers can be.
+            (!layouts.holds_counted(id)).then_some(Word::Plain(id))
         }
         _ => None,
     }

@@ -59,6 +59,7 @@ pub enum Block {
     Boxed(u32),
     List(ListItem),
     Dict(Word, Word),
+    Cap(Cap),
 }
 
 impl Block {
@@ -70,6 +71,7 @@ impl Block {
             Ty::Boxed(id) => Block::Boxed(id),
             Ty::List(item) => Block::List(item),
             Ty::Dict(key, value) => Block::Dict(key, value),
+            Ty::Cap(cap) => Block::Cap(cap),
             _ => return None,
         })
     }
@@ -82,6 +84,7 @@ impl Block {
             Block::Boxed(id) => Ty::Boxed(id),
             Block::List(item) => Ty::List(item),
             Block::Dict(key, value) => Ty::Dict(key, value),
+            Block::Cap(cap) => Ty::Cap(cap),
         }
     }
 }
@@ -240,6 +243,10 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Float => Element::Float,
         Ty::Bool => Element::Bool,
         Ty::Boxed(id) => Element::Boxed(usize::try_from(id).ok()?),
+        // By its block's address, whose own shape says it's a capability.
+        Ty::Cap(_) => {
+            Element::Boxed(usize::try_from(fennec_interp::embed::heap::CAPABILITY_SHAPE).ok()?)
+        }
         Ty::Str if layouts.text_headers() => Element::Text,
         Ty::Str => Element::Str,
         Ty::Obj => Element::Object,

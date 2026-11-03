@@ -492,6 +492,9 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
         Type::Str => Ty::Str,
+        Type::Named(name) if layouts.native_buffers && Cap::named(name).is_some() => {
+            Cap::named(name).map_or(Ty::Obj, Ty::Cap)
+        }
         Type::Named(name) => match (reserved.get(name), layouts.id(name)) {
             (Some(id), _) => Ty::Boxed(*id),
             (None, Some(id)) => Ty::Struct(id),

@@ -655,8 +655,8 @@ impl Emit<'_, '_, '_> {
             (self.offset(&block, TEXT_BYTES.unsigned_abs()), self.offset(&block, TEXT_CHARS.unsigned_abs()));
         let (bytes, chars, ascii, inside, quick) =
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{bytes} = load i64, ptr {bytes_at}"));
-        self.line(&format!("{chars} = load i64, ptr {chars_at}"));
+        self.line(&format!("{bytes} = load i64, ptr {bytes_at}{}", crate::emit::LENGTH_ACCESS));
+        self.line(&format!("{chars} = load i64, ptr {chars_at}{}", crate::emit::LENGTH_ACCESS));
         self.line(&format!("{ascii} = icmp eq i64 {bytes}, {chars}"));
         self.line(&format!("{inside} = icmp ult i64 {at}, {bytes}"));
         self.line(&format!("{quick} = and i1 {ascii}, {inside}"));
@@ -875,7 +875,7 @@ impl Emit<'_, '_, '_> {
         let (block, at, word) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
         self.line(&format!("{at} = getelementptr inbounds i8, ptr {block}, i64 {}", offset.unsigned_abs()));
-        self.line(&format!("{word} = load i64, ptr {at}"));
+        self.line(&format!("{word} = load i64, ptr {at}{}", crate::emit::LENGTH_ACCESS));
         let read_end = self.current.clone();
         self.line(&format!("br label %{done}"));
         self.start_block(&done);

@@ -57,17 +57,8 @@ impl Runtime {
     /// its own, workers would count shared blocks plainly, so the plain one stays the default.
     fn for_program(lowered: &fennec_ir::Program) -> Self {
         let asked = std::env::var_os("FENNEC_THREADS_RUNTIME").is_some_and(|on| on == "1");
-        if asked && uses_parallel(lowered) { Self::Threads } else { Self::Plain }
+        if asked && fennec_llvm::uses_parallel(lowered) { Self::Threads } else { Self::Plain }
     }
-}
-
-/// Whether any function of a lowered program hands work to the runtime's `parallel` calls.
-fn uses_parallel(lowered: &fennec_ir::Program) -> bool {
-    lowered.functions.iter().chain(&lowered.constants).flat_map(|function| &function.blocks).any(|block| {
-        block.insts.iter().any(|inst| {
-            matches!(&inst.kind, fennec_ir::InstKind::Builtin { name, .. } if name.starts_with("parallel."))
-        })
-    })
 }
 
 pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {

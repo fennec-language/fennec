@@ -136,7 +136,8 @@ impl Table {
     }
 
     pub(super) fn remove(&mut self, address: usize) -> Option<Box<[u64]>> {
-        debug_assert_ne!(address, self.place_in, "a string left with its place still kept");
+        // No block has address 0, which says no place is kept.
+        debug_assert!(address == 0 || address != self.place_in, "a string left with its place still kept");
         self.remove_any(address)
     }
 
@@ -167,6 +168,11 @@ mod tests {
         table.insert(block);
         table.note_place(at);
         table.remove(at);
+    }
+
+    #[test]
+    fn with_no_place_kept_any_address_can_be_asked_for() {
+        assert!(Table::default().remove(0).is_none());
     }
 
     #[test]

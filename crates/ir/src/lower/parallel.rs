@@ -163,6 +163,8 @@ impl Lowering<'_> {
         runs: &Runs<'_>,
         span: Span,
     ) -> Lowered<(Operand, Operand)> {
+        // The list first, as it's written before the body, then what the body captures.
+        let list = self.expr(items)?;
         let mut names = Vec::new();
         let mut record = |seen: &mut Expr| {
             if let ExprKind::Name(found) = &seen.kind {
@@ -205,6 +207,6 @@ impl Lowering<'_> {
         let mut_params = if changes { vec![captures.len()] } else { Vec::new() };
         self.lifted.extend(lifted.finished(captures.len() + 1, mut_params));
         let closure = self.make_closure(key, &captures, Type::Arrow(vec![item], Box::new(returns)), span);
-        Ok((self.expr(items)?, Operand::Local(closure)))
+        Ok((list, Operand::Local(closure)))
     }
 }

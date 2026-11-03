@@ -1,7 +1,11 @@
 // Structs in a game loop, the Go twin of particles.fen.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"time"
+)
 
 type Vec2 struct {
 	x, y float64
@@ -25,6 +29,7 @@ func (p *Particle) step(dt float64) {
 }
 
 func main() {
+	started := time.Now()
 	count := 2000
 	particles := make([]Particle, 0, count)
 	for i := 0; i < count; i++ {
@@ -47,4 +52,7 @@ func main() {
 		height += particle.position.y
 	}
 	fmt.Printf("%d %.6f\n", bounces, height)
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

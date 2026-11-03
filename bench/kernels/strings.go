@@ -3,10 +3,13 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"time"
 )
 
 func main() {
+	started := time.Now()
 	var builder strings.Builder
 	for i := 0; i < 2_000_000; i++ {
 		if i%3 == 0 {
@@ -23,4 +26,7 @@ func main() {
 		}
 	}
 	fmt.Println(len(text), spaces)
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

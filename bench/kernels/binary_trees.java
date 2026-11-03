@@ -1,5 +1,8 @@
 // Binary trees, the Java twin of binary_trees.fen.
 
+import java.io.OutputStream;
+import java.io.PrintStream;
+
 public class binary_trees {
     // A leaf when both children are null, and a node otherwise.
     static final class Tree {
@@ -26,7 +29,7 @@ public class binary_trees {
         return 1 + count(tree.left) + count(tree.right);
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         int most = 14;
         Tree longest = build(most);
         long total = 0;
@@ -36,6 +39,18 @@ public class binary_trees {
                 total += count(build(depth));
             }
         }
-        System.out.println(total + " " + count(longest));
+        out.println(total + " " + count(longest));
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

@@ -3,7 +3,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"slices"
+	"time"
 )
 
 func fannkuch(n int) (int64, int64) {
@@ -46,6 +48,10 @@ func fannkuch(n int) (int64, int64) {
 }
 
 func main() {
+	started := time.Now()
 	checksum, most := fannkuch(9)
 	fmt.Printf("%d %d\n", checksum, most)
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

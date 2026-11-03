@@ -3,8 +3,10 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Json interface{}
@@ -167,6 +169,7 @@ func document(records int64) string {
 }
 
 func main() {
+	started := time.Now()
 	text := document(300)
 	total := 0
 	for range 40 {
@@ -177,4 +180,7 @@ func main() {
 		total += out.Len()
 	}
 	fmt.Printf("%d %d\n", len(text), total)
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

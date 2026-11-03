@@ -1,7 +1,11 @@
 // The Mandelbrot set, the Go twin of mandelbrot.fen.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"time"
+)
 
 func iterations(cr, ci float64, limit int64) int64 {
 	zr, zi := 0.0, 0.0
@@ -17,6 +21,7 @@ func iterations(cr, ci float64, limit int64) int64 {
 }
 
 func main() {
+	started := time.Now()
 	size := 400
 	var total, inside int64
 	for y := 0; y < size; y++ {
@@ -31,4 +36,7 @@ func main() {
 		}
 	}
 	fmt.Printf("%d %d\n", total, inside)
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

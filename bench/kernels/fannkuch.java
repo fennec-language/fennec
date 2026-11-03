@@ -1,4 +1,7 @@
 // Fannkuch, the Java twin of fannkuch.fen.
+import java.io.OutputStream;
+import java.io.PrintStream;
+
 public class fannkuch {
     static long[] fannkuch(int n) {
         int[] perm = new int[n];
@@ -42,8 +45,20 @@ public class fannkuch {
         }
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         long[] result = fannkuch(9);
-        System.out.println(result[0] + " " + result[1]);
+        out.println(result[0] + " " + result[1]);
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

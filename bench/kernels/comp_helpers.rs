@@ -17,6 +17,7 @@ fn times_transposed(v: &[f64]) -> Vec<f64> {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let n = std::hint::black_box(100);
     let mut u = vec![1.0; n];
     let mut v = vec![0.0; n];
@@ -27,4 +28,7 @@ fn main() {
     let vbv: f64 = u.iter().zip(&v).map(|(x, y)| x * y).sum();
     let vv: f64 = v.iter().map(|x| x * x).sum();
     println!("{:.9}", (vbv / vv).sqrt());
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

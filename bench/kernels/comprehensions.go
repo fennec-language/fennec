@@ -1,9 +1,14 @@
 // Comprehensions and iterators, the Go twin of comprehensions.fen.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"time"
+)
 
 func main() {
+	started := time.Now()
 	size := int64(100_000)
 	var total int64
 	for round := int64(0); round < 10; round++ {
@@ -41,4 +46,7 @@ func main() {
 		}
 	}
 	fmt.Println(total)
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

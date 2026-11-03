@@ -4,7 +4,9 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
 	"strconv"
+	"time"
 )
 
 type Body struct {
@@ -48,6 +50,7 @@ func advance(bodies []Body, dt float64) {
 }
 
 func main() {
+	started := time.Now()
 	pi := math.Pi
 	solarMass := 4.0 * pi * pi
 	days := 365.24
@@ -75,4 +78,7 @@ func main() {
 		advance(bodies, 0.01)
 	}
 	fmt.Println(strconv.FormatFloat(energy(bodies), 'f', 9, 64))
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

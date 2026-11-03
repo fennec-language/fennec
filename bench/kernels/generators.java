@@ -1,4 +1,6 @@
 // Generators: stages chained through names and through functions, the Java twin of generators.fen.
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -72,7 +74,7 @@ public class generators {
         return oddSquares(countUp(limit)).filter(n -> n > over).findFirst().orElse(0);
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         List<String> src = makeLines(20_000);
         long result = 0;
         for (long round = 0; round < 40; round++) {
@@ -85,6 +87,18 @@ public class generators {
             result += sum;
             result += firstOver(1_000, 990 - round);
         }
-        System.out.println(result);
+        out.println(result);
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

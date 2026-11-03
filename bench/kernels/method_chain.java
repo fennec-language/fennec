@@ -1,4 +1,7 @@
 // Chained method calls on small structs, the Java twin of method_chain.fen.
+import java.io.OutputStream;
+import java.io.PrintStream;
+
 public class method_chain {
     record Complex(double re, double im) {
         Complex plus(Complex other) {
@@ -25,7 +28,7 @@ public class method_chain {
         return limit;
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         int size = 500;
         long total = 0;
         for (int y = 0; y < size; y++) {
@@ -35,6 +38,18 @@ public class method_chain {
                 total += iterations(new Complex(cr, ci), 100);
             }
         }
-        System.out.println(total);
+        out.println(total);
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

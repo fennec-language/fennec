@@ -4,8 +4,10 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
+	"time"
 )
 
 func sequence(length int) string {
@@ -33,6 +35,7 @@ type pair struct {
 }
 
 func main() {
+	started := time.Now()
 	dna := sequence(100_000)
 	for _, size := range []int{1, 2} {
 		var ordered []pair
@@ -51,5 +54,8 @@ func main() {
 	}
 	for _, piece := range []string{"ggt", "ggta", "ggtatt", "ggtattttaatt", "ggtattttaatttatagt"} {
 		fmt.Printf("%d %s\n", counted(dna, len(piece))[piece], piece)
+	}
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
 	}
 }

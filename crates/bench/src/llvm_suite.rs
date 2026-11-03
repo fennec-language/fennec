@@ -55,16 +55,21 @@ struct Row {
     builds: (Option<f64>, Option<f64>),
     /// The LLVM build's and the Rust twin's cache misses, where Valgrind can simulate them.
     misses: (Option<Misses>, Option<Misses>),
+    /// The kernel's own best time, in seconds, as the LLVM build and the Rust twin measured it,
+    /// and the LLVM build's as a percentage of the twin's speed.
+    kernel_time: (Option<f64>, Option<f64>),
+    kernel: Option<f64>,
 }
 
 /// How a kernel did against one of its other twins.
 #[derive(Default)]
 struct Versus {
-    /// The twin's best whole run, in seconds.
+    /// The twin's best whole run, and its kernel's best own time, in seconds.
     best: Option<f64>,
+    kernel_best: Option<f64>,
     /// The whole run's best time, as a percentage of the twin's speed.
     time: Option<f64>,
-    /// Roughly the kernel's: the best time with each side's startup taken off.
+    /// The kernel's own best time, as each program measured it, as a percentage of the twin's.
     kernel: Option<f64>,
     problem: Option<String>,
 }
@@ -83,6 +88,8 @@ impl Row {
             dev: None,
             builds: (None, None),
             misses: (None, None),
+            kernel_time: (None, None),
+            kernel: None,
         }
     }
 }
@@ -143,15 +150,77 @@ fn build(
     Err(said.lines().next().unwrap_or("it didn't build").trim_start_matches("error: ").to_owned())
 }
 
+/// The header of every kernel's `main`, which is the last thing in its file.
+const KERNEL_MAIN: &str = "def main(stdout: Stdout):\n";
+
+/// A kernel that takes `--time` as its twins do, written to `out_dir`: its `main` also takes
+/// the clock and the arguments, notes when it starts, and with any argument prints
+/// `kernel-ns N` last, from the clock. It's added here rather than written in the kernel, so
+/// the kernel stays exactly the code its targets and the JIT's fallback check hold it to: the
+/// clock and the arguments aren't native under the JIT. None for a kernel whose `main` isn't
+/// written that way, or isn't last, which is then timed only as a whole run.
+fn timed_copy(source: &str, out_dir: &Path, name: &str) -> Option<String> {
+    let text = std::fs::read_to_string(source).ok()?;
+    let at = text.find(KERNEL_MAIN)?;
+    let body = text.get(at + KERNEL_MAIN.len()..)?;
+    if body.lines().any(|line| !line.is_empty() && !line.starts_with(' ')) {
+        return None;
+    }
+    let timed = format!(
+        "{}def main(stdout: Stdout, clock: Clock, args: Args):\n    started = clock.now()\n{}\n    if args.len() > 0:\n        stdout.print(\"kernel-ns\", (clock.now() - started).nanos)\n",
+        text.get(..at)?,
+        body.trim_end()
+    );
+    let path = out_dir.join(format!("{name}.timed.fen"));
+    std::fs::write(&path, timed).ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// What one side's runs took: each whole run, and the kernel's own time each run said.
+#[derive(Default)]
+struct Times {
+    whole: Vec<Duration>,
+    kernel: Vec<Duration>,
+}
+
+impl Times {
+    /// The best whole run, in seconds.
+    fn best(&self) -> f64 {
+        summary(&self.whole).0
+    }
+
+    /// The best of the kernel's own times, in seconds, if every run said one.
+    fn best_kernel(&self) -> Option<f64> {
+        (!self.kernel.is_empty() && self.kernel.len() == self.whole.len()).then(|| summary(&self.kernel).0)
+    }
+}
+
+/// A program run with `--time`, which makes each kernel and twin print its kernel's own time
+/// last, measured with a monotonic clock, as `kernel-ns N`.
+fn timing(program: &Program) -> Program {
+    let mut args = program.args.clone();
+    args.push("--time".to_owned());
+    Program { command: program.command.clone(), args, stdin: program.stdin.clone() }
+}
+
+/// What a program printed without the `kernel-ns N` line, and the time that line says.
+fn kernel_time(stdout: &str) -> (String, Option<Duration>) {
+    let mut kept = String::with_capacity(stdout.len());
+    let mut took = None;
+    for line in stdout.split_inclusive('\n') {
+        match line.trim_end().strip_prefix("kernel-ns ") {
+            Some(nanos) => took = nanos.trim().parse().ok().map(Duration::from_nanos),
+            None => kept.push_str(line),
+        }
+    }
+    (kept, took)
+}
+
 /// Runs a kernel and a twin `runs` times each, taking turns and swapping which goes first,
-/// and gives back each side's times, or why they can't be compared.
-fn race(
-    kernel: &Kernel,
-    ours: &Program,
-    theirs: &Program,
-    runs: usize,
-) -> Result<(Vec<Duration>, Vec<Duration>), String> {
-    let (mut mine, mut twins) = (Vec::with_capacity(runs), Vec::with_capacity(runs));
+/// each with `--time`, and gives back what each side took, or why they can't be compared.
+fn race(kernel: &Kernel, ours: &Program, theirs: &Program, runs: usize) -> Result<(Times, Times), String> {
+    let (ours, theirs) = (timing(ours), timing(theirs));
+    let (mut mine, mut twins) = (Times::default(), Times::default());
     for round in 0..runs {
         let ran = if round % 2 == 0 {
             (ours.run(), theirs.run())
@@ -159,16 +228,21 @@ fn race(
             let twin = theirs.run();
             (ours.run(), twin)
         };
-        match ran {
-            (Ok(ours), Ok(twin)) if kernel.output_hash(&ours.stdout) == kernel.output_hash(&twin.stdout) => {
-                mine.push(ours.took);
-                twins.push(twin.took);
-            }
-            (Ok(_), Ok(_)) => return Err(MISMATCH.to_owned()),
+        let (ours_ran, twin_ran) = match ran {
+            (Ok(ours), Ok(twin)) => (ours, twin),
             (Err(message), _) | (_, Err(message)) => {
                 return Err(message.lines().next().unwrap_or("it failed").to_owned());
             }
+        };
+        let ((our_output, our_kernel), (their_output, their_kernel)) =
+            (kernel_time(&ours_ran.stdout), kernel_time(&twin_ran.stdout));
+        if kernel.output_hash(&our_output) != kernel.output_hash(&their_output) {
+            return Err(MISMATCH.to_owned());
         }
+        mine.whole.push(ours_ran.took);
+        twins.whole.push(twin_ran.took);
+        mine.kernel.extend(our_kernel);
+        twins.kernel.extend(their_kernel);
     }
     Ok((mine, twins))
 }
@@ -188,7 +262,11 @@ fn measured(kernel: &Kernel, llvm: &Program, twin: &Program, counter: Option<&Co
         }
     };
     let ((my_best, my_median, my_spread), (rust_best, rust_median, rust_spread)) =
-        (summary(&ours), summary(&theirs));
+        (summary(&ours.whole), summary(&theirs.whole));
+    row.kernel_time = (ours.best_kernel(), theirs.best_kernel());
+    if let (Some(mine), Some(rust)) = row.kernel_time {
+        row.kernel = speed(rust, mine);
+    }
     row.time = speed(rust_best, my_best);
     row.best = (Some(my_best), Some(rust_best));
     row.median = speed(rust_median, my_median);
@@ -220,13 +298,11 @@ fn dev_build(
         race(kernel, &Program { command: executable, args: Vec::new(), stdin: None }, twin, runs)
     });
     match raced {
-        Ok((ours, theirs)) => row.dev = speed(summary(&theirs).0, summary(&ours).0),
+        Ok((ours, theirs)) => row.dev = speed(theirs.best(), ours.best()),
         Err(problem) => row.problem = Some(format!("dev build: {problem}")),
     }
 }
 
-/// A kernel against its twin in `language`, if it has one and the language is installed, with
-/// `startups`, ours then theirs, taken off for the kernel's own time.
 /// What every race of one kernel shares: its LLVM build, where twins are built, and how many
 /// runs each side gets.
 struct Racing<'r> {
@@ -235,28 +311,26 @@ struct Racing<'r> {
     runs: usize,
 }
 
-fn versus(
-    kernel: &Kernel,
-    source: &str,
-    racing: &Racing<'_>,
-    language: Language,
-    startups: (Option<f64>, Option<f64>),
-) -> Versus {
+/// A kernel against its twin in `language`, if it has one and the language is installed.
+fn versus(kernel: &Kernel, source: &str, racing: &Racing<'_>, language: Language) -> Versus {
     let Racing { llvm, out_dir, runs } = *racing;
     let Some(twin) = language.twin_of(source) else { return Versus::default() };
     let raced = language.build(&twin, out_dir).and_then(|program| race(kernel, llvm, &program, runs));
     match raced {
         Ok((ours, theirs)) => {
-            let (ours, theirs) = (summary(&ours).0, summary(&theirs).0);
-            let kernel = match startups {
-                (Some(our_startup), Some(their_startup)) => {
-                    crate::startup::kernel_speed(ours, our_startup, theirs, their_startup)
-                }
+            let kernel = match (ours.best_kernel(), theirs.best_kernel()) {
+                (Some(ours), Some(theirs)) => speed(theirs, ours),
                 _ => None,
             };
-            Versus { best: Some(theirs), time: speed(theirs, ours), kernel, problem: None }
+            Versus {
+                best: Some(theirs.best()),
+                kernel_best: theirs.best_kernel(),
+                time: speed(theirs.best(), ours.best()),
+                kernel,
+                problem: None,
+            }
         }
-        Err(problem) => Versus { best: None, time: None, kernel: None, problem: Some(problem) },
+        Err(problem) => Versus { problem: Some(problem), ..Versus::default() },
     }
 }
 
@@ -311,11 +385,11 @@ fn slowest(rows: &[Row]) -> Option<(&str, f64)> {
 /// The table, then the geometric means and the slowest kernel.
 fn table(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String {
     let mut text = format!("## LLVM against Rust, Go and Java on {}\n\n", platform());
-    text.push_str("| kernel | instructions % | D1 misses, ours / Rust's | LL misses, ours / Rust's | best time % | median time % | spread | dev best time % | release build | dev build |");
+    text.push_str("| kernel | instructions % | D1 misses, ours / Rust's | LL misses, ours / Rust's | best time % | kernel time % | median time % | spread | dev best time % | release build | dev build |");
     for language in Language::ALL {
-        let _ = write!(text, " {0} kernel % ≈ | {0} whole run % |", language.name());
+        let _ = write!(text, " {0} kernel time % | {0} whole run % |", language.name());
     }
-    text.push_str(" |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    text.push_str(" |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     text.push_str(&"---:|---:|".repeat(Language::ALL.len()));
     text.push_str("---|\n");
     for row in rows {
@@ -338,12 +412,13 @@ fn table(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String
             if row.problem.is_some() { "-".to_owned() } else { format!("{:.0}%", row.spread * 100.0) };
         let _ = writeln!(
             text,
-            "| {} | {} | {} | {} | {} | {} | {spread} | {} | {} | {} |{others} {note} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {spread} | {} | {} | {} |{others} {note} |",
             row.name,
             percent(row.instructions),
             both(row.misses, |misses| misses.d1),
             both(row.misses, |misses| misses.ll),
             percent(row.time),
+            percent(row.kernel),
             percent(row.median),
             percent(row.dev),
             millis(row.builds.0),
@@ -362,12 +437,11 @@ fn table(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String
          `fennec build --llvm` makes without `--release`, cached a function at a time, raced \
          against the twin the same way. Each build's time is from an empty Fennec home, so no \
          cache helps it.\n\nThe Go and Java \
-         columns compare best times the same way. Whole run is each program from start to exit. \
-         Kernel ≈ takes each language's startup off its whole run first: startup is the best run of \
-         a hello-world in that language, so this is only roughly the kernel's time, and it's left out \
-         where either side's kernel took less time than its startup, which leaves mostly noise. \
-         Java's whole runs include the JVM starting and its JIT warming up, and its kernel times \
-         still include the warming up.\n",
+         columns compare best times the same way. Kernel time is what each program measured \
+         itself with a monotonic clock, from the start of its work to its last line, when run with \
+         `--time`; Java's is its second run, after one run to warm its JIT up. Whole run is each \
+         program from start to exit, startup included; Java's includes the JVM starting and its \
+         JIT warming up. Startup is the best run of a hello-world in each language.\n",
     );
     text
 }
@@ -379,11 +453,13 @@ fn means(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String
     let time = geomean(rows.iter().filter_map(|row| row.time));
     let median = geomean(rows.iter().filter_map(|row| row.median));
     let dev = geomean(rows.iter().filter_map(|row| row.dev));
+    let kernel = geomean(rows.iter().filter_map(|row| row.kernel));
     let _ = write!(
         text,
-        "\nGeometric mean: {}% by instructions, {}% by best time, {}% by median time, and the dev build {}% by best time.",
+        "\nGeometric mean: {}% by instructions, {}% by best time, {}% by kernel time, {}% by median time, and the dev build {}% by best time.",
         percent(instructions),
         percent(time),
+        percent(kernel),
         percent(median),
         percent(dev)
     );
@@ -397,7 +473,7 @@ fn means(rows: &[Row], counter: Option<&Counter>, startups: &Startups) -> String
             Some(mean) => {
                 let _ = write!(
                     text,
-                    " Against {}: roughly {}% by kernel time, {mean:.0}% by whole run.",
+                    " Against {}: {}% by kernel time, {mean:.0}% by whole run.",
                     language.name(),
                     percent(kernels)
                 );
@@ -427,13 +503,14 @@ fn number(value: Option<f64>) -> Json {
     value.map_or(Json::Null, |value| Json::Number((value * 10.0).round() / 10.0))
 }
 
-/// Each side's best whole run in milliseconds, which less its language's startup is roughly
-/// what its kernel took.
-fn best_ms(row: &Row) -> Json {
+/// Each side's best in milliseconds, for the history: its whole run with `whole`, or its
+/// kernel's own time.
+fn best_ms(row: &Row, whole: bool) -> Json {
     let ms = |seconds: Option<f64>| number(seconds.map(|seconds| seconds * 1000.0));
-    let mut fields = vec![("fennec".to_owned(), ms(row.best.0)), ("rust".to_owned(), ms(row.best.1))];
+    let (fennec, rust) = if whole { row.best } else { row.kernel_time };
+    let mut fields = vec![("fennec".to_owned(), ms(fennec)), ("rust".to_owned(), ms(rust))];
     for (language, versus) in Language::ALL.iter().zip(&row.others) {
-        fields.push((language.key().to_owned(), ms(versus.best)));
+        fields.push((language.key().to_owned(), ms(if whole { versus.best } else { versus.kernel_best })));
     }
     Json::Object(fields)
 }
@@ -475,7 +552,9 @@ fn json(rows: &[Row], startups: &Startups) -> Json {
             ("spread", number(Some(row.spread * 100.0))),
             ("noisy", Json::Bool(row.problem.is_none() && row.spread > NOISY)),
             ("problem", row.problem.as_ref().map_or(Json::Null, |problem| Json::string(problem.as_str()))),
-            ("best_ms", best_ms(row)),
+            ("best_ms", best_ms(row, true)),
+            ("kernel", number(row.kernel)),
+            ("kernel_ms", best_ms(row, false)),
             ("dev", number(row.dev)),
             ("misses", misses_json(row.misses)),
             ("release_build_ms", number(row.builds.0.map(|seconds| seconds * 1000.0))),
@@ -496,6 +575,7 @@ fn json(rows: &[Row], startups: &Startups) -> Json {
         ("commit", Json::string(std::env::var("GITHUB_SHA").unwrap_or_default())),
         ("instructions", number(geomean(rows.iter().filter_map(|row| row.instructions)))),
         ("time", number(geomean(rows.iter().filter_map(|row| row.time)))),
+        ("kernel", number(geomean(rows.iter().filter_map(|row| row.kernel)))),
         ("median", number(geomean(rows.iter().filter_map(|row| row.median)))),
         ("slowest", slowest(rows).map_or(Json::Null, |(name, _)| Json::string(name))),
         ("dev", number(geomean(rows.iter().filter_map(|row| row.dev)))),
@@ -527,9 +607,13 @@ pub(crate) fn run(
     let mut rows = Vec::new();
     for kernel in &kernels {
         let Some(source) = kernel.single_file() else { continue };
+        // Built from a copy that times its own work, as the twins do; its twins are found
+        // beside the kernel itself.
+        let timed = timed_copy(source, &out_dir, &kernel.name);
+        let built_from = timed.as_deref().unwrap_or(source);
         let executable = out_dir.join(format!("{}.llvm", kernel.name));
         let home = |which: &str| out_dir.join(format!("home-{}-{which}", kernel.name));
-        let release = build(fennec, source, &executable, true, Some(&home("release")));
+        let release = build(fennec, built_from, &executable, true, Some(&home("release")));
         let row = match release.map(|took| (executable, took)) {
             Err(problem) => {
                 let mut row = Row::new(&kernel.name);
@@ -542,16 +626,12 @@ pub(crate) fn run(
                 let mut row = measured(kernel, &llvm, &twin, counter.as_ref(), runs);
                 row.builds.0 = Some(release_build);
                 if row.problem.is_none() {
-                    dev_build(&mut row, kernel, (fennec, source), &twin, &home("dev"), (&out_dir, runs));
+                    dev_build(&mut row, kernel, (fennec, built_from), &twin, &home("dev"), (&out_dir, runs));
+                    let racing = Racing { llvm: &llvm, out_dir: &out_dir, runs };
                     row.others = installed
                         .iter()
-                        .zip(&startups.others)
-                        .map(|(language, their_startup)| match language {
-                            Some(language) => {
-                                let both = (startups.fennec, *their_startup);
-                                let racing = Racing { llvm: &llvm, out_dir: &out_dir, runs };
-                                versus(kernel, source, &racing, *language, both)
-                            }
+                        .map(|language| match language {
+                            Some(language) => versus(kernel, source, &racing, *language),
                             None => Versus::default(),
                         })
                         .collect();
@@ -579,7 +659,7 @@ pub(crate) fn run(
 mod tests {
     use std::time::Duration;
 
-    use super::{geomean, summary};
+    use super::{geomean, kernel_time, summary, timed_copy};
 
     #[test]
     fn the_best_run_counts_and_the_spread_is_how_far_the_median_is_from_it() {
@@ -588,6 +668,39 @@ mod tests {
         assert!((best - 0.010).abs() < 1e-9);
         assert!((median - 0.012).abs() < 1e-9);
         assert!((spread - 0.2).abs() < 1e-9, "{spread}");
+    }
+
+    #[test]
+    fn a_kernels_own_time_comes_off_what_it_printed() {
+        let (printed, took) = kernel_time("9227465\nkernel-ns 1500\n");
+        assert_eq!(printed, "9227465\n");
+        assert_eq!(took, Some(Duration::from_nanos(1500)));
+        assert_eq!(kernel_time("1 2\n"), ("1 2\n".to_owned(), None), "run without --time");
+    }
+
+    #[test]
+    fn a_kernel_is_built_from_a_copy_that_times_its_main() {
+        let dir = std::env::temp_dir().join(format!("fennec-timed-copy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let kernel = dir.join("k.fen");
+        std::fs::write(
+            &kernel,
+            "def f() -> int:\n    1\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n",
+        )
+        .unwrap();
+        let copy = timed_copy(kernel.to_str().unwrap(), &dir, "k").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(copy).unwrap(),
+            "def f() -> int:\n    1\n\ndef main(stdout: Stdout, clock: Clock, args: Args):\n    started = clock.now()\n    \
+             stdout.print(f())\n    if args.len() > 0:\n        stdout.print(\"kernel-ns\", (clock.now() - started).nanos)\n"
+        );
+        std::fs::write(
+            &kernel,
+            "def main(stdout: Stdout):\n    stdout.print(1)\n\ndef later() -> int:\n    2\n",
+        )
+        .unwrap();
+        assert_eq!(timed_copy(kernel.to_str().unwrap(), &dir, "k"), None, "main isn't last");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

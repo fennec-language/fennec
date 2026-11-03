@@ -3,7 +3,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"slices"
+	"time"
 )
 
 const NONE int64 = -1
@@ -439,10 +441,14 @@ func projectionTest(size int64) int64 {
 }
 
 func main() {
+	started := time.Now()
 	size := int64(100)
 	var total int64
 	for range 100 {
 		total += chainTest(int(size)) + projectionTest(size)
 	}
 	fmt.Println(total)
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

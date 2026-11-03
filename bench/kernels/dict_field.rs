@@ -32,9 +32,13 @@ impl Counter {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let mut counter = Counter { counts: HashMap::default() };
     for i in 0..std::hint::black_box(2_500_000_i64) {
         counter.bump(i * 7919 % 64);
     }
     println!("{} {} {}", counter.counts.len(), counter.counts[&0], counter.counts[&63]);
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

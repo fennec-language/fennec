@@ -229,6 +229,8 @@ impl Conn {
         if until.deadline.is_some_and(|deadline| deadline <= Instant::now()) {
             return Err(Failure::TimedOut(until.timeout.unwrap_or_default()));
         }
+        // What a task has printed comes out before it waits, however long that is.
+        super::write_kept_output();
         let waited = if self.registered && !super::state_is_borrowed() {
             PARKING.set(Some((interest, until.deadline)));
             match fennec_parked::park(u64::try_from(self.token.0).unwrap_or(0)) {
@@ -459,6 +461,8 @@ impl Worker {
                 self.take(stream, handler);
             }
             self.run_ready();
+            // What the tasks that just ran printed comes out before this worker waits.
+            super::write_kept_output();
             let waited = self.poll.poll(&mut events, self.timeout());
             if let Err(error) = waited
                 && error.kind() != ErrorKind::Interrupted

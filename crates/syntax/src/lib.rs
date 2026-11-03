@@ -2,6 +2,7 @@
 
 mod ast;
 mod diagnostic;
+mod doc_examples;
 #[doc(hidden)]
 pub mod dump;
 pub mod fuse;
@@ -22,6 +23,7 @@ pub use ast::{
     UnaryOp, WithName,
 };
 pub use diagnostic::{Also, Diagnostic, Edit, apply_fixes};
+pub use doc_examples::doc_examples;
 pub use modules::{
     Imported, dotted, importable_type, member as std_member, module_as_value, package_member, short_module,
     std_import,

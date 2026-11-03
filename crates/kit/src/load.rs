@@ -22,9 +22,15 @@ pub(crate) fn is_std(import: &Import) -> bool {
 }
 
 /// Loads a single `.fen` file. Its imports resolve against its own folder.
-pub(crate) fn file(path: &Path, shown_as: &str, overlay: &Overlay) -> Result<Program, Problems> {
+pub(crate) fn file(
+    path: &Path,
+    shown_as: &str,
+    entry: Entry,
+    overlay: &Overlay,
+) -> Result<Program, Problems> {
     let src = path.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let mut loader = Loader::new(src, folder_prefix(Path::new(shown_as).parent()), None, overlay);
+    loader.doc_examples = entry == Entry::Tests;
     let name = path.file_stem().map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     loader.visit(&name, path, shown_as.to_owned(), None);
     loader.finish(None)
@@ -40,6 +46,7 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
     let manifest = read_manifest(&root, &shown_root)?;
     let src = root.join("src");
     let mut loader = Loader::new(src.clone(), format!("{shown_root}src/"), Some(&root), overlay);
+    loader.doc_examples = entry == Entry::Tests;
     let main = src.join("main.fen");
     if main.is_file() || overlay.contains_key(&main) {
         loader.visit("main", &main, format!("{shown_root}src/main.fen"), None);
@@ -48,7 +55,7 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
             "error: {shown_root}src/main.fen doesn't exist\n  = help: a kit runs `main` from src/main.fen\n"
         )));
     }
-    if entry == Entry::Everything {
+    if entry != Entry::Main {
         let mut modules = Vec::new();
         find_modules(&src, &mut Vec::new(), &mut modules);
         modules.sort();
@@ -95,11 +102,31 @@ pub(crate) fn kit_modules(
     modules: &[String],
     overlay: &Overlay,
 ) -> Result<Program, Problems> {
+    some_of_a_kit(dir, shown_as, modules, overlay, false)
+}
+
+/// Some of a kit's modules, with the examples in their doc comments as tests.
+pub(crate) fn kit_modules_to_test(
+    dir: &Path,
+    shown_as: &str,
+    modules: &[String],
+) -> Result<Program, Problems> {
+    some_of_a_kit(dir, shown_as, modules, &Overlay::new(), true)
+}
+
+fn some_of_a_kit(
+    dir: &Path,
+    shown_as: &str,
+    modules: &[String],
+    overlay: &Overlay,
+    doc_examples: bool,
+) -> Result<Program, Problems> {
     let Some((root, shown_root)) = find_root(dir, shown_as) else {
         return Err(Problems::unplaced("error: this isn't in a kit\n".to_owned()));
     };
     let manifest = read_manifest(&root, &shown_root)?;
     let mut loader = Loader::new(root.join("src"), format!("{shown_root}src/"), Some(&root), overlay);
+    loader.doc_examples = doc_examples;
     let modules: Vec<Vec<String>> =
         modules.iter().map(|module| module.split('.').map(str::to_owned).collect()).collect();
     loader.parse_ahead(modules.clone());
@@ -169,10 +196,19 @@ fn find_modules(dir: &Path, prefix: &mut Vec<String>, found: &mut Vec<Vec<String
 /// only reserved, not used, until a file nests deeply.
 const PARSING_STACK: usize = 1 << 30;
 
-/// Parses each text at its offset, in order, on as many threads as there are CPUs.
-fn parse_all(texts: &[(String, u32)]) -> Vec<Result<Module, Diagnostic>> {
-    let parse = |chunk: &[(String, u32)]| -> Vec<Result<Module, Diagnostic>> {
-        chunk.iter().map(|(text, base)| fennec_syntax::parse_at(text, *base)).collect()
+/// Parses a file at its offset, with the examples in its doc comments as tests if asked.
+fn parse_file(text: &str, base: u32, shown: &str, doc_examples: bool) -> Result<Module, Diagnostic> {
+    let mut module = fennec_syntax::parse_at(text, base)?;
+    if doc_examples {
+        module.items.extend(fennec_syntax::doc_examples(text, base, shown)?);
+    }
+    Ok(module)
+}
+
+/// Parses each text, shown as named, at its offset, in order, on as many threads as there are CPUs.
+fn parse_all(texts: &[(String, u32, String)], doc_examples: bool) -> Vec<Result<Module, Diagnostic>> {
+    let parse = |chunk: &[(String, u32, String)]| -> Vec<Result<Module, Diagnostic>> {
+        chunk.iter().map(|(text, base, shown)| parse_file(text, *base, shown, doc_examples)).collect()
     };
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     if threads < 2 || texts.len() < 2 {
@@ -207,6 +243,8 @@ struct Loader<'a> {
     src: PathBuf,
     /// How `src` is shown before a module's path.
     shown_src: String,
+    /// Whether the examples in doc comments become tests.
+    doc_examples: bool,
     /// The folder of the kit being loaded, which `embed` can't reach out of. A single file has none.
     root: Option<PathBuf>,
     embedded: Vec<Embedded>,
@@ -228,6 +266,7 @@ impl<'a> Loader<'a> {
             overlay,
             src,
             shown_src,
+            doc_examples: false,
             root: root.map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())),
             embedded: Vec::new(),
             sources: Sources::new(),
@@ -275,7 +314,10 @@ impl<'a> Loader<'a> {
             parsed
         } else {
             match self.read(real) {
-                Ok(text) => fennec_syntax::parse_at(&text, self.sources.add(shown.clone(), text.as_str())),
+                Ok(text) => {
+                    let base = self.sources.add(shown.clone(), text.as_str());
+                    parse_file(&text, base, &shown, self.doc_examples)
+                }
                 Err(err) => {
                     match from {
                         Some(span) => self.errors.push(
@@ -329,12 +371,12 @@ impl<'a> Loader<'a> {
             }
             let (real, shown) = self.module_path(&module);
             if let Ok(text) = self.read(&real) {
-                let base = self.sources.add(shown, text.as_str());
+                let base = self.sources.add(shown.clone(), text.as_str());
                 names.push(name);
-                texts.push((text, base));
+                texts.push((text, base, shown));
             }
         }
-        self.parsed.extend(names.into_iter().zip(parse_all(&texts)));
+        self.parsed.extend(names.into_iter().zip(parse_all(&texts, self.doc_examples)));
     }
 
     /// The modules an import loads. `from game import physics` loads `game/physics.fen` when

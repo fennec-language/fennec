@@ -192,6 +192,13 @@ fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled
     if let Some(skipped) = lowered.not_lowered.first() {
         return Err(format!("`{}` isn't lowered yet: {}", skipped.function, skipped.why));
     }
+    // A mistake in lowering is caught here in a dev build of `fennec`, whatever the linker takes:
+    // macOS's links a function defined twice.
+    if cfg!(debug_assertions)
+        && let Err(problems) = fennec_ir::validate(&lowered)
+    {
+        return Err(format!("the IR isn't sound: {}", problems.join("; ")));
+    }
     let runtime = Runtime::for_program(&lowered);
     let cpu = if BASELINE.load(std::sync::atomic::Ordering::Relaxed) {
         fennec_llvm::Cpu::Baseline

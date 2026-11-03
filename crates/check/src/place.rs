@@ -202,9 +202,12 @@ impl FnCx<'_> {
         let ty = self.peek_type(object);
         if let Some(name) = ty.type_name().filter(|name| self.checker.program.method(name, "[]").is_some())
             && self.checker.program.method(name, "[]=").is_none()
+            && self.checker.program.method(name, "[]mut").is_none()
         {
             let message = format!("`{name}` has a `def []` but no `def []=`, so its items can't be changed");
-            let help = format!("define `def []=(mut self, index: ..., value: ...)` for `{name}`");
+            let help = format!(
+                "define the `mut` form, `def [](mut self, i: int)`, or `def []=(mut self, index: ..., value: ...)` for `{name}`"
+            );
             self.error(Diagnostic::new(message, place.span).with_help(help));
         }
     }

@@ -1,5 +1,7 @@
 //! Plain structs, tuples and lists, laid out as the runtime and the JIT lay them out.
 
+use std::fmt::Write as _;
+
 use fennec_interp::embed::layout::{FIELDS, LIST_ITEMS, LIST_LENGTH, LIST_ROOM};
 use fennec_ir::{LocalId, Operand};
 use fennec_layout::ListItem;
@@ -8,6 +10,24 @@ use fennec_syntax::{BinOp, Span};
 use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::uniqueness::{FieldPath, item_step, list_place};
+
+/// Something an inline struct or enum owns, at its offset.
+#[derive(Clone)]
+pub(crate) enum InlinePart {
+    /// A block, always there.
+    Block(u32, Kind),
+    /// An enum of this layout, whose blocks depend on its case.
+    Enum(u32, u32),
+}
+
+impl InlinePart {
+    fn shifted(self, by: u32) -> InlinePart {
+        match self {
+            InlinePart::Block(offset, held) => InlinePart::Block(offset + by, held),
+            InlinePart::Enum(offset, id) => InlinePart::Enum(offset + by, id),
+        }
+    }
+}
 
 /// A case's field: its name, where it goes, and how it's held if this backend takes it.
 type CaseField = (String, u32, Option<Kind>);
@@ -58,25 +78,6 @@ impl Emit<'_, '_, '_> {
         let shape = self.temp();
         self.line(&format!("{shape} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
         Ok(shape)
-    }
-
-    /// Whether a layout held in place has a block anywhere in it, in a field or a case.
-    pub(crate) fn holds_blocks(&self, id: u32) -> Result<bool, String> {
-        let layout = self.layout_of(id)?;
-        let fields = layout.fields.iter().map(|field| field.ty);
-        let cases = layout.cases.iter().flatten().flat_map(|case| case.fields.iter().map(|field| field.ty));
-        for ty in fields.chain(cases) {
-            match Kind::from_ty(self.module.layouts, ty) {
-                Some(Kind::Struct(inner) | Kind::Enum(inner)) if inner != id => {
-                    if self.holds_blocks(inner)? {
-                        return Ok(true);
-                    }
-                }
-                Some(kind) if !kind.counted() => {}
-                _ => return Ok(true),
-            }
-        }
-        Ok(false)
     }
 
     /// Writes a value inside something that hasn't held one before, with an owner if it needs one.
@@ -157,41 +158,98 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &value)
     }
 
-    /// Where an inline struct holds blocks, its inner structs' fields too: each word's offset,
-    /// and what it holds. Nothing for anything else.
-    pub(crate) fn inline_blocks(&self, kind: &Kind) -> Vec<(u32, Kind)> {
-        let Kind::Struct(id) = kind else { return Vec::new() };
-        let Some(layout) = self.module.layouts.get(*id) else { return Vec::new() };
+    /// What's owned inside an inline struct or enum, its inner structs' fields too. Nothing for
+    /// anything else, or for an enum whose cases are all plain.
+    pub(crate) fn inline_parts(&self, kind: &Kind) -> Vec<InlinePart> {
+        match kind {
+            Kind::Struct(id) => {
+                self.module.layouts.get(*id).map_or_else(Vec::new, |layout| self.parts_of(&layout.fields))
+            }
+            Kind::Enum(id) if !self.case_parts(*id).is_empty() => vec![InlinePart::Enum(0, *id)],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether an inline struct or enum owns anything.
+    pub(crate) fn holds_inline(&self, kind: &Kind) -> bool {
+        !self.inline_parts(kind).is_empty()
+    }
+
+    fn parts_of(&self, fields: &[fennec_layout::Field]) -> Vec<InlinePart> {
         let mut found = Vec::new();
-        for field in &layout.fields {
+        for field in fields {
             match Kind::from_ty(self.module.layouts, field.ty) {
                 Some(inner @ Kind::Struct(_)) => {
-                    found.extend(
-                        self.inline_blocks(&inner).into_iter().map(|(at, held)| (at + field.offset, held)),
-                    );
+                    found
+                        .extend(self.inline_parts(&inner).into_iter().map(|part| part.shifted(field.offset)));
                 }
-                Some(held) if held.counted() => found.push((field.offset, held)),
+                Some(Kind::Enum(id)) if !self.case_parts(id).is_empty() => {
+                    found.push(InlinePart::Enum(field.offset, id));
+                }
+                Some(held) if held.counted() => found.push(InlinePart::Block(field.offset, held)),
                 _ => {}
             }
         }
         found
     }
 
-    /// One more owner for each block an inline struct at `at` holds.
-    pub(crate) fn retain_inline(&mut self, kind: &Kind, at: &str) {
-        for (offset, held) in self.inline_blocks(kind) {
-            let (place, block, text) = (self.offset(at, offset), self.temp(), self.text_of(&held));
-            self.line(&format!("{block} = load {text}, ptr {place}"));
-            self.retain_value(&block, &held);
+    /// Each case of an enum that owns anything: its number, and what it owns.
+    fn case_parts(&self, id: u32) -> Vec<(usize, Vec<InlinePart>)> {
+        let Some(cases) = self.module.layouts.get(id).and_then(|layout| layout.cases.as_ref()) else {
+            return Vec::new();
+        };
+        cases
+            .iter()
+            .enumerate()
+            .map(|(number, case)| (number, self.parts_of(&case.fields)))
+            .filter(|(_, parts)| !parts.is_empty())
+            .collect()
+    }
+
+    /// One more owner, or one fewer, for each block in what an inline part holds: for an enum,
+    /// by the case it's in now.
+    fn count_part(&mut self, part: InlinePart, at: &str, more: bool) {
+        match part {
+            InlinePart::Block(offset, held) => {
+                let (place, block, text) = (self.offset(at, offset), self.temp(), self.text_of(&held));
+                self.line(&format!("{block} = load {text}, ptr {place}"));
+                if more {
+                    self.retain_value(&block, &held);
+                } else {
+                    self.release_kind(&block, &held);
+                }
+            }
+            InlinePart::Enum(offset, id) => {
+                let (base, tag, done) = (self.offset(at, offset), self.temp(), self.label("counted"));
+                self.line(&format!("{tag} = load i64, ptr {base}"));
+                for (number, parts) in self.case_parts(id) {
+                    let (this, next, same) = (self.label("case"), self.label("not_case"), self.temp());
+                    self.line(&format!("{same} = icmp eq i64 {tag}, {number}"));
+                    self.line(&format!("br i1 {same}, label %{this}, label %{next}"));
+                    self.start_block(&this);
+                    for part in parts {
+                        self.count_part(part, &base, more);
+                    }
+                    self.line(&format!("br label %{done}"));
+                    self.start_block(&next);
+                }
+                self.line(&format!("br label %{done}"));
+                self.start_block(&done);
+            }
         }
     }
 
-    /// One owner fewer for each block an inline struct at `at` holds.
+    /// One more owner for each block an inline struct or enum at `at` holds.
+    pub(crate) fn retain_inline(&mut self, kind: &Kind, at: &str) {
+        for part in self.inline_parts(kind) {
+            self.count_part(part, at, true);
+        }
+    }
+
+    /// One owner fewer for each block an inline struct or enum at `at` holds.
     pub(crate) fn release_inline(&mut self, kind: &Kind, at: &str) {
-        for (offset, held) in self.inline_blocks(kind) {
-            let (place, block, text) = (self.offset(at, offset), self.temp(), self.text_of(&held));
-            self.line(&format!("{block} = load {text}, ptr {place}"));
-            self.release_kind(&block, &held);
+        for part in self.inline_parts(kind) {
+            self.count_part(part, at, false);
         }
     }
 
@@ -213,8 +271,7 @@ impl Emit<'_, '_, '_> {
             .collect();
         let block = if matches!(kind, Kind::Boxed(_)) { Some(self.new_block(id)?) } else { None };
         // Holding blocks, it's made beside what the local holds, which may be read for it.
-        let beside =
-            (block.is_none() && !self.inline_blocks(&kind).is_empty()).then(|| self.place_for(&kind));
+        let beside = (block.is_none() && self.holds_inline(&kind)).then(|| self.place_for(&kind));
         let base = match (&block, &beside) {
             (Some(block), _) => self.offset(block, FIELDS_OFFSET),
             (None, Some(place)) => place.clone(),
@@ -397,13 +454,16 @@ impl Emit<'_, '_, '_> {
         let kind = self.kind_of(dest)?.clone();
         let (number, written) = self.case_of(&kind, case)?;
         let block = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
+        // Holding blocks, it's made beside what the local holds, which may be read for it.
+        let beside = (block.is_none() && self.holds_inline(&kind)).then(|| self.place_for(&kind));
         let base = if let Some(block) = &block {
             self.offset(block, FIELDS_OFFSET)
         } else {
             // Words a case doesn't use are zero, so equal enums have equal words.
-            let (slot, text) = (self.slot(dest), self.text_of(&kind));
-            self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
-            slot
+            let place = beside.clone().unwrap_or_else(|| self.slot(dest));
+            let text = self.text_of(&kind);
+            self.line(&format!("store {text} zeroinitializer, ptr {place}"));
+            place
         };
         self.line(&format!("store i64 {number}, ptr {base}"));
         for ((_, offset, held), value) in written.into_iter().zip(fields) {
@@ -413,6 +473,9 @@ impl Emit<'_, '_, '_> {
         }
         if let Some(block) = block {
             self.assign(dest, &block)?;
+        }
+        if let Some(place) = beside {
+            self.assign_memory_owned(dest, &place)?;
         }
         Ok(())
     }
@@ -508,19 +571,25 @@ impl Emit<'_, '_, '_> {
             .collect()
     }
 
-    fn same_structs(&mut self, id: u32, (a, b): (&str, &str)) -> Result<String, String> {
+    fn same_structs(&mut self, id: u32, places: (&str, &str)) -> Result<String, String> {
+        let fields = self.struct_fields(id)?;
+        self.same_fields(&fields, places)
+    }
+
+    /// Whether these fields of what's at two addresses are all the same.
+    fn same_fields(&mut self, fields: &[(u32, Kind)], (a, b): (&str, &str)) -> Result<String, String> {
         let mut same = "true".to_owned();
-        for (offset, kind) in self.struct_fields(id)? {
-            let (x_at, y_at) = (self.offset(a, offset), self.offset(b, offset));
-            let equal = match &kind {
+        for (offset, kind) in fields {
+            let (x_at, y_at) = (self.offset(a, *offset), self.offset(b, *offset));
+            let equal = match kind {
                 Kind::Struct(inner) => self.same_structs(*inner, (&x_at, &y_at))?,
-                Kind::Enum(inner) => self.same_enums(BinOp::Eq, *inner, (&x_at, &y_at)),
+                Kind::Enum(inner) => self.same_enums(BinOp::Eq, *inner, (&x_at, &y_at))?,
                 _ => {
-                    let (x, y) = (self.load_field(&kind, &x_at, ""), self.load_field(&kind, &y_at, ""));
-                    match &kind {
+                    let (x, y) = (self.load_field(kind, &x_at, ""), self.load_field(kind, &y_at, ""));
+                    match kind {
                         Kind::Int | Kind::Bool => {
                             let equal = self.temp();
-                            let text = if kind == Kind::Bool { "i1" } else { "i64" };
+                            let text = if *kind == Kind::Bool { "i1" } else { "i64" };
                             self.line(&format!("{equal} = icmp eq {text} {x}, {y}"));
                             equal
                         }
@@ -616,25 +685,72 @@ impl Emit<'_, '_, '_> {
         self.compare_structs(op, id, (&a_fields, &b_fields))
     }
 
-    /// `==` on two plain enums: their words, one by one.
-    pub(crate) fn same_enums(&mut self, op: BinOp, id: u32, (a, b): (&str, &str)) -> String {
-        let words = self.module.layouts.get(id).map_or(0, |layout| layout.size / 8);
-        let mut same = "true".to_owned();
-        for word in 0..words {
-            let (x_at, y_at) = (self.offset(a, word * 8), self.offset(b, word * 8));
-            let (x, y, equal, both) = (self.temp(), self.temp(), self.temp(), self.temp());
-            self.line(&format!("{x} = load i64, ptr {x_at}"));
-            self.line(&format!("{y} = load i64, ptr {y_at}"));
-            self.line(&format!("{equal} = icmp eq i64 {x}, {y}"));
-            self.line(&format!("{both} = and i1 {same}, {equal}"));
-            same = both;
-        }
+    /// `==` on two enums in place: their words, one by one, or their cases' fields if they hold
+    /// blocks, whose words can differ when what they hold doesn't.
+    pub(crate) fn same_enums(&mut self, op: BinOp, id: u32, (a, b): (&str, &str)) -> Result<String, String> {
+        let same = if self.case_parts(id).is_empty() {
+            let words = self.module.layouts.get(id).map_or(0, |layout| layout.size / 8);
+            let mut same = "true".to_owned();
+            for word in 0..words {
+                let (x_at, y_at) = (self.offset(a, word * 8), self.offset(b, word * 8));
+                let (x, y, equal, both) = (self.temp(), self.temp(), self.temp(), self.temp());
+                self.line(&format!("{x} = load i64, ptr {x_at}"));
+                self.line(&format!("{y} = load i64, ptr {y_at}"));
+                self.line(&format!("{equal} = icmp eq i64 {x}, {y}"));
+                self.line(&format!("{both} = and i1 {same}, {equal}"));
+                same = both;
+            }
+            same
+        } else {
+            self.same_cases(id, (a, b))?
+        };
         if op == BinOp::NotEq {
             let flipped = self.temp();
             self.line(&format!("{flipped} = xor i1 {same}, true"));
-            return flipped;
+            return Ok(flipped);
         }
-        same
+        Ok(same)
+    }
+
+    /// Whether two enums at these addresses are in the same case with the same fields.
+    fn same_cases(&mut self, id: u32, (a, b): (&str, &str)) -> Result<String, String> {
+        let layouts = self.module.layouts;
+        let cases =
+            layouts.get(id).and_then(|layout| layout.cases.as_ref()).ok_or("the cases of a struct")?;
+        let (x_tag, y_tag, same_tag) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{x_tag} = load i64, ptr {a}"));
+        self.line(&format!("{y_tag} = load i64, ptr {b}"));
+        self.line(&format!("{same_tag} = icmp eq i64 {x_tag}, {y_tag}"));
+        let result = self.label("%same");
+        let _ = writeln!(self.allocas, "  {result} = alloca i1");
+        self.line(&format!("store i1 {same_tag}, ptr {result}"));
+        let done = self.label("compared");
+        for (number, case) in cases.iter().enumerate().filter(|(_, case)| !case.fields.is_empty()) {
+            let fields: Vec<(u32, Kind)> = case
+                .fields
+                .iter()
+                .map(|field| {
+                    Kind::from_ty(self.module.layouts, field.ty)
+                        .map(|kind| (field.offset, kind))
+                        .ok_or_else(|| "a field this backend doesn't take yet".to_owned())
+                })
+                .collect::<Result<_, _>>()?;
+            let (this, next, here, both) =
+                (self.label("case"), self.label("not_case"), self.temp(), self.temp());
+            self.line(&format!("{here} = icmp eq i64 {x_tag}, {number}"));
+            self.line(&format!("{both} = and i1 {same_tag}, {here}"));
+            self.line(&format!("br i1 {both}, label %{this}, label %{next}"));
+            self.start_block(&this);
+            let same = self.same_fields(&fields, (a, b))?;
+            self.line(&format!("store i1 {same}, ptr {result}"));
+            self.line(&format!("br label %{done}"));
+            self.start_block(&next);
+        }
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let same = self.temp();
+        self.line(&format!("{same} = load i1, ptr {result}"));
+        Ok(same)
     }
 
     pub(crate) fn item_kind(&self, item: ListItem) -> Result<Kind, String> {

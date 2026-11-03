@@ -64,6 +64,9 @@ impl Interp<'_> {
         if let Some(cell) = self.cell_at(place) {
             return self.in_cell(&cell, place, Self::take);
         }
+        if let Some(through) = self.through_positions(place)? {
+            return self.take(&through);
+        }
         let binding = self
             .frame
             .get_mut(&place.root)
@@ -91,6 +94,9 @@ impl Interp<'_> {
     pub(crate) fn put(&mut self, place: &Place, value: Value) -> Result<(), Diagnostic> {
         if let Some(cell) = self.cell_at(place) {
             return self.in_cell(&cell, place, |interp, inner| interp.put(inner, value));
+        }
+        if let Some(through) = self.through_positions(place)? {
+            return self.put(&through, value);
         }
         let binding = self
             .frame
@@ -184,6 +190,147 @@ impl Interp<'_> {
         fields.iter().find(|written| written.name == field)?.rule.clone()
     }
 
+    /// Whether a value's type has positions: the `mut` form of `def []`.
+    pub(crate) fn has_positions(&self, value: &Value) -> bool {
+        let Value::Instance(instance) = value else { return false };
+        self.type_info(&instance.type_name).is_some_and(|info| info.methods.contains_key(MUT_INDEX))
+    }
+
+    /// The first step of a place into a position of a type with the `mut` form of `def []`.
+    fn position_step(&self, place: &Place) -> Option<usize> {
+        let mut value = &self.frame.get(&place.root)?.value;
+        for (at, step) in place.steps.iter().enumerate() {
+            if matches!(step, Step::Index(Value::Int(_))) && self.has_positions(value) {
+                return Some(at);
+            }
+            value = step_into(value, step)?;
+        }
+        None
+    }
+
+    /// A place with its first step into a position replaced by the place that position is.
+    fn through_positions(&mut self, place: &Place) -> Result<Option<Place>, Diagnostic> {
+        let Some(at) = self.position_step(place) else { return Ok(None) };
+        let (Some(before), Some(Step::Index(key)), Some(after)) =
+            (place.steps.get(..at), place.steps.get(at), place.steps.get(at + 1..))
+        else {
+            return Ok(None);
+        };
+        let holder = Place { steps: before.to_vec(), ..place.clone() };
+        let inside = self.position_steps(&holder, key, place.span)?;
+        let steps = before.iter().chain(&inside).chain(after).cloned().collect();
+        Ok(Some(Place { steps, ..place.clone() }))
+    }
+
+    /// Runs a holder's `mut` form of `def []` for a position, for the steps from the holder to
+    /// that position's item. Anything else the method changes stays changed.
+    fn position_steps(&mut self, holder: &Place, key: &Value, span: Span) -> Result<Vec<Step>, Diagnostic> {
+        let held = self.take(holder)?;
+        self.frame.push();
+        self.frame.declare(HOLDER, held, true);
+        self.frame.declare(KEY, key.clone(), false);
+        let name = |name: &str| Expr { kind: ExprKind::Name(name.to_owned()), span };
+        let outer = self.naming_place.replace(self.depth + 1);
+        let called = self.call_mut_method(&name(HOLDER), MUT_INDEX, &[name(KEY)], span);
+        self.naming_place = outer;
+        let named = self.named_place.take();
+        let held = self.take(&Place { root: HOLDER.to_owned(), steps: Vec::new(), span });
+        self.frame.pop();
+        self.put(holder, held?)?;
+        called?;
+        let named =
+            named.ok_or_else(|| Diagnostic::new("the `mut` form of `def []` gave back no place", span))?;
+        Ok(named.steps)
+    }
+
+    /// What's in a place, through any positions on the way.
+    fn read_place(&mut self, place: &Place) -> Result<Value, Diagnostic> {
+        if let Some(through) = self.through_positions(place)? {
+            return self.read_place(&through);
+        }
+        let binding = self
+            .frame
+            .get(&place.root)
+            .ok_or_else(|| Diagnostic::new(format!("`{}` doesn't exist", place.root), place.span))?;
+        let mut value = &binding.value;
+        for step in &place.steps {
+            value = step_into(value, step)
+                .ok_or_else(|| Diagnostic::new("the `mut` form of `def []` named no item", place.span))?;
+        }
+        Ok(value.clone())
+    }
+
+    /// `value[at]` on a type with only the `mut` form of `def []`.
+    pub(crate) fn read_position(&mut self, value: Value, at: Value, span: Span) -> Result<Value, Diagnostic> {
+        self.frame.push();
+        self.frame.declare(POSITIONED, value, true);
+        let place = Place { root: POSITIONED.to_owned(), steps: vec![Step::Index(at)], span };
+        let read = self.read_place(&place);
+        self.frame.pop();
+        read
+    }
+
+    /// The live positions of a value, each with its item, for what lists a `for mut`'s items
+    /// without the place they came from.
+    pub(crate) fn position_entries(
+        &mut self,
+        value: Value,
+        span: Span,
+    ) -> Result<Vec<(Option<Value>, Value)>, Diagnostic> {
+        self.frame.push();
+        self.frame.declare(POSITIONED, value.clone(), true);
+        let place = Place { root: POSITIONED.to_owned(), steps: Vec::new(), span };
+        let items = self.position_items(value, &place, span);
+        self.frame.pop();
+        let mut entries = Vec::new();
+        if let crate::generators::Items::Listed(items) = items? {
+            entries.extend(items);
+        }
+        Ok(entries)
+    }
+
+    /// The live positions of what a `for mut` goes over, each with its item. `source` is dropped
+    /// before any item is read, so reaching one doesn't copy what holds it.
+    pub(crate) fn position_items(
+        &mut self,
+        source: Value,
+        place: &Place,
+        span: Span,
+    ) -> Result<crate::generators::Items, Diagnostic> {
+        let Value::Instance(instance) = &source else {
+            return self.items_of(source, span);
+        };
+        let info = self.type_info(&instance.type_name);
+        let method = |name: &str| info.as_ref().and_then(|info| info.methods.get(name).cloned());
+        let (length, is_live) = (method("len"), method("is_live"));
+        let length =
+            length.ok_or_else(|| Diagnostic::new("`for mut` over this needs its `def len`", span))?;
+        let Value::Int(count) = self.call_with_values(&length, vec![source.clone()], span)? else {
+            return Err(Diagnostic::new("`def len` should give an int", span));
+        };
+        let mut live = Vec::new();
+        for at in 0..count {
+            let here = Value::Int(at);
+            let keep = match &is_live {
+                Some(is_live) => {
+                    self.call_with_values(is_live, vec![source.clone(), here.clone()], span)?
+                        == Value::Bool(true)
+                }
+                None => true,
+            };
+            if keep {
+                live.push(here);
+            }
+        }
+        drop(source);
+        let mut items = Vec::with_capacity(live.len());
+        for at in live {
+            let item = self.read_place(&place.then(Step::Index(at.clone())))?;
+            items.push((Some(at), item));
+        }
+        Ok(crate::generators::Items::Listed(items.into_iter()))
+    }
+
     /// The first step of a place into a type with its own `def []=`.
     fn own_index<'p>(&self, root: &Value, place: &'p Place) -> Option<OwnIndex<'p>> {
         let mut value = root;
@@ -247,6 +394,11 @@ impl Interp<'_> {
         self.put(&holder_place, written?)
     }
 }
+
+/// The `mut` form of `def []`, under the name the parser gives it.
+const MUT_INDEX: &str = "[]mut";
+/// What holds a value read through its `mut` form of `def []`.
+const POSITIONED: &str = "$positioned";
 
 /// The names that hold the parts of a place while a type's own `def []=` runs.
 const ITEM: &str = "$item";

@@ -2,7 +2,7 @@
 //! errors and enum cases. Arguments are matched to parameters or fields, positionally and by
 //! name, and `mut` has to be written exactly where a parameter changes.
 
-use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Span, UnaryOp};
+use fennec_syntax::{Arg, Diagnostic, Expr, ExprKind, Field, Generic, Span, UnaryOp};
 
 use crate::ParamType;
 use crate::builtins;
@@ -207,6 +207,12 @@ impl FnCx<'_> {
             self.ignore_args(args);
             return Type::Unknown;
         };
+        let entry = self.checker.program.functions.get(key);
+        let own = entry.map_or(types.len(), |entry| written_generics(&entry.def.generics));
+        if !self.takes_types(name, own, types, span) {
+            self.ignore_args(args);
+            return Type::Unknown;
+        }
         let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
         self.bind_args(name, &signature.params, args, span);
         self.check_bounds(chosen, span);
@@ -403,7 +409,7 @@ impl FnCx<'_> {
             let message = no_method(&owner, method, span).message;
             return self.unusable(Diagnostic::new(message, span).with_help(help), args);
         };
-        if !self.takes_types(method, def.generics.len(), types, span) {
+        if !self.takes_types(method, written_generics(&def.generics), types, span) {
             self.ignore_args(args);
             return Type::Unknown;
         }
@@ -481,7 +487,8 @@ impl FnCx<'_> {
             self.ignore_args(args);
             return Type::Unknown;
         }
-        let own = self.checker.program.functions.get(key).map_or(0, |entry| entry.def.generics.len());
+        let own =
+            self.checker.program.functions.get(key).map_or(0, |entry| written_generics(&entry.def.generics));
         if !self.takes_types(method, own, types, span) {
             self.ignore_args(args);
             return Type::Unknown;
@@ -835,6 +842,12 @@ impl FnCx<'_> {
 
 /// An argument that matches no parameter or field. `nouns` names what's being matched and
 /// what's being passed, like `("parameter", "argument")`.
+/// How many type parameters can be written in brackets: the program's own, not the ones it has
+/// for parameters typed by an interface.
+fn written_generics(generics: &[Generic]) -> usize {
+    generics.iter().filter(|generic| !generic.is_hidden()).count()
+}
+
 fn unmatched(owner: &str, nouns: (&str, &str), names: &[&str], arg: &Arg) -> Diagnostic {
     let (matched, passed) = nouns;
     let listed: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();

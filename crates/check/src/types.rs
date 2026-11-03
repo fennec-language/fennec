@@ -293,6 +293,8 @@ impl fmt::Display for Type {
                 write!(f, "{name}[{}]", items.join(", "))
             }
             Type::IdMap(item) => write!(f, "IdMap[{item}]"),
+            // A type parameter the program didn't write shows as the interface it stands for.
+            Type::Param(name) => f.write_str(name.split(fennec_syntax::visit::HIDDEN).next().unwrap_or(name)),
             other => f.write_str(&other.kind()),
         }
     }

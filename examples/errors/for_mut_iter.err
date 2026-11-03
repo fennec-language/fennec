@@ -4,4 +4,4 @@ error: `for mut` can't change the items of a `Ring`, since its `iter` makes copi
 10 |     for mut slot in ring:
    |                     ^^^^
    |
-   = help: change them through a method of `Ring`, or loop with `for mut` over what it holds
+   = help: give `Ring` positions: `def len(self) -> int` and the `mut` form, `def [](mut self, i: int)`

@@ -140,6 +140,8 @@ impl Stream {
                     chunks = self.lock();
                 }
                 Some(Slot::Running) => {
+                    // What's been printed comes out before this thread waits.
+                    super::super::write_kept_output();
                     chunks = self.done.wait(chunks).unwrap_or_else(PoisonError::into_inner);
                 }
                 Some(Slot::Done { .. }) => break,
@@ -215,6 +217,7 @@ pub extern "C" fn stream_end(stream: i64) {
     let Some(stream) = STREAMS.with_borrow_mut(|streams| streams.remove(&stream)) else { return };
     let mut chunks = stream.lock();
     chunks.ended = true;
+    super::super::write_kept_output();
     while chunks.slots.iter().any(|slot| matches!(slot, Slot::Running)) {
         chunks = stream.done.wait(chunks).unwrap_or_else(PoisonError::into_inner);
     }

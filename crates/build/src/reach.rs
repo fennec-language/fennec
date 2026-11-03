@@ -4,8 +4,8 @@
 //! tree without positions (see `tree`). A definition reaches what it names: functions,
 //! types, constants, aliases, enum cases and errors by name, and methods and fields by
 //! member name, on any type, since which type is only known after checking. A type reaches
-//! the methods the language calls without naming them: its operators, `[]`, `iter` and
-//! `del`. Reaching too much only means running a test that didn't need it; anything that can
+//! the methods the language calls without naming them: its operators, `[]`, `iter`, `del`,
+//! and a `for mut` over positions' `len` and `is_live`. Reaching too much only means running a test that didn't need it; anything that can
 //! change a test's result is reached.
 
 use std::collections::{BTreeSet, HashMap};
@@ -18,8 +18,8 @@ use fennec_syntax::{
 use crate::tree::tree_hash;
 
 /// Methods the language calls on a value without the code naming them: indexing, looping,
-/// cleanup. Operators, whose names aren't words, are called the same way.
-const IMPLICIT: [&str; 3] = ["[]", "iter", "del"];
+/// cleanup. Operators, whose names aren't words, are called the same way, `[]mut` included.
+const IMPLICIT: [&str; 5] = ["[]", "iter", "len", "is_live", "del"];
 
 /// Each test's name and the key of everything its result depends on.
 pub fn test_keys(module: &Module) -> Vec<(String, Hash)> {

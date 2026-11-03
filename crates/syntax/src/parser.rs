@@ -36,6 +36,19 @@ pub fn parse_repl(source: &str) -> Result<Module, Diagnostic> {
     Parser::new(lex(source, 0)?).module(true)
 }
 
+/// Parses statements standing alone, like the code in a doc example. They're indented as they
+/// are in `source`, and their spans start at byte `base`.
+pub(crate) fn parse_statements_at(source: &str, base: u32) -> Result<Vec<Stmt>, Diagnostic> {
+    let mut parser = Parser::new(lex(source, base)?);
+    parser.eat(&Tok::Newline);
+    parser.eat(&Tok::Indent);
+    let mut stmts = Vec::new();
+    while !parser.eat(&Tok::Dedent) && !parser.at(&Tok::Eof) {
+        stmts.push(parser.stmt()?);
+    }
+    Ok(stmts)
+}
+
 pub(crate) struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -573,6 +586,12 @@ impl Parser {
             }
         }
         self.expect_p(Punct::RParen)?;
+        // `def [](mut self, i)` is the `mut` form, which a type can have beside `def [](self, i)`.
+        let name = if name == "[]" && params.first().is_some_and(|first| first.is_self && first.is_mut) {
+            "[]mut".to_owned()
+        } else {
+            name
+        };
         let arrow = self.eat_p(Punct::Arrow).then(|| self.prev_span());
         let ret = if arrow.is_some() { Some(self.type_expr()?) } else { None };
         // `fails` is a word only here, after the parameters and any return type.

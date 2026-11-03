@@ -40,13 +40,15 @@ pub extern "C" fn image(word: i64) {
 /// Gives back the process's exit code.
 pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
     let _ = STOP.set(stop);
+    super::write_kept_output_on_panic();
     let mut bytes = IMAGE.take();
     bytes.truncate(usize::try_from(length).unwrap_or(0));
     // Each worker `parallel` runs on starts a runtime of its own, holding the program.
     let program = std::sync::Arc::new(bytes.clone());
     super::parallel::set_worker_setup(Box::new(move || {
         if let Some(Image { module, tables, .. }) = Image::from_bytes(&program) {
-            let _ = super::start(&module, tables, crate::Inputs::default());
+            // What it prints goes straight out: `parallel`'s output follows real call order.
+            let _ = super::start(&module, tables, crate::Inputs { live: true, ..crate::Inputs::default() });
         }
     }));
     let ran = std::thread::scope(|scope| {

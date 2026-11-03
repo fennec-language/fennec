@@ -1,0 +1,100 @@
+# decision: `for mut` over a user type writes back through positions.
+
+# A type gets `for mut` by defining `def len` and the `mut` form of `def []`, which returns
+# the item as a place. Positions that can be empty are skipped by `def is_live`, and a form
+# that touches only its own item can run in parallel. The loop changes each item where it is.
+from std.collections import Deque, Grid
+
+struct Unit:
+    health = 10
+    tags = list[str]()
+
+struct Units:
+    _items = list[Unit]()
+    _live = list[bool]()
+
+    def add(mut self, unit: Unit):
+        self._items.append(unit)
+        self._live.append(True)
+
+    def remove(mut self, i: int):
+        self._live[i] = False
+
+    def len(self) -> int:
+        self._items.len()
+
+    def is_live(self, i: int) -> bool:
+        self._live[i]
+
+    def [](mut self, i: int) -> Unit:
+        return self._items[i]
+
+struct Squad:
+    units = Units()
+
+## Heals units until one reaches `full`, and says how many it healed.
+def heal_until(mut units: Units, full: int) -> int:
+    mut healed = 0
+    for mut unit in units:
+        unit.health += 5
+        healed += 1
+        if unit.health >= full: return healed
+    healed
+
+def main(stdout: Stdout):
+    mut units = Units()
+    for health in [1, 2, 3, 4]:
+        units.add(Unit(health=health))
+    units.remove(1)
+
+    # The removed unit is skipped, and the others change where they are.
+    for mut unit in units:
+        unit.health += 100
+        unit.tags.append("hit")
+    stdout.print(units[0].health, units[1].health, units[2].tags)
+
+    # A `mut` name's item is a place too.
+    units[1].health = 7
+    mut first = units[0]
+    first.health = 50
+    stdout.print(units[0].health, units[1].health)
+
+    # `continue` and `break` both keep what the item has so far.
+    for mut unit in units:
+        unit.health += 1
+        if unit.health == 51: continue
+        unit.health = 0
+        break
+    stdout.print(units[0].health, units[1].health, units[2].health, units[3].health)
+
+    # So does `return`.
+    stdout.print(heal_until(mut units, 5), units[0].health, units[2].health)
+
+    # Each item is its own, so the iterations can run at once.
+    for mut unit in parallel(units):
+        unit.health *= 2
+    stdout.print(units[0].health, units[1].health, units[2].health, units[3].health)
+
+    # Through a field of something else.
+    mut squad = Squad(units=units)
+    for mut unit in squad.units:
+        unit.health = 1
+    stdout.print(squad.units[0].health, squad.units[1].health)
+
+    # The standard library's ring and grid have positions too.
+    mut queue = Deque[int]()
+    for i in range(5):
+        queue.append(i)
+    queue.popleft()
+    queue.append(9)
+    for mut item in queue:
+        item *= 2
+    stdout.print(queue[0], queue[4], queue.len())
+    queue[1] = 77
+    stdout.print(queue[1], queue.popleft())
+
+    mut grid = Grid.filled(width=2, height=2, value=1)
+    for mut cell in grid:
+        cell += 4
+    grid[(1, 1)] = 8
+    stdout.print(grid[(0, 1)], grid[(1, 1)])

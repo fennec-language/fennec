@@ -162,8 +162,6 @@ impl Checker {
         let places = if self.diagnostics.is_empty() { self.names_for_places() } else { BTreeSet::new() };
         if self.diagnostics.is_empty() {
             let enums = self.enums();
-            // An enum nothing uses isn't checked, so reading its fields can't report anything.
-            self.diagnostics.clear();
             let locals = std::mem::take(&mut self.locals);
             let functions = self
                 .states

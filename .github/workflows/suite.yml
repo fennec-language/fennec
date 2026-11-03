@@ -164,7 +164,7 @@ jobs:
                                   for key, value in (run.get("startup_ms") or {}).items() if value is not None)
               if startup:
                   others += f"; startup {startup}"
-              print(f"- {run['platform']}: geometric mean {counted}{shown(run['time'])}% by best time, "
+              print(f"- {run['platform']}, {run['cpu']} with {run['cores']:.0f} cores: geometric mean {counted}{shown(run['time'])}% by best time, "
                     f"{shown(run.get('median'))}% by median time, dev build {shown(run.get('dev'))}%{others}; slowest {run['slowest'] or '-'}")
           print("\nEach is the overflow-checked Rust twin's count or time over LLVM's: 100 matches Rust, higher is faster. "
                 "Each side runs ten times, taking turns, and its best and median runs are shown. "

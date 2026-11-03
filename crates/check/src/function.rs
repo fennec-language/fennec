@@ -5,7 +5,7 @@
 //! afterwards. Where paths through the code meet again, after an `if` or a loop, a name holds
 //! whatever it held on any path that gets there.
 
-use fennec_syntax::{Diagnostic, Expr, FnDef, Generic, Span, StmtKind, TestDef};
+use fennec_syntax::{Diagnostic, Expr, Field, FnDef, Generic, Span, StmtKind, TestDef};
 
 use crate::ParamType;
 use crate::checker::Checker;
@@ -443,15 +443,12 @@ impl<'c> FnCx<'c> {
         let mut cx = FnCx::new(checker, &format!("fields of {type_name}"), type_name, report);
         cx.generics.clone_from(&def.generics);
         for field in &def.fields {
-            let expected = cx.checker.field_type(type_name, None, &field.name);
-            let Some(default) = &field.default else { continue };
-            let actual = cx.expr(default);
-            if !cx.checker.fits(&expected, &actual) {
-                let what = format!("`{}`", field.name);
-                cx.error(crate::messages::mismatch(&what, &expected, &actual, default.span));
+            cx.check_field_default(type_name, None, field);
+        }
+        for case in &def.cases {
+            for field in &case.fields {
+                cx.check_field_default(type_name, Some(&case.name), field);
             }
-            // A field whose type its default doesn't show has been reported already.
-            cx.reported += usize::from(expected == Type::Unknown);
         }
         let rules: Vec<&Expr> = def.fields.iter().filter_map(|field| field.rule.as_ref()).collect();
         if !rules.is_empty() {
@@ -469,6 +466,20 @@ impl<'c> FnCx<'c> {
             }
         }
         cx.finish(&[]);
+    }
+
+    /// Works out a field's type, whether anything uses the field or not, and checks its default
+    /// fits it.
+    fn check_field_default(&mut self, type_name: &str, case: Option<&str>, field: &Field) {
+        let expected = self.checker.field_type(type_name, case, &field.name);
+        let Some(default) = &field.default else { return };
+        let actual = self.expr(default);
+        if !self.checker.fits(&expected, &actual) {
+            let what = format!("`{}`", field.name);
+            self.error(crate::messages::mismatch(&what, &expected, &actual, default.span));
+        }
+        // A field whose type its default doesn't show has been reported already.
+        self.reported += usize::from(expected == Type::Unknown);
     }
 
     /// The type of a field's default, without reporting anything: that happens once, when

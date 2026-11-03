@@ -1,0 +1,7 @@
+error: `Nope` isn't a type
+ --> examples/errors/unknown_type_in_unused_case.fen:3:10
+  |
+3 |     A(x: Nope)
+  |          ^^^^
+  |
+  = help: declare it, like `struct Nope:`, or check the spelling

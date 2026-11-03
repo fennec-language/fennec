@@ -1842,7 +1842,6 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-
 /// Conversions and small builtins: floats to ints, `PI`, `range` and `reversed` as lists, and a
 /// dict's or set's keys as a list.
 #[test]
@@ -1872,7 +1871,6 @@ def main(stdout: Stdout):
     )
 }
 
-
 /// A float outside an int's range doesn't become one.
 #[test]
 fn a_float_too_big_for_an_int_fails_like_the_jit() -> std::io::Result<()> {
@@ -1887,7 +1885,6 @@ fn a_float_too_big_for_an_int_fails_like_the_jit() -> std::io::Result<()> {
 ",
     )
 }
-
 
 /// Optional strings going into a list, whose items hold an optional as an enum.
 #[test]

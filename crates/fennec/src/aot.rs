@@ -138,13 +138,14 @@ pub(crate) fn build_llvm(path: &str, output: Option<&str>, release: bool) -> Exi
 }
 
 /// Builds an executable that runs the functions `tests` of a module with everything else trimmed
-/// away, through LLVM's cached dev build.
+/// away, through LLVM's cached dev build. Gives back the functions that have a flag saying they
+/// ran, in the order the executable numbers them.
 pub(crate) fn tests_executable(
     module: &fennec_syntax::Module,
     tests: &[String],
     output: &Path,
-) -> Result<(), String> {
-    let emitted = emitted(module)?;
+) -> Result<Vec<String>, String> {
+    let emitted = emitted(module, true)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_interp::embed::codec::Image {
             module: module.clone(),
@@ -159,12 +160,13 @@ pub(crate) fn tests_executable(
         compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
             fennec_llvm::tests_entry(lowered, shared, image, bytes, tests)
         })?;
-    link_objects(&objects, output, runtime, false).map(|_| ())
+    link_objects(&objects, output, runtime, false)?;
+    Ok(emitted.shared.ran.iter().cloned().collect())
 }
 
 /// Whether LLVM has text for a trimmed program, or why not, without compiling any of it.
 pub(crate) fn takes(module: &fennec_syntax::Module) -> Result<(), String> {
-    emitted(module).map(|_| ())
+    emitted(module, false).map(|_| ())
 }
 
 /// What building an executable through LLVM did.
@@ -220,7 +222,7 @@ struct Emitted {
 }
 
 /// Lowers a trimmed program and writes its text, or says why LLVM can't.
-fn emitted(reached: &fennec_syntax::Module) -> Result<Emitted, String> {
+fn emitted(reached: &fennec_syntax::Module, traced: bool) -> Result<Emitted, String> {
     let checked =
         fennec_check::check(reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
@@ -245,7 +247,8 @@ fn emitted(reached: &fennec_syntax::Module) -> Result<Emitted, String> {
     } else {
         fennec_llvm::Cpu::Usual
     };
-    let (units, shared, layouts) = fennec_llvm::emit_for(&lowered, cpu)?;
+    let (units, shared, layouts) =
+        if traced { fennec_llvm::emit_traced(&lowered, cpu)? } else { fennec_llvm::emit_for(&lowered, cpu)? };
     Ok(Emitted { lowered, units, shared, layouts })
 }
 
@@ -253,7 +256,7 @@ fn emitted(reached: &fennec_syntax::Module) -> Result<Emitted, String> {
 fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled, String> {
     let mut reached = program.module.clone();
     fennec_build::keep_what_main_reaches(&mut reached);
-    let emitted = emitted(&reached)?;
+    let emitted = emitted(&reached, false)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_interp::embed::codec::Image {
             module: program.module.clone(),

@@ -292,6 +292,7 @@ export! {
     fennec_aot_literal(a0: i64) -> i64 => aot::literal(a0);
     fennec_aot_tests_start() => aot::tests_start();
     fennec_aot_next_test() -> i64 => aot::next_test_number();
+    fennec_aot_test_ran(a0: i64) => aot::test_ran(a0);
     fennec_aot_test_done(a0: i64) => aot::test_done(a0);
 }
 

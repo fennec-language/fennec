@@ -2378,3 +2378,38 @@ fn a_bad_shift_fails_like_the_jit() -> std::io::Result<()> {
 ",
     )
 }
+
+/// `==`, `+` and ordering on lists of each kind of item, and `==` on dicts and sets.
+#[test]
+fn operators_on_collections_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "operators_on_collections",
+        r#"struct Spot:
+    x: int
+    y: str
+
+def maybe(on: bool) -> Spot?:
+    if on:
+        return Spot(x=1, y="a")
+    None
+
+def main(stdout: Stdout):
+    a = [1, 2]
+    stdout.print(a == [1, 2], a != [1, 2], a == [1], a + [3], a, [] + a, [1.5] == [1.5], [True] != [False])
+    words = ["a", "a string long enough to be held in a block"]
+    stdout.print(words == ["a", "a string long enough to be held in a block"], words + ["c"], words != words)
+    spots = [Spot(x=1, y="a")]
+    stdout.print(spots == [Spot(x=1, y="a")], spots == [Spot(x=2, y="a")], spots + spots)
+    stdout.print([[1], [2, 3]] == [[1], [2, 3]], [[1]] + [[2]], [(1, "a")] == [(1, "a")])
+    stdout.print([1] < [1, 0], [2] < [1, 0], [1, 2] <= [1, 2], [1, 2] > [1], [1.5] >= [2.5], ["a"] < ["b"], ["b", "a"] > ["b"])
+    stdout.print({1, 2} == {2, 1}, {1, 2} != {1, 3}, {"a": 1} == {"a": 1}, {"a": 1} != {"a": 1}, {1: 2} == {1: 3})
+    stdout.print(maybe(True) == maybe(True), maybe(True) == maybe(False), maybe(False) == None)
+    mut grown = a + [3]
+    grown.append(4)
+    stdout.print(grown, a)
+"#,
+    )
+}

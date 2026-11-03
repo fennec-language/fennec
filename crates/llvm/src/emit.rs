@@ -1183,7 +1183,15 @@ impl Emit<'_, '_, '_> {
                 _ => self.string_binary(op, (&a, &b))?,
             },
             Kind::Str => self.string_binary(op, (&a, &b))?,
-            Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
+            Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
+                if matches!(op, BinOp::Eq | BinOp::NotEq) =>
+            {
+                self.same_blocks(op, (&a, &b))
+            }
+            Kind::List(_) if op == BinOp::Add => self.joined_lists(&a, &b),
+            Kind::List(item) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
+                self.lists_in_order(op, item, (&a, &b), span)?
+            }
             Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b))?,
             Kind::Struct(id) => self.compare_structs(op, id, (&a, &b))?,
             Kind::Boxed(id) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {

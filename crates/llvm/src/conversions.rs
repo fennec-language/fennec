@@ -290,7 +290,7 @@ impl Emit<'_, '_, '_> {
 
     /// Whether `score` beats `best` for `max` or `min`, as the interpreter orders them. Values
     /// in memory come as addresses.
-    fn better(
+    pub(crate) fn better(
         &mut self,
         name: &str,
         kind: &Kind,
@@ -391,6 +391,65 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{failed} = icmp ne ptr {held}, null"));
             self.leave_if(&failed);
         }
+        Ok(result)
+    }
+
+    /// `a + b` on lists: a copy of the first, with the second's items after them.
+    pub(crate) fn joined_lists(&mut self, a: &str, b: &str) -> String {
+        self.declare("declare ptr @fennec_list_slice(ptr, i64, i64) nounwind");
+        self.declare("declare ptr @fennec_list_extend(ptr, ptr) nounwind");
+        let (copy, joined) = (self.temp(), self.temp());
+        let lowest = i64::MIN;
+        self.line(&format!("{copy} = call ptr @fennec_list_slice(ptr {a}, i64 {lowest}, i64 {lowest})"));
+        self.line(&format!("{joined} = call ptr @fennec_list_extend(ptr {copy}, ptr {b})"));
+        joined
+    }
+
+    /// `<` and the like on lists: the first items that differ decide, or else the lengths.
+    pub(crate) fn lists_in_order(
+        &mut self,
+        op: BinOp,
+        item: ListItem,
+        (a, b): (&str, &str),
+        span: Span,
+    ) -> Result<String, String> {
+        let held = self.item_kind(item)?;
+        let (a_length, b_length) = (self.list_length(a), self.list_length(b));
+        let (shorter, both) = (self.temp(), self.temp());
+        self.line(&format!("{shorter} = icmp slt i64 {a_length}, {b_length}"));
+        self.line(&format!("{both} = select i1 {shorter}, i64 {a_length}, i64 {b_length}"));
+        // Below zero if `a` comes first, above if `b` does, and zero if they've been equal so far.
+        let ordering = self.counter();
+        let (at, end) = self.loop_begin(&both);
+        let (decided, compare, next) = (self.temp(), self.label("compare"), self.label("next"));
+        let so_far = self.temp();
+        self.line(&format!("{so_far} = load i64, ptr {ordering}"));
+        self.line(&format!("{decided} = icmp ne i64 {so_far}, 0"));
+        self.line(&format!("br i1 {decided}, label %{next}, label %{compare}"));
+        self.start_block(&compare);
+        let (x, y) = (self.item_value(a, &held, &at), self.item_value(b, &held, &at));
+        let less = self.better("min", &held, (&x, &y), span)?;
+        let more = self.better("max", &held, (&x, &y), span)?;
+        let (above, order) = (self.temp(), self.temp());
+        self.line(&format!("{above} = select i1 {more}, i64 1, i64 0"));
+        self.line(&format!("{order} = select i1 {less}, i64 -1, i64 {above}"));
+        self.line(&format!("store i64 {order}, ptr {ordering}"));
+        self.line(&format!("br label %{next}"));
+        self.start_block(&next);
+        self.loop_end(&end);
+        let (so_far, by_length, equal, length_order, result) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{so_far} = load i64, ptr {ordering}"));
+        self.line(&format!("{by_length} = sub i64 {a_length}, {b_length}"));
+        self.line(&format!("{equal} = icmp eq i64 {so_far}, 0"));
+        self.line(&format!("{length_order} = select i1 {equal}, i64 {by_length}, i64 {so_far}"));
+        let cc = match op {
+            BinOp::Lt => "slt",
+            BinOp::LtEq => "sle",
+            BinOp::Gt => "sgt",
+            _ => "sge",
+        };
+        self.line(&format!("{result} = icmp {cc} i64 {length_order}, 0"));
         Ok(result)
     }
 

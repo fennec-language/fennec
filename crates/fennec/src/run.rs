@@ -34,7 +34,9 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
-    if matches!(engine, Engine::Native | Engine::Untested) && !cfg!(windows) {
+    // Where LLVM's tools or the runtime library aren't there, the JIT runs it without a word:
+    // that's this machine, not the program. Only LLVM turning the program down is said.
+    if matches!(engine, Engine::Native | Engine::Untested) && crate::aot::llvm_ready() {
         match built_and_run(&program, path, arguments) {
             Ok(code) => return code,
             Err(why) => eprintln!("note: running this with the JIT, since LLVM can't build it: {why}"),
@@ -68,8 +70,9 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
 }
 
 /// Builds the program through LLVM's cached dev build and runs it, handing it the arguments,
-/// this process's input and output, and its exit code. Windows can't link executables yet, so
-/// it never gets here.
+/// this process's input and output, and its exit code. Windows can't link executables yet,
+/// and a machine without LLVM's tools or the runtime library can't either, so neither gets
+/// here.
 fn built_and_run(
     program: &fennec_kit::Program,
     path: &str,

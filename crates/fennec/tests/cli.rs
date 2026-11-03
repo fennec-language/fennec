@@ -531,10 +531,13 @@ fn run_takes_a_kits_folder_in_either_engine() {
         let output = fennec(args, "").unwrap();
         assert!(output.status.success(), "{}", text(&output.stderr));
         assert_eq!(text(&output.stdout), expected);
-        // LLVM doesn't take arena yet, so `run` says why in one line before the JIT runs it,
-        // and the JIT shouldn't need the interpreter for the whole program.
+        // LLVM doesn't take arena yet, so where LLVM can build at all, `run` says why in one
+        // line before the JIT runs it, and the JIT shouldn't need the interpreter for the whole
+        // program.
         let said = text(&output.stderr);
-        let expected_note = args.len() == 2 && !cfg!(windows);
+        let llvm_here =
+            !cfg!(windows) && fennec_llvm::Tools::find().is_ok() && crate::executables::runtime_built();
+        let expected_note = args.len() == 2 && llvm_here;
         assert_eq!(said.lines().count(), usize::from(expected_note), "{said}");
         assert!(
             !expected_note

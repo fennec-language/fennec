@@ -104,6 +104,12 @@ pub(crate) struct Built {
     linked: std::time::Duration,
 }
 
+/// Whether this machine can build through LLVM at all: its tools are there, and the runtime
+/// library is beside `fennec`. Without them, nothing about the program is the reason.
+pub(crate) fn llvm_ready() -> bool {
+    !cfg!(windows) && fennec_llvm::Tools::find().is_ok() && runtime_library().is_ok()
+}
+
 /// Builds a checked program through LLVM to `output`, or says why LLVM can't: a function it
 /// doesn't take yet, or a tool or library that isn't there.
 pub(crate) fn executable(

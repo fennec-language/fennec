@@ -416,3 +416,105 @@ fn a_doc_example_in_a_kit_sees_what_its_file_sees_and_a_run_does_not_need_it() {
     assert!(stdout(&again).contains("(0 run,"), "{}", stdout(&again));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Whether `fennec test --llvm` can build through LLVM here: it needs the tools and the runtime
+/// library, and a run under coverage has `fennec` somewhere without one.
+fn llvm_here() -> bool {
+    !cfg!(windows)
+        && std::env::var_os("FENNEC_UNDER_MUTANTS").is_none()
+        && fennec_llvm::Tools::find().is_ok()
+        && crate::executables::runtime_built()
+        && Path::new(env!("CARGO_BIN_EXE_fennec")).with_file_name("libfennec_runtime.a").is_file()
+}
+
+#[test]
+fn tests_through_llvm_pass_and_fail_as_they_do_on_the_jit() {
+    if !llvm_here() {
+        return;
+    }
+    let dir = scratch("llvm-tests").unwrap();
+    let game = dir.join("game.fen");
+    let source = |wrong: &str| {
+        format!(
+            "struct Unit:\n    size: int\n\ndef grown(unit: Unit) -> int:\n    unit.size + 1\n\n\
+             ## An example.\n##\n## ```\n## assert double(2) == 4\n## ```\ndef double(x: int) -> int:\n    x * 2\n\n\
+             test \"struct\":\n    assert grown(Unit(size=1)) == 2\n\n\
+             test \"list\":\n    numbers = [1, 2, 3]\n    assert sum(numbers) == 6\n\n\
+             test \"may fail\":\n    assert double(2) == {wrong}\n\n\
+             test \"takes a capability\" (stdout: Stdout):\n    stdout.print(1)\n\n\
+             test \"any\" for x: int:\n    assert double(x) == x + x\n"
+        )
+    };
+    std::fs::write(&game, source("4")).unwrap();
+    let passing = run_tests(&dir, &["--all", "--llvm"]).unwrap();
+    assert_eq!(stdout(&passing), "6 passed, 0 failed\n", "{}", String::from_utf8_lossy(&passing.stderr));
+
+    std::fs::write(&game, source("5")).unwrap();
+    let jit = run_tests(&dir, &["--all"]).unwrap();
+    let llvm = run_tests(&dir, &["--all", "--llvm"]).unwrap();
+    assert_eq!(stdout(&llvm), stdout(&jit));
+    assert_eq!(String::from_utf8_lossy(&llvm.stderr), String::from_utf8_lossy(&jit.stderr));
+    assert!(!llvm.status.success());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_test_llvm_cannot_build_runs_another_way() {
+    if !llvm_here() {
+        return;
+    }
+    let dir = scratch("llvm-tests-refused").unwrap();
+    let game = dir.join("game.fen");
+    // LLVM doesn't take a dict of lists yet. When it does, this still has to pass.
+    let text = "def lengths() -> dict[str, list[int]]:\n    {\"a\": [1, 2]}\n\ntest \"plain\":\n    assert 1 + 1 == 2\n\n\
+                test \"a dict of lists\":\n    assert lengths()[\"a\"].len() == 2\n";
+    std::fs::write(&game, text).unwrap();
+    let ran = run_tests(&dir, &["--all", "--llvm"]).unwrap();
+    assert_eq!(stdout(&ran), "2 passed, 0 failed\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// What `fennec test` says about a program, without the note about tests LLVM couldn't build.
+fn tested(program: &Path, args: &[&str], home: &Path) -> std::io::Result<(String, String)> {
+    let output = crate::executables::fennec_command()
+        .arg("test")
+        .args(args)
+        .arg(program)
+        .env("FENNEC_HOME", home)
+        .env_remove("CI")
+        .output()?;
+    let said = String::from_utf8_lossy(&output.stderr);
+    let kept: Vec<&str> = said.lines().filter(|line| !line.starts_with("note: ")).collect();
+    Ok((String::from_utf8_lossy(&output.stdout).into_owned(), kept.join("\n")))
+}
+
+/// Every example with tests says the same whichever way its tests run.
+#[test]
+fn every_example_tested_through_llvm_says_what_it_says_on_the_jit() {
+    if !llvm_here() {
+        return;
+    }
+    let home = std::env::temp_dir().join(format!("fennec-unchanged-llvm-examples-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let mut compared = 0;
+    for entry in std::fs::read_dir(&examples).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|ext| ext != "fen") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        if !source.lines().any(|line| line.trim_start().starts_with("test \"")) {
+            continue;
+        }
+        compared += 1;
+        assert_eq!(
+            tested(&path, &["--all", "--llvm"], &home).unwrap(),
+            tested(&path, &["--all"], &home).unwrap(),
+            "{} says something else through LLVM",
+            path.display()
+        );
+    }
+    assert!(compared > 20, "only {compared} examples have tests");
+    std::fs::remove_dir_all(&home).unwrap();
+}

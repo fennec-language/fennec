@@ -148,7 +148,7 @@ impl Interp<'_> {
             ("captured", Some(world)) => return Ok(Value::str(world.printed())),
             _ => return Err(no_method(&Value::Capability(Capability::Stdout), method, span)),
         };
-        let text = args.iter().map(format::display).collect::<Vec<_>>().join(" ");
+        let text = args.iter().map(|arg| self.shown(arg, span)).collect::<Result<Vec<_>, _>>()?.join(" ");
         if let Some(world) = &mut self.world {
             world.print(&text, ending);
             if !world.real() {

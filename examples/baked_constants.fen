@@ -1,0 +1,16 @@
+# A top-level constant built from literals and functions that take no capabilities is worked
+# out while compiling, and the program holds its value. There's nothing to write to ask for
+# it. One that takes too long is worked out when the program starts instead, with a hint.
+from std.math import PI, sin
+
+struct Point:
+    x: float
+    y: float
+
+SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]
+CORNERS = [Point(x=float(at // 2), y=float(at % 2)) for at in range(4)]
+SQUARES = {n: n * n for n in range(5)}
+
+def main(stdout: Stdout):
+    stdout.print(SINE.len(), SINE[256], SINE[512] < 0.000001)
+    stdout.print(CORNERS[3], SQUARES[4])

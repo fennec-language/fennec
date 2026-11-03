@@ -36,6 +36,7 @@ mod pattern;
 mod place;
 mod privacy;
 mod program;
+mod protocols;
 mod rules;
 mod shared;
 mod stdlib;

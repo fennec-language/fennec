@@ -103,10 +103,18 @@ jobs:
       matrix:
         os: ${{ fromJSON(github.event_name == 'merge_group' && '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
+    # LLVM is the main backend, so on Linux its tests have to run: with LLVM's tools from the
+    # toolchain's own `llvm-tools`, the LLVM rustc uses, a missing tool or runtime library fails
+    # them instead of skipping them.
+    env:
+      FENNEC_EXPECT_LLVM: ${{ startsWith(matrix.os, 'ubuntu') && '1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install LLVM's tools
+        if: runner.os == 'Linux'
+        run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test --locked
       # Which tests passed. A pull request reads its own results, then the shared ones, and
@@ -161,7 +169,13 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.9.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo llvm-cov --locked --summary-only | tee coverage.txt
+      # `tee` would hide a failing test without `pipefail`, which `shell: bash` turns on. The
+      # tests that link programs look for the runtime library beside `fennec`, which isn't where
+      # llvm-cov builds it, so they run in the test jobs instead.
+      - name: Measure coverage
+        shell: bash
+        run: |
+          cargo llvm-cov --locked --summary-only -- --skip llvm:: --skip executables:: | tee coverage.txt
       - name: Show coverage on the run's summary page
         run: |
           {

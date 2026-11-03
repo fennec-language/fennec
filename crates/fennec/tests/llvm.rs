@@ -1,5 +1,6 @@
 //! `fennec build --llvm` against `fennec run`, on programs that backend takes so far. Skipped
-//! where LLVM's tools aren't installed, as `fennec build --llvm` itself would say.
+//! where LLVM's tools aren't installed, as `fennec build --llvm` itself would say, unless
+//! `FENNEC_EXPECT_LLVM` says they have to be.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -13,11 +14,23 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
 }
 
-/// Whether this can run: this isn't Windows, where `fennec build` doesn't link, LLVM's tools are
-/// there, and mutation testing isn't under way, which
-/// would go past its time limit, as in `executables.rs`.
-fn has_tools() -> bool {
-    !cfg!(windows) && std::env::var_os("FENNEC_UNDER_MUTANTS").is_none() && fennec_llvm::Tools::find().is_ok()
+/// Whether this can run: this isn't Windows, where `fennec build` doesn't link, LLVM's tools and
+/// the runtime library are there, and mutation testing isn't under way, which would go past its
+/// time limit, as in `executables.rs`. Where `FENNEC_EXPECT_LLVM` is set, as CI's Linux test
+/// jobs set it, LLVM is the backend that has to work, so what's missing fails the test rather
+/// than skipping it.
+fn ready() -> bool {
+    if cfg!(windows) || std::env::var_os("FENNEC_UNDER_MUTANTS").is_some() {
+        return false;
+    }
+    let tools = fennec_llvm::Tools::find();
+    let runtime = runtime_built();
+    if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
+        let missing = tools.as_ref().err().map_or("", String::as_str);
+        assert!(tools.is_ok(), "FENNEC_EXPECT_LLVM is set, but {missing}");
+        assert!(runtime, "FENNEC_EXPECT_LLVM is set, but the runtime library didn't build");
+    }
+    tools.is_ok() && runtime
 }
 
 /// A folder of its own, emptied when the test is done.
@@ -76,7 +89,7 @@ fn outcome(output: &Output) -> Outcome {
 
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -87,7 +100,7 @@ fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
 
 #[test]
 fn lists_keep_value_semantics_like_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -144,7 +157,7 @@ def main(stdout: Stdout):
 /// mustn't see it, however the item's own count reads.
 #[test]
 fn changing_an_item_doesnt_show_through_a_copy() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -207,7 +220,7 @@ def main(stdout: Stdout):
 
 #[test]
 fn structs_tuples_and_formats_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -264,7 +277,7 @@ def main(stdout: Stdout):
 /// say so, and the count keeps that from shrinking unnoticed.
 #[test]
 fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let dir = folder("examples")?;
@@ -298,7 +311,7 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
 
 #[test]
 fn dicts_sets_closures_and_tuples_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -371,7 +384,7 @@ def main(stdout: Stdout):
 
 #[test]
 fn generators_and_results_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -443,7 +456,7 @@ def main(stdout: Stdout):
 
 #[test]
 fn regexes_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -483,7 +496,7 @@ fn counts_of(name: &str, source: &str) -> std::io::Result<String> {
 
 #[test]
 fn what_a_field_or_an_items_field_holds_changes_without_being_copied() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let counts = counts_of(
@@ -512,7 +525,7 @@ fn count(counts: &str, name: &str) -> Option<u64> {
 
 #[test]
 fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let source = "from std.collections import Packed\n\ndef main(stdout: Stdout):\n    mut packed = Packed[int]()\n    for n in range(100):\n        packed.append([n, n + 1, n + 2])\n";
@@ -536,7 +549,7 @@ fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Resul
 /// keeps its own value.
 #[test]
 fn the_last_copy_of_a_list_takes_it_over() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let counts = counts_of(
@@ -554,7 +567,7 @@ fn the_last_copy_of_a_list_takes_it_over() -> std::io::Result<()> {
 /// bytes, nine, a zero byte and two-byte characters all compare as in the interpreter.
 #[test]
 fn strings_compare_with_short_literals_like_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -577,7 +590,7 @@ fn strings_compare_with_short_literals_like_the_jit() -> std::io::Result<()> {
 /// negative indexes are each checked again, and the last read fails as in the interpreter.
 #[test]
 fn an_index_is_checked_again_once_its_list_changes() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let source = r"struct Bag:
@@ -620,7 +633,7 @@ def main(stdout: Stdout):
 /// added, and alongside lists looked at some other way, or joined with something between.
 #[test]
 fn pieces_joined_once_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let source = r#"def add(n: int, mut out: list[str]):
@@ -674,7 +687,7 @@ def main(stdout: Stdout):
 /// when the pairs are kept, looked at whole, or the list grows while it's gone through.
 #[test]
 fn enumerates_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let source = r#"def total(names: list[str]) -> int:
@@ -711,7 +724,7 @@ def main(stdout: Stdout):
 /// list of plain structs, and failing on bad text, as the interpreter does.
 #[test]
 fn json_matches_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let source = r#"from std import json
@@ -754,7 +767,7 @@ def main(stdout: Stdout):
 /// JIT do: a whole kit, saved to JSON and loaded back, cached and as a release.
 #[test]
 fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let proof = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/proof");
@@ -782,7 +795,7 @@ fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()
 /// copied and replaced each time round a loop, it still says what it allows when it's used.
 #[test]
 fn narrowed_capabilities_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let source = r#"from std.process import Output
@@ -812,7 +825,7 @@ def main(stdout: Stdout, process: Process):
 /// as a list does.
 #[test]
 fn an_empty_buffer_fails_to_pop_like_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_message_as_the_jit(
@@ -829,7 +842,7 @@ fn an_empty_buffer_fails_to_pop_like_the_jit() -> std::io::Result<()> {
 /// so a wrong number would send `listen` to another capability.
 #[test]
 fn net_reaches_native_code_as_its_own_kind() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let source = "def main(stdout: Stdout, net: Net):\n    match net.listen(0):\n        case Ok(server):\n            stdout.print(\"listening\", server.port > 0)\n        case Err(_):\n            stdout.print(\"failed\")\n";
@@ -840,7 +853,7 @@ fn net_reaches_native_code_as_its_own_kind() -> std::io::Result<()> {
 /// end, which fails as the interpreter says.
 #[test]
 fn a_list_insert_matches_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -855,7 +868,7 @@ fn a_list_insert_matches_the_jit() -> std::io::Result<()> {
 
 #[test]
 fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let source = "def find(names: list[str], wanted: str) -> str?:\n    for name in names:\n        if name == wanted: return name\n    None\n\nstruct Seen:\n    last: str?\n\ndef main(stdout: Stdout):\n    names = [\"fox\", \"kit\", \"den\"]\n    mut seen = Seen(last=None)\n    mut hits = 0\n    for at in range(1000):\n        found = find(names, names[at % 3])\n        if found is not None:\n            hits += 1\n        seen.last = found\n    stdout.print(hits, seen.last, find(names, \"owl\"))\n";
@@ -872,7 +885,7 @@ fn an_optional_of_a_block_allocates_nothing() -> std::io::Result<()> {
 
 #[test]
 fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let source = "struct Point:\n    x: int\n    y: int\n\n    def moved(self, by: int) -> Point:\n        Point(x=self.x + by, y=self.y - by)\n\ndef count_up(limit: int) -> Iterator[int]:\n    mut at = 0\n    while at < limit:\n        yield at\n        at += 1\n\ndef main(stdout: Stdout):\n    mut points = [Point(x=i, y=i * 2) for i in range(5)]\n    mut seen: dict[str, int] = {}\n    for point in points:\n        moved = point.moved(3)\n        seen[f\"{moved.x}\"] = moved.y\n    stdout.print(seen.len(), sum(n for n in count_up(10)), points[4].moved(1).y)\n    stdout.print([1, 2][5])\n";
@@ -884,7 +897,7 @@ fn a_release_build_optimized_as_a_whole_matches_the_jit() -> std::io::Result<()>
 
 #[test]
 fn tuples_and_structs_compare_like_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -915,7 +928,7 @@ def main(stdout: Stdout):
 
 #[test]
 fn id_maps_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -951,7 +964,7 @@ def main(stdout: Stdout):
 
 #[test]
 fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -986,7 +999,7 @@ fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
 
 #[test]
 fn std_pieces_the_proof_program_uses_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     // Lists of lists and `dict.pop`.
@@ -1071,7 +1084,7 @@ def main(stdout: Stdout):
 
 #[test]
 fn a_method_checks_self_once_and_still_copies_a_shared_one() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -1109,7 +1122,7 @@ def main(stdout: Stdout):
 /// change after has to copy.
 #[test]
 fn a_field_something_keeps_is_checked_again() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let source = r"struct Packet:
@@ -1187,7 +1200,7 @@ def main(stdout: Stdout):
 
 #[test]
 fn failures_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let print_after = "\n\ndef main(stdout: Stdout):\n    stdout.print(\"before\")\n";
@@ -1229,7 +1242,7 @@ fn failures_match_the_jit() -> std::io::Result<()> {
 
 #[test]
 fn an_edit_recompiles_only_the_function_it_touches() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     let dir = folder("edit")?;
@@ -1257,7 +1270,7 @@ fn an_edit_recompiles_only_the_function_it_touches() -> std::io::Result<()> {
 /// runtime.
 #[test]
 fn strips_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(
@@ -1277,7 +1290,7 @@ fn strips_match_the_jit() -> std::io::Result<()> {
 /// `upper`, `lower`, `replace`, `find` and `split`, which run the interpreter's own code.
 #[test]
 fn string_methods_the_runtime_runs_match_the_jit() -> std::io::Result<()> {
-    if !has_tools() || !runtime_built() {
+    if !ready() {
         return Ok(());
     }
     same_as_the_jit(

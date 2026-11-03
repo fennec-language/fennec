@@ -73,6 +73,9 @@ fn linted(path: &str, json: bool) -> ExitCode {
     };
     let mut found = fennec_lint::lint(&program.module, &program.sources);
     found.extend(fennec_lint::needless_copies(&program.module, &program.sources));
+    if program.manifest.is_some() {
+        found.extend(fennec_lint::kit_lints(&program.module));
+    }
     found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
     let costs = fennec_ir::costs(&fennec_ir::lower(&resolved, &signatures));
     let copies = fennec_lint::implicit_copies(&costs);

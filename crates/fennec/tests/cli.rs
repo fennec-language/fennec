@@ -1385,3 +1385,49 @@ fn a_shared_value_is_one_cell_however_its_reached() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn constants_are_worked_out_while_compiling() {
+    let dir = scratch("constants").unwrap();
+    let program = dir.join("consts.fen");
+    let path = program.to_string_lossy().into_owned();
+    std::fs::write(
+        &program,
+        "from std.math import PI, sin\n\nstruct Point:\n    x: float\n    y: float\n\n\
+         SINE = [sin(float(i) * PI / 512.0) for i in range(1024)]\nORIGIN = Point(x=0.0, y=-1.5)\n\
+         SQUARES = {n: n * n for n in range(5)}\n\ndef main(stdout: Stdout):\n    \
+         stdout.print(SINE.len(), SINE[256], ORIGIN.y, SQUARES[4])\n",
+    )
+    .unwrap();
+    for how in [&["run"][..], &["run", "--interp"]] {
+        let output = fennec(&[how, &[path.as_str()]].concat(), "").unwrap();
+        assert_eq!(text(&output.stdout), "1024 1.0 -1.5 16\n", "{}", text(&output.stderr));
+        assert_eq!(text(&output.stderr), "");
+    }
+
+    // One that takes too long is worked out when the program starts, with a hint.
+    std::fs::write(
+        &program,
+        "def slow() -> int:\n    mut total = 0\n    for i in range(2000000):\n        total += i\n    total\n\n\
+         SLOW = slow()\n\ndef main(stdout: Stdout):\n    stdout.print(SLOW)\n",
+    )
+    .unwrap();
+    let output = fennec(&["run", &path], "").unwrap();
+    assert_eq!(text(&output.stdout), "1999999000000\n");
+    assert!(text(&output.stderr).contains("hint: `SLOW` takes more than"), "{}", text(&output.stderr));
+
+    // One that fails would fail every time, so it's a compile error.
+    std::fs::write(
+        &program,
+        "ITEMS = [1, 2]\nBAD = ITEMS[5]\n\ndef main(stdout: Stdout):\n    stdout.print(BAD)\n",
+    )
+    .unwrap();
+    let output = fennec(&["run", &path], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        text(&output.stderr).contains("index 5 is out of range for length 2"),
+        "{}",
+        text(&output.stderr)
+    );
+}

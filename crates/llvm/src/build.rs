@@ -173,8 +173,15 @@ fn one(tools: &Tools, text: &str, work: &Path, name: &str, optimize: bool) -> Re
 
 /// For a release: every function's module and `entry` linked into one, optimized as a whole,
 /// with nothing but `main` seen from outside, so LLVM inlines and specializes across the whole
-/// program. Nothing's cached, as any change changes the whole.
-pub fn compile_whole(tools: &Tools, units: &[Unit], entry: &str, work: &Path) -> Result<Built, String> {
+/// program. Given the runtime's own bitcode, what the program uses of it joins the unit too, so
+/// its calls inline as well. Nothing's cached, as any change changes the whole.
+pub fn compile_whole(
+    tools: &Tools,
+    units: &[Unit],
+    entry: &str,
+    work: &Path,
+    runtime: Option<&Path>,
+) -> Result<Built, String> {
     std::fs::create_dir_all(work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
     let mut inputs = Vec::with_capacity(units.len() + 1);
     for (at, unit) in units.iter().enumerate() {
@@ -200,6 +207,15 @@ pub fn compile_whole(tools: &Tools, units: &[Unit], entry: &str, work: &Path) ->
         return Err(format!("LLVM's `llvm-link` isn't beside `opt` in {}", tools.link.display()));
     }
     run(Command::new(&tools.link).args(&inputs).arg("-o").arg(&whole), "llvm-link")?;
+    if let Some(runtime) = runtime {
+        let program = work.join("program.bc");
+        std::fs::rename(&whole, &program)
+            .map_err(|err| format!("couldn't move {}: {err}", whole.display()))?;
+        run(
+            Command::new(&tools.link).arg(&program).arg("--only-needed").arg(runtime).arg("-o").arg(&whole),
+            "llvm-link",
+        )?;
+    }
     run(
         Command::new(&tools.opt)
             .arg(format!("-passes=internalize,{}", pipeline()))

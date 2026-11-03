@@ -340,9 +340,10 @@ pub extern "C" fn float_text(x: f64) -> i64 {
 
 /// A new string with a temporary's text, as `str` gives it.
 pub extern "C" fn value_text(value: i64) -> i64 {
-    with(|state| {
+    attempt(|state: &mut State| {
         let value = state.temp(value);
-        text_address(state, &crate::format::display(&value))
+        let text = state.interp.shown(&value, Span::default())?;
+        Ok(text_address(state, &text))
     })
 }
 
@@ -352,8 +353,7 @@ pub extern "C" fn spec_text(value: i64, spec: i64, start: i64, end: i64) -> i64 
     attempt(|state: &mut State| {
         let value = state.temp(value);
         let spec = text(state, spec).unwrap_or_default();
-        let piece = crate::format::with_spec(&value, &spec)
-            .map_err(|message| Diagnostic::new(message, span(start, end)))?;
+        let piece = state.interp.shown_spec(&value, &spec, span(start, end))?;
         Ok(text_address(state, &piece))
     })
 }

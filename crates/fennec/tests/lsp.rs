@@ -3,7 +3,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// A kit whose `main` uses a name that doesn't exist, and a folder for Fennec's own files.
 fn broken_kit(name: &str) -> std::io::Result<(PathBuf, PathBuf)> {
@@ -35,7 +35,7 @@ fn session(kit: &Path, home: &Path, daemon: bool) -> std::io::Result<(String, bo
         r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_owned(),
         r#"{"jsonrpc":"2.0","method":"exit"}"#.to_owned(),
     ];
-    let mut command = Command::new(env!("CARGO_BIN_EXE_fennec"));
+    let mut command = crate::executables::fennec_command();
     command.arg("lsp").env("FENNEC_HOME", home).env("FENNEC_DAEMON_IDLE", "30");
     if daemon {
         command.env_remove("FENNEC_NO_DAEMON");
@@ -72,7 +72,7 @@ fn the_language_server_runs_in_the_daemon() {
     let (output, clean) = session(&kit, &home, true).unwrap();
     check(&output);
     assert!(clean);
-    let status = Command::new(env!("CARGO_BIN_EXE_fennec"))
+    let status = crate::executables::fennec_command()
         .args(["daemon", "status"])
         .env("FENNEC_HOME", &home)
         .env_remove("FENNEC_NO_DAEMON")
@@ -80,9 +80,6 @@ fn the_language_server_runs_in_the_daemon() {
         .unwrap();
     let status = String::from_utf8_lossy(&status.stdout).into_owned();
     assert!(status.contains("1 request served"), "the session didn't run in the daemon: {status}");
-    let _ = Command::new(env!("CARGO_BIN_EXE_fennec"))
-        .args(["daemon", "stop"])
-        .env("FENNEC_HOME", &home)
-        .output();
+    let _ = crate::executables::fennec_command().args(["daemon", "stop"]).env("FENNEC_HOME", &home).output();
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }

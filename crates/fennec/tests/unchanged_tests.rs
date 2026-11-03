@@ -1,7 +1,7 @@
 //! `fennec test` runs only what a change affects, reporting the rest as unchanged.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 const SOURCE: &str = "def double(x: int) -> int:\n    x * 2\n\ndef triple(x: int) -> int:\n    x * 3\n\n\
     test \"doubling\":\n    assert double(2) == 4\n\ntest \"tripling\":\n    assert triple(2) == 6\n";
@@ -20,7 +20,7 @@ fn scratch(name: &str) -> std::io::Result<PathBuf> {
 /// Runs `fennec test` on the program, with the cache in `dir` and the environment of a
 /// person's machine rather than CI's.
 fn run_tests(dir: &Path, args: &[&str]) -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_fennec"))
+    crate::executables::fennec_command()
         .arg("test")
         .args(args)
         .arg(dir.join("game.fen"))
@@ -82,7 +82,7 @@ fn a_failing_test_runs_every_time_and_a_break_is_never_hidden() {
 fn ci_reuses_what_passed_like_anywhere_else() {
     let dir = scratch("ci").unwrap();
     run_tests(&dir, &[]).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_fennec"))
+    let output = crate::executables::fennec_command()
         .arg("test")
         .arg(dir.join("game.fen"))
         .env("FENNEC_HOME", dir.join("home"))
@@ -108,7 +108,7 @@ fn a_change_in_another_file_of_a_kit_reaches_tests_through_aliases() {
         test \"elsewhere\":\n    assert one() == 1\n";
     std::fs::write(dir.join("src/main.fen"), tests).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_fennec"))
+        crate::executables::fennec_command()
             .arg("test")
             .arg(&dir)
             .env("FENNEC_HOME", dir.join("home"))
@@ -210,7 +210,7 @@ fn kit_with_tests(name: &str) -> std::io::Result<PathBuf> {
 }
 
 fn test_kit(dir: &Path) -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_fennec"))
+    crate::executables::fennec_command()
         .arg("test")
         .arg(dir)
         .env("FENNEC_HOME", dir.join("home"))

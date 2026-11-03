@@ -11,7 +11,7 @@ use crate::executables::runtime_built;
 const BUILDING_EXAMPLES: usize = 49;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_fennec")).args(args).env("FENNEC_HOME", home).output()
+    crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
 }
 
 /// Whether this can run: this isn't Windows, where `fennec build` doesn't link, LLVM's tools and
@@ -792,7 +792,7 @@ fn the_proof_program_built_with_llvm_prints_its_out_file() -> std::io::Result<()
         let output = executable.to_string_lossy().into_owned();
         let args: Vec<&str> =
             ["build"].into_iter().chain(how.iter().copied()).chain(["-o", &output]).collect();
-        let built = Command::new(env!("CARGO_BIN_EXE_fennec"))
+        let built = crate::executables::fennec_command()
             .args(&args)
             .env("FENNEC_HOME", &dir)
             .current_dir(&proof)

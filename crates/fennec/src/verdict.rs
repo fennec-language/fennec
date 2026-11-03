@@ -148,7 +148,7 @@ pub(crate) fn plan(
         return None;
     }
     let dir = Path::new(path);
-    let loaded = fennec_kit::load_modules(dir, path, &changed).ok()?;
+    let loaded = fennec_kit::load_modules_to_test(dir, path, &changed).ok()?;
     let rows = rows_by_module(&loaded, files);
     let mut bodies: HashSet<String> = HashSet::new();
     for module in &changed {
@@ -171,7 +171,7 @@ pub(crate) fn plan(
             needed.push(record.module.clone());
         }
     }
-    let mut program = fennec_kit::load_modules(dir, path, &needed).ok()?;
+    let mut program = fennec_kit::load_modules_to_test(dir, path, &needed).ok()?;
     let signatures = fennec_check::check_to_run(&mut program.module).ok()?;
     Some(Plan {
         program,

@@ -754,7 +754,7 @@ impl Emit<'_, '_, '_> {
 
     /// Leaves the function if the runtime has recorded a failure.
     pub(crate) fn leave_if_failed(&mut self) {
-        self.declare("@fennec_failed = external dso_local global ptr");
+        self.declare(crate::parallel::failed_global(self.module.threads));
         let (flag_at, flag, failed) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{flag_at} = load ptr, ptr @fennec_failed, !invariant.load !1"));
         self.line(&format!("{flag} = load i8, ptr {flag_at}"));

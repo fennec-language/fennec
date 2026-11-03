@@ -8,19 +8,63 @@
 //! `env` names, its code `swiftcc` as closures are, and says whether it failed: the failure is
 //! already in the runtime's state. The runtime decides how ranges are split and where they run.
 //!
+//! A program that runs `parallel` keeps its stack limit and failure flag for each thread, since a
+//! worker's stack and runtime are its own. The program's thread sets them in `fennec_entry`, and
+//! a worker in the first shim it runs.
+//!
 //! `parallel.put` and `parallel.put_back` write an item at a position only one range writes,
 //! in place: into the list `fennec_parallel_map` made, or back into a `for mut` loop's list,
 //! which `parallel.own` made the loop's own first.
 
 use std::fmt::Write as _;
 
-use fennec_ir::{LocalId, Operand};
+use fennec_ir::{InstKind, LocalId, Operand, Program};
 use fennec_syntax::Span;
 
 use crate::closures::CODE;
 use crate::emit::{Emit, ITEM_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::lists::list_item;
+
+/// Whether a program hands work to the runtime's `parallel` calls, and so keeps a stack limit
+/// and failure flag for each thread.
+pub fn uses_parallel(program: &Program) -> bool {
+    program.functions.iter().chain(&program.constants).flat_map(|function| &function.blocks).any(|block| {
+        block
+            .insts
+            .iter()
+            .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if name.starts_with("parallel.")))
+    })
+}
+
+/// How a module declares the lowest address the stack may grow to, for this thread when there
+/// are threads. Initial-exec, since `fennec_entry`'s module, in the executable, defines it.
+pub(crate) fn stack_limit_global(threads: bool) -> &'static str {
+    if threads {
+        "@fennec_stack_limit = external dso_local thread_local(initialexec) global i64"
+    } else {
+        "@fennec_stack_limit = external dso_local global i64"
+    }
+}
+
+/// How a module declares where the runtime's failure flag is, for this thread when there are
+/// threads.
+pub(crate) fn failed_global(threads: bool) -> &'static str {
+    if threads {
+        "@fennec_failed = external dso_local thread_local(initialexec) global ptr"
+    } else {
+        "@fennec_failed = external dso_local global ptr"
+    }
+}
+
+/// The start of every shim: on a thread whose failure flag isn't known yet, a worker running
+/// its first range, asks the runtime where this thread's flag is and how deep its stack goes.
+/// The program's thread has both from `fennec_entry`.
+const READY: &str = "entry:\n  %known = load ptr, ptr @fennec_failed\n  %fresh = icmp eq ptr %known, null\n  \
+    br i1 %fresh, label %ready, label %run\nready:\n  \
+    %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  \
+    store ptr %flag_at, ptr @fennec_failed\n  %limit = call i64 @fennec_aot_stack_limit()\n  \
+    store i64 %limit, ptr @fennec_stack_limit\n  br label %run\nrun:\n";
 
 /// What a range's closure gives back, which says which shim runs it.
 #[derive(Clone, Copy)]
@@ -64,7 +108,7 @@ impl Shape {
         };
         let into = if matches!(self, Shape::Into) { "  %into = inttoptr i64 %out to ptr\n" } else { "" };
         format!(
-            "define internal i64 {name}(i64 %env, i64 %from, i64 %to, i64 %thread{extra}) #0 {{\nentry:\n  \
+            "define internal i64 {name}(i64 %env, i64 %from, i64 %to, i64 %thread{extra}) #0 {{\n{READY}  \
              %closure = inttoptr i64 %env to ptr\n{into}  %code_at = getelementptr inbounds i8, ptr %closure, i64 {CODE}\n  \
              %code = load ptr, ptr %code_at\n  %failed = alloca swifterror ptr\n  store ptr null, ptr %failed\n  \
              {call} %code(ptr %closure, i64 %from, i64 %to{args}, ptr swifterror %failed)\n{keep}  \
@@ -105,6 +149,13 @@ impl Emit<'_, '_, '_> {
     /// The shim for a range's shape, written once a module.
     fn shim(&mut self, shape: Shape) -> &'static str {
         let name = shape.name();
+        // Shims are only in programs that run `parallel`, whose modules all declare these for
+        // each thread; asking the module keeps every declaration in it alike.
+        let threads = self.module.threads;
+        self.declare(stack_limit_global(threads));
+        self.declare(failed_global(threads));
+        self.declare("declare i64 @fennec_aot_failed_flag()");
+        self.declare("declare i64 @fennec_aot_stack_limit()");
         self.module.add_helper(name, shape.shim());
         name
     }

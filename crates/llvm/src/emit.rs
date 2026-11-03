@@ -96,10 +96,12 @@ pub fn emit_for(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layou
     let layouts = crate::layouts_of(program);
     let mut shared = Shared::default();
     let mut units = Vec::with_capacity(program.functions.len());
+    // Every module of a program agrees, since what it declares has to match what's defined.
+    let threads = crate::parallel::uses_parallel(program);
     // Every function it can't take yet is named, not just the first.
     let mut refused = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
-        match unit(function, &everything, &layouts, &mut shared, (header, &attributes)) {
+        match unit(function, (&everything, threads), &layouts, &mut shared, (header, &attributes)) {
             Ok(text) => units.push(Unit { function: function.name.clone(), text }),
             Err(why) => refused.push(format!("`{}`: {why}", function.name)),
         }
@@ -144,6 +146,9 @@ pub(crate) struct Module<'w, 'p> {
     whole: &'w Whole<'p>,
     pub(crate) layouts: &'w Layouts,
     pub(crate) shared: &'w mut Shared,
+    /// Whether the program runs `parallel`'s ranges on other threads, which keep their own stack
+    /// limit and failure flag.
+    pub(crate) threads: bool,
     declares: BTreeSet<String>,
     defined: HashSet<&'p str>,
     bodies: String,
@@ -153,7 +158,7 @@ pub(crate) struct Module<'w, 'p> {
 
 fn unit<'p>(
     function: &'p Function,
-    whole: &Whole<'p>,
+    (whole, threads): (&Whole<'p>, bool),
     layouts: &Layouts,
     shared: &mut Shared,
     (header, attributes): (&str, &str),
@@ -162,6 +167,7 @@ fn unit<'p>(
         whole,
         layouts,
         shared,
+        threads,
         declares: BTreeSet::new(),
         defined: HashSet::new(),
         bodies: String::new(),
@@ -821,7 +827,7 @@ impl Emit<'_, '_, '_> {
     /// running and the frame stays put, so LLVM drops all but the first check on a path.
     pub(crate) fn check_stack(&mut self, span: Span) {
         self.declare("declare ptr @llvm.frameaddress.p0(i32)");
-        self.declare("@fennec_stack_limit = external dso_local global i64");
+        self.declare(crate::parallel::stack_limit_global(self.module.threads));
         let (here, limit, number, low) = (self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{here} = call ptr @llvm.frameaddress.p0(i32 0)"));
         self.line(&format!("{limit} = load i64, ptr @fennec_stack_limit, !invariant.load !1"));

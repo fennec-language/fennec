@@ -74,7 +74,11 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
         return Err("`main` gives back a value, which this backend doesn't take yet".to_owned());
     }
     let mut out = String::from(crate::header()?);
-    out += "@fennec_stack_limit = dso_local global i64 0\n@fennec_failed = dso_local global ptr null\n@fennec_ascii = dso_local global ptr null\n";
+    // A program running `parallel` keeps a stack limit and a failure flag for each thread.
+    let local = if crate::parallel::uses_parallel(program) { "thread_local(initialexec) " } else { "" };
+    let _ = writeln!(out, "@fennec_stack_limit = dso_local {local}global i64 0");
+    let _ = writeln!(out, "@fennec_failed = dso_local {local}global ptr null");
+    out += "@fennec_ascii = dso_local global ptr null\n";
     for (symbol, start) in &shared.starts {
         let _ = writeln!(out, "@\"{symbol}\" = dso_local constant i64 {start}");
     }

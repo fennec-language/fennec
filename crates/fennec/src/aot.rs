@@ -14,10 +14,52 @@ const SYSTEM_LIBRARIES: &[&str] = &["-lSystem", "-lc", "-lm", "-Wl,-dead_strip"]
 const SYSTEM_LIBRARIES: &[&str] =
     &["-lgcc_s", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl", "-lc", "-Wl,--gc-sections"];
 
-/// The runtime library's file name.
-const RUNTIME: &str = "libfennec_runtime.a";
-/// The runtime's own bitcode, which a release build puts in the program's unit when it's there.
-const RUNTIME_BITCODE: &str = "libfennec_runtime.bc";
+/// Which runtime library a program links against, next to the `fennec` command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Runtime {
+    /// The usual one, for programs that run on one thread.
+    Plain,
+    /// The one built with `threads`, whose pool runs `parallel`'s ranges on workers. Its
+    /// counts are atomic, so only programs that use `parallel` pay for it.
+    Threads,
+}
+
+impl Runtime {
+    /// The library's file name.
+    fn library(self) -> &'static str {
+        match self {
+            Self::Plain => "libfennec_runtime.a",
+            Self::Threads => "libfennec_runtime_threads.a",
+        }
+    }
+
+    /// The runtime's own bitcode, which a release build puts in the program's unit when it's
+    /// there.
+    fn bitcode(self) -> &'static str {
+        match self {
+            Self::Plain => "libfennec_runtime.bc",
+            Self::Threads => "libfennec_runtime_threads.bc",
+        }
+    }
+
+    /// How to build the library, for saying when it's missing.
+    fn how_to_build(self) -> &'static str {
+        match self {
+            Self::Plain => "`cargo build -p fennec-runtime`",
+            Self::Threads => {
+                "`cargo build -p fennec-runtime --features threads --target-dir target/threads`, copying its `libfennec_runtime.a` next to `fennec` as `libfennec_runtime_threads.a`"
+            }
+        }
+    }
+
+    /// The runtime a lowered program needs: the threads one when it runs `parallel` and
+    /// `FENNEC_THREADS_RUNTIME=1` asks for it. Until a range's copies of what it captures are
+    /// its own, workers would count shared blocks plainly, so the plain one stays the default.
+    fn for_program(lowered: &fennec_ir::Program) -> Self {
+        let asked = std::env::var_os("FENNEC_THREADS_RUNTIME").is_some_and(|on| on == "1");
+        if asked && fennec_llvm::uses_parallel(lowered) { Self::Threads } else { Self::Plain }
+    }
+}
 
 pub(crate) fn build(path: &str, output: Option<&str>) -> ExitCode {
     if cfg!(windows) {
@@ -107,7 +149,7 @@ pub(crate) struct Built {
 /// Whether this machine can build through LLVM at all: its tools are there, and the runtime
 /// library is beside `fennec`. Without them, nothing about the program is the reason.
 pub(crate) fn llvm_ready() -> bool {
-    !cfg!(windows) && fennec_llvm::Tools::find().is_ok() && runtime_library().is_ok()
+    !cfg!(windows) && fennec_llvm::Tools::find().is_ok() && runtime_library(Runtime::Plain).is_ok()
 }
 
 /// Builds a checked program through LLVM to `output`, or says why LLVM can't: a function it
@@ -118,20 +160,29 @@ pub(crate) fn executable(
     release: bool,
 ) -> Result<Built, String> {
     let started = Instant::now();
-    let (objects, total, fresh) = llvm_objects(program, release)?;
+    let Compiled { objects, total, fresh, runtime } = llvm_objects(program, release)?;
     let compiled = started.elapsed();
     // A release built with the runtime's bitcode has its Rust inside already.
-    let runtime_in = release && runtime_bitcode().is_some();
-    let linked = link_objects(&objects, output, runtime_in)?;
+    let runtime_in = release && runtime_bitcode(runtime).is_some();
+    // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
+    // taking another way.
+    let linked = link_objects(&objects, output, runtime, runtime_in)?;
     Ok(Built { total, fresh, compiled, linked })
 }
 
-/// Lowers what the program reaches and compiles it: the objects, how many functions, and how
-/// many weren't already in the cache.
-fn llvm_objects(
-    program: &fennec_kit::Program,
-    release: bool,
-) -> Result<(Vec<Vec<u8>>, usize, usize), String> {
+/// What compiling a program with LLVM gives.
+struct Compiled {
+    objects: Vec<Vec<u8>>,
+    /// How many functions there are.
+    total: usize,
+    /// How many of them weren't already in the cache.
+    fresh: usize,
+    /// The runtime the objects link against.
+    runtime: Runtime,
+}
+
+/// Lowers what the program reaches and compiles it.
+fn llvm_objects(program: &fennec_kit::Program, release: bool) -> Result<Compiled, String> {
     let mut reached = program.module.clone();
     fennec_build::keep_what_main_reaches(&mut reached);
     let checked =
@@ -141,6 +192,7 @@ fn llvm_objects(
     if let Some(skipped) = lowered.not_lowered.first() {
         return Err(format!("`{}` isn't lowered yet: {}", skipped.function, skipped.why));
     }
+    let runtime = Runtime::for_program(&lowered);
     let cpu = if BASELINE.load(std::sync::atomic::Ordering::Relaxed) {
         fennec_llvm::Cpu::Baseline
     } else {
@@ -164,7 +216,7 @@ fn llvm_objects(
         .map(fennec_build::Cache::new);
     let work = std::env::temp_dir().join(format!("fennec-llvm-{}", std::process::id()));
     let built = if release {
-        fennec_llvm::compile_whole(&tools, &units, &entry, &work, runtime_bitcode().as_deref())
+        fennec_llvm::compile_whole(&tools, &units, &entry, &work, runtime_bitcode(runtime).as_deref())
     } else {
         fennec_llvm::compile(&tools, &units, &entry, cache.as_ref(), &work)
     };
@@ -173,14 +225,19 @@ fn llvm_objects(
         let _ = std::fs::remove_dir_all(&work);
     }
     let built = built?;
-    Ok((built.objects, units.len(), built.compiled))
+    Ok(Compiled { objects: built.objects, total: units.len(), fresh: built.compiled, runtime })
 }
 
 /// Links object files with the runtime library, giving back how long linking took. When the
 /// runtime's Rust is in the objects already, only its C parts are linked, so nothing of it is
 /// there twice.
-fn link_objects(objects: &[Vec<u8>], output: &Path, runtime_in: bool) -> Result<std::time::Duration, String> {
-    let runtime = runtime_library()?;
+fn link_objects(
+    objects: &[Vec<u8>],
+    output: &Path,
+    runtime: Runtime,
+    runtime_in: bool,
+) -> Result<std::time::Duration, String> {
+    let runtime = runtime_library(runtime)?;
     let work = std::env::temp_dir().join(format!("fennec-link-{}", std::process::id()));
     std::fs::create_dir_all(&work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
     let mut paths = Vec::with_capacity(objects.len());
@@ -224,7 +281,7 @@ fn default_output(path: &str, program: &fennec_kit::Program) -> PathBuf {
 /// Links an object file with the runtime library into an executable at `output`, giving
 /// back how long linking took.
 fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
-    let runtime = runtime_library()?;
+    let runtime = runtime_library(Runtime::Plain)?;
     let work = std::env::temp_dir().join(format!("fennec-build-{}", std::process::id()));
     std::fs::create_dir_all(&work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
     let object_path = work.join("program.o");
@@ -247,10 +304,11 @@ fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
     }
 }
 
-/// The runtime's bitcode, next to the `fennec` command, if it was built: see `RUNTIME_BITCODE`.
-pub(crate) fn runtime_bitcode() -> Option<PathBuf> {
+/// The runtime's bitcode, next to the `fennec` command, if it was built: see
+/// `Runtime::bitcode`.
+fn runtime_bitcode(runtime: Runtime) -> Option<PathBuf> {
     let fennec = std::env::current_exe().ok()?;
-    Some(fennec.with_file_name(RUNTIME_BITCODE)).filter(|path| path.is_file())
+    Some(fennec.with_file_name(runtime.bitcode())).filter(|path| path.is_file())
 }
 
 /// A copy of the runtime library with only its C objects: mimalloc and the compiler's helpers.
@@ -278,16 +336,18 @@ fn c_parts(runtime: &Path, work: &Path) -> Result<PathBuf, String> {
 }
 
 /// The runtime library, next to the `fennec` command.
-fn runtime_library() -> Result<PathBuf, String> {
+fn runtime_library(runtime: Runtime) -> Result<PathBuf, String> {
     let fennec =
         std::env::current_exe().map_err(|err| format!("couldn't find the `fennec` command: {err}"))?;
-    let runtime = fennec.with_file_name(RUNTIME);
-    if runtime.is_file() {
-        Ok(runtime)
+    let path = fennec.with_file_name(runtime.library());
+    if path.is_file() {
+        Ok(path)
     } else {
         Err(format!(
-            "the runtime library `{RUNTIME}` should be next to `fennec`, at {}; build it with `cargo build -p fennec-runtime`",
-            runtime.display()
+            "the runtime library `{}` should be next to `fennec`, at {}; build it with {}",
+            runtime.library(),
+            path.display(),
+            runtime.how_to_build()
         ))
     }
 }

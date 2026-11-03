@@ -33,6 +33,18 @@ jobs:
       - run: rustup target add ${{ matrix.target }}
       # `fennec build` links executables against the runtime library, shipped next to `fennec`.
       - run: cargo build --release --locked -p fennec -p fennec-runtime --target ${{ matrix.target }}
+      # The runtime with threads, for programs that use `parallel`, also next to `fennec`. Built
+      # on its own, in a folder of its own: built with the others, Cargo would give all of them
+      # `threads`.
+      - name: Build the runtime library with threads
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          cargo rustc --release --locked -p fennec-runtime --features threads --target "$TARGET" --target-dir target/threads --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
+          cp "target/threads/$TARGET/release/libfennec_runtime.a" "target/$TARGET/release/libfennec_runtime_threads.a"
+          cp "$(find "target/threads/$TARGET/release/deps" -name 'fennec_runtime-*.bc' -print -quit)" "target/$TARGET/release/libfennec_runtime_threads.bc"
       # A release build puts what it uses of the runtime in the program's own unit, from this.
       - name: Build the runtime's bitcode
         if: runner.os != 'Windows'
@@ -55,7 +67,8 @@ jobs:
             7z a "$name.zip" "$name" > /dev/null
             echo "ARCHIVE=$name.zip" >> "$GITHUB_ENV"
           else
-            cp "target/${TARGET}/release/fennec" "target/${TARGET}/release/libfennec_runtime.a" "target/${TARGET}/release/libfennec_runtime.bc" "$name/"
+            cp "target/${TARGET}/release/fennec" "target/${TARGET}/release/libfennec_runtime.a" "target/${TARGET}/release/libfennec_runtime.bc" \
+              "target/${TARGET}/release/libfennec_runtime_threads.a" "target/${TARGET}/release/libfennec_runtime_threads.bc" "$name/"
             tar czf "$name.tar.gz" "$name"
             echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
           fi

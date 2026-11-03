@@ -119,6 +119,14 @@ installed, its column is left out.
 - The twins are a small cargo project of their own in `bench/parallel/twin`, with rayon pinned in its lock file. rayon is there only to be measured against: Fennec's pool uses `rayon-core`, the same version the twin's rayon runs on.
 - It needs the runtime with threads next to `fennec`, as `libfennec_runtime_threads.a` and `.bc`. CI builds them in `suite.yml`, and each machine's table joins the suite's report.
 
+## Real programs against Rust with crates
+
+`fennec-bench realworld` measures `bench/realworld`: programs that use `std` the way a real program does, beside a Rust twin using the crates a Rust program would. `json_typed` loads JSON into typed structs through `std.json`, uses them and writes them back, against serde and serde_json. The `json` kernel in the suite is a parser written by hand on both sides, so it doesn't measure `std.json`.
+
+- It's outside the locked suite, whose twins are one file each, and has no targets. Being slow never fails it: only printing something other than the twin does.
+- The twins are a small cargo project of their own in `bench/realworld/twin`, built with the same flags as the suite's, with their crates pinned in its lock file. serde is there only to be measured against, and nothing shipped depends on it.
+- Each machine's table joins the suite's report.
+
 ## Pinning targets
 
 The twins beside the kernels are idiomatic code for the same work, in Rust, fully optimized: `opt-level=3`, fat link-time optimization, one codegen unit, abort on panic and no debug assertions. The CPU level is fixed, so a target doesn't depend on which machine pinned it, and matches what the JIT uses: `x86-64-v3` on x86-64 and the baseline on 64-bit Arm. Each targets file says which compiler pinned it. `regex`'s twin runs on `crates/re`, the engine behind `std.re`. `fennec-bench pin` builds them, checks that each prints what its kernel prints, and writes their instruction counts to `targets/<architecture>.txt`, keeping each kernel's `enforced` mark. The twin of `selfhost` is `fennec dev tree`, the Rust front end.

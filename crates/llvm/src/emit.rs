@@ -763,8 +763,15 @@ impl Emit<'_, '_, '_> {
         let (none, _) = self.case_of(kind, "None")?;
         let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
         self.retain_value(value, held);
-        let (missing, tag) = (self.temp(), self.temp());
-        self.line(&format!("{missing} = icmp eq ptr {value}, null"));
+        // A local holds an optional string as a header, all zero for `None`.
+        let missing = if *held == Kind::MaybeText {
+            self.header_is_none(value)
+        } else {
+            let missing = self.temp();
+            self.line(&format!("{missing} = icmp eq ptr {value}, null"));
+            missing
+        };
+        let tag = self.temp();
         self.line(&format!("{tag} = select i1 {missing}, i64 {none}, i64 {some}"));
         let (place, fields_at) = if let Kind::Boxed(id) = kind {
             let block = self.new_block(*id)?;
@@ -778,7 +785,8 @@ impl Emit<'_, '_, '_> {
         };
         self.line(&format!("store i64 {tag}, ptr {fields_at}"));
         let at = self.offset(&fields_at, offset);
-        self.line(&format!("store ptr {value}, ptr {at}"));
+        let memory = held.memory(self.module.layouts);
+        self.line(&format!("store {memory} {value}, ptr {at}"));
         Ok((place, true))
     }
 
@@ -787,7 +795,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn value_for(&mut self, operand: &Operand, kind: &Kind) -> Result<(String, bool), String> {
         if *operand != Operand::None {
             let (value, held) = self.operand(operand)?;
-            if matches!(held, Kind::Maybe(_)) && self.is_optional(kind) {
+            if matches!(held, Kind::Maybe(_) | Kind::MaybeText) && self.is_optional(kind) {
                 return self.optional_as_enum(&value, &held, kind);
             }
             return Ok((value, false));
@@ -936,7 +944,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Calls the runtime's failure and leaves the function when `bad` holds.
-    fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
+    pub(crate) fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
         let (fail, ok) = (self.label("fail"), self.label("ok"));
         self.line(&format!("br i1 {bad}, label %{fail}, label %{ok}, !prof !0"));
         self.start_block(&ok);
@@ -1433,6 +1441,9 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         if let Some(done) = self.loop_builtin(dest, name, args, span) {
+            return done;
+        }
+        if let Some(done) = self.conversion(dest, name, args, span) {
             return done;
         }
         let first = args.first();
@@ -1978,6 +1989,42 @@ mod tests {
             text_of(&source, "add")
         };
         assert_eq!(later("")?, later("## moved down\n\n")?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_constant_keeps_its_value_after_the_first_time() -> Result<(), String> {
+        let source = "WORDS = [\"a\", \"b\"]\n\ndef main(stdout: Stdout):\n    stdout.print(WORDS)\n";
+        let text = text_of(source, "WORDS")?;
+        for written in [
+            "@\"f_WORDS.kept\" = internal global ",
+            "@\"f_WORDS.done\" = internal global i1 false",
+            "= load i1, ptr @\"f_WORDS.done\"",
+            ", ptr @\"f_WORDS.kept\"",
+            "store i1 true, ptr @\"f_WORDS.done\"",
+        ] {
+            assert!(text.contains(written), "{written} isn't in:\n{text}");
+        }
+        assert!(text.contains("define swiftcc") && text.contains("@\"f_WORDS\""), "{text}");
+        // What reads it calls it rather than holding a copy, and isn't kept itself.
+        let main = text_of(source, "main")?;
+        assert!(main.contains("call swiftcc") && main.contains("@\"f_WORDS\"("), "{main}");
+        assert!(!main.contains(".kept"), "{main}");
+        assert!(!main.contains("define internal") || !main.contains("f_WORDS.done"), "{main}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_program_using_parallel_works_a_constant_out_at_each_read() -> Result<(), String> {
+        let source = "WORDS = [\"a\", \"b\"]\n\ndef main(stdout: Stdout):\n    mut counts = [1, 2]\n    \
+                      for mut count in parallel(counts):\n        count += WORDS.len()\n    stdout.print(counts)\n";
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower_with(&module, &checked, fennec_ir::Options { outline_parallel: true });
+        assert!(crate::parallel::uses_parallel(&program), "{:?}", program.not_lowered);
+        let (units, _, _) = emit(&program)?;
+        let constant = units.iter().find(|unit| unit.function == "WORDS").ok_or("it isn't lowered")?;
+        assert!(!constant.text.contains(".kept"), "{}", constant.text);
         Ok(())
     }
 

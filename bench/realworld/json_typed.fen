@@ -1,0 +1,94 @@
+## JSON as a real program does it: loading text into typed structs through `std.json`, using
+## them, and writing them back, against serde and serde_json.
+
+from std import json
+
+enum Kind:
+    Player
+    Monster
+    Trader
+
+enum Order:
+    Hold
+    Move(x: int, y: int)
+    Say(text: str)
+
+struct Spot:
+    x: float
+    y: float
+
+struct Item:
+    name: str
+    count: int
+    tags: list[str]
+
+struct Unit:
+    id: int
+    name: str
+    active: bool
+    health: float
+    kind: Kind
+    pet: str?
+    at: Spot
+    tags: list[str]
+    bag: list[Item]
+    stats: dict[str, int]
+    orders: list[Order]
+
+def order(i: int) -> Order:
+    match i % 3:
+        case 0:
+            Order.Hold
+        case 1:
+            Order.Move(x=i, y=-i)
+        case _:
+            Order.Say(text=f"unit {i} says \"hello\"\n")
+
+def unit(i: int) -> Unit:
+    kinds = [Kind.Player, Kind.Monster, Kind.Trader]
+    Unit(
+        id=i,
+        name=f"fox-{i}",
+        active=i % 2 == 0,
+        health=float(i % 100) + 0.5,
+        kind=kinds[i % 3],
+        pet=f"pet-{i}" if i % 4 == 0 else None,
+        at=Spot(x=float(i) * 0.25, y=float(i) * -0.5),
+        tags=["fast", "été", f"group-{i % 7}"],
+        bag=[Item(name=f"item-{at}", count=i + at, tags=["a", "b"]) for at in range(i % 5)],
+        stats={"armor": i % 11, "attack": i % 13, "speed": i % 17},
+        orders=[order(i + at) for at in range(3)],
+    )
+
+def score(units: list[Unit]) -> int:
+    mut total = 0
+    for unit in units:
+        total += unit.id + unit.name.len() + unit.tags.len() + unit.stats["attack"]
+        if unit.active:
+            total += 1
+        if unit.pet is not None:
+            total += 2
+        for item in unit.bag:
+            total += item.count
+        for order in unit.orders:
+            match order:
+                case .Hold:
+                    total += 1
+                case .Move(x, y):
+                    total += x - y
+                case .Say(text):
+                    total += text.len()
+    total
+
+def main(stdout: Stdout):
+    text = json.dumps([unit(i) for i in range(300)])
+    mut scored = 0
+    mut written = 0
+    for _ in range(40):
+        match json.loads[list[Unit]](text):
+            case Ok(units):
+                scored += score(units)
+                written += json.dumps(units).len()
+            case Err(error):
+                stdout.print(error.message)
+    stdout.print(text.len(), scored, written)

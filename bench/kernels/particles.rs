@@ -25,6 +25,7 @@ impl Particle {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let count = std::hint::black_box(2000);
     let mut particles: Vec<Particle> = (0..count)
         .map(|i| Particle {
@@ -41,4 +42,7 @@ fn main() {
     let bounces: i64 = particles.iter().map(|particle| particle.bounces).sum();
     let height: f64 = particles.iter().map(|particle| particle.position.y).sum();
     println!("{bounces} {height:.6}");
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

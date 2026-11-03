@@ -1,5 +1,7 @@
 // The n-body simulation from the Benchmarks Game, the Java twin of nbody.fen.
 
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
@@ -68,7 +70,7 @@ public class nbody {
         return new BigDecimal(value).setScale(9, RoundingMode.HALF_EVEN).toPlainString();
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         Body[] bodies = {
             new Body(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, SOLAR_MASS),
             planet(4.84143144246472090e+00, -1.16032004402742839e+00, -1.03622044471123109e-01, 1.66007664274403694e-03, 7.69901118419740425e-03, -6.90460016972063023e-05, 9.54791938424326609e-04),
@@ -85,10 +87,22 @@ public class nbody {
         bodies[0].vx = -px / SOLAR_MASS;
         bodies[0].vy = -py / SOLAR_MASS;
         bodies[0].vz = -pz / SOLAR_MASS;
-        System.out.println(fixed9(energy(bodies)));
+        out.println(fixed9(energy(bodies)));
         for (int step = 0; step < 200_000; step++) {
             advance(bodies, 0.01);
         }
-        System.out.println(fixed9(energy(bodies)));
+        out.println(fixed9(energy(bodies)));
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

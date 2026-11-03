@@ -48,7 +48,8 @@ def first_over(limit: int, over: int) -> int:
         if n > over: return n
     0
 
-def main(stdout: Stdout):
+def main(stdout: Stdout, clock: Clock, args: Args):
+    started = clock.now()
     src = make_lines(20_000)
     mut result = 0
     for round in range(40):
@@ -57,3 +58,5 @@ def main(stdout: Stdout):
         result += sum(n % 7 for n in chain)
         result += first_over(1_000, 990 - round)
     stdout.print(result)
+    if args.len() > 0:
+        stdout.print("kernel-ns", (clock.now() - started).nanos)

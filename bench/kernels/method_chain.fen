@@ -24,7 +24,8 @@ def iterations(c: Complex, limit: int) -> int:
         z = z.times(z).plus(c)
     limit
 
-def main(stdout: Stdout):
+def main(stdout: Stdout, clock: Clock, args: Args):
+    started = clock.now()
     size = 500
     mut total = 0
     for y in range(size):
@@ -33,3 +34,5 @@ def main(stdout: Stdout):
             cr = 2.0 * float(x) / float(size) - 1.5
             total += iterations(Complex(re=cr, im=ci), 100)
     stdout.print(total)
+    if args.len() > 0:
+        stdout.print("kernel-ns", (clock.now() - started).nanos)

@@ -34,6 +34,10 @@ fn fannkuch(n: usize) -> (i64, i64) {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let (checksum, most) = fannkuch(std::hint::black_box(9));
     println!("{checksum} {most}");
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

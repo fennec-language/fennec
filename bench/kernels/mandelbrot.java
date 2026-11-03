@@ -1,5 +1,8 @@
 // The Mandelbrot set, the Java twin of mandelbrot.fen.
 
+import java.io.OutputStream;
+import java.io.PrintStream;
+
 public class mandelbrot {
     static long iterations(double cr, double ci, long limit) {
         double zr = 0.0, zi = 0.0;
@@ -14,7 +17,7 @@ public class mandelbrot {
         return limit;
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         int size = 400;
         long total = 0, inside = 0;
         for (int y = 0; y < size; y++) {
@@ -28,6 +31,18 @@ public class mandelbrot {
                 }
             }
         }
-        System.out.println(total + " " + inside);
+        out.println(total + " " + inside);
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

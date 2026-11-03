@@ -263,9 +263,13 @@ fn simulate() -> (i64, i64) {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let (mut queued, mut holds) = (0, 0);
     for _ in 0..std::hint::black_box(25) {
         (queued, holds) = simulate();
     }
     println!("{queued} {holds}");
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

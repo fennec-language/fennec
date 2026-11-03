@@ -9,6 +9,7 @@ fn twice(value: i64, change: impl Fn(i64) -> i64) -> i64 {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let count = std::hint::black_box(10_000);
     let values: Vec<i64> = (0..count).map(|i| i % 1000).collect();
     let mut total = 0;
@@ -18,4 +19,7 @@ fn main() {
         total += apply_all(&values, |n| twice(n, |m| m * 3 % 1001 + offset));
     }
     println!("{total}");
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

@@ -1,4 +1,7 @@
 // The sieve of Eratosthenes, the Java twin of sieve.fen.
+import java.io.OutputStream;
+import java.io.PrintStream;
+
 public class sieve {
     static long countPrimes(int limit) {
         long[] composite = new long[limit + 1];
@@ -16,7 +19,19 @@ public class sieve {
         return count;
     }
 
+    static void run(PrintStream out) {
+        out.println(countPrimes(5_000_000));
+    }
+
     public static void main(String[] args) {
-        System.out.println(countPrimes(5_000_000));
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

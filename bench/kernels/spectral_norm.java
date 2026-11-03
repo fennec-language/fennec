@@ -1,5 +1,7 @@
 // The spectral norm from the Benchmarks Game, the Java twin of spectral_norm.fen.
 
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Arrays;
@@ -30,7 +32,7 @@ public class spectral_norm {
         return new BigDecimal(value).setScale(9, RoundingMode.HALF_EVEN).toPlainString();
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         int n = 400;
         double[] u = new double[n];
         Arrays.fill(u, 1.0);
@@ -46,6 +48,18 @@ public class spectral_norm {
         for (double x : v) {
             vv += x * x;
         }
-        System.out.println(fixed9(Math.sqrt(vbv / vv)));
+        out.println(fixed9(Math.sqrt(vbv / vv)));
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

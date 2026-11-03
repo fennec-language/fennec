@@ -8,5 +8,9 @@ fn fib(n: i64) -> i64 {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     println!("{}", fib(std::hint::black_box(35)));
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

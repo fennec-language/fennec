@@ -48,6 +48,7 @@ fn largest<'a, T>(items: &'a [T], better: impl Fn(&T, &T) -> bool) -> &'a T {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let count = std::hint::black_box(5000);
     let circles: Vec<Circle> = (0..count).map(|i| Circle { radius: f64::from(i % 10) }).collect();
     let squares: Vec<Square> = (0..count).map(|i| Square { side: f64::from(i % 13) }).collect();
@@ -58,4 +59,7 @@ fn main() {
     }
     let biggest = largest(&circles, |a, b| a.radius > b.radius);
     println!("{sum:.3} {:?}", biggest.radius);
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

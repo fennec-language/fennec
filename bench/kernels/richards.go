@@ -1,7 +1,11 @@
 // Richards, the Go twin of richards.fen.
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"time"
+)
 
 const (
 	none         int64 = -1
@@ -267,9 +271,13 @@ func simulate() (int64, int64) {
 }
 
 func main() {
+	started := time.Now()
 	var queued, holds int64
 	for i := 0; i < 25; i++ {
 		queued, holds = simulate()
 	}
 	fmt.Printf("%d %d\n", queued, holds)
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

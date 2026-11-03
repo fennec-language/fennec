@@ -3,8 +3,10 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Shape interface {
@@ -64,6 +66,7 @@ func debugFloat(x float64) string {
 }
 
 func main() {
+	started := time.Now()
 	count := 5000
 	circles := make([]Circle, 0, count)
 	squares := make([]Square, 0, count)
@@ -80,4 +83,7 @@ func main() {
 	}
 	biggest := largest(circles, func(a, b *Circle) bool { return a.radius > b.radius })
 	fmt.Printf("%.3f %s\n", sum, debugFloat(biggest.radius))
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

@@ -155,6 +155,7 @@ fn document(records: i64) -> String {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let text = document(std::hint::black_box(300));
     let mut total = 0;
     for _ in 0..40 {
@@ -165,4 +166,7 @@ fn main() {
         total += out.len();
     }
     println!("{} {total}", text.len());
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

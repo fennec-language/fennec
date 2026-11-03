@@ -1,4 +1,6 @@
 // K-nucleotide, the Java twin of k_nucleotide.fen.
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
@@ -23,7 +25,7 @@ public class k_nucleotide {
         return counts;
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         String dna = sequence(100_000);
         for (int size : new int[] {1, 2}) {
             ArrayList<Map.Entry<String, Long>> ordered = new ArrayList<>(counted(dna, size).entrySet());
@@ -32,11 +34,23 @@ public class k_nucleotide {
                 return byCount != 0 ? byCount : a.getKey().compareTo(b.getKey());
             });
             for (Map.Entry<String, Long> entry : ordered) {
-                System.out.println(entry.getKey() + " " + entry.getValue());
+                out.println(entry.getKey() + " " + entry.getValue());
             }
         }
         for (String piece : new String[] {"ggt", "ggta", "ggtatt", "ggtattttaatt", "ggtattttaatttatagt"}) {
-            System.out.println(counted(dna, piece.length()).getOrDefault(piece, 0L) + " " + piece);
+            out.println(counted(dna, piece.length()).getOrDefault(piece, 0L) + " " + piece);
         }
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

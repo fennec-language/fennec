@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 fn main() {
+    let started = std::time::Instant::now();
     let size = std::hint::black_box(100_000);
     let mut total: i64 = 0;
     for round in 0..10 {
@@ -15,4 +16,7 @@ fn main() {
         total += numbers.iter().zip(&squares).map(|(a, b)| a * b % 7).sum::<i64>();
     }
     println!("{total}");
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

@@ -9,7 +9,8 @@ def apply_all(values: list[int], change: (int) -> int) -> int:
 def twice(value: int, change: (int) -> int) -> int:
     change(change(value))
 
-def main(stdout: Stdout):
+def main(stdout: Stdout, clock: Clock, args: Args):
+    started = clock.now()
     values = [i % 1000 for i in range(10_000)]
     mut total = 0
     for round in range(400):
@@ -17,3 +18,5 @@ def main(stdout: Stdout):
         total += apply_all(values, (n) => n + offset)
         total += apply_all(values, (n) => twice(n, (m) => m * 3 % 1001 + offset))
     stdout.print(total)
+    if args.len() > 0:
+        stdout.print("kernel-ns", (clock.now() - started).nanos)

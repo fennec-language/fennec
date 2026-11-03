@@ -21,6 +21,7 @@ fn counted(dna: &str, size: usize) -> HashMap<&str, i64> {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let dna = sequence(std::hint::black_box(100_000));
     for size in [1, 2] {
         let mut ordered: Vec<(&str, i64)> = counted(&dna, size).into_iter().collect();
@@ -31,5 +32,8 @@ fn main() {
     }
     for piece in ["ggt", "ggta", "ggtatt", "ggtattttaatt", "ggtattttaatttatagt"] {
         println!("{} {piece}", counted(&dna, piece.len()).get(piece).unwrap_or(&0));
+    }
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
     }
 }

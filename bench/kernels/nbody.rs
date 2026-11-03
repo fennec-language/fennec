@@ -47,6 +47,7 @@ fn advance(bodies: &mut [Body], dt: f64) {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     let pi = std::f64::consts::PI;
     let solar_mass = 4.0 * pi * pi;
     let days = 365.24;
@@ -80,4 +81,7 @@ fn main() {
         advance(&mut bodies, 0.01);
     }
     println!("{:.9}", energy(&bodies));
+    if std::env::args().len() > 1 {
+        println!("kernel-ns {}", started.elapsed().as_nanos());
+    }
 }

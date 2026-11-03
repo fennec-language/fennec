@@ -1,4 +1,6 @@
 // Structs in a game loop, the Java twin of particles.fen.
+import java.io.OutputStream;
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Locale;
 
@@ -35,7 +37,7 @@ public class particles {
         }
     }
 
-    public static void main(String[] args) {
+    static void run(PrintStream out) {
         int count = 2000;
         ArrayList<Particle> particles = new ArrayList<>();
         for (int i = 0; i < count; i++) {
@@ -54,6 +56,18 @@ public class particles {
         for (Particle particle : particles) {
             height += particle.position.y;
         }
-        System.out.println(bounces + " " + String.format(Locale.ROOT, "%.6f", height));
+        out.println(bounces + " " + String.format(Locale.ROOT, "%.6f", height));
+    }
+
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            run(System.out);
+            return;
+        }
+        run(new PrintStream(OutputStream.nullOutputStream()));
+        long started = System.nanoTime();
+        run(System.out);
+        System.out.flush();
+        System.out.println("kernel-ns " + (System.nanoTime() - started));
     }
 }

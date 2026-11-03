@@ -43,6 +43,9 @@ def fannkuch(n: int) -> (int, int):
                 count[r] = 0
                 r += 1
 
-def main(stdout: Stdout):
+def main(stdout: Stdout, clock: Clock, args: Args):
+    started = clock.now()
     checksum, most = fannkuch(9)
     stdout.print(checksum, most)
+    if args.len() > 0:
+        stdout.print("kernel-ns", (clock.now() - started).nanos)

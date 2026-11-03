@@ -3,8 +3,10 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 func sequence(length int) string {
@@ -19,6 +21,7 @@ func sequence(length int) string {
 }
 
 func main() {
+	started := time.Now()
 	dna := sequence(50_000)
 	patterns := []string{
 		"agggtaaa|tttaccct",
@@ -36,4 +39,7 @@ func main() {
 	}
 	fmt.Println(len(text))
 	fmt.Println(len(regexp.MustCompile("ta+c").ReplaceAllLiteralString(dna, "x")))
+	if len(os.Args) > 1 {
+		fmt.Printf("kernel-ns %d\n", time.Since(started).Nanoseconds())
+	}
 }

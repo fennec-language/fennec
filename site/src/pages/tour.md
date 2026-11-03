@@ -165,7 +165,7 @@ def main(stdout: Stdout):
     stdout.print(units.get(ash))      # None: a stale Id finds nothing
 ```
 
-An `Id` is a small plain value with a generation in it, so it stays safe after its slot is reused, and a cycle of them can't leak. `Tree`, in `std.collections`, does the same bookkeeping for parents and children.
+An `Id` is a small plain value with a generation in it, so it stays safe after its slot is reused, and a cycle of them can't leak. `Tree`, in `std.collections`, does the same bookkeeping for parents and children, and a `Graph` built the same way is planned. There are no classes, so this is how graphs and trees are done.
 
 Assigning or passing a value never lets anyone change yours. This doesn't mean everything gets copied: the compiler passes values by reference when it's safe, moves them when the original isn't used again, and shares large data until one side changes it. You write simple value code, and the compiler does the rest.
 

@@ -68,6 +68,7 @@ Each of these is decided and not built.
 
 - Compile-time loops over a type, `Writer` and `Reader` for every format, annotations as data, and `std.pack`.
 - `SortedSet`, `Grid` and `Packed`.
+- `Graph`, built on `IdMap` as `Tree` is.
 - `std.net`, `std.sql`, `std.process` and `std.crypto`.
 - `extern "C"` and `unsafe`, for what can't be written in Fennec, and first-party native kits.
 - SIMD and GPU types, and [the Den](/den/), Fennec's registry for kits.
@@ -75,7 +76,7 @@ Each of these is decided and not built.
 
 ## Only if the evidence asks
 
-These stay out unless measurements show they're needed: `class` with `link` fields, a limited `View[T]` for stored views, and tighter lock patterns. `yield mut` helpers, a `Graph` type, `@arena` and compile-time channel deadlock checks were cut from the first version, and each can come later without breaking anything.
+These stay out unless measurements show they're needed: a limited `View[T]` for stored views, and tighter lock patterns. `yield mut` helpers, `@arena` and compile-time channel deadlock checks were cut from the first version, and each can come later without breaking anything.
 
 ## Open questions
 
@@ -86,6 +87,7 @@ These are still being decided. Decisions already made, and why, are in [the desi
 - How a type marks that its finishing method has to be called.
 - How replay records the order tasks reach a `shared` value or a channel.
 - The exact API of event channels.
+- The API of `Graph`.
 - The exact syntax for property tests, and for units of measure.
 - The file extension (currently `.fen`).
 - Whether files of a kit may reuse a top-level name, reached through `import` by their module's name.

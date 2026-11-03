@@ -1374,6 +1374,9 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
+            return self.header_isdigit(dest, text);
+        }
         let callee = *self
             .module
             .whole

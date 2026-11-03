@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 54;
+const BUILDING_EXAMPLES: usize = 62;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -1563,5 +1563,30 @@ fn a_float_too_big_for_an_int_fails_like_the_jit() -> std::io::Result<()> {
     huge = 1e300
     stdout.print(int(huge * huge / huge))
 ",
+    )
+}
+
+/// Optional strings going into a list, whose items hold an optional as an enum.
+#[test]
+fn optional_strings_in_lists_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "optional_strings_in_lists",
+        r#"def first(words: list[str]) -> str?:
+    if words.len() > 0:
+        return words[0]
+    None
+
+def main(stdout: Stdout):
+    mut found = []
+    found.append(first(["short"]))
+    found.append(first([]))
+    found.append(first(["a string long enough that it has a block of its own"]))
+    stdout.print(found, found.len())
+    for item in found:
+        stdout.print(item else "missing")
+"#,
     )
 }

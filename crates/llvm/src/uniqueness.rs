@@ -141,7 +141,7 @@ fn reaches(known: &Analysis, local: LocalId, depth: usize) -> Option<FieldPath> 
     }
     if let Some((home, list, _)) = known.path_home(local) {
         let (root, mut path) = reaches(known, *home, deeper)?;
-        path.push(list.clone());
+        path.extend(list.iter().cloned());
         path.push(ANY_ITEM.to_owned());
         return Some((root, path));
     }

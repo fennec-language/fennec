@@ -55,7 +55,7 @@ pub(crate) struct Analysis {
     items_taken: HashMap<usize, (LocalId, Vec<String>)>,
     /// Locals taking a field of a list's item out to change it, put back through the same place
     /// read again: `root.list[index].field`, as the root, the list's field and the index.
-    path_taken: HashMap<usize, (LocalId, String, Operand)>,
+    path_taken: HashMap<usize, (LocalId, Vec<String>, Operand)>,
     /// Locals written once, from a field of another: which, and the field.
     field_of: HashMap<usize, (LocalId, String)>,
     /// A slice of a string used only as a dict's key: the string and where it starts and ends.
@@ -96,6 +96,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) builders: HashMap<&'p str, HashSet<usize>>,
     /// The field paths of `mut` parameters each function's callers make alone before calling.
     pub(crate) needs: HashMap<&'p str, Vec<FieldPath>>,
+    /// The functions that give a constant's value, which keep it after the first time.
+    pub(crate) constants: HashSet<&'p str>,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments, and a
@@ -942,9 +944,9 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
     }
 }
 
-/// `root.list[index].field.append(x)`, which the IR writes as reading the field out, changing
-/// it, then reading the item again to put it back: the field is taken, not copied, when nothing
-/// else touches the root meanwhile and the index stays the same.
+/// `root.list[index].field.append(x)` or `list[index].field.append(x)`, which the IR writes as
+/// reading the field out, changing it, then reading the item again to put it back: the field is
+/// taken, not copied, when nothing else touches the root meanwhile and the index stays the same.
 fn find_path_takes(function: &Function, known: &mut Analysis) {
     let steady = |operand: &Operand, known: &Analysis| match operand {
         Operand::Int(_) => true,
@@ -971,12 +973,17 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                 continue;
             }
             let Some((None, list, Some(index))) = defined(*item, at) else { continue };
-            let Some((Some(list_field), root, None)) = defined(list, at) else { continue };
+            // The list is a field of the root, or the root itself.
+            let (root, list_path) = match defined(list, at) {
+                Some((Some(list_field), root, None)) => (root, vec![list_field]),
+                None => (list, Vec::new()),
+                Some(_) => continue,
+            };
             if !steady(&index, known) || !known.borrowed.contains(&item.0) {
                 continue;
             }
             // Then: changes to it, the same place read again, and it put back there.
-            let mut again: (Option<LocalId>, Option<LocalId>) = (None, None);
+            let mut again: (Option<LocalId>, Option<LocalId>) = (list_path.is_empty().then_some(root), None);
             let mut put_in_item = false;
             for next in block.insts.get(at + 1..).unwrap_or_default() {
                 match &next.kind {
@@ -985,7 +992,7 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                             && args.first() == Some(&Operand::Local(*dest))
                             && args.iter().skip(1).all(|arg| *arg != Operand::Local(root)) => {}
                     InstKind::GetField { dest: list2, object: Operand::Local(from), field: name }
-                        if *from == root && *name == list_field && again.0.is_none() =>
+                        if *from == root && list_path.first() == Some(name) && again.0.is_none() =>
                     {
                         again.0 = Some(*list2);
                     }
@@ -1004,12 +1011,12 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                     InstKind::SetIndex { object, path, index: at_again, value: Operand::Local(put) }
                         if put_in_item
                             && *object == root
-                            && path.as_slice() == std::slice::from_ref(&list_field)
+                            && *path == list_path
                             && *at_again == index
                             && Some(*put) == again.1 =>
                     {
                         known.taken.insert(dest.0);
-                        known.path_taken.insert(dest.0, (root, list_field.clone(), index.clone()));
+                        known.path_taken.insert(dest.0, (root, list_path.clone(), index.clone()));
                         break;
                     }
                     other if is_quiet(other) && !reads_local(other, root) && !reads_local(other, *dest) => {}
@@ -1280,9 +1287,9 @@ impl Analysis {
     }
 
     /// Where the list is that a local took an item out of.
-    /// Where a field taken out of a list's item to change goes back: the root, the list's
-    /// field, and the index.
-    pub(crate) fn path_home(&self, local: LocalId) -> Option<&(LocalId, String, Operand)> {
+    /// Where a field taken out of a list's item to change goes back: the root, the path to the
+    /// list from it, and the index.
+    pub(crate) fn path_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>, Operand)> {
         self.path_taken.get(&local.0)
     }
 
@@ -1711,5 +1718,13 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
     let lengths = summarized(&functions, &analyses, Tracked::Lengths);
     let needs = needed(program, &functions, &analyses);
     let builders = crate::builders::builders(program, &functions);
-    Whole { functions, analyses, can_fail, generators, settles, lengths, builders, needs }
+    let constants = every()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.insts)
+        .filter_map(|inst| match &inst.kind {
+            InstKind::Constant { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    Whole { functions, analyses, can_fail, generators, settles, lengths, builders, needs, constants }
 }

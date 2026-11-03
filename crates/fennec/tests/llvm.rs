@@ -157,6 +157,72 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// `units[at].tags.append(x)` with the list in a local: the inner list goes on growing in place,
+/// and what's shared with it, at any level, doesn't change.
+#[test]
+fn appending_to_a_field_of_a_local_lists_item_copies_only_what_is_shared() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "local_item_field_appends",
+        r"struct Unit:
+    tags: list[int]
+    hp: int
+
+struct Box:
+    items: list[int]
+    next: list[Box]
+
+def grow(mut units: list[Unit], by: int):
+    for at in range(units.len()):
+        units[at].tags.append(by)
+
+def main(stdout: Stdout):
+    mut units = [Unit([1, 2, 3], 0), Unit([4], 1)]
+    # A copy of the list, of an item, and of the field, each kept apart from what comes after.
+    snapshot = copy(units)
+    shared = units
+    item = units[0]
+    tags = units[0].tags
+    units[0].tags.append(10)
+    stdout.print(units, snapshot, shared, item, tags)
+    units[-1].tags.append(11)
+    stdout.print(units, snapshot, shared, item, tags)
+    # An argument read from the same place, and from another item.
+    units[0].tags.append(units[0].tags.len())
+    units[0].tags.append(units[1].tags[0])
+    stdout.print(units)
+    # An index that changes between the read and the write isn't this at all.
+    mut at = 0
+    units[at].tags.append(at)
+    at = 1
+    units[at].tags.append(at)
+    stdout.print(units)
+    grow(mut units, 5)
+    stdout.print(units, snapshot)
+    # A caller's copy stays as it was.
+    mut mine = copy(units)
+    kept = mine
+    grow(mut mine, 6)
+    stdout.print(mine[0].tags, kept[0].tags)
+    # Items that are blocks of their own.
+    mut boxes = [Box([1], []), Box([2], [])]
+    other = boxes[0]
+    boxes[0].items.append(3)
+    stdout.print(boxes, other)
+    # Outside the list's length, it fails as it should.
+    units[9].tags.append(1)
+",
+    )?;
+    let counts = counts_of(
+        "local_item_field_counts",
+        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for at in range(units.len()):\n            units[at].tags.append(round)\n    stdout.print(units[0].tags.len())\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -1896,6 +1962,73 @@ def main(stdout: Stdout):
     assert!(said.starts_with("note: running this with the JIT, since LLVM can't build it: `main`"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
+}
+
+/// A constant that isn't written out is worked out once. Reading it this often would take minutes
+/// if each read worked it out again.
+#[test]
+fn a_constant_is_worked_out_once() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def slow() -> int:\n    mut total = 0\n    for i in range(2000000):\n        total += i\n    total\n\n\
+                  SLOW = slow()\n\ndef main(stdout: Stdout):\n    mut seen = 0\n    for i in range(300000):\n        \
+                  seen += SLOW + i\n    stdout.print(seen)\n";
+    let dir = folder("constant_once")?;
+    let program = dir.join("once.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("once"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours.0, "599999744999850000\n");
+    Ok(())
+}
+
+/// A constant keeps its value whatever a read does with what it was given.
+#[test]
+fn each_read_of_a_constant_has_its_own_value() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Point:
+    x: int
+    tags: list[str]
+
+enum Shape:
+    Dot
+    Named(words: list[str])
+
+WORDS = ["a", "b"]
+LENGTHS = {word: word.len() for word in WORDS}
+ORIGIN = Point(x=0, tags=["start"])
+NAMED = Shape.Named(words=["n"])
+TEXT = f"{WORDS[0]} and a long tail of text"
+
+def changed() -> list[str]:
+    mut mine = WORDS
+    mine.append("c")
+    mine[0] = "z"
+    mine
+
+def main(stdout: Stdout):
+    stdout.print(changed(), changed(), WORDS)
+    mut counts = LENGTHS
+    counts["new"] = 3
+    stdout.print(counts, LENGTHS)
+    mut point = ORIGIN
+    point.x = 5
+    point.tags.append("moved")
+    stdout.print(point, ORIGIN)
+    match NAMED:
+        case .Named(words):
+            stdout.print(words.len())
+        case .Dot:
+            pass
+    stdout.print(NAMED, TEXT, TEXT.len())
+"#;
+    same_as_the_jit("constant_reads", source)
 }
 
 /// Conversions and small builtins: floats to ints, `PI`, `range` and `reversed` as lists, and a

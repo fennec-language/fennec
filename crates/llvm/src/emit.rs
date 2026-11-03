@@ -123,6 +123,7 @@ fn size(function: &Function) -> usize {
 /// must be too, `depth` calls deep. A recursive one isn't.
 fn copyable(whole: &Whole<'_>, function: &Function, depth: usize) -> bool {
     size(function) <= COPIED
+        && !whole.constants.contains(function.name.as_str())
         && callees(function).all(|name| {
             depth > 0
                 && name != function.name
@@ -538,6 +539,9 @@ impl Emit<'_, '_, '_> {
 
     fn body(&mut self) -> Result<(), String> {
         let function = self.function;
+        if self.keeps_its_value() {
+            self.give_back_what_it_kept();
+        }
         let kinds = self.kinds.clone();
         for (at, kind) in kinds.iter().enumerate() {
             let local = LocalId(at);
@@ -1844,9 +1848,70 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// Whether this function gives a constant's value, which is worked out once and then kept. On
+    /// a program's other threads a block's count can't be changed like this, so a program that
+    /// uses `parallel` still works it out at each read.
+    fn keeps_its_value(&mut self) -> bool {
+        let returns = self.returns.clone();
+        !self.module.threads
+            && self.module.whole.constants.contains(self.function.name.as_str())
+            && self.text_of(&returns) != "void"
+    }
+
+    /// Where a constant's value is kept, and whether it's there yet.
+    fn kept_places(&mut self) -> (String, String) {
+        let name = &self.function.name;
+        let (kept, done) = (format!("@\"f_{name}.kept\""), format!("@\"f_{name}.done\""));
+        let returns = self.returns.clone();
+        let text = self.text_of(&returns);
+        self.declare(&format!("{kept} = internal global {text} zeroinitializer"));
+        self.declare(&format!("{done} = internal global i1 false"));
+        (kept, done)
+    }
+
+    /// Starts a constant's function: if its value is kept, that's what it gives back, with one more
+    /// owner.
+    fn give_back_what_it_kept(&mut self) {
+        let (kept, done) = self.kept_places();
+        let returns = self.returns.clone();
+        let text = self.text_of(&returns);
+        let (ready, again, first) = (self.temp(), self.label("kept"), self.label("first"));
+        self.line(&format!("{ready} = load i1, ptr {done}"));
+        self.line(&format!("br i1 {ready}, label %{again}, label %{first}"));
+        self.start_block(&again);
+        let held = self.temp();
+        self.line(&format!("{held} = load {text}, ptr {kept}"));
+        if returns.in_memory() {
+            self.line(&format!("store {text} {held}, ptr %ret"));
+            self.retain_inline(&returns, "%ret");
+            self.line("ret void");
+        } else {
+            if returns.counted() {
+                self.retain_value(&held, &returns);
+            }
+            self.line(&format!("ret {text} {held}"));
+        }
+        self.start_block(&first);
+    }
+
+    /// Keeps a constant's value, with an owner of its own, the first time it's worked out.
+    fn keep_value(&mut self, held: &str) {
+        let (kept, done) = self.kept_places();
+        let returns = self.returns.clone();
+        let text = self.text_of(&returns);
+        self.line(&format!("store {text} {held}, ptr {kept}"));
+        self.line(&format!("store i1 true, ptr {done}"));
+        if returns.in_memory() {
+            self.retain_inline(&returns, &kept);
+        } else if returns.counted() {
+            self.retain_value(held, &returns);
+        }
+    }
+
     fn give_back(&mut self, value: Option<&Operand>) -> Result<(), String> {
         let returns = self.returns.clone();
         let text = self.text_of(&returns);
+        let keeps = self.keeps_its_value();
         if returns.in_memory() {
             let (at, _) =
                 self.value_for(value.ok_or("it returns nothing where a value is due")?, &returns)?;
@@ -1860,6 +1925,9 @@ impl Emit<'_, '_, '_> {
             };
             if moved.is_none() {
                 self.retain_inline(&returns, "%ret");
+            }
+            if keeps {
+                self.keep_value(&held);
             }
             self.release_locals(moved);
             self.line("ret void");
@@ -1879,6 +1947,9 @@ impl Emit<'_, '_, '_> {
         };
         if returns.counted() && moved.is_none() && !fresh {
             self.retain_value(&held, &returns);
+        }
+        if keeps {
+            self.keep_value(&held);
         }
         self.release_locals(moved);
         self.line(&format!("ret {text} {held}"));
@@ -1929,6 +2000,42 @@ mod tests {
             text_of(&source, "add")
         };
         assert_eq!(later("")?, later("## moved down\n\n")?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_constant_keeps_its_value_after_the_first_time() -> Result<(), String> {
+        let source = "WORDS = [\"a\", \"b\"]\n\ndef main(stdout: Stdout):\n    stdout.print(WORDS)\n";
+        let text = text_of(source, "WORDS")?;
+        for written in [
+            "@\"f_WORDS.kept\" = internal global ",
+            "@\"f_WORDS.done\" = internal global i1 false",
+            "= load i1, ptr @\"f_WORDS.done\"",
+            ", ptr @\"f_WORDS.kept\"",
+            "store i1 true, ptr @\"f_WORDS.done\"",
+        ] {
+            assert!(text.contains(written), "{written} isn't in:\n{text}");
+        }
+        assert!(text.contains("define swiftcc") && text.contains("@\"f_WORDS\""), "{text}");
+        // What reads it calls it rather than holding a copy, and isn't kept itself.
+        let main = text_of(source, "main")?;
+        assert!(main.contains("call swiftcc") && main.contains("@\"f_WORDS\"("), "{main}");
+        assert!(!main.contains(".kept"), "{main}");
+        assert!(!main.contains("define internal") || !main.contains("f_WORDS.done"), "{main}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_program_using_parallel_works_a_constant_out_at_each_read() -> Result<(), String> {
+        let source = "WORDS = [\"a\", \"b\"]\n\ndef main(stdout: Stdout):\n    mut counts = [1, 2]\n    \
+                      for mut count in parallel(counts):\n        count += WORDS.len()\n    stdout.print(counts)\n";
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower_with(&module, &checked, fennec_ir::Options { outline_parallel: true });
+        assert!(crate::parallel::uses_parallel(&program), "{:?}", program.not_lowered);
+        let (units, _, _) = emit(&program)?;
+        let constant = units.iter().find(|unit| unit.function == "WORDS").ok_or("it isn't lowered")?;
+        assert!(!constant.text.contains(".kept"), "{}", constant.text);
         Ok(())
     }
 

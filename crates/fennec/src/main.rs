@@ -27,8 +27,10 @@ mod verdict;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
-  fennec run [path] [args]  run the tests a change affects, then a kit's main or a single .fen file's
+  fennec run [path] [args]  run the tests a change affects, then a kit's main or a single .fen file's,
+      built through LLVM a function at a time, or with the JIT where LLVM can't build it yet
   fennec run --no-test [path] [args]  run it without running the tests first
+  fennec run --jit [path] [args]  run it with the JIT instead of LLVM
   fennec run --interp [path]  run it with the interpreter instead of compiling it
   fennec build [path] [-o out]  compile it to a standalone executable
   fennec build --llvm [--release] [--cpu baseline] [path] [-o out]  the same through LLVM, for what that backend takes so far;

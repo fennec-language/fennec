@@ -56,7 +56,7 @@ struct Slots:
     assert_eq!(
         crate::in_main_after(
             types,
-            "mut slots = Slots(items=[])\nslots[0].x += 1.0\nslots[0] = Part()\nslots.total = 1"
+            "mut slots = Slots(items=[])\nslots[0].x += 1.0\nslots[0] = Part()\nslots.total = 1\nstdout.print(slots.total)"
         ),
         Vec::<String>::new()
     );
@@ -84,7 +84,10 @@ struct Writes:
     def []=(mut self, at: int, value: int):
         self.cells[at] = value
 ";
-    assert_eq!(crate::in_main_after(types, "mut g = Grid(cells=[1])\ng[0] += 1"), Vec::<String>::new());
+    assert_eq!(
+        crate::in_main_after(types, "mut g = Grid(cells=[1])\ng[0] += 1\nstdout.print(g[0])"),
+        Vec::<String>::new()
+    );
     assert_eq!(
         crate::in_main_after(types, "mut g = Grid(cells=[1])\ng[0] += 1.5"),
         ["can't mix int and float in `+` @ g[0]"]
@@ -100,7 +103,10 @@ struct Writes:
 fn names_change_only_when_mut() {
     assert_eq!(in_main("name = 'Ash'\nname = 'Vex'"), ["`name` isn't mut @ name"]);
     assert_eq!(in_main("count = 1\ncount += 1"), ["`count` isn't mut @ count"]);
-    assert_eq!(in_main("mut count = 1\ncount += 1\ncount = 5"), Vec::<String>::new());
+    assert_eq!(
+        in_main("mut count = 1\ncount += 1\nstdout.print(count)\ncount = 5\nstdout.print(count)"),
+        Vec::<String>::new()
+    );
     assert_eq!(in_main("a, b = (1, 2)\na, c = (3, 4)"), ["`a` isn't mut @ a"]);
 }
 

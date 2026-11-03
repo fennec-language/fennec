@@ -220,7 +220,33 @@ impl Writer<'_> {
         for _ in 0..count {
             self.statement(indent);
         }
+        self.print_changeable(indent, scope);
         self.names.truncate(scope);
+    }
+
+    /// Prints each name that can change, declared since `scope`, so no change it had is lost:
+    /// the checker rejects that, and what's printed is what the engines are compared on.
+    fn print_changeable(&mut self, indent: usize, scope: usize) {
+        let names: Vec<(String, Kind)> = self
+            .names
+            .iter()
+            .skip(scope)
+            .filter(|(.., changeable)| *changeable)
+            .map(|(name, kind, _)| (name.clone(), *kind))
+            .collect();
+        for (name, kind) in names {
+            let value = self.printable(name, kind);
+            self.line(indent, &format!("stdout.print({value})"));
+        }
+    }
+
+    /// What prints a value, as this writer prints what it holds.
+    fn printable(&self, value: String, kind: Kind) -> String {
+        match kind {
+            Kind::Point if self.plainly => format!("{value}.total()"),
+            Kind::Shape if self.plainly => format!("area({value})"),
+            _ => value,
+        }
     }
 
     fn statement(&mut self, indent: usize) {
@@ -299,11 +325,7 @@ impl Writer<'_> {
     fn print(&mut self, indent: usize) {
         let kind = self.kind();
         let value = self.of(kind, 0);
-        let value = match kind {
-            Kind::Point if self.plainly => format!("{value}.total()"),
-            Kind::Shape if self.plainly => format!("area({value})"),
-            _ => value,
-        };
+        let value = self.printable(value, kind);
         self.line(indent, &format!("stdout.print({value})"));
     }
 }
@@ -327,6 +349,7 @@ fn written(bytes: &[u8], plainly: bool) -> String {
     while writer.bytes.len() > 0 && writer.source.len() < 1 << 14 {
         writer.statement(1);
     }
+    writer.print_changeable(1, 0);
     writer.line(1, "stdout.print(\"done\")");
     writer.source
 }

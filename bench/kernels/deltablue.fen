@@ -282,6 +282,8 @@ def chain_test(size: int) -> int:
         planner.run_plan(plan)
         total += planner.variables[last].value
     planner.destroy(edit)
+    if planner.constraints.len() == 0:
+        return 0
     total
 
 ## Pairs of variables related by a scale and an offset, changed from each end.

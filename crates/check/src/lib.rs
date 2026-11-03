@@ -30,6 +30,7 @@ mod index;
 mod infer;
 mod keys;
 mod loops;
+mod lost;
 mod messages;
 mod parallel;
 mod pattern;

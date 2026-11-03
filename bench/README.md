@@ -86,6 +86,10 @@ than 5% slower than the best, on either side. Each kernel is also built the dev 
 twin too, so a slip in dev builds shows. Both builds are timed, each from an empty Fennec home
 so no cache helps. The Suite report workflow runs it on
 x86 Linux, where Valgrind counts, and on Arm macOS, after every push to `main` and on demand.
+Where Valgrind counts, it also simulates the caches, so each kernel shows its first-level data
+cache and last-level misses, Fennec's and the Rust twin's, beside its instructions. The caches
+are fixed (32 KiB first level, 8 MiB last level, 64-byte lines), so the counts are as
+repeatable as the instruction counts, whichever machine runs them.
 It puts one table on the run's summary page and adds each push's numbers to `history.jsonl`
 on the `bench-history` branch. Being slow never fails it.
 

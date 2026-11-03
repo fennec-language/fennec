@@ -157,6 +157,72 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// `units[at].tags.append(x)` with the list in a local: the inner list goes on growing in place,
+/// and what's shared with it, at any level, doesn't change.
+#[test]
+fn appending_to_a_field_of_a_local_lists_item_copies_only_what_is_shared() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "local_item_field_appends",
+        r"struct Unit:
+    tags: list[int]
+    hp: int
+
+struct Box:
+    items: list[int]
+    next: list[Box]
+
+def grow(mut units: list[Unit], by: int):
+    for at in range(units.len()):
+        units[at].tags.append(by)
+
+def main(stdout: Stdout):
+    mut units = [Unit([1, 2, 3], 0), Unit([4], 1)]
+    # A copy of the list, of an item, and of the field, each kept apart from what comes after.
+    snapshot = copy(units)
+    shared = units
+    item = units[0]
+    tags = units[0].tags
+    units[0].tags.append(10)
+    stdout.print(units, snapshot, shared, item, tags)
+    units[-1].tags.append(11)
+    stdout.print(units, snapshot, shared, item, tags)
+    # An argument read from the same place, and from another item.
+    units[0].tags.append(units[0].tags.len())
+    units[0].tags.append(units[1].tags[0])
+    stdout.print(units)
+    # An index that changes between the read and the write isn't this at all.
+    mut at = 0
+    units[at].tags.append(at)
+    at = 1
+    units[at].tags.append(at)
+    stdout.print(units)
+    grow(mut units, 5)
+    stdout.print(units, snapshot)
+    # A caller's copy stays as it was.
+    mut mine = copy(units)
+    kept = mine
+    grow(mut mine, 6)
+    stdout.print(mine[0].tags, kept[0].tags)
+    # Items that are blocks of their own.
+    mut boxes = [Box([1], []), Box([2], [])]
+    other = boxes[0]
+    boxes[0].items.append(3)
+    stdout.print(boxes, other)
+    # Outside the list's length, it fails as it should.
+    units[9].tags.append(1)
+",
+    )?;
+    let counts = counts_of(
+        "local_item_field_counts",
+        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for at in range(units.len()):\n            units[at].tags.append(round)\n    stdout.print(units[0].tags.len())\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    Ok(())
+}
+
 /// Reading a string that isn't ASCII goes on from where the last read got to, so reading it in
 /// order takes a step for each character. A place kept for a string that's since moved, grown or
 /// been let go of, with its address used again, would give a wrong character and no failure.

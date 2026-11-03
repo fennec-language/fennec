@@ -178,6 +178,8 @@ fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
             if *count == 0 {
                 pending.push(child);
             }
+        } else {
+            state.heap.change_lent_owners(child, -1);
         }
     }
     state.heap.found = found;
@@ -187,7 +189,7 @@ fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>) {
 /// to, adding those it was the last owner of to `pending`. False, having done nothing, when
 /// its shape's plan doesn't say.
 fn release_planned(heap: &mut Heap, block: &[u64], pending: &mut Vec<u64>) -> bool {
-    let Heap { plans, blocks, .. } = heap;
+    let Heap { plans, blocks, lent, lent_owners, .. } = heap;
     let shape = shape_word(block).and_then(|shape| usize::try_from(shape).ok());
     let fields = block.get(HEADER_WORDS..).unwrap_or_default();
     let words = match shape.and_then(|shape| plans.get(shape)) {
@@ -209,6 +211,11 @@ fn release_planned(heap: &mut Heap, block: &[u64], pending: &mut Vec<u64>) -> bo
             if *count == 0 {
                 pending.push(*child);
             }
+        } else if lent
+            .as_ref()
+            .is_some_and(|lent| usize::try_from(*child).is_ok_and(|at| lent.get(at).is_some()))
+        {
+            *lent_owners.entry(*child).or_default() -= 1;
         }
     }
     true
@@ -258,7 +265,10 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
             false
         }
         Some(_) => true,
-        None => false,
+        None => {
+            state.heap.change_lent_owners(address, -1);
+            false
+        }
     };
     if last {
         free_block(state, address);

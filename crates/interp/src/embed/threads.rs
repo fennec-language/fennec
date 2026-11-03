@@ -9,10 +9,23 @@
 //! the block, the block waits; when the last of those lets go, the block goes on its owner's
 //! queue, and the owner frees it the next time it's in the runtime. No thread ever frees a
 //! block another made, and no table is shared.
+//!
+//! A `parallel` call works differently, since the thread that made the call only waits for it.
+//! For the length of the call it lends its table of blocks (`lend`), which nothing can change
+//! while it waits, so each range can read its blocks. Nothing writes a lent block: `alone` is
+//! false for one, so it's copied rather than changed in place. Each range keeps how it changed
+//! lent blocks' owners to itself, with no lock, and hands that over with what it made. When
+//! the call ends, the calling thread takes its table back, adopts what the ranges made, and
+//! applies those changes (`settle`), freeing what they took the last owner from.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+#[cfg(any(test, feature = "threads"))]
+use std::sync::{Arc, RwLock};
 use std::sync::{Mutex, PoisonError};
+
+#[cfg(any(test, feature = "threads"))]
+use super::table::Table;
 
 /// Whether this runtime is built for native code on several threads. Without it, the checks
 /// on the paths every block takes are compiled away.
@@ -69,10 +82,80 @@ fn remote<T>(f: impl FnOnce(&mut HashMap<u16, Vec<u64>>) -> T) -> T {
     f(queues.get_or_insert_with(HashMap::new))
 }
 
+/// The table of the thread waiting for a `parallel` call, for its ranges to read.
+#[cfg(any(test, feature = "threads"))]
+static LENT: RwLock<Option<Arc<Table>>> = RwLock::new(None);
+
+/// Lends this thread's blocks to the ranges of the call it's about to wait for.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn lend() {
+    super::with(|state| {
+        let table = std::mem::take(&mut state.heap.blocks);
+        *LENT.write().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(table));
+    });
+}
+
+/// Takes this thread's blocks back, the call over. Every range has let go of them by now; if
+/// one somehow hadn't, they're kept where this thread can read them, as native code still
+/// points at them.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn take_back() {
+    let lent = LENT.write().unwrap_or_else(PoisonError::into_inner).take();
+    super::with(|state| match lent.map(Arc::try_unwrap) {
+        Some(Ok(table)) => state.heap.blocks = table,
+        Some(Err(table)) => state.heap.lent = Some(table),
+        None => {}
+    });
+}
+
+/// Starts a range on a worker: it can read the blocks lent for the call.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn range_starts() {
+    let lent = LENT.read().unwrap_or_else(PoisonError::into_inner).clone();
+    super::with(|state| state.heap.lent = lent);
+}
+
+/// Ends a range on a worker: it lets go of the blocks lent for the call, and of the text it
+/// kept of them, as the same addresses may hold other strings by its next range. Gives back how
+/// it changed their owners, and what it printed, which this worker has nowhere to write.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn range_ends() -> (Vec<(u64, i64)>, Vec<u8>) {
+    super::with(|state| {
+        if state.heap.lent.take().is_some() {
+            state.heap.texts.get_mut().clear();
+        }
+        (state.heap.lent_owners.drain().collect(), state.output.0.take())
+    })
+}
+
+/// Applies the changes the ranges of a call made to this thread's blocks' owners, freeing those
+/// left with none.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn settle(changes: HashMap<u64, i64>) {
+    let gone: Vec<u64> = super::with(|state| {
+        let mut gone = Vec::new();
+        for (address, by) in changes {
+            if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
+                *count = count.saturating_add_signed(by);
+                if *count == 0 {
+                    gone.push(address);
+                }
+            }
+        }
+        gone
+    });
+    for address in gone {
+        super::heap::free(i64::try_from(address).unwrap_or(0));
+    }
+}
+
 /// `fennec_retain_shared(address, owner)`: one more count of a block, from a thread that
 /// didn't make it. `owner` is the number in the block's shape word, which native code has
 /// just read to see the block isn't its own.
 pub extern "C" fn retain_shared(address: i64, owner: i64) {
+    if super::with(|state| state.heap.change_lent_owners(address.cast_unsigned(), 1)) {
+        return;
+    }
     ANY_SHARED.store(true, Ordering::Relaxed);
     let owner = u16::try_from(owner).unwrap_or(0);
     shared(|table| {
@@ -87,6 +170,9 @@ pub extern "C" fn retain_shared(address: i64, owner: i64) {
 /// queue.
 pub extern "C" fn release_shared(address: i64, _owner: i64) {
     let address = address.cast_unsigned();
+    if super::with(|state| state.heap.change_lent_owners(address, -1)) {
+        return;
+    }
     let freed = shared(|table| {
         let entry = table.get_mut(&address)?;
         entry.count = entry.count.saturating_sub(1);

@@ -12,6 +12,12 @@
 //! worker's stack and runtime are its own. The program's thread sets them in `fennec_entry`, and
 //! a worker in the first shim it runs.
 //!
+//! All of such a program's counting checks whose block it is, wherever it runs, since a closure
+//! made anywhere can be called in a range. A block's own thread counts it with plain arithmetic
+//! as ever. Any other thread leaves that to the runtime (see its `threads`), and a block isn't
+//! alone to any thread but its own. A closure isn't a block: it has no owner to check, and any
+//! thread that holds one counts it atomically.
+//!
 //! `parallel.put` and `parallel.put_back` write an item at a position only one range writes,
 //! in place: into the list `fennec_parallel_map` made, or back into a `for mut` loop's list,
 //! which `parallel.own` made the loop's own first.
@@ -22,7 +28,7 @@ use fennec_ir::{InstKind, LocalId, Operand, Program};
 use fennec_syntax::Span;
 
 use crate::closures::CODE;
-use crate::emit::{Emit, ITEM_ACCESS};
+use crate::emit::{Emit, HEADER_ACCESS, ITEM_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::lists::list_item;
 
@@ -57,14 +63,41 @@ pub(crate) fn failed_global(threads: bool) -> &'static str {
     }
 }
 
+/// How a module declares this thread's number, which is what a block's owner bits hold when
+/// this thread made it. It's 0 on the program's thread, and a worker's first shim sets it.
+const THREAD_GLOBAL: &str = "@fennec_thread = external dso_local thread_local(initialexec) global i64";
+
+/// Where a block's shape word is, whose top 16 bits say which thread made it.
+const SHAPE: u32 = 8;
+const OWNER_SHIFT: u32 = 48;
+/// The owner count of a block that's never freed, the runtime's `heap::IMMORTAL`, or more.
+const IMMORTAL: u64 = 1 << 48;
+
+/// The start of a function about a block's owners: `%owner` is the thread that made `%block`, and
+/// `%mine` says whether that's this one.
+fn whose_block() -> String {
+    format!(
+        "  %shape_at = getelementptr inbounds i8, ptr %block, i64 {SHAPE}\n  %shape = load i64, ptr %shape_at\n  \
+         %owner = lshr i64 %shape, {OWNER_SHIFT}\n  %me = load i64, ptr @fennec_thread, !invariant.load !1\n  \
+         %mine = icmp eq i64 %owner, %me\n"
+    )
+}
+
+/// In a function about another thread's block, whether it's one that's never freed, like a
+/// string literal: its count never gets near zero, so a thread needn't count it at all, and a
+/// body using one on every iteration costs nothing here. `%immortal` says so.
+fn immortal() -> String {
+    format!("  %held = load i64, ptr %block{HEADER_ACCESS}\n  %immortal = icmp uge i64 %held, {IMMORTAL}\n")
+}
+
 /// The start of every shim: on a thread whose failure flag isn't known yet, a worker running
-/// its first range, asks the runtime where this thread's flag is and how deep its stack goes.
-/// The program's thread has both from `fennec_entry`.
+/// its first range, asks the runtime where this thread's flag is and how deep its stack goes,
+/// and notes its number. The program's thread has all three from `fennec_entry`.
 const READY: &str = "entry:\n  %known = load ptr, ptr @fennec_failed\n  %fresh = icmp eq ptr %known, null\n  \
     br i1 %fresh, label %ready, label %run\nready:\n  \
     %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  \
     store ptr %flag_at, ptr @fennec_failed\n  %limit = call i64 @fennec_aot_stack_limit()\n  \
-    store i64 %limit, ptr @fennec_stack_limit\n  br label %run\nrun:\n";
+    store i64 %limit, ptr @fennec_stack_limit\n  store i64 %thread, ptr @fennec_thread\n  br label %run\nrun:\n";
 
 /// What a range's closure gives back, which says which shim runs it.
 #[derive(Clone, Copy)]
@@ -119,6 +152,91 @@ impl Shape {
 }
 
 impl Emit<'_, '_, '_> {
+    /// Defines `@fen_retain` for a program that runs `parallel`: one more owner of a block, by
+    /// whichever way this thread counts it.
+    pub(crate) fn counted_retain_helper(&mut self) {
+        self.declare(THREAD_GLOBAL);
+        self.declare("declare void @fennec_retain_shared(i64, i64) nounwind");
+        let (start, immortal) = (whose_block(), immortal());
+        self.module.add_helper(
+            "fen_retain",
+            format!(
+                "define internal void @fen_retain(ptr %block) #0 {{\nentry:\n{start}  br i1 %mine, label %own, label %other\nown:\n  \
+                 %count = load i64, ptr %block{HEADER_ACCESS}\n  %more = add i64 %count, 1\n  store i64 %more, ptr %block{HEADER_ACCESS}\n  ret void\n\
+                 other:\n{immortal}  br i1 %immortal, label %kept, label %counted\nkept:\n  ret void\n\
+                 counted:\n  %at = ptrtoint ptr %block to i64\n  call void @fennec_retain_shared(i64 %at, i64 %owner)\n  ret void\n}}\n\n"
+            ),
+        );
+    }
+
+    /// Defines `@fen_owner_gone` for a program that runs `parallel`: one owner fewer of a block,
+    /// by whichever way this thread counts it, and whether that was the last one here to free.
+    pub(crate) fn counted_owner_gone_helper(&mut self) {
+        self.declare(THREAD_GLOBAL);
+        self.declare("declare void @fennec_release_shared(i64, i64) nounwind");
+        let (start, immortal) = (whose_block(), immortal());
+        self.module.add_helper(
+            "fen_owner_gone",
+            format!(
+                "define internal i1 @fen_owner_gone(ptr %block) #0 {{\nentry:\n{start}  br i1 %mine, label %own, label %other\nown:\n  \
+                 %count = load i64, ptr %block{HEADER_ACCESS}\n  %fewer = add i64 %count, -1\n  store i64 %fewer, ptr %block{HEADER_ACCESS}\n  \
+                 %gone = icmp eq i64 %fewer, 0\n  ret i1 %gone\nother:\n{immortal}  br i1 %immortal, label %kept, label %counted\nkept:\n  ret i1 false\n\
+                 counted:\n  %at = ptrtoint ptr %block to i64\n  call void @fennec_release_shared(i64 %at, i64 %owner)\n  ret i1 false\n}}\n\n"
+            ),
+        );
+    }
+
+    /// Defines `@fen_alone`, for a program that runs `parallel`: whether a block is this thread's,
+    /// with one owner.
+    pub(crate) fn alone_helper(&mut self) {
+        self.declare(THREAD_GLOBAL);
+        let start = whose_block();
+        self.module.add_helper(
+            "fen_alone",
+            format!(
+                "define internal i1 @fen_alone(ptr %block) #0 {{\nentry:\n{start}  br i1 %mine, label %own, label %other\nown:\n  \
+                 %count = load i64, ptr %block{HEADER_ACCESS}\n  %one = icmp eq i64 %count, 1\n  ret i1 %one\nother:\n  ret i1 false\n}}\n\n"
+            ),
+        );
+    }
+
+    /// Defines what counts a closure in a program that runs `parallel`: atomically, as any thread
+    /// may hold one.
+    pub(crate) fn closure_helpers(&mut self) {
+        if !self.module.threads {
+            return;
+        }
+        self.module.add_helper(
+            "fen_closure_retain",
+            "define internal void @fen_closure_retain(ptr %closure) #0 {\nentry:\n  %old = atomicrmw add ptr %closure, i64 1 monotonic\n  ret void\n}\n\n".to_owned(),
+        );
+        self.module.add_helper(
+            "fen_closure_gone",
+            "define internal i1 @fen_closure_gone(ptr %closure) #0 {\nentry:\n  %old = atomicrmw sub ptr %closure, i64 1 acq_rel\n  %gone = icmp eq i64 %old, 1\n  ret i1 %gone\n}\n\n".to_owned(),
+        );
+    }
+
+    /// One more owner for a closure.
+    pub(crate) fn retain_closure(&mut self, closure: &str) {
+        if self.module.threads {
+            self.closure_helpers();
+            self.line(&format!("call void @fen_closure_retain(ptr {closure})"));
+        } else {
+            self.retain(closure);
+        }
+    }
+
+    /// One owner fewer for a closure, saying whether that was the last.
+    pub(crate) fn closure_gone(&mut self, closure: &str) -> String {
+        if !self.module.threads {
+            return self.owner_gone(closure);
+        }
+        self.closure_helpers();
+        let gone = self.temp();
+        self.line(&format!("{gone} = call i1 @fen_closure_gone(ptr {closure})"));
+        gone
+    }
+
     /// The builtins `parallel` is lowered to.
     pub(crate) fn parallel_builtin(
         &mut self,
@@ -154,6 +272,7 @@ impl Emit<'_, '_, '_> {
         let threads = self.module.threads;
         self.declare(stack_limit_global(threads));
         self.declare(failed_global(threads));
+        self.declare(THREAD_GLOBAL);
         self.declare("declare i64 @fennec_aot_failed_flag()");
         self.declare("declare i64 @fennec_aot_stack_limit()");
         self.module.add_helper(name, shape.shim());

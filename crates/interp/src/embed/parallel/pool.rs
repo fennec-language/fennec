@@ -30,6 +30,8 @@ thread_local! {
     static WORKER: Cell<bool> = const { Cell::new(false) };
     /// The lowest address native code on this worker may grow its stack to, or 0 off the pool.
     static LIMIT: Cell<usize> = const { Cell::new(0) };
+    /// Whether this worker is running a `parallel` call of its own, on itself alone.
+    static NESTED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Gives what each worker runs before its first range. The first one given is kept.
@@ -86,11 +88,36 @@ pub(super) fn on_threads<R: Send>(threads: usize, run: impl FnOnce() -> R + Send
 }
 
 /// Runs a call's ranges: on the pool when there are enough words of items to be worth it and
-/// workers can have runtimes, and on the calling thread otherwise.
+/// workers can have runtimes, and on the calling thread otherwise. A worker's own call stays on
+/// that worker, which can't lend its blocks while it keeps working.
 pub(super) fn install<R: Send>(words: usize, run: impl FnOnce() -> R + Send) -> R {
     let pool = (words >= SEQUENTIAL_WORDS && SETUP.get().is_some()).then(pool).flatten();
     let Some(pool) = pool else { return run() };
-    pool.install(run)
+    if WORKER.get() {
+        let outer = NESTED.replace(true);
+        let result = run();
+        NESTED.set(outer);
+        return result;
+    }
+    super::super::threads::lend();
+    let result = pool.install(run);
+    super::super::threads::take_back();
+    result
+}
+
+/// Starts a range on a worker, with the blocks lent for the call to read.
+pub(super) fn range_starts() {
+    super::super::threads::range_starts();
+}
+
+/// Ends a range on a worker, giving back how it changed lent blocks' owners and what it printed.
+pub(super) fn range_ends() -> (Vec<(u64, i64)>, Vec<u8>) {
+    super::super::threads::range_ends()
+}
+
+/// Applies the changes a call's ranges made to the owners of this thread's blocks.
+pub(super) fn settle(changes: std::collections::HashMap<u64, i64>) {
+    super::super::threads::settle(changes);
 }
 
 /// How many chunks a stream over this many words of items runs ahead of its reader, on the
@@ -114,5 +141,5 @@ pub(super) fn join<A: Send, B: Send>(
     first: impl FnOnce() -> A + Send,
     second: impl FnOnce() -> B + Send,
 ) -> (A, B) {
-    if WORKER.get() { rayon_core::join(first, second) } else { (first(), second()) }
+    if WORKER.get() && !NESTED.get() { rayon_core::join(first, second) } else { (first(), second()) }
 }

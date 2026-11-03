@@ -255,3 +255,107 @@ fn a_parallel_program_built_after_a_plain_one_shares_no_cached_module_that_disag
     assert_eq!(String::from_utf8_lossy(&ran_second.stdout), "99990000\n");
     Ok(())
 }
+
+/// Runtime calls in bodies on workers, over blocks the calling thread made, in every way a body
+/// can use them: strings and dicts passed to the runtime, things kept past the call, a closure
+/// made outside, a lent list copied before it's changed, `for mut` replacing strings, and
+/// `parallel` inside `parallel`.
+const LENT_BLOCKS: &str = "\
+struct Tag:
+    name: str
+    n: int
+
+def shout(word: str) -> str:
+    word + \"!\"
+
+def over(f: (str) -> str, words: list[str]) -> list[str]:
+    [f(word) for word in parallel(words)]
+
+def grown(base: list[int], n: int) -> int:
+    mut copy = base
+    copy.append(n)
+    copy.len()
+
+def main(stdout: Stdout):
+    words = [f\"a word long enough to be held in a block of its own, {n}\" for n in range(20_000)]
+    longer = [word + \"!\" for word in parallel(words)]
+    stdout.print(longer[0], longer[19_999], words[7])
+    called = [shout(word) for word in parallel(words)]
+    stdout.print(called[1], sum(word.len() for word in parallel(called)))
+    same = [word for word in parallel(words)]
+    stdout.print(same[3], same[19_998])
+    counts = {word: n for n, word in enumerate(words)}
+    stdout.print(sum(counts[word] for word in parallel(words)))
+    suffix = \"? and long enough to be a block of its own\"
+    asked = over(word => word + suffix, words)
+    stdout.print(asked[11])
+    pairs = [[word, word] for word in parallel(words)]
+    stdout.print(pairs[5][1], pairs.len())
+    base = [1, 2, 3]
+    numbers = [n for n in range(20_000)]
+    stdout.print(sum(grown(base, n) for n in parallel(numbers)), base.len())
+    mut tags = [Tag(f\"a name long enough to be held in a block of its own, {n}\", n) for n in range(20_000)]
+    for mut tag in parallel(tags):
+        if tag.n % 2 == 0:
+            tag.name = tag.name + \"*\"
+        tag.n += 1
+    stdout.print(tags[0].name, tags[1].name, tags[19_999].n)
+    grids = [[n * m for m in range(100)] for n in range(2_000)]
+    stdout.print(sum(sum(cell for cell in parallel(row)) for row in parallel(grids)))
+";
+
+#[test]
+fn bodies_on_workers_use_the_calling_thread_s_blocks_as_the_interpreter_does() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-lent-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let lent = build_on_threads(&dir, LENT_BLOCKS, "lent")?;
+    let source = dir.join("lent.fen").to_string_lossy().into_owned();
+    let interpreted = fennec(&["run", "--interp", &source], &dir)?;
+    for threads in ["1", "2", "4", "8"] {
+        let ran = Command::new(&lent).env("FENNEC_THREADS", threads).output()?;
+        assert!(ran.status.success(), "{threads} threads: {}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            String::from_utf8_lossy(&interpreted.stdout),
+            "{threads} threads"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A body that prints, on enough items to run on workers.
+const PRINTS: &str = "\
+def main(stdout: Stdout):
+    words = [f\"line {n} of a text long enough to be held in a block of its own\" for n in range(10_000)]
+    for word in parallel(words):
+        stdout.print(word)
+    stdout.print(\"after\")
+";
+
+#[test]
+fn what_a_body_prints_on_workers_all_comes_out_in_whole_lines() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-prints-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let prints = build_on_threads(&dir, PRINTS, "prints")?;
+    let source = dir.join("prints.fen").to_string_lossy().into_owned();
+    let interpreted = fennec(&["run", "--interp", &source], &dir)?;
+    let ran = Command::new(&prints).env("FENNEC_THREADS", "4").output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    // `for x in parallel(xs)` runs in any order, so its lines come in any order, each whole.
+    let sorted = |text: &[u8]| {
+        let mut lines: Vec<String> = String::from_utf8_lossy(text).lines().map(str::to_owned).collect();
+        lines.sort();
+        lines
+    };
+    assert_eq!(sorted(&ran.stdout), sorted(&interpreted.stdout));
+    assert!(String::from_utf8_lossy(&ran.stdout).ends_with("after\n"));
+    Ok(())
+}

@@ -15,6 +15,7 @@
 //! run: the failure passed up is the lowest range's that fails, so it's the same however many
 //! threads run.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
@@ -67,6 +68,10 @@ struct Run {
     failure: Mutex<Option<(usize, Diagnostic)>>,
     /// What each range made on a worker that outlives it, for the calling thread to adopt.
     made: Mutex<Vec<Box<[u64]>>>,
+    /// How the ranges changed the owners of the calling thread's blocks, for it to apply.
+    owners: Mutex<HashMap<u64, i64>>,
+    /// What the ranges printed on workers, each range's whole, as they finish.
+    printed: Mutex<Vec<u8>>,
 }
 
 impl Run {
@@ -77,6 +82,8 @@ impl Run {
             stop: AtomicUsize::new(usize::MAX),
             failure: Mutex::new(None),
             made: Mutex::new(Vec::new()),
+            owners: Mutex::new(HashMap::new()),
+            printed: Mutex::new(Vec::new()),
         }
     }
 
@@ -94,12 +101,30 @@ impl Run {
         }
     }
 
-    /// Keeps what the range just run on this thread made since `since`, when this thread is a
-    /// worker.
+    /// Starts a range on this thread, giving back where what it makes starts.
+    fn range_starts(&self) -> usize {
+        if super::threads::index() != self.caller {
+            pool::range_starts();
+        }
+        super::threads::made_so_far()
+    }
+
+    /// Keeps what the range just run on this thread made since `since`, and how it changed the
+    /// owners of the calling thread's blocks, when this thread is a worker.
     fn keep_made(&self, since: usize) {
         if super::threads::index() != self.caller {
             let made = super::threads::hand_over(since);
             self.made.lock().unwrap_or_else(PoisonError::into_inner).extend(made);
+            let (changes, printed) = pool::range_ends();
+            if !printed.is_empty() {
+                self.printed.lock().unwrap_or_else(PoisonError::into_inner).extend(printed);
+            }
+            if !changes.is_empty() {
+                let mut owners = self.owners.lock().unwrap_or_else(PoisonError::into_inner);
+                for (address, by) in changes {
+                    *owners.entry(address).or_default() += by;
+                }
+            }
         }
     }
 
@@ -107,6 +132,8 @@ impl Run {
     /// made: 1 if there was one, else 0.
     fn finish(self) -> i64 {
         super::threads::adopt(self.made.into_inner().unwrap_or_else(PoisonError::into_inner));
+        pool::settle(self.owners.into_inner().unwrap_or_else(PoisonError::into_inner));
+        super::print_handed_over(&self.printed.into_inner().unwrap_or_else(PoisonError::into_inner));
         let failure = self.failure.into_inner().unwrap_or_else(PoisonError::into_inner);
         match failure {
             Some((_, failure)) => attempt(|_: &mut State| -> Result<i64, Diagnostic> { Err(failure) }).max(1),
@@ -120,7 +147,7 @@ impl Run {
             return;
         }
         if to - from <= self.chunk {
-            let since = super::threads::made_so_far();
+            let since = self.range_starts();
             let failed = leaf(from, to, i64::from(super::threads::index())) != 0;
             self.keep_made(since);
             if failed {
@@ -141,7 +168,7 @@ impl Run {
         let thread = i64::from(super::threads::index());
         if to - from <= self.chunk {
             let mut partial = 0;
-            let since = super::threads::made_so_far();
+            let since = self.range_starts();
             let failed = body(env, number(from), number(to), thread, &mut partial) != 0;
             self.keep_made(since);
             if failed {
@@ -243,6 +270,15 @@ mod pool {
     pub fn stack_limit() -> usize {
         0
     }
+
+    /// Without threads, nothing is lent, so ranges have nothing to read or hand back.
+    pub(super) fn range_starts() {}
+
+    pub(super) fn range_ends() -> (Vec<(u64, i64)>, Vec<u8>) {
+        (Vec::new(), Vec::new())
+    }
+
+    pub(super) fn settle(_changes: std::collections::HashMap<u64, i64>) {}
 
     pub(super) fn install<R>(_words: usize, run: impl FnOnce() -> R) -> R {
         run()

@@ -892,6 +892,20 @@ pub mod eval {
     }
 }
 
+/// Writes what `parallel`'s ranges printed on workers, on this thread.
+fn print_handed_over(printed: &[u8]) {
+    if printed.is_empty() {
+        return;
+    }
+    attempt(|state: &mut State| {
+        state
+            .interp
+            .out
+            .write_all(printed)
+            .map_err(|err| Diagnostic::new(format!("couldn't write output: {err}"), Span::default()))
+    });
+}
+
 /// Printing, and the loops native code runs over interpreter values.
 pub mod io {
     use super::{Span, State, Value, attempt, format, with};

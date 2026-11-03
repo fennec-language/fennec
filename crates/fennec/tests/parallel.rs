@@ -587,3 +587,33 @@ fn a_worker_forgets_where_it_got_to_in_a_string_when_its_range_ends() -> std::io
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "373332\n");
     Ok(())
 }
+
+/// A constant read on workers is worked out once, on the calling thread, before any of them starts.
+/// It holds a string too long to fit in a header and a list, read in a body and passed to a runtime
+/// call, so counting on a worker has blocks of the caller's to count.
+#[test]
+fn workers_read_a_constant_the_calling_thread_worked_out() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-constants-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let source = "LONG = f\"{1 + 1} and then a string too long to fit in a header\"\n\
+                  WORDS = [\"a\", \"b\", LONG]\n\n\
+                  def main(stdout: Stdout):\n    mut counts = [at for at in range(2000)]\n    for mut count in parallel(counts):\n        \
+                  count = LONG.len() + WORDS.len() + WORDS[2].upper().len()\n    \
+                  stdout.print(sum(counts), LONG, WORDS.len())\n    mut mine = WORDS\n    mine.append(\"mine\")\n    \
+                  stdout.print(mine.len(), WORDS.len())\n";
+    let executable = build_on_threads(&dir, source, "constants")?;
+    let ran = Command::new(&executable).env("FENNEC_THREADS", "4").output()?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    let interpreted = crate::executables::fennec_command()
+        .args(["run", "--interp"])
+        .arg(dir.join("constants.fen"))
+        .env("FENNEC_HOME", &dir)
+        .output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&interpreted.stdout));
+    assert!(ran.stdout.starts_with(b"1"), "{}", String::from_utf8_lossy(&ran.stdout));
+    Ok(())
+}

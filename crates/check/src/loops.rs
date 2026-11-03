@@ -1,8 +1,8 @@
 //! A collection can't change while a loop goes over it. Inside `for x in xs:`, nothing may
-//! append to `xs`, remove from it, set one of its items, or pass it as `mut`, and neither may a
-//! function the body calls: each function's summary says which places under its `mut`
-//! parameters it changes. The loop goes over `copy(xs)` instead, or collects the changes and
-//! makes them after.
+//! append to `xs`, remove from it, set one of its items, write through it with another `for mut`,
+//! or pass it as `mut`, and neither may a function the body calls: each function's summary says
+//! which places under its `mut` parameters it changes. The loop goes over `copy(xs)` instead, or
+//! collects the changes and makes them after.
 
 use std::collections::{HashMap, HashSet};
 
@@ -105,17 +105,23 @@ impl Loops<'_> {
     /// Checks every loop in a block, and the loops inside them.
     fn loops_in(&mut self, stmts: &[Stmt], body: Option<&Body>) {
         for stmt in stmts {
-            if let StmtKind::For { iter, body: block, .. } = &stmt.kind {
+            if let StmtKind::For { iter, is_mut, body: block, .. } = &stmt.kind {
                 let changes = self.changes_in(block, body);
                 for (looped, written) in looped_over(iter) {
                     let shown = fennec_syntax::dotted(written).unwrap_or_else(|| "it".to_owned());
+                    // A `for mut` over a copy would write to the copy.
+                    let help = if *is_mut {
+                        "collect the changes and make them after the loop".to_owned()
+                    } else {
+                        format!(
+                            "loop over `copy({shown})`, or collect the changes and make them after the loop"
+                        )
+                    };
                     for (_, span) in changes.iter().filter(|(changed, _)| changed.overlaps(&looped)) {
                         let message = format!("`{shown}` changes while a loop goes over it");
                         self.problems.push(
                             Diagnostic::new(message, *span)
-                                .with_help(format!(
-                                    "loop over `copy({shown})`, or collect the changes and make them after the loop"
-                                ))
+                                .with_help(help.clone())
                                 .also_at_the(fennec_syntax::Also::Loop, written.span),
                         );
                     }
@@ -141,6 +147,12 @@ impl Loops<'_> {
                     {
                         found.push((changed, target.span));
                     }
+                }
+            }
+            // A `for mut` writes each item back, whatever its body does with it.
+            if let StmtKind::For { iter, is_mut: true, .. } = &stmt.kind {
+                for (looped, written) in looped_over(iter) {
+                    found.push((looped.under(&[None]), written.span));
                 }
             }
             for expr in exprs(stmt) {

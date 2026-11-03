@@ -73,3 +73,55 @@ fn a_loop_cant_change_what_it_goes_over() {
         ["loop over `copy(names)`, or collect the changes and make them after the loop"]
     );
 }
+
+#[test]
+fn writing_through_a_collection_changes_it_for_a_loop_over_it() {
+    let problem = ["`names` changes while a loop goes over it @ names"];
+    for body in [
+        "for mut name in names:\n    for mut other in names:\n        other += name\n",
+        "for name in names:\n    for mut other in names:\n        other += name\n",
+        "for mut name in names:\n    if name == \"a\":\n        for mut other in names:\n            other += name\n",
+    ] {
+        assert_eq!(changes(body), problem, "{body}");
+    }
+}
+
+#[test]
+fn a_function_that_writes_through_a_collection_changes_it() {
+    let writes = "def shout(mut items: list[str]):\n    for mut item in items:\n        item = item.upper()\n\n\
+                  def twice(mut items: list[str]):\n    shout(mut items)\n\n";
+    let problem = ["`names` changes while a loop goes over it @ names"];
+    for call in ["shout", "twice"] {
+        let body = format!("mut names = [\"a\"]\nfor name in names:\n    {call}(mut names)\n");
+        assert_eq!(in_main_after(writes, &body), problem, "{call}");
+    }
+}
+
+#[test]
+fn a_nested_for_mut_over_something_else_is_fine() {
+    let empty: [&str; 0] = [];
+    let body =
+        "mut grid = [[1, 2], [3]]\nfor mut row in grid:\n    for mut cell in row:\n        cell += 1\n";
+    assert_eq!(in_main_after("", body), empty);
+    let body = "mut xs = [1]\nmut ys = [2]\nfor mut x in xs:\n    for mut y in ys:\n        y += x\n";
+    assert_eq!(in_main_after("", body), empty);
+    let body = "mut xs = [1]\nfor mut x in xs:\n    x += 1\nfor mut x in xs:\n    x += 1\n";
+    assert_eq!(in_main_after("", body), empty);
+}
+
+#[test]
+fn a_for_mut_over_an_id_map_locks_it_too() {
+    let body = "mut units = IdMap[int]()\nfor mut unit in units:\n    for mut other in units:\n        other += unit\n";
+    assert_eq!(
+        in_main_after("from std.game import IdMap\n\n", body),
+        ["`units` changes while a loop goes over it @ units"]
+    );
+}
+
+#[test]
+fn a_for_mut_isnt_told_to_loop_over_a_copy() {
+    let help = helps(
+        "def main(stdout: Stdout):\n    mut xs = [1]\n    for mut x in xs:\n        for mut y in xs:\n            y += x\n",
+    );
+    assert_eq!(help, ["collect the changes and make them after the loop"]);
+}

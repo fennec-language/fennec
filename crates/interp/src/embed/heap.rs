@@ -56,6 +56,8 @@ impl Hasher for AddressHasher {
 pub(crate) struct Heap {
     pub(super) blocks: super::table::Table,
     spare: Vec<Vec<Box<[u64]>>>,
+    /// How many words `spare`'s blocks hold.
+    spare_words: usize,
     /// How many of the blocks live for the whole run.
     statics: usize,
     /// Strings' text as the interpreter holds it, made once per block.
@@ -148,8 +150,11 @@ const FINISHED: u64 = u64::MAX;
 /// near zero.
 pub const IMMORTAL: u64 = 1 << 48;
 
-/// How many freed blocks of each size are kept for reuse.
-const SPARE_BLOCKS: usize = 1 << 16;
+/// How many words of freed blocks a heap keeps for reuse, across all sizes: 8 MB. Reuse is only
+/// a little cheaper than the allocator, which needs this much to match on programs that free a
+/// lot at once. More just keeps memory from the rest of the program, with blocks scattered
+/// through allocator and table pages that then can't be given back.
+const SPARE_TOTAL_WORDS: usize = 1 << 20;
 
 /// The biggest block, in words, kept for reuse.
 const SPARE_WORDS: usize = 256;
@@ -211,6 +216,7 @@ impl Heap {
     pub(super) fn fresh(&mut self, words: usize) -> Box<[u64]> {
         match self.spare.get_mut(words).and_then(Vec::pop) {
             Some(mut block) => {
+                self.spare_words -= block.len();
                 zero(&mut block);
                 block
             }
@@ -225,9 +231,15 @@ impl Heap {
         if cfg!(feature = "sanitize") {
             return;
         }
-        match self.spare.get_mut(block.len()) {
-            Some(spare) if spare.len() < SPARE_BLOCKS => spare.push(block),
-            Some(_) => {}
+        if self.spare_words + block.len() > SPARE_TOTAL_WORDS {
+            return;
+        }
+        let words = block.len();
+        match self.spare.get_mut(words) {
+            Some(spare) => {
+                spare.push(block);
+                self.spare_words += words;
+            }
             None => self.recycle_first(block),
         }
     }
@@ -245,6 +257,7 @@ impl Heap {
         }
         if let Some(spare) = self.spare.get_mut(words) {
             spare.push(block);
+            self.spare_words += words;
         }
     }
 

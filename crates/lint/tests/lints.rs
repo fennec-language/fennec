@@ -309,6 +309,84 @@ fn a_conversion_that_makes_a_value_of_a_names_own_stays() {
     );
 }
 
+/// `double-lookup`'s findings in a source, and the source with its fixes made until none are left.
+fn double_lookups(source: &str) -> (usize, String) {
+    let mut text = source.to_owned();
+    let mut first = None;
+    for _ in 0..4 {
+        let mut sources = Sources::new();
+        let base = sources.add("game.fen", text.as_str());
+        let Ok(module) = parse_at(&text, base) else { return (0, "it doesn't parse".to_owned()) };
+        let diagnostics: Vec<_> =
+            fennec_lint::double_lookups(&module, &sources).into_iter().map(|lint| lint.diagnostic).collect();
+        first.get_or_insert(diagnostics.len());
+        match apply_fixes(&text, base, &diagnostics) {
+            Some(next) if next != text => text = next,
+            _ => break,
+        }
+    }
+    (first.unwrap_or(0), text)
+}
+
+#[test]
+fn a_key_looked_up_after_asking_for_it_is_looked_up_once() {
+    let wrap = |expr: &str| format!("def f(counts: dict[str, int], key: str) -> int:\n    {expr}\n");
+    for (written, fixed) in [
+        ("counts[key] if key in counts else 0", "counts.get(key) else 0"),
+        ("0 if key not in counts else counts[key]", "counts.get(key) else 0"),
+        ("counts[\"a\"] if \"a\" in counts else 1 + 2", "counts.get(\"a\") else 1 + 2"),
+    ] {
+        assert_eq!(double_lookups(&wrap(written)), (1, wrap(fixed)), "{written}");
+    }
+    let field = "struct Tally:\n    counts: dict[str, int]\n\n    def of(self, key: str) -> int:\n        self.counts[key] if key in self.counts else 0\n";
+    assert_eq!(
+        double_lookups(field),
+        (1, field.replace("self.counts[key] if key in self.counts else 0", "self.counts.get(key) else 0")),
+    );
+    let none =
+        "def f(counts: dict[str, int], key: str) -> int?:\n    counts[key] if key in counts else None\n";
+    assert_eq!(
+        double_lookups(none),
+        (1, none.replace("counts[key] if key in counts else None", "counts.get(key)")),
+        "a missing value stays one"
+    );
+    let two = "def f(one: dict[str, int], other: dict[str, int], key: str) -> int:\n    one[key] if key in one else other[key] if key in other else 0\n";
+    assert_eq!(
+        double_lookups(two).1,
+        two.replace(
+            "one[key] if key in one else other[key] if key in other else 0",
+            "one.get(key) else other.get(key) else 0"
+        ),
+        "one inside another"
+    );
+}
+
+#[test]
+fn a_lookup_that_would_mean_something_else_stays() {
+    for source in [
+        // A list's `in` asks about its values, not its positions.
+        "def f(xs: list[int], at: int) -> int:\n    xs[at] if at in xs else 0\n",
+        // A key holding `None` gives `None` here, and would give the default.
+        "def f(counts: dict[str, int?], key: str) -> int?:\n    counts[key] if key in counts else 0\n",
+        // Another key, or another table.
+        "def f(counts: dict[str, int], key: str, other: str) -> int:\n    counts[other] if key in counts else 0\n",
+        "def f(one: dict[str, int], two: dict[str, int], key: str) -> int:\n    one[key] if key in two else 0\n",
+        // A call may give something else the second time.
+        "def next_key() -> str:\n    \"a\"\n\ndef f(counts: dict[str, int]) -> int:\n    counts[next_key()] if next_key() in counts else 0\n",
+        // A type of its own may mean anything by these.
+        "struct Odd:\n    size: int\n\n    def in(self, key: int) -> bool:\n        key < self.size\n\n    def [](self, key: int) -> int:\n        key\n\ndef f(odd: Odd, key: int) -> int:\n    odd[key] if key in odd else 0\n",
+        // A bracket the span leaves out.
+        "def f(counts: dict[str, int], key: str, more: int) -> int:\n    counts[key] if key in counts else (more + 1)\n",
+        // The index runs where the key isn't there, which stops the program, as `get` wouldn't.
+        "def f(counts: dict[str, int], key: str) -> int:\n    counts[key] if key not in counts else 0\n",
+        "def f(counts: dict[str, int], key: str) -> int:\n    0 if key in counts else counts[key]\n",
+    ] {
+        let module = parse_at(source, 0).map_err(|problem| problem.message).unwrap();
+        assert!(fennec_check::check_typed(&module).is_ok(), "it has to check to say anything: {source}");
+        assert_eq!(double_lookups(source), (0, source.to_owned()), "{source}");
+    }
+}
+
 #[test]
 fn a_pub_item_says_what_it_is_for() {
     let missing = |source: &str| all_rules(source).iter().filter(|rule| **rule == "missing-doc").count();

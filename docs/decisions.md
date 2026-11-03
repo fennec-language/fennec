@@ -141,6 +141,8 @@ Neither fix is applied by `fennec fix`, since each changes what the program does
 
 *Why:* Game engines, compilers, graph libraries and servers use the same generational-handle pattern. IDs are small plain values, so they're cheap to copy and can be saved or sent anywhere. A cycle of them is just numbers, with nothing counted, so it can't leak. A stale ID that silently became `None` would hide bugs, so the short form is the loud one.
 
+**An `Id` crosses the network as a plain compact value, and there's no `NetId` type.** A client keeps its own table from a server's `Id` to its local entity. An `Id` is never a secret or a permission: a server authorizes every action, even if every `Id` is known.
+
 ## Collections
 
 **A struct works as a dict key with nothing to write.** It hashes all its fields automatically. A struct that defines its own `def ==` can't be a key, and the compile error suggests keying by a field. There's no `def key`. `==` and `!=` call a type's own `def ==` when it has one; today they don't yet, which is a bug.
@@ -460,8 +462,16 @@ def merge[T: Ordered & Hashable](a: list[T], b: list[T]) -> list[T]:
 struct Pool[T]:
 interface Container[T]:
 ```
-Type arguments are inferred at calls; `largest[int](xs)` is allowed when they can't be. This replaces the earlier shorthand where an interface in a parameter's type, `list[Shape]`, meant "any one type that fits". Writing that now is an error, with a fix to `[T: Shape]`.
+Type arguments are inferred at calls; `largest[int](xs)` is allowed when they can't be. This replaces the earlier shorthand where an interface inside a parameter's type, `list[Shape]`, meant "any one type that fits". Writing that now is an error, and its fix offers `[T: Shape]` for one type or a union for a mix.
 *Why:* `T` lets the type flow through, so `largest(enemies)` gives back an `Enemy`, and it relates parameters to each other. There's one way to write it, and it's Python's. In Python, Java, C# and Go, `list[Shape]` means a list of mixed types dispatched at run time, so the shorthand would have misled exactly the people and models Fennec is written for.
+
+**A parameter typed with an interface is resolved at compile time.** `shape: Shape` is allowed, and each call is specialized to the type it passes, exactly as `[T: Shape]` is, with no hidden dispatch or boxing.
+```fennec
+def describe(shape: Shape) -> str:
+    return f"area {shape.area()}"
+```
+An interface inside another type, like `list[Shape]`, stays an error, as above.
+*Why:* A signature can name what it needs and still cost what a direct call costs, and a reader never has to wonder whether a call goes through a table.
 
 **Generic code is checked once, and errors name the missing piece.** A generic body may use only what its bounds promise, so errors never surface at an instantiation. A call with a type that doesn't fit says what's missing and the nearest match: "`Rock` isn't a `Shape`: it has no `area(self) -> f32`. Its `area` returns `int`."
 
@@ -482,8 +492,8 @@ def write[T, W: Writer](x: T, mut out: W):
 **Annotations are data, read at compile time.** `@serialize(name="uid")` on a field says something a generic function can read. An annotation never wraps or changes what it's on.
 *Why:* A few things can't be said any other way, like a field's name in someone else's format, and data can't hide behavior.
 
-**Generics compile the way Swift's do.** Development builds, including the JIT, compile a generic function once and share that code across every type it's used with, passing each type's methods alongside its values. Release builds compile a copy for each type, so every call is direct and can be inlined, then merge copies whose machine code comes out identical. What a program does is the same either way.
-*Why:* Development builds compile once per generic function instead of once per type, which keeps them fast to build. Release builds get full speed, without paying in binary size for copies that are identical anyway. This replaces the earlier rule that generics are compiled per type in every build.
+**Generic Fennec code compiles to a copy for each type, in every build.** A generic function or type is copied for each set of types a program uses it with, before any backend sees it, so `[T: Shape]` and `shape: Shape` compile the same and every call is direct. Development and release builds lower the same copies, and each is cached by a hash of its text. A program can ask for up to 2,000 copies. The runtime's own list and dict operations are still shared by design, taking an element number, since they're runtime code, not generic Fennec code. This corrects the entry that said generics compile the way Swift's do, with development builds sharing one copy.
+*Why:* One rule for every build, with no hidden dispatch in Fennec code, so what runs while editing is what ships.
 
 **`A | B` is a union: a value that's exactly one of those types.** It's stored inline with a one-byte tag, sized for its largest member, and never boxed. `type Shape = Circle | Square` names one.
 ```fennec
@@ -507,7 +517,10 @@ def report(shapes: list[Shape], stdout: Stdout):
 
 *Why:* Mixed lists stay fast and unboxed, and they read like a Python type hint. Unions add nothing new to learn beyond `is` and `match`.
 
-**Mixed types are a union or an `enum`; open sets are function values.** A list that holds different existing types is a list of a union, `list[Circle | Square]`, and a list of new cases is a list of an enum. Either way each element is inline with a one-byte tag, and `match` compiles to a jump table. When other kits must be able to add kinds, as with plugins, a struct with function fields does it, and a call through a function value is the only run-time dispatch a program can ask for. Generic code shared in development builds is the compiler's choice, and release builds compile it away.
+**There's no run-time open set.** There are no boxed, dynamically dispatched interface values, and that's a hard no. Every type is known at compile time, since the whole program is compiled, Den packages included, and plugins loaded at run time aren't a thing.
+*Why:* The goal is as many facts as possible about a program at compile time.
+
+**Mixed types are a union or an `enum`; kinds other kits add go through function values.** A list that holds different existing types is a list of a union, `list[Circle | Square]`, and a list of new cases is a list of an enum. Either way each element is inline with a one-byte tag, and `match` compiles to a jump table. Other kits add kinds through a struct with function fields, all compiled into the one program, and a call through a function value is the only run-time dispatch a program can ask for.
 
 **`Self` in an interface's method means the type that fits it.** `interface Signed: def abs(self) -> Self` says `abs` returns the same type it's called on: a `Money` for a `Money`.
 
@@ -1083,7 +1096,7 @@ struct Ring:
         for at in range(self.slots.len()):
             yield self.slots[(self.start + at) % self.slots.len()]
 ```
-- `for mut` over such a type is a compile error until writing back through `iter` is designed, since the items it makes are copies and a change to one would be lost. `list`, `Buffer` and `IdMap` keep `for mut`.
+- `for mut` over a type with only `iter` is a compile error that says to add positions, since the items it makes are copies and a change to one would be lost. `list`, `Buffer` and `IdMap` keep `for mut`.
 - A loop over `iter` fuses into a plain loop where it can, as any stage does.
 
 *Why:* A loop shouldn't copy a collection before it starts, and a `break` should stop the work. A `for mut` that quietly lost its changes was the bug this replaces.
@@ -1336,9 +1349,11 @@ tools = { path = "../tools" }
 **There's one backend: LLVM, with per-function `-O3` and a function-level cache.** `fennec run` makes real binaries in the store. Whole-program work happens only in `--release`. There's no hot reload in the plan, and no tiering.
 *Why:* What people run is what ships, so a first benchmark shows real speed. The cache is what makes it fast to edit, and one backend is less to maintain and keep in agreement.
 
-**Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.** Until then, `fennec run` and `fennec build` use it.
+**LLVM becomes the default backend once about 90% of examples build natively, which retires Cranelift.** The interpreter is then out of `fennec run` and `fennec build`, and refusing to build and building natively stay the only two outcomes. Until then, `fennec run` uses the cached LLVM build, with a one-line note and then the JIT where LLVM can't build the program, and the interpreter for what the JIT can't compile. `fennec build` and `fennec test` still use the JIT's compiler, Cranelift, and `fennec build --llvm` asks for LLVM. This replaces the rule that Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
 
-**The tree-walking interpreter stays simple and correct, not fast.** It runs the REPL, the playground, compile-time evaluation and the sandbox, and it's the reference the JIT is tested against: every example must give the same output on both.
+**The tree-walking interpreter is kept for now, simple and correct, not fast.** It runs the REPL, the playground, compile-time evaluation and the sandbox, and it's the test reference. The goal is to drop it as soon as we can, and what replaces each of its jobs, a test reference included, gets decided at that point.
+
+**Every example that builds natively must give the same output as the interpreter.** An example that's refused goes on a tracked list, which must reach zero.
 
 **While it remains, the JIT aims for 80% of the speed of the benchmark suite's twins to start, then 85%, and no further.** Closing the rest is the release build's job. Optimizations that would slow the JIT's compiling to win the last few percent aren't made.
 *Why:* Development builds are for changing code and seeing it run at once. The 110% target applies to release builds.
@@ -1557,6 +1572,8 @@ Steps 2 to 4 wait until the core semantics above are frozen and the Fennec compi
 
 ## Still open
 
+- How an `Id` is used across servers, which is expected at the simulation level.
+- How an `Id`'s tag and generation behave across a restart, which decides what a saved `Id` means.
 - How `std.pack` data evolves: a lock file of past layouts with automatic migration rules, as Avro does. It comes later and adds to v1 without breaking it.
 - How a type marks that its finishing method must be called.
 - The syntax of the `mut` form of `def []`, which returns a place.

@@ -1,0 +1,7 @@
+error: `Pool`'s `mut` form of `def []` gives back a place in `self`
+ --> examples/errors/mut_index_not_a_place.fen:8:16
+  |
+8 |         return self.items[i] + 1
+  |                ^^^^^^^^^^^^^^^^^
+  |
+  = help: end it with `return` and a field or item of `self`, like `return self._items[i]`

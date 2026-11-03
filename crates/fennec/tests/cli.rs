@@ -573,6 +573,34 @@ fn conversions_to_what_a_value_is_already_give_it_back() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `fennec fix` writes a key looked up after asking for it with `get`, and however the program
+/// runs, it prints what it did.
+#[test]
+fn a_double_lookup_fixed_prints_the_same() {
+    let dir = scratch("double-lookup").unwrap();
+    let program = dir.join("double_lookup.fen");
+    let source = "def main(stdout: Stdout):\n    counts = {\"a\": 1}\n    names = {\"a\": \"fox\"}\n    \
+                  for key in [\"a\", \"b\"]:\n        stdout.print(counts[key] if key in counts else 7)\n        \
+                  stdout.print(8 if key not in counts else counts[key])\n        \
+                  stdout.print((names[key] if key in names else \"wolf\").len())\n";
+    std::fs::write(&program, source).unwrap();
+    let path = program.to_str().unwrap();
+    let expected = "1\n1\n3\n7\n8\n4\n";
+    assert_eq!(text(&fennec(&["run", "--interp", path], "").unwrap().stdout), expected);
+    let fixed = fennec(&["fix", path], "").unwrap();
+    assert!(fixed.status.success(), "{}", text(&fixed.stderr));
+    let now = std::fs::read_to_string(&program).unwrap();
+    assert_eq!(now.matches(".get(").count(), 3, "{now}");
+    assert!(!now.contains("in counts") && !now.contains("in names"), "{now}");
+    for engine in [&["run"][..], &["run", "--jit"], &["run", "--interp"]] {
+        let args: Vec<&str> = engine.iter().copied().chain([path]).collect();
+        let output = fennec(&args, "").unwrap();
+        assert_eq!(text(&output.stdout), expected, "{engine:?}: {}", text(&output.stderr));
+        assert_eq!(text(&output.stderr), "", "{engine:?} ran it as asked");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A program that fails while running, or returns normally, gives `fennec run` the same exit
 /// code whichever way it runs: through LLVM, on the JIT, or in the interpreter.
 #[test]

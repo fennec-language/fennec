@@ -29,6 +29,7 @@ const INTERPRETED_FUNCTIONS: &[(&str, &[&str])] = &[
     ("json_collections.fen", &["Grid.iter", "SortedMap.iter"]),
     ("json_enums.fen", &["Grid.iter"]),
     ("operators.fen", &["Grid.iter"]),
+    ("own_positions.fen", &["Deque.iter", "Grid.iter"]),
     ("std_collections.fen", &["Counter.iter", "Deque.iter"]),
     ("std_grid.fen", &["Deque.iter", "Grid.iter"]),
     // Generator methods from the standard library, as `Grid.iter` is from the program, and

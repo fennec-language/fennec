@@ -76,6 +76,10 @@ impl Lowering<'_> {
             }
             Some(Type::Named(owner)) => {
                 let found = self.resolve(&format!("{owner}.[]"), std::slice::from_ref(&held), Some(&ty));
+                if found.is_none() && self.has_mut_form(owner) {
+                    let place = self.place_of(expr)?;
+                    return self.read_steps(place.local, &place.steps, expr.span);
+                }
                 let param = found.as_ref().and_then(|(_, found)| found.params.get(1));
                 param.ok_or_else(|| format!("it indexes `{owner}`, which has no `[]`"))?.ty.clone()
             }
@@ -226,6 +230,11 @@ impl Lowering<'_> {
         let iter = if is_mut { super::parallel::parallel_items(iter).unwrap_or(iter) } else { iter };
         if !is_mut && let Some(expansion) = self.expanded(names, iter, body) {
             return self.fused(expansion);
+        }
+        if let (true, [name], Some(Type::Named(owner))) = (is_mut, names, self.type_at(iter.span))
+            && self.has_mut_form(&owner)
+        {
+            return self.through_positions(name, (iter, &owner), body, span);
         }
         // Only the items of a list or `IdMap` are written back, and only one name holds them.
         let by_id = matches!(self.type_at(iter.span), Some(Type::IdMap(_)));

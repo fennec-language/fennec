@@ -45,7 +45,7 @@ fn without(module: &Module, call: Span) -> Module {
 }
 
 /// Whether a program checks and makes no copy each time round a loop, which is a compile error.
-fn still_fine(mut trial: Module) -> bool {
+pub(crate) fn still_fine(mut trial: Module) -> bool {
     let Ok(signatures) = fennec_check::check_and_resolve(&mut trial) else { return false };
     crate::costs::implicit(&fennec_ir::costs(&fennec_ir::lower(&trial, &signatures))).is_empty()
 }

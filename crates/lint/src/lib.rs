@@ -12,6 +12,7 @@ mod dead;
 mod docs;
 mod flow;
 mod items;
+mod lookups;
 mod loops;
 mod names;
 mod params;
@@ -99,6 +100,14 @@ pub fn needless_copies(module: &Module, sources: &Sources) -> Vec<Lint> {
 #[must_use]
 pub fn needless_conversions(module: &Module, sources: &Sources) -> Vec<Lint> {
     conversions::of(module, sources)
+}
+
+/// Every `table[key] if key in table else default` on a dict, in a module that checks, which
+/// `table.get(key) else default` says with one lookup. Like `needless_copies`, each fix is tried,
+/// so they're asked for where the whole program is checked anyway.
+#[must_use]
+pub fn double_lookups(module: &Module, sources: &Sources) -> Vec<Lint> {
+    lookups::of(module, sources)
 }
 
 /// A hint for each place a lowered program may copy, once, and each it may allocate in code

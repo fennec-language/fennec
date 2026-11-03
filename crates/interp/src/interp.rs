@@ -11,7 +11,7 @@ use crate::exec::Flow;
 use crate::format;
 use crate::prelude;
 use crate::scope::Frame;
-use crate::value::{Callable, Capability, Value};
+use crate::value::{Callable, Capability, Def, Value};
 
 /// How deep calls may nest before the program is stopped, as in Python.
 const MAX_DEPTH: usize = 1000;
@@ -28,9 +28,61 @@ pub(crate) enum TypeKind {
 }
 
 pub(crate) struct TypeInfo {
-    pub(crate) def: TypeDef,
+    pub(crate) def: TypeRef,
     pub(crate) kind: TypeKind,
     pub(crate) methods: HashMap<String, Rc<Callable>>,
+}
+
+/// A type's definition: the standard library's, held where it was parsed once for the whole
+/// process, or a program's own, as for functions (`Def`).
+#[derive(Clone)]
+pub(crate) enum TypeRef {
+    Std(&'static TypeDef),
+    Own(Rc<TypeDef>),
+}
+
+impl std::ops::Deref for TypeRef {
+    type Target = TypeDef;
+
+    fn deref(&self) -> &TypeDef {
+        match self {
+            TypeRef::Std(def) => def,
+            TypeRef::Own(def) => def,
+        }
+    }
+}
+
+/// How loading keeps what it loads: the standard library's by where it was parsed, which
+/// lives as long as the process, and a program's own by a copy.
+trait Keep<'m> {
+    fn function(&self, def: &'m FnDef) -> Def;
+    fn type_def(&self, def: &'m TypeDef) -> TypeRef;
+}
+
+/// Keeps the standard library's definitions where they were parsed.
+struct InPlace;
+
+impl Keep<'static> for InPlace {
+    fn function(&self, def: &'static FnDef) -> Def {
+        Def::Std(def)
+    }
+
+    fn type_def(&self, def: &'static TypeDef) -> TypeRef {
+        TypeRef::Std(def)
+    }
+}
+
+/// Keeps a copy of a program's own definitions.
+struct Copied;
+
+impl<'m> Keep<'m> for Copied {
+    fn function(&self, def: &'m FnDef) -> Def {
+        Def::Own(Rc::new(def.clone()))
+    }
+
+    fn type_def(&self, def: &'m TypeDef) -> TypeRef {
+        TypeRef::Own(Rc::new(def.clone()))
+    }
 }
 
 /// The built-in types the standard library's code gives methods to with `extend`.
@@ -129,7 +181,7 @@ impl<'out> Interp<'out> {
             built_in_methods: HashMap::new(),
         };
         for module in fennec_syntax::prelude_to_run()? {
-            interp.load(module)?;
+            interp.load_with(module, &InPlace)?;
         }
         interp.prelude_imports = std::mem::take(&mut interp.imports);
         interp.prelude_modules = std::mem::take(&mut interp.modules);
@@ -184,15 +236,20 @@ impl<'out> Interp<'out> {
     /// Registers a module's declarations and returns its top-level statements, which only
     /// the REPL runs.
     pub fn load(&mut self, module: &Module) -> Result<Vec<Stmt>, Diagnostic> {
+        self.load_with(module, &Copied)
+    }
+
+    fn load_with<'m>(&mut self, module: &'m Module, keep: &impl Keep<'m>) -> Result<Vec<Stmt>, Diagnostic> {
         let mut statements = Vec::new();
         for item in &module.items {
             match item {
                 Item::Function(def) => {
-                    self.functions.insert(def.name.clone(), Rc::new(callable(def, Vec::new())));
+                    self.functions
+                        .insert(def.name.clone(), Rc::new(Callable::new(keep.function(def), Vec::new())));
                 }
-                Item::Struct(def) => self.register_type(def, TypeKind::Struct),
-                Item::Enum(def) => self.register_type(def, TypeKind::Enum),
-                Item::Error(def) => self.register_type(def, TypeKind::Error),
+                Item::Struct(def) => self.register_type(def, TypeKind::Struct, keep),
+                Item::Enum(def) => self.register_type(def, TypeKind::Enum, keep),
+                Item::Error(def) => self.register_type(def, TypeKind::Error, keep),
                 Item::Import(import) => {
                     let (modules, functions) = prelude::check_import(import)?;
                     self.modules.extend(modules);
@@ -214,18 +271,19 @@ impl<'out> Interp<'out> {
         // Extensions come last, so the type they extend is known wherever it's declared.
         for item in &module.items {
             if let Item::Extend(extension) = item {
-                self.extend_type(extension)?;
+                self.extend_type(extension, keep)?;
             }
         }
         Ok(statements)
     }
 
     /// Adds an extension's methods to its type, as if they were written in its declaration.
-    fn extend_type(&mut self, extension: &Extension) -> Result<(), Diagnostic> {
+    fn extend_type<'m>(&mut self, extension: &'m Extension, keep: &impl Keep<'m>) -> Result<(), Diagnostic> {
         if BUILT_IN_OWNERS.contains(&extension.name.as_str()) {
             let methods = self.built_in_methods.entry(extension.name.clone()).or_default();
             for method in &extension.methods {
-                methods.insert(method.name.clone(), Rc::new(callable(method, Vec::new())));
+                methods
+                    .insert(method.name.clone(), Rc::new(Callable::new(keep.function(method), Vec::new())));
             }
             return Ok(());
         }
@@ -235,7 +293,7 @@ impl<'out> Interp<'out> {
             .ok_or_else(|| Diagnostic::new(format!("`{}` isn't a type", extension.name), extension.span))?;
         let mut methods = info.methods.clone();
         for method in &extension.methods {
-            methods.insert(method.name.clone(), Rc::new(callable(method, Vec::new())));
+            methods.insert(method.name.clone(), Rc::new(Callable::new(keep.function(method), Vec::new())));
         }
         if methods.contains_key("==") {
             self.own_equality.insert(extension.name.clone());
@@ -257,16 +315,16 @@ impl<'out> Interp<'out> {
         self.built_in_methods.get(owner)?.get(method).cloned()
     }
 
-    fn register_type(&mut self, def: &TypeDef, kind: TypeKind) {
+    fn register_type<'m>(&mut self, def: &'m TypeDef, kind: TypeKind, keep: &impl Keep<'m>) {
         let methods = def
             .methods
             .iter()
-            .map(|method| (method.name.clone(), Rc::new(callable(method, Vec::new()))))
+            .map(|method| (method.name.clone(), Rc::new(Callable::new(keep.function(method), Vec::new()))))
             .collect::<HashMap<_, _>>();
         if methods.contains_key("==") {
             self.own_equality.insert(def.name.clone());
         }
-        self.types.insert(def.name.clone(), Rc::new(TypeInfo { def: def.clone(), kind, methods }));
+        self.types.insert(def.name.clone(), Rc::new(TypeInfo { def: keep.type_def(def), kind, methods }));
     }
 
     /// Loads a program and calls its `main`.
@@ -372,10 +430,9 @@ fn out_of_steps(limit: u64, span: Span) -> Diagnostic {
         .with_help("check for a loop that never ends, or recursion that never stops")
 }
 
-/// Wraps a function definition, noting whether it can fail and whether it's a generator.
+/// Wraps a function definition of a program's own.
 pub(crate) fn callable(def: &FnDef, captured: Vec<(String, Value)>) -> Callable {
-    let (fallible, generator) = crate::scan::body_effects(&def.body);
-    Callable { def: Rc::new(def.clone()), captured, fallible, generator }
+    Callable::new(Def::Own(Rc::new(def.clone())), captured)
 }
 
 #[cfg(test)]

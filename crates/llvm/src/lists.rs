@@ -1008,7 +1008,7 @@ impl Emit<'_, '_, '_> {
             if let Operand::Local(sliced) = index
                 && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
             {
-                return self.slice_set(&place, value_word, (&slice, found), value);
+                return self.slice_set(&place, (key, value_word), (&slice, found), value);
             }
             return self.dict_store_at(&place, (key, value_word), index, Some(value), found);
         }

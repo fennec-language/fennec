@@ -17,6 +17,10 @@ const NAME_RULES: [&str; 3] = ["short-name", "naming-case", "shadowed-builtin"];
 /// makes its fixes.
 const PARAM_RULES: [&str; 1] = ["unused-param"];
 
+/// The rule about items nothing uses, which most tests' small programs would set off too, since
+/// they define a function and nothing calls it.
+const ITEM_RULES: [&str; 1] = ["unused-item"];
+
 /// The lints' names, which won't match anything a test expects if the source doesn't parse.
 fn all_rules(source: &str) -> Vec<&'static str> {
     found(source)
@@ -26,7 +30,9 @@ fn all_rules(source: &str) -> Vec<&'static str> {
 fn rules(source: &str) -> Vec<&'static str> {
     all_rules(source)
         .into_iter()
-        .filter(|rule| !NAME_RULES.contains(rule) && !PARAM_RULES.contains(rule))
+        .filter(|rule| {
+            !NAME_RULES.contains(rule) && !PARAM_RULES.contains(rule) && !ITEM_RULES.contains(rule)
+        })
         .collect()
 }
 
@@ -34,9 +40,9 @@ fn name_rules(source: &str) -> Vec<&'static str> {
     all_rules(source).into_iter().filter(|rule| NAME_RULES.contains(rule)).collect()
 }
 
-/// The source with every fix made but `PARAM_RULES`', which has to parse.
+/// The source with every fix made but `PARAM_RULES`' and `ITEM_RULES`', which has to parse.
 fn fixed(source: &str) -> String {
-    fixed_by(source, &|rule| !PARAM_RULES.contains(&rule))
+    fixed_by(source, &|rule| !PARAM_RULES.contains(&rule) && !ITEM_RULES.contains(&rule))
 }
 
 /// The source with only `PARAM_RULES`' fixes made.
@@ -301,6 +307,35 @@ fn a_conversion_that_makes_a_value_of_a_names_own_stays() {
         (1, in_a_loop.replace("str(h)", "h")),
         "text changes without a copy each pass"
     );
+}
+
+#[test]
+fn an_item_nothing_uses_goes_with_its_doc() {
+    let source = "## Says hello.\ndef greet() -> str:\n    \"hi\"\n\n## A spare.\nstruct Spare:\n    size: int\n\n    def grow(self) -> int:\n        self.size + 1\n\ndef main(stdout: Stdout):\n    stdout.print(greet())\n";
+    assert_eq!(
+        all_rules(source).iter().filter(|rule| **rule == "unused-item").count(),
+        1,
+        "{:?}",
+        all_rules(source)
+    );
+    assert_eq!(
+        fixed_by(source, &|rule| rule == "unused-item"),
+        "## Says hello.\ndef greet() -> str:\n    \"hi\"\n\ndef main(stdout: Stdout):\n    stdout.print(greet())\n"
+    );
+    let cases = "enum Mood:\n    Calm\n    Angry\n\ndef main(stdout: Stdout):\n    mood = .Calm\n    stdout.print(mood == .Angry)\n";
+    assert!(!all_rules(cases).contains(&"unused-item"), "an enum used through its cases");
+    let typed = "struct Point:\n    x: int\n\ndef origin(p: Point) -> int:\n    p.x\n\ndef main(stdout: Stdout):\n    stdout.print(1)\n";
+    let flagged: Vec<String> = found(typed)
+        .unwrap()
+        .iter()
+        .filter(|lint| lint.rule == "unused-item")
+        .map(|lint| lint.message().to_owned())
+        .collect();
+    assert_eq!(flagged, ["nothing uses the function `origin`"], "a type named in a parameter is used");
+    let public = "pub def greet() -> str:\n    \"hi\"\n";
+    assert!(!all_rules(public).contains(&"unused-item"), "another kit may use it");
+    let recursive = "def countdown(n: int) -> int:\n    if n == 0: return 0\n    countdown(n - 1)\n\ndef main(stdout: Stdout):\n    stdout.print(1)\n";
+    assert!(all_rules(recursive).contains(&"unused-item"), "calling itself isn't a use");
 }
 
 #[test]

@@ -10,6 +10,7 @@ mod copies;
 mod costs;
 mod dead;
 mod flow;
+mod items;
 mod loops;
 mod names;
 mod params;
@@ -68,6 +69,7 @@ pub fn lint(module: &Module, sources: &Sources) -> Vec<Lint> {
     found.extend(paths::of(sources));
     found.extend(asserts::of(module));
     found.extend(params::of(module, sources));
+    found.extend(items::of(module, sources));
     found.sort_by_key(|lint| (lint.diagnostic.span.start, lint.rule));
     found
 }

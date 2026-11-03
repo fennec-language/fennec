@@ -1423,3 +1423,57 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// String keys held in a dict's entries as headers: every length from empty to past a header's
+/// 23 bytes, made from literals, slices, `+` and the runtime, so inline and block keys of the
+/// same text always meet as the same key.
+#[test]
+fn string_keys_in_place_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "string_keys",
+        r#"def main(stdout: Stdout):
+    letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"
+    mut counts: dict[str, int] = {}
+    for size in range(31):
+        counts[letters[:size]] = size
+    held = letters[:30]
+    for size in range(31):
+        made = "".join([letters[at] for at in range(size)])
+        counts[made] = (counts.get(made) else 0) + 100
+    for word in "the quick brown fox jumps over the lazy dog and a much longer word than a header holds".split():
+        counts[word] = (counts.get(word) else 0) + 1
+    stdout.print(counts.len(), counts[""], counts["abc"], counts[held], counts[letters[:23]], counts[letters[:24]])
+    stdout.print(counts.pop("the"), counts.pop(letters[:24]), counts.len())
+    counts["the"] = 7
+    counts[letters[:24]] = 8
+    stdout.print(counts["the"], counts[letters[:24]], counts.len(), list(counts.keys())[-2:])
+    mut order: list[str] = []
+    for key in counts.keys():
+        if key.len() < 3:
+            order.append(key)
+    stdout.print(order, counts.get("missing") else -1)
+    mut seen: set[str] = {"dog"}
+    for word in ["fox", "fox", "a much longer word than a header holds", "dog"]:
+        seen.add(word)
+    stdout.print(seen.len(), "fox" in seen, "cat" in seen)
+"#,
+    )
+}
+
+/// Reading a string key a dict doesn't have fails with the key in the message.
+#[test]
+fn a_missing_string_key_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "missing_string_key",
+        r#"def main(stdout: Stdout):
+    counts: dict[str, int] = {"fox": 1}
+    stdout.print(counts["a key long enough to live in a block"])
+"#,
+    )
+}

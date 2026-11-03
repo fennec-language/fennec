@@ -40,6 +40,7 @@ Each of these is decided and not built.
 - `for mut` over user types, through `def len` and the `mut` form of `def []`.
 - A compile error for changing a collection while it's being looped over or written through.
 - `xs.pair(i, j)`, and compile errors for copies that can go stale and for a copy on every iteration of a loop.
+- A compile error for a local that's changed and then never read, returned or passed on.
 - `fails Name` in signatures, with one `error` listing several cases. `?` required wherever a failure passes up, narrowing with `if x is Err(...)`, and a compile error for checking an error and then ignoring it.
 - `xs.get(i)`, and `sum(xs, start=...)` replacing today's positional start.
 - `_name` hiding a field, and `pub` on top-level things only.

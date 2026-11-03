@@ -1463,3 +1463,22 @@ fn a_missing_string_key_fails_like_the_jit() -> std::io::Result<()> {
 "#,
     )
 }
+
+/// A float sum over a generator, whose start the checker writes in by name, as an int's isn't.
+#[test]
+fn float_sums_over_generators_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "float_sums",
+        r"struct U:
+    h: float
+
+def main(stdout: Stdout):
+    us = [U(1.5), U(2.0), U(-0.25)]
+    stdout.print(sum(u.h for u in us), sum(u.h for u in us if u.h > 0.0))
+    stdout.print(sum((u.h for u in us), start=1.0), sum(1 if u.h > 0.0 else 0 for u in us))
+",
+    )
+}

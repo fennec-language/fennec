@@ -44,6 +44,10 @@ pub enum Word {
     /// A plain struct or enum as a key, by its layout's number, which native code knows. The
     /// runtime goes by the shape of the key's block.
     Plain(u32),
+    /// A string key held in the entry as its 24-byte header (see `super::text`): up to 23
+    /// bytes in the header itself, or a block's address and length. Strings of 23 bytes or
+    /// fewer are always inline, so a key's header is the same however it was made.
+    Text,
 }
 
 impl Word {
@@ -53,7 +57,10 @@ impl Word {
     }
 }
 
-const KEYS: [Word; 3] = [Word::Int, Word::Str, Word::Plain(0)];
+const KEYS: [Word; 4] = [Word::Int, Word::Str, Word::Plain(0), Word::Text];
+
+/// Words an entry with a string header for its key takes: hash, the header's three, value.
+const HEADER_ENTRY_WORDS: usize = 5;
 const VALUES: [Word; 5] = [Word::Int, Word::Float, Word::Bool, Word::Str, Word::Nothing];
 
 /// How many shapes dicts take, after the string shape.
@@ -98,7 +105,8 @@ fn layout(state: &State, block: &[u64]) -> Option<Layout> {
 fn shape_layout(state: &State, shape: u64) -> Option<Layout> {
     let at = usize::try_from(shape.checked_sub(state.tables.str_shape + 1)?).ok()?;
     let (key, value) = (*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?);
-    Some(Layout { key, value, width: ENTRY_WORDS })
+    let width = if key == Word::Text { HEADER_ENTRY_WORDS } else { ENTRY_WORDS };
+    Some(Layout { key, value, width })
 }
 
 /// An entry's key: its words between the hash and the value.
@@ -115,6 +123,7 @@ fn value_of(entry: &[u64]) -> u64 {
 fn key_block(key_word: Word, key: &[u64]) -> Option<u64> {
     match key {
         [address] if key_word.owned() => Some(*address),
+        [a, b, c] if key_word == Word::Text => super::text::block_of(&[*a, *b, *c]),
         _ => None,
     }
 }
@@ -166,19 +175,50 @@ fn hash_key(state: &State, key_word: Word, key: &[u64]) -> u64 {
             state.heap.block(first).and_then(|block| block.get(HEADER_WORDS..)).unwrap_or_default(),
         );
     }
-    if key_word != Word::Str {
-        return hash_int(first);
+    match key_word {
+        Word::Str => hash_block_text(state, first),
+        Word::Text => hash_header(state, key),
+        _ => hash_int(first),
     }
-    let block = state.heap.block(first).unwrap_or_default();
+}
+
+/// The hash of the string in a block.
+fn hash_block_text(state: &State, address: u64) -> u64 {
+    let block = state.heap.block(address).unwrap_or_default();
     let length = block.get(2).copied().unwrap_or(0);
     let words = usize::try_from(length).unwrap_or(0).div_ceil(8);
     hash_text(length, block.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + words).unwrap_or_default())
 }
 
+/// The hash of a string held as its header: an inline one's words are its bytes packed as a
+/// block packs them, once byte 23 is cleared, so both forms hash alike.
+fn hash_header(state: &State, key: &[u64]) -> u64 {
+    let Ok(&[a, b, c]) = <&[u64; 3]>::try_from(key) else { return 0 };
+    if let Some(address) = super::text::block_of(&[a, b, c]) {
+        return hash_block_text(state, address);
+    }
+    let length = (c >> 56) & 0x7f;
+    let words = [a, b, c & (u64::MAX >> 8)];
+    debug_assert!(
+        words
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .skip(usize::try_from(length).unwrap_or(0))
+            .all(|byte| byte == 0),
+        "an inline header is zero after its bytes"
+    );
+    hash_text(length, words.get(..usize::try_from(length).unwrap_or(0).div_ceil(8)).unwrap_or_default())
+}
+
 fn keys_equal(state: &State, key_word: Word, a: &[u64], b: &[u64]) -> bool {
     match (a, b) {
         ([a], [b]) => a == b || (key_word.owned() && same(state, *a, *b)),
-        _ => a == b,
+        // Equal strings have the same form, so inline headers are equal exactly when their
+        // words are, and only two blocks need their bytes compared.
+        _ => {
+            a == b
+                || matches!((key_block(key_word, a), key_block(key_word, b)), (Some(a), Some(b)) if same(state, a, b))
+        }
     }
 }
 
@@ -343,7 +383,9 @@ fn packed_words(bytes: &[u8]) -> Vec<u64> {
 /// Where a string key with these bytes is in a dict of string keys, comparing hashes first
 /// and then the key's length and words, with no key of its own made.
 fn find_text(state: &State, block: &[u64], (bytes, chars): (&[u8], usize)) -> Option<(Probe, u64)> {
-    let width = layout(state, block)?.width;
+    let layout = layout(state, block)?;
+    let width = layout.width;
+    let short = (bytes.len() <= super::text::INLINE_BYTES).then(|| super::text::inline(bytes));
     let words = packed_words(bytes);
     let length = u64::try_from(bytes.len()).ok()?;
     let hash = hash_text(length, &words);
@@ -358,11 +400,21 @@ fn find_text(state: &State, block: &[u64], (bytes, chars): (&[u8], usize)) -> Op
         };
         let at = start + entry * width;
         if block.get(at) == Some(&hash) {
-            let key = block.get(at + 1).and_then(|key| state.heap.block(*key));
-            let same_text = key.is_some_and(|key| {
-                key.get(2..4) == Some(&header[..])
-                    && key.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + words.len()) == Some(&words[..])
-            });
+            let same_block = |address: u64| {
+                state.heap.block(address).is_some_and(|key| {
+                    key.get(2..4) == Some(&header[..])
+                        && key.get(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + words.len()) == Some(&words[..])
+                })
+            };
+            let same_text = match block.get(at + 1..at + layout.value_at()) {
+                // A key held as its header: inline ones are equal exactly when their words are.
+                Some(&[a, b, c]) if layout.key == Word::Text => match super::text::block_of(&[a, b, c]) {
+                    Some(address) => same_block(address),
+                    None => short == Some([a, b, c]),
+                },
+                Some(&[address]) => same_block(address),
+                _ => false,
+            };
             if same_text {
                 return Some((Probe::Found(entry), hash));
             }
@@ -377,7 +429,7 @@ pub extern "C" fn find_slice(dict: i64, text: i64, from: i64, to: i64) -> i64 {
     with(|state| {
         let slice = slice_of(state, text, from, to)?;
         let block = state.heap.block(u64::try_from(dict).ok()?)?;
-        if kind(state, block)?.0 != Word::Str {
+        if !matches!(kind(state, block)?.0, Word::Str | Word::Text) {
             return None;
         }
         let (Probe::Found(entry), _) = find_text(state, block, (&slice.0, slice.1))? else { return Some(0) };
@@ -396,7 +448,7 @@ pub extern "C" fn add_slice(dict: i64, text: i64, from: i64, to: i64, value: i64
         let at = u64::try_from(dict).ok()?;
         let block = state.heap.block(at)?;
         let (key_word, value_word) = kind(state, block)?;
-        if key_word != Word::Str {
+        if !matches!(key_word, Word::Str | Word::Text) {
             return None;
         }
         let unique = block.first() == Some(&1);
@@ -409,10 +461,23 @@ pub extern "C" fn add_slice(dict: i64, text: i64, from: i64, to: i64, value: i64
             }
             return Some(dict);
         }
-        let key = text_from_bytes(state, &bytes, chars);
-        set_in(state, dict, key, value)
+        let key = new_key(state, key_word, (&bytes, chars));
+        set_words(state, dict, &key, value.cast_unsigned())
     })
     .unwrap_or(dict)
+}
+
+/// A new string key's words for a dict holding this kind of key, made from its bytes: its
+/// header, inline when it fits, or else the address of a new block, owned once.
+fn new_key(state: &mut State, key_word: Word, (bytes, chars): (&[u8], usize)) -> Vec<u64> {
+    if key_word == Word::Text && bytes.len() <= super::text::INLINE_BYTES {
+        return super::text::inline(bytes).to_vec();
+    }
+    let address = text_from_bytes(state, bytes, chars).cast_unsigned();
+    if key_word == Word::Text {
+        return vec![address, u64::try_from(bytes.len()).unwrap_or(0), 0];
+    }
+    vec![address]
 }
 
 /// `add_slice`, for a caller that has just looked for the key and not found it: the key's
@@ -420,10 +485,50 @@ pub extern "C" fn add_slice(dict: i64, text: i64, from: i64, to: i64, value: i64
 /// all is still found, by `set_in`.
 pub extern "C" fn add_new_slice(dict: i64, text: i64, from: i64, to: i64, value: i64) -> i64 {
     with(|state| {
+        let held_as_headers = state
+            .heap
+            .block(u64::try_from(dict).ok()?)
+            .and_then(|block| kind(state, block))
+            .is_some_and(|(key, _)| key == Word::Text);
+        if held_as_headers {
+            if let Some(key) = ascii_slice_header(state, text, from, to) {
+                return set_words(state, dict, &key, value.cast_unsigned());
+            }
+            let (bytes, chars) = slice_of(state, text, from, to)?;
+            let key = new_key(state, Word::Text, (&bytes, chars));
+            return set_words(state, dict, &key, value.cast_unsigned());
+        }
         let key = slice_key(state, text, from, to)?;
         set_in(state, dict, key, value)
     })
     .unwrap_or(dict)
+}
+
+/// The inline header of `text[from:to]`, for an ASCII string whose slice fits in one, made
+/// from the few words of the string that hold it.
+fn ascii_slice_header(state: &State, text: i64, from: i64, to: i64) -> Option<[u64; 3]> {
+    let block = state.heap.block(u64::try_from(text).ok()?)?;
+    let (length, chars) = (*block.get(2)?, *block.get(3)?);
+    if !super::heap::is_text(state, block) || length != chars {
+        return None;
+    }
+    let count = i64::try_from(chars).ok()?;
+    let bound = |at: i64, missing: i64| {
+        let at = if at == i64::MIN { missing } else { at };
+        let at = if at < 0 { at + count } else { at };
+        usize::try_from(at.clamp(0, count)).unwrap_or(0)
+    };
+    let (from, to) = (bound(from, 0), bound(to, count));
+    let size = to.max(from) - from;
+    if size > super::text::INLINE_BYTES {
+        return None;
+    }
+    let mut bytes = [0_u8; 40];
+    let words = block.get(TEXT_HEADER_WORDS + from / 8..TEXT_HEADER_WORDS + (from + size).div_ceil(8))?;
+    for (at, word) in words.iter().enumerate() {
+        bytes.get_mut(at * 8..at * 8 + 8)?.copy_from_slice(&word.to_le_bytes());
+    }
+    Some(super::text::inline(bytes.get(from % 8..from % 8 + size)?))
 }
 
 /// A new string owned once of the characters `from..to` of a string, as `text[from:to]`
@@ -467,13 +572,23 @@ fn header_text(state: &State, header: &[u64; 3]) -> Option<(Vec<u8>, usize)> {
 /// block is made for a key held in its header.
 pub extern "C" fn find_header(dict: i64, a: u64, b: u64, c: u64) -> i64 {
     with(|state| {
-        let (bytes, chars) = header_text(state, &[a, b, c])?;
         let block = state.heap.block(u64::try_from(dict).ok()?)?;
-        if kind(state, block)?.0 != Word::Str {
+        let layout = layout(state, block)?;
+        if layout.key == Word::Text {
+            let key = [a, b, c];
+            let Probe::Found(entry) = find(state, block, layout, &key, hash_key(state, Word::Text, &key))
+            else {
+                return Some(0);
+            };
+            let word = value_place(block, layout, entry)?;
+            return i64::try_from(block.as_ptr().addr() + word * 8).ok();
+        }
+        let (bytes, chars) = header_text(state, &[a, b, c])?;
+        if layout.key != Word::Str {
             return None;
         }
         let (Probe::Found(entry), _) = find_text(state, block, (&bytes, chars))? else { return Some(0) };
-        let word = value_place(block, layout(state, block)?, entry)?;
+        let word = value_place(block, layout, entry)?;
         i64::try_from(block.as_ptr().addr() + word * 8).ok()
     })
     .unwrap_or(0)
@@ -485,10 +600,13 @@ pub extern "C" fn find_header(dict: i64, a: u64, b: u64, c: u64) -> i64 {
 pub extern "C" fn set_header(dict: i64, a: u64, b: u64, c: u64, value: i64) -> i64 {
     with(|state| {
         let header = [a, b, c];
-        let (bytes, chars) = header_text(state, &header)?;
         let at = u64::try_from(dict).ok()?;
         let block = state.heap.block(at)?;
         let (key_word, value_word) = kind(state, block)?;
+        if key_word == Word::Text {
+            return set_words(state, dict, &header, value.cast_unsigned());
+        }
+        let (bytes, chars) = header_text(state, &header)?;
         if key_word != Word::Str {
             return None;
         }
@@ -518,6 +636,13 @@ pub extern "C" fn set_header(dict: i64, a: u64, b: u64, c: u64, value: i64) -> i
 /// `dict.pop(key)` for a dict of string keys, the key given as its header's words, as `pop`
 /// does it. The key's owner stays with the caller.
 pub extern "C" fn pop_header(dict: i64, a: u64, b: u64, c: u64, start: i64, end: i64) -> i64 {
+    let held_as_headers = with(|state| {
+        let block = state.heap.block(u64::try_from(dict).unwrap_or(0));
+        block.and_then(|block| kind(state, block)).is_some_and(|(key, _)| key == Word::Text)
+    });
+    if held_as_headers {
+        return pop_words(dict, &[a, b, c], (start, end));
+    }
     let key = super::text::block(a, b, c);
     let popped = pop(dict, key, start, end);
     with(|state| release(state, key.cast_unsigned()));
@@ -641,18 +766,17 @@ enum Taken {
     NotOne,
 }
 
-/// Takes a key out of a dict or set already owned once.
-fn take_key(state: &mut State, at: u64, key: u64) -> Taken {
+/// Takes a key, given as its words, out of a dict or set already owned once.
+fn take_key(state: &mut State, at: u64, key: &[u64]) -> Taken {
     take(state, at, key).unwrap_or(Taken::NotOne)
 }
 
-fn take(state: &mut State, at: u64, key: u64) -> Option<Taken> {
+fn take(state: &mut State, at: u64, key: &[u64]) -> Option<Taken> {
     let block = state.heap.block(at)?;
     let layout = layout(state, block)?;
-    let key = [key];
-    let hash = hash_key(state, layout.key, &key);
+    let hash = hash_key(state, layout.key, key);
     let mask = usize::try_from(*block.get(4)?).ok()?;
-    let Probe::Found(entry) = find(state, block, layout, &key, hash) else { return Some(Taken::Missing) };
+    let Probe::Found(entry) = find(state, block, layout, key, hash) else { return Some(Taken::Missing) };
     let place = DICT_HEADER_WORDS + mask + 1 + entry * layout.width;
     let removed = block.get(place..place + layout.width)?;
     let (held, value) = (key_block(layout.key, key_of(removed)), value_of(removed));
@@ -670,8 +794,17 @@ fn take(state: &mut State, at: u64, key: u64) -> Option<Taken> {
 /// `set.discard(key)`, or `set.remove(key)` when `must`, failing like the interpreter for a
 /// key it doesn't have. Takes over the set's owner and gives back the set's.
 pub extern "C" fn set_remove(set: i64, key: i64, must: i8, start: i64, end: i64) -> i64 {
+    remove_words(set, &[key.cast_unsigned()], must, (start, end))
+}
+
+/// `set_remove` for a set of string keys held as headers, the key given as its header's words.
+/// The key's owner stays with the caller.
+pub extern "C" fn set_remove_header(set: i64, a: u64, b: u64, c: u64, must: i8, start: i64, end: i64) -> i64 {
+    remove_words(set, &[a, b, c], must, (start, end))
+}
+
+fn remove_words(set: i64, key: &[u64], must: i8, (start, end): (i64, i64)) -> i64 {
     attempt(|state: &mut State| {
-        let key = key.cast_unsigned();
         let at = u64::try_from(set).ok().and_then(|at| unshared(state, at)).unwrap_or(0);
         match take_key(state, at, key) {
             Taken::Missing if must != 0 => {
@@ -680,7 +813,7 @@ pub extern "C" fn set_remove(set: i64, key: i64, must: i8, start: i64, end: i64)
                     .block(at)
                     .and_then(|block| kind(state, block))
                     .map_or(Word::Int, |kind| kind.0);
-                let value = word_value(state, key_word, key);
+                let value = key_value(state, key_word, key);
                 let message = format!("{} isn't in the set", crate::format::repr(&value));
                 Err(Diagnostic::new(message, span(start, end)))
             }
@@ -699,8 +832,11 @@ thread_local! {
 /// it's shared. The value taken out is picked up straight after with `popped`, whose owner goes
 /// with it. A key the dict doesn't have fails as the interpreter does.
 pub extern "C" fn pop(dict: i64, key: i64, start: i64, end: i64) -> i64 {
+    pop_words(dict, &[key.cast_unsigned()], (start, end))
+}
+
+fn pop_words(dict: i64, key: &[u64], (start, end): (i64, i64)) -> i64 {
     attempt(|state: &mut State| {
-        let key = key.cast_unsigned();
         let at = u64::try_from(dict).ok().and_then(|at| unshared(state, at)).unwrap_or(0);
         match take_key(state, at, key) {
             Taken::Removed(value) => {
@@ -713,7 +849,7 @@ pub extern "C" fn pop(dict: i64, key: i64, start: i64, end: i64) -> i64 {
                     .block(at)
                     .and_then(|block| kind(state, block))
                     .map_or(Word::Int, |kind| kind.0);
-                let value = word_value(state, key_word, key);
+                let value = key_value(state, key_word, key);
                 Err(Diagnostic::new(
                     format!("the dict has no key {}", crate::format::repr(&value)),
                     span(start, end),
@@ -744,15 +880,22 @@ pub extern "C" fn set_clear(set: i64) -> i64 {
 /// Fails with the interpreter's message for a key a dict doesn't have: reading it, or, for
 /// `augmented`, changing it with `+=` and the like.
 pub extern "C" fn missing(dict: i64, key: i64, augmented: i8, start: i64, end: i64) {
+    missing_words(dict, &[key.cast_unsigned()], augmented, (start, end));
+}
+
+/// `missing` for a dict of string keys held as headers, the key given as its header's words.
+pub extern "C" fn missing_header(dict: i64, a: u64, b: u64, c: u64, augmented: i8, start: i64, end: i64) {
+    missing_words(dict, &[a, b, c], augmented, (start, end));
+}
+
+fn missing_words(dict: i64, key: &[u64], augmented: i8, (start, end): (i64, i64)) {
     attempt(|state: &mut State| -> Result<(), Diagnostic> {
-        let key_word =
-            state.heap.block(u64::try_from(dict).unwrap_or(0)).and_then(|block| kind(state, block));
-        let key = match key_word {
-            Some((word, _)) if word.owned() => {
-                super::heap::read_block(state, u64::try_from(key).unwrap_or(0))
-            }
-            _ => Value::Int(key),
-        };
+        let key_word = state
+            .heap
+            .block(u64::try_from(dict).unwrap_or(0))
+            .and_then(|block| kind(state, block))
+            .map_or(Word::Int, |kind| kind.0);
+        let key = key_value(state, key_word, key);
         let message = format!("the dict has no key {}", crate::format::repr(&key));
         let failure = Diagnostic::new(message, span(start, end));
         Err(if augmented == 0 {
@@ -800,6 +943,9 @@ fn read_set(state: &State, layout: Layout, block: &[u64]) -> Value {
 
 /// A key's words as the interpreter holds the key.
 fn key_value(state: &State, word: Word, key: &[u64]) -> Value {
+    if let (Word::Text, Ok(&[a, b, c])) = (word, <&[u64; 3]>::try_from(key)) {
+        return Value::str(&super::text::text_of(state, &[a, b, c]));
+    }
     word_value(state, word, key.first().copied().unwrap_or(0))
 }
 
@@ -809,7 +955,7 @@ fn word_value(state: &State, word: Word, bits: u64) -> Value {
         Word::Float => Value::Float(f64::from_bits(bits)),
         Word::Bool => Value::Bool(bits != 0),
         Word::Str | Word::Plain(_) => super::heap::read_block(state, bits),
-        Word::Nothing => Value::Unit,
+        Word::Nothing | Word::Text => Value::Unit,
     }
 }
 
@@ -843,13 +989,19 @@ pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64>
     };
     let mut entries = Vec::with_capacity(pairs.len() * layout.width);
     for (key, value) in pairs {
-        let (Some(key), Some(value)) = (words(state, key_word, key), words(state, value_word, value)) else {
+        let key = match (key_word, key) {
+            (Word::Text, Value::Str(text)) => Some(super::text::header(state, text).to_vec()),
+            _ => words(state, key_word, key).map(|key| vec![key]),
+        };
+        let (Some(key), Some(value)) = (key, words(state, value_word, value)) else {
             for entry in entries.chunks_exact(layout.width) {
                 release_entry(state, layout, entry);
             }
             return None;
         };
-        entries.extend([hash_key(state, key_word, &[key]), key, value]);
+        entries.push(hash_key(state, key_word, &key));
+        entries.extend(key);
+        entries.push(value);
     }
     let block = build(state, shape, layout.width, &entries, pairs.len());
     Some(state.heap.insert(block))
@@ -880,7 +1032,9 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
                     .is_some_and(|other| match layout.value {
                         Word::Float => f64::from_bits(value).total_cmp(&f64::from_bits(*other)).is_eq(),
                         Word::Str => same(state, value, *other),
-                        Word::Int | Word::Bool | Word::Nothing | Word::Plain(_) => value == *other,
+                        Word::Int | Word::Bool | Word::Nothing | Word::Plain(_) | Word::Text => {
+                            value == *other
+                        }
                     }),
                 Probe::Empty(_) => false,
             }

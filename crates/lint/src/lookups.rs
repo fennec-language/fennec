@@ -17,7 +17,7 @@ use crate::copies::places;
 use crate::rewrites::{replaceable, written};
 
 /// Whether reading an expression twice gives the same thing and does nothing else.
-fn pure(expr: &Expr) -> bool {
+pub(crate) fn pure(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Name(_) | ExprKind::Int(_) | ExprKind::Str(_) => true,
         ExprKind::Attr { object, optional: false, .. } => pure(object),

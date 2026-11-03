@@ -5,6 +5,7 @@
 mod asserts;
 mod calls;
 mod chains;
+mod compares;
 mod conversions;
 mod copies;
 mod costs;
@@ -108,6 +109,13 @@ pub fn needless_conversions(module: &Module, sources: &Sources) -> Vec<Lint> {
 #[must_use]
 pub fn double_lookups(module: &Module, sources: &Sources) -> Vec<Lint> {
     lookups::of(module, sources)
+}
+
+/// Every `x == x` and `x != x` on a name or field of a plain type, in a module that checks. It
+/// needs the types, so it's asked for where the whole program is checked anyway, apart from `lint`.
+#[must_use]
+pub fn self_compares(module: &Module, sources: &Sources) -> Vec<Lint> {
+    compares::of(module, sources)
 }
 
 /// A hint for each place a lowered program may copy, once, and each it may allocate in code

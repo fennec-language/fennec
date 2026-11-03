@@ -72,11 +72,12 @@ impl Lowering<'_> {
             }
             None => return Ok(None),
         };
-        // A sum over `parallel(xs)`, its start written or the `0.0` the checker writes in for
-        // floats, when the backend runs it on threads.
-        if let ("sum", [_] | [_, Arg { is_mut: false, .. }]) = (name.as_str(), args)
-            && args.get(1).is_none_or(|start| start.name.as_deref().is_none_or(|named| named == "start"))
-        {
+        // A sum, its start written or the `0.0` the checker writes in for floats.
+        let summed = name == "sum"
+            && matches!(args, [_] | [_, Arg { is_mut: false, .. }])
+            && args.get(1).is_none_or(|start| start.name.as_deref().is_none_or(|named| named == "start"));
+        // Over `parallel(xs)`, when the backend runs it on threads.
+        if summed {
             let start = super::parallel::Gives::Sum(args.get(1).map(|start| &start.value));
             if let Some(outlined) =
                 self.parallel_value(expr, (parts.elem, parts.names, parts.iter, parts.cond), start)
@@ -84,10 +85,10 @@ impl Lowering<'_> {
                 return outlined.map(Some);
             }
         }
+        if summed {
+            return self.summing(expr, &parts, args.get(1));
+        }
         match (name.as_str(), args) {
-            ("sum", [_] | [_, Arg { name: None, is_mut: false, .. }]) => {
-                self.summing(expr, &parts, args.get(1))
-            }
             ("any" | "all", [_]) => self.deciding(name == "any", &parts, expr.span).map(Some),
             _ => Ok(None),
         }

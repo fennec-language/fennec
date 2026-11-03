@@ -81,6 +81,14 @@ fn pool() -> Option<&'static rayon_core::ThreadPool> {
     POOL.get_or_init(|| builder().num_threads(threads_wanted()).build().ok()).as_ref()
 }
 
+/// Whether `FENNEC_PARALLEL_STRESS` asks every loop to run on the pool, however few its items,
+/// and loops and comprehensions to split down to one item a range, for testing what bodies do on
+/// workers with programs small enough to test many of.
+pub(super) fn stressed() -> bool {
+    static STRESSED: OnceLock<bool> = OnceLock::new();
+    *STRESSED.get_or_init(|| std::env::var_os("FENNEC_PARALLEL_STRESS").is_some())
+}
+
 /// Runs `run` on a pool of its own with `threads` workers, set up as the shared pool's are.
 #[cfg(test)]
 pub(super) fn on_threads<R: Send>(threads: usize, run: impl FnOnce() -> R + Send) -> R {
@@ -91,7 +99,7 @@ pub(super) fn on_threads<R: Send>(threads: usize, run: impl FnOnce() -> R + Send
 /// workers can have runtimes, and on the calling thread otherwise. A worker's own call stays on
 /// that worker, which can't lend its blocks while it keeps working.
 pub(super) fn install<R: Send>(call: &super::Run, words: usize, run: impl FnOnce() -> R + Send) -> R {
-    let pool = (words >= SEQUENTIAL_WORDS && SETUP.get().is_some()).then(pool).flatten();
+    let pool = ((words >= SEQUENTIAL_WORDS || stressed()) && SETUP.get().is_some()).then(pool).flatten();
     let Some(pool) = pool else { return run() };
     if WORKER.get() {
         let outer = NESTED.replace(true);

@@ -310,6 +310,43 @@ fn a_conversion_that_makes_a_value_of_a_names_own_stays() {
 }
 
 #[test]
+fn a_pub_item_says_what_it_is_for() {
+    let missing = |source: &str| all_rules(source).iter().filter(|rule| **rule == "missing-doc").count();
+    for source in [
+        "pub def spawn() -> int:\n    1\n",
+        "pub struct Unit:\n    size: int\n",
+        "pub enum Mood:\n    Calm\n",
+        "pub error Lost:\n    reason: str\n",
+        "pub interface Named:\n    def name(self) -> str\n",
+        "pub type Size = int\n",
+        "pub LIMIT = 8\n",
+        // Nothing but a `##` line just above it counts.
+        "# A plain comment.\npub def spawn() -> int:\n    1\n",
+        "## A comment on nothing.\n\npub def spawn() -> int:\n    1\n",
+    ] {
+        assert_eq!(missing(source), 1, "{source}");
+    }
+    let inside = "## A unit.\npub struct Unit:\n    pub size: int\n\n    pub def grown(self) -> int:\n        self.size + 1\n";
+    assert_eq!(missing(inside), 2, "its field and its method");
+}
+
+#[test]
+fn a_private_item_or_one_with_a_doc_says_nothing() {
+    for source in [
+        "def spawn() -> int:\n    1\n",
+        "struct Unit:\n    size: int\n",
+        "## Spawns one.\npub def spawn() -> int:\n    1\n",
+        "## Spawns one.\n## It's always the same one.\npub def spawn() -> int:\n    1\n",
+        "## Spawns one.\n@inline\npub def spawn() -> int:\n    1\n",
+        "## A unit.\npub struct Unit:\n    ## How big it is.\n    pub size: int\n\n    ## How big it would be.\n    pub def grown(self) -> int:\n        self.size + 1\n",
+        // `pub` inside text says nothing.
+        "def spawn() -> str:\n    \"pub def\"\n",
+    ] {
+        assert!(!all_rules(source).contains(&"missing-doc"), "{source}");
+    }
+}
+
+#[test]
 fn an_item_nothing_uses_goes_with_its_doc() {
     let source = "## Says hello.\ndef greet() -> str:\n    \"hi\"\n\n## A spare.\nstruct Spare:\n    size: int\n\n    def grow(self) -> int:\n        self.size + 1\n\ndef main(stdout: Stdout):\n    stdout.print(greet())\n";
     assert_eq!(

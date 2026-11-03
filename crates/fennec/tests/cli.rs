@@ -917,6 +917,104 @@ fn check_and_lint_say_the_same_in_json() {
     assert_eq!((code, rules(&report)), (Some(1), vec!["load".to_owned()]));
 }
 
+/// What `fennec check --json` says first about something that fails to load, with how many errors
+/// it counts.
+#[derive(Debug, Default, PartialEq)]
+struct LoadProblem {
+    errors: Option<usize>,
+    fixable: Option<usize>,
+    rule: Option<String>,
+    /// The file's last part.
+    file: Option<String>,
+    line: Option<usize>,
+    column: Option<usize>,
+    message: Option<String>,
+    help: Option<String>,
+}
+
+fn load_problem(path: &Path) -> std::io::Result<LoadProblem> {
+    let output = fennec(&["check", "--json", &path.to_string_lossy()], "")?;
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
+    let report = fennec_lsp::Json::parse(text(&output.stdout).trim()).unwrap_or(fennec_lsp::Json::Null);
+    let found = report.at(&["diagnostics"]).and_then(fennec_lsp::Json::as_array).and_then(<[_]>::first);
+    let words = |key: &str| found?.get(key)?.as_str().map(str::to_owned);
+    let number = |key: &str| found?.get(key)?.as_usize();
+    Ok(LoadProblem {
+        errors: report.get("errors").and_then(fennec_lsp::Json::as_usize),
+        fixable: report.get("fixable").and_then(fennec_lsp::Json::as_usize),
+        rule: words("rule"),
+        file: words("file")
+            .and_then(|file| Path::new(&file).file_name().map(|name| name.to_string_lossy().into_owned())),
+        line: number("line"),
+        column: number("column"),
+        message: words("message"),
+        help: words("help"),
+    })
+}
+
+#[test]
+fn check_json_gives_what_stops_a_load_a_place_and_its_help() {
+    let dir = scratch("load_json").unwrap();
+    let program = dir.join("game.fen");
+    let some = |text: &str| Some(text.to_owned());
+
+    std::fs::write(&program, "from nowhere import x\n\ndef main():\n    pass\n").unwrap();
+    let found = load_problem(&program).unwrap();
+    assert_eq!(found.help.as_deref().map(|help| help.ends_with("nowhere.fen")), Some(true), "{found:?}");
+    assert_eq!(
+        LoadProblem { help: None, ..found },
+        LoadProblem {
+            errors: Some(1),
+            fixable: Some(0),
+            rule: some("load"),
+            file: some("game.fen"),
+            line: Some(1),
+            column: Some(1),
+            message: some("there's no module called `nowhere`"),
+            help: None,
+        }
+    );
+
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print((\n").unwrap();
+    let found = load_problem(&program).unwrap();
+    assert_eq!((found.errors, &found.rule, &found.file), (Some(1), &some("load"), &some("game.fen")));
+    assert!(found.line.is_some(), "{found:?}");
+    assert!(found.message.as_deref().is_some_and(|message| !message.contains("-->")), "{found:?}");
+
+    std::fs::write(&program, "MAP = embed(\"not_there.bin\")\n\ndef main():\n    pass\n").unwrap();
+    let found = load_problem(&program).unwrap();
+    assert_eq!((found.errors, &found.rule, &found.file), (Some(1), &some("load"), &some("game.fen")));
+    assert_eq!((found.line, found.column), (Some(1), Some(7)));
+    assert_eq!(found.message, some("there's no file `not_there.bin` to embed"));
+    assert!(found.help.as_deref().is_some_and(|help| help.ends_with("not_there.bin")), "{found:?}");
+
+    let kit = dir.join("kit");
+    std::fs::create_dir_all(kit.join("src")).unwrap();
+    std::fs::write(kit.join("kit.toml"), "name = \"demo\"\nversoin = \"0.1.0\"\n").unwrap();
+    let found = load_problem(&kit).unwrap();
+    assert_eq!(
+        found,
+        LoadProblem {
+            errors: Some(3),
+            fixable: Some(0),
+            rule: some("load"),
+            file: some("kit.toml"),
+            line: Some(2),
+            column: Some(1),
+            message: some("kit.toml has no key called `versoin`"),
+            help: some("kit.toml has `name`, `version` and `fennec`"),
+        }
+    );
+
+    // With nothing to point at, the place is null and the message and help are still apart.
+    std::fs::remove_file(kit.join("kit.toml")).unwrap();
+    let found = load_problem(&kit).unwrap();
+    assert_eq!((found.errors, &found.rule, &found.file, found.line), (Some(1), &some("load"), &None, None));
+    assert!(found.message.as_deref().is_some_and(|message| message.starts_with("there's no kit.toml in ")));
+    assert!(found.help.as_deref().is_some_and(|help| help.contains("`fennec new <name>`")));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     let dir = scratch("lint").unwrap();

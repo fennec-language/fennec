@@ -37,7 +37,7 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
             "error: there's no kit.toml in {shown_as} or any folder above it\n  = help: `fennec new <name>` starts a kit, and `fennec run <file.fen>` runs a single file\n"
         )));
     };
-    let manifest = read_manifest(&root, &shown_root).map_err(Problems::unplaced)?;
+    let manifest = read_manifest(&root, &shown_root)?;
     let src = root.join("src");
     let mut loader = Loader::new(src.clone(), format!("{shown_root}src/"), Some(&root), overlay);
     let main = src.join("main.fen");
@@ -98,7 +98,7 @@ pub(crate) fn kit_modules(
     let Some((root, shown_root)) = find_root(dir, shown_as) else {
         return Err(Problems::unplaced("error: this isn't in a kit\n".to_owned()));
     };
-    let manifest = read_manifest(&root, &shown_root).map_err(Problems::unplaced)?;
+    let manifest = read_manifest(&root, &shown_root)?;
     let mut loader = Loader::new(root.join("src"), format!("{shown_root}src/"), Some(&root), overlay);
     let modules: Vec<Vec<String>> =
         modules.iter().map(|module| module.split('.').map(str::to_owned).collect()).collect();
@@ -138,14 +138,14 @@ fn folder_prefix(folder: Option<&Path>) -> String {
     }
 }
 
-fn read_manifest(root: &Path, shown_root: &str) -> Result<Manifest, String> {
+fn read_manifest(root: &Path, shown_root: &str) -> Result<Manifest, Problems> {
     let shown = format!("{shown_root}kit.toml");
     let text = std::fs::read_to_string(root.join("kit.toml"))
-        .map_err(|err| format!("error: couldn't read {shown}: {err}\n"))?;
+        .map_err(|err| Problems::unplaced(format!("error: couldn't read {shown}: {err}\n")))?;
     manifest::parse(&text, 0).map_err(|diagnostics| {
         let mut sources = Sources::new();
         sources.add(shown, text);
-        sources.render_all(&diagnostics)
+        Problems { sources, diagnostics, unplaced: Vec::new() }
     })
 }
 

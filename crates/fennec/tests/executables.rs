@@ -7,6 +7,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
 
+/// A `fennec` to start, with the runtime library built first. `fennec run` links against that
+/// library, and one left from before a rebase links without a word and gets things wrong: a
+/// dict's layout that no longer matches, say, printing zeroes. So nothing starts `fennec` until
+/// the library is current. Mutation testing and Windows don't link programs, and a test that
+/// needs the library says so itself when it couldn't be built.
+pub(crate) fn fennec_command() -> Command {
+    if !cfg!(windows) && !under_mutants() {
+        runtime_built();
+    }
+    Command::new(env!("CARGO_BIN_EXE_fennec"))
+}
+
 /// The runtime library executables link against, which `fennec build` expects next to
 /// itself. `cargo test` doesn't build it, so this does, once a run: an old one would be
 /// missing what the interpreter has learned since. Only once, because even when it's
@@ -74,12 +86,7 @@ fn programs(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// when it doesn't build.
 fn build(path: &Path, work: &Path) -> std::io::Result<Result<PathBuf, Output>> {
     let executable = work.join(path.file_stem().unwrap_or_default());
-    let built = Command::new(env!("CARGO_BIN_EXE_fennec"))
-        .arg("build")
-        .arg(path)
-        .arg("-o")
-        .arg(&executable)
-        .output()?;
+    let built = fennec_command().arg("build").arg(path).arg("-o").arg(&executable).output()?;
     Ok(if built.status.success() { Ok(executable) } else { Err(built) })
 }
 
@@ -141,8 +148,7 @@ fn failing_examples_fail_the_same_way_as_executables() {
         let ran = run(&executable).unwrap();
         // `fennec run` runs an executable itself where LLVM builds the program, so the
         // interpreter is what an executable's failure is held to.
-        let interpreted =
-            Command::new(env!("CARGO_BIN_EXE_fennec")).args(["run", "--interp"]).arg(&path).output().unwrap();
+        let interpreted = fennec_command().args(["run", "--interp"]).arg(&path).output().unwrap();
         assert!(!ran.status.success(), "{name} should fail");
         assert_eq!(
             String::from_utf8_lossy(&ran.stderr),

@@ -10,7 +10,7 @@ fn fennec(args: &[&str], stdin: &str) -> std::io::Result<Output> {
 }
 
 fn fennec_in(dir: &Path, args: &[&str], stdin: &str) -> std::io::Result<Output> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fennec"))
+    let mut child = crate::executables::fennec_command()
         .args(args)
         .current_dir(dir)
         // Every run does all of its work, whatever earlier runs left in the real cache.
@@ -653,7 +653,7 @@ fn run_outside_a_kit_says_how_to_start_one() {
 
 /// `fennec bench` on a program, with the cache in `home`, as on a person's machine.
 fn bench_in(home: &Path, program: &Path) -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_fennec"))
+    crate::executables::fennec_command()
         .arg("bench")
         .arg(program)
         .env("FENNEC_HOME", home)
@@ -1068,7 +1068,7 @@ fn fmt_with_no_path_formats_the_kit_around_the_current_folder() {
 
 /// Runs `fennec dev changes` in `dir`, keeping its snapshots under `home`.
 fn changes_in(dir: &Path, home: &Path) -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_fennec"))
+    crate::executables::fennec_command()
         .args(["dev", "changes"])
         .current_dir(dir)
         .env("FENNEC_HOME", home)
@@ -1146,7 +1146,7 @@ fn fix_reports_what_it_cant_fix() {
 /// Runs `fennec` in `dir` with its own Fennec folder, letting it use the daemon.
 #[cfg(unix)]
 fn with_daemon(dir: &Path, home: &Path, idle: &str, args: &[&str]) -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_fennec"))
+    crate::executables::fennec_command()
         .args(args)
         .current_dir(dir)
         .env("FENNEC_HOME", home)
@@ -1217,7 +1217,7 @@ fn the_daemon_keeps_the_cache_under_its_cap() {
     let old = home.join("cache").join("0.0.0-old").join("functions").join("x");
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
     std::fs::write(&old, vec![0_u8; 10_000]).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_fennec"))
+    crate::executables::fennec_command()
         .args(["dev", "changes"])
         .current_dir(&kit)
         .env("FENNEC_HOME", &home)
@@ -1333,7 +1333,7 @@ fn run_compiles_by_default_and_shows_output_before_it_reads_input() {
     )
     .unwrap();
     for engine in [&["run"][..], &["run", "--interp"]] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_fennec"))
+        let mut child = crate::executables::fennec_command()
             .args(engine)
             .arg(&program)
             .stdin(Stdio::piped())
@@ -1357,7 +1357,7 @@ fn run_compiles_by_default_and_shows_output_before_it_reads_input() {
 /// A program whose memory has to stay small: it's stopped, and fails, past `limit_kb`.
 #[cfg(unix)]
 fn peak_is_under(program: &Path, limit_kb: u64) -> Result<(), String> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fennec"))
+    let mut child = crate::executables::fennec_command()
         .arg("run")
         .arg(program)
         .stdout(Stdio::null())

@@ -564,13 +564,19 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `text.chars()`: each character's block lasts the whole run, and comes from its byte place.
-    fn chars(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
+    pub(crate) fn chars(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
         let (text, _) = self.operand(text)?;
         self.on_blocks([&text], |emit, [block]| emit.chars_of(dest, &block))
     }
 
     /// [`Self::chars`] of a string's block.
     fn chars_of(&mut self, dest: LocalId, text: &str) -> Result<(), String> {
+        let list = self.chars_list(text);
+        self.assign(dest, &list)
+    }
+
+    /// A new list of the characters of a string's block.
+    pub(crate) fn chars_list(&mut self, text: &str) -> String {
         let text = text.to_owned();
         let (chars_at, count) = (self.offset(&text, 24), self.temp());
         self.line(&format!("{count} = load i64, ptr {chars_at}"));
@@ -601,7 +607,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{next} = add i64 {byte}, {size}"));
         self.line(&format!("store i64 {next}, ptr {byte_place}"));
         self.loop_end(&end);
-        self.assign(dest, &list)
+        list
     }
 
     /// The builtins here; gives back `None` for any other.

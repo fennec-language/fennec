@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 72;
+const BUILDING_EXAMPLES: usize = 74;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -2198,5 +2198,47 @@ fn small_calls_fail_like_the_jit() -> std::io::Result<()> {
     some.remove(2)
     stdout.print(some)
 ",
+    )
+}
+
+/// Numbers read from text, with what fails being a value the program holds; and lists and sets of
+/// a string's characters and a list's items.
+#[test]
+fn numbers_and_sets_from_text_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "numbers_from_text",
+        r#"from std.re import Regex
+
+def add(a: str, b: str) -> int:
+    int(a)? + int(b)?
+
+def main(stdout: Stdout):
+    for text in ["42", " -7 ", "4x2", "", "99999999999999999999"]:
+        match int(text):
+            case Ok(n):
+                stdout.print(n)
+            case Err(error):
+                stdout.print(error.message)
+    for text in ["2.5", " 1e3 ", "nope", "a \"quoted\" value long enough for a block"]:
+        match float(text):
+            case Ok(x):
+                stdout.print(x)
+            case Err(error):
+                stdout.print(error.message)
+    stdout.print(int("12") else 0, int("x") else -1, float("0.5") else 0.0, float("y") else -1.5)
+    stdout.print(add("1", "2") else -1, add("1", "two") else -1)
+    for pattern in ["[0-9]+", "[0-9+"]:
+        match Regex(pattern):
+            case Ok(regex):
+                stdout.print(regex.pattern)
+            case Err(error):
+                stdout.print(error.message)
+    stdout.print(list("héllo"), list(""), set("hello").len(), "l" in set("hello"), set(""))
+    stdout.print(set([3, 1, 3, 2, 1]), set(["b", "a", "b", "a key long enough for a block", "a key long enough for a block"]))
+    stdout.print(set([(1, 2), (1, 2), (3, 4)]).len())
+"#,
     )
 }

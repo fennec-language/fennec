@@ -36,6 +36,7 @@ impl Emit<'_, '_, '_> {
             Operand::Local(local) => emit.kind_of(*local).ok().cloned(),
             Operand::Int(_) => Some(Kind::Int),
             Operand::Float(_) => Some(Kind::Float),
+            Operand::Str(_) => Some(Kind::Str),
             _ => None,
         };
         let kinds: Vec<Option<Kind>> = args.iter().map(|arg| kind_of(self, arg)).collect();
@@ -94,10 +95,103 @@ impl Emit<'_, '_, '_> {
                 dest.and_then(|dest| self.list_contains(dest, list, item))
             }
             ("list.remove", [Operand::Local(list), item], _) => self.list_remove(*list, item, span),
+            ("int" | "float", [text], [Some(Kind::Str)]) => {
+                dest.and_then(|dest| self.number_of_text(dest, name, text))
+            }
+            ("list", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.chars(dest, text)),
+            ("set", [list], [Some(Kind::List(_))]) => dest.and_then(|dest| {
+                let (list, _, held) = self.list_operand(list)?;
+                self.set_of_list(dest, &list, &held)
+            }),
+            ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),
             _ => return None,
+        })
+    }
+
+    /// `int(text)` or `float(text)`: `Ok` with the number, or `Err` with an `InvalidValue`.
+    fn number_of_text(&mut self, dest: LocalId, name: &str, text: &Operand) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        let (ok_case, ok_fields) = self.case_of(&kind, "Ok")?;
+        let (err_case, err_fields) = self.case_of(&kind, "Err")?;
+        let (_, ok_offset, _) = ok_fields.first().cloned().ok_or("an `Ok` holding nothing")?;
+        let (_, err_offset, err_kind) = err_fields.first().cloned().ok_or("an `Err` holding nothing")?;
+        let err_kind = err_kind.ok_or("an error this backend doesn't take yet")?;
+        let (value, _) = self.operand(text)?;
+        let (block, made) = if self.headers() {
+            let (block, made) = self.text_block(&value);
+            (block, Some(made))
+        } else {
+            (value, None)
+        };
+        let boxed = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
+        let base = if let Some(boxed) = &boxed {
+            self.offset(boxed, crate::lists::FIELDS_OFFSET)
+        } else {
+            let (slot, text) = (self.slot(dest), self.text_of(&kind));
+            self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
+            slot
+        };
+        let function = if name == "int" { "fennec_parse_int" } else { "fennec_parse_float" };
+        self.declare(&format!("declare {{ i64, i64 }} @{function}(ptr) nounwind"));
+        let (parsed, read, bits, is_number) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{parsed} = call {{ i64, i64 }} @{function}(ptr {block})"));
+        self.line(&format!("{read} = extractvalue {{ i64, i64 }} {parsed}, 0"));
+        self.line(&format!("{bits} = extractvalue {{ i64, i64 }} {parsed}, 1"));
+        self.line(&format!("{is_number} = icmp ne i64 {read}, 0"));
+        let (good, bad, joined) = (self.label("number"), self.label("not_number"), self.label("read"));
+        self.line(&format!("br i1 {is_number}, label %{good}, label %{bad}"));
+        self.start_block(&good);
+        self.line(&format!("store i64 {ok_case}, ptr {base}"));
+        let number_at = self.offset(&base, ok_offset);
+        self.line(&format!("store i64 {bits}, ptr {number_at}"));
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&bad);
+        self.line(&format!("store i64 {err_case}, ptr {base}"));
+        self.declare("declare ptr @fennec_not_a_number(ptr, i64) nounwind");
+        let message = self.temp();
+        let int = i64::from(name == "int");
+        self.line(&format!("{message} = call ptr @fennec_not_a_number(ptr {block}, i64 {int})"));
+        let message = self.text_value(&message);
+        let error_at = self.offset(&base, err_offset);
+        self.invalid_value(&err_kind, &message, &error_at)?;
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        if let Some(made) = made {
+            self.let_go_text_block(&block, &made);
+        }
+        if let Some(boxed) = boxed {
+            self.assign(dest, &boxed)?;
+        }
+        Ok(())
+    }
+
+    /// An `InvalidValue` written at `at`, holding a message it takes over.
+    fn invalid_value(&mut self, kind: &Kind, message: &str, at: &str) -> Result<(), String> {
+        let (offset, field) = self.field(kind, "message")?;
+        if let Kind::Boxed(id) = kind {
+            let block = self.new_block(*id)?;
+            let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+            let place = self.offset(&fields, offset);
+            self.store_field(&field, message, &place, "");
+            self.store_field(kind, &block, at, "");
+        } else {
+            let place = self.offset(at, offset);
+            self.store_field(&field, message, &place, "");
+        }
+        Ok(())
+    }
+
+    /// `set(text)`: a set of its characters.
+    fn set_of_chars(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
+        let (text, _) = self.operand(text)?;
+        self.on_blocks([&text], |emit, [block]| {
+            let list = emit.chars_list(&block);
+            emit.set_of_list(dest, &list, &Kind::Str)?;
+            emit.release(&list);
+            Ok(())
         })
     }
 

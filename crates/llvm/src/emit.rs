@@ -759,8 +759,15 @@ impl Emit<'_, '_, '_> {
         let (none, _) = self.case_of(kind, "None")?;
         let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
         self.retain_value(value, held);
-        let (missing, tag) = (self.temp(), self.temp());
-        self.line(&format!("{missing} = icmp eq ptr {value}, null"));
+        // A local holds an optional string as a header, all zero for `None`.
+        let missing = if *held == Kind::MaybeText {
+            self.header_is_none(value)
+        } else {
+            let missing = self.temp();
+            self.line(&format!("{missing} = icmp eq ptr {value}, null"));
+            missing
+        };
+        let tag = self.temp();
         self.line(&format!("{tag} = select i1 {missing}, i64 {none}, i64 {some}"));
         let (place, fields_at) = if let Kind::Boxed(id) = kind {
             let block = self.new_block(*id)?;
@@ -774,7 +781,8 @@ impl Emit<'_, '_, '_> {
         };
         self.line(&format!("store i64 {tag}, ptr {fields_at}"));
         let at = self.offset(&fields_at, offset);
-        self.line(&format!("store ptr {value}, ptr {at}"));
+        let memory = held.memory(self.module.layouts);
+        self.line(&format!("store {memory} {value}, ptr {at}"));
         Ok((place, true))
     }
 
@@ -783,7 +791,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn value_for(&mut self, operand: &Operand, kind: &Kind) -> Result<(String, bool), String> {
         if *operand != Operand::None {
             let (value, held) = self.operand(operand)?;
-            if matches!(held, Kind::Maybe(_)) && self.is_optional(kind) {
+            if matches!(held, Kind::Maybe(_) | Kind::MaybeText) && self.is_optional(kind) {
                 return self.optional_as_enum(&value, &held, kind);
             }
             return Ok((value, false));
@@ -932,7 +940,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Calls the runtime's failure and leaves the function when `bad` holds.
-    fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
+    pub(crate) fn fail_if(&mut self, bad: &str, code: i64, span: Span) {
         let (fail, ok) = (self.label("fail"), self.label("ok"));
         self.line(&format!("br i1 {bad}, label %{fail}, label %{ok}, !prof !0"));
         self.start_block(&ok);
@@ -1429,6 +1437,9 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         if let Some(done) = self.loop_builtin(dest, name, args, span) {
+            return done;
+        }
+        if let Some(done) = self.conversion(dest, name, args, span) {
             return done;
         }
         let first = args.first();

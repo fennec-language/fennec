@@ -35,6 +35,7 @@ mod builders;
 mod builtins;
 mod capabilities;
 mod closures;
+mod conversions;
 mod dicts;
 mod emit;
 mod entry;

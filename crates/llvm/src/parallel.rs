@@ -282,11 +282,11 @@ impl Emit<'_, '_, '_> {
     fn parallel_put(
         &mut self,
         back: bool,
-        (list, at, value): (&Operand, &Operand, &Operand),
+        (list, at, new): (&Operand, &Operand, &Operand),
     ) -> Result<(), String> {
         let (held, kind) = self.operand(list)?;
         let item = self.item_kind(list_item(&kind)?)?;
-        let ((place, _), (value, value_kind)) = (self.operand(at)?, self.operand(value)?);
+        let (place, _) = self.operand(at)?;
         let memory = item.memory(self.module.layouts);
         let slot = self.item_address(&held, &memory, &place);
         // What was there is let go only once the new item is in, which may be the same item,
@@ -303,7 +303,14 @@ impl Emit<'_, '_, '_> {
                 old.push((self.load_field(&item, &slot, ITEM_ACCESS), item.clone()));
             }
         }
-        self.put_item(&item, &value_kind, &value, &slot);
+        if item.in_memory() {
+            // An inline struct's blocks get an owner in the list, or move there from a local
+            // read for the last time, as any write into a list's place does.
+            self.fill(&item, new, &slot, ITEM_ACCESS)?;
+        } else {
+            let (value, value_kind) = self.operand(new)?;
+            self.put_item(&item, &value_kind, &value, &slot);
+        }
         for (block, held) in old {
             self.release_kind(&block, &held);
         }

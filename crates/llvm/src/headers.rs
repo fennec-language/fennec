@@ -294,10 +294,11 @@ impl Emit<'_, '_, '_> {
         text += "  %o = call i64 @fennec_str_compare(ptr %xb, ptr %yb)\n";
         for side in ["x", "y"] {
             text += &format!(
-                "  %{side}c = load i64, ptr %{side}b\n  %{side}d = add i64 %{side}c, -1\n  store i64 %{side}d, ptr %{side}b\n  %{side}z = icmp eq i64 %{side}d, 0\n  br i1 %{side}z, label %{side}free, label %{side}kept\n{side}free:\n  call void @fennec_free(ptr %{side}b)\n  br label %{side}kept\n{side}kept:\n"
+                "  %{side}z = call i1 @fen_owner_gone(ptr %{side}b)\n  br i1 %{side}z, label %{side}free, label %{side}kept\n{side}free:\n  call void @fennec_free(ptr %{side}b)\n  br label %{side}kept\n{side}kept:\n"
             );
         }
         text += "  ret i64 %o\n}\n\n";
+        self.owner_gone_helper();
         self.module.add_helper("fen_header_order", text);
     }
 
@@ -518,9 +519,8 @@ impl Emit<'_, '_, '_> {
         let ascii = self.inline_ascii(more);
         let more_length = self.inline_length(more);
         let at = |emit: &mut Self, offset: i32| emit.offset(block, offset.unsigned_abs());
-        let (count, alone, inline, simple) = (self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{count} = load i64, ptr {block}{}", crate::emit::HEADER_ACCESS));
-        self.line(&format!("{alone} = icmp eq i64 {count}, 1"));
+        let alone = self.alone(block);
+        let (inline, simple) = (self.temp(), self.temp());
         self.line(&format!("{inline} = xor i1 {in_block}, true"));
         self.line(&format!("{simple} = and i1 {inline}, {ascii}"));
         let (length_at, room_at) = (at(self, TEXT_BYTES), at(self, TEXT_ROOM));

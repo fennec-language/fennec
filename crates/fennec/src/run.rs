@@ -84,7 +84,12 @@ fn built_and_run(
     let program = if program.sources.files().next().is_none() {
         let read = fennec_kit::load(std::path::Path::new(path), path, fennec_kit::Entry::Main);
         let sources = read.map_err(|_| "its source couldn't be read again".to_owned())?.sources;
-        whole = fennec_kit::Program { module: program.module.clone(), sources, manifest: None };
+        whole = fennec_kit::Program {
+            module: program.module.clone(),
+            sources,
+            manifest: None,
+            embedded: Vec::new(),
+        };
         &whole
     } else {
         program
@@ -154,7 +159,10 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures)
     let files = crate::image::files_now(path, &cache);
     let mut program = crate::load(path, fennec_kit::Entry::Main).ok_or(ExitCode::FAILURE)?;
     let name = passed_name(path);
-    let text = fingerprint(program.sources.files());
+    let embedded = program.embedded_texts();
+    let text = fingerprint(
+        program.sources.files().chain(embedded.iter().map(|(path, text)| (path.as_str(), text.as_str()))),
+    );
     if cache.read("checked", &name).is_none_or(|passed| passed != text.as_bytes()) {
         if let Err(diagnostics) = crate::copy_rule::check_rules(&mut program.module.clone()) {
             return Err(reject(&program, &diagnostics));
@@ -168,7 +176,7 @@ fn reached(path: &str) -> Result<(fennec_kit::Program, fennec_check::Signatures)
         return Err(reject(&program, &diagnostics));
     }
     if let Some(files) = &files {
-        crate::image::store(path, &cache, files, &program.module);
+        crate::image::store(path, &cache, files, &program);
     }
     match fennec_check::check_to_run(&mut program.module) {
         Ok(signatures) => Ok((program, signatures)),

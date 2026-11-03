@@ -28,23 +28,23 @@ fn copy_call(expr: &Expr) -> Option<(Span, &Expr)> {
     (name == "copy" && arg.name.is_none() && !arg.is_mut).then_some((expr.span, &arg.value))
 }
 
-/// Whether the program gives `copy` a meaning of its own: a function, or a name some function
-/// binds. Then a call to it isn't the builtin's.
-fn copy_is_redefined(module: &Module) -> bool {
-    let defined = module.items.iter().any(|item| matches!(item, Item::Function(def) if def.name == "copy"));
+/// Whether the program gives a builtin's name a meaning of its own: a function, or a name some
+/// function binds. Then a call to it isn't the builtin's.
+pub(crate) fn redefined(module: &Module, builtin: &str) -> bool {
+    let defined = module.items.iter().any(|item| matches!(item, Item::Function(def) if def.name == builtin));
     defined
         || functions(module)
             .iter()
-            .any(|def| def.params.iter().any(|param| param.name == "copy") || binds_copy(&def.body))
+            .any(|def| def.params.iter().any(|param| param.name == builtin) || binds(&def.body, builtin))
 }
 
-fn binds_copy(stmts: &[Stmt]) -> bool {
+fn binds(stmts: &[Stmt], builtin: &str) -> bool {
     stmts.iter().any(|stmt| {
         let assigned = matches!(&stmt.kind, StmtKind::Assign { target, .. }
-            if matches!(&target.kind, ExprKind::Name(name) if name == "copy"));
+            if matches!(&target.kind, ExprKind::Name(name) if name == builtin));
         let looped =
-            matches!(&stmt.kind, StmtKind::For { names, .. } if names.iter().any(|name| name == "copy"));
-        assigned || looped || blocks(stmt).into_iter().any(binds_copy)
+            matches!(&stmt.kind, StmtKind::For { names, .. } if names.iter().any(|name| name == builtin));
+        assigned || looped || blocks(stmt).into_iter().any(|block| binds(block, builtin))
     })
 }
 
@@ -57,8 +57,9 @@ fn root(expr: &Expr) -> &Expr {
 }
 
 /// Where a place is named, by the span of the start of its path: what `mut x = ...` declares,
-/// what `for mut` loops over, and each `mut` argument.
-fn places(module: &Module) -> HashSet<(u32, u32)> {
+/// what `for mut` loops over, and each `mut` argument, anywhere: in a function, a test, a nested
+/// function or a case of a `match`.
+pub(crate) fn places(module: &Module) -> HashSet<(u32, u32)> {
     fn block(stmts: &[Stmt], found: &mut HashSet<(u32, u32)>) {
         for stmt in stmts {
             let named = match &stmt.kind {
@@ -69,6 +70,9 @@ fn places(module: &Module) -> HashSet<(u32, u32)> {
             if let Some(value) = named {
                 found.insert((root(value).span.start, root(value).span.end));
             }
+            if let StmtKind::Def(def) = &stmt.kind {
+                block(&def.body, found);
+            }
             for inner in blocks(stmt) {
                 block(inner, found);
             }
@@ -78,13 +82,24 @@ fn places(module: &Module) -> HashSet<(u32, u32)> {
     for def in functions(module) {
         block(&def.body, &mut found);
     }
+    for item in &module.items {
+        if let Item::Test(test) = item {
+            block(&test.body, &mut found);
+        }
+    }
     let mut walked = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
-        if let ExprKind::Call { args, .. } = &expr.kind {
+    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| match &expr.kind {
+        ExprKind::Call { args, .. } => {
             for arg in args.iter().filter(|arg| arg.is_mut) {
                 found.insert((root(&arg.value).span.start, root(&arg.value).span.end));
             }
         }
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                block(&arm.body, &mut found);
+            }
+        }
+        _ => {}
     });
     found
 }
@@ -169,7 +184,7 @@ fn fix(sources: &Sources, call: Span, value: &Expr) -> Option<Diagnostic> {
 /// Every needless `copy` in a module that checks. Each one found costs a check of the whole
 /// program, and programs write few, so it runs only where the whole program is checked anyway.
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
-    if copy_is_redefined(module) {
+    if redefined(module, "copy") {
         return Vec::new();
     }
     let mut calls = Vec::new();

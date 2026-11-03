@@ -1,0 +1,7 @@
+error: there's no file `not_there.bin` to embed
+ --> examples/projects/errors/embed_missing_file/src/main.fen:2:7
+  |
+2 | MAP = embed("not_there.bin")
+  |       ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: the path starts from the folder this file is in, so it would be examples/projects/errors/embed_missing_file/src/not_there.bin

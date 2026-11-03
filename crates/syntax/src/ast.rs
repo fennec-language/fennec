@@ -263,6 +263,29 @@ pub enum StmtKind {
     Pass,
 }
 
+/// A file's bytes, shared since a file can be big and a syntax tree is copied. Written for
+/// debugging, it's a hash and not every byte: hashing a tree that way still sees any change.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Blob(pub std::sync::Arc<[u8]>);
+
+impl Blob {
+    pub fn hash(&self) -> fennec_blake3::Hash {
+        fennec_blake3::hash(&self.0)
+    }
+}
+
+impl From<Vec<u8>> for Blob {
+    fn from(data: Vec<u8>) -> Self {
+        Blob(data.into())
+    }
+}
+
+impl std::fmt::Debug for Blob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Blob({}, {})", self.0.len(), self.hash())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Expr {
     pub kind: ExprKind,
@@ -275,6 +298,8 @@ pub enum ExprKind {
     Float(f64),
     /// A duration literal, like `30s`, in nanoseconds: a `Duration` from `std.time`.
     Duration(i64),
+    /// A file's bytes, read when the program was loaded: what `embed("path")` becomes.
+    Bytes(Blob),
     Str(String),
     FStr(Vec<FStrPart>),
     Bool(bool),
@@ -479,6 +504,7 @@ impl Expr {
             ExprKind::Int(_)
             | ExprKind::Float(_)
             | ExprKind::Duration(_)
+            | ExprKind::Bytes(_)
             | ExprKind::Str(_)
             | ExprKind::Bool(_)
             | ExprKind::None => true,

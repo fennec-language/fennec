@@ -131,6 +131,32 @@ impl Decode for f64 {
     }
 }
 
+impl Encode for u8 {
+    fn encode(&self, to: &mut Writer) {
+        to.bytes.push(*self);
+    }
+}
+
+impl Decode for u8 {
+    fn decode(from: &mut Reader<'_>) -> Option<Self> {
+        let (first, rest) = from.bytes.split_first()?;
+        from.bytes = rest;
+        Some(*first)
+    }
+}
+
+impl Encode for fennec_syntax::Blob {
+    fn encode(&self, to: &mut Writer) {
+        self.0.as_ref().encode(to);
+    }
+}
+
+impl Decode for fennec_syntax::Blob {
+    fn decode(from: &mut Reader<'_>) -> Option<Self> {
+        Vec::<u8>::decode(from).map(fennec_syntax::Blob::from)
+    }
+}
+
 impl Encode for bool {
     fn encode(&self, to: &mut Writer) {
         to.tag(u8::from(*self));

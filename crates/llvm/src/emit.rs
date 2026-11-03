@@ -14,6 +14,9 @@ use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
 use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
 
+/// Why a program with bytes written into it, as `embed("path")` gives, isn't taken yet.
+pub(crate) const BYTES: &str = "it uses a Bytes, which this backend doesn't take yet";
+
 /// The level of processor code is built for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Cpu {
@@ -958,6 +961,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(value) => (float_text(*value), Kind::Float),
             Operand::Bool(value) => (value.to_string(), Kind::Bool),
             Operand::Str(text) => (self.literal_value(text), Kind::Str),
+            Operand::Bytes(_) => return Err(BYTES.to_owned()),
             Operand::None => ("null".to_owned(), Kind::Unit),
         })
     }
@@ -1526,6 +1530,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(_) => Kind::Float,
             Operand::Bool(_) => Kind::Bool,
             Operand::Str(_) => Kind::Str,
+            Operand::Bytes(_) => return Err(BYTES.to_owned()),
             Operand::None => wanted.clone(),
         };
         if from != wanted && self.headers() {

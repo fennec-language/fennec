@@ -218,6 +218,8 @@ enum ExprKind:
     ## A duration literal, like `30s`, in nanoseconds: a `Duration` from `std.time`. It comes
     ## last so the cases before it keep the numbers the embedding gives them.
     Duration(nanos: int)
+    ## A file's bytes, read when the program was loaded: what `embed("path")` becomes.
+    Bytes(data: bytes)
 
 enum CompKind:
     List

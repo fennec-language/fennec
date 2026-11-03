@@ -374,6 +374,7 @@ impl Resolver<'_> {
         let span = expr.span;
         match &mut expr.kind {
             ExprKind::Int(_)
+            | ExprKind::Bytes(_)
             | ExprKind::Duration(_)
             | ExprKind::Float(_)
             | ExprKind::Str(_)

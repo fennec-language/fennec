@@ -30,6 +30,7 @@ impl Interp<'_> {
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Float(x) => Ok(Value::Float(*x)),
             ExprKind::Duration(nanos) => self.duration(*nanos, span),
+            ExprKind::Bytes(data) => Ok(Value::Bytes(Rc::from(data.0.as_ref()))),
             ExprKind::Str(text) => Ok(Value::str(text)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
             ExprKind::None => Ok(Value::None),

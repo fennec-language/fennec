@@ -27,14 +27,15 @@ pub(crate) fn check_json(path: &str) -> ExitCode {
 
 /// The program at `path`, or, when it can't be loaded, `None` once that's shown as asked.
 fn loaded(path: &str, json: bool) -> Option<fennec_kit::Program> {
-    match fennec_kit::load(std::path::Path::new(path), path, fennec_kit::Entry::Everything) {
+    let overlay = fennec_kit::Overlay::new();
+    match fennec_kit::load_with(std::path::Path::new(path), path, fennec_kit::Entry::Everything, &overlay) {
         Ok(program) => Some(program),
-        Err(rendered) if json => {
-            print!("{}", report::unloaded(&rendered));
+        Err(problems) if json => {
+            print!("{}", report::unloaded(&problems));
             None
         }
-        Err(rendered) => {
-            eprint!("{rendered}");
+        Err(problems) => {
+            eprint!("{}", problems.render());
             None
         }
     }

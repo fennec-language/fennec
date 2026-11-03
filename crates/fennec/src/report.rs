@@ -6,8 +6,9 @@
 //! `severity` (`error` or `hint`), `file`, `line`, `column`, `end_line`, `end_column` (lines and
 //! columns count from 1, columns in characters), `message`, `help` (or null), `also` (another
 //! place it involves, or null) and `fixes`, the edits `fennec fix` would make; then how many
-//! `errors`, `hints` and `fixable` there are. A program that can't be loaded, like one that
-//! doesn't parse, gives one finding with rule `load`, its problem as text, and no place.
+//! `errors`, `hints` and `fixable` there are. What stops a program being loaded, like a file that
+//! doesn't parse, is found the same way with rule `load`, except that a problem with no place in a
+//! file, like a missing `kit.toml`, has null for its `file`, lines and columns.
 
 use fennec_lint::{Lint, Severity};
 use fennec_lsp::Json;
@@ -23,6 +24,11 @@ pub(crate) struct Finding<'d> {
 }
 
 impl<'d> Finding<'d> {
+    /// Something that stopped the program being loaded.
+    fn unloaded(diagnostic: &'d Diagnostic) -> Self {
+        Finding { rule: "load", severity: Severity::Error, message: &diagnostic.message, diagnostic }
+    }
+
     /// One of the checker's errors.
     pub(crate) fn checked(diagnostic: &'d Diagnostic) -> Self {
         Finding { rule: "check", severity: Severity::Error, message: &diagnostic.message, diagnostic }
@@ -100,10 +106,11 @@ pub(crate) fn json(sources: &Sources, found: &[Finding<'_>]) -> String {
     format!("{report}\n")
 }
 
-/// What couldn't be loaded, like a file that doesn't parse, as one finding with rule `load`. Its
-/// message is the problem as text, which says where it is, and its place is null.
-pub(crate) fn unloaded(rendered: &str) -> String {
-    let problem = Json::object([
+/// A problem with no place in a file, as `Problems` has it rendered, as a finding with rule `load`.
+fn unplaced(rendered: &str) -> Json {
+    let rendered = rendered.trim_end().trim_start_matches("error: ");
+    let (message, help) = rendered.split_once("\n  = help: ").unzip();
+    Json::object([
         ("rule", Json::string("load")),
         ("severity", Json::string("error")),
         ("file", Json::Null),
@@ -111,16 +118,26 @@ pub(crate) fn unloaded(rendered: &str) -> String {
         ("column", Json::Null),
         ("end_line", Json::Null),
         ("end_column", Json::Null),
-        ("message", Json::string(rendered.trim_end())),
-        ("help", Json::Null),
+        ("message", Json::string(message.unwrap_or(rendered))),
+        ("help", help.map_or(Json::Null, Json::string)),
         ("also", Json::Null),
+        ("also_is", Json::Null),
         ("fixes", Json::Array(Vec::new())),
-    ]);
+    ])
+}
+
+/// Everything that stopped a program being loaded, as one JSON object.
+pub(crate) fn unloaded(problems: &fennec_kit::Problems) -> String {
+    let found: Vec<Finding<'_>> = problems.diagnostics.iter().map(Finding::unloaded).collect();
+    let mut shown: Vec<Json> = problems.unplaced.iter().map(|rendered| unplaced(rendered)).collect();
+    shown.extend(found.iter().map(|finding_of| finding(&problems.sources, finding_of)));
+    let fixable = found.iter().filter(|shown| !shown.diagnostic.fixes.is_empty()).count();
+    let errors = shown.len();
     let report = Json::object([
-        ("diagnostics", Json::Array(vec![problem])),
-        ("errors", Json::number(1)),
+        ("diagnostics", Json::Array(shown)),
+        ("errors", Json::number(errors)),
         ("hints", Json::number(0)),
-        ("fixable", Json::number(0)),
+        ("fixable", Json::number(fixable)),
     ]);
     format!("{report}\n")
 }

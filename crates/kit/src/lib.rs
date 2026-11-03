@@ -97,7 +97,7 @@ pub fn load_with(path: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
 pub struct Problems {
     /// The files read before the problems were found.
     pub sources: Sources,
-    /// Problems in those files, like a parse error or an import of nothing.
+    /// Problems in those files, like a parse error, an import of nothing or a bad `kit.toml`.
     pub diagnostics: Vec<Diagnostic>,
     /// Problems with no place in a file, like a missing `kit.toml`, already rendered.
     pub unplaced: Vec<String>,

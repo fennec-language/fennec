@@ -7,6 +7,7 @@ import enemies
 
 ## Whether an enemy is down is about damage, so it's written here, as `Enemy`'s own method.
 extend Enemy:
+    ## Whether it has no health left.
     pub def is_down(self) -> bool:
         self.health <= 0
 

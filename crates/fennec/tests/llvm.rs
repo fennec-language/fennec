@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 49;
+const BUILDING_EXAMPLES: usize = 62;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -99,6 +99,62 @@ fn str_of_text_matches_the_jit() -> std::io::Result<()> {
         "str_of_text",
         "def main(stdout: Stdout):\n    name = \"fox\"\n    stdout.print(str(name), str(\"\"))\n",
     )
+}
+
+/// `fail` and `?` leave a `for mut` loop as `return` does: the item it's on is written back first.
+#[test]
+fn failing_out_of_a_for_mut_loop_writes_the_item_back() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let shared = r#"error Bad:
+    why: str
+
+struct Unit:
+    tags: list[int]
+    hp: int
+
+def maybe(at: int) -> int:
+    if at == 1:
+        fail Bad("from a call")
+    at
+
+def by_fail(mut units: list[Unit], at: int) -> int:
+    for mut unit in units:
+        unit.tags.append(at)
+        unit.hp += 1
+        if unit.hp == 2:
+            fail Bad("stop")
+    0
+
+def by_try(mut units: list[Unit]) -> int:
+    for mut unit in units:
+        unit.tags.append(8)
+        unit.hp += maybe(unit.hp)?
+    0
+
+def main(stdout: Stdout):
+    mut units = [Unit([1], 0), Unit([2], 1), Unit([3], 5)]
+    stdout.print(by_fail(mut units, 9) else -1, units)
+    mut others = [Unit([1], 0), Unit([2], 1), Unit([3], 5)]
+    stdout.print(by_try(mut others) else -2, others)
+"#;
+    same_as_the_jit("failing_out_of_for_mut", shared)?;
+    // Out of two loops at once. The JIT stops here with "expected an int", so this one's held to
+    // what the interpreter prints.
+    let nested = "error Bad:\n    why: str\n\ndef nested(mut grid: list[list[int]]) -> int:\n    for mut row in grid:\n        for mut cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(mut grid) else -3, grid)\n";
+    let dir = folder("failing_out_of_two_loops")?;
+    let program = dir.join("two_loops.fen");
+    std::fs::write(&program, nested)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("two_loops"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours, interpreted);
+    assert_eq!(ours.0, "-3 [[2, 3], [5, 7], [9]]\n");
+    Ok(())
 }
 
 #[test]
@@ -1842,58 +1898,71 @@ def main(stdout: Stdout):
     Ok(())
 }
 
-/// `fail` and `?` leave a `for mut` loop as `return` does: the item it's on is written back first.
+/// Conversions and small builtins: floats to ints, `PI`, `range` and `reversed` as lists, and a
+/// dict's or set's keys as a list.
 #[test]
-fn failing_out_of_a_for_mut_loop_writes_the_item_back() -> std::io::Result<()> {
+fn conversions_match_the_jit() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let shared = r#"error Bad:
-    why: str
-
-struct Unit:
-    tags: list[int]
-    hp: int
-
-def maybe(at: int) -> int:
-    if at == 1:
-        fail Bad("from a call")
-    at
-
-def by_fail(mut units: list[Unit], at: int) -> int:
-    for mut unit in units:
-        unit.tags.append(at)
-        unit.hp += 1
-        if unit.hp == 2:
-            fail Bad("stop")
-    0
-
-def by_try(mut units: list[Unit]) -> int:
-    for mut unit in units:
-        unit.tags.append(8)
-        unit.hp += maybe(unit.hp)?
-    0
+    same_as_the_jit(
+        "conversions",
+        r#"from std.math import PI, ceil, floor
 
 def main(stdout: Stdout):
-    mut units = [Unit([1], 0), Unit([2], 1), Unit([3], 5)]
-    stdout.print(by_fail(mut units, 9) else -1, units)
-    mut others = [Unit([1], 0), Unit([2], 1), Unit([3], 5)]
-    stdout.print(by_try(mut others) else -2, others)
-"#;
-    same_as_the_jit("failing_out_of_for_mut", shared)?;
-    // Out of two loops at once. The JIT stops here with "expected an int", so this one's held to
-    // what the interpreter prints.
-    let nested = "error Bad:\n    why: str\n\ndef nested(mut grid: list[list[int]]) -> int:\n    for mut row in grid:\n        for mut cell in row:\n            cell += 1\n            if cell == 5:\n                fail Bad(\"inner\")\n    0\n\ndef main(stdout: Stdout):\n    mut grid = [[1, 2], [4, 7], [9]]\n    stdout.print(nested(mut grid) else -3, grid)\n";
-    let dir = folder("failing_out_of_two_loops")?;
-    let program = dir.join("two_loops.fen");
-    std::fs::write(&program, nested)?;
-    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("two_loops"));
-    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ours = outcome(&Command::new(&executable).output()?);
-    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
-    std::fs::remove_dir_all(&dir)?;
-    assert_eq!(ours, interpreted);
-    assert_eq!(ours.0, "-3 [[2, 3], [5, 7], [9]]\n");
-    Ok(())
+    for x in [2.5, -2.5, 3.5, 0.49, -0.51, 7.0]:
+        stdout.print(int(x), round(x), floor(x), ceil(x), x.abs())
+    stdout.print(PI > 3.14, PI < 3.15)
+    stdout.print(range(5), range(2, 6), range(10, 0, -3), range(0, 10, 4), range(3, 3), range(5, 0))
+    stdout.print(sorted(range(4), key=(n) => -n), range(-3, 3, 2))
+    stdout.print(reversed([1, 2, 3]), reversed(["a", "b long enough to be a block of its own", "c"]))
+    counts = {"b": 2, "a": 1, "c": 3}
+    stdout.print(list(counts), list({3, 1, 2}))
+    mut seen: set[int] = set()
+    seen.add(4)
+    copied = set(seen)
+    seen.add(5)
+    stdout.print(seen, copied)
+"#,
+    )
+}
+
+/// A float outside an int's range doesn't become one.
+#[test]
+fn a_float_too_big_for_an_int_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "float_too_big",
+        "def main(stdout: Stdout):
+    huge = 1e300
+    stdout.print(int(huge * huge / huge))
+",
+    )
+}
+
+/// Optional strings going into a list, whose items hold an optional as an enum.
+#[test]
+fn optional_strings_in_lists_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "optional_strings_in_lists",
+        r#"def first(words: list[str]) -> str?:
+    if words.len() > 0:
+        return words[0]
+    None
+
+def main(stdout: Stdout):
+    mut found = []
+    found.append(first(["short"]))
+    found.append(first([]))
+    found.append(first(["a string long enough that it has a block of its own"]))
+    stdout.print(found, found.len())
+    for item in found:
+        stdout.print(item else "missing")
+"#,
+    )
 }

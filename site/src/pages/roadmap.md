@@ -28,7 +28,7 @@ description: What Fennec does today, what's being built next, and the design que
 ## Next: speed and builds
 
 - One backend: LLVM, with per-function `-O3` and a function-level cache. Whole-program work happens only in `--release`.
-- LLVM becomes the default once about 90% of examples build natively, and that retires Cranelift. A program either builds natively or is refused, and refused examples go on a tracked list that must reach zero.
+- LLVM becomes the default once about 90% of examples build natively. Removing Cranelift also takes a native `fennec test` harness and Windows linking. A program either builds natively or is refused, and refused examples go on a tracked list that must reach zero.
 - One content store per machine, with results named by hash and no `target` folders. `fennec run` makes real binaries in it.
 - A shared cache that only trusted builds can write to, and a clean rebuild in CI to check it against.
 - A tiny launcher that fetches the compiler a kit asks for. Pinned compilers never change by themselves.
@@ -59,6 +59,7 @@ Each of these is decided and not built.
 - `parallel` over collections and streams, on real cores, with `limit=`. Today it compiles for reading, and runs in order.
 - User types splitting for `parallel` through their positions, and `(f(x) for x in parallel(xs))` streaming results in order.
 - `with launch(fn) as task:` for long-running tasks, and bounded channels with `send`, `pending()` and `for x in ch`.
+- Event channels, for many listeners each reading at its own pace.
 - One scheduler, with I/O multiplexed by the OS.
 - `shared Name:`, with methods that lock automatically.
 - A failure in a server task staying in that task, designed when servers are built.
@@ -84,6 +85,7 @@ These are still being decided. Decisions already made, and why, are in [the desi
 - Whether independent writes, not just reads, should overlap automatically.
 - How a type marks that its finishing method has to be called.
 - How replay records the order tasks reach a `shared` value or a channel.
+- The exact API of event channels.
 - The exact syntax for property tests, and for units of measure.
 - The file extension (currently `.fen`).
 - Whether files of a kit may reuse a top-level name, reached through `import` by their module's name.

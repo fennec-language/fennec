@@ -52,12 +52,13 @@ modules! {
 
 /// What's available everywhere without an import: the errors standard operations fail
 /// with, and the built-in types' methods written in Fennec.
-const CORE: [(&str, &str); 5] = [
+const CORE: [(&str, &str); 6] = [
     ("errors", include_str!("stdlib/errors.fen")),
     ("str", include_str!("stdlib/str.fen")),
     ("list", include_str!("stdlib/list.fen")),
     ("dict", include_str!("stdlib/dict.fen")),
     ("set", include_str!("stdlib/set.fen")),
+    ("serialize", include_str!("stdlib/serialize.fen")),
 ];
 
 /// The standard library written in Fennec, loaded before every program by both the
@@ -109,7 +110,15 @@ pub fn core_to_run() -> Result<&'static [crate::Module], crate::Diagnostic> {
     static CORE_RUN: std::sync::OnceLock<Result<Vec<crate::Module>, crate::Diagnostic>> =
         std::sync::OnceLock::new();
     let made = CORE_RUN.get_or_init(|| {
-        CORE.into_iter().map(|(name, source)| parse_module(name, source).map(to_run)).collect()
+        let mut core = Vec::new();
+        for (name, source) in CORE {
+            core.push(parse_module(name, source)?);
+        }
+        let interfaces = crate::visit::interface_names(&core);
+        for module in &mut core {
+            crate::visit::interface_params(module, &interfaces);
+        }
+        Ok(core.into_iter().map(to_run).collect())
     });
     match made {
         Ok(modules) => Ok(modules),
@@ -152,7 +161,10 @@ fn parse_alone(at: usize) -> Result<crate::Module, crate::Diagnostic> {
         }
     }
     qualify_functions(&mut set);
-    let (_, module) = set.swap_remove(0);
+    let (_, mut module) = set.swap_remove(0);
+    let imported = set.iter().map(|(_, module)| module);
+    let interfaces = crate::visit::interface_names(core_to_run()?.iter().chain(imported).chain([&module]));
+    crate::visit::interface_params(&mut module, &interfaces);
     Ok(to_run(module))
 }
 

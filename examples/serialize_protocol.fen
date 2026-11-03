@@ -1,0 +1,147 @@
+# decision: `def serialize(self, mut out: Serializer)` and `def deserialize(mut src: Deserializer) -> Self` are the serialization protocol,
+
+# A format is a type with a `Serializer`'s methods. Each call is compiled for the format it's
+# given, so nothing is looked up as it runs, and one `def serialize` serves every format.
+
+struct Shown:
+    parts = list[str]()
+
+    def int(mut self, value: int):
+        self.parts.append(str(value))
+
+    def float(mut self, value: float):
+        self.parts.append(str(value))
+
+    def bool(mut self, value: bool):
+        self.parts.append("yes" if value else "no")
+
+    def text(mut self, value: str):
+        self.parts.append(f"'{value}'")
+
+    def bytes(mut self, value: bytes):
+        self.parts.append("bytes")
+
+    def none(mut self):
+        self.parts.append("nothing")
+
+    def value[T: Serializable](mut self, x: T):
+        x.serialize(mut self)
+
+    def sequence[T: Serializable](mut self, items: list[T]):
+        self.parts.append("(")
+        for item in items:
+            item.serialize(mut self)
+        self.parts.append(")")
+
+    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+        for key, value in pairs:
+            key.serialize(mut self)
+            self.parts.append("=")
+            value.serialize(mut self)
+
+    def record(mut self, name: str, fields: list[(str, bool)]):
+        self.parts.append(f"{name}/{fields.len()}")
+
+    def field[T: Serializable](mut self, x: T):
+        x.serialize(mut self)
+
+    def case(mut self, name: str, case: str):
+        self.parts.append(f"{name}.{case}")
+
+    def shown(self) -> str:
+        " ".join(self.parts)
+
+# Another format takes the same types, and counts instead of writing.
+struct Counted:
+    total = 0
+
+    def int(mut self, value: int):
+        self.total += 1
+
+    def float(mut self, value: float):
+        self.total += 1
+
+    def bool(mut self, value: bool):
+        self.total += 1
+
+    def text(mut self, value: str):
+        self.total += 1
+
+    def bytes(mut self, value: bytes):
+        self.total += 1
+
+    def none(mut self):
+        self.total += 1
+
+    def value[T: Serializable](mut self, x: T):
+        x.serialize(mut self)
+
+    def sequence[T: Serializable](mut self, items: list[T]):
+        for item in items:
+            item.serialize(mut self)
+
+    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+        for key, value in pairs:
+            value.serialize(mut self)
+
+    def record(mut self, name: str, fields: list[(str, bool)]):
+        pass
+
+    def field[T: Serializable](mut self, x: T):
+        x.serialize(mut self)
+
+    def case(mut self, name: str, case: str):
+        self.total += 1
+
+struct Spot:
+    x: int
+    label: str
+
+    def serialize(self, mut out: Serializer):
+        out.record("Spot", [("x", False), ("label", False)])
+        out.field(self.x)
+        out.field(self.label)
+
+struct Squad:
+    spots: list[Spot]
+    scores: dict[str, int]
+    ready: bool
+    pace: float
+
+    def serialize(self, mut out: Serializer):
+        out.record("Squad", [("spots", False), ("scores", True), ("ready", False), ("pace", False)])
+        out.field(self.spots)
+        out.field(self.scores)
+        out.field(self.ready)
+        out.field(self.pace)
+
+def shown[T: Serializable](x: T) -> str:
+    mut out = Shown()
+    out.value(x)
+    out.shown()
+
+test "plain values write themselves":
+    assert shown(3) == "3"
+    assert shown(1.5) == "1.5"
+    assert shown(True) == "yes"
+    assert shown("hi") == "'hi'"
+
+test "collections write their items":
+    assert shown([1, 2]) == "( 1 2 )"
+    assert shown({"a": 1}) == "'a' = 1"
+    assert shown({2}) == "( 2 )"
+
+test "a struct writes its fields in order":
+    assert shown(Spot(x=1, label="a")) == "Spot/2 1 'a'"
+
+def main(stdout: Stdout):
+    squad = Squad(
+        spots=[Spot(x=1, label="a"), Spot(x=2, label="b")],
+        scores={"ash": 3},
+        ready=True,
+        pace=0.5,
+    )
+    stdout.print(shown(squad))
+    mut counted = Counted()
+    squad.serialize(mut counted)
+    stdout.print(counted.total)

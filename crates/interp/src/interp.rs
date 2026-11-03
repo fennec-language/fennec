@@ -86,7 +86,7 @@ impl<'m> Keep<'m> for Copied {
 }
 
 /// The built-in types the standard library's code gives methods to with `extend`.
-const BUILT_IN_OWNERS: [&str; 4] = ["str", "list", "dict", "set"];
+const BUILT_IN_OWNERS: [&str; 8] = ["int", "float", "bool", "bytes", "str", "list", "dict", "set"];
 
 /// A running Fennec program: its declarations, the current call's names, and its output.
 pub struct Interp<'out> {
@@ -348,6 +348,10 @@ impl<'out> Interp<'out> {
     /// A method the standard library gives a built-in value's type, like `str`'s `def *`.
     pub(crate) fn built_in_method(&self, value: &Value, method: &str) -> Option<Rc<Callable>> {
         let owner = match value {
+            Value::Int(_) => "int",
+            Value::Float(_) => "float",
+            Value::Bool(_) => "bool",
+            Value::Bytes(_) => "bytes",
             Value::Str(_) => "str",
             Value::List(_) | Value::Packed(_) => "list",
             Value::Dict(_) => "dict",

@@ -185,6 +185,10 @@ impl Type {
     /// standard library gives them methods.
     pub(crate) fn method_owner(&self) -> Option<&str> {
         match self {
+            Type::Int => Some("int"),
+            Type::Float => Some("float"),
+            Type::Bool => Some("bool"),
+            Type::Bytes => Some("bytes"),
             Type::Str => Some("str"),
             Type::List(_) => Some("list"),
             Type::Buffer(_) => Some("Buffer"),
@@ -218,7 +222,14 @@ impl Type {
 
     /// The built-in type `self` is in a method the standard library gives it, like `str`.
     pub(crate) fn built_in(name: &str) -> Option<Type> {
-        (name == "str").then_some(Type::Str)
+        match name {
+            "int" => Some(Type::Int),
+            "float" => Some(Type::Float),
+            "bool" => Some(Type::Bool),
+            "bytes" => Some(Type::Bytes),
+            "str" => Some(Type::Str),
+            _ => None,
+        }
     }
 
     pub(crate) fn type_name(&self) -> Option<&str> {

@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/release.yml
+      - .github/scripts/windows.sh
       - THIRD-PARTY.md
       - crates/fennec/src/aot.rs
       - crates/llvm/src/build.rs
@@ -29,7 +30,7 @@ jobs:
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
           - { os: macos-latest, target: aarch64-apple-darwin }
           - { os: macos-latest, target: x86_64-apple-darwin }
-          - { os: windows-latest, target: x86_64-pc-windows-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-gnullvm }
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -39,10 +40,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Fennec links programs with LLD and MinGW's libraries on Windows, so it's built for them.
-      - name: Use the GNU toolchain
+      # Fennec links programs with LLD and MinGW-w64's libraries on Windows, so it's built for them.
+      - name: Use Rust's GNU toolchain for LLVM
         if: runner.os == 'Windows'
-        run: rustup set default-host x86_64-pc-windows-gnu
+        shell: bash
+        run: .github/scripts/windows.sh toolchain
       - run: rustup target add ${{ matrix.target }}
       # `fennec build` links executables against the runtime library, shipped next to `fennec`.
       - run: cargo build --release --locked -p fennec -p fennec-runtime --target ${{ matrix.target }}
@@ -68,6 +70,7 @@ jobs:
       # LLVM's tools for the target's own machine, as `fennec` runs them. They're laid out in an
       # archive as the toolchain lays them out, which is where `fennec` looks: see `Tools::find`.
       - name: Install LLVM's tools for this platform
+        if: runner.os != 'Windows'
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -82,19 +85,20 @@ jobs:
         run: |
           # A pull request's ref has a slash in it.
           name="fennec-${GITHUB_REF_NAME//\//-}-${TARGET}"
-          mkdir -p "$name/llvm/bin" "$name/llvm/lib"
+          mkdir "$name"
           cp README.md LICENSE-MIT LICENSE-APACHE RUNTIME-LIBRARY-EXCEPTION THIRD-PARTY.md "$name/"
+          cp -r licenses "$name/"
           from="target/${TARGET}/release"
           cp "$from/libfennec_runtime.a" "$from/libfennec_runtime.bc" "$from/libfennec_runtime_threads.a" "$from/libfennec_runtime_threads.bc" "$name/"
           if [ "$RUNNER_OS" = Windows ]; then
             cp "$from/fennec.exe" "$name/"
-            cp "$TOOLS"/bin/{opt,llc,llvm-link,llvm-ar,rust-lld}.exe "$name/llvm/bin/"
-            mkdir "$name/llvm/lib/self-contained"
-            cp "$TOOLS"/lib/self-contained/* "$name/llvm/lib/self-contained/"
+            .github/scripts/windows.sh folder "$name/llvm"
+            cp "$RUNNER_TEMP/llvm-mingw-20251104-ucrt-x86_64/LICENSE.TXT" "$name/licenses/LLVM.txt"
             7z a "$name.zip" "$name" > /dev/null
             echo "ARCHIVE=$name.zip" >> "$GITHUB_ENV"
           else
             cp "$from/fennec" "$name/"
+            mkdir -p "$name/llvm/bin" "$name/llvm/lib"
             cp "$TOOLS"/bin/{opt,llc,llvm-link} "$name/llvm/bin/"
             # The tools share LLVM from a library of its own here.
             cp "$TOOLS"/lib/libLLVM* "$name/llvm/lib/"

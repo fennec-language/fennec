@@ -30,7 +30,7 @@ Then add the module's name to the `modules!` list in each crate's `stdlib.rs`, o
 
 ## Building on Windows
 
-Fennec builds with Rust's GNU toolchain on Windows, as it links programs with LLD and MinGW's libraries rather than Visual Studio. Run `rustup set default-host x86_64-pc-windows-gnu` once. `mimalloc` needs a C compiler to build, so `gcc` from a MinGW install has to be on `PATH`.
+Fennec builds with Rust's `x86_64-pc-windows-gnullvm` toolchain on Windows, as it links programs with LLD and MinGW-w64's libraries rather than Visual Studio. Run `rustup set default-host x86_64-pc-windows-gnullvm` once, and put the `bin` folder of an [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) UCRT release on `PATH`, for `mimalloc`'s C. `.github/scripts/windows.sh` has the release CI uses, and what it gathers beside `fennec` for building programs.
 
 ## Changing the lexer, parser or checker
 

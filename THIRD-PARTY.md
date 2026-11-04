@@ -1,17 +1,16 @@
 # Third-party software in a Fennec archive
 
-Fennec itself is under the licenses in `LICENSE-MIT` and `LICENSE-APACHE`. An archive also carries these, unchanged, as Rust's toolchain ships them, under their own licenses.
+Fennec itself is under the licenses in `LICENSE-MIT` and `LICENSE-APACHE`. An archive also carries these, unchanged, under their own licenses. Their texts are in the `licenses` folder, and none of them is under the GPL.
 
 ## In the `llvm` folder, on every platform
 
 `opt`, `llc`, `llvm-link`, and LLVM's shared library where the platform has one. On Windows, also `llvm-ar` and `rust-lld`, which is LLD.
 
-They're from the [LLVM Project](https://github.com/rust-lang/llvm-project), under the Apache License 2.0 with LLVM Exceptions and the University of Illinois/NCSA license. The project's `llvm/LICENSE.TXT` and `lld/LICENSE.TXT` have the full terms.
+They're from the [LLVM Project](https://github.com/rust-lang/llvm-project), built by the Rust project, under the Apache License 2.0 with LLVM Exceptions and the University of Illinois/NCSA license, in `licenses/LLVM.txt` on Windows.
 
 ## In `llvm/lib/self-contained`, on Windows
 
-MinGW's libraries, from the build Rust's toolchain bundles.
+These come from [llvm-mingw](https://github.com/mstorsjo/llvm-mingw).
 
-- **MinGW-w64's runtime and Windows import libraries:** [its notices](https://github.com/mingw-w64/mingw-w64/blob/master/COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt). Parts of them are linked into the programs `fennec build` makes, and those notices ask to be included when such a program is distributed.
-- **winpthreads:** the MIT license and a BSD-style license from Lockless Inc.: [its terms](https://github.com/mingw-w64/mingw-w64/blob/master/mingw-w64-libraries/winpthreads/COPYING).
-- **GCC's `libgcc` and `libgcc_eh`:** the GNU General Public License version 3 or later with the [GCC Runtime Library Exception](https://www.gnu.org/licenses/gcc-exception-3.1.html). Their source is GCC's, at [gcc.gnu.org](https://gcc.gnu.org/).
+- **LLVM's `libunwind` and `compiler-rt` builtins:** the Apache License 2.0 with LLVM Exceptions, in `licenses/LLVM.txt`. The exceptions cover what's linked into a program.
+- **MinGW-w64's runtime and Windows import libraries:** the notices in `licenses/mingw-w64-runtime.txt`. Parts of the runtime are linked into every program `fennec build` makes on Windows, and these notices ask to be included when such a program is distributed in binary form.

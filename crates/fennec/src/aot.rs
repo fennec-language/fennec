@@ -1,6 +1,6 @@
 //! `fennec build`: compiles a program ahead of time to a standalone executable. The JIT's
 //! compiler or LLVM writes object files, and the system's linker links them with Fennec's
-//! runtime library, which sits next to the `fennec` command. On Windows, that's LLD with MinGW's
+//! runtime library, which sits next to the `fennec` command. On Windows, that's LLD with MinGW-w64's
 //! libraries, which come with LLVM's tools, and for now only LLVM's objects.
 
 use std::path::{Path, PathBuf};
@@ -15,13 +15,13 @@ const SYSTEM_LIBRARIES: &[&str] = &["-lSystem", "-lc", "-lm", "-Wl,-dead_strip"]
 const SYSTEM_LIBRARIES: &[&str] =
     &["-lgcc_s", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl", "-lc", "-Wl,--gc-sections"];
 
-// LLD links programs against MinGW's libraries, which is what the runtime library has to be built
-// for, and nothing here looks for Visual Studio.
+// LLD links programs against MinGW-w64's libraries, so that's what the runtime library has to be
+// built for, and nothing here looks for Visual Studio.
 #[cfg(all(windows, target_env = "msvc"))]
-compile_error!("Fennec builds with the GNU toolchain on Windows: `rustup set default-host x86_64-pc-windows-gnu`");
+compile_error!("Fennec builds with the GNU toolchain on Windows: see CONTRIBUTING.md");
 
-/// What Rust's standard library needs from Windows and MinGW, which the runtime library uses, in
-/// the order LLD reads them.
+/// What Rust's standard library needs from Windows and MinGW-w64, which the runtime library uses,
+/// in the order LLD reads them.
 #[cfg(windows)]
 const WINDOWS_LIBRARIES: &[&str] = &[
     "-lkernel32",
@@ -32,13 +32,11 @@ const WINDOWS_LIBRARIES: &[&str] = &[
     "-lbcrypt",
     "-ladvapi32",
     "-lsynchronization",
-    "-lgcc_eh",
-    "-l:libpthread.a",
-    "-lmsvcrt",
-    "-lmingwex",
+    "-lunwind",
     "-lmingw32",
-    "-lgcc",
-    "-lmsvcrt",
+    "-lmingwex",
+    "-lucrt",
+    "-lclang_rt.builtins-x86_64",
     "-lmingwex",
     "-luser32",
     "-lkernel32",
@@ -204,11 +202,15 @@ pub(crate) struct Built {
     linked: std::time::Duration,
 }
 
-/// Whether there's a linker to find. Windows doesn't come with one, so LLD comes with LLVM's tools.
+/// Whether there's a linker to find. Windows doesn't come with one, so LLD and the libraries it
+/// links come with LLVM's tools.
 fn linker_here() -> bool {
     #[cfg(windows)]
     {
-        fennec_llvm::Tools::find().is_ok_and(|tools| tools.folder().join("rust-lld.exe").is_file())
+        fennec_llvm::Tools::find().is_ok_and(|tools| {
+            let (lld, libraries) = windows_linker(tools.folder());
+            lld.is_file() && libraries.join("crt2.o").is_file()
+        })
     }
     #[cfg(not(windows))]
     {
@@ -366,7 +368,8 @@ fn link_objects(
     }
     let started = Instant::now();
     let runtime = if runtime_in { c_parts(&runtime, &work)? } else { runtime };
-    let linked = linker(&paths, &runtime, output).output().map_err(|err| format!("couldn't run the linker: {err}"))?;
+    let linked =
+        linker(&paths, &runtime, output).output().map_err(|err| format!("couldn't run the linker: {err}"))?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
     if linked.status.success() {
@@ -391,13 +394,18 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
     command
 }
 
-/// LLD, set to link objects with a runtime library into an executable. It and MinGW's libraries
-/// are where a Rust toolchain for this target keeps them beside LLVM's tools, and a release too.
+/// LLD and the folder of libraries it links, in the `llvm` folder beside `fennec`.
+#[cfg(windows)]
+fn windows_linker(tools: &Path) -> (PathBuf, PathBuf) {
+    (tools.join("rust-lld.exe"), tools.with_file_name("lib").join("self-contained"))
+}
+
+/// LLD, set to link objects with a runtime library into an executable.
 #[cfg(windows)]
 fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
     let tools = fennec_llvm::Tools::find().map(|tools| tools.folder().to_path_buf()).unwrap_or_default();
-    let libraries = tools.with_file_name("lib").join("self-contained");
-    let mut command = Command::new(tools.join("rust-lld.exe"));
+    let (lld, libraries) = windows_linker(&tools);
+    let mut command = Command::new(lld);
     command
         .args(["-flavor", "gnu", "-m", "i386pep", "--dynamicbase", "--high-entropy-va", "--nxcompat"])
         .args(["--gc-sections", "--subsystem", "console"])
@@ -432,7 +440,9 @@ fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
     let object_path = work.join("program.o");
     std::fs::write(&object_path, object).map_err(|err| format!("couldn't write the object file: {err}"))?;
     let started = Instant::now();
-    let linked = linker(std::slice::from_ref(&object_path), &runtime, output).output().map_err(|err| format!("couldn't run the linker: {err}"))?;
+    let linked = linker(std::slice::from_ref(&object_path), &runtime, output)
+        .output()
+        .map_err(|err| format!("couldn't run the linker: {err}"))?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
     if linked.status.success() {

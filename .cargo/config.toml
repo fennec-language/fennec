@@ -1,0 +1,4 @@
+# Fennec's programs and the `fennec` command unwind with a libunwind of their own on Windows, so
+# neither needs its DLL beside it.
+[target.x86_64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]

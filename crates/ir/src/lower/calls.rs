@@ -177,11 +177,18 @@ impl Lowering<'_> {
     }
 
     /// The name of the type an expression names, as in `Point.origin()` or `Deque[int].of(xs)`.
-    fn type_named<'e>(&self, object: &'e Expr) -> Option<&'e str> {
+    fn type_named<'e>(&'e self, object: &'e Expr) -> Option<&'e str> {
         let named = match &object.kind {
             ExprKind::Index { object, .. } => object,
             _ => object,
         };
+        // `T.make()`: the type this copy of a generic has for `T`.
+        if let ExprKind::Name(param) = &named.kind
+            && self.lookup(param).is_none()
+            && let Some(ty) = self.subst.get(param)
+        {
+            return owner_name(ty);
+        }
         match &named.kind {
             ExprKind::Name(owner) if self.names_a_type(owner) => Some(owner),
             _ => None,

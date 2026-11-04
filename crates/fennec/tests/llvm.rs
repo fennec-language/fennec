@@ -480,6 +480,28 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `isdigit`, native on headers, says what std's says: inline and in a block, empty, digits
+/// outside ASCII, and a digit beside something that isn't.
+#[test]
+fn isdigit_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "isdigit",
+        r#"def main(stdout: Stdout):
+    long = "1234567890" * 5
+    for text in ["", "0", "9", "5", "/", ":", "a", "12", "1a", "a1", " 1", "1 ", "٣", "１", "1٣", "é", "🦊", long, long + "x", "x" + long, long[:23], long[:24]]:
+        stdout.print(text, text.isdigit())
+    mut found = 0
+    for at in range(long.len()):
+        if long[at].isdigit():
+            found += 1
+    stdout.print(found)
+"#,
+    )
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -2495,6 +2517,32 @@ def main(stdout: Stdout):
     )
 }
 
+/// `T.make()` calls the function of the type each copy of a generic stands for. It's native only:
+/// the interpreter has no types at run time to find it through.
+#[test]
+fn a_type_parameter_calls_its_types_function() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "interface Made:\n    def make() -> Self\n\n\
+                  struct Part:\n    x = 1\n\n    def make() -> Self:\n        Self(x=7)\n\n\
+                  struct Other:\n    name = \"\"\n\n    def make() -> Self:\n        Self(name=\"other\")\n\n\
+                  def build[T: Made]() -> T:\n    T.make()\n\n\
+                  def twice[T: Made]() -> list[T]:\n    [build[T](), T.make()]\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(build[Part]().x, build[Other]().name)\n    \
+                  made: Part = build()\n    stdout.print(made.x, twice[Other]().len())\n";
+    let dir = folder("type_param_function")?;
+    let program = dir.join("made.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("made"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours.0, "7 other\n7 2\n");
+    Ok(())
+}
+
 /// `max` and `min` of lists and of values, with keys and a type's own `<`, as the first of equals
 /// wins; `in` and `remove` on lists of each kind of item; `sin`, `cos` and `str` of what isn't text.
 #[test]
@@ -2611,6 +2659,7 @@ def main(stdout: Stdout):
     )
 }
 
+<<<<<<< HEAD
 /// A failed `assert` says all the JIT does, each side as the interpreter shows it.
 #[test]
 fn a_failed_assert_says_what_the_jit_does() -> std::io::Result<()> {
@@ -3500,13 +3549,13 @@ def main(stdout: Stdout):
 }
 
 /// Floats as keys have one equality: `-0.0` is `0.0`, and every NaN is the same, with the key
-/// kept as it was first written.
+/// kept as it was first written. The JIT's keys don't follow that yet.
 #[test]
-fn float_keys_match_the_jit() -> std::io::Result<()> {
+fn float_keys_match_the_interpreter() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_the_interpreter(
         "float_keys",
         r#"from std.math import sqrt
 
@@ -3645,4 +3694,88 @@ def main(stdout: Stdout):
         stdout.print(limit, looped(limit))
 "#,
     )
+=======
+/// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
+/// NaN, whatever its sign. So this is held to what that decision says, on LLVM and the interpreter
+/// both. The JIT's `==` and keys don't follow it yet.
+#[test]
+fn floats_are_equal_as_decided() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"struct Pair:
+    x: float
+    y: float
+
+def same(a: float, b: float) -> bool:
+    a == b
+
+def different(a: float, b: float) -> bool:
+    a != b
+
+def main(stdout: Stdout):
+    zero = 0.0
+    minus = -zero
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    other = -nan
+    one = 1.0
+    stdout.print(same(zero, minus), same(nan, nan), same(nan, other), same(nan, one), same(one, one))
+    stdout.print(different(zero, minus), different(nan, other), different(nan, one), different(one, 2.0))
+    stdout.print(zero == -0.0, nan == 1.0, 1.0 == nan, nan != 1.0, 1.0 != nan, -0.0 == zero)
+    stdout.print(Pair(x=zero, y=nan) == Pair(x=minus, y=other), Pair(x=1.0, y=nan) == Pair(x=1.0, y=2.0))
+    stdout.print(Pair(x=zero, y=nan) != Pair(x=minus, y=other))
+    stdout.print((zero, nan) == (minus, other), (nan, 1.0) == (1.0, 1.0))
+    stdout.print(zero in [minus], other in [nan], 1.0 in [nan])
+";
+    let dir = folder("floats_as_decided")?;
+    let program = dir.join("floats.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("floats"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours, interpreted);
+    assert_eq!(
+        ours.0,
+        "True True True False True
+False False True True
+True False False True True True
+True False
+False
+True False
+True True False
+"
+    );
+    Ok(())
+}
+
+/// Floats as keys hash as they compare, on the interpreter here. LLVM's float keys are held to the
+/// same answers where they're lowered.
+#[test]
+fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
+    let source = "def main(stdout: Stdout):
+    zero = 0.0
+    minus = -zero
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    mut zeros = {zero}
+    stdout.print(minus in zeros)
+    zeros.add(minus)
+    stdout.print(zeros.len(), {zero, 1.0} == {minus, 1.0})
+    mut nans = {nan}
+    nans.add(-nan)
+    stdout.print(nans.len(), -nan in nans)
+    named = {zero: 1}
+    stdout.print(named.get(minus), named[minus])
+    stdout.print([zero, nan] == [minus, -nan])
+";
+    let dir = folder("float_keys_interpreted")?;
+    let program = dir.join("keys.fen");
+    std::fs::write(&program, source)?;
+    let interpreted = outcome(&fennec(&["run", "--interp", &program.to_string_lossy()], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(interpreted.0, "True\n1 True\n1 True\n1 1\nTrue\n");
+    Ok(())
+>>>>>>> claude/float-equals
 }

@@ -772,11 +772,7 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{equal} = icmp eq {text} {x}, {y}"));
                             equal
                         }
-                        Kind::Float => {
-                            let equal = self.temp();
-                            self.line(&format!("{equal} = fcmp oeq double {x}, {y}"));
-                            equal
-                        }
+                        Kind::Float => self.float_equal(BinOp::Eq, (&x, &y)),
                         Kind::Str if self.headers() => self.same_headers(&x, &y),
                         Kind::Str => self.string_binary(BinOp::Eq, (&x, &y))?,
                         Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {

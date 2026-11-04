@@ -248,6 +248,7 @@ fn write_kept_output_on_panic() {
 }
 
 struct State {
+    #[cfg(not(feature = "lean"))]
     interp: Interp<'static>,
     output: Output,
     tables: Tables,

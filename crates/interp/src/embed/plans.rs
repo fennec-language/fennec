@@ -19,7 +19,12 @@ fn fixed_words(element: &Element, at: &mut usize, found: &mut Vec<usize>) -> Opt
     match element {
         // An optional string's header holds a block or not by its string, as a string's does.
         element if element.is_optional_text() => return None,
-        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
+        Element::Boxed(_)
+        | Element::Str
+        | Element::List(_)
+        | Element::ListOf(_)
+        | Element::Object
+        | Element::Maybe(_) => {
             found.push(*at);
             *at += 1;
         }

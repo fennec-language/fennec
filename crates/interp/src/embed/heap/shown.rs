@@ -195,7 +195,7 @@ pub(in crate::embed) fn item(
         }
         Element::Float => out.push_str(&crate::format::float(f64::from_bits(word(words)))),
         Element::Bool => out.push_str(if word(words) == 0 { "False" } else { "True" }),
-        Element::Boxed(_) | Element::Str | Element::Object | Element::List(_) => {
+        Element::Boxed(_) | Element::Str | Element::Object | Element::List(_) | Element::ListOf(_) => {
             quoted(state, word(words), out);
         }
         Element::Text => header(state, [word(words), word(words), word(words)], out),

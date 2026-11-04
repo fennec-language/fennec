@@ -451,7 +451,7 @@ fn a_loop_sees_what_its_body_changes() {
 fn a_loop_keeps_what_its_body_leaves_alone() {
     let cases = [
         "x: int? = 5\nif x is None:\n    return\nfor n in names:\n    use(x + 1)\n",
-        "mut x: int? = 5\nif x is None:\n    return\nfor n in names:\n    use(x + 1)\nx = None\n",
+        "mut x: int? = 5\nif x is None:\n    return\nfor n in names:\n    use(x + 1)\nx = None\nuse(x else 0)\n",
         "mut x: int? = None\nfor n in names:\n    x = 1\n    use(x + 1)\n",
         "mut x: int? = None\nfor n in names:\n    if x is not None:\n        use(x + 1)\n    x = 1\n",
         "h = Held(x=1)\nif h.x is not None:\n    for n in names:\n        use(h.x + 1)\n        h.show()\n",

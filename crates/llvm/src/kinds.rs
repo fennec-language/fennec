@@ -108,6 +108,8 @@ pub(crate) enum Kind {
     /// The address of a string's block, which something owns; or its 24-byte header, when the
     /// layouts hold strings as headers.
     Str,
+    /// The address of a block of `bytes`, which something owns.
+    Bytes,
     /// A string as its block's address where strings are otherwise headers: how a dict holds one.
     TextBlock,
     /// An optional string where strings are headers: a header, all zero for `None`.
@@ -152,6 +154,7 @@ impl Kind {
             Ty::Boxed(id) => Kind::Boxed(id),
             Ty::List(item) => Kind::List(item),
             Ty::Str => Kind::Str,
+            Ty::Bytes => Kind::Bytes,
             Ty::Dict(key, value) => Kind::Dict(key, value),
             Ty::Maybe(Block::Str) if layouts.text_headers() => Kind::MaybeText,
             Ty::Maybe(block) => Kind::Maybe(Box::new(Kind::from_ty(layouts, block.ty())?)),
@@ -168,6 +171,7 @@ impl Kind {
             Kind::Cap
                 | Kind::List(_)
                 | Kind::Str
+                | Kind::Bytes
                 | Kind::TextBlock
                 | Kind::MaybeText
                 | Kind::Boxed(_)
@@ -202,6 +206,7 @@ impl Kind {
             Kind::Cap
             | Kind::List(_)
             | Kind::Str
+            | Kind::Bytes
             | Kind::TextBlock
             | Kind::Boxed(_)
             | Kind::Dict(..)

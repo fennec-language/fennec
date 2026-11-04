@@ -15,7 +15,6 @@ use crate::kinds::{Kind, struct_definitions};
 use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
 
 /// Why a program with bytes written into it, as `embed("path")` gives, isn't taken yet.
-pub(crate) const BYTES: &str = "it uses a Bytes, which this backend doesn't take yet";
 
 /// The level of processor code is built for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1001,7 +1000,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(value) => (float_text(*value), Kind::Float),
             Operand::Bool(value) => (value.to_string(), Kind::Bool),
             Operand::Str(text) => (self.literal_value(text), Kind::Str),
-            Operand::Bytes(_) => return Err(BYTES.to_owned()),
+            Operand::Bytes(data) => (self.bytes_literal(&data.0), Kind::Bytes),
             Operand::None => ("null".to_owned(), Kind::Unit),
         })
     }
@@ -1189,13 +1188,14 @@ impl Emit<'_, '_, '_> {
                 _ => self.string_binary(op, (&a, &b))?,
             },
             Kind::Str => self.string_binary(op, (&a, &b))?,
-            Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
+            Kind::Boxed(_) | Kind::Bytes | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
                 if matches!(op, BinOp::Eq | BinOp::NotEq) =>
             {
                 self.same_blocks(op, (&a, &b))
             }
             Kind::Closure(..) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_code(op, (&a, &b)),
             Kind::List(_) if op == BinOp::Add => self.joined_lists(&a, &b),
+            Kind::Bytes => self.bytes_binary(op, (&a, &b))?,
             Kind::List(item) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
                 self.lists_in_order(op, item, (&a, &b), span)?
             }
@@ -1634,7 +1634,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(_) => Kind::Float,
             Operand::Bool(_) => Kind::Bool,
             Operand::Str(_) => Kind::Str,
-            Operand::Bytes(_) => return Err(BYTES.to_owned()),
+            Operand::Bytes(_) => Kind::Bytes,
             Operand::None => wanted.clone(),
         };
         if from != wanted && self.headers() {

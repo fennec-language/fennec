@@ -1580,6 +1580,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "min.key"
                     | "list.remove"
                     | "main.result"
+                    | "bytes"
                     | "Regex.replace"
                     | "Regex.split"
                     | "Regex.find_all"

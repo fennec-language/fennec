@@ -512,3 +512,28 @@ def run(names: list[str]):
 "
     )
 }
+
+#[test]
+fn an_else_chain_stops_at_a_failing_step_too() {
+    let empty: [&str; 0] = [];
+    let types = "error Lost:\n    why: str\n\nstruct Part:\n    name = \"\"\n\n    def again(self) -> Part fails Lost:\n        self\n\ndef find(n: int) -> Part fails Lost:\n    if n > 1: fail Lost(why=\"big\")\n    Part()\n";
+    let kept = |body: &str| crate::in_main_after(types, &format!("{body}\nstdout.print(1)\n"));
+    for body in [
+        "name: str = find(1).name else \"?\"\nstdout.print(name)",
+        "size: int = find(1).name.len() else 0\nstdout.print(size)",
+        "kept: str = find(1).expect(\"there\").name\nstdout.print(kept)",
+    ] {
+        assert_eq!(kept(body), empty, "{body}");
+    }
+    let second = kept("name: str = find(1).again().name else \"?\"\nstdout.print(name)");
+    assert_eq!(second, ["this is the result of something that can fail @ find(1).again().name"]);
+    let twice = kept("part: Part = find(1).again() else Part()\nstdout.print(part.name)");
+    assert_eq!(
+        twice,
+        ["two steps of this chain can fail, and `else` stops at one @ find(1).again() else Part()"]
+    );
+    let said = kept("stdout.print(find(1).name)");
+    assert_eq!(said, ["this is the result of something that can fail @ find(1).name"]);
+    let bracketed = kept("stdout.print((find(1).name else \"?\") + find(2).name)");
+    assert_eq!(bracketed, ["this is the result of something that can fail @ find(2).name"]);
+}

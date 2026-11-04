@@ -150,6 +150,16 @@ pub fn not_of_equals(compare: &mut Expr) {
     compare.kind = ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(equals) };
 }
 
+/// `value.step`, where the value can fail, in a chain an `else` ends: reads `(value else None).step`,
+/// so the chain stops there. Nothing's written for what's added, so its span is empty.
+pub fn none_on_failure(step: &mut Expr) {
+    let ExprKind::Attr { object, .. } = &mut step.kind else { return };
+    let at = crate::Span { start: object.span.end, end: object.span.end };
+    let value = std::mem::replace(object.as_mut(), Expr { kind: ExprKind::None, span: at });
+    let default = Box::new(Expr { kind: ExprKind::None, span: at });
+    **object = Expr { kind: ExprKind::Else { value: Box::new(value), default }, span: at };
+}
+
 /// Makes a leading-dot case name its enum: `.Int(value)` becomes `ExprKind.Int(value)`.
 /// Anything but a leading-dot case is left as it is.
 pub fn name_enum(case: &mut Expr, owner: &str) {

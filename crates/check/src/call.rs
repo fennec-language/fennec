@@ -360,6 +360,7 @@ impl FnCx<'_> {
             return self.static_on_param(param, method, (types, args), span);
         }
         let ty = self.expr(object);
+        let ty = if method == "expect" { ty } else { self.failing_step(ty, object.span, step) };
         let optional = optional || self.chained_step(&ty, step);
         self.method_on(&MethodCall { object, method, types, args, span }, &ty, optional)
     }

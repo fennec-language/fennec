@@ -129,6 +129,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `list(capability)`: what looping over it gives.
+    #[expect(dead_code, reason = "local merge of two unlanded branches")]
     pub(crate) fn capability_items(
         &mut self,
         dest: Option<LocalId>,

@@ -128,7 +128,7 @@ impl Emit<'_, '_, '_> {
             }),
             // What's ignored has been worked out already.
             ("ignore", [_, _], _) => Ok(()),
-            ("list", [capability], [Some(Kind::Cap)]) => self.capability_items(dest.ok(), capability, span),
+            ("list", [_], [Some(Kind::Cap)]) => dest.and_then(|dest| self.args_list(dest)),
             ("round", [value, places], [Some(Kind::Float), Some(Kind::Int)]) => dest.and_then(|dest| {
                 let ((value, _), (places, _)) = (self.operand(value)?, self.operand(places)?);
                 self.declare("declare double @fennec_round_places(double, i64) nounwind");

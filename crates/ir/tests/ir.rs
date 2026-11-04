@@ -1851,7 +1851,8 @@ fn an_assert_stops_the_program() {
   bb1:
     return
   bb2:
-    stop \"assertion failed\"
+    builtin assert.sides(_0, 0)
+    stop \"this assertion failed\"
 "
     );
 }

@@ -94,6 +94,7 @@ mod tests {
         };
         assert_eq!(float("float_div", &[1.0, 4.0]), Ok(Value::Float(0.25)));
         assert_eq!(float("float_eq", &[f64::NAN, f64::NAN]), Ok(Value::Bool(true)));
+        assert_eq!(float("float_eq", &[-0.0, 0.0]), Ok(Value::Bool(true)));
         assert_eq!(float("float_lt", &[-0.0, 0.0]), Ok(Value::Bool(true)));
         assert_eq!(float("float_to_int", &[-2.7]), Ok(Value::Int(-2)));
         assert!(float("float_to_int", &[f64::NAN]).is_err());

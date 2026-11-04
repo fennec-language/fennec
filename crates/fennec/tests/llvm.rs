@@ -515,6 +515,83 @@ def main(stdout: Stdout, args: Args, clock: Clock):
     Ok(())
 }
 
+/// Every shape of value printing reads from its block, nested, with text that needs quoting.
+const SHOWN_VALUES: &str = "\
+from std.game import IdMap
+
+struct Point:
+    x = 0
+    y = 0.5
+
+struct Named:
+    name: str
+    tags: list[str]
+    near: Point
+    next: str?
+
+struct Empty:
+    pass
+
+enum Shape:
+    Dot
+    Circle(radius: float, label: str)
+    Box(corner: Point)
+
+def main(stdout: Stdout):
+    stdout.print([1, -2, 3])
+    stdout.print([1.5, 2.0, 1e30, 0.1])
+    stdout.print([True, False])
+    stdout.print([\"plain\", \"with \\\"quotes\\\"\", \"line\\nbreak\", \"été\", \"\"])
+    stdout.print([[1], [], [2, 3]])
+    stdout.print([(1, \"a\"), (2, \"b\")])
+    stdout.print([(1,)])
+    stdout.print([Point(x=1), Point()])
+    named = Named(name=\"n\", tags=[\"a\", \"b\"], near=Point(x=3), next=None)
+    stdout.print([named, Named(name=\"m\" * 40, tags=[], near=Point(), next=\"s\" * 40)])
+    stdout.print(f\"{[named]}\")
+    stdout.print([Empty()])
+    stdout.print([Shape.Dot, Shape.Circle(radius=1.5, label=\"c\"), Shape.Box(corner=Point())])
+    stdout.print({\"a\": 1, \"long key that isn't inline, at all, in any way\": 2})
+    empty: dict[str, int] = {}
+    stdout.print(empty)
+    stdout.print({1, 2})
+    stdout.print({\"a\", \"b\"})
+    none: set[int] = set()
+    stdout.print(none)
+    maybe: list[int?] = [1, None]
+    stdout.print(maybe)
+    words: list[str?] = [\"a\", None]
+    stdout.print(words)
+    points: list[Point?] = [Point(), None]
+    stdout.print(points)
+    mut map = IdMap[str]()
+    first = map.insert(\"a\")
+    second = map.insert(\"b\")
+    map.insert(\"c\")
+    map.remove(second)
+    stdout.print(map)
+    stdout.print([first])
+";
+
+#[test]
+fn values_read_from_their_blocks_show_as_they_do_in_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shown-values")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, SHOWN_VALUES)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {

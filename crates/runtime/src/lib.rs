@@ -159,6 +159,7 @@ export! {
     fennec_print_bool(a0: i8) => io::print_bool(a0);
     fennec_print_str(a0: i64) => io::print_str(a0);
     fennec_print_value(a0: i64) => io::print_value(a0);
+    fennec_print_block(a0: i64) => io::print_block(a0);
     fennec_print_spec(a0: i64, a1: i64, a2: i64, a3: i64) => io::print_spec(a0, a1, a2, a3);
     fennec_items(a0: i64, a1: i64, a2: i64) -> i64 => io::items(a0, a1, a2);
     fennec_next(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => io::next(a0, a1, a2, a3, a4);
@@ -201,6 +202,7 @@ export! {
     fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
     fennec_float_text(a0: f64) -> i64 => strings::float_text(a0);
     fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);
+    fennec_block_text(a0: i64) -> i64 => strings::shown_text(a0);
     fennec_spec_text(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::spec_text(a0, a1, a2, a3);
     fennec_str_code(a0: i64, a1: i64, a2: i64) -> i64 => strings::code(a0, a1, a2);
     fennec_dict_find_slice(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => dicts::find_slice(a0, a1, a2, a3);

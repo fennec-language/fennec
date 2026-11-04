@@ -7,7 +7,7 @@ use fennec_ir::{LocalId, Operand};
 use fennec_layout::ListItem;
 use fennec_syntax::{BinOp, Span};
 
-use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS};
+use crate::emit::{Emit, FIELD_ACCESS, HEADER_ACCESS, ITEM_ACCESS, LENGTH_ACCESS, VALUE_ACCESS};
 use crate::kinds::{Kind, element_symbol};
 use crate::uniqueness::{FieldPath, item_step, list_place};
 
@@ -413,7 +413,7 @@ impl Emit<'_, '_, '_> {
             place = self.offset(&inside, offset);
             kind = inner;
         }
-        let access = if in_block { FIELD_ACCESS } else { "" };
+        let access = if in_block { FIELD_ACCESS } else { VALUE_ACCESS };
         if put_back && kind.counted() {
             // The field's old value was taken out, and this is what became of it.
             let text = self.text_of(&kind);

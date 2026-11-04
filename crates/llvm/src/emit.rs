@@ -46,12 +46,14 @@ const METADATA: &str = "!0 = !{!\"branch_weights\", i32 1, i32 100000}\n\
 !2 = !{!\"fennec\"}\n\
 !3 = !{!\"header\", !2, i64 0}\n\
 !4 = !{!3, !3, i64 0}\n\
-!5 = !{!\"item\", !2, i64 0}\n\
+!5 = !{!\"item\", !11, i64 0}\n\
 !6 = !{!5, !5, i64 0}\n\
 !7 = !{i64 0, i64 281474976710657}\n\
 !8 = !{!\"branch_weights\", i32 100000, i32 1}\n\
-!9 = !{!\"field\", !2, i64 0}\n\
-!10 = !{!9, !9, i64 0}\n";
+!9 = !{!\"field\", !11, i64 0}\n\
+!10 = !{!9, !9, i64 0}\n\
+!11 = !{!\"values\", !2, i64 0}\n\
+!12 = !{!11, !11, i64 0}\n";
 
 /// Where a string block's bytes start.
 pub(crate) const TEXT_START: u32 = fennec_interp::embed::layout::TEXT.unsigned_abs();
@@ -62,6 +64,10 @@ pub(crate) const ITEM_ACCESS: &str = ", !tbaa !6";
 /// A boxed struct's or enum's fields never overlap a block's header or a list's items.
 pub(crate) const FIELD_ACCESS: &str = ", !tbaa !10";
 pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7";
+/// A struct's field wherever the struct is, which could be an item or a boxed field, but is
+/// never a block's header. So changing one, like a parser's place in its text, doesn't make a
+/// string's lengths read again.
+pub(crate) const VALUE_ACCESS: &str = ", !tbaa !12";
 
 /// Below this many instructions, a function that calls nothing is always inlined.
 const ALWAYS_INLINE: usize = 16;

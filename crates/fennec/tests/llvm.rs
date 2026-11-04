@@ -998,6 +998,77 @@ def main(stdout: Stdout):
     stdout.print(text[100000])
 "#;
 
+/// A string's lengths needn't be read again when a struct's field changes, as a field is never
+/// a block's header. They do when the string itself changes: here it grows in place, moves to a
+/// new block and gets replaced, while a field changes beside it in the same loop.
+#[test]
+fn a_strings_length_is_read_again_when_it_changes_beside_a_field() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Reader:
+    text: str
+    at = 0
+    seen = 0
+
+    def grow(mut self, more: str):
+        self.text += more
+        self.at += 1
+
+    def read(mut self) -> int:
+        mut total = 0
+        while self.at < self.text.len():
+            if self.text[self.at] == "x":
+                total += 1
+            self.at += 1
+            self.seen = self.text.len()
+        total
+
+    def read_growing(mut self) -> int:
+        mut total = 0
+        while self.at < self.text.len() and self.text.len() < 400:
+            if self.text[self.at] == "a":
+                self.text += "ax"
+            self.at += 1
+            total += self.text.len()
+        total
+
+    def read_replacing(mut self) -> int:
+        mut total = 0
+        while self.at < self.text.len():
+            if self.at == 2:
+                self.text = "a replacement long enough to have its own block of text"
+            total += self.text.len()
+            self.at += 1
+        total
+
+def main(stdout: Stdout):
+    mut one = Reader(text="xaxax long enough to have a block of its own")
+    stdout.print(one.read(), one.at, one.seen)
+    mut two = Reader(text="a string long enough to have a block of its own ")
+    stdout.print(two.read_growing(), two.at, two.text.len())
+    mut three = Reader(text="short")
+    stdout.print(three.read_replacing(), three.at, three.text)
+    mut four = Reader(text="short")
+    for round in range(40):
+        four.grow("é" if round % 7 == 0 else "ab")
+        stdout.print(four.text.len(), four.text[four.at - 1], four.at)
+    mut readers = [Reader(text="xx long enough to have a block of its own"), Reader(text="x")]
+    for mut reader in readers:
+        reader.grow("x")
+        stdout.print(reader.read(), reader.at, reader.seen)
+"#;
+    // Whether a read moves past a write is the optimizer's choice, so with it, too.
+    for (name, how) in [
+        ("lengths_beside_fields", &["--llvm"][..]),
+        ("lengths_beside_fields_release", &["--llvm", "--release"][..]),
+    ] {
+        let (ours, jit) = both_built(name, source, how)?;
+        assert_eq!(ours, jit);
+    }
+    Ok(())
+}
+
 #[test]
 fn reading_a_string_that_isnt_ascii_finds_the_right_character() -> std::io::Result<()> {
     if !ready() {

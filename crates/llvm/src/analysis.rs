@@ -93,6 +93,11 @@ pub(crate) struct Analysis {
     last_copies: HashSet<(usize, usize)>,
     /// `enumerate(list)` results, and copies of them, never made: each with the list.
     pub(crate) enumerated: HashMap<usize, LocalId>,
+    /// `map.items()` or `map.values()` where all that's done with what it gives is going through
+    /// it in order: it's never made, as the loop walks the map's slots. Which map.
+    pub(crate) map_walks: HashMap<usize, LocalId>,
+    /// What such a loop reads each time round: which map, and whether it's a pair to take apart.
+    pub(crate) walk_items: HashMap<usize, (LocalId, bool)>,
     /// Pairs read from those, never made: the list, and the index the pair is at.
     pub(crate) pairs: HashMap<usize, (LocalId, Operand)>,
 }
@@ -433,6 +438,8 @@ fn analyze(
         zero_filled: HashSet::new(),
         last_copies: HashSet::new(),
         enumerated: HashMap::new(),
+        map_walks: HashMap::new(),
+        walk_items: HashMap::new(),
         pairs: HashMap::new(),
     };
     let grown = count_uses(function, (changes, keeps), &mut known);
@@ -1774,6 +1781,69 @@ fn local_of(operand: &Operand) -> Option<usize> {
     }
 }
 
+/// Whether nothing changes a map from where a walk of it is asked for, on any way from there to
+/// where the walk reads it, round its loop included.
+fn walk_leaves_alone(function: &Function, made: LocalId, map: LocalId, read_at: usize) -> bool {
+    let mut after = HashMap::new();
+    let mut before: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (at, block) in function.blocks.iter().enumerate() {
+        for next in block.end.targets() {
+            before.entry(next.0).or_default().push(at);
+        }
+        if let Some(index) = block.insts.iter().position(
+            |inst| matches!(&inst.kind, InstKind::Builtin { dest: Some(dest), .. } if *dest == made),
+        ) {
+            after.insert(at, index + 1);
+        }
+    }
+    let Some((&start, &first)) = after.iter().next() else { return false };
+    let reach = |from: usize, links: &dyn Fn(usize) -> Vec<usize>| {
+        let mut seen = HashSet::from([from]);
+        let mut waiting = vec![from];
+        while let Some(at) = waiting.pop() {
+            for next in links(at) {
+                if seen.insert(next) {
+                    waiting.push(next);
+                }
+            }
+        }
+        seen
+    };
+    let forward = |at: usize| {
+        function
+            .blocks
+            .get(at)
+            .map_or_else(Vec::new, |block| block.end.targets().iter().map(|next| next.0).collect())
+    };
+    let backward = |at: usize| before.get(&at).cloned().unwrap_or_default();
+    let from_start = reach(start, &forward);
+    let to_read = reach(read_at, &backward);
+    let changes = |inst: &InstKind| {
+        let mut written = false;
+        visit(inst, |_| {}, |local| written |= local == map);
+        written
+            || match inst {
+                InstKind::SetIndex { object, .. } | InstKind::SetField { object, .. } => *object == map,
+                InstKind::Builtin { args, changes: true, .. } => args.first() == Some(&Operand::Local(map)),
+                InstKind::Call { args, .. } => args.contains(&Operand::Local(map)),
+                _ => false,
+            }
+    };
+    from_start.intersection(&to_read).all(|at| {
+        let skipped = if *at == start && !to_read_comes_back(&to_read, &before, start) { first } else { 0 };
+        function
+            .blocks
+            .get(*at)
+            .is_some_and(|block| block.insts.iter().skip(skipped).all(|inst| !changes(&inst.kind)))
+    })
+}
+
+/// Whether the block a walk's asked for in can be reached again on the way to its read, so what
+/// comes before the asking counts too.
+fn to_read_comes_back(to_read: &HashSet<usize>, before: &HashMap<usize, Vec<usize>>, start: usize) -> bool {
+    before.get(&start).is_some_and(|froms| froms.iter().any(|from| to_read.contains(from)))
+}
+
 /// `enumerate(list)` where all that's done with what it gives is counting it and reading pairs
 /// to take apart right away: neither it nor the pairs are made. A pair's count is where its
 /// index points in the list, and its item is the list's there, as nothing here changes the list.
@@ -1817,7 +1887,14 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 break;
             }
         }
-        if name != "enumerate" || !steady || known.writes.get(made.0) != Some(&1) {
+        let walks = matches!(name.as_str(), "IdMap.items" | "IdMap.values");
+        // A loop over a map can't change it, as the checker sees to, so a walk only needs nothing
+        // to change it from when this was asked for until its loop's done. Something else can
+        // reach a map through a `shared` handle, so unless it's known steady, the local holds an
+        // owner of its own for the walk, which makes such a change copy it.
+        let holds_it = !known.is_borrowed(*list) && !known.is_taken(*list) && known.alias(*list).is_none();
+        let steady = steady || (walks && holds_it);
+        if !(name == "enumerate" || walks) || !steady || known.writes.get(made.0) != Some(&1) {
             continue;
         }
         // The result and the copies of it, each written once.
@@ -1857,8 +1934,18 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 _ => fine = false,
             }
         }
+        // A walk goes through the slots in order, once for each count of one loop.
+        if walks {
+            let counted = |at: &Operand| {
+                function.counts.iter().any(|count| !count.down && *at == Operand::Local(count.count))
+            };
+            fine &= matches!(pairs.as_slice(), [(_, at, _, _)] if counted(at));
+            fine &= pairs
+                .iter()
+                .all(|(_, _, walked_at, _)| walk_leaves_alone(function, *made, *list, *walked_at));
+        }
         // Each pair is only taken apart, after it's read, in its block.
-        for (pair, _, at, index) in &pairs {
+        for (pair, _, at, index) in pairs.iter().filter(|_| name != "IdMap.values") {
             let Some(block) = function.blocks.get(*at) else { continue };
             let later = block.insts.get(index + 1..).unwrap_or_default();
             let mut uses = 0;
@@ -1880,7 +1967,14 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 fine = false;
             }
         }
-        if fine {
+        if fine && walks {
+            for local in &group {
+                known.map_walks.insert(local.0, *list);
+            }
+            for (item, _, _, _) in pairs {
+                known.walk_items.insert(item.0, (*list, name == "IdMap.items"));
+            }
+        } else if fine {
             for local in &group {
                 known.enumerated.insert(local.0, *list);
             }

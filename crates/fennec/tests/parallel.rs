@@ -450,6 +450,10 @@ const LENT_PLACES: &str = include_str!("fixtures/workers/places_lent.fen");
 /// and a struct's list changed by a `for mut` body.
 const THROUGH_LISTS: &str = include_str!("fixtures/workers/through_lists.fen");
 
+/// A map walked with no list made: captured by a body, where every thread reads the caller's, and
+/// changed and walked by a `for mut` body, which has a copy of its own.
+const WALKS: &str = include_str!("fixtures/workers/walks.fen");
+
 #[test]
 fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
@@ -465,6 +469,7 @@ fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::
         ("places", CHANGED_PLACES),
         ("places_lent", LENT_PLACES),
         ("through_lists", THROUGH_LISTS),
+        ("walks", WALKS),
     ];
     for (name, source) in programs {
         matches_the_interpreter_on_workers(&dir, name, source)?;

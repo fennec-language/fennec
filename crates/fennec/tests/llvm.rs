@@ -3192,6 +3192,125 @@ def main(stdout: Stdout):
     )
 }
 
+/// `items()` and `values()` gone through in order, with slots empty, at the start and the end,
+/// and everything an item can be, which the loop walks with no list made.
+const WALKING_A_MAP: &str = r#"from std.game import IdMap
+
+struct Unit:
+    name: str
+    tags: list[int]
+
+struct Point:
+    x: int
+    y: float
+
+def total(numbers: IdMap[int]) -> int:
+    mut sum_of = 0
+    for id, number in numbers.items():
+        sum_of += number + numbers[id]
+    for number in numbers.values():
+        sum_of += number
+    sum_of
+
+def named(units: IdMap[Unit]) -> str:
+    mut parts = []
+    for id, unit in units.items():
+        parts.append(f"{unit.name}:{unit.tags.len()}:{units[id].name}")
+    for unit in units.values():
+        parts.append(unit.name)
+    ",".join(parts)
+
+def main(stdout: Stdout):
+    mut numbers = IdMap[int]()
+    ids = [numbers.insert(n) for n in range(8)]
+    stdout.print(total(numbers))
+    numbers.remove(ids[0])
+    numbers.remove(ids[3])
+    numbers.remove(ids[4])
+    numbers.remove(ids[7])
+    stdout.print(total(numbers), numbers.len())
+    numbers.insert(100)
+    stdout.print(total(numbers), numbers.len())
+
+    mut units = IdMap[Unit]()
+    first = units.insert(Unit("first", [1]))
+    units.insert(Unit("second is a much longer name than fits", [2, 3]))
+    last = units.insert(Unit("é", []))
+    stdout.print(named(units))
+    units.remove(first)
+    units.remove(last)
+    stdout.print(named(units))
+
+    mut points = IdMap[Point]()
+    gone = points.insert(Point(0, 0.5))
+    points.insert(Point(1, 1.5))
+    points.insert(Point(2, 2.5))
+    points.remove(gone)
+    for id, point in points.items():
+        stdout.print(point.x, point.y, points[id].x)
+
+    mut words = IdMap[str]()
+    words.insert("a")
+    words.insert("a word too long to fit in a header")
+    for word in words.values():
+        stdout.print(word)
+
+    # Nothing in it, then nothing left in it.
+    mut empty = IdMap[int]()
+    for id, number in empty.items():
+        stdout.print(number)
+    only = empty.insert(1)
+    empty.remove(only)
+    for number in empty.values():
+        stdout.print(number)
+    stdout.print(total(empty))
+
+    # Inside another, and gone through more than once.
+    held = [1, 2]
+    for round in held:
+        for number in numbers.values():
+            for other in numbers.values():
+                if number == other and round == 2:
+                    stdout.print(number)
+    pairs = numbers.items()
+    for again in range(2):
+        for id, number in pairs:
+            stdout.print(again, number, numbers[id])
+    stdout.print(pairs.len())
+
+    # Changed after it's asked for and before it's gone through, which sees it as it was.
+    mut changing = IdMap[int]()
+    kept = [changing.insert(n) for n in range(3)]
+    before = changing.items()
+    changing.remove(kept[1])
+    for id, number in before:
+        stdout.print(number)
+    # Changed between rounds of an outer loop.
+    for round in range(3):
+        for number in changing.values():
+            stdout.print(round, number)
+        changing.insert(round * 100)
+"#;
+
+#[test]
+fn walking_a_map_says_what_a_list_of_its_items_would() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("walking_a_map", WALKING_A_MAP)
+}
+
+#[test]
+fn walking_a_map_makes_no_list() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "from std.game import IdMap\n\ndef main(stdout: Stdout):\n    mut numbers = IdMap[int]()\n    for n in range(1000):\n        numbers.insert(n)\n    mut found = 0\n    for round in range(100):\n        for id, number in numbers.items():\n            found += number\n        for number in numbers.values():\n            found += number\n    stdout.print(found)\n";
+    let counts = counts_of("walking_no_list", source)?;
+    assert!(count(&counts, "allocations") < Some(40), "{counts}");
+    Ok(())
+}
+
 #[test]
 fn id_maps_match_the_jit() -> std::io::Result<()> {
     if !ready() {

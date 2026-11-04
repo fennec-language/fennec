@@ -656,3 +656,23 @@ fn self_in_a_types_own_method_is_that_type() {
     let text = "def same(x: Self) -> int:\n    1\n";
     assert_eq!(problems(text), ["`Self` isn't a type @ Self"]);
 }
+
+const MADE: &str = "interface Made:\n    def make() -> Self\n\nstruct Part:\n    x = 1\n\n    def make() -> Part:\n        Part(x=7)\n\n";
+
+#[test]
+fn a_type_parameter_has_its_interfaces_functions() {
+    let text = format!(
+        "{MADE}def build[T: Made]() -> T:\n    T.make()\n\ndef main(stdout: Stdout):\n    stdout.print(build[Part]().x)\n"
+    );
+    assert_eq!(problems(&text), Vec::<String>::new());
+    let text = format!("{MADE}def build[T: Made]() -> T:\n    T.other()\n");
+    assert_eq!(problems(&text), ["`T` has nothing called `other` @ T.other()"]);
+    let text = format!("{MADE}def build[T]() -> T:\n    T.make()\n");
+    assert_eq!(problems(&text), ["`T` has nothing called `make` @ T.make()"]);
+    let text = format!("{MADE}def build[T: Made]() -> int:\n    T.make()\n");
+    assert_eq!(problems(&text).len(), 1, "{:?}", problems(&text));
+    let text = "interface Sized:\n    def size(self) -> int\n\ndef build[T: Sized]() -> int:\n    T.size()\n";
+    assert_eq!(problems(text), ["`size` needs a `T` to call it on @ T.size()"]);
+    let text = "def build() -> int:\n    T.make()\n";
+    assert_eq!(problems(text).len(), 1, "{:?}", problems(text));
+}

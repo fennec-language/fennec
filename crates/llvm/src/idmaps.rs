@@ -398,6 +398,39 @@ impl Emit<'_, '_, '_> {
                 self.id_map_remove(*map, &parts, Some((&closure, &returns)), span);
                 Ok(())
             }
+            "IdMap.modify" => {
+                let id = self.id_parts(args.get(1).ok_or("no argument")?)?;
+                let (closure, closure_kind) = self.operand(args.get(2).ok_or("no argument")?)?;
+                let Kind::Closure(_, returns) = closure_kind else {
+                    return Err("a change that isn't a closure".to_owned());
+                };
+                if held == Kind::Bool {
+                    return Err(
+                        "it changes a bool in an `IdMap`, which this backend doesn't take yet".to_owned()
+                    );
+                }
+                let place = self.slot(*map);
+                let block = self.alone_at(&place, "fennec_unshare");
+                let (_, generations) = self.part(&block, parts.generations, true);
+                let found = self.finds(&generations, (&id.0, &id.1));
+                let (yes, done) = (self.label("change"), self.label("changed"));
+                self.line(&format!("br i1 {found}, label %{yes}, label %{done}"));
+                self.start_block(&yes);
+                let (_, items) = self.part(&block, parts.items, true);
+                let at = self.item_address(&items, &memory, &id.0);
+                let given = self.call_closure_with(&closure, &returns, &[format!("ptr {at}")], span);
+                if returns.in_memory() {
+                    self.release_inline(&returns, &given);
+                } else if returns.counted() {
+                    self.release_kind(&given, &returns);
+                }
+                self.line(&format!("br label %{done}"));
+                self.start_block(&done);
+                match dest {
+                    Some(dest) => self.assign(dest, &found),
+                    None => Ok(()),
+                }
+            }
             "IdMap.clear" => {
                 self.id_map_remove(*map, &parts, None, span);
                 Ok(())

@@ -1213,6 +1213,10 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                 continue;
             }
             let Some((None, list, Some(index))) = defined(*item, at) else { continue };
+            // An `IdMap`'s item isn't in a place this can reach, so it's read and put back.
+            if !matches!(function.type_of(&Operand::Local(list)), Some(Type::List(_))) {
+                continue;
+            }
             // The list is a field of the root, or the root itself.
             let (root, list_path) = match defined(list, at) {
                 Some((Some(list_field), root, None)) => (root, vec![list_field]),
@@ -2073,6 +2077,7 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "sorted.key"
                     | "list.remove_where"
                     | "IdMap.remove_where"
+                    | "IdMap.modify"
                     | "result.expect"
                     | "dict.pop"
                     | "random.random_int"

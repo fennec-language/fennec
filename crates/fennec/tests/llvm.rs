@@ -4294,6 +4294,59 @@ fn walking_a_map_makes_no_list() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `IdMap.modify` changes an item where it is through a closure with a `mut` parameter, and items
+/// of an `IdMap` change their fields as a list's do.
+#[test]
+fn changing_what_an_id_map_holds_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "id_map_changes",
+        r#"from std.game import Id, IdMap
+
+struct Enemy:
+    name: str
+    health: int
+    tags: list[str]
+
+    def take_damage(mut self, amount: int) -> int:
+        self.health = self.health - amount
+        self.tags.append("hit")
+        self.health
+
+struct Node:
+    value: int
+    children: list[Id[Node]]
+
+struct World:
+    enemies: IdMap[Enemy]
+
+def main(stdout: Stdout):
+    mut world = World(enemies=IdMap[Enemy]())
+    near = world.enemies.insert(Enemy(name="near", health=100, tags=[]))
+    far = world.enemies.insert(Enemy(name="a long name that sits in its own block", health=50, tags=["x"]))
+    kept = world
+    stdout.print(world.enemies.modify(far, foe => foe.take_damage(25)))
+    stdout.print(world.enemies[far], kept.enemies[far])
+    world.enemies.remove(near)
+    stdout.print(world.enemies.modify(near, foe => foe.take_damage(1)), world.enemies.len())
+    mut numbers = IdMap[int]()
+    one = numbers.insert(1)
+    numbers.modify(one, n => n * 5)
+    stdout.print(numbers[one])
+    mut nodes = IdMap[Node]()
+    root = nodes.insert(Node(value=1, children=[]))
+    leaf = nodes.insert(Node(value=2, children=[]))
+    nodes[root].children.append(leaf)
+    nodes[root].value = 9
+    copied = nodes
+    nodes[root].children.append(root)
+    stdout.print(nodes[root].value, nodes[root].children.len(), copied[root].children.len())
+"#,
+    )
+}
+
 #[test]
 fn id_maps_match_the_jit() -> std::io::Result<()> {
     if !ready() {

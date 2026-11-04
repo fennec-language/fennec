@@ -1650,7 +1650,8 @@ impl Emit<'_, '_, '_> {
                 self.copy(dest.ok_or("no result")?, from)
             }
             "IdMap" | "IdMap.len" | "IdMap.contains" | "IdMap.get" | "IdMap.insert" | "IdMap.remove"
-            | "IdMap.values" | "IdMap.ids" | "IdMap.items" | "IdMap.remove_where" | "IdMap.clear" => {
+            | "IdMap.values" | "IdMap.ids" | "IdMap.items" | "IdMap.remove_where" | "IdMap.clear"
+            | "IdMap.modify" => {
                 self.id_map_builtin(dest, name, args, span)
             }
             "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"

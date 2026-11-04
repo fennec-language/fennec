@@ -22,14 +22,14 @@ fn text(state: &State, address: i64) -> String {
 
 fn compiled(state: &mut State, pattern: i64, at: Span) -> Result<Rc<fennec_re::Regex>, Diagnostic> {
     let pattern = text(state, pattern);
-    state.interp.regex(&pattern).map_err(|error| invalid(&error, at))
+    state.regexes.compiled(&pattern).map_err(|error| invalid(&error, at))
 }
 
 /// `re.is_regex(pattern)`.
 pub extern "C" fn is_valid(pattern: i64) -> i8 {
     with(|state| {
         let pattern = text(state, pattern);
-        i8::from(state.interp.regex(&pattern).is_ok())
+        i8::from(state.regexes.compiled(&pattern).is_ok())
     })
 }
 
@@ -48,7 +48,8 @@ pub extern "C" fn problem(pattern: i64) -> i64 {
 pub extern "C" fn groups(pattern: i64) -> i64 {
     with(|state| {
         let pattern = text(state, pattern);
-        state.interp.regex(&pattern).map_or(-1, |regex| i64::try_from(regex.groups()).unwrap_or(-1))
+        let regex = state.regexes.compiled(&pattern).ok();
+        regex.and_then(|regex| i64::try_from(regex.groups()).ok()).unwrap_or(-1)
     })
 }
 

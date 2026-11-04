@@ -115,7 +115,7 @@ pub struct Interp<'out> {
     pub(crate) resuming: Vec<crate::generators::Position>,
     pub(crate) suspending: Vec<crate::generators::Position>,
     /// Each regex pattern used so far, compiled.
-    pub(crate) regexes: HashMap<String, Rc<fennec_re::Regex>>,
+    pub(crate) regexes: crate::stdlib::re::Regexes,
     /// How many more steps the program may take, if it's limited.
     pub(crate) steps_left: Option<u64>,
     step_limit: Option<u64>,
@@ -173,7 +173,7 @@ impl<'out> Interp<'out> {
             passing_up: None,
             resuming: Vec::new(),
             suspending: Vec::new(),
-            regexes: HashMap::new(),
+            regexes: crate::stdlib::re::Regexes::default(),
             steps_left: None,
             step_limit: None,
             own_equality: std::collections::HashSet::new(),

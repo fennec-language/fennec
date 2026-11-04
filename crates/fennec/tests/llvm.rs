@@ -6754,3 +6754,45 @@ fn indexing_past_the_end_of_args_fails_like_the_jit() -> std::io::Result<()> {
 ",
     )
 }
+
+/// `IdMap[str].get`, an optional string, however it's then used.
+#[test]
+fn getting_from_an_id_map_of_strings_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "id_map_of_strings",
+        r#"from std.game import Id, IdMap
+
+struct Holder:
+    names: IdMap[str]
+
+    def named(self, id: Id[str]) -> str:
+        found = self.names.get(id)
+        if found is None:
+            return "nobody"
+        found
+
+def main(stdout: Stdout):
+    mut names = IdMap[str]()
+    first = names.insert("ash")
+    second = names.insert("a long name that sits in its own block")
+    found = names.get(first)
+    stdout.print(found, found is None)
+    named = names.get(first) else "nothing"
+    stdout.print(named)
+    if found is not None:
+        stdout.print(found.len())
+    held = Holder(names=names)
+    stdout.print(held.named(second))
+    kept: list[str?] = [names.get(first), names.get(second)]
+    stdout.print(kept)
+    names.remove(first)
+    stdout.print(names.get(first), names.get(first) else "gone", names.get(first) is None)
+    for at in [first, second]:
+        got = names.get(at)
+        stdout.print(got else "absent")
+"#,
+    )
+}

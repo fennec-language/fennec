@@ -60,7 +60,10 @@ impl FnCx<'_> {
 
     fn stmt(&mut self, stmt: &Stmt, used: bool) -> Flow {
         match &stmt.kind {
-            StmtKind::Expr(expr) => Flow { ty: self.expr(expr), exits: false },
+            StmtKind::Expr(expr) => {
+                let ty = self.expr(expr);
+                if always_leaves(expr) { Flow::exit() } else { Flow { ty, exits: false } }
+            }
             StmtKind::Assign { target, op, value, declare_mut, ty } => {
                 self.assign(target, *op, value, *declare_mut, ty.as_ref());
                 Flow::unit()
@@ -398,5 +401,22 @@ pub(crate) fn path(expr: &Expr) -> Option<String> {
             path(object).map(|object| format!("{object}.{name}"))
         }
         _ => None,
+    }
+}
+
+/// Whether a `match` never gets past itself, because every case leaves.
+fn always_leaves(expr: &Expr) -> bool {
+    let ExprKind::Match { arms, .. } = &expr.kind else { return false };
+    arms.iter().all(|arm| block_leaves(&arm.body))
+}
+
+fn block_leaves(stmts: &[Stmt]) -> bool {
+    match stmts.last().map(|stmt| &stmt.kind) {
+        Some(StmtKind::Return(_) | StmtKind::Fail(_) | StmtKind::Break | StmtKind::Continue) => true,
+        Some(StmtKind::If { branches, otherwise: Some(otherwise) }) => {
+            branches.iter().all(|(_, body)| block_leaves(body)) && block_leaves(otherwise)
+        }
+        Some(StmtKind::Expr(inner)) => always_leaves(inner),
+        _ => false,
     }
 }

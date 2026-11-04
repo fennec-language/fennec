@@ -342,3 +342,13 @@ fn a_value_at_the_end_of_a_def_with_no_arrow_still_needs_its_type() {
         ["`size` gives back an int, so its return type has to be written @ def size(items: list[int])"]
     );
 }
+
+#[test]
+fn a_last_match_whose_cases_all_leave_gives_back_what_they_do() {
+    let source = "enum Order:\n    Hold\n    Move\n\ndef pick(n: int) -> Order:\n    match n:\n        case 0:\n            return .Hold\n        case _:\n            return .Move\n";
+    assert_eq!(problems_as_written(source), Vec::<String>::new());
+    let wrong = "def pick(n: int) -> str:\n    match n:\n        case 0:\n            return 1\n        case _:\n            return \"a\"\n";
+    assert_eq!(problems_as_written(wrong).len(), 1, "{:?}", problems_as_written(wrong));
+    let falls = "def pick(n: int) -> str:\n    match n:\n        case 0:\n            return \"a\"\n        case _:\n            n + 1\n";
+    assert_eq!(problems_as_written(falls).len(), 1, "{:?}", problems_as_written(falls));
+}

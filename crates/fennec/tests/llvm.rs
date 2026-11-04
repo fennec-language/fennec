@@ -2459,11 +2459,15 @@ def main(stdout: Stdout, args: Args, process: Process):
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output()?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "[<a>] {\"key\": 1} 0\nhello\n\n");
-    let symbols = Command::new("nm").arg(&executable).output()?;
-    assert!(symbols.status.success(), "{}", String::from_utf8_lossy(&symbols.stderr));
-    let symbols = String::from_utf8_lossy(&symbols.stdout);
-    assert!(symbols.contains("fennec_clock_now") || symbols.contains("fennec_print_block"), "{symbols}");
-    assert!(!symbols.contains("5Interp"), "the interpreter is still linked");
+    // A Windows executable has no symbols to look through. There, what follows is the check: what
+    // needs the interpreter doesn't link.
+    if !cfg!(windows) {
+        let symbols = Command::new("nm").arg(&executable).output()?;
+        assert!(symbols.status.success(), "{}", String::from_utf8_lossy(&symbols.stderr));
+        let symbols = String::from_utf8_lossy(&symbols.stdout);
+        assert!(symbols.contains("fennec_clock_now") || symbols.contains("fennec_print_block"), "{symbols}");
+        assert!(!symbols.contains("5Interp"), "the interpreter is still linked");
+    }
 
     let needs = dir.join("needs.fen");
     std::fs::write(

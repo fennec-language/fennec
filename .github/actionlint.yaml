@@ -1,0 +1,6 @@
+paths:
+  # GitHub takes `queue: max` on a job's concurrency, and this actionlint is older than it. Remove
+  # this when a release knows it.
+  .github/workflows/mutants.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'

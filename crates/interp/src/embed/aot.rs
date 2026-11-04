@@ -93,8 +93,10 @@ fn live_inputs() -> crate::Inputs {
 /// starts in turn gets the variable too, and goes by its own name.
 fn program_name(own: String) -> String {
     let told = std::env::var("FENNEC_RUN_AS").ok();
-    let told = told.as_deref().and_then(|told| told.split_once('|'));
-    told.filter(|(executable, _)| *executable == own).map_or(own.clone(), |(_, program)| program.to_owned())
+    match told.as_deref().and_then(|told| told.split_once('|')) {
+        Some((executable, program)) if executable == own => program.to_owned(),
+        _ => own,
+    }
 }
 
 /// The process's standard input for one thread. It takes a line at a time, so a thread never holds

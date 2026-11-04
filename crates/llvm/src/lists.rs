@@ -372,6 +372,10 @@ impl Emit<'_, '_, '_> {
                     return Some(Ok(()));
                 }
                 self.known.place_taken(self.function, *dest)?;
+                // Failing to reach it comes first, as it's written, and the rest can wait.
+                if self.known.place_waits(*dest) {
+                    return Some(self.walk_place(*dest, false, span).map(|_| ()));
+                }
                 Some(self.take_place(*dest, span))
             }
             InstKind::SetField { object, value: Operand::Local(put), .. }
@@ -386,7 +390,33 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// Takes out each place this instruction changes that was waiting for it.
+    pub(crate) fn take_waiting_places(&mut self, inst: &InstKind, span: Span) -> Result<(), String> {
+        let (InstKind::Call { args, .. } | InstKind::Builtin { args, .. }) = inst else { return Ok(()) };
+        for arg in args {
+            if let Operand::Local(local) = arg
+                && self.known.place_waits(*local)
+            {
+                self.take_place(*local, span)?;
+            }
+        }
+        Ok(())
+    }
+
     fn take_place(&mut self, value: LocalId, span: Span) -> Result<(), String> {
+        let (at, kind, access) = self.walk_place(value, true, span)?;
+        self.place_homes.insert(value.0, (at.clone(), kind.clone(), access));
+        self.read_into(value, &kind, &at, access)
+    }
+
+    /// Where a place is, from its root. Taking it, each block on the way is made alone first;
+    /// otherwise this only fails if an index is outside its list.
+    fn walk_place(
+        &mut self,
+        value: LocalId,
+        taking: bool,
+        span: Span,
+    ) -> Result<(String, Kind, &'static str), String> {
         let function = self.function;
         let place = self.known.place_taken(function, value).ok_or("a place that isn't taken")?;
         let root = place.root;
@@ -399,7 +429,11 @@ impl Emit<'_, '_, '_> {
                 PlaceStep::Field(name) => {
                     let boxed = matches!(kind, Kind::Boxed(_));
                     let inside = if boxed {
-                        let block = self.alone_along((root, &along), &at, "fennec_unshare");
+                        let block = if taking {
+                            self.alone_along((root, &along), &at, "fennec_unshare")
+                        } else {
+                            self.load_block(&at)
+                        };
                         self.offset(&block, FIELDS_OFFSET)
                     } else {
                         at
@@ -413,10 +447,10 @@ impl Emit<'_, '_, '_> {
                     along.push(name.clone());
                 }
                 PlaceStep::Item(index_operand) => {
-                    let list = if along.is_empty() {
-                        self.unshared(root)
-                    } else {
-                        self.alone_along((root, &along), &at, "fennec_list_unshare")
+                    let list = match (taking, along.is_empty()) {
+                        (true, true) => self.unshared(root),
+                        (true, false) => self.alone_along((root, &along), &at, "fennec_list_unshare"),
+                        (false, _) => self.load_block(&at),
                     };
                     let held = self.item_kind(list_item(&kind)?)?;
                     let (index, _) = self.operand(index_operand)?;
@@ -438,8 +472,13 @@ impl Emit<'_, '_, '_> {
         if let Some((step, list)) = along.split_last() {
             self.taken_items.insert(value.0, (root, list.to_vec(), step.clone()));
         }
-        self.place_homes.insert(value.0, (at.clone(), kind.clone(), access));
-        self.read_into(value, &kind, &at, access)
+        Ok((at, kind, access))
+    }
+
+    fn load_block(&mut self, place: &str) -> String {
+        let block = self.temp();
+        self.line(&format!("{block} = load ptr, ptr {place}"));
+        block
     }
 
     fn put_place_back(&mut self, value: LocalId) -> Result<(), String> {

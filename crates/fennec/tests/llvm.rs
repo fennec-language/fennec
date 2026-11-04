@@ -1219,6 +1219,28 @@ def main(stdout: Stdout):
     show(stdout, own)
     show(stdout, [first])
 
+    # Built-ins changing a place, given what comes from what's changed.
+    mut lists = [unit(1), unit(2), unit(3)]
+    lists[0].tags.append(lists[1].hp)
+    lists[0].tags.append(lists[0].tags.len())
+    lists[1].tags.extend(lists[0].tags)
+    lists[1].tags.extend(lists[1].tags)
+    lists[2].inner.tags.append(lists[1].tags.pop())
+    lists[2].tags.insert(0, lists[0].tags[0])
+    lists[0].tags.pop()
+    show(stdout, lists)
+    mut pick = 0
+    mut chosen = [[1], [2]]
+    chosen[pick].append(pick)
+    chosen[pick + 1].append(chosen[pick][0])
+    copied_chosen = chosen
+    chosen[0].append(chosen[1].pop())
+    stdout.print(chosen, copied_chosen)
+    mut tables = [{"a": 1}, {"b": 2}]
+    tables[0]["c"] = tables[1]["b"]
+    tables[1].pop("b")
+    stdout.print(tables)
+
     # What a call keeps stays what it was, and the place goes on from there.
     mut keeps = [unit(1)]
     mut kept: list[list[int]] = []

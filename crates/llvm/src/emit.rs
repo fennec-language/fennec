@@ -681,6 +681,7 @@ impl Emit<'_, '_, '_> {
             for (index, inst) in block.insts.iter().enumerate() {
                 self.at = (at, index);
                 self.forget_entries(&inst.kind);
+                self.take_waiting_places(&inst.kind, inst.span)?;
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
                     for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
                         if let Some(Operand::Local(given)) = args.get(param.0) {

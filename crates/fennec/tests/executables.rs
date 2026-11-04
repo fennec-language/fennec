@@ -10,12 +10,10 @@ use std::sync::OnceLock;
 /// A `fennec` to start, with the runtime library built first. `fennec run` links against that
 /// library, and one left from before a rebase links without a word and gets things wrong: a
 /// dict's layout that no longer matches, say, printing zeroes. So nothing starts `fennec` until
-/// the library is current. Mutation testing doesn't link programs, and a test that needs the
-/// library says so itself when it couldn't be built.
+/// the library is current. Under mutation that's each mutant's own library, or a mutant in the
+/// runtime would meet the old one. A test that needs the library says so when it couldn't be built.
 pub(crate) fn fennec_command() -> Command {
-    if !under_mutants() {
-        runtime_built();
-    }
+    runtime_built();
     Command::new(env!("CARGO_BIN_EXE_fennec"))
 }
 
@@ -70,9 +68,9 @@ pub(crate) fn threads_runtime_built() -> bool {
 }
 
 /// Whether mutation testing is running the tests (CI's mutation jobs set
-/// `FENNEC_UNDER_MUTANTS`). Building the runtime library and linking every example takes
-/// longer than its time limit for a whole run, so these tests stand aside there. Every
-/// other run of the tests, CI's test jobs included, runs them.
+/// `FENNEC_UNDER_MUTANTS`). Linking every example through the JIT's objects takes longer than it's
+/// worth for each mutant, so these two tests stand aside there: every other run of the tests runs
+/// them, and the LLVM tests run under mutants too.
 fn under_mutants() -> bool {
     std::env::var_os("FENNEC_UNDER_MUTANTS").is_some()
 }

@@ -180,7 +180,7 @@ impl Interp<'_> {
                 let items = self.iterate(items, span)?;
                 self.extreme(name, items, key, span)
             }
-            // The checker gives anything but ints a start, but the REPL runs without it.
+            // The checker gives anything but ints a start, but a run without it needs one worked out.
             ("sum", Some(items), start, None) => {
                 let items = self.iterate(items, span)?;
                 let mut total = start.unwrap_or_else(|| {

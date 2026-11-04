@@ -2551,3 +2551,87 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
+/// NaN, whatever its sign. So this is held to what that decision says, on LLVM and the interpreter
+/// both. The JIT's `==` and keys don't follow it yet.
+#[test]
+fn floats_are_equal_as_decided() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"struct Pair:
+    x: float
+    y: float
+
+def same(a: float, b: float) -> bool:
+    a == b
+
+def different(a: float, b: float) -> bool:
+    a != b
+
+def main(stdout: Stdout):
+    zero = 0.0
+    minus = -zero
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    other = -nan
+    one = 1.0
+    stdout.print(same(zero, minus), same(nan, nan), same(nan, other), same(nan, one), same(one, one))
+    stdout.print(different(zero, minus), different(nan, other), different(nan, one), different(one, 2.0))
+    stdout.print(zero == -0.0, nan == 1.0, 1.0 == nan, nan != 1.0, 1.0 != nan, -0.0 == zero)
+    stdout.print(Pair(x=zero, y=nan) == Pair(x=minus, y=other), Pair(x=1.0, y=nan) == Pair(x=1.0, y=2.0))
+    stdout.print(Pair(x=zero, y=nan) != Pair(x=minus, y=other))
+    stdout.print((zero, nan) == (minus, other), (nan, 1.0) == (1.0, 1.0))
+    stdout.print(zero in [minus], other in [nan], 1.0 in [nan])
+";
+    let dir = folder("floats_as_decided")?;
+    let program = dir.join("floats.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("floats"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours, interpreted);
+    assert_eq!(
+        ours.0,
+        "True True True False True
+False False True True
+True False False True True True
+True False
+False
+True False
+True True False
+"
+    );
+    Ok(())
+}
+
+/// Floats as keys hash as they compare, on the interpreter here. LLVM's float keys are held to the
+/// same answers where they're lowered.
+#[test]
+fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
+    let source = "def main(stdout: Stdout):
+    zero = 0.0
+    minus = -zero
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    mut zeros = {zero}
+    stdout.print(minus in zeros)
+    zeros.add(minus)
+    stdout.print(zeros.len(), {zero, 1.0} == {minus, 1.0})
+    mut nans = {nan}
+    nans.add(-nan)
+    stdout.print(nans.len(), -nan in nans)
+    named = {zero: 1}
+    stdout.print(named.get(minus), named[minus])
+    stdout.print([zero, nan] == [minus, -nan])
+";
+    let dir = folder("float_keys_interpreted")?;
+    let program = dir.join("keys.fen");
+    std::fs::write(&program, source)?;
+    let interpreted = outcome(&fennec(&["run", "--interp", &program.to_string_lossy()], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(interpreted.0, "True\n1 True\n1 True\n1 1\nTrue\n");
+    Ok(())
+}

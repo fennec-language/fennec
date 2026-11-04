@@ -198,6 +198,35 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     (output, failure.map(|failure| sources.render(&failure)).unwrap_or_default())
 }
 
+/// Native code built to trace what it costs is about to do what's at this place in the source.
+pub fn trace_at(site: i64) {
+    with(|state: &mut State| state.heap.trace_at(u32::try_from(site).unwrap_or(0)));
+}
+
+/// Native code built to trace what it costs made a block of its own, of this many bytes.
+pub fn trace_allocated(bytes: i64) {
+    with(|state: &mut State| state.heap.allocated(u64::try_from(bytes).unwrap_or(0)));
+}
+
+/// With `FENNEC_TRACE_FILE` set, writes what each place in the source cost there, for
+/// `fennec dev trace` to read: a line of numbers for each place.
+pub(super) fn report_sites(sites: &std::collections::HashMap<u32, heap::Counts>) {
+    let Some(file) = std::env::var_os("FENNEC_TRACE_FILE") else { return };
+    let mut lines = String::new();
+    for (site, counts) in sites {
+        let _ = writeln!(
+            lines,
+            "{site} {} {} {} {} {}",
+            counts.allocations,
+            counts.allocated_bytes,
+            counts.copies,
+            counts.copied_bytes,
+            counts.largest_copy
+        );
+    }
+    let _ = std::fs::write(file, lines);
+}
+
 /// With `FENNEC_COUNTS` set, says on stderr what the run allocated and copied, so a test can
 /// check that a program doesn't copy.
 fn report_counts(counts: &heap::Counts) {

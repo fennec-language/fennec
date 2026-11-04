@@ -99,20 +99,29 @@ pub fn emit(program: &Program) -> Result<(Vec<Unit>, Shared, Layouts), String> {
 
 /// `emit`, for a level of processor.
 pub fn emit_for(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layouts), String> {
-    emit_with(program, cpu, false)
+    emit_with(program, cpu, Shared::default())
 }
 
 /// `emit_for`, with each function setting a flag that says it ran, for a test to say what it ran.
 pub fn emit_traced(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layouts), String> {
-    emit_with(program, cpu, true)
+    emit_with(program, cpu, Shared { traced: true, ..Shared::default() })
 }
 
-fn emit_with(program: &Program, cpu: Cpu, traced: bool) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+/// `emit_for`, with code saying where it is before anything there can allocate or copy, so a run
+/// can say what each place cost.
+pub fn emit_tracing_costs(program: &Program, cpu: Cpu) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+    emit_with(program, cpu, Shared { tracing_costs: true, ..Shared::default() })
+}
+
+fn emit_with(
+    program: &Program,
+    cpu: Cpu,
+    mut shared: Shared,
+) -> Result<(Vec<Unit>, Shared, Layouts), String> {
     let header = crate::header()?;
     let attributes = attributes(cpu);
     let everything = whole(program);
     let layouts = crate::layouts_of(program);
-    let mut shared = Shared { traced, ..Shared::default() };
     let mut units = Vec::with_capacity(program.functions.len());
     // Every module of a program agrees, since what it declares has to match what's defined.
     let threads = crate::parallel::uses_parallel(program);
@@ -148,6 +157,27 @@ fn copyable(whole: &Whole<'_>, function: &Function, depth: usize) -> bool {
 
 pub(crate) fn symbol(name: &str) -> String {
     format!("@\"f_{name}\"")
+}
+
+/// What an instruction does, in a few words, if it can allocate or copy. Reading what's already
+/// there can't, and a call says for itself what's in the function it calls.
+fn what_can_cost(inst: &InstKind) -> Option<String> {
+    Some(match inst {
+        InstKind::Builtin { name, .. } => format!("`{name}`"),
+        InstKind::Binary { .. } => "an operator".to_owned(),
+        InstKind::Make { .. } | InstKind::MakeCase { .. } | InstKind::MakeTuple { .. } => {
+            "making a value".to_owned()
+        }
+        InstKind::MakeList { .. } => "making a list".to_owned(),
+        InstKind::MakeSet { .. } => "making a set".to_owned(),
+        InstKind::MakeDict { .. } => "making a dict".to_owned(),
+        InstKind::Format { .. } => "making a string".to_owned(),
+        InstKind::Slice { .. } => "a slice".to_owned(),
+        InstKind::SetField { .. } => "setting a field".to_owned(),
+        InstKind::SetIndex { .. } => "setting an item".to_owned(),
+        InstKind::GetIndex { .. } => "reading an item".to_owned(),
+        _ => return None,
+    })
 }
 
 /// How a function's written into a module.
@@ -1699,7 +1729,19 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// Says where this is, in a build that traces what things cost, if what's here can cost.
+    fn trace_site(&mut self, inst: &InstKind, span: Span) {
+        if !self.module.shared.tracing_costs {
+            return;
+        }
+        let Some(what) = what_can_cost(inst) else { return };
+        self.module.shared.sites.entry(span.start).or_insert(what);
+        self.declare("declare void @fennec_trace_at(i64) nounwind");
+        self.line(&format!("call void @fennec_trace_at(i64 {})", span.start));
+    }
+
     fn inst(&mut self, inst: &InstKind, span: Span, block: usize) -> Result<(), String> {
+        self.trace_site(inst, span);
         match inst {
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }

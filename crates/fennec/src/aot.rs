@@ -181,6 +181,33 @@ pub(crate) fn tests_executable(
     Ok(emitted.shared.ran.iter().cloned().collect())
 }
 
+/// Builds an executable of a program that says what each place in its source cost, for `fennec dev
+/// trace`, through LLVM's cached dev build. Gives back what's at each place, and the lowered
+/// program.
+pub(crate) fn tracing_executable(
+    program: &fennec_kit::Program,
+    output: &Path,
+) -> Result<(std::collections::BTreeMap<u32, String>, fennec_ir::Program), String> {
+    let mut reached = program.module.clone();
+    fennec_build::keep_what_main_reaches(&mut reached);
+    let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs)?;
+    let image_of = |image: &mut fennec_llvm::Image| {
+        fennec_interp::embed::codec::Image {
+            module: program.module.clone(),
+            sources: program.sources.clone(),
+            tables: std::mem::take(&mut image.tables),
+            literals: image.literals.clone(),
+        }
+        .to_bytes()
+    };
+    let Compiled { objects, runtime, .. } =
+        compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
+            fennec_llvm::entry(lowered, shared, image, bytes)
+        })?;
+    link_objects(&objects, output, runtime, false)?;
+    Ok((emitted.shared.sites, emitted.lowered))
+}
+
 /// Whether LLVM has text for a trimmed program, or why not, without compiling any of it.
 pub(crate) fn takes(module: &fennec_syntax::Module) -> Result<(), String> {
     emitted(module, false).map(|_| ())
@@ -252,6 +279,17 @@ struct Emitted {
 
 /// Lowers a trimmed program and writes its text, or says why LLVM can't.
 fn emitted(reached: &fennec_syntax::Module, traced: bool) -> Result<Emitted, String> {
+    emitted_with(reached, if traced { fennec_llvm::emit_traced } else { fennec_llvm::emit_for })
+}
+
+/// What LLVM emits for a program: each function's text, and what they share.
+type Emits = Result<(Vec<fennec_llvm::Unit>, fennec_llvm::Shared, fennec_llvm::Layouts), String>;
+
+/// A trimmed program's text from one of LLVM's ways of emitting it.
+fn emitted_with(
+    reached: &fennec_syntax::Module,
+    emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
+) -> Result<Emitted, String> {
     let checked =
         fennec_check::check(reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
@@ -276,8 +314,7 @@ fn emitted(reached: &fennec_syntax::Module, traced: bool) -> Result<Emitted, Str
     } else {
         fennec_llvm::Cpu::Usual
     };
-    let (units, shared, layouts) =
-        if traced { fennec_llvm::emit_traced(&lowered, cpu)? } else { fennec_llvm::emit_for(&lowered, cpu)? };
+    let (units, shared, layouts) = emit(&lowered, cpu)?;
     Ok(Emitted { lowered, units, shared, layouts })
 }
 

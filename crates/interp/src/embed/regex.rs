@@ -38,7 +38,7 @@ pub extern "C" fn is_valid(pattern: i64) -> i8 {
 pub extern "C" fn problem(pattern: i64) -> i64 {
     with(|state| {
         let pattern = text(state, pattern);
-        let problem = state.interp.regex(&pattern).err();
+        let problem = state.regexes.compiled(&pattern).err();
         let message = problem.map(|error| invalid(&error, Span::default()).message).unwrap_or_default();
         text_address(state, &message)
     })

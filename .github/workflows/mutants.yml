@@ -36,6 +36,7 @@ jobs:
     name: Mutate the changed code
     if: github.event_name == 'pull_request' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     # At most three at once, so it can't take the runners required checks are waiting for. The rest
     # wait, holding no runner, and none is dropped. Which of the three a pull request waits for goes
     # by the last digit of its number. A newer push still cancels its older run, waiting or not.
@@ -79,6 +80,7 @@ jobs:
     name: Mutate everything (shard ${{ matrix.shard }} of 8)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       # The same cap as on pull requests: a shard that waits is only later.

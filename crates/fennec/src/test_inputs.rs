@@ -133,11 +133,11 @@ impl<'m> Inputs<'m> {
         }
         // Never reached, but a function has to give back a value at its end.
         let first = def.cases.first()?;
-        if !first.fields.is_empty() {
-            let (lines, made) = self.fields(&first.fields, "    ")?;
-            let _ = write!(body, "{lines}    {name}.{}({made})\n", first.name);
-        } else {
+        if first.fields.is_empty() {
             let _ = writeln!(body, "    {name}.{}", first.name);
+        } else {
+            let (lines, made) = self.fields(&first.fields, "    ")?;
+            let _ = writeln!(body, "{lines}    {name}.{}({made})", first.name);
         }
         Some(body)
     }

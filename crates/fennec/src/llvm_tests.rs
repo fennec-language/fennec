@@ -211,13 +211,13 @@ fn test_functions(number: usize, test: &TestDef, inputs: &mut Inputs<'_>) -> Opt
         let _ = writeln!(made, "{indent}input{at} = {function}(mut state, 0)");
         args.push(format!("input{at}"));
     }
-    let called = format!("{PREFIX}{number}_body({})", args.join(", "));
+    let body_call = format!("{PREFIX}{number}_body({})", args.join(", "));
     let call = if passes_failures_up(test) {
         format!(
-            "{indent}match {called}:\n{indent}    case Err(_):\n{indent}        assert False\n{indent}    case _:\n{indent}        pass\n"
+            "{indent}match {body_call}:\n{indent}    case Err(_):\n{indent}        assert False\n{indent}    case _:\n{indent}        pass\n"
         )
     } else {
-        format!("{indent}{called}\n")
+        format!("{indent}{body_call}\n")
     };
     let start = if looped {
         format!("    mut state = {}\n    for _ in range({}):\n", property_seed(&test.name), PROPERTY_CASES)
@@ -265,11 +265,11 @@ fn takeable<'t>(
     tests: &[&'t TestDef],
     refused: &mut Vec<(&'t TestDef, String)>,
 ) -> Vec<&'t TestDef> {
-    let takes = trimmed_for(module, tests).map_or_else(
+    let answer = trimmed_for(module, tests).map_or_else(
         || Err("a test's inputs aren't ready".to_owned()),
         |trimmed| crate::aot::takes(&trimmed),
     );
-    match takes {
+    match answer {
         Ok(()) => tests.to_vec(),
         Err(why) => match tests {
             [] => Vec::new(),

@@ -2556,13 +2556,25 @@ fn a_failure_passed_up_fails_a_test_through_llvm() -> std::io::Result<()> {
     }
     let dir = folder("test_passed_up")?;
     let program = dir.join("up.fen");
-    std::fs::write(&program, "test \"gone\"(fs: Fs):\n    fs.read_text(\"gone\")?\n")?;
-    let path = program.to_string_lossy().into_owned();
-    let ran = fennec(&["test", "--all", &path], &dir)?;
-    let said = String::from_utf8_lossy(&ran.stderr);
-    assert!(!ran.status.success(), "{said}");
-    assert!(said.contains("the test failed with"), "{said}");
-    assert!(!said.contains("through LLVM"), "{said}");
+    for (name, body) in [
+        ("passed_up", "(fs: Fs):\n    fs.read_text(\"gone\")?\n"),
+        ("fails", ":\n    fail Oops(\"broken\")\n"),
+        ("fails_inside", ":\n    for _ in range(1):\n        if True:\n            fail Oops(\"broken\")\n"),
+        // The function it makes of this gives back a result it can't see from the statements.
+        (
+            "fails_in_a_match",
+            ":\n    match 1:\n        case 1:\n            fail Oops(\"broken\")\n        case _:\n            pass\n",
+        ),
+    ] {
+        let source = format!("error Oops:\n    reason: str\n\ntest \"{name}\"{body}");
+        std::fs::write(&program, source)?;
+        let path = program.to_string_lossy().into_owned();
+        let ran = fennec(&["test", "--all", &path], &dir)?;
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert!(!ran.status.success(), "{name}: {said}");
+        assert!(said.contains("the test failed with"), "{name}: {said}");
+        assert!(!said.contains("through LLVM"), "{name}: {said}");
+    }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

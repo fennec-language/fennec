@@ -141,10 +141,26 @@ fn as_function(name: String, test: &TestDef) -> FnDef {
     }
 }
 
-/// Whether a test's body can pass a failure up with `?`, which makes its function give back a
-/// result.
+/// Whether statements say `fail` or give back a value, wherever they are among other statements.
+fn fails_or_gives_back(body: &[Stmt]) -> bool {
+    body.iter().any(|stmt| match &stmt.kind {
+        StmtKind::Fail(_) | StmtKind::Return(Some(_)) => true,
+        StmtKind::If { branches, otherwise } => {
+            branches.iter().any(|(_, body)| fails_or_gives_back(body))
+                || otherwise.as_deref().is_some_and(fails_or_gives_back)
+        }
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+            fails_or_gives_back(body)
+        }
+        _ => false,
+    })
+}
+
+/// Whether a test's body can pass a failure up, which makes its function give back a result. The
+/// executable refuses a test function that gives back a value, so one missed here, like a `fail`
+/// in a `match`, only means its tests run another way.
 fn passes_failures_up(test: &TestDef) -> bool {
-    let mut found = false;
+    let mut found = fails_or_gives_back(&test.body);
     let mut body = test.body.clone();
     fennec_syntax::visit::in_stmts(&mut body, &mut |inner| {
         found |= matches!(inner.kind, ExprKind::Try { .. });

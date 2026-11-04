@@ -3780,13 +3780,14 @@ fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
 }
 
 /// A generator made for a loop goes when the loop does, closing what it's holding right then,
-/// while one with a name lasts as long as the name.
+/// while one with a name lasts as long as the name. Returning out of the loop closes it before
+/// the caller goes on, where the JIT is late, so this is held to the interpreter.
 #[test]
-fn a_generator_left_partway_closes_as_the_jit_does() -> std::io::Result<()> {
+fn a_generator_left_partway_closes_as_the_interpreter_does() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_the_interpreter(
         "generator_left",
         r#"struct Door:
     out: Stdout

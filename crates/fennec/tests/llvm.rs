@@ -732,21 +732,24 @@ def main(stdout: Stdout):
     xs[j] = 22
     stdout.print(held, j, xs)
 
-    # A place and its index both given, with what's read first keeping its value.
+    # A place and an index the call changes, held apart, since one can't pick the other.
     mut k = 0
     mut ys = [1, 2, 3]
-    stdout.print(put(k, mut ys[k], mut k), k, ys)
-    stdout.print(put(k, mut ys[k], mut k), k, ys)
+    first = k
+    stdout.print(put(first, mut ys[first], mut k), k, ys)
+    second = k
+    stdout.print(put(second, mut ys[second], mut k), k, ys)
 
     # A list read as an argument, then changed by a later one, and its length.
     mut zs = [1, 2, 3]
     stdout.print(listed(zs, zs.pop()), zs)
     stdout.print(zs, zs.pop(), zs.len())
 
-    # An optional given to what can clear it, after being read.
+    # An optional given to what can clear it, its value held in a name first.
     mut maybe: int? = 3
     if maybe is not None:
-        stdout.print(maybe_cleared(maybe, mut maybe), maybe is None)
+        read = maybe
+        stdout.print(maybe_cleared(read, mut maybe), maybe is None)
 "#;
 
 #[test]

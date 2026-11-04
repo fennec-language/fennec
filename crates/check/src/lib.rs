@@ -78,12 +78,12 @@ fn own_type_names(module: &Module) -> BTreeMap<String, String> {
         .unwrap_or_default()
         .iter()
         .flat_map(|module| &module.items)
-        .filter_map(declared_type)
+        .filter_map(declared_name)
         .collect();
     module
         .items
         .iter()
-        .filter_map(declared_type)
+        .filter_map(declared_name)
         .filter(|name| library.contains(name))
         .map(|name| (name.to_owned(), format!("{name}{}", fennec_syntax::rename::RENAMED)))
         .collect()
@@ -95,6 +95,15 @@ fn declared_type(item: &fennec_syntax::Item) -> Option<&str> {
         | fennec_syntax::Item::Enum(def)
         | fennec_syntax::Item::Error(def) => Some(def.name.as_str()),
         _ => None,
+    }
+}
+
+/// The name an item gives a type or an interface, which share one set of names.
+fn declared_name(item: &fennec_syntax::Item) -> Option<&str> {
+    match item {
+        fennec_syntax::Item::Interface(interface) => Some(interface.name.as_str()),
+        fennec_syntax::Item::TypeAlias { name, .. } => Some(name.as_str()),
+        item => declared_type(item),
     }
 }
 

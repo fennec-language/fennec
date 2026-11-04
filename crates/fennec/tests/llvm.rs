@@ -108,6 +108,49 @@ fn str_of_text_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A text growing in a field: short then long, from each kind of text, and with a copy held
+/// elsewhere that has to keep what it had.
+#[test]
+fn a_text_growing_in_a_field_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "text_in_a_field",
+        r#"struct Log:
+    text = ""
+    hp = 0
+
+    def add(mut self, more: str):
+        self.text += more
+
+struct World:
+    log = Log()
+
+def main(stdout: Stdout):
+    mut log = Log()
+    log.add("short")
+    stdout.print(log.text, log.text.len())
+    held = log.text
+    log.add(" and a good deal longer than a header can hold")
+    stdout.print(held, log.text)
+    kept = log.text
+    log.text += " été"
+    log.text += log.text
+    stdout.print(kept, log.text, log.text.len())
+    mut world = World()
+    for at in range(100):
+        world.log.text += str(at)
+    world.log.hp += 1
+    stdout.print(world.log.text, world.log.hp)
+    copy = world
+    world.log.text += "!"
+    stdout.print(copy.log.text.len(), world.log.text.len())
+    stdout.print(str(-12), str(0), str(9007199254740993), str(1.5), str(2.0), str(-0.0), str(1e300), str(-1.7976931348623157e308))
+"#,
+    )
+}
+
 /// `fail` and `?` leave a `for mut` loop as `return` does: the item it's on is written back first.
 #[test]
 fn failing_out_of_a_for_mut_loop_writes_the_item_back() -> std::io::Result<()> {
@@ -597,261 +640,6 @@ fn isdigit_matches_the_jit() -> std::io::Result<()> {
 }
 
 #[test]
-fn arguments_and_the_clock_match_the_interpreter() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let dir = folder("args-and-clock")?;
-    let program = dir.join("program.fen");
-    std::fs::write(
-        &program,
-        "\
-from std.time import Clock, Duration
-
-def main(stdout: Stdout, args: Args, clock: Clock):
-    stdout.print(args.len(), args.program != \"\")
-    for arg in args:
-        stdout.print(arg)
-    stdout.print(args[0], args[-1])
-    started = clock.now()
-    clock.sleep(Duration.millis(2))
-    stdout.print((clock.now() - started).nanos >= 2000000)
-    stdout.print(args[5])
-",
-    )?;
-    let executable = dir.join("program");
-    let path = |file: &Path| file.display().to_string();
-    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ran = Command::new(&executable).args(["one", "two"]).output()?;
-    let interpreted = fennec(&["run", "--interp", &path(&program), "one", "two"], &dir)?;
-    std::fs::remove_dir_all(&dir)?;
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "2 True\none\ntwo\none two\nTrue\n");
-    assert_eq!(outcome(&ran), outcome(&interpreted));
-    Ok(())
-}
-
-/// Every shape of value printing reads from its block, nested, with text that needs quoting.
-const SHOWN_VALUES: &str = "\
-from std.game import IdMap
-
-struct Point:
-    x = 0
-    y = 0.5
-
-struct Named:
-    name: str
-    tags: list[str]
-    near: Point
-    next: str?
-
-struct Empty:
-    pass
-
-enum Shape:
-    Dot
-    Circle(radius: float, label: str)
-    Box(corner: Point)
-
-def main(stdout: Stdout):
-    stdout.print([1, -2, 3])
-    stdout.print([1.5, 2.0, 1e30, 0.1])
-    stdout.print([True, False])
-    stdout.print([\"plain\", \"with \\\"quotes\\\"\", \"line\\nbreak\", \"été\", \"\"])
-    stdout.print([[1], [], [2, 3]])
-    stdout.print([(1, \"a\"), (2, \"b\")])
-    stdout.print([(1,)])
-    stdout.print([Point(x=1), Point()])
-    named = Named(name=\"n\", tags=[\"a\", \"b\"], near=Point(x=3), next=None)
-    stdout.print([named, Named(name=\"m\" * 40, tags=[], near=Point(), next=\"s\" * 40)])
-    stdout.print(f\"{[named]}\")
-    stdout.print([Empty()])
-    stdout.print([Shape.Dot, Shape.Circle(radius=1.5, label=\"c\"), Shape.Box(corner=Point())])
-    stdout.print({\"a\": 1, \"long key that isn't inline, at all, in any way\": 2})
-    empty: dict[str, int] = {}
-    stdout.print(empty)
-    stdout.print({1, 2})
-    stdout.print({\"a\", \"b\"})
-    none: set[int] = set()
-    stdout.print(none)
-    maybe: list[int?] = [1, None]
-    stdout.print(maybe)
-    words: list[str?] = [\"a\", None]
-    stdout.print(words)
-    points: list[Point?] = [Point(), None]
-    stdout.print(points)
-    mut map = IdMap[str]()
-    first = map.insert(\"a\")
-    second = map.insert(\"b\")
-    map.insert(\"c\")
-    map.remove(second)
-    stdout.print(map)
-    stdout.print([first])
-";
-
-/// Values whose types write their own text, printed inside others, in every place they can be.
-const OWN_TEXT_INSIDE: &str = "\
-struct Tag:
-    name: str
-
-    def str(self, mut out: StrWriter):
-        out.write(\"<\" + self.name + \">\")
-
-struct Pair:
-    x = 0
-    y = 0
-
-    def str(self, mut out: StrWriter):
-        out.write(f\"{self.x}/{self.y}\")
-
-enum Light:
-    Red
-    Green(level: int)
-
-    def str(self, mut out: StrWriter):
-        out.write(\"light\")
-
-struct Holder:
-    tag: Tag
-    pair: Pair
-    count = 1
-
-def main(stdout: Stdout):
-    stdout.print([Tag(name=\"a\"), Tag(name=\"b\" * 40)])
-    stdout.print([Pair(x=1), Pair(y=2)])
-    stdout.print([Light.Red, Light.Green(level=2)])
-    stdout.print([(Tag(name=\"t\"), 1)])
-    maybe: list[Pair?] = [Pair(), None]
-    stdout.print(maybe)
-    stdout.print([Holder(tag=Tag(name=\"h\"), pair=Pair(x=9))])
-    stdout.print(f\"before {[Pair(x=5)]} after\")
-    stdout.print(Tag(name=\"top\"), Pair(y=3))
-    stdout.print([[Pair(x=7)], []])
-";
-
-#[test]
-fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let dir = folder("own-text-inside")?;
-    let program = dir.join("program.fen");
-    std::fs::write(&program, OWN_TEXT_INSIDE)?;
-    let executable = dir.join("program");
-    let path = |file: &Path| file.display().to_string();
-    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ran = Command::new(&executable).output()?;
-    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
-    std::fs::remove_dir_all(&dir)?;
-    assert_eq!(outcome(&ran), outcome(&interpreted));
-    Ok(())
-}
-
-#[test]
-fn values_read_from_their_blocks_show_as_they_do_in_the_interpreter() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let dir = folder("shown-values")?;
-    let program = dir.join("program.fen");
-    std::fs::write(&program, SHOWN_VALUES)?;
-    let executable = dir.join("program");
-    let path = |file: &Path| file.display().to_string();
-    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ran = Command::new(&executable).output()?;
-    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
-    std::fs::remove_dir_all(&dir)?;
-    assert_eq!(outcome(&ran), outcome(&interpreted));
-    Ok(())
-}
-
-/// What compiled code does through capabilities without the interpreter, failing as well as not.
-const NATIVE_CAPABILITIES: &str = "\
-from std.path import Path
-
-def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entropy):
-    folder = \"native-capabilities\"
-    stdout.print(fs.exists(folder))
-    fs.make_dir(folder).expect(\"it works\")
-    file = folder + \"/a.txt\"
-    fs.write_text(file, \"one\\ntwo\\n\").expect(\"it works\")
-    stdout.print(fs.read_text(file).expect(\"it works\"), fs.exists(Path(text=file)))
-    stdout.print(fs.metadata(file).expect(\"it works\").size, fs.metadata(file).expect(\"it works\").is_file)
-    stdout.print(fs.list_dir(folder).expect(\"it works\"))
-    only = fs.only(folder)
-    stdout.print(only.read_text(file).expect(\"it works\"))
-    stdout.print(only.exists(\"/\"))
-    match only.read_text(\"/etc/hosts\"):
-        case Ok(_):
-            stdout.print(\"read it\")
-        case Err(error):
-            stdout.print(error.reason.endswith(\"native-capabilities\"))
-    match fs.read_text(\"no such file\"):
-        case Ok(_):
-            stdout.print(\"read it\")
-        case Err(error):
-            stdout.print(error.reason != \"\")
-    fs.remove(file).expect(\"it works\")
-    fs.remove(folder).expect(\"it works\")
-    done = process.run(\"echo\", [\"hello\"]).expect(\"it works\")
-    stdout.print(done.status, done.stdout, done.stderr == \"\")
-    match process.run(\"no-such-program-at-all\", []):
-        case Ok(_):
-            stdout.print(\"ran it\")
-        case Err(error):
-            stdout.print(error.program)
-    echo = process.only(\"echo\")
-    stdout.print(echo.run(\"echo\", [\"again\"]).expect(\"it works\").stdout)
-    match echo.run(\"ls\", []):
-        case Ok(_):
-            stdout.print(\"ran it\")
-        case Err(error):
-            stdout.print(error.message)
-    stdout.print(stdin.lines())
-    stdout.print(entropy.seed() != entropy.seed())
-";
-
-#[test]
-fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let dir = folder("native-capabilities")?;
-    let program = dir.join("program.fen");
-    std::fs::write(&program, NATIVE_CAPABILITIES)?;
-    let executable = dir.join("program");
-    let path = |file: &Path| file.display().to_string();
-    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let with_lines = |command: &mut Command| -> std::io::Result<Output> {
-        use std::io::Write as _;
-        let mut running = command
-            .current_dir(&dir)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
-        running
-            .stdin
-            .take()
-            .ok_or_else(|| std::io::Error::other("no input"))?
-            .write_all(b"first\r\nsecond\n")?;
-        running.wait_with_output()
-    };
-    let ran = with_lines(&mut Command::new(&executable))?;
-    let interpreted = with_lines(
-        crate::executables::fennec_command()
-            .args(["run", "--interp", &path(&program)])
-            .env("FENNEC_HOME", &dir),
-    )?;
-    std::fs::remove_dir_all(&dir)?;
-    assert_eq!(outcome(&ran), outcome(&interpreted));
-    Ok(())
-}
-
-#[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
@@ -1035,6 +823,142 @@ def main(stdout: Stdout):
     stdout.print(f"{half:.3f} and {n} at {a.x}")
 "#,
     )
+}
+
+/// Values whose types write their own text, printed inside others, in every place they can be.
+const OWN_TEXT_INSIDE: &str = "\
+struct Tag:
+    name: str
+
+    def str(self, mut out: StrWriter):
+        out.write(\"<\" + self.name + \">\")
+
+struct Pair:
+    x = 0
+    y = 0
+
+    def str(self, mut out: StrWriter):
+        out.write(f\"{self.x}/{self.y}\")
+
+enum Light:
+    Red
+    Green(level: int)
+
+    def str(self, mut out: StrWriter):
+        out.write(\"light\")
+
+struct Holder:
+    tag: Tag
+    pair: Pair
+    count = 1
+
+def main(stdout: Stdout):
+    stdout.print([Tag(name=\"a\"), Tag(name=\"b\" * 40)])
+    stdout.print([Pair(x=1), Pair(y=2)])
+    stdout.print([Light.Red, Light.Green(level=2)])
+    stdout.print([(Tag(name=\"t\"), 1)])
+    maybe: list[Pair?] = [Pair(), None]
+    stdout.print(maybe)
+    stdout.print([Holder(tag=Tag(name=\"h\"), pair=Pair(x=9))])
+    stdout.print(f\"before {[Pair(x=5)]} after\")
+    stdout.print(Tag(name=\"top\"), Pair(y=3))
+    stdout.print([[Pair(x=7)], []])
+";
+
+#[test]
+fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("own-text-inside")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, OWN_TEXT_INSIDE)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
+/// Every shape of value printing reads from its block, nested, with text that needs quoting.
+const SHOWN_VALUES: &str = "\
+from std.game import IdMap
+
+struct Point:
+    x = 0
+    y = 0.5
+
+struct Named:
+    name: str
+    tags: list[str]
+    near: Point
+    next: str?
+
+struct Empty:
+    pass
+
+enum Shape:
+    Dot
+    Circle(radius: float, label: str)
+    Box(corner: Point)
+
+def main(stdout: Stdout):
+    stdout.print([1, -2, 3])
+    stdout.print([1.5, 2.0, 1e30, 0.1])
+    stdout.print([True, False])
+    stdout.print([\"plain\", \"with \\\"quotes\\\"\", \"line\\nbreak\", \"été\", \"\"])
+    stdout.print([[1], [], [2, 3]])
+    stdout.print([(1, \"a\"), (2, \"b\")])
+    stdout.print([(1,)])
+    stdout.print([Point(x=1), Point()])
+    named = Named(name=\"n\", tags=[\"a\", \"b\"], near=Point(x=3), next=None)
+    stdout.print([named, Named(name=\"m\" * 40, tags=[], near=Point(), next=\"s\" * 40)])
+    stdout.print(f\"{[named]}\")
+    stdout.print([Empty()])
+    stdout.print([Shape.Dot, Shape.Circle(radius=1.5, label=\"c\"), Shape.Box(corner=Point())])
+    stdout.print({\"a\": 1, \"long key that isn't inline, at all, in any way\": 2})
+    empty: dict[str, int] = {}
+    stdout.print(empty)
+    stdout.print({1, 2})
+    stdout.print({\"a\", \"b\"})
+    none: set[int] = set()
+    stdout.print(none)
+    maybe: list[int?] = [1, None]
+    stdout.print(maybe)
+    words: list[str?] = [\"a\", None]
+    stdout.print(words)
+    points: list[Point?] = [Point(), None]
+    stdout.print(points)
+    mut map = IdMap[str]()
+    first = map.insert(\"a\")
+    second = map.insert(\"b\")
+    map.insert(\"c\")
+    map.remove(second)
+    stdout.print(map)
+    stdout.print([first])
+";
+
+#[test]
+fn values_read_from_their_blocks_show_as_they_do_in_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shown-values")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, SHOWN_VALUES)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
 }
 
 /// What a program prints through LLVM is what the interpreter prints.
@@ -1688,6 +1612,125 @@ def main(stdout: Stdout, process: Process):
         let (ours, jit) = both_built(name, source, how)?;
         assert_eq!(ours, jit);
     }
+    Ok(())
+}
+
+#[test]
+fn arguments_and_the_clock_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("args-and-clock")?;
+    let program = dir.join("program.fen");
+    std::fs::write(
+        &program,
+        "\
+from std.time import Clock, Duration
+
+def main(stdout: Stdout, args: Args, clock: Clock):
+    stdout.print(args.len(), args.program != \"\")
+    for arg in args:
+        stdout.print(arg)
+    stdout.print(args[0], args[-1])
+    started = clock.now()
+    clock.sleep(Duration.millis(2))
+    stdout.print((clock.now() - started).nanos >= 2000000)
+    stdout.print(args[5])
+",
+    )?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).args(["one", "two"]).output()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program), "one", "two"], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "2 True\none\ntwo\none two\nTrue\n");
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
+/// What compiled code does through capabilities without the interpreter, failing as well as not.
+const NATIVE_CAPABILITIES: &str = "\
+from std.path import Path
+
+def main(stdout: Stdout, fs: Fs, process: Process, stdin: Stdin, entropy: Entropy):
+    folder = \"native-capabilities\"
+    stdout.print(fs.exists(folder))
+    fs.make_dir(folder).expect(\"it works\")
+    file = folder + \"/a.txt\"
+    fs.write_text(file, \"one\\ntwo\\n\").expect(\"it works\")
+    stdout.print(fs.read_text(file).expect(\"it works\"), fs.exists(Path(text=file)))
+    stdout.print(fs.metadata(file).expect(\"it works\").size, fs.metadata(file).expect(\"it works\").is_file)
+    stdout.print(fs.list_dir(folder).expect(\"it works\"))
+    only = fs.only(folder)
+    stdout.print(only.read_text(file).expect(\"it works\"))
+    stdout.print(only.exists(\"/\"))
+    match only.read_text(\"/etc/hosts\"):
+        case Ok(_):
+            stdout.print(\"read it\")
+        case Err(error):
+            stdout.print(error.reason.endswith(\"native-capabilities\"))
+    match fs.read_text(\"no such file\"):
+        case Ok(_):
+            stdout.print(\"read it\")
+        case Err(error):
+            stdout.print(error.reason != \"\")
+    fs.remove(file).expect(\"it works\")
+    fs.remove(folder).expect(\"it works\")
+    done = process.run(\"echo\", [\"hello\"]).expect(\"it works\")
+    stdout.print(done.status, done.stdout, done.stderr == \"\")
+    match process.run(\"no-such-program-at-all\", []):
+        case Ok(_):
+            stdout.print(\"ran it\")
+        case Err(error):
+            stdout.print(error.program)
+    echo = process.only(\"echo\")
+    stdout.print(echo.run(\"echo\", [\"again\"]).expect(\"it works\").stdout)
+    match echo.run(\"ls\", []):
+        case Ok(_):
+            stdout.print(\"ran it\")
+        case Err(error):
+            stdout.print(error.message)
+    stdout.print(stdin.lines())
+    stdout.print(entropy.seed() != entropy.seed())
+";
+
+#[test]
+fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("native-capabilities")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, NATIVE_CAPABILITIES)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let with_lines = |command: &mut Command| -> std::io::Result<Output> {
+        use std::io::Write as _;
+        let mut running = command
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        running
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("no input"))?
+            .write_all(b"first\r\nsecond\n")?;
+        running.wait_with_output()
+    };
+    let ran = with_lines(&mut Command::new(&executable))?;
+    let interpreted = with_lines(
+        crate::executables::fennec_command()
+            .args(["run", "--interp", &path(&program)])
+            .env("FENNEC_HOME", &dir),
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
     Ok(())
 }
 
@@ -3060,6 +3103,228 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+const WORDS_FORMAT: &str = r#"
+struct Words:
+    parts: list[str]
+    at = 0
+    place = 0
+
+    def next(mut self) -> str fails ParseError:
+        if self.at >= self.parts.len():
+            fail ParseError(message="out of words", line=0, column=self.at)
+        self.at += 1
+        self.parts[self.at - 1]
+
+    def int(mut self) -> int fails ParseError:
+        word = self.next()?
+        match int(word):
+            case Ok(n):
+                n
+            case Err(_):
+                fail ParseError(message=f"`{word}` should be an int", line=0, column=self.at)
+
+    def float(mut self) -> float fails ParseError:
+        word = self.next()?
+        match float(word):
+            case Ok(x):
+                x
+            case Err(_):
+                fail ParseError(message=f"`{word}` should be a float", line=0, column=self.at)
+
+    def bool(mut self) -> bool fails ParseError:
+        self.next()? == "yes"
+
+    def text(mut self) -> str fails ParseError:
+        self.next()?
+
+    def none(mut self) -> bool fails ParseError:
+        if self.at < self.parts.len() and self.parts[self.at] == "-":
+            self.at += 1
+            return True
+        False
+
+    def value[T: Deserializable](mut self) -> T fails ParseError:
+        T.deserialize(mut self)?
+
+    def sequence[T: Deserializable](mut self) -> list[T] fails ParseError:
+        mut found = list[T]()
+        for _ in range(self.int()?):
+            found.append(T.deserialize(mut self)?)
+        found
+
+    def map[K: Deserializable, V: Deserializable](mut self) -> list[(K, V)] fails ParseError:
+        mut found = list[(K, V)]()
+        for _ in range(self.int()?):
+            key = K.deserialize(mut self)?
+            found.append((key, V.deserialize(mut self)?))
+        found
+
+    def record(mut self, name: str) fails ParseError:
+        word = self.next()?
+        if word != name:
+            fail ParseError(message=f"`{word}` should be a {name}", line=0, column=self.at)
+
+    def next_field(mut self, fields: list[(str, str)]) -> bool fails ParseError:
+        word = self.next()?
+        if word == "end":
+            return False
+        mut at = 0
+        for name, _ in fields:
+            if name == word:
+                self.place = at
+                return True
+            at += 1
+        fail ParseError(message=f"no field `{word}`", line=0, column=self.at)
+
+    def field_at(self) -> int:
+        self.place
+
+    def missing(self, name: str) -> ParseError:
+        ParseError(message=f"`{name}` is missing", line=0, column=self.at)
+
+    def rule(self, message: str) -> ParseError:
+        ParseError(message=f"in the text, {message}", line=0, column=self.at)
+
+    def case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+        word = self.next()?
+        mut at = 0
+        for case, _ in cases:
+            if case == word:
+                return at
+            at += 1
+        fail ParseError(message=f"no case `{word}` in {name}", line=0, column=self.at)
+
+    def end_case(mut self) fails ParseError:
+        _ = self.next()?
+
+enum Order:
+    Hold
+    Move(x: int)
+
+    def deserialize(mut src: Deserializer) -> Self fails ParseError:
+        match src.case("Order", [("Hold", False), ("Move", True)])?:
+            case 0:
+                Order.Hold
+            case _:
+                fields = [("x", "x")]
+                src.record("Move")?
+                mut x: int? = None
+                while src.next_field(fields)?:
+                    x = src.value[int]()?
+                src.end_case()?
+                if x is None:
+                    fail src.missing("x")
+                Order.Move(x=x)
+
+    def str(self, mut out: StrWriter):
+        match self:
+            case .Hold:
+                out.write("Hold")
+            case .Move(x):
+                out.write(f"Move({x})")
+
+struct Unit:
+    name: str
+    health = 10
+    pet: str?
+    pace: float
+    ready: bool
+    tags: list[str]
+    seen: set[int]
+    scores: dict[str, int]
+    orders: list[Order]
+
+    def deserialize(mut src: Deserializer) -> Self fails ParseError:
+        fields = [("name", "name"), ("hp", "health"), ("pet", "pet"), ("pace", "pace"), ("ready", "ready"), ("tags", "tags"), ("seen", "seen"), ("scores", "scores"), ("orders", "orders")]
+        src.record("Unit")?
+        mut name: str? = None
+        mut health: int? = None
+        mut pet: str? = None
+        mut pace = 0.0
+        mut ready = False
+        mut tags = list[str]()
+        mut seen = set[int]()
+        mut scores = dict[str, int]()
+        mut orders = list[Order]()
+        while src.next_field(fields)?:
+            match src.field_at():
+                case 0:
+                    name = src.value[str]()?
+                case 1:
+                    health = src.value[int]()?
+                case 2:
+                    if not src.none()?:
+                        pet = src.value[str]()?
+                case 3:
+                    pace = src.value[float]()?
+                case 4:
+                    ready = src.value[bool]()?
+                case 5:
+                    tags = src.value[list[str]]()?
+                case 6:
+                    seen = src.value[set[int]]()?
+                case 7:
+                    scores = src.value[dict[str, int]]()?
+                case _:
+                    orders = src.value[list[Order]]()?
+        if name is None:
+            fail src.missing("name")
+        Unit(name=name, health=health else 10, pet=pet, pace=pace, ready=ready, tags=tags, seen=seen, scores=scores, orders=orders)
+
+def read(text: str) -> Unit fails ParseError:
+    mut src = Words(parts=text.split(" "))
+    src.value[Unit]()?
+
+def shown(text: str) -> str:
+    match read(text):
+        case Ok(unit):
+            orders = " ".join([str(order) for order in unit.orders])
+            pet = unit.pet else "no pet"
+            f"{unit.name} {unit.health} {pet} {unit.pace} {unit.ready} {unit.tags} {unit.seen.len()} {unit.scores} {orders}"
+        case Err(error):
+            f"failed: {error.message} at {error.column}"
+
+def main(stdout: Stdout):
+    stdout.print(shown("Unit name ash hp 3 pet - pace 0.5 ready yes tags 2 a b seen 2 7 7 scores 1 hits 9 orders 2 Hold Move Move x 4 end end end"))
+    stdout.print(shown("Unit name ash pet fox end"))
+    stdout.print(shown("Unit end"))
+    stdout.print(shown("Unit hp x end"))
+    stdout.print(shown("Unit size 1 end"))
+    stdout.print(shown("Spot end"))
+    stdout.print(shown("Unit orders 1 Wander end"))
+    stdout.print(shown("Unit tags 2 a"))
+"#;
+
+/// A format and a type written by hand on `Deserializer` and `Deserializable`, as generated code
+/// will be: every kind of value reads through one `T.deserialize`, a field left out takes its
+/// default or says it's missing, and each failure stops the read and says why.
+#[test]
+fn a_format_reads_a_type_through_its_deserialize() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("deserializer_format")?;
+    let program = dir.join("words.fen");
+    std::fs::write(&program, WORDS_FORMAT)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("words"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        ours.0,
+        "ash 3 no pet 0.5 True [\"a\", \"b\"] 1 {\"hits\": 9} Hold Move(4)\n\
+         ash 10 fox 0.0 False [] 0 {} \n\
+         failed: `name` is missing at 2\n\
+         failed: `x` should be an int at 3\n\
+         failed: no field `size` at 2\n\
+         failed: `Spot` should be a Unit at 1\n\
+         failed: no case `Wander` in Order at 4\n\
+         failed: out of words at 4\n"
+    );
+    Ok(())
+}
+
 /// `T.make()` calls the function of the type each copy of a generic stands for. It's native only:
 /// the interpreter has no types at run time to find it through.
 #[test]
@@ -3277,6 +3542,44 @@ test \"nothing runs\"(process: Process):
     let said = String::from_utf8_lossy(&ran.stderr);
     assert!(ran.status.success(), "{said}");
     assert!(said.contains("2 of 2 tests passed through LLVM"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A property test runs through LLVM with each input, and one that fails there runs again in the
+/// interpreter, on the same inputs, which shrinks what it failed for.
+#[test]
+fn property_tests_run_through_llvm() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("test_properties")?;
+    let program = dir.join("properties.fen");
+    std::fs::write(
+        &program,
+        "\
+struct Point:
+    x: int
+    y: float
+
+test \"ints stay small\" for value: int:
+    assert value >= -1000 and value <= 1000
+
+test \"points too\" for point: Point, count: int:
+    assert point.x <= 1000 and count <= 1000
+
+test \"this one goes too far\" for value: int:
+    assert value < 500
+",
+    )?;
+    let path = program.to_string_lossy().into_owned();
+    let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
+    let (out, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+    assert!(!ran.status.success(), "{said}");
+    assert!(said.contains("2 of 3 tests passed through LLVM"), "{said}");
+    assert!(out.contains("ints stay small (100 inputs)"), "{out}");
+    assert!(said.contains("it failed for value = 500"), "{said}");
+    assert!(!said.contains("through LLVM and passes"), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

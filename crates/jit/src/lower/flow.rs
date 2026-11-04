@@ -2,7 +2,7 @@
 //! Patterns are tested by the runtime; the arms are compiled natively.
 
 use cranelift_codegen::ir::{Block, InstBuilder};
-use fennec_syntax::{Diagnostic, Expr, MatchArm, Pattern, Span};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, MatchArm, Pattern, Span};
 
 use super::expr::Lowered;
 use super::{Lowerer, abi};
@@ -186,7 +186,12 @@ impl Lowerer<'_, '_> {
         let present = self.b.create_block();
         self.b.ins().brif(passes, fallback, &[], present, &[]);
         self.b.switch_to_block(fallback);
-        let (default_value, default_ty) = self.expr(default)?;
+        let (default_value, default_ty) = match &default.kind {
+            ExprKind::Match { arms, .. } if default.leaves() => {
+                self.tail(arms.first().map_or(&[], |arm| arm.body.as_slice()))?
+            }
+            _ => self.expr(default)?,
+        };
         let mut arms: Vec<_> = self.arm_end(default_value, default_ty)?.into_iter().collect();
         self.b.switch_to_block(present);
         let inner = self.help(Helper::Unwrap, &[handle])?;

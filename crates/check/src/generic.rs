@@ -202,7 +202,10 @@ impl FnCx<'_> {
             .and_then(|owner| self.checker.program.method(owner, &wanted.name).map(|(key, _)| key));
         let actual = if let Some(key) = key {
             let Some(signature) = self.checker.signature(&key) else { return Ok(()) };
-            let (actual, chosen) = self.instantiate(&key, &signature, Some(ty), types, Span::default());
+            // A function with no `self` has no value to read its type's parameters from.
+            let takes_self = self.checker.program.functions.get(&key).is_some_and(|f| f.def.takes_self());
+            let given = if takes_self { types.to_vec() } else { [ty.type_args(), types.to_vec()].concat() };
+            let (actual, chosen) = self.instantiate(&key, &signature, Some(ty), &given, Span::default());
             for Chosen { ty: chosen, bounds } in chosen {
                 let chosen = self.checker.settled(&chosen);
                 let asks_more =

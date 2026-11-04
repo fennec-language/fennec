@@ -23,6 +23,7 @@ pub(super) fn abi(ty: Ty) -> Option<types::Type> {
         | Ty::Struct(_)
         | Ty::Boxed(_)
         | Ty::Str
+        | Ty::Bytes
         | Ty::Dict(..)
         | Ty::List(_)
         | Ty::Maybe(_)

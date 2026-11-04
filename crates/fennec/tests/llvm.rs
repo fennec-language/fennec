@@ -2848,6 +2848,228 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+const WORDS_FORMAT: &str = r#"
+struct Words:
+    parts: list[str]
+    at = 0
+    place = 0
+
+    def next(mut self) -> str fails ParseError:
+        if self.at >= self.parts.len():
+            fail ParseError(message="out of words", line=0, column=self.at)
+        self.at += 1
+        self.parts[self.at - 1]
+
+    def int(mut self) -> int fails ParseError:
+        word = self.next()?
+        match int(word):
+            case Ok(n):
+                n
+            case Err(_):
+                fail ParseError(message=f"`{word}` should be an int", line=0, column=self.at)
+
+    def float(mut self) -> float fails ParseError:
+        word = self.next()?
+        match float(word):
+            case Ok(x):
+                x
+            case Err(_):
+                fail ParseError(message=f"`{word}` should be a float", line=0, column=self.at)
+
+    def bool(mut self) -> bool fails ParseError:
+        self.next()? == "yes"
+
+    def text(mut self) -> str fails ParseError:
+        self.next()?
+
+    def none(mut self) -> bool fails ParseError:
+        if self.at < self.parts.len() and self.parts[self.at] == "-":
+            self.at += 1
+            return True
+        False
+
+    def value[T: Deserializable](mut self) -> T fails ParseError:
+        T.deserialize(mut self)?
+
+    def sequence[T: Deserializable](mut self) -> list[T] fails ParseError:
+        mut found = list[T]()
+        for _ in range(self.int()?):
+            found.append(T.deserialize(mut self)?)
+        found
+
+    def map[K: Deserializable, V: Deserializable](mut self) -> list[(K, V)] fails ParseError:
+        mut found = list[(K, V)]()
+        for _ in range(self.int()?):
+            key = K.deserialize(mut self)?
+            found.append((key, V.deserialize(mut self)?))
+        found
+
+    def record(mut self, name: str) fails ParseError:
+        word = self.next()?
+        if word != name:
+            fail ParseError(message=f"`{word}` should be a {name}", line=0, column=self.at)
+
+    def next_field(mut self, fields: list[(str, str)]) -> bool fails ParseError:
+        word = self.next()?
+        if word == "end":
+            return False
+        mut at = 0
+        for name, _ in fields:
+            if name == word:
+                self.place = at
+                return True
+            at += 1
+        fail ParseError(message=f"no field `{word}`", line=0, column=self.at)
+
+    def field_at(self) -> int:
+        self.place
+
+    def missing(self, name: str) -> ParseError:
+        ParseError(message=f"`{name}` is missing", line=0, column=self.at)
+
+    def rule(self, message: str) -> ParseError:
+        ParseError(message=f"in the text, {message}", line=0, column=self.at)
+
+    def case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+        word = self.next()?
+        mut at = 0
+        for case, _ in cases:
+            if case == word:
+                return at
+            at += 1
+        fail ParseError(message=f"no case `{word}` in {name}", line=0, column=self.at)
+
+    def end_case(mut self) fails ParseError:
+        _ = self.next()?
+
+enum Order:
+    Hold
+    Move(x: int)
+
+    def deserialize(mut src: Deserializer) -> Self fails ParseError:
+        match src.case("Order", [("Hold", False), ("Move", True)])?:
+            case 0:
+                Order.Hold
+            case _:
+                fields = [("x", "x")]
+                src.record("Move")?
+                mut x: int? = None
+                while src.next_field(fields)?:
+                    x = src.value[int]()?
+                src.end_case()?
+                if x is None:
+                    fail src.missing("x")
+                Order.Move(x=x)
+
+    def str(self, mut out: StrWriter):
+        match self:
+            case .Hold:
+                out.write("Hold")
+            case .Move(x):
+                out.write(f"Move({x})")
+
+struct Unit:
+    name: str
+    health = 10
+    pet: str?
+    pace: float
+    ready: bool
+    tags: list[str]
+    seen: set[int]
+    scores: dict[str, int]
+    orders: list[Order]
+
+    def deserialize(mut src: Deserializer) -> Self fails ParseError:
+        fields = [("name", "name"), ("hp", "health"), ("pet", "pet"), ("pace", "pace"), ("ready", "ready"), ("tags", "tags"), ("seen", "seen"), ("scores", "scores"), ("orders", "orders")]
+        src.record("Unit")?
+        mut name: str? = None
+        mut health: int? = None
+        mut pet: str? = None
+        mut pace = 0.0
+        mut ready = False
+        mut tags = list[str]()
+        mut seen = set[int]()
+        mut scores = dict[str, int]()
+        mut orders = list[Order]()
+        while src.next_field(fields)?:
+            match src.field_at():
+                case 0:
+                    name = src.value[str]()?
+                case 1:
+                    health = src.value[int]()?
+                case 2:
+                    if not src.none()?:
+                        pet = src.value[str]()?
+                case 3:
+                    pace = src.value[float]()?
+                case 4:
+                    ready = src.value[bool]()?
+                case 5:
+                    tags = src.value[list[str]]()?
+                case 6:
+                    seen = src.value[set[int]]()?
+                case 7:
+                    scores = src.value[dict[str, int]]()?
+                case _:
+                    orders = src.value[list[Order]]()?
+        if name is None:
+            fail src.missing("name")
+        Unit(name=name, health=health else 10, pet=pet, pace=pace, ready=ready, tags=tags, seen=seen, scores=scores, orders=orders)
+
+def read(text: str) -> Unit fails ParseError:
+    mut src = Words(parts=text.split(" "))
+    src.value[Unit]()?
+
+def shown(text: str) -> str:
+    match read(text):
+        case Ok(unit):
+            orders = " ".join([str(order) for order in unit.orders])
+            pet = unit.pet else "no pet"
+            f"{unit.name} {unit.health} {pet} {unit.pace} {unit.ready} {unit.tags} {unit.seen.len()} {unit.scores} {orders}"
+        case Err(error):
+            f"failed: {error.message} at {error.column}"
+
+def main(stdout: Stdout):
+    stdout.print(shown("Unit name ash hp 3 pet - pace 0.5 ready yes tags 2 a b seen 2 7 7 scores 1 hits 9 orders 2 Hold Move Move x 4 end end end"))
+    stdout.print(shown("Unit name ash pet fox end"))
+    stdout.print(shown("Unit end"))
+    stdout.print(shown("Unit hp x end"))
+    stdout.print(shown("Unit size 1 end"))
+    stdout.print(shown("Spot end"))
+    stdout.print(shown("Unit orders 1 Wander end"))
+    stdout.print(shown("Unit tags 2 a"))
+"#;
+
+/// A format and a type written by hand on `Deserializer` and `Deserializable`, as generated code
+/// will be: every kind of value reads through one `T.deserialize`, a field left out takes its
+/// default or says it's missing, and each failure stops the read and says why.
+#[test]
+fn a_format_reads_a_type_through_its_deserialize() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("deserializer_format")?;
+    let program = dir.join("words.fen");
+    std::fs::write(&program, WORDS_FORMAT)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("words"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        ours.0,
+        "ash 3 no pet 0.5 True [\"a\", \"b\"] 1 {\"hits\": 9} Hold Move(4)\n\
+         ash 10 fox 0.0 False [] 0 {} \n\
+         failed: `name` is missing at 2\n\
+         failed: `x` should be an int at 3\n\
+         failed: no field `size` at 2\n\
+         failed: `Spot` should be a Unit at 1\n\
+         failed: no case `Wander` in Order at 4\n\
+         failed: out of words at 4\n"
+    );
+    Ok(())
+}
+
 /// `T.make()` calls the function of the type each copy of a generic stands for. It's native only:
 /// the interpreter has no types at run time to find it through.
 #[test]

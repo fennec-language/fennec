@@ -818,6 +818,9 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
                         | "set.len"
                         | "set.contains"
                         | "str.len"
+                        | "intrinsics.text_byte"
+                        | "intrinsics.text_size"
+                        | "intrinsics.text_part"
                 )
         }
         _ => false,

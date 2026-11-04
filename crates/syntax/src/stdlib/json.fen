@@ -1,3 +1,5 @@
+from std.intrinsics import text_byte, text_of_code, text_part, text_size, type_name
+
 ## How field names are spelled in JSON, set with `names=`. `snake_case` writes them as the
 ## program does. The keys of a dict are written as they are.
 enum JsonNames:
@@ -10,3 +12,1123 @@ enum JsonNames:
 enum JsonExtra:
     error
     ignore
+
+## A field's name as `names` spells it. Leading underscores stay as they are.
+def _spelled(name: str, names: JsonNames) -> str:
+    size = text_size(name)
+    mut start = 0
+    while text_byte(name, start) == 95:
+        start += 1
+    mut out = text_part(name, 0, start)
+    mut word = 0
+    mut at = start
+    while at <= size:
+        if at == size or text_byte(name, at) == 95:
+            if at > start:
+                part = text_part(name, start, at)
+                match names:
+                    case .snake_case:
+                        return name
+                    case .kebab_case:
+                        out += "-" if word > 0 else ""
+                        out += part
+                    case .camel_case:
+                        out += _capital(part) if word > 0 else part
+                    case .pascal_case:
+                        out += _capital(part)
+                word += 1
+            start = at + 1
+        at += 1
+    out
+
+def _capital(word: str) -> str:
+    word[:1].upper() + word[1:]
+
+## A float as JSON writes it: an exponent has no `+` and no leading zeros.
+def _float_text(value: float) -> str:
+    text = str(value)
+    if value != 0.0 and not (value >= 0.0001 and value < 10000000000000000.0) and not (value <= -0.0001 and value > -10000000000000000.0):
+        mut at = 0
+        while text_byte(text, at) != 101:
+            at += 1
+        mut digits = at + 1
+        negative = text_byte(text, digits) == 45
+        if negative or text_byte(text, digits) == 43:
+            digits += 1
+        while text_byte(text, digits) == 48 and digits + 1 < text_size(text):
+            digits += 1
+        lead = text_part(text, 0, at)
+        sign = "e-" if negative else "e"
+        return f"{lead}{sign}{text_part(text, digits, text_size(text))}"
+    text
+
+## How a byte JSON can't hold as it is gets written.
+def _escaped(b: int) -> str:
+    match b:
+        case 34:
+            "\\\""
+        case 92:
+            "\\\\"
+        case 10:
+            "\\n"
+        case 13:
+            "\\r"
+        case 9:
+            "\\t"
+        case 8:
+            "\\b"
+        case 12:
+            "\\f"
+        case _:
+            digits = "0123456789abcdef"
+            f"\\u00{digits[b // 16]}{digits[b % 16]}"
+
+## What a dict's key is, for deciding how to write it: JSON's object keys are text, and an int
+## is written as its digits. Anything else makes the dict an array of `[key, value]` pairs.
+struct _Key:
+    text = ""
+    fits = False
+
+    def int(mut self, value: int):
+        self.text = str(value)
+        self.fits = True
+
+    def float(mut self, value: float):
+        pass
+
+    def bool(mut self, value: bool):
+        pass
+
+    def text(mut self, value: str):
+        self.text = value
+        self.fits = True
+
+    def none(mut self):
+        pass
+
+    def value[T: Serializable](mut self, x: T):
+        pass
+
+    def sequence[T: Serializable](mut self, items: list[T]):
+        pass
+
+    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+        pass
+
+    def record(mut self, name: str, count: int):
+        pass
+
+    def field[T: Serializable](mut self, name: str, x: T):
+        pass
+
+    def renamed[T: Serializable](mut self, name: str, x: T):
+        pass
+
+    def end(mut self):
+        pass
+
+    def case(mut self, name: str, case: str):
+        pass
+
+    def case_record(mut self, name: str, case: str, count: int):
+        pass
+
+## Writes JSON into one growing text.
+struct JsonWriter:
+    _text = ""
+    _names = JsonNames.snake_case
+    _indent = -1
+    _depth = 0
+    _first = True
+
+    def written(self) -> str:
+        self._text
+
+    def int(mut self, value: int):
+        self._text += str(value)
+
+    def float(mut self, value: float):
+        if value != value or value - value != 0.0:
+            assert False
+        self._text += _float_text(value)
+
+    def bool(mut self, value: bool):
+        self._text += "true" if value else "false"
+
+    def text(mut self, value: str):
+        self._text += "\""
+        size = text_size(value)
+        mut start = 0
+        mut at = 0
+        while at < size:
+            b = text_byte(value, at)
+            if b >= 32 and b != 34 and b != 92 and b != 127 and b != 194:
+                at += 1
+            elif b == 194 and (text_byte(value, at + 1) < 128 or text_byte(value, at + 1) > 159):
+                at += 2
+            else:
+                self._text += text_part(value, start, at)
+                if b == 194:
+                    self._text += _escaped(text_byte(value, at + 1))
+                    at += 1
+                else:
+                    self._text += _escaped(b)
+                at += 1
+                start = at
+        if start == 0:
+            self._text += value
+        else:
+            self._text += text_part(value, start, size)
+        self._text += "\""
+
+    def none(mut self):
+        self._text += "null"
+
+    def value[T: Serializable](mut self, x: T):
+        x.serialize(mut self)
+
+    def _open(mut self, opening: str):
+        self._text += opening
+        self._depth += 1
+        self._first = True
+
+    def _close(mut self, closing: str):
+        self._depth -= 1
+        if self._indent >= 0 and not self._first:
+            self._text += "\n"
+            self._text += " " * (self._indent * self._depth)
+        self._text += closing
+        self._first = False
+
+    def _entry(mut self):
+        if self._first:
+            self._first = False
+        elif self._indent < 0:
+            self._text += ", "
+        else:
+            self._text += ","
+        if self._indent >= 0:
+            self._text += "\n"
+            self._text += " " * (self._indent * self._depth)
+
+    def sequence[T: Serializable](mut self, items: list[T]):
+        self._open("[")
+        for item in items:
+            self._entry()
+            item.serialize(mut self)
+        self._close("]")
+
+    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)]):
+        mut as_object = True
+        if pairs.len() > 0:
+            mut first = _Key()
+            pairs[0][0].serialize(mut first)
+            as_object = first.fits
+        if as_object:
+            self._open("{")
+            for key, value in pairs:
+                mut name = _Key()
+                key.serialize(mut name)
+                self._entry()
+                self.text(name.text)
+                self._text += ": "
+                value.serialize(mut self)
+            self._close("}")
+        else:
+            self._open("[")
+            for key, value in pairs:
+                self._entry()
+                self._open("[")
+                self._entry()
+                key.serialize(mut self)
+                self._entry()
+                value.serialize(mut self)
+                self._close("]")
+            self._close("]")
+
+    def record(mut self, name: str, count: int):
+        self._open("{")
+
+    def field[T: Serializable](mut self, name: str, x: T):
+        self._entry()
+        self._text += "\""
+        match self._names:
+            case .snake_case:
+                self._text += name
+            case _:
+                self._text += _spelled(name, self._names)
+        self._text += "\": "
+        x.serialize(mut self)
+
+    def renamed[T: Serializable](mut self, name: str, x: T):
+        self._entry()
+        self.text(name)
+        self._text += ": "
+        x.serialize(mut self)
+
+    def end(mut self):
+        self._close("}")
+
+    def case(mut self, name: str, case: str):
+        self._text += "\""
+        self._text += case
+        self._text += "\""
+
+    def case_record(mut self, name: str, case: str, count: int):
+        self._open("{")
+        self._entry()
+        self._text += "\""
+        self._text += case
+        self._text += "\": "
+        self._open("{")
+
+## `value` as JSON text, through its own `def serialize`.
+def native_dumps[T: Serializable](value: T, names: JsonNames = JsonNames.snake_case, indent: int = -1) -> str:
+    mut out = JsonWriter(_names=names, _indent=indent)
+    value.serialize(mut out)
+    out.written()
+
+## How deeply arrays and objects may nest, so bad input can't overflow the stack.
+_MOST_DEEP = 500
+
+## What a read that went wrong gives back, with nothing to say yet: the text is read again to
+## find what to say, so reading text that's fine pays for none of it.
+def _no_reason() -> ParseError:
+    ParseError(message="", line=0, column=0)
+
+def _article(name: str) -> str:
+    first = text_byte(name, 0)
+    if first == 97 or first == 101 or first == 105 or first == 111 or first == 117 or first == 65 or first == 69 or first == 73 or first == 79 or first == 85:
+        return f"an {name}"
+    f"a {name}"
+
+def _powers() -> list[float]:
+    [1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0, 10000000.0, 100000000.0, 1000000000.0, 10000000000.0, 100000000000.0, 1000000000000.0, 10000000000000.0, 100000000000000.0, 1000000000000000.0, 10000000000000000.0, 100000000000000000.0, 1000000000000000000.0, 10000000000000000000.0, 100000000000000000000.0, 1000000000000000000000.0, 10000000000000000000000.0]
+
+_POWERS = _powers()
+
+## Reads JSON a byte at a time, straight into what it's read as. The first read of a text says
+## nothing about what's wrong; only a failed one is read again, keeping track of where it is.
+struct JsonReader:
+    _source: str
+    _names = JsonNames.snake_case
+    _extra = JsonExtra.error
+    _explain = False
+    _at = 0
+    _place = 0
+    _first = True
+    _depth = 0
+    _in_key = False
+    _path = list[str]()
+    _fields = list[(str, str)]()
+    _owner = ""
+
+    def _space(mut self) -> int:
+        mut at = self._at
+        mut b = text_byte(self._source, at)
+        while b == 32 or b == 10 or b == 13 or b == 9:
+            at += 1
+            b = text_byte(self._source, at)
+        self._at = at
+        b
+
+    ## Where the reader is, as messages say it.
+    def _where(self) -> str:
+        if self._path.len() == 0:
+            return "the text"
+        f"`{self._joined()}`"
+
+    def _joined(self) -> str:
+        mut out = ""
+        for part in self._path:
+            if out != "" and text_byte(part, 0) != 91:
+                out += "."
+            out += part
+        out
+
+    ## What the next value is, for a message.
+    def _found(mut self) -> str:
+        b = self._space()
+        if b == 123:
+            return "a table"
+        if b == 110:
+            return "null"
+        if b == 34:
+            return "a str"
+        if b == 91:
+            return "a list"
+        if b == 116 or b == 102:
+            return "a bool"
+        mut at = self._at
+        mut c = text_byte(self._source, at)
+        while c == 45 or c == 43 or (c >= 48 and c <= 57):
+            at += 1
+            c = text_byte(self._source, at)
+        if c == 46 or c == 101 or c == 69:
+            return "a float"
+        "an int"
+
+    ## The error for a value that isn't what's wanted.
+    def _misfit(mut self, wanted: str) -> ParseError:
+        if not self._explain:
+            return _no_reason()
+        found = self._found()
+        ParseError(message=f"{self._where()} should be {_article(wanted)}, but it's {found}", line=0, column=0)
+
+    def int(mut self) -> int fails ParseError:
+        mut at = self._at
+        mut b = text_byte(self._source, at)
+        while b == 32 or b == 10 or b == 13 or b == 9:
+            at += 1
+            b = text_byte(self._source, at)
+        start = at
+        negative = b == 45
+        if negative:
+            at += 1
+            b = text_byte(self._source, at)
+        if b < 48 or b > 57:
+            self._at = start
+            return self._int_otherwise()?
+        leading = at
+        mut value = 0
+        while b >= 48 and b <= 57:
+            value = value * 10 + b - 48 if at - leading < 18 else value
+            at += 1
+            b = text_byte(self._source, at)
+        if text_byte(self._source, leading) == 48 and at - leading > 1:
+            fail _no_reason()
+        if at - leading > 18 or b == 46 or b == 101 or b == 69:
+            self._at = start
+            return self._long_int()?
+        self._at = at
+        -value if negative else value
+
+    ## An int that isn't plain digits: the digits of a dict's key, or what isn't an int.
+    def _int_otherwise(mut self) -> int fails ParseError:
+        if self._in_key and text_byte(self._source, self._at) == 34:
+            key = self.text()?
+            match int(key):
+                case Ok(n):
+                    return n
+                case Err(_):
+                    if not self._explain:
+                        fail _no_reason()
+                    fail ParseError(message=f"{self._where()} has the key \"{key}\", which isn't an int", line=0, column=0)
+        fail self._misfit("int")
+
+    ## An int of too many digits for the quick way, or what's a float or isn't a number.
+    def _long_int(mut self) -> int fails ParseError:
+        start = self._at
+        if self._number_end(start) < 0:
+            fail self._misfit("int")
+        end = self._number_end(start)
+        match int(text_part(self._source, start, end)):
+            case Ok(n):
+                self._at = end
+                return n
+            case Err(_):
+                fail _no_reason()
+
+    ## Where the plain int starting here ends, or -1 if it's written as a float.
+    def _number_end(self, start: int) -> int:
+        mut at = start
+        if text_byte(self._source, at) == 45:
+            at += 1
+        mut b = text_byte(self._source, at)
+        while b >= 48 and b <= 57:
+            at += 1
+            b = text_byte(self._source, at)
+        if b == 46 or b == 101 or b == 69:
+            return -1
+        at
+
+    def float(mut self) -> float fails ParseError:
+        mut at = self._at
+        mut b = text_byte(self._source, at)
+        while b == 32 or b == 10 or b == 13 or b == 9:
+            at += 1
+            b = text_byte(self._source, at)
+        start = at
+        negative = b == 45
+        if negative:
+            at += 1
+            b = text_byte(self._source, at)
+        if b < 48 or b > 57:
+            self._at = start
+            fail self._misfit("float")
+        leading = at
+        mut digits = 0
+        mut whole = 0
+        while b >= 48 and b <= 57:
+            whole = whole * 10 + b - 48 if digits < 18 else whole
+            digits += 1
+            at += 1
+            b = text_byte(self._source, at)
+        if text_byte(self._source, leading) == 48 and at - leading > 1:
+            fail _no_reason()
+        mut places = 0
+        if b == 46:
+            at += 1
+            b = text_byte(self._source, at)
+            if b < 48 or b > 57:
+                fail _no_reason()
+            while b >= 48 and b <= 57:
+                whole = whole * 10 + b - 48 if digits < 18 else whole
+                digits += 1
+                places += 1
+                at += 1
+                b = text_byte(self._source, at)
+        if b == 101 or b == 69 or digits > 15 or places > 22:
+            return self._long_float(start)?
+        self._at = at
+        value = float(whole) / _POWERS[places]
+        -value if negative else value
+
+    ## A float the quick way can't be sure of, read by the runtime.
+    def _long_float(mut self, start: int) -> float fails ParseError:
+        mut at = start
+        mut b = text_byte(self._source, at)
+        while b == 45 or b == 43 or b == 46 or b == 101 or b == 69 or (b >= 48 and b <= 57):
+            at += 1
+            b = text_byte(self._source, at)
+        match float(text_part(self._source, start, at)):
+            case Ok(x):
+                self._at = at
+                return x
+            case Err(_):
+                fail _no_reason()
+
+    def bool(mut self) -> bool fails ParseError:
+        b = self._space()
+        at = self._at
+        if b == 116 and text_byte(self._source, at + 1) == 114 and text_byte(self._source, at + 2) == 117 and text_byte(self._source, at + 3) == 101:
+            self._at = at + 4
+            return True
+        if b == 102 and text_byte(self._source, at + 1) == 97 and text_byte(self._source, at + 2) == 108 and text_byte(self._source, at + 3) == 115 and text_byte(self._source, at + 4) == 101:
+            self._at = at + 5
+            return False
+        fail self._misfit("bool")
+
+    def text(mut self) -> str fails ParseError:
+        mut at = self._at
+        mut b = text_byte(self._source, at)
+        while b == 32 or b == 10 or b == 13 or b == 9:
+            at += 1
+            b = text_byte(self._source, at)
+        if b != 34:
+            self._at = at
+            fail self._misfit("str")
+        at += 1
+        start = at
+        b = text_byte(self._source, at)
+        while b != 34 and b != 92 and b >= 32:
+            at += 1
+            b = text_byte(self._source, at)
+        if b == 34:
+            self._at = at + 1
+            return text_part(self._source, start, at)
+        if b == 92:
+            self._at = start
+            return self._unescaped()?
+        fail _no_reason()
+
+    ## The rest of a string with an escape in it, from just inside its opening quote.
+    def _unescaped(mut self) -> str fails ParseError:
+        mut out = ""
+        mut at = self._at
+        mut start = at
+        while True:
+            b = text_byte(self._source, at)
+            if b == 34:
+                out += text_part(self._source, start, at)
+                self._at = at + 1
+                return out
+            if b < 32:
+                fail _no_reason()
+            if b != 92:
+                at += 1
+            else:
+                out += text_part(self._source, start, at)
+                e = text_byte(self._source, at + 1)
+                at += 2
+                match e:
+                    case 34:
+                        out += "\""
+                    case 92:
+                        out += "\\"
+                    case 47:
+                        out += "/"
+                    case 98:
+                        out += "\x08"
+                    case 102:
+                        out += "\x0c"
+                    case 110:
+                        out += "\n"
+                    case 114:
+                        out += "\r"
+                    case 116:
+                        out += "\t"
+                    case 117:
+                        mut code = self._hex(at)
+                        at += 4
+                        if code >= 55296 and code < 56320:
+                            if text_byte(self._source, at) != 92 or text_byte(self._source, at + 1) != 117:
+                                fail _no_reason()
+                            low = self._hex(at + 2)
+                            at += 6
+                            if low < 56320 or low >= 57344:
+                                fail _no_reason()
+                            code = 65536 + (code - 55296) * 1024 + low - 56320
+                        elif code < 0 or (code >= 56320 and code < 57344):
+                            fail _no_reason()
+                        out += text_of_code(code)
+                    case _:
+                        fail _no_reason()
+                start = at
+
+    ## The number in the four hex digits here, or -1 if they aren't.
+    def _hex(self, at: int) -> int:
+        mut code = 0
+        for place in range(4):
+            b = text_byte(self._source, at + place)
+            if b >= 48 and b <= 57:
+                code = code * 16 + b - 48
+            elif b >= 97 and b <= 102:
+                code = code * 16 + b - 87
+            elif b >= 65 and b <= 70:
+                code = code * 16 + b - 55
+            else:
+                return -1
+        code
+
+    def none(mut self) -> bool fails ParseError:
+        b = self._space()
+        if b != 110:
+            return False
+        at = self._at
+        if text_byte(self._source, at + 1) != 117 or text_byte(self._source, at + 2) != 108 or text_byte(self._source, at + 3) != 108:
+            fail _no_reason()
+        self._at = at + 4
+        True
+
+    def value[T: Deserializable](mut self) -> T fails ParseError:
+        T.deserialize(mut self)?
+
+    def sequence[T: Deserializable](mut self) -> list[T] fails ParseError:
+        if self._space() != 91:
+            fail self._misfit(f"list[{type_name[T]()}]")
+        self._at += 1
+        self._depth += 1
+        if self._depth > _MOST_DEEP:
+            fail _no_reason()
+        mut found = list[T]()
+        if self._space() == 93:
+            self._at += 1
+            self._depth -= 1
+            return found
+        mut count = 0
+        while True:
+            if self._explain:
+                self._path.append(f"[{count}]")
+                count += 1
+            found.append(T.deserialize(mut self)?)
+            if self._explain:
+                _ = self._path.pop()
+            b = self._space()
+            self._at += 1
+            if b == 93:
+                self._depth -= 1
+                return found
+            if b != 44:
+                fail _no_reason()
+
+    def map[K: Deserializable, V: Deserializable](mut self) -> list[(K, V)] fails ParseError:
+        b = self._space()
+        if b == 91:
+            return self._pairs[K, V]()?
+        if b != 123:
+            fail self._misfit(f"dict[{type_name[K]()}, {type_name[V]()}]")
+        self._at += 1
+        self._depth += 1
+        if self._depth > _MOST_DEEP:
+            fail _no_reason()
+        mut found = list[(K, V)]()
+        if self._space() == 125:
+            self._at += 1
+            self._depth -= 1
+            return found
+        while True:
+            start = self._at
+            self._in_key = True
+            key = K.deserialize(mut self)?
+            self._in_key = False
+            if self._space() != 58:
+                fail _no_reason()
+            if self._explain:
+                self._path.append(f"[{text_part(self._source, self._key_start(start), self._at)}]")
+            self._at += 1
+            value = V.deserialize(mut self)?
+            if self._explain:
+                _ = self._path.pop()
+            found.append((key, value))
+            c = self._space()
+            self._at += 1
+            if c == 125:
+                self._depth -= 1
+                return found
+            if c != 44:
+                fail _no_reason()
+
+    def _key_start(self, start: int) -> int:
+        mut at = start
+        mut b = text_byte(self._source, at)
+        while b == 32 or b == 10 or b == 13 or b == 9:
+            at += 1
+            b = text_byte(self._source, at)
+        at
+
+    ## A dict whose keys can't be an object's, as an array of `[key, value]` pairs.
+    def _pairs[K: Deserializable, V: Deserializable](mut self) -> list[(K, V)] fails ParseError:
+        self._at += 1
+        mut found = list[(K, V)]()
+        if self._space() == 93:
+            self._at += 1
+            return found
+        mut count = 0
+        while True:
+            if self._explain:
+                self._path.append(f"[{count}]")
+                count += 1
+            if self._space() != 91:
+                fail self._misfit("[key, value] pair")
+            self._at += 1
+            if self._explain:
+                self._path.append("[0]")
+            key = K.deserialize(mut self)?
+            if self._explain:
+                _ = self._path.pop()
+            if self._space() != 44:
+                fail self._not_a_pair()
+            self._at += 1
+            if self._explain:
+                self._path.append("[1]")
+            value = V.deserialize(mut self)?
+            if self._explain:
+                _ = self._path.pop()
+            if self._space() != 93:
+                fail self._not_a_pair()
+            self._at += 1
+            if self._explain:
+                _ = self._path.pop()
+            found.append((key, value))
+            b = self._space()
+            self._at += 1
+            if b == 93:
+                return found
+            if b != 44:
+                fail _no_reason()
+
+    def _not_a_pair(self) -> ParseError:
+        if not self._explain:
+            return _no_reason()
+        _ = self._path
+        ParseError(message=f"{self._where()} should be a [key, value] pair", line=0, column=0)
+
+    def record(mut self, name: str) fails ParseError:
+        if self._space() != 123:
+            mut wanted = name
+            at = name.find(".")
+            if at is not None:
+                wanted = name[:at]
+            fail self._misfit(wanted)
+        self._at += 1
+        self._first = True
+        self._depth += 1
+        if self._depth > _MOST_DEEP:
+            fail _no_reason()
+        if self._explain:
+            self._owner = name
+
+    def next_field(mut self, fields: list[(str, str)]) -> bool fails ParseError:
+        if self._explain:
+            self._fields = fields
+        b = self._space()
+        if self._first:
+            self._first = False
+            if b == 125:
+                self._at += 1
+                self._depth -= 1
+                return False
+        else:
+            if self._explain:
+                _ = self._path.pop()
+            if b == 125:
+                self._at += 1
+                self._depth -= 1
+                return False
+            if b != 44:
+                fail _no_reason()
+            self._at += 1
+        key = self.text()?
+        if self._space() != 58:
+            fail _no_reason()
+        self._at += 1
+        return self._named(key, fields)?
+
+    ## Takes in a field's key: which of `fields` it is, or what's done with a key none has.
+    def _named(mut self, key: str, fields: list[(str, str)]) -> bool fails ParseError:
+        mut at = 0
+        for saved, own in fields:
+            if saved == key:
+                if saved == own and self._names != JsonNames.snake_case and _spelled(own, self._names) != key:
+                    at += 1
+                    continue
+                self._place = at
+                if self._explain:
+                    self._path.append(key)
+                return True
+            at += 1
+        if self._names != JsonNames.snake_case:
+            at = 0
+            for saved, own in fields:
+                if saved == own and _spelled(own, self._names) == key:
+                    self._place = at
+                    if self._explain:
+                        self._path.append(key)
+                    return True
+                at += 1
+        match self._extra:
+            case .ignore:
+                self._skip(self._depth)?
+                self._first = False
+                if self._explain:
+                    self._path.append(key)
+                return self.next_field(fields)?
+            case .error:
+                fail self._unknown(key, fields)
+
+    def _unknown(self, key: str, fields: list[(str, str)]) -> ParseError:
+        if not self._explain:
+            return _no_reason()
+        owner = f"`{self._owner}`"
+        where = self._where()
+        for saved, own in fields:
+            if _spelled(own, self._names) == key:
+                if saved == "":
+                    return ParseError(message=f"{owner} doesn't save `{own}`, which has `@skip`, but {where} has it", line=0, column=0)
+                return ParseError(message=f"{owner} saves `{own}` as \"{saved}\", but {where} has \"{key}\"", line=0, column=0)
+        ParseError(message=f"{owner} has no field \"{key}\", but {where} has one", line=0, column=0)
+
+    def field_at(self) -> int:
+        self._place
+
+    def missing(self, name: str) -> ParseError:
+        if not self._explain:
+            return _no_reason()
+        mut wire = name
+        for saved, own in self._fields:
+            if saved == name and saved == own:
+                wire = _spelled(own, self._names)
+        joined = self._joined()
+        if joined == "":
+            return ParseError(message=f"`{wire}` is missing", line=0, column=0)
+        if text_byte(wire, 0) == 91:
+            return ParseError(message=f"`{joined}{wire}` is missing", line=0, column=0)
+        ParseError(message=f"`{joined}.{wire}` is missing", line=0, column=0)
+
+    def rule(self, message: str) -> ParseError:
+        if not self._explain:
+            return _no_reason()
+        ParseError(message=f"in {self._where()}, {message}", line=0, column=0)
+
+    def case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+        b = self._space()
+        if b == 34:
+            return self._plain_case(name, cases)?
+        if b != 123:
+            fail self._misfit(name)
+        start = self._at
+        self._at += 1
+        if self._space() != 34:
+            self._at = start
+            fail self._misfit(name)
+        key = self.text()?
+        if self._space() != 58:
+            fail _no_reason()
+        self._at += 1
+        if self._space() != 123:
+            self._at = start
+            fail self._misfit(name)
+        mut at = 0
+        for case, has_data in cases:
+            if case == key:
+                if not has_data:
+                    self._at += 1
+                    if self._space() != 125:
+                        fail self._no_field(f"{name}.{case}")
+                    self._at += 1
+                    self.end_case()?
+                return at
+            at += 1
+        fail self._no_case(name, key)
+
+    ## The error for a case with no data that the text gives a field.
+    def _no_field(mut self, owner: str) -> ParseError:
+        if not self._explain:
+            return _no_reason()
+        match self.text():
+            case Ok(key):
+                ParseError(message=f"`{owner}` has no field \"{key}\", but {self._where()} has one", line=0, column=0)
+            case Err(_):
+                _no_reason()
+
+    def _plain_case(mut self, name: str, cases: list[(str, bool)]) -> int fails ParseError:
+        key = self.text()?
+        mut at = 0
+        for case, has_data in cases:
+            if case == key:
+                if has_data:
+                    if not self._explain:
+                        fail _no_reason()
+                    fail ParseError(message=f"{self._where()} is `{name}.{case}`, which needs its fields", line=0, column=0)
+                return at
+            at += 1
+        fail self._no_case(name, key)
+
+    def _no_case(self, name: str, key: str) -> ParseError:
+        if not self._explain:
+            return _no_reason()
+        ParseError(message=f"{self._where()} is \"{key}\", which isn't a case of `{name}`", line=0, column=0)
+
+    def end_case(mut self) fails ParseError:
+        if self._space() != 125:
+            fail _no_reason()
+        self._at += 1
+
+    ## What comes after everything's been read has to be nothing.
+    def finish(mut self) fails ParseError:
+        if self._space() != -1:
+            fail _no_reason()
+
+    ## What's next, for a message about the text itself: "`x`", or "the end of the text".
+    def _next_char(self) -> str:
+        b = text_byte(self._source, self._at)
+        if b < 0:
+            return "the end of the text"
+        if b == 10:
+            return "the end of the line"
+        mut size = 1
+        if b >= 240:
+            size = 4
+        elif b >= 224:
+            size = 3
+        elif b >= 192:
+            size = 2
+        c = text_part(self._source, self._at, self._at + size)
+        f"`{c}`"
+
+    ## A failure saying what's wrong with the text here, by line and column.
+    def _bad(self, message: str) -> ParseError:
+        self._bad_at(message, self._at)
+
+    def _bad_at(self, message: str, place: int) -> ParseError:
+        mut line = 1
+        mut column = 1
+        mut at = 0
+        while at < place:
+            b = text_byte(self._source, at)
+            if b == 10:
+                line += 1
+                column = 1
+            elif b < 128 or b >= 192:
+                column += 1
+            at += 1
+        ParseError(message=f"{message}, at line {line}, column {column}", line=line, column=column)
+
+    ## Goes past one value, saying what's wrong with it if anything is.
+    def _skip(mut self, depth: int) fails ParseError:
+        if depth > _MOST_DEEP:
+            fail self._bad(f"arrays and objects nest more than {_MOST_DEEP} deep here")
+        b = self._space()
+        if b == 123:
+            self._skip_object(depth)?
+        elif b == 91:
+            self._skip_array(depth)?
+        elif b == 34:
+            self._skip_string()?
+        elif b == 45 or (b >= 48 and b <= 57):
+            self._skip_number()?
+        elif b >= 97 and b <= 122:
+            self._skip_word()?
+        else:
+            fail self._bad(f"expected a value, but found {self._next_char()}")
+
+    def _skip_word(mut self) fails ParseError:
+        start = self._at
+        mut at = start
+        mut b = text_byte(self._source, at)
+        while (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57):
+            at += 1
+            b = text_byte(self._source, at)
+        word = text_part(self._source, start, at)
+        if word != "true" and word != "false" and word != "null":
+            fail self._bad(f"`{word}` isn't a JSON value; the words JSON knows are true, false and null")
+        self._at = at
+
+    def _skip_object(mut self, depth: int) fails ParseError:
+        self._at += 1
+        if self._space() == 125:
+            self._at += 1
+            return
+        while True:
+            if self._space() != 34:
+                fail self._bad(f"expected a key in double quotes, but found {self._next_char()}")
+            self._skip_string()?
+            if self._space() != 58:
+                fail self._bad(f"expected `:` after the key, but found {self._next_char()}")
+            self._at += 1
+            self._skip(depth + 1)?
+            b = self._space()
+            if b == 125:
+                self._at += 1
+                return
+            if b != 44:
+                fail self._bad(f"expected `,` or `}}` after the value, but found {self._next_char()}")
+            self._at += 1
+
+    def _skip_array(mut self, depth: int) fails ParseError:
+        self._at += 1
+        if self._space() == 93:
+            self._at += 1
+            return
+        while True:
+            self._skip(depth + 1)?
+            b = self._space()
+            if b == 93:
+                self._at += 1
+                return
+            if b != 44:
+                fail self._bad(f"expected `,` or `]` after the value, but found {self._next_char()}")
+            self._at += 1
+
+    def _skip_string(mut self) fails ParseError:
+        start = self._at
+        self._at += 1
+        while True:
+            b = text_byte(self._source, self._at)
+            if b == 34:
+                self._at += 1
+                return
+            if b < 0:
+                fail self._bad_at("this string never ends", start)
+            if b < 32:
+                fail self._bad("a string can't hold a line break or control character; write `\\n` or `\\t`")
+            self._at += 1
+            if b == 92:
+                self._skip_escape()?
+
+    def _skip_escape(mut self) fails ParseError:
+        at = self._at
+        b = text_byte(self._source, at)
+        if b < 0:
+            fail self._bad("this string never ends")
+        self._at = at + 1
+        if b == 117:
+            self._skip_unicode()?
+        elif b != 34 and b != 92 and b != 47 and b != 98 and b != 102 and b != 110 and b != 114 and b != 116:
+            self._at = at
+            fail self._bad(f"`\\{self._next_char()[1:-1]}` isn't a JSON escape")
+
+    def _skip_unicode(mut self) fails ParseError:
+        start = self._at
+        high = self._hex(start)
+        if high < 0:
+            fail self._bad("`\\u` needs 4 hex digits")
+        self._at = start + 4
+        if high < 55296 or high >= 56320:
+            if high >= 56320 and high < 57344:
+                fail self._bad("this `\\u` escape isn't a character")
+            return
+        if text_byte(self._source, self._at) != 92 or text_byte(self._source, self._at + 1) != 117:
+            self._at = start
+            fail self._bad("this `\\u` escape is half of a pair, so another `\\u` must follow it")
+        self._at += 2
+        low = self._hex(self._at)
+        if low < 0:
+            fail self._bad("`\\u` needs 4 hex digits")
+        if low < 56320 or low >= 57344:
+            self._at = start
+            fail self._bad("these `\\u` escapes aren't a valid pair")
+        self._at += 4
+
+    def _skip_number(mut self) fails ParseError:
+        start = self._at
+        if text_byte(self._source, start) == 45:
+            self._at += 1
+        whole = self._at
+        self._digits()
+        if self._at == whole:
+            fail self._bad(f"expected a digit, but found {self._next_char()}")
+        if self._at - whole > 1 and text_byte(self._source, whole) == 48:
+            self._at = start
+            fail self._bad("a number can't start with 0 unless it is 0")
+        mut is_float = False
+        if text_byte(self._source, self._at) == 46:
+            is_float = True
+            self._at += 1
+            place = self._at
+            self._digits()
+            if self._at == place:
+                fail self._bad(f"expected a digit after `.`, but found {self._next_char()}")
+        b = text_byte(self._source, self._at)
+        if b == 101 or b == 69:
+            is_float = True
+            self._at += 1
+            sign = text_byte(self._source, self._at)
+            if sign == 43 or sign == 45:
+                self._at += 1
+            place = self._at
+            self._digits()
+            if self._at == place:
+                fail self._bad(f"expected a digit in the exponent, but found {self._next_char()}")
+        if not is_float:
+            number = text_part(self._source, start, self._at)
+            match int(number):
+                case Ok(_):
+                    pass
+                case Err(_):
+                    fail self._bad_at(f"`{number}` is too big for an int", start)
+
+    def _digits(mut self):
+        mut b = text_byte(self._source, self._at)
+        while b >= 48 and b <= 57:
+            self._at += 1
+            b = text_byte(self._source, self._at)
+
+    ## Goes over the whole text, saying what's wrong with it if anything is.
+    def _whole(mut self) fails ParseError:
+        self._skip(0)?
+        if self._space() != -1:
+            fail self._bad(f"expected the end of the text after the value, but found {self._next_char()}")
+
+## `text` read as a `T`, through its own `def deserialize`.
+def native_loads[T: Deserializable](text: str, names: JsonNames = JsonNames.snake_case, extra: JsonExtra = JsonExtra.error) -> T fails ParseError:
+    mut src = JsonReader(_source=text, _names=names, _extra=extra)
+    match _read[T](mut src):
+        case Ok(value):
+            value
+        case Err(_):
+            _explained[T](text, names, extra)?
+
+def _read[T: Deserializable](mut src: JsonReader) -> T fails ParseError:
+    value = T.deserialize(mut src)?
+    src.finish()?
+    value
+
+## Fails with what's wrong with text that failed to read: first anything wrong with it as JSON,
+## then what doesn't fit the type, found by reading it again keeping track of where it is.
+def _explained[T: Deserializable](text: str, names: JsonNames, extra: JsonExtra) -> T fails ParseError:
+    mut check = JsonReader(_source=text)
+    check._whole()?
+    mut src = JsonReader(_source=text, _names=names, _extra=extra, _explain=True)
+    _read[T](mut src)?

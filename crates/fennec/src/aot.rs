@@ -253,7 +253,7 @@ struct Emitted {
 /// Lowers a trimmed program and writes its text, or says why LLVM can't.
 fn emitted(reached: &fennec_syntax::Module, traced: bool) -> Result<Emitted, String> {
     let checked =
-        fennec_check::check(reached).map_err(|_| "the program didn't check once trimmed".to_owned())?;
+        fennec_check::check(reached).map_err(|problems| format!("the program didn't check once trimmed: {problems:?}"))?;
     // `parallel` runs on the runtime's threads, its work lifted for each range of positions.
     let lowered = fennec_ir::lower_with(reached, &checked, fennec_ir::Options { outline_parallel: true });
     if !lowered.not_lowered.is_empty() {

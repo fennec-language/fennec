@@ -424,6 +424,35 @@ pub extern "C" fn slice(address: i64, from: i64, to: i64, start: i64, end: i64) 
     })
 }
 
+/// The part of a string between two places in its bytes, each where a character starts or at
+/// its end, for `std.intrinsics`' `text_part`.
+pub extern "C" fn part(address: i64, from: i64, to: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| part_by_bytes(state, address, from, to).ok_or_else(|| lost(start, end)))
+}
+
+fn part_by_bytes(state: &mut State, address: i64, from: i64, to: i64) -> Option<i64> {
+    let source = u64::try_from(address).ok()?;
+    let (from, to) = (usize::try_from(from).ok()?, usize::try_from(to).ok()?);
+    let block = state.heap.block(source)?;
+    let (length, chars) = lengths(block);
+    let all_ascii = usize::try_from(chars).ok() == Some(length);
+    if !super::heap::is_text(state, block) || from > to || to > length {
+        return None;
+    }
+    let chars = if all_ascii {
+        to - from
+    } else {
+        let words = block.get(TEXT_HEADER_WORDS..)?;
+        (from..to)
+            .filter(|at| {
+                let byte = words.get(at / 8).and_then(|word| word.to_le_bytes().get(at % 8).copied());
+                byte.is_some_and(|byte| byte & 0xC0 != 0x80)
+            })
+            .count()
+    };
+    ascii_part_of(state, source, (from, to), u64::try_from(chars).ok()?)
+}
+
 /// How two strings order: -1, 0 or 1, comparing bytes as the interpreter does.
 pub extern "C" fn compare(a: i64, b: i64) -> i64 {
     with(|state| match bytes(state, a).unwrap_or_default().0.cmp(&bytes(state, b).unwrap_or_default().0) {

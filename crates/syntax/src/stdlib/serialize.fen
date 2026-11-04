@@ -5,7 +5,6 @@ interface Serializer:
     def float(mut self, value: float)
     def bool(mut self, value: bool)
     def text(mut self, value: str)
-    def bytes(mut self, value: bytes)
 
     ## A missing value.
     def none(mut self)
@@ -115,10 +114,6 @@ extend str:
 
     def deserialize(mut src: Deserializer) -> str fails ParseError:
         src.text()?
-
-extend bytes:
-    def serialize(self, mut out: Serializer):
-        out.bytes(self)
 
 extend list[T: Serializable]:
     def serialize(self, mut out: Serializer):

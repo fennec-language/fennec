@@ -190,6 +190,13 @@ pub extern "C" fn int_header(n: i64) -> Text {
     Text { words: inline(digits.get(at..).unwrap_or_default()) }
 }
 
+/// `fennec_code_header(code)`: the character with a code as a header. A number that isn't a
+/// character's code gives the replacement character, which `std.json` never asks for.
+pub extern "C" fn code_header(code: i64) -> Text {
+    let found = u32::try_from(code).ok().and_then(char::from_u32).unwrap_or(char::REPLACEMENT_CHARACTER);
+    Text { words: inline(found.encode_utf8(&mut [0; 4]).as_bytes()) }
+}
+
 /// `fennec_float_header(x)`: a float's text as it prints, as a header, inline unless it's the
 /// longest there is.
 pub extern "C" fn float_header(x: f64) -> Text {

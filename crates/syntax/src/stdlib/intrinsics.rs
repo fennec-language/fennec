@@ -1,4 +1,4 @@
-//! `std.intrinsics`: the machine operations `int` and `float` stand on, for the standard
+//! `std.intrinsics`: the machine operations `int`, `float` and `str` stand on, for the standard
 //! library alone.
 
 use super::Module;
@@ -34,6 +34,11 @@ pub(crate) const MODULE: Module = Module {
         "float_lt",
         "float_to_int",
         "float_bits",
+        "text_byte",
+        "text_size",
+        "text_part",
+        "text_of_code",
+        "type_name",
     ],
     source: include_str!("intrinsics.fen"),
     gives: &[],

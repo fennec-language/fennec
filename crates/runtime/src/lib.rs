@@ -79,7 +79,9 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_str_index_text",
     "fennec_str_print",
     "fennec_str_slice",
+    "fennec_str_part",
     "fennec_int_header",
+    "fennec_code_header",
     "fennec_float_header",
     "fennec_str_split",
     "fennec_stream_next",
@@ -276,6 +278,7 @@ export! {
     fennec_text_contains(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::contains(a0, a1, a2, a3, a4, a5);
     fennec_text_of(a0: i64) -> text::Text => text::of(a0);
     fennec_int_header(a0: i64) -> text::Text => text::int_header(a0);
+    fennec_code_header(a0: i64) -> text::Text => text::code_header(a0);
     fennec_float_header(a0: f64) -> text::Text => text::float_header(a0);
     fennec_str_char_at(a0: i64, a1: i64) -> i64 => strings::char_at(a0, a1);
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);
@@ -285,6 +288,7 @@ export! {
     fennec_str_index(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::index(a0, a1, a2, a3);
     fennec_str_index_text(a0: i64, a1: i64, a2: i64, a3: i64) -> text::Text => strings::index_text(a0, a1, a2, a3);
     fennec_str_slice(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => strings::slice(a0, a1, a2, a3, a4);
+    fennec_str_part(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => strings::part(a0, a1, a2, a3, a4);
     fennec_str_compare(a0: i64, a1: i64) -> i64 => strings::compare(a0, a1);
     fennec_str_contains(a0: i64, a1: i64) -> i8 => strings::contains(a0, a1);
     fennec_str_print(a0: i64) => strings::print(a0);

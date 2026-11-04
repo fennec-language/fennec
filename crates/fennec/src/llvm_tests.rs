@@ -274,7 +274,11 @@ pub(crate) fn run(module: &Module, wanted: &[String], defines: &dyn Fn(&str) -> 
         return result;
     }
     let names: Vec<String> = (0..taken.len()).map(function_name).collect();
-    let work = std::env::temp_dir().join(format!("fennec-tests-{}", std::process::id()));
+    let work = std::env::temp_dir().join(format!(
+        "fennec-tests-{}{}",
+        std::process::id(),
+        std::env::consts::EXE_SUFFIX
+    ));
     let flags = match crate::aot::tests_executable(&trimmed_for(module, &taken), &names, &work) {
         Ok(flags) => flags,
         Err(why) => {

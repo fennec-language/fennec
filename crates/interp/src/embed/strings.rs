@@ -173,6 +173,11 @@ pub extern "C" fn char_at(text: i64, at: i64) -> i64 {
         let near: Vec<u8> = words.iter().take(2).flat_map(|word| word.to_le_bytes()).collect();
         let wanted = length.saturating_sub(at).min(4);
         let start = near.get(at % 8..at % 8 + wanted).unwrap_or_default();
+        if let Some(address) = start.first().filter(|byte| byte.is_ascii()).and_then(|byte| {
+            state.tables.ascii.get(usize::from(*byte)).and_then(|at| i64::try_from(*at).ok())
+        }) {
+            return address;
+        }
         let valid = match std::str::from_utf8(start) {
             Ok(text) => text,
             Err(err) => {
@@ -193,9 +198,14 @@ pub extern "C" fn index(address: i64, at: i64, start: i64, end: i64) -> i64 {
     byte.map_or(0, |byte| char_at(address, byte))
 }
 
-/// Where the `at`th character starts, in bytes, reading only the text before it, and none of
-/// it for ASCII. An index past either end fails as the interpreter's does.
-fn byte_of_char(state: &State, address: i64, at: i64, (start, end): (i64, i64)) -> Result<i64, Diagnostic> {
+/// Where the `at`th character starts, in bytes, reading none of the text for ASCII. An index
+/// past either end fails as the interpreter's does.
+fn byte_of_char(
+    state: &mut State,
+    address: i64,
+    at: i64,
+    (start, end): (i64, i64),
+) -> Result<i64, Diagnostic> {
     let block = u64::try_from(address).ok().and_then(|address| state.heap.block(address));
     let block = block.filter(|block| super::heap::is_text(state, block)).ok_or_else(|| lost(start, end))?;
     let header = |at: usize| block.get(at).and_then(|n| i64::try_from(*n).ok()).unwrap_or(0);
@@ -209,19 +219,72 @@ fn byte_of_char(state: &State, address: i64, at: i64, (start, end): (i64, i64)) 
     if length == chars {
         return Ok(wanted);
     }
-    let words = block.get(TEXT_HEADER_WORDS..).unwrap_or_default();
-    let mut seen = -1;
-    let bytes = words.iter().flat_map(|word| word.to_le_bytes()).take(usize::try_from(length).unwrap_or(0));
-    for (byte_at, byte) in bytes.enumerate() {
-        // Every byte but a continuation byte starts a character.
-        if byte & 0xC0 != 0x80 {
-            seen += 1;
-            if seen == wanted {
-                return i64::try_from(byte_at).map_err(|_| lost(start, end));
-            }
+    let wanted = usize::try_from(wanted).map_err(|_| lost(start, end))?;
+    let place = place_of_char(state, address, wanted).ok_or_else(|| lost(start, end))?;
+    i64::try_from(place).map_err(|_| lost(start, end))
+}
+
+/// Where the `wanted`th character of a string that isn't ASCII starts, in bytes, walking from
+/// whichever is nearest of its start, its end and the last place read, and keeping the place
+/// found. So reading a string in order takes a step for each character.
+fn place_of_char(state: &mut State, address: i64, wanted: usize) -> Option<usize> {
+    let at = usize::try_from(address).ok()?;
+    let cursor = state.heap.cursor();
+    let block = state.heap.block(u64::try_from(address).ok()?)?;
+    let (length, chars) = lengths(block);
+    let chars = usize::try_from(chars).ok()?;
+    let words = block.get(TEXT_HEADER_WORDS..)?;
+    let byte =
+        |place: usize| words.get(place / 8).and_then(|word| word.to_le_bytes().get(place % 8).copied());
+    // Every byte but a continuation byte starts a character.
+    let continues = |place: usize| byte(place).is_some_and(|byte| byte & 0xC0 == 0x80);
+    let mut here = (0_usize, 0_usize);
+    for known in [(chars, length), if cursor.address == at { (cursor.chars, cursor.bytes) } else { (0, 0) }] {
+        if known.0.abs_diff(wanted) < here.0.abs_diff(wanted) {
+            here = known;
         }
     }
-    Err(lost(start, end))
+    let (mut char_at, mut place) = here;
+    while char_at < wanted {
+        place += 1;
+        while place < length && continues(place) {
+            place += 1;
+        }
+        char_at += 1;
+    }
+    while char_at > wanted {
+        place -= 1;
+        while place > 0 && continues(place) {
+            place -= 1;
+        }
+        char_at -= 1;
+    }
+    state.heap.set_cursor(super::heap::Cursor { address: at, chars: wanted, bytes: place });
+    Some(place)
+}
+
+/// A new string with the characters `from..to` of one that isn't ASCII, Python's clamping and
+/// all, copying only those bytes: what they came from is valid and needs no checking.
+fn part_by_chars(state: &mut State, address: i64, from: i64, to: i64) -> Option<i64> {
+    let source = u64::try_from(address).ok()?;
+    let block = state.heap.block(source)?;
+    if !super::heap::is_text(state, block) {
+        return None;
+    }
+    let (length, chars) = lengths(block);
+    let count = i64::try_from(chars).ok()?;
+    let bound = |at: i64, missing: i64| {
+        let at = if at == i64::MIN { missing } else { at };
+        let at = if at < 0 { at + count } else { at };
+        usize::try_from(at.clamp(0, count)).unwrap_or(0)
+    };
+    let (from, to) = (bound(from, 0), bound(to, count));
+    if from >= to {
+        return Some(text_from_bytes(state, &[], 0));
+    }
+    let first = place_of_char(state, address, from)?;
+    let last = if to == usize::try_from(count).ok()? { length } else { place_of_char(state, address, to)? };
+    ascii_part_of(state, source, (first, last), u64::try_from(to - from).ok()?)
 }
 
 /// A string block's bytes, and its length in characters.
@@ -292,14 +355,7 @@ pub extern "C" fn slice(address: i64, from: i64, to: i64, start: i64, end: i64) 
         if let Some(part) = ascii_part(state, address, from, to) {
             return Ok(part);
         }
-        let (all, _) = bytes(state, address).ok_or_else(|| lost(start, end))?;
-        let whole = Value::str(&String::from_utf8(all).unwrap_or_default());
-        let bound = |at: i64| (at != i64::MIN).then_some(Value::Int(at));
-        let (from, to) = (bound(from), bound(to));
-        match crate::ops::slice(&whole, from.as_ref(), to.as_ref(), span(start, end))? {
-            Value::Str(part) => Ok(text_address(state, &part)),
-            _ => Err(lost(start, end)),
-        }
+        part_by_chars(state, address, from, to).ok_or_else(|| lost(start, end))
     })
 }
 
@@ -312,12 +368,79 @@ pub extern "C" fn compare(a: i64, b: i64) -> i64 {
     })
 }
 
+/// A string's bytes where they are: the words holding them, packed eight to a word, and how many
+/// there are. Nothing, for an address that isn't a string's block.
+pub(super) fn bytes_in_block(state: &State, address: i64) -> (&[u64], usize) {
+    u64::try_from(address)
+        .ok()
+        .and_then(|address| state.heap.block(address))
+        .filter(|block| super::heap::is_text(state, block))
+        .map_or((&[], 0), |block| {
+            let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+            (block.get(TEXT_HEADER_WORDS..).unwrap_or_default(), length)
+        })
+}
+
+/// The longest `part` looked for in place: it fits one word.
+const WORD_BYTES: usize = 8;
+
+/// A one in each byte, and each byte's top bit, for finding a byte a word at a time.
+const LOW_BITS: u64 = u64::from_ne_bytes([1; 8]);
+const HIGH_BITS: u64 = LOW_BITS << 7;
+
+/// Whether `part`, of at most a word's bytes, is in `whole`, with nothing copied: a word at a
+/// time to where `part`'s first byte is, then whether the rest follows. It takes one look per
+/// place, so it's linear whatever the strings hold.
+fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> bool {
+    let mask = if size >= WORD_BYTES { u64::MAX } else { (1 << (size * 8)) - 1 };
+    let (part, first) = (part & mask, part & 0xff);
+    for (at, word) in whole.iter().enumerate() {
+        let word = u64::from_le(*word);
+        let others = word ^ (first * LOW_BITS);
+        // Each byte that's `first` has its top bit set here, along with perhaps some byte above
+        // one that is, which the look below turns down.
+        let mut places = others.wrapping_sub(LOW_BITS) & !others & HIGH_BITS;
+        while places != 0 {
+            let byte = usize::try_from(places.trailing_zeros() / 8).unwrap_or(0);
+            if at * 8 + byte + size > length {
+                return false;
+            }
+            let next = whole.get(at + 1).map_or(0, |next| u64::from_le(*next));
+            let shift = byte * 8;
+            let found = if shift == 0 { word } else { (word >> shift) | (next << (64 - shift)) };
+            if found & mask == part {
+                return true;
+            }
+            places &= places - 1;
+        }
+    }
+    false
+}
+
+/// Whether `part`'s bytes are in `whole`'s, each given where it is. Bytes are the same question as
+/// characters, in UTF-8, where no character's bytes start partway through another's.
+pub(super) fn bytes_contain(whole: (&[u64], usize), (part, size): (&[u64], usize)) -> bool {
+    if size == 0 {
+        return true;
+    }
+    if size > whole.1 {
+        return false;
+    }
+    if size <= WORD_BYTES {
+        let first = part.first().map_or(0, |word| u64::from_le(*word));
+        return word_in_place(whole, first, size);
+    }
+    // Longer ones are rare, and `str`'s search stays linear however the two repeat themselves.
+    let text_of = |(words, length): (&[u64], usize)| {
+        let bytes = words.iter().flat_map(|word| word.to_le_bytes()).take(length).collect();
+        String::from_utf8(bytes).unwrap_or_default()
+    };
+    text_of(whole).contains(text_of((part, size)).as_str())
+}
+
 /// `part in text`.
 pub extern "C" fn contains(whole: i64, part: i64) -> i8 {
-    with(|state| {
-        let whole = text(state, whole).unwrap_or_default();
-        i8::from(whole.contains(text(state, part).unwrap_or_default().as_str()))
-    })
+    with(|state| i8::from(bytes_contain(bytes_in_block(state, whole), bytes_in_block(state, part))))
 }
 
 /// Prints a string as `stdout.print` shows it.

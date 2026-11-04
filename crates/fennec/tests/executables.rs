@@ -10,10 +10,10 @@ use std::sync::OnceLock;
 /// A `fennec` to start, with the runtime library built first. `fennec run` links against that
 /// library, and one left from before a rebase links without a word and gets things wrong: a
 /// dict's layout that no longer matches, say, printing zeroes. So nothing starts `fennec` until
-/// the library is current. Mutation testing and Windows don't link programs, and a test that
-/// needs the library says so itself when it couldn't be built.
+/// the library is current. Mutation testing doesn't link programs, and a test that needs the
+/// library says so itself when it couldn't be built.
 pub(crate) fn fennec_command() -> Command {
-    if !cfg!(windows) && !under_mutants() {
+    if !under_mutants() {
         runtime_built();
     }
     Command::new(env!("CARGO_BIN_EXE_fennec"))
@@ -36,6 +36,17 @@ pub(crate) fn runtime_built() -> bool {
     })
 }
 
+/// The runtime library's file name, as Cargo names a static library here.
+pub(crate) fn runtime_file() -> &'static str {
+    if cfg!(windows) { "fennec_runtime.lib" } else { "libfennec_runtime.a" }
+}
+
+/// Whether the runtime library is beside the `fennec` these tests run, which is where it's looked
+/// for. Under coverage, `fennec` is built somewhere else, without one.
+pub(crate) fn runtime_beside_fennec() -> bool {
+    Path::new(env!("CARGO_BIN_EXE_fennec")).with_file_name(runtime_file()).is_file()
+}
+
 /// The runtime library with `threads`, which `fennec build` takes for a program that uses
 /// `parallel` when `FENNEC_THREADS_RUNTIME=1` asks, next to `fennec` as
 /// `libfennec_runtime_threads.a`. It's built in a folder of its own, since Cargo puts the same
@@ -53,8 +64,9 @@ pub(crate) fn threads_runtime_built() -> bool {
             .args((profile == "release").then_some("--release"))
             .status()
             .is_ok_and(|status| status.success());
-        let library = threads.join(profile).join("libfennec_runtime.a");
-        built && fs::copy(library, folder.join("libfennec_runtime_threads.a")).is_ok()
+        let library = threads.join(profile).join(runtime_file());
+        let beside = if cfg!(windows) { "fennec_runtime_threads.lib" } else { "libfennec_runtime_threads.a" };
+        built && fs::copy(library, folder.join(beside)).is_ok()
     })
 }
 

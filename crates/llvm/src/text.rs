@@ -927,9 +927,17 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest.ok_or("no result")?, &code)
             }
             "str.contains" => {
-                let text = self.block_operand(first.ok_or("no argument")?, made)?;
-                let part = self.block_operand(args.get(1).ok_or("no argument")?, made)?;
-                let found = self.string_binary(BinOp::In, (&part, &text))?;
+                let (text, part) = (first.ok_or("no argument")?, args.get(1).ok_or("no argument")?);
+                let found = match (self.operand(text)?, self.operand(part)?) {
+                    ((text, Kind::Str), (part, Kind::Str)) if self.headers() => {
+                        self.headers_contain(&part, &text)
+                    }
+                    _ => {
+                        let text = self.block_operand(text, made)?;
+                        let part = self.block_operand(part, made)?;
+                        self.string_binary(BinOp::In, (&part, &text))?
+                    }
+                };
                 self.assign(dest.ok_or("no result")?, &found)
             }
             "str.join" => {

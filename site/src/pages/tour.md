@@ -165,7 +165,7 @@ def main(stdout: Stdout):
     stdout.print(units.get(ash))      # None: a stale Id finds nothing
 ```
 
-An `Id` is a small plain value with a generation in it, so it stays safe after its slot is reused, and a cycle of them can't leak. `Tree`, in `std.collections`, does the same bookkeeping for parents and children.
+An `Id` is a small plain value with a generation in it, so it stays safe after its slot is reused, and a cycle of them can't leak. `Tree`, in `std.collections`, does the same bookkeeping for parents and children, and a `Graph` built the same way is planned. There are no classes, so this is how graphs and trees are done.
 
 Assigning or passing a value never lets anyone change yours. This doesn't mean everything gets copied: the compiler passes values by reference when it's safe, moves them when the original isn't used again, and shares large data until one side changes it. You write simple value code, and the compiler does the rest.
 
@@ -204,6 +204,8 @@ world.selected = copy(world.units[i])    # fine: a separate copy, on purpose
 ```
 
 A copy that would happen on every iteration of a loop is planned to be a compile error too, naming the line and why the value is shared: "`state` is copied every iteration because `history` keeps it". A copy that happens once, on the first write, is only a hint.
+
+A write that goes nowhere is planned to be a compile error as well: a local that's changed and then never read, returned or passed on. Writing through a name for a place doesn't count, since that edits the place. It doesn't catch a copy that's read afterwards.
 
 ## Mutation is visible
 

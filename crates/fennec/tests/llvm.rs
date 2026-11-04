@@ -156,433 +156,6 @@ def main(stdout: Stdout):
 
 /// `units[at].tags.append(x)` with the list in a local: the inner list goes on growing in place,
 /// and what's shared with it, at any level, doesn't change.
-#[test]
-fn appending_to_a_field_of_a_local_lists_item_copies_only_what_is_shared() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    same_message_as_the_jit(
-        "local_item_field_appends",
-        r"struct Unit:
-    tags: list[int]
-    hp: int
-
-struct Box:
-    items: list[int]
-    next: list[Box]
-
-def grow(mut units: list[Unit], by: int):
-    for at in range(units.len()):
-        units[at].tags.append(by)
-
-def main(stdout: Stdout):
-    mut units = [Unit([1, 2, 3], 0), Unit([4], 1)]
-    # A copy of the list, of an item, and of the field, each kept apart from what comes after.
-    snapshot = copy(units)
-    shared = units
-    item = units[0]
-    tags = units[0].tags
-    units[0].tags.append(10)
-    stdout.print(units, snapshot, shared, item, tags)
-    units[-1].tags.append(11)
-    stdout.print(units, snapshot, shared, item, tags)
-    # An argument read from the same place, and from another item.
-    units[0].tags.append(units[0].tags.len())
-    units[0].tags.append(units[1].tags[0])
-    stdout.print(units)
-    # An index that changes between the read and the write isn't this at all.
-    mut at = 0
-    units[at].tags.append(at)
-    at = 1
-    units[at].tags.append(at)
-    stdout.print(units)
-    grow(mut units, 5)
-    stdout.print(units, snapshot)
-    # A caller's copy stays as it was.
-    mut mine = copy(units)
-    kept = mine
-    grow(mut mine, 6)
-    stdout.print(mine[0].tags, kept[0].tags)
-    # Items that are blocks of their own.
-    mut boxes = [Box([1], []), Box([2], [])]
-    other = boxes[0]
-    boxes[0].items.append(3)
-    stdout.print(boxes, other)
-    # Outside the list's length, it fails as it should.
-    units[9].tags.append(1)
-",
-    )?;
-    let counts = counts_of(
-        "local_item_field_counts",
-        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for at in range(units.len()):\n            units[at].tags.append(round)\n    stdout.print(units[0].tags.len())\n",
-    )?;
-    assert!(counts.starts_with("copies 0 "), "{counts}");
-    Ok(())
-}
-
-/// Reading a string that isn't ASCII goes on from where the last read got to, so reading it in
-/// order takes a step for each character. A place kept for a string that's since moved, grown or
-/// been let go of, with its address used again, would give a wrong character and no failure.
-const CHARACTER_PLACES: &str = r#"def long_text() -> str:
-    mut parts = ["héllo wörld "]
-    for i in range(40):
-        parts.append(f"ça {i} 日本語 🦊 ")
-    "".join(parts)
-
-def show_all(text: str) -> str:
-    mut out = []
-    for at in range(text.len()):
-        out.append(text[at])
-    "".join(out)
-
-def main(stdout: Stdout):
-    text = long_text()
-    stdout.print(text.len(), show_all(text) == text)
-    # Backward, forward, jumps, ends, negative.
-    mut seen = []
-    mut back = text.len() - 1
-    while back >= 0:
-        seen.append(text[back])
-        back -= 1
-    stdout.print(seen[0], seen[1], seen[seen.len() - 1], seen.len())
-    stdout.print(text[0], text[1], text[-1], text[-2], text[5], text[100], text[3], text[text.len() - 1])
-    mut jumps = []
-    for at in [0, 200, 1, 199, 50, 51, 49, -1, -200, 7]:
-        jumps.append(text[at])
-    stdout.print(jumps)
-    # Slices: every way of bounding one, inside, past the ends, empty, backward.
-    stdout.print(text[:5], text[5:], text[1:6], text[-5:], text[:-200], text[-3:-1], text[3:3], text[9:2])
-    stdout.print(text[0:100000], text[-100000:3], text[200:205], text[205:200], text[:].len())
-    mut pieces = []
-    mut piece_at = 0
-    while piece_at < text.len():
-        pieces.append(text[piece_at:piece_at + 3])
-        piece_at += 37
-    stdout.print(pieces)
-    # A one-character slice of each width.
-    stdout.print(text[1:2], "日本語"[1:2], "🦊x"[0:1], "a🦊"[1:], "é"[0:1], "é"[1:])
-    # Two strings in turn, each with its own place.
-    other = "ñandú " * 30
-    mut turns = []
-    mut turn = 0
-    while turn < 60:
-        turns.append(text[turn])
-        turns.append(other[turn])
-        turn += 7
-    stdout.print(turns)
-    # A string growing in place while it's read.
-    mut grown = "é"
-    for i in range(200):
-        grown += "ü" if i % 3 == 0 else "a"
-        if grown[-1] != grown[grown.len() - 1]:
-            stdout.print("wrong")
-    stdout.print(grown.len(), grown[100], grown[-1], grown[150:153])
-    # Strings let go of, their addresses free for new ones with other text.
-    for round in range(200):
-        made = f"é{round} ümläut ümläut ümläut ümläut ümläut"
-        last = made[made.len() - 1]
-        middle = made[10]
-        if last != "t":
-            stdout.print("wrong", round, last)
-        if round % 50 == 0:
-            stdout.print(middle, made[2:6])
-    # A block moved by `+=`, read at the same place before and after, past and before the cursor.
-    mut moved = "é" * 3
-    mut before = moved[2]
-    for i in range(300):
-        moved += "日"
-        before = moved[moved.len() - 2]
-    stdout.print(moved.len(), before, moved[1], moved[2], moved[3], moved[299], moved[-1], moved[1:4])
-    # The address of a string let go of, used by another with different text, at the same place.
-    mut wrong = 0
-    for round in range(400):
-        first = "ab" * 20 + f"é{round}" + "日本" * 20
-        at_first = first[42]
-        second = "é" * 30 + f"x{round}" + "ü" * 30
-        at_second = second[42]
-        if at_first != "0" and at_first != "1" and at_first != "2" and at_first != "3" and at_first != "é" and at_first != "4" and at_first != "5" and at_first != "6" and at_first != "7" and at_first != "8" and at_first != "9" and at_first != "日" and at_first != "本":
-            wrong += 1
-        if at_second != "ü":
-            wrong += 1
-    stdout.print(wrong)
-    # Inline strings, read directly, and the same text as a block.
-    short = "日本é"
-    stdout.print(short[0], short[1], short[2], short[-1], short[1:], short[:1], short.len())
-    # Other things on non-ASCII text.
-    stdout.print(text[:20].upper(), text[3:9].find("w"), text[:8] + "é", f"{text[:4]}!", text[:4] == "héll", text[1] == "é")
-    stdout.print(text[100000])
-"#;
-
-#[test]
-fn reading_a_string_that_isnt_ascii_finds_the_right_character() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    same_message_as_the_jit("character_places", CHARACTER_PLACES)
-}
-
-/// Reading and slicing a long string in order, one accented letter in it. How long this takes
-/// is held by the `json_unicode` kernel; a test this size says only that it's right.
-#[test]
-fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    same_as_the_jit(
-        "character_steps",
-        "def main(stdout: Stdout):\n    text = \"é\" + \"a\" * 3000\n    mut found = 0\n    for at in range(text.len()):\n        if text[at] == \"a\":\n            found += 1\n    mut pieces = 0\n    for at in range(text.len() - 3):\n        pieces += text[at:at + 3].len()\n    stdout.print(found, pieces)\n",
-    )
-}
-
-/// A program changing `for mut` items in every way a body can, and leaving in every way.
-const FOR_MUT_ITEMS: &str = r#"error Bad:
-    why: str
-
-struct Unit:
-    tags: list[int]
-    name: str
-    hp: int
-
-struct World:
-    units: list[Unit]
-    log: list[int]
-    turn: int
-
-enum Token:
-    Blank
-    Word(text: str)
-    Many(items: list[int])
-
-def total(units: list[Unit]) -> int:
-    sum(unit.hp for unit in units)
-
-def by_fail(mut units: list[Unit]) -> int:
-    for mut unit in units:
-        unit.tags.append(9)
-        unit.hp += 1
-        if unit.hp == 2:
-            fail Bad("stop")
-    0
-
-def by_return(mut units: list[Unit]) -> int:
-    for mut unit in units:
-        unit.tags.append(8)
-        if unit.hp == 1:
-            return unit.tags.len()
-    -1
-
-def grow(mut units: list[Unit], by: int):
-    for mut unit in units:
-        unit.tags.append(by)
-        unit.name += "!"
-
-def step(mut world: World):
-    for mut unit in world.units:
-        world.log.append(unit.hp)
-        unit.tags.append(world.turn)
-    world.turn += 1
-
-def make() -> list[Unit]:
-    [Unit([1], "first name long enough not to be inline", 0), Unit([2], "b", 1), Unit([3], "c", 5)]
-
-def main(stdout: Stdout):
-    # Copies taken before the loop keep what they had.
-    mut units = make()
-    shared = units
-    kept = copy(units)
-    item = units[0]
-    tags = units[0].tags
-    for mut unit in units:
-        unit.tags.append(unit.hp)
-    stdout.print(units, shared, kept, item, tags)
-    # Ways out.
-    mut a = make()
-    stdout.print(by_fail(mut a) else -1, a)
-    mut b = make()
-    stdout.print(by_return(mut b), b)
-    mut c = make()
-    for mut unit in c:
-        if unit.hp == 0:
-            continue
-        unit.tags.append(4)
-        if unit.hp == 1:
-            break
-        unit.hp = 100
-    stdout.print(c)
-    # The list read in the body sees what was written back so far.
-    mut d = make()
-    for mut unit in d:
-        unit.tags.append(d[0].tags.len())
-        unit.hp += d.len() + total(d)
-    stdout.print(d)
-    # A copy of the item, or of what it holds, made inside.
-    mut e = make()
-    mut seen: list[Unit] = []
-    mut held: list[list[int]] = []
-    for mut unit in e:
-        seen.append(unit)
-        held.append(unit.tags)
-        unit.hp += 1
-    stdout.print(e, seen, held)
-    # Replaced whole, and given away.
-    mut f = make()
-    for mut unit in f:
-        unit = Unit([7], "whole new value long enough not to be inline", unit.hp)
-    stdout.print(f)
-    # Through a function, and a field.
-    mut g = make()
-    grow(mut g, 6)
-    grow(mut g, 7)
-    stdout.print(g)
-    mut w = World(make(), [], 3)
-    step(mut w)
-    other = w
-    step(mut w)
-    stdout.print(w, other)
-    # Nested.
-    mut grid = [[1, 2], [3], []]
-    for mut row in grid:
-        row.append(row.len())
-        for mut cell in row:
-            cell *= 2
-    stdout.print(grid)
-    # Strings and enums as items.
-    mut words = ["a", "a string long enough not to be held inline"]
-    for mut word in words:
-        word += "!"
-    stdout.print(words)
-    mut lists = [[1], [2, 3]]
-    before = lists[1]
-    for mut one in lists:
-        one.append(9)
-    stdout.print(lists, before)
-    # Emptied in the body, then grown.
-    mut h = make()
-    for mut unit in h:
-        unit.tags = []
-        unit.tags.append(1)
-    stdout.print(h)
-"#;
-
-/// A `for mut` item is taken out for the whole of the body, so what it holds changes in place.
-/// What's shared, and a body that reads the list, see what they should.
-#[test]
-fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    same_as_the_jit("for_mut_items", FOR_MUT_ITEMS)?;
-    let counts = counts_of(
-        "for_mut_counts",
-        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for mut unit in units:\n            unit.tags.append(round)\n            if round % 2 == 0:\n                unit.hp += 1\n    stdout.print(units[0].tags.len())\n",
-    )?;
-    assert!(counts.starts_with("copies 0 "), "{counts}");
-    Ok(())
-}
-
-/// `isdigit`, native on headers, says what std's says: inline and in a block, empty, digits
-/// outside ASCII, and a digit beside something that isn't.
-#[test]
-fn isdigit_matches_the_jit() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    same_as_the_jit(
-        "isdigit",
-        r#"def main(stdout: Stdout):
-    long = "1234567890" * 5
-    for text in ["", "0", "9", "5", "/", ":", "a", "12", "1a", "a1", " 1", "1 ", "٣", "１", "1٣", "é", "🦊", long, long + "x", "x" + long, long[:23], long[:24]]:
-        stdout.print(text, text.isdigit())
-    mut found = 0
-    for at in range(long.len()):
-        if long[at].isdigit():
-            found += 1
-    stdout.print(found)
-"#,
-    )
-}
-
-#[test]
-fn an_index_a_call_changes_is_read_again() -> std::io::Result<()> {
-    same_as_the_jit(
-        "index_given_mut",
-        r"struct Unit:
-    tags: list[int]
-
-def bump(mut at: int):
-    at += 1
-
-def bump_twice(mut at: int):
-    bump(mut at)
-    bump(mut at)
-
-def main(stdout: Stdout):
-    mut at = 0
-    mut lists = [[1], [2], [3]]
-    lists[at].append(10)
-    bump(mut at)
-    lists[at].append(20)
-    bump_twice(mut at)
-    lists[at - 1].append(30)
-    stdout.print(at, lists)
-
-    mut i = 0
-    mut numbers = [5, 6, 7]
-    numbers[i] = 50
-    bump(mut i)
-    numbers[i] = 60
-    stdout.print(i, numbers, numbers[i])
-
-    mut j = 0
-    mut units = [Unit([1]), Unit([2])]
-    units[j].tags.append(10)
-    bump(mut j)
-    units[j].tags.append(20)
-    stdout.print(j, units[0].tags, units[1].tags)
-
-    mut items = [1, 2, 3, 4]
-    for round in range(3):
-        mut k = round
-        items[k] = items[k] + 10
-        bump(mut k)
-        items[k] = items[k] + 100
-    stdout.print(items)
-
-    mut w = 0
-    while w < items.len():
-        items[w] = 0
-        bump(mut w)
-        if w < items.len():
-            items[w] = 7
-        bump(mut w)
-    stdout.print(items)
-",
-    )
-}
-
-/// The engines before this one stop on this, reading the index after the call has it, so it's
-/// checked against what it means rather than against them.
-#[test]
-fn a_place_stays_where_it_was_when_a_call_changes_its_index() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let dir = folder("place_index_given_mut")?;
-    let program = dir.join("place.fen");
-    std::fs::write(
-        &program,
-        "struct Unit:\n    hp: int\n\n    def stepped(mut self, mut at: int):\n        at += 1\n        self.hp += at\n\ndef moved(mut item: int, mut at: int):\n    at += 1\n    item += 10\n\ndef main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1), Unit(2), Unit(3)]\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    mut other = 0\n    mut numbers = [1, 2, 3]\n    moved(mut numbers[other], mut other)\n    stdout.print(other, numbers)\n",
-    )?;
-    let executable = dir.join("place");
-    let (program, executable_name) = (program.to_string_lossy().into_owned(), executable.to_string_lossy());
-    let built = fennec(&["build", "--llvm", &program, "-o", &executable_name], &dir)?;
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let ran = Command::new(&executable).output()?;
-    std::fs::remove_dir_all(&dir)?;
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1 2 2 3\n2 2 4 3\n1 [11, 2, 3]\n");
-    Ok(())
-}
-
 /// What a program printed, how it ended and its first error line, built with LLVM and in dev
 /// and `--release` both, is what the interpreter does. What the backend remembers about a local
 /// has to end when something changes it, and only optimizing shows some of that.
@@ -1062,6 +635,436 @@ def main(stdout: Stdout):
         same_as_the_interpreter(name, source)?;
     }
     Ok(())
+}
+
+#[test]
+fn an_index_a_call_changes_is_read_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "index_given_mut",
+        r"struct Unit:
+    tags: list[int]
+
+def bump(mut at: int):
+    at += 1
+
+def bump_twice(mut at: int):
+    bump(mut at)
+    bump(mut at)
+
+def main(stdout: Stdout):
+    mut at = 0
+    mut lists = [[1], [2], [3]]
+    lists[at].append(10)
+    bump(mut at)
+    lists[at].append(20)
+    bump_twice(mut at)
+    lists[at - 1].append(30)
+    stdout.print(at, lists)
+
+    mut i = 0
+    mut numbers = [5, 6, 7]
+    numbers[i] = 50
+    bump(mut i)
+    numbers[i] = 60
+    stdout.print(i, numbers, numbers[i])
+
+    mut j = 0
+    mut units = [Unit([1]), Unit([2])]
+    units[j].tags.append(10)
+    bump(mut j)
+    units[j].tags.append(20)
+    stdout.print(j, units[0].tags, units[1].tags)
+
+    mut items = [1, 2, 3, 4]
+    for round in range(3):
+        mut k = round
+        items[k] = items[k] + 10
+        bump(mut k)
+        items[k] = items[k] + 100
+    stdout.print(items)
+
+    mut w = 0
+    while w < items.len():
+        items[w] = 0
+        bump(mut w)
+        if w < items.len():
+            items[w] = 7
+        bump(mut w)
+    stdout.print(items)
+",
+    )
+}
+
+/// The engines before this one stop on this, reading the index after the call has it, so it's
+/// checked against what it means rather than against them.
+#[test]
+fn a_place_stays_where_it_was_when_a_call_changes_its_index() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("place_index_given_mut")?;
+    let program = dir.join("place.fen");
+    std::fs::write(
+        &program,
+        "struct Unit:\n    hp: int\n\n    def stepped(mut self, mut at: int):\n        at += 1\n        self.hp += at\n\ndef moved(mut item: int, mut at: int):\n    at += 1\n    item += 10\n\ndef main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1), Unit(2), Unit(3)]\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    mut other = 0\n    mut numbers = [1, 2, 3]\n    moved(mut numbers[other], mut other)\n    stdout.print(other, numbers)\n",
+    )?;
+    let executable = dir.join("place");
+    let (program, executable_name) = (program.to_string_lossy().into_owned(), executable.to_string_lossy());
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable_name], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1 2 2 3\n2 2 4 3\n1 [11, 2, 3]\n");
+    Ok(())
+}
+
+#[test]
+fn appending_to_a_field_of_a_local_lists_item_copies_only_what_is_shared() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "local_item_field_appends",
+        r"struct Unit:
+    tags: list[int]
+    hp: int
+
+struct Box:
+    items: list[int]
+    next: list[Box]
+
+def grow(mut units: list[Unit], by: int):
+    for at in range(units.len()):
+        units[at].tags.append(by)
+
+def main(stdout: Stdout):
+    mut units = [Unit([1, 2, 3], 0), Unit([4], 1)]
+    # A copy of the list, of an item, and of the field, each kept apart from what comes after.
+    snapshot = copy(units)
+    shared = units
+    item = units[0]
+    tags = units[0].tags
+    units[0].tags.append(10)
+    stdout.print(units, snapshot, shared, item, tags)
+    units[-1].tags.append(11)
+    stdout.print(units, snapshot, shared, item, tags)
+    # An argument read from the same place, and from another item.
+    units[0].tags.append(units[0].tags.len())
+    units[0].tags.append(units[1].tags[0])
+    stdout.print(units)
+    # An index that changes between the read and the write isn't this at all.
+    mut at = 0
+    units[at].tags.append(at)
+    at = 1
+    units[at].tags.append(at)
+    stdout.print(units)
+    grow(mut units, 5)
+    stdout.print(units, snapshot)
+    # A caller's copy stays as it was.
+    mut mine = copy(units)
+    kept = mine
+    grow(mut mine, 6)
+    stdout.print(mine[0].tags, kept[0].tags)
+    # Items that are blocks of their own.
+    mut boxes = [Box([1], []), Box([2], [])]
+    other = boxes[0]
+    boxes[0].items.append(3)
+    stdout.print(boxes, other)
+    # Outside the list's length, it fails as it should.
+    units[9].tags.append(1)
+",
+    )?;
+    let counts = counts_of(
+        "local_item_field_counts",
+        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for at in range(units.len()):\n            units[at].tags.append(round)\n    stdout.print(units[0].tags.len())\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    Ok(())
+}
+
+/// Reading a string that isn't ASCII goes on from where the last read got to, so reading it in
+/// order takes a step for each character. A place kept for a string that's since moved, grown or
+/// been let go of, with its address used again, would give a wrong character and no failure.
+const CHARACTER_PLACES: &str = r#"def long_text() -> str:
+    mut parts = ["héllo wörld "]
+    for i in range(40):
+        parts.append(f"ça {i} 日本語 🦊 ")
+    "".join(parts)
+
+def show_all(text: str) -> str:
+    mut out = []
+    for at in range(text.len()):
+        out.append(text[at])
+    "".join(out)
+
+def main(stdout: Stdout):
+    text = long_text()
+    stdout.print(text.len(), show_all(text) == text)
+    # Backward, forward, jumps, ends, negative.
+    mut seen = []
+    mut back = text.len() - 1
+    while back >= 0:
+        seen.append(text[back])
+        back -= 1
+    stdout.print(seen[0], seen[1], seen[seen.len() - 1], seen.len())
+    stdout.print(text[0], text[1], text[-1], text[-2], text[5], text[100], text[3], text[text.len() - 1])
+    mut jumps = []
+    for at in [0, 200, 1, 199, 50, 51, 49, -1, -200, 7]:
+        jumps.append(text[at])
+    stdout.print(jumps)
+    # Slices: every way of bounding one, inside, past the ends, empty, backward.
+    stdout.print(text[:5], text[5:], text[1:6], text[-5:], text[:-200], text[-3:-1], text[3:3], text[9:2])
+    stdout.print(text[0:100000], text[-100000:3], text[200:205], text[205:200], text[:].len())
+    mut pieces = []
+    mut piece_at = 0
+    while piece_at < text.len():
+        pieces.append(text[piece_at:piece_at + 3])
+        piece_at += 37
+    stdout.print(pieces)
+    # A one-character slice of each width.
+    stdout.print(text[1:2], "日本語"[1:2], "🦊x"[0:1], "a🦊"[1:], "é"[0:1], "é"[1:])
+    # Two strings in turn, each with its own place.
+    other = "ñandú " * 30
+    mut turns = []
+    mut turn = 0
+    while turn < 60:
+        turns.append(text[turn])
+        turns.append(other[turn])
+        turn += 7
+    stdout.print(turns)
+    # A string growing in place while it's read.
+    mut grown = "é"
+    for i in range(200):
+        grown += "ü" if i % 3 == 0 else "a"
+        if grown[-1] != grown[grown.len() - 1]:
+            stdout.print("wrong")
+    stdout.print(grown.len(), grown[100], grown[-1], grown[150:153])
+    # Strings let go of, their addresses free for new ones with other text.
+    for round in range(200):
+        made = f"é{round} ümläut ümläut ümläut ümläut ümläut"
+        last = made[made.len() - 1]
+        middle = made[10]
+        if last != "t":
+            stdout.print("wrong", round, last)
+        if round % 50 == 0:
+            stdout.print(middle, made[2:6])
+    # A block moved by `+=`, read at the same place before and after, past and before the cursor.
+    mut moved = "é" * 3
+    mut before = moved[2]
+    for i in range(300):
+        moved += "日"
+        before = moved[moved.len() - 2]
+    stdout.print(moved.len(), before, moved[1], moved[2], moved[3], moved[299], moved[-1], moved[1:4])
+    # The address of a string let go of, used by another with different text, at the same place.
+    mut wrong = 0
+    for round in range(400):
+        first = "ab" * 20 + f"é{round}" + "日本" * 20
+        at_first = first[42]
+        second = "é" * 30 + f"x{round}" + "ü" * 30
+        at_second = second[42]
+        if at_first != "0" and at_first != "1" and at_first != "2" and at_first != "3" and at_first != "é" and at_first != "4" and at_first != "5" and at_first != "6" and at_first != "7" and at_first != "8" and at_first != "9" and at_first != "日" and at_first != "本":
+            wrong += 1
+        if at_second != "ü":
+            wrong += 1
+    stdout.print(wrong)
+    # Inline strings, read directly, and the same text as a block.
+    short = "日本é"
+    stdout.print(short[0], short[1], short[2], short[-1], short[1:], short[:1], short.len())
+    # Other things on non-ASCII text.
+    stdout.print(text[:20].upper(), text[3:9].find("w"), text[:8] + "é", f"{text[:4]}!", text[:4] == "héll", text[1] == "é")
+    stdout.print(text[100000])
+"#;
+
+#[test]
+fn reading_a_string_that_isnt_ascii_finds_the_right_character() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit("character_places", CHARACTER_PLACES)
+}
+
+/// Reading and slicing a long string in order, one accented letter in it. How long this takes
+/// is held by the `json_unicode` kernel; a test this size says only that it's right.
+#[test]
+fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "character_steps",
+        "def main(stdout: Stdout):\n    text = \"é\" + \"a\" * 3000\n    mut found = 0\n    for at in range(text.len()):\n        if text[at] == \"a\":\n            found += 1\n    mut pieces = 0\n    for at in range(text.len() - 3):\n        pieces += text[at:at + 3].len()\n    stdout.print(found, pieces)\n",
+    )
+}
+
+/// A program changing `for mut` items in every way a body can, and leaving in every way.
+const FOR_MUT_ITEMS: &str = r#"error Bad:
+    why: str
+
+struct Unit:
+    tags: list[int]
+    name: str
+    hp: int
+
+struct World:
+    units: list[Unit]
+    log: list[int]
+    turn: int
+
+enum Token:
+    Blank
+    Word(text: str)
+    Many(items: list[int])
+
+def total(units: list[Unit]) -> int:
+    sum(unit.hp for unit in units)
+
+def by_fail(mut units: list[Unit]) -> int:
+    for mut unit in units:
+        unit.tags.append(9)
+        unit.hp += 1
+        if unit.hp == 2:
+            fail Bad("stop")
+    0
+
+def by_return(mut units: list[Unit]) -> int:
+    for mut unit in units:
+        unit.tags.append(8)
+        if unit.hp == 1:
+            return unit.tags.len()
+    -1
+
+def grow(mut units: list[Unit], by: int):
+    for mut unit in units:
+        unit.tags.append(by)
+        unit.name += "!"
+
+def step(mut world: World):
+    for mut unit in world.units:
+        world.log.append(unit.hp)
+        unit.tags.append(world.turn)
+    world.turn += 1
+
+def make() -> list[Unit]:
+    [Unit([1], "first name long enough not to be inline", 0), Unit([2], "b", 1), Unit([3], "c", 5)]
+
+def main(stdout: Stdout):
+    # Copies taken before the loop keep what they had.
+    mut units = make()
+    shared = units
+    kept = copy(units)
+    item = units[0]
+    tags = units[0].tags
+    for mut unit in units:
+        unit.tags.append(unit.hp)
+    stdout.print(units, shared, kept, item, tags)
+    # Ways out.
+    mut a = make()
+    stdout.print(by_fail(mut a) else -1, a)
+    mut b = make()
+    stdout.print(by_return(mut b), b)
+    mut c = make()
+    for mut unit in c:
+        if unit.hp == 0:
+            continue
+        unit.tags.append(4)
+        if unit.hp == 1:
+            break
+        unit.hp = 100
+    stdout.print(c)
+    # The list read in the body sees what was written back so far.
+    mut d = make()
+    for mut unit in d:
+        unit.tags.append(d[0].tags.len())
+        unit.hp += d.len() + total(d)
+    stdout.print(d)
+    # A copy of the item, or of what it holds, made inside.
+    mut e = make()
+    mut seen: list[Unit] = []
+    mut held: list[list[int]] = []
+    for mut unit in e:
+        seen.append(unit)
+        held.append(unit.tags)
+        unit.hp += 1
+    stdout.print(e, seen, held)
+    # Replaced whole, and given away.
+    mut f = make()
+    for mut unit in f:
+        unit = Unit([7], "whole new value long enough not to be inline", unit.hp)
+    stdout.print(f)
+    # Through a function, and a field.
+    mut g = make()
+    grow(mut g, 6)
+    grow(mut g, 7)
+    stdout.print(g)
+    mut w = World(make(), [], 3)
+    step(mut w)
+    other = w
+    step(mut w)
+    stdout.print(w, other)
+    # Nested.
+    mut grid = [[1, 2], [3], []]
+    for mut row in grid:
+        row.append(row.len())
+        for mut cell in row:
+            cell *= 2
+    stdout.print(grid)
+    # Strings and enums as items.
+    mut words = ["a", "a string long enough not to be held inline"]
+    for mut word in words:
+        word += "!"
+    stdout.print(words)
+    mut lists = [[1], [2, 3]]
+    before = lists[1]
+    for mut one in lists:
+        one.append(9)
+    stdout.print(lists, before)
+    # Emptied in the body, then grown.
+    mut h = make()
+    for mut unit in h:
+        unit.tags = []
+        unit.tags.append(1)
+    stdout.print(h)
+"#;
+
+/// A `for mut` item is taken out for the whole of the body, so what it holds changes in place.
+/// What's shared, and a body that reads the list, see what they should.
+#[test]
+fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("for_mut_items", FOR_MUT_ITEMS)?;
+    let counts = counts_of(
+        "for_mut_counts",
+        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for mut unit in units:\n            unit.tags.append(round)\n            if round % 2 == 0:\n                unit.hp += 1\n    stdout.print(units[0].tags.len())\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    Ok(())
+}
+
+/// `isdigit`, native on headers, says what std's says: inline and in a block, empty, digits
+/// outside ASCII, and a digit beside something that isn't.
+#[test]
+fn isdigit_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "isdigit",
+        r#"def main(stdout: Stdout):
+    long = "1234567890" * 5
+    for text in ["", "0", "9", "5", "/", ":", "a", "12", "1a", "a1", " 1", "1 ", "٣", "１", "1٣", "é", "🦊", long, long + "x", "x" + long, long[:23], long[:24]]:
+        stdout.print(text, text.isdigit())
+    mut found = 0
+    for at in range(long.len()):
+        if long[at].isdigit():
+            found += 1
+    stdout.print(found)
+"#,
+    )
 }
 
 #[test]
@@ -2969,6 +2972,32 @@ def main(stdout: Stdout):
             ),
         )?;
     }
+    Ok(())
+}
+
+/// `T.make()` calls the function of the type each copy of a generic stands for. It's native only:
+/// the interpreter has no types at run time to find it through.
+#[test]
+fn a_type_parameter_calls_its_types_function() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "interface Made:\n    def make() -> Self\n\n\
+                  struct Part:\n    x = 1\n\n    def make() -> Self:\n        Self(x=7)\n\n\
+                  struct Other:\n    name = \"\"\n\n    def make() -> Self:\n        Self(name=\"other\")\n\n\
+                  def build[T: Made]() -> T:\n    T.make()\n\n\
+                  def twice[T: Made]() -> list[T]:\n    [build[T](), T.make()]\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(build[Part]().x, build[Other]().name)\n    \
+                  made: Part = build()\n    stdout.print(made.x, twice[Other]().len())\n";
+    let dir = folder("type_param_function")?;
+    let program = dir.join("made.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("made"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours.0, "7 other\n7 2\n");
     Ok(())
 }
 

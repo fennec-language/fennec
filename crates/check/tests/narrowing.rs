@@ -412,6 +412,18 @@ fn match_cases_bind_typed_values() {
 }
 
 #[test]
+fn a_list_written_where_a_list_of_optionals_goes_is_one() {
+    let program = "
+        def f() -> int:
+            mut numbers: list[int?] = [1, 2]
+            numbers.append(None)
+            numbers[0] + 1
+    ";
+    assert_eq!(problems(program).len(), 1, "{:?}", problems(program));
+    assert!(problems(program)[0].contains("numbers[0]"), "{:?}", problems(program));
+}
+
+#[test]
 fn what_a_mut_parameter_can_make_none_is_checked_again() {
     let program = "
         def cleared(mut value: int?):

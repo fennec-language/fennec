@@ -4111,6 +4111,53 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// Items given where a list of something wider goes, each made to fit.
+#[test]
+fn numbers_and_strings_go_in_lists_of_optionals() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "optional_items",
+        r#"struct Holder:
+    values: list[int?]
+
+def counted(values: list[int?]) -> int:
+    mut found = 0
+    for value in values:
+        if value is not None:
+            found += value
+    found
+
+def made() -> list[str?]:
+    ["given back", None]
+
+def main(stdout: Stdout):
+    mut numbers: list[int?] = [1, 2]
+    numbers.append(3)
+    numbers.append(None)
+    numbers.insert(0, 4)
+    numbers[1] = 5
+    stdout.print(numbers, counted(numbers), counted([6, None, 7]), counted([8, 9]))
+    mut gaps: list[int?] = []
+    gaps.append(1)
+    gaps.append(None)
+    gaps.insert(0, 2)
+    gaps[1] = None
+    stdout.print(gaps, counted(gaps))
+    mut words: list[str?] = ["a", "é"]
+    words.append("b")
+    words.insert(1, "a word too long to fit in a header")
+    stdout.print(words, made())
+    mut floats: list[float?] = [1.5]
+    floats.append(2.5)
+    stdout.print(floats)
+    holder = Holder([8, None])
+    stdout.print(holder.values)
+"#,
+    )
+}
+
 #[test]
 fn optional_strings_in_lists_match_the_jit() -> std::io::Result<()> {
     if !ready() {

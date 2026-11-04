@@ -1659,6 +1659,12 @@ impl Emit<'_, '_, '_> {
             "list.append" => self.append(args),
             "result.expect" => self.expect(dest, args, span),
             "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
+            "intrinsics.text_byte"
+            | "intrinsics.text_size"
+            | "intrinsics.text_part"
+            | "intrinsics.text_of_code" => {
+                self.text_by_place(dest, name, args, span)
+            }
             "random.random_int" | "random.random_float" | "random_choice" | "random.random_choice" => {
                 self.random_builtin(dest, name, args, span)
             }

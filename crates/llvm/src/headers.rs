@@ -716,6 +716,88 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// `text_byte`, `text_size` and `text_part`: a text read by where its bytes are, with no
+    /// characters to count. A short part is made inline from its bytes, and the rest by the
+    /// runtime, which also says what's wrong with places outside the text.
+    pub(crate) fn text_by_place(
+        &mut self,
+        dest: Option<fennec_ir::LocalId>,
+        name: &str,
+        args: &[fennec_ir::Operand],
+        span: fennec_syntax::Span,
+    ) -> Result<(), String> {
+        let dest = dest.ok_or("no result")?;
+        if !self.headers() {
+            return Err(format!("it calls `{name}` where strings aren't headers"));
+        }
+        let (text, _) = self.operand(args.first().ok_or("no argument")?)?;
+        if name == "intrinsics.text_of_code" {
+            self.declare(&format!("declare void @fennec_code_header(ptr sret({HEADER}) align 8, i64) nounwind"));
+            let (place, found) = (self.place_for_text(), self.temp());
+            self.line(&format!("call void @fennec_code_header(ptr sret({HEADER}) align 8 {place}, i64 {text})"));
+            self.line(&format!("{found} = load {HEADER}, ptr {place}"));
+            return self.assign(dest, &found);
+        }
+        let length = self.header_byte_length(&text);
+        if name == "intrinsics.text_size" {
+            return self.assign(dest, &length);
+        }
+        let bytes = self.header_bytes(&text);
+        let (first, _) = self.operand(args.get(1).ok_or("no argument")?)?;
+        if name == "intrinsics.text_byte" {
+            let inside = self.temp();
+            self.line(&format!("{inside} = icmp ult i64 {first}, {length}"));
+            let (read, joined) = (self.label("byte_read"), self.label("byte_done"));
+            let before = self.current.clone();
+            self.line(&format!("br i1 {inside}, label %{read}, label %{joined}, !prof !8"));
+            self.start_block(&read);
+            let (at, byte, wide) = (self.temp(), self.temp(), self.temp());
+            self.line(&format!("{at} = getelementptr inbounds i8, ptr {bytes}, i64 {first}"));
+            self.line(&format!("{byte} = load i8, ptr {at}"));
+            self.line(&format!("{wide} = zext i8 {byte} to i64"));
+            self.line(&format!("br label %{joined}"));
+            self.start_block(&joined);
+            let found = self.temp();
+            self.line(&format!("{found} = phi i64 [ {wide}, %{read} ], [ -1, %{before} ]"));
+            return self.assign(dest, &found);
+        }
+        let (last, _) = self.operand(args.get(2).ok_or("no argument")?)?;
+        let (ordered, within, size, short, ok, quick) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{ordered} = icmp ule i64 {first}, {last}"));
+        self.line(&format!("{within} = icmp ule i64 {last}, {length}"));
+        self.line(&format!("{size} = sub i64 {last}, {first}"));
+        self.line(&format!("{short} = icmp ule i64 {size}, 23"));
+        self.line(&format!("{ok} = and i1 {ordered}, {within}"));
+        self.line(&format!("{quick} = and i1 {ok}, {short}"));
+        let (fast, slow, done) = (self.label("part_inline"), self.label("part_runtime"), self.label("part_done"));
+        self.line(&format!("br i1 {quick}, label %{fast}, label %{slow}"));
+        self.start_block(&fast);
+        let at = self.temp();
+        self.line(&format!("{at} = getelementptr inbounds i8, ptr {bytes}, i64 {first}"));
+        let piece = self.inline_from(&at, &size);
+        let fast_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&slow);
+        self.declare("declare ptr @fennec_str_part(ptr, i64, i64, i64, i64) nounwind");
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let made = self.on_blocks([&text], |emit, [block]| {
+            let made = emit.temp();
+            emit.line(&format!(
+                "{made} = call ptr @fennec_str_part(ptr {block}, i64 {first}, i64 {last}, i64 {from}, i64 {to})"
+            ));
+            made
+        });
+        self.leave_if_failed();
+        let other = self.text_from_block(&made);
+        let slow_end = self.current.clone();
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        let result = self.temp();
+        self.line(&format!("{result} = phi {HEADER} [ {piece}, %{fast_end} ], [ {other}, %{slow_end} ]"));
+        self.assign(dest, &result)
+    }
+
     /// `text[start:end]` on a header (an absent bound as `i64::MIN`): a short piece of ASCII text
     /// with both bounds inside it made inline from its bytes, and anything else by the runtime.
     pub(crate) fn header_slice(

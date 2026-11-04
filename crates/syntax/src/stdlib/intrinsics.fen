@@ -1,6 +1,6 @@
-## The machine operations the standard library's `int` and `float` stand on. Each engine
-## supplies the body. Only the standard library can import this module: a program uses
-## `int` and `float`, which are written on top of it.
+## The machine operations the standard library stands on. Each engine supplies the body. Only
+## the standard library can import this module: a program uses `int`, `float` and `str`, which
+## are written on top of it.
 
 @intrinsic
 def int_add(a: int, b: int) -> int
@@ -85,3 +85,23 @@ def float_to_int(a: float) -> int
 
 @intrinsic
 def float_bits(a: float) -> int
+
+## The byte at a place in a text's bytes, or -1 past its end.
+@intrinsic
+def text_byte(text: str, at: int) -> int
+
+## How many bytes a text has.
+@intrinsic
+def text_size(text: str) -> int
+
+## The part of a text between two places in its bytes, each where a character starts or at its end.
+@intrinsic
+def text_part(text: str, start: int, end: int) -> str
+
+## The character with a code, which has to be one.
+@intrinsic
+def text_of_code(code: int) -> str
+
+## A type's name as it's written. Only native code has types as it runs.
+@intrinsic
+def type_name[T]() -> str

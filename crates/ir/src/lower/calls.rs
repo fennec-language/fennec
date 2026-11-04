@@ -133,6 +133,13 @@ impl Lowering<'_> {
         if let ExprKind::Attr { object, name, optional: true } = &callee.kind {
             return self.optional_method((object, name), args, keep, span);
         }
+        if let Some(name) = self.type_name_called(callee) {
+            let dest = keep.map(|ty| self.temporary(ty));
+            if let Some(dest) = dest {
+                self.emit(InstKind::Copy { dest, value: Operand::Str(name) }, span);
+            }
+            return Ok(dest);
+        }
         // `json.loads[T](text)`: the type it's given is the type of what it gives back.
         let callee = match &callee.kind {
             ExprKind::Index { object, .. } => object,
@@ -207,6 +214,16 @@ impl Lowering<'_> {
             }
         }
         Ok(())
+    }
+
+    /// The standard library's `type_name[T]()`: the name of the type this copy has for `T`.
+    fn type_name_called(&self, callee: &Expr) -> Option<String> {
+        let ExprKind::Index { object, index } = &callee.kind else { return None };
+        let (ExprKind::Name(name), ExprKind::Name(param)) = (&object.kind, &index.kind) else { return None };
+        if name != "intrinsics.type_name" {
+            return None;
+        }
+        self.subst.get(param)?.source()
     }
 
     /// The name of the type an expression names, as in `Point.origin()` or `Deque[int].of(xs)`.

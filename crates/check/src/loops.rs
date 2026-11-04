@@ -270,7 +270,7 @@ impl Loops<'_> {
 }
 
 /// The blocks directly inside a statement, but not a nested function's.
-fn blocks(stmt: &Stmt) -> Vec<&[Stmt]> {
+pub(crate) fn blocks(stmt: &Stmt) -> Vec<&[Stmt]> {
     match &stmt.kind {
         StmtKind::If { branches, otherwise } => {
             branches.iter().map(|(_, block)| block.as_slice()).chain(otherwise.as_deref()).collect()

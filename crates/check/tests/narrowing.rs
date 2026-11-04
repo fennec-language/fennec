@@ -410,3 +410,47 @@ fn match_cases_bind_typed_values() {
         ]
     );
 }
+
+#[test]
+fn a_loop_sees_what_its_body_gave_a_name() {
+    let program = "
+        def a(names: list[str]):
+            mut given: int? = 5
+            for name in names:
+                stdout_less = given + 1
+                given = None
+            mut left: int? = 5
+            while left + 1 > 0:
+                left = None
+            mut field = Player(name='a', weapon=Weapon(damage=1))
+            if field.weapon is not None:
+                for name in names:
+                    stdout_less = field.weapon.damage
+                    field.weapon = None
+    ";
+    assert_eq!(
+        problems(&format!("{FIND}\n{}", crate::dedent(program))),
+        [
+            "this might be None @ given",
+            "this might be None @ left",
+            "this might be None @ field.weapon.damage",
+        ]
+    );
+}
+
+#[test]
+fn a_loop_that_leaves_a_name_alone_keeps_what_is_known() {
+    let program = "
+        def a(names: list[str]):
+            player = find('a')
+            if player is None:
+                return
+            for name in names:
+                stdout_less = player.name
+            mut after: int? = None
+            for name in names:
+                after = 1
+                stdout_less = after + 1
+    ";
+    assert_eq!(problems(&format!("{FIND}\n{}", crate::dedent(program))), Vec::<String>::new());
+}

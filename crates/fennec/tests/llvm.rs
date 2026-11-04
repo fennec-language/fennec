@@ -4255,3 +4255,28 @@ fn a_loop_tests_a_name_its_body_gave_none() -> std::io::Result<()> {
     assert_eq!((out.as_str(), err.as_str(), code), ("False 0\nTrue 1\nNone\n", "", Some(0)));
     Ok(())
 }
+
+#[test]
+fn f_strings_of_optional_text_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def named(n: int) -> str?:
+    if n == 0:
+        return None
+    "a long enough name to live in a block of its own {n}"
+
+def main(stdout: Stdout):
+    for n in range(2):
+        held = named(n)
+        stdout.print(f"[{held}] and [{held}]")
+    short: str? = "ab"
+    missing: str? = None
+    stdout.print(f"{short}/{missing}", missing)
+    mut kept = []
+    for n in range(3):
+        kept.append(f"{named(n)}")
+    stdout.print(kept)
+"#;
+    same_as_the_jit("f_strings_of_optional_text", source)
+}

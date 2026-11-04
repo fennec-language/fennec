@@ -38,7 +38,8 @@ pub extern "C" fn is_valid(pattern: i64) -> i8 {
 pub extern "C" fn groups(pattern: i64) -> i64 {
     with(|state| {
         let pattern = text(state, pattern);
-        state.regexes.compiled(&pattern).map_or(-1, |regex| i64::try_from(regex.groups()).unwrap_or(-1))
+        let regex = state.regexes.compiled(&pattern).ok();
+        regex.and_then(|regex| i64::try_from(regex.groups()).ok()).unwrap_or(-1)
     })
 }
 

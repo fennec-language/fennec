@@ -156,14 +156,14 @@ struct Definition<'d> {
 
 /// What one module holds so far.
 pub(crate) struct Module<'w, 'p> {
-    whole: &'w Whole<'p>,
+    pub(crate) whole: &'w Whole<'p>,
     pub(crate) layouts: &'w Layouts,
     pub(crate) shared: &'w mut Shared,
     /// Whether the program runs `parallel`'s ranges on other threads, which keep their own stack
     /// limit and failure flag.
     pub(crate) threads: bool,
     declares: BTreeSet<String>,
-    defined: HashSet<&'p str>,
+    pub(crate) defined: HashSet<&'p str>,
     bodies: String,
     /// Functions a module only needs once, however many things use them.
     helpers: BTreeMap<String, String>,
@@ -307,7 +307,7 @@ impl<'p> Module<'_, 'p> {
     }
 
     /// A function's parameters, with their names and attributes or just their types.
-    fn params(&self, function: &Function, named: bool) -> Result<String, String> {
+    pub(crate) fn params(&self, function: &Function, named: bool) -> Result<String, String> {
         let mut params = Vec::with_capacity(function.params + 2);
         let returns = self.kind(&function.returns)?;
         if returns.in_memory() {
@@ -1502,8 +1502,8 @@ impl Emit<'_, '_, '_> {
             }
             "IdMap" | "IdMap.len" | "IdMap.get" | "IdMap.insert" | "IdMap.remove" | "IdMap.values"
             | "IdMap.ids" | "IdMap.items" => self.id_map_builtin(dest, name, args, span),
-            "is_regex" | "re.is_regex" | "Regex.replace" | "Regex.split" | "Regex.find_all"
-            | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
+            "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"
+            | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
             }
             "json.dumps" | "json.loads" => self.json_builtin(dest, name, args, span),
@@ -1528,20 +1528,6 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare double @llvm.sqrt.f64(double)");
                 let temp = self.temp();
                 self.line(&format!("{temp} = call double @llvm.sqrt.f64(double {value})"));
-                self.assign(dest.ok_or("no result")?, &temp)
-            }
-            "max" | "min" if args.len() == 2 => {
-                let (a, kind) = self.operand(first.ok_or("no argument")?)?;
-                let (b, _) = self.operand(args.get(1).ok_or("no argument")?)?;
-                if kind != Kind::Int {
-                    return Err(format!(
-                        "it calls `{name}` on a {kind:?}, which this backend doesn't take yet"
-                    ));
-                }
-                let cc = if name == "max" { "sgt" } else { "slt" };
-                let (first_wins, temp) = (self.temp(), self.temp());
-                self.line(&format!("{first_wins} = icmp {cc} i64 {a}, {b}"));
-                self.line(&format!("{temp} = select i1 {first_wins}, i64 {a}, i64 {b}"));
                 self.assign(dest.ok_or("no result")?, &temp)
             }
             "int.abs" => {
@@ -2066,6 +2052,29 @@ def main(stdout: Stdout):
         let (units, _, _) = emit(&program)?;
         let constant = units.iter().find(|unit| unit.function == "WORDS").ok_or("it isn't lowered")?;
         assert!(!constant.text.contains(".kept"), "{}", constant.text);
+        Ok(())
+    }
+
+    /// A field of a local list's item, changed by `append`, is taken out for the change rather
+    /// than given a second owner, whether the list is the local itself or a field of it.
+    #[test]
+    fn appending_to_a_field_of_an_item_takes_it_out_and_lets_go_of_nothing() -> Result<(), String> {
+        let types =
+            "struct Unit:\n    tags: list[int]\n    hp: int\n\nstruct World:\n    units: list[Unit]\n\n";
+        let main = "def main(stdout: Stdout):\n    mut units = [Unit([1], 0)]\n    grow(mut units, 0, 1)\n    mut world = World(units)\n    grow_field(mut world, 0, 1)\n    stdout.print(units[0].hp, read(world, 0))\n";
+        let source = format!(
+            "{types}def grow(mut units: list[Unit], at: int, v: int):\n    units[at].tags.append(v)\n\ndef grow_field(mut world: World, at: int, v: int):\n    world.units[at].tags.append(v)\n\ndef read(world: World, at: int) -> int:\n    world.units[at].hp\n\n{main}"
+        );
+        for function in ["grow", "grow_field"] {
+            let text = text_of(&source, function)?;
+            // Where the item is in the list, as `take_from_item` works it out.
+            assert!(text.contains("getelementptr inbounds %\"s.Unit\""), "{function}: {text}");
+            assert!(text.contains("fennec_list_grow"), "{function}: {text}");
+            // Nothing here has an owner to let go of, as a field read with one would.
+            assert!(!text.contains("call void @fennec_free"), "{function}: {text}");
+        }
+        // A plain read of a field reads it.
+        assert!(text_of(&source, "read")?.contains("getelementptr"));
         Ok(())
     }
 

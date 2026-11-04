@@ -10,8 +10,10 @@
 //!
 //! `fennec run` does this first, for the tests a change affects, unless told not to.
 //!
-//! Tests run as native code on every core, reusing machine code from the cache. Property
-//! tests, and any test the JIT can't compile yet, run in the interpreter.
+//! Tests run through LLVM's cached dev build, in worker processes on every core (see
+//! `llvm_tests`). A test LLVM can't build yet, or that failed, since the JIT says more about why,
+//! runs on the JIT, and property tests and tests that take capabilities in the interpreter. `--jit`
+//! leaves LLVM out.
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -29,8 +31,8 @@ pub(crate) struct Options {
     verbose: bool,
     /// Keep standard output for the program that runs next, and say nothing if all is well.
     before_a_run: bool,
-    /// Run what LLVM can build through LLVM.
-    llvm: bool,
+    /// Run on the JIT what would otherwise run through LLVM.
+    jit: bool,
 }
 
 /// Which tests run, and what they get.
@@ -57,7 +59,7 @@ impl Options {
                 "--all" => {}
                 "--verbose" | "-v" => options.verbose = true,
                 "--real" => options.run = Run::Real,
-                "--llvm" => options.llvm = true,
+                "--jit" => options.jit = true,
                 flag if flag.starts_with("--") => return None,
                 written if path.is_none() => path = Some(written),
                 _ => return None,
@@ -182,9 +184,14 @@ fn run_plan(
     let mut wanted = wanted;
     let mut failed_through_llvm = Vec::new();
     let mut ran_through_llvm = HashMap::new();
-    if options.llvm && crate::aot::llvm_ready() {
+    // Tests with real capabilities take what they're given, which only the interpreter does.
+    if !options.jit && options.run != Run::Real && crate::aot::llvm_ready() {
         let through_llvm = crate::llvm_tests::run(&program.module, &wanted, &|name| graph.defines(name));
-        if let Some(why) = through_llvm.refused.as_deref().and_then(|why| why.lines().next()) {
+        // Most of a program's tests still reach something LLVM doesn't take, and every run saying
+        // so would cost whoever reads it for nothing they can act on.
+        if options.verbose
+            && let Some(why) = through_llvm.refused.as_deref().and_then(|why| why.lines().next())
+        {
             eprintln!("note: some tests run another way, since LLVM can't build what they reach: {why}");
         }
         outcomes = through_llvm.outcomes;

@@ -1,5 +1,4 @@
-//! The interpreter's state, and its entry points: running a program's `main`, evaluating
-//! REPL input, and running tests.
+//! The interpreter's state, and its entry points: running a program's `main` and running tests.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -198,7 +197,7 @@ impl<'out> Interp<'out> {
         Ok(interp)
     }
 
-    /// Stops `main`, each test, and each REPL chunk once it has taken `steps` steps, so a
+    /// Stops `main` and each test once it has taken `steps` steps, so a
     /// loop that never ends can't hang the host. A step is one statement or expression.
     pub fn limit_steps(&mut self, steps: u64) {
         self.step_limit = Some(steps);
@@ -243,8 +242,8 @@ impl<'out> Interp<'out> {
         }
     }
 
-    /// Registers a module's declarations and returns its top-level statements, which only
-    /// the REPL runs.
+    /// Registers a module's declarations and returns its top-level statements, which a program
+    /// can't run.
     pub fn load(&mut self, module: &Module) -> Result<Vec<Stmt>, Diagnostic> {
         self.load_with(module, &Copied)
     }
@@ -430,25 +429,6 @@ impl<'out> Interp<'out> {
             }
             _ => Ok(()),
         }
-    }
-
-    /// Starts a REPL session, where `stdout`, `fs` and `clock` are already defined.
-    pub fn start_repl(&mut self) {
-        self.frame.declare("stdout", Value::Capability(Capability::Stdout), false);
-        self.frame.declare("fs", Value::Capability(Capability::Fs), false);
-        self.frame.declare("clock", Value::Capability(Capability::Clock), false);
-    }
-
-    /// Runs a chunk typed into the REPL. Returns how to echo its last expression, if anything.
-    pub fn eval_repl(&mut self, module: &Module) -> Result<Option<String>, Diagnostic> {
-        let statements = self.load(module)?;
-        self.refill_steps();
-        let mut echo = None;
-        for stmt in &statements {
-            echo = self.exec_top(stmt)?;
-        }
-        self.flush()?;
-        Ok(echo)
     }
 
     pub(crate) fn flush(&mut self) -> Result<(), Diagnostic> {

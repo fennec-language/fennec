@@ -53,6 +53,11 @@ pub(super) fn inline_bytes(words: &[u64; 3]) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// An inline header holding `length` bytes, 8 or fewer, packed in a word with zeros after them.
+pub(super) fn inline_word(word: u64, length: u8) -> [u64; 3] {
+    [word, 0, u64::from(INLINE | length) << 56]
+}
+
 /// An inline header holding `bytes`, which are 23 or fewer.
 pub(super) fn inline(bytes: &[u8]) -> [u64; 3] {
     let mut packed = [0_u8; 24];

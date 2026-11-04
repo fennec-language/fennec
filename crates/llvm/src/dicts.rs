@@ -306,6 +306,30 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &dict)
     }
 
+    /// `set(list)`: a new set of a list's items, the first of equal ones staying.
+    pub(crate) fn set_of_list(&mut self, dest: LocalId, list: &str, held: &Kind) -> Result<(), String> {
+        let Kind::Dict(key, value) = self.kind_of(dest)?.clone() else {
+            return Err("it makes a set this backend doesn't take yet".to_owned());
+        };
+        let length = self.list_length(list);
+        let dict = self.new_dict(key, value, &length);
+        let slot = self.temp_slot(&dict);
+        let (at, end) = self.loop_begin(&length);
+        let item = self.item_value(list, held, &at);
+        let item = if *held == Kind::Bool {
+            let wide = self.temp();
+            self.line(&format!("{wide} = zext i1 {item} to i64"));
+            wide
+        } else {
+            item
+        };
+        self.dict_store_word(&slot, (key, value), &item, "", None)?;
+        self.loop_end(&end);
+        let dict = self.temp();
+        self.line(&format!("{dict} = load ptr, ptr {slot}"));
+        self.assign(dest, &dict)
+    }
+
     /// `dict[key] = value` on the dict at `place`. Changing a key's value in a dict nothing else
     /// holds happens here, and everything else in the runtime.
     pub(crate) fn dict_store(
@@ -327,12 +351,25 @@ impl Emit<'_, '_, '_> {
         value: Option<&Operand>,
         found: Option<String>,
     ) -> Result<(), String> {
-        let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let key = self.key_value(key, key_word)?;
         let held = match value {
             Some(value) => self.operand(value)?.0,
             None => String::new(),
         };
+        self.dict_store_word(place, (key_word, value_word), &key, &held, found)
+    }
+
+    /// As [`Self::dict_store_at`], with the key and value already worked out.
+    fn dict_store_word(
+        &mut self,
+        place: &str,
+        (key_word, value_word): (Word, Word),
+        key: &str,
+        held: &str,
+        found: Option<String>,
+    ) -> Result<(), String> {
+        let (key, held) = (key.to_owned(), held.to_owned());
+        let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         self.declare("declare ptr @fennec_dict_set(ptr, i64, i64) nounwind");
         let dict = self.temp();
         let (quick, change, slow, done) =

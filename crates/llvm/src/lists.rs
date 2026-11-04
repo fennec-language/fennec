@@ -45,7 +45,7 @@ impl Emit<'_, '_, '_> {
         at
     }
 
-    fn layout_of(&self, id: u32) -> Result<&'_ fennec_layout::Layout, String> {
+    pub(crate) fn layout_of(&self, id: u32) -> Result<&'_ fennec_layout::Layout, String> {
         self.module.layouts.get(id).ok_or_else(|| "no such layout".to_owned())
     }
 
@@ -903,12 +903,17 @@ impl Emit<'_, '_, '_> {
         // An item taken out to change: its count only means something once the list is alone,
         // and with the list alone from here, putting it back needs no checks between.
         // A local list's own check is made once, ahead of its loop, so that stays as it is.
-        let list = if let Some((home, path)) =
-            self.known.item_home(dest).filter(|(_, path)| held.counted() || !path.is_empty()).cloned()
-        {
-            self.alone_list(home, &path)?
-        } else {
-            list
+        // So does a `for mut` item, which lets go of nothing until it's put back.
+        let over_loop = self.known.taken_over_loop(dest);
+        let taken = self
+            .known
+            .item_home(dest)
+            .filter(|(_, path)| held.counted() || !path.is_empty() || over_loop)
+            .cloned();
+        let list = match &taken {
+            Some((home, path)) if over_loop && path.is_empty() => self.unshared(*home),
+            Some((home, path)) => self.alone_list(*home, path)?,
+            None => list,
         };
         let index_operand = index;
         let (index, _) = self.operand(index)?;
@@ -923,12 +928,10 @@ impl Emit<'_, '_, '_> {
         };
         let memory = held.memory(self.module.layouts);
         let at = self.item_address(&list, &memory, &position);
-        if let Some((home, path)) =
-            self.known.item_home(dest).filter(|(_, path)| held.counted() || !path.is_empty())
-        {
+        if let Some((home, path)) = taken {
             self.taken_at.insert(dest.0, at.clone());
             if let Some(step) = item_step(index_operand) {
-                self.taken_items.insert(dest.0, (*home, path.clone(), step));
+                self.taken_items.insert(dest.0, (home, path, step));
             }
         }
         self.read_into(dest, &held, &at, ITEM_ACCESS)

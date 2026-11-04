@@ -33,6 +33,16 @@ pub extern "C" fn is_valid(pattern: i64) -> i8 {
     })
 }
 
+/// A new string saying what's wrong with a pattern, as making a `Regex` of it says.
+pub extern "C" fn problem(pattern: i64) -> i64 {
+    with(|state| {
+        let pattern = text(state, pattern);
+        let problem = state.interp.regex(&pattern).err();
+        let message = problem.map(|error| invalid(&error, Span::default()).message).unwrap_or_default();
+        text_address(state, &message)
+    })
+}
+
 /// How many groups a pattern has, not counting the whole match: what says how many numbers
 /// `find_all` and `find` give for each match. -1 for a pattern that isn't valid.
 pub extern "C" fn groups(pattern: i64) -> i64 {

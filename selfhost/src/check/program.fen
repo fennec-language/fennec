@@ -231,6 +231,9 @@ struct Program:
             generics += entry.extension
         elif owner is not None and owner in self.types:
             generics += self.types[owner].type_def.generics
+        # In a method, `Self` is the type it belongs to.
+        if owner is not None:
+            generics.append(Generic(name="Self", bounds=[], span=entry.function.span))
         generics + entry.inherited + entry.function.generics
 
     ## The type a written type means, with these type parameters in scope.
@@ -355,7 +358,7 @@ def unknown_type(name: str, span: Span) -> Diagnostic:
     elif name == "Optional":
         help = "write `?` after the type, like `Enemy?`"
     elif name == "Self":
-        help = "`Self` means the type that fits an interface, so it goes in an interface's methods"
+        help = "`Self` means the type a method belongs to, so it goes in a method of a type or an interface"
     Diagnostic(message=f"`{name}` isn't a type", span=span, help=help)
 
 ## An extension of a type that isn't one of the program's own.

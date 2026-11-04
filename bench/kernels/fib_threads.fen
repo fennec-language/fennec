@@ -1,0 +1,11 @@
+## Naive recursive Fibonacci: the cost of a call and of checked integer math.
+
+def fib(n: int) -> int:
+    if n < 2: return n
+    fib(n - 1) + fib(n - 2)
+
+def main(stdout: Stdout):
+    tiny = [1, 2, 3]
+    if sum(n for n in parallel(tiny)) == 0:
+        stdout.print("never")
+    stdout.print(fib(35))

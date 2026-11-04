@@ -51,21 +51,31 @@ pub(crate) fn runtime_beside_fennec() -> bool {
 /// file name in place for both, once a run as `runtime_built` does.
 pub(crate) fn threads_runtime_built() -> bool {
     static BUILT: OnceLock<bool> = OnceLock::new();
-    *BUILT.get_or_init(|| {
-        let Some(folder) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent() else { return false };
-        // `target/threads`, beside the plain build's `target/debug`, as CI builds it.
-        let Some(threads) = folder.parent().map(|target| target.join("threads")) else { return false };
-        let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-        let built = Command::new(env!("CARGO"))
-            .args(["build", "--quiet", "-p", "fennec-runtime", "--features", "threads", "--target-dir"])
-            .arg(&threads)
-            .args((profile == "release").then_some("--release"))
-            .status()
-            .is_ok_and(|status| status.success());
-        let library = threads.join(profile).join(runtime_file());
-        let beside = if cfg!(windows) { "fennec_runtime_threads.lib" } else { "libfennec_runtime_threads.a" };
-        built && fs::copy(library, folder.join(beside)).is_ok()
-    })
+    *BUILT.get_or_init(|| runtime_variant_built("threads", "threads", "fennec_runtime_threads"))
+}
+
+/// The runtime library with no interpreter in it, which `fennec build` takes when
+/// `FENNEC_LEAN_RUNTIME=1` asks, next to `fennec` as `libfennec_runtime_lean.a`.
+pub(crate) fn lean_runtime_built() -> bool {
+    static BUILT: OnceLock<bool> = OnceLock::new();
+    *BUILT.get_or_init(|| runtime_variant_built("lean", "lean", "fennec_runtime_lean"))
+}
+
+/// Builds the runtime library with `features`, in a folder of its own named `folder`, beside the
+/// plain build's `target/debug`, and puts it next to `fennec` as `name`.
+fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {
+    let Some(beside) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent() else { return false };
+    let Some(own) = beside.parent().map(|target| target.join(folder)) else { return false };
+    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let built = Command::new(env!("CARGO"))
+        .args(["build", "--quiet", "-p", "fennec-runtime", "--features", features, "--target-dir"])
+        .arg(&own)
+        .args((profile == "release").then_some("--release"))
+        .status()
+        .is_ok_and(|status| status.success());
+    let library = own.join(profile).join(runtime_file());
+    let file = if cfg!(windows) { format!("{name}.lib") } else { format!("lib{name}.a") };
+    built && fs::copy(library, beside.join(file)).is_ok()
 }
 
 /// Whether mutation testing is running the tests (CI's mutation jobs set

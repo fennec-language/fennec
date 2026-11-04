@@ -215,14 +215,14 @@ mod tests {
     }
 
     #[test]
-    fn floats_sort_as_the_interpreter_sorts_them() {
+    fn floats_sort_as_the_interpreter_sorts_them_whatever_their_order() {
         let tables = Tables { elements: vec![Rc::new(Element::Float)], ..Tables::default() };
         start(&Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
         let nans = [f64::NAN, -f64::NAN, f64::from_bits(f64::NAN.to_bits() | 1)];
         let floats = [0.0, -0.0, 1.5, -0.0, 0.0, f64::INFINITY, -1.0, f64::NEG_INFINITY];
         let floats: Vec<f64> = floats.into_iter().chain(nans).chain([0.0, -0.0]).collect();
         let mut expected = floats.clone();
-        expected.sort_by(|a, b| crate::value::float_order(*a, *b));
+        expected.sort_by(f64::total_cmp);
         for turn in 0..floats.len() {
             let mut input = floats.clone();
             input.rotate_left(turn);
@@ -233,11 +233,7 @@ mod tests {
             let sorted = lists::sorted(list, lists::SORT_FLOATS);
             let bits: Vec<u64> =
                 (LIST_ITEMS..).step_by(8).take(input.len()).map(|at| word(sorted, at).unwrap()).collect();
-            // Floats that are equal stay in the order they were in, so they're compared as one.
-            let keys = |bits: Vec<u64>| -> Vec<u64> {
-                bits.into_iter().map(|bits| crate::value::float_key(f64::from_bits(bits))).collect()
-            };
-            assert_eq!(keys(bits), keys(expected.iter().map(|float| float.to_bits()).collect()));
+            assert_eq!(bits, expected.iter().map(|float| float.to_bits()).collect::<Vec<_>>());
         }
         finish();
     }

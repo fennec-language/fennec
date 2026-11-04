@@ -154,7 +154,7 @@ fn hash_in(hash: u64, value: &Value) -> u64 {
     match value {
         Value::Bool(b) => mixed(hash, u64::from(*b) + 1),
         Value::Int(n) => mixed(hash, n.cast_unsigned()),
-        Value::Float(x) => mixed(hash, crate::value::float_key(*x)),
+        Value::Float(x) => mixed(hash, x.to_bits()),
         Value::Str(text) => hash_text(hash, text.as_bytes()),
         Value::Bytes(data) => hash_text(hash, data),
         Value::List(items) | Value::Tuple(items) => items.iter().fold(mixed(hash, 7), hash_in),

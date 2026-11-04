@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{ExprKind, FnDef, Item, Module, Pattern, Stmt, StmtKind, TypeExpr};
+use crate::ast::{ExprKind, FnDef, Generic, Item, Module, Pattern, Stmt, StmtKind, TypeExpr};
 
 /// What a renamed type is shown as: the name it was written with.
 pub fn shown_type_name(name: &str) -> &str {
@@ -105,6 +105,7 @@ impl Renamer<'_> {
             Item::Function(def) => self.function(def),
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
                 self.name(&mut def.name);
+                self.bounds(&mut def.generics);
                 let fields =
                     def.fields.iter_mut().chain(def.cases.iter_mut().flat_map(|case| case.fields.iter_mut()));
                 for field in fields {
@@ -115,13 +116,19 @@ impl Renamer<'_> {
                 def.methods.iter_mut().for_each(|method| self.function(method));
             }
             Item::Interface(interface) => {
+                self.name(&mut interface.name);
                 interface.methods.iter_mut().for_each(|method| self.function(method));
             }
             Item::Extend(extension) => {
                 self.name(&mut extension.name);
+                self.bounds(&mut extension.generics);
                 extension.methods.iter_mut().for_each(|method| self.function(method));
             }
-            Item::TypeAlias { ty, .. } | Item::Const { ty: Some(ty), .. } => self.type_expr(ty),
+            Item::TypeAlias { name, ty, .. } => {
+                self.name(name);
+                self.type_expr(ty);
+            }
+            Item::Const { ty: Some(ty), .. } => self.type_expr(ty),
             Item::Test(test) => {
                 for input in &mut test.inputs {
                     if let Some(ty) = &mut input.ty {
@@ -145,10 +152,14 @@ impl Renamer<'_> {
         for ty in types {
             self.type_expr(ty);
         }
-        for generic in &mut def.generics {
+        self.bounds(&mut def.generics);
+        self.stmts(&mut def.body);
+    }
+
+    fn bounds(&self, generics: &mut [Generic]) {
+        for generic in generics {
             generic.bounds.iter_mut().for_each(|bound| self.type_expr(bound));
         }
-        self.stmts(&mut def.body);
     }
 
     /// The types written in statements, which `exprs_mut` doesn't reach.

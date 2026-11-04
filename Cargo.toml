@@ -44,8 +44,6 @@ print_stdout = "deny"
 print_stderr = "deny"
 
 [workspace.dependencies]
-# Finding Visual Studio's linker on Windows, as Rust's own builds do. It's already here for `mimalloc`.
-cc = "=1.10.0"
 # The allocator the runtime gives Fennec programs: fast for many small blocks, under MIT.
 mimalloc = { version = "=0.1.52", default-features = false }
 # Secure random bytes from the operating system, for `Entropy`, on every platform Fennec runs on.

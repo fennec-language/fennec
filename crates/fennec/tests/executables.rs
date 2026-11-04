@@ -36,9 +36,9 @@ pub(crate) fn runtime_built() -> bool {
     })
 }
 
-/// The runtime library's file name, as Cargo names a static library here.
-pub(crate) fn runtime_file() -> &'static str {
-    if cfg!(windows) { "fennec_runtime.lib" } else { "libfennec_runtime.a" }
+/// The runtime library's file name.
+pub(crate) const fn runtime_file() -> &'static str {
+    "libfennec_runtime.a"
 }
 
 /// Whether the runtime library is beside the `fennec` these tests run, which is where it's looked
@@ -65,8 +65,7 @@ pub(crate) fn threads_runtime_built() -> bool {
             .status()
             .is_ok_and(|status| status.success());
         let library = threads.join(profile).join(runtime_file());
-        let beside = if cfg!(windows) { "fennec_runtime_threads.lib" } else { "libfennec_runtime_threads.a" };
-        built && fs::copy(library, folder.join(beside)).is_ok()
+        built && fs::copy(library, folder.join("libfennec_runtime_threads.a")).is_ok()
     })
 }
 

@@ -1,7 +1,7 @@
 //! `fennec build`: compiles a program ahead of time to a standalone executable. The JIT's
 //! compiler or LLVM writes object files, and the system's linker links them with Fennec's
-//! runtime library, which sits next to the `fennec` command. On Windows, that's Visual Studio's
-//! linker, and for now only LLVM's objects.
+//! runtime library, which sits next to the `fennec` command. On Windows, that's LLD with MinGW's
+//! libraries, which come with LLVM's tools, and for now only LLVM's objects.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -15,21 +15,33 @@ const SYSTEM_LIBRARIES: &[&str] = &["-lSystem", "-lc", "-lm", "-Wl,-dead_strip"]
 const SYSTEM_LIBRARIES: &[&str] =
     &["-lgcc_s", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl", "-lc", "-Wl,--gc-sections"];
 
-/// What Rust's standard library needs from Windows, which the runtime library uses.
+// LLD links programs against MinGW's libraries, which is what the runtime library has to be built
+// for, and nothing here looks for Visual Studio.
+#[cfg(all(windows, target_env = "msvc"))]
+compile_error!("Fennec builds with the GNU toolchain on Windows: `rustup set default-host x86_64-pc-windows-gnu`");
+
+/// What Rust's standard library needs from Windows and MinGW, which the runtime library uses, in
+/// the order LLD reads them.
 #[cfg(windows)]
 const WINDOWS_LIBRARIES: &[&str] = &[
-    "kernel32.lib",
-    "ntdll.lib",
-    "userenv.lib",
-    "ws2_32.lib",
-    "dbghelp.lib",
-    "advapi32.lib",
-    "bcrypt.lib",
-    "synchronization.lib",
-    "msvcrt.lib",
-    "vcruntime.lib",
-    "ucrt.lib",
-    "legacy_stdio_definitions.lib",
+    "-lkernel32",
+    "-lntdll",
+    "-luserenv",
+    "-lws2_32",
+    "-ldbghelp",
+    "-lbcrypt",
+    "-ladvapi32",
+    "-lsynchronization",
+    "-lgcc_eh",
+    "-l:libpthread.a",
+    "-lmsvcrt",
+    "-lmingwex",
+    "-lmingw32",
+    "-lgcc",
+    "-lmsvcrt",
+    "-lmingwex",
+    "-luser32",
+    "-lkernel32",
 ];
 
 /// Which runtime library a program links against, next to the `fennec` command.
@@ -46,9 +58,6 @@ impl Runtime {
     /// The library's file name.
     fn library(self) -> &'static str {
         match self {
-            // Cargo names a static library this way on Windows.
-            Self::Plain if cfg!(windows) => "fennec_runtime.lib",
-            Self::Threads if cfg!(windows) => "fennec_runtime_threads.lib",
             Self::Plain => "libfennec_runtime.a",
             Self::Threads => "libfennec_runtime_threads.a",
         }
@@ -195,11 +204,11 @@ pub(crate) struct Built {
     linked: std::time::Duration,
 }
 
-/// Whether there's a linker to find. Windows doesn't come with one: Visual Studio's Build Tools do.
+/// Whether there's a linker to find. Windows doesn't come with one, so LLD comes with LLVM's tools.
 fn linker_here() -> bool {
     #[cfg(windows)]
     {
-        cc::windows_registry::find_tool("x86_64-pc-windows-msvc", "link.exe").is_some()
+        fennec_llvm::Tools::find().is_ok_and(|tools| tools.folder().join("rust-lld.exe").is_file())
     }
     #[cfg(not(windows))]
     {
@@ -357,10 +366,7 @@ fn link_objects(
     }
     let started = Instant::now();
     let runtime = if runtime_in { c_parts(&runtime, &work)? } else { runtime };
-    let linked = linker(&paths, &runtime, output).output().map_err(|err| {
-        let help = if cfg!(windows) { "; install Visual Studio's Build Tools" } else { "" };
-        format!("couldn't run the linker: {err}{help}")
-    })?;
+    let linked = linker(&paths, &runtime, output).output().map_err(|err| format!("couldn't run the linker: {err}"))?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
     if linked.status.success() {
@@ -385,19 +391,24 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
     command
 }
 
-/// The system's linker, set to link objects with a runtime library into an executable.
+/// LLD, set to link objects with a runtime library into an executable. It and MinGW's libraries
+/// are where a Rust toolchain for this target keeps them beside LLVM's tools, and a release too.
 #[cfg(windows)]
 fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
-    // Where Visual Studio's linker is, with what it needs to find the system's libraries, or
-    // else one a developer prompt has set up.
-    let found = cc::windows_registry::find_tool("x86_64-pc-windows-msvc", "link.exe");
-    let mut command = found.map_or_else(|| Command::new("link.exe"), |tool| tool.to_command());
+    let tools = fennec_llvm::Tools::find().map(|tools| tools.folder().to_path_buf()).unwrap_or_default();
+    let libraries = tools.with_file_name("lib").join("self-contained");
+    let mut command = Command::new(tools.join("rust-lld.exe"));
     command
-        .args(["/NOLOGO", "/SUBSYSTEM:CONSOLE", "/OPT:REF", "/NODEFAULTLIB:libcmt"])
-        .arg(format!("/OUT:{}", output.display()))
+        .args(["-flavor", "gnu", "-m", "i386pep", "--dynamicbase", "--high-entropy-va", "--nxcompat"])
+        .args(["--gc-sections", "--subsystem", "console"])
+        .arg("-L")
+        .arg(&libraries)
+        .arg(libraries.join("crt2.o"))
         .args(objects)
         .arg(runtime)
-        .args(WINDOWS_LIBRARIES);
+        .args(WINDOWS_LIBRARIES)
+        .arg("-o")
+        .arg(output);
     command
 }
 
@@ -421,10 +432,7 @@ fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
     let object_path = work.join("program.o");
     std::fs::write(&object_path, object).map_err(|err| format!("couldn't write the object file: {err}"))?;
     let started = Instant::now();
-    let linked = linker(std::slice::from_ref(&object_path), &runtime, output).output().map_err(|err| {
-        let help = if cfg!(windows) { "; install Visual Studio's Build Tools" } else { "" };
-        format!("couldn't run the linker: {err}{help}")
-    })?;
+    let linked = linker(std::slice::from_ref(&object_path), &runtime, output).output().map_err(|err| format!("couldn't run the linker: {err}"))?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
     if linked.status.success() {
@@ -446,7 +454,7 @@ fn c_parts(runtime: &Path, work: &Path) -> Result<PathBuf, String> {
     let copy = work.join("runtime-c.a");
     std::fs::copy(runtime, &copy).map_err(|err| format!("couldn't copy the runtime library: {err}"))?;
     let ar = |args: &[&std::ffi::OsStr]| {
-        Command::new("ar").args(args).output().map_err(|err| format!("couldn't run `ar`: {err}"))
+        archiver().args(args).output().map_err(|err| format!("couldn't run `ar`: {err}"))
     };
     let listed = ar(&["t".as_ref(), copy.as_os_str()])?;
     let rust: Vec<String> = String::from_utf8_lossy(&listed.stdout)
@@ -463,6 +471,14 @@ fn c_parts(runtime: &Path, work: &Path) -> Result<PathBuf, String> {
         }
     }
     Ok(copy)
+}
+
+/// What edits an archive: the system's `ar`, or LLVM's on Windows, which doesn't come with one.
+fn archiver() -> Command {
+    match fennec_llvm::Tools::find() {
+        Ok(tools) if cfg!(windows) => Command::new(tools.folder().join("llvm-ar.exe")),
+        _ => Command::new("ar"),
+    }
 }
 
 /// The runtime library, next to the `fennec` command.

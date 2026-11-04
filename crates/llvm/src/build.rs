@@ -50,13 +50,16 @@ pub struct Tools {
 }
 
 impl Tools {
-    /// From `FENNEC_LLVM_BIN`, or the Rust toolchain's `llvm-tools` component. Nothing's
-    /// downloaded; what's missing is reported. Where the toolchain keeps them is remembered in
-    /// the Fennec home, as asking `rustc` each build costs more than the rest of an unchanged one.
+    /// From `FENNEC_LLVM_BIN`, the `llvm` folder a release has beside `fennec`, or the Rust
+    /// toolchain's `llvm-tools` component. Nothing's downloaded; what's missing is reported. Where
+    /// the toolchain keeps them is remembered in the Fennec home, as asking `rustc` each build
+    /// costs more than the rest of an unchanged one.
     pub fn find() -> Result<Self, String> {
         let remembered = fennec_build::fennec_home().map(|home| home.join("llvm-tools"));
         let folder = if let Some(folder) = std::env::var_os("FENNEC_LLVM_BIN") {
             PathBuf::from(folder)
+        } else if let Some(folder) = shipped_tools() {
+            folder
         } else if let Some(folder) = remembered.as_deref().and_then(remembered_folder) {
             folder
         } else {
@@ -82,6 +85,13 @@ impl Tools {
                 folder.display()
             ))
         }
+    }
+
+    /// The folder they're in. A release lays it out as the toolchain does, so what's kept around
+    /// the tools is in the same place either way.
+    #[must_use]
+    pub fn folder(&self) -> &Path {
+        self.llc.parent().unwrap_or_else(|| Path::new(""))
     }
 
     /// What makes one version of the tools differ from another, for cache keys: remembered
@@ -116,6 +126,12 @@ fn remembered_folder(at: &Path) -> Option<PathBuf> {
 /// A tool's file name on this machine.
 fn tool(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// The tools a release ships beside `fennec`, if this is one.
+fn shipped_tools() -> Option<PathBuf> {
+    let folder = std::env::current_exe().ok()?.with_file_name("llvm").join("bin");
+    folder.join(tool("llc")).is_file().then_some(folder)
 }
 
 fn toolchain_tools() -> Result<PathBuf, String> {

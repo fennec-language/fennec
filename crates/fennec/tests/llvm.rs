@@ -2490,6 +2490,8 @@ def main(stdout: Stdout):
     mut aa = "a"
     mut ab = [aa]
     stdout.print(ab, ab.pop(), aa)
+"#,
+    )
 }
 
 /// `max` and `min` of lists and of values, with keys and a type's own `<`, as the first of equals

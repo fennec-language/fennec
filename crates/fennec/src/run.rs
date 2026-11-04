@@ -70,9 +70,8 @@ pub(crate) fn run(path: &str, engine: Engine, arguments: &[String]) -> ExitCode 
 }
 
 /// Builds the program through LLVM's cached dev build and runs it, handing it the arguments,
-/// this process's input and output, and its exit code. Windows can't link executables yet,
-/// and a machine without LLVM's tools or the runtime library can't either, so neither gets
-/// here.
+/// this process's input and output, and its exit code. A machine without LLVM's tools, the
+/// runtime library or a linker can't, so it doesn't get here.
 fn built_and_run(
     program: &fennec_kit::Program,
     path: &str,
@@ -89,12 +88,17 @@ fn built_and_run(
             sources,
             manifest: None,
             embedded: Vec::new(),
+            kit_src: None,
         };
         &whole
     } else {
         program
     };
-    let executable = std::env::temp_dir().join(format!("fennec-run-{}", std::process::id()));
+    let executable = std::env::temp_dir().join(format!(
+        "fennec-run-{}{}",
+        std::process::id(),
+        std::env::consts::EXE_SUFFIX
+    ));
     crate::aot::executable(program, &executable, false)?;
     let ran = std::process::Command::new(&executable).args(arguments).status();
     let _ = std::fs::remove_file(&executable);
@@ -269,7 +273,26 @@ pub(crate) fn check(program: &mut fennec_kit::Program) -> bool {
 }
 
 /// Prints the problems a check found.
-fn reject(program: &fennec_kit::Program, diagnostics: &[fennec_syntax::Diagnostic]) -> ExitCode {
-    eprint!("{}", program.sources.render_all(diagnostics));
+pub(crate) fn reject(program: &fennec_kit::Program, diagnostics: &[fennec_syntax::Diagnostic]) -> ExitCode {
+    let told: Vec<_> = diagnostics.iter().map(|diagnostic| with_extension(program, diagnostic)).collect();
+    eprint!("{}", program.sources.render_all(&told));
     ExitCode::FAILURE
+}
+
+/// A problem, saying which file has a missing method when a file the run didn't load has it. A run
+/// loads `main` and what it imports, so nothing else brings in a file that only extends a type.
+pub(crate) fn with_extension(
+    program: &fennec_kit::Program,
+    diagnostic: &fennec_syntax::Diagnostic,
+) -> fennec_syntax::Diagnostic {
+    let found = fennec_check::missing_method(diagnostic).and_then(|(who, method)| {
+        let (shown, module) = program.extension_elsewhere(who, method)?;
+        Some(format!(
+            "`{method}` is in an `extend` in {shown}, which this program doesn't import: add `import {module}`"
+        ))
+    });
+    match found {
+        Some(help) => diagnostic.clone().with_help(help),
+        None => diagnostic.clone(),
+    }
 }

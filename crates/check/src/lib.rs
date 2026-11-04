@@ -48,6 +48,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use fennec_syntax::{Diagnostic, Expr, Module, Span};
 
+pub use messages::missing_method;
 pub use types::Type;
 
 /// Checks a parsed module. Returns the signature of every function and method, or every

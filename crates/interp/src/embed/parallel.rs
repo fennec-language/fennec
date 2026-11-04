@@ -477,7 +477,7 @@ mod tests {
         finish();
     }
 
-    /// How many of a test's ranges ran.
+    /// How many of the lending test's ranges ran.
     static RANGES: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
     /// Runs on a worker: `env` is a string the calling thread made, read and joined to itself
@@ -510,7 +510,6 @@ mod tests {
     #[test]
     fn ranges_read_lent_blocks_and_their_owner_changes_are_applied_when_the_call_ends() {
         begin();
-        RANGES.store(0, Ordering::Relaxed);
         let text = string_block();
         let list = lists::new(0, ITEMS);
         assert_eq!(super::parallel_for(list, uses_lent, text), 0);
@@ -553,20 +552,22 @@ mod tests {
         finish();
     }
 
+    /// How many of the printing test's ranges ran, kept apart as tests run at the same time.
+    static PRINTING_RANGES: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
     extern "C" fn prints(env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
         strings::print(env);
-        RANGES.fetch_add(1, Ordering::Relaxed);
+        PRINTING_RANGES.fetch_add(1, Ordering::Relaxed);
         0
     }
 
     #[test]
     fn what_a_range_prints_on_a_worker_reaches_the_calling_thread() {
         begin();
-        RANGES.store(0, Ordering::Relaxed);
         let text = string_block();
         let list = lists::new(0, ITEMS);
         assert_eq!(super::parallel_for(list, prints, text), 0);
-        let ranges = usize::try_from(RANGES.load(Ordering::Relaxed)).unwrap();
+        let ranges = usize::try_from(PRINTING_RANGES.load(Ordering::Relaxed)).unwrap();
         heap::free(list);
         heap::free(text);
         let (output, _, _) = finish();

@@ -1,0 +1,18 @@
+# `in` on strings, short and long, across where a string's bytes are stored, and on text that
+# isn't ASCII.
+def main(stdout: Stdout):
+    short = "short"
+    long = "a string long enough to be held in a block of its own, with an ending"
+    accented = "été à la plage, déjà vu"
+    stdout.print("or" in short, "ort" in short, "t" in short, "" in short, "x" in short)
+    stdout.print("long enough" in long, "ending" in long, "ending!" in long, "a string" in long)
+    stdout.print("été" in accented, "déjà" in accented, "à la" in accented, "e" in accented)
+    stdout.print(long in short, short in long, long in long, short not in long)
+    mut found = 0
+    words = [f"word number {n}" for n in range(100)]
+    for word in words:
+        if "7" in word:
+            found += 1
+        if "number 9" not in word:
+            found += 100
+    stdout.print(found)

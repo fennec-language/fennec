@@ -60,8 +60,9 @@ fn through_line_end(text: &str, base: u32, span: Span) -> Span {
     Span { start: span.start, end: base + u32::try_from(line_end).unwrap_or(0) }
 }
 
-/// Imports in one file that nothing in that file uses.
-fn unused_imports(text: &str, base: u32, found: &mut Vec<Lint>) {
+/// Imports in one file that nothing in that file uses. A file that extends a type is imported for
+/// that, with nothing to name: `extending` says which files do.
+fn unused_imports(text: &str, base: u32, extending: &[&str], found: &mut Vec<Lint>) {
     let Ok(module) = parse_at(text, base) else { return };
     let imports: Vec<&Import> = module
         .items
@@ -78,7 +79,12 @@ fn unused_imports(text: &str, base: u32, found: &mut Vec<Lint>) {
         if import.names.is_empty() {
             let bound =
                 import.alias.as_deref().or_else(|| import.module.first().map(String::as_str)).unwrap_or("");
-            if !used(bound) {
+            let path = format!("{}.fen", import.module.join("/"));
+            let extends = extending.iter().any(|file| {
+                file.strip_suffix(path.as_str())
+                    .is_some_and(|before| before.is_empty() || before.ends_with('/'))
+            });
+            if !used(bound) && !extends {
                 let span = through_line_end(text, base, import.span);
                 let diagnostic =
                     Diagnostic::new(format!("nothing uses `{bound}`"), import.span).with_fix(span, "");
@@ -311,9 +317,17 @@ fn needless_mut(stmts: &[Stmt], changed: &HashSet<String>, sources: &Sources, fo
 
 pub(crate) fn of(module: &Module, sources: &Sources) -> Vec<Lint> {
     let mut found = Vec::new();
+    let extending: Vec<&str> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Extend(extension) => sources.file_at(extension.span).map(|(file, ..)| file),
+            _ => None,
+        })
+        .collect();
     for (path, text) in sources.files() {
         if let Some((_, base)) = sources.by_path(path) {
-            unused_imports(text, base, &mut found);
+            unused_imports(text, base, &extending, &mut found);
         }
     }
     let tests = module

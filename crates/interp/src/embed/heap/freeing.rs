@@ -42,6 +42,7 @@ fn free_waiting(state: &mut State) {
 pub extern "C" fn free_text(address: i64) {
     let freed = with(|state| {
         let at = usize::try_from(address).ok()?;
+        state.heap.forget_place(u64::try_from(at).unwrap_or(0));
         let block = state.heap.blocks.remove(at)?;
         if !is_text(state, &block) {
             state.heap.blocks.insert(block);
@@ -109,15 +110,23 @@ fn free_block(state: &mut State, address: u64) {
         if crate::embed::threads::held_elsewhere(address) {
             continue;
         }
-        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove(at)) else {
+        // Only a string has a place kept in it, and that's forgotten below, once it's known to be one.
+        let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove_any(at))
+        else {
             continue;
         };
         let shape = shape_word(&block).unwrap_or(u64::MAX);
+        debug_assert!(
+            shape == state.tables.str_shape
+                || usize::try_from(address).is_ok_and(|at| state.heap.cursor().address != at),
+            "a place was kept in something that isn't a string"
+        );
         if is_abandoned(state, &block) {
             keep_abandoned(state, address, block);
             continue;
         }
         if shape == state.tables.str_shape {
+            state.heap.forget_place(address);
             if !state.heap.texts.get_mut().is_empty() {
                 forget_text(state, address);
             }
@@ -232,6 +241,7 @@ pub(in crate::embed) fn measure_part(part: u8, address: usize) {
         }
         2 => {
             if let Some(block) = state.heap.spare.get_mut(4).and_then(Vec::pop) {
+                state.heap.spare_words -= block.len();
                 state.heap.recycle(std::hint::black_box(block));
             } else {
                 let block = state.heap.fresh(4);
@@ -273,5 +283,47 @@ pub(in crate::embed) fn release(state: &mut State, address: u64) {
     };
     if last {
         free_block(state, address);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::embed::{Tables, finish, start, with};
+
+    /// Frees `count` blocks of `words` words at once, as a program dropping a big structure does.
+    fn free_many(count: usize, words: usize) {
+        with(|state| {
+            let blocks: Vec<_> = (0..count).map(|_| state.heap.fresh(words)).collect();
+            for block in blocks {
+                state.heap.recycle(block);
+            }
+        });
+    }
+
+    #[test]
+    fn what_a_heap_keeps_for_reuse_stays_under_its_limit_however_much_is_freed() {
+        let module = fennec_syntax::Module { items: Vec::new() };
+        start(&module, Tables::default(), crate::Inputs::default()).unwrap();
+        // Blocks of four words fill the limit exactly, and all of it gets used.
+        free_many(400_000, 4);
+        with(|state| assert_eq!(state.heap.spare_words, super::super::SPARE_TOTAL_WORDS));
+        for words in [4, 5, 16, 100] {
+            free_many(400_000, words);
+            with(|state| {
+                let kept: usize =
+                    state.heap.spare.iter().enumerate().map(|(size, blocks)| size * blocks.len()).sum();
+                assert_eq!(kept, state.heap.spare_words);
+                assert!(kept <= super::super::SPARE_TOTAL_WORDS, "{kept} words kept");
+                assert!(kept > 0, "nothing's kept for reuse");
+            });
+        }
+        // A block taken back out counts as gone, so the limit is what's kept now, not ever.
+        with(|state| {
+            let before = state.heap.spare_words;
+            let block = state.heap.fresh(4);
+            assert_eq!(block.len(), 4);
+            assert_eq!(state.heap.spare_words, before - 4);
+        });
+        finish();
     }
 }

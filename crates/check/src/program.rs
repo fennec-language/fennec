@@ -421,8 +421,9 @@ pub(crate) fn unknown_type(name: &str, span: Span) -> Diagnostic {
         "boolean" | "Bool" => diagnostic.with_help("write `bool`"),
         "List" | "Dict" | "Set" => diagnostic.with_help(format!("write `{}`", name.to_lowercase())),
         "Optional" => diagnostic.with_help("write `?` after the type, like `Enemy?`"),
-        "Self" => diagnostic
-            .with_help("`Self` means the type that fits an interface, so it goes in an interface's methods"),
+        "Self" => diagnostic.with_help(
+            "`Self` means the type a method belongs to, so it goes in a method of a type or an interface",
+        ),
         _ => diagnostic.with_help(format!("declare it, like `struct {name}:`, or check the spelling")),
     }
 }

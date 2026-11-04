@@ -41,11 +41,7 @@ impl Lowering<'_> {
     pub(super) fn list(&mut self, expr: &Expr, items: &[Expr]) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
         let Type::List(item) = &ty else { return Err("a list has another type".to_owned()) };
-        let mut values = Vec::with_capacity(items.len());
-        for written in items {
-            let value = self.expr(written)?;
-            values.push(self.coerce(value, item, written.span)?);
-        }
+        let values = self.items_as(items, item, expr.span)?;
         let dest = self.temporary(ty);
         self.emit(InstKind::MakeList { dest, items: values }, expr.span);
         Ok(Operand::Local(dest))
@@ -86,8 +82,14 @@ impl Lowering<'_> {
             _ => return Err("it uses indexing on something the IR doesn't index".to_owned()),
         };
         let object = self.expr(object)?;
-        let lowered = self.expr(index)?;
-        let index = self.coerce(lowered, &key, index.span)?;
+        let (object, index) = self.both(
+            object,
+            |lowering| {
+                let lowered = lowering.expr(index)?;
+                lowering.coerce(lowered, &key, index.span)
+            },
+            expr.span,
+        )?;
         Ok(Operand::Local(self.read_item(held.as_ref().unwrap_or(&ty), object, index, &ty, expr.span)))
     }
 
@@ -105,7 +107,7 @@ impl Lowering<'_> {
         let given = [Some(held.clone()), self.type_at(item.span)];
         let Some((function, signature)) = self.resolve(&key, &given, None) else { return Ok(None) };
         let item = self.expr(item)?;
-        let items = self.expr(items)?;
+        let (item, items) = self.both(item, |lowering| lowering.expr(items), span)?;
         let own = self.context.functions.contains(self.context.base_key(&key).as_str());
         let item = match signature.params.get(1) {
             Some(param) if own => self.coerce(item, &param.ty, span)?,
@@ -155,7 +157,7 @@ impl Lowering<'_> {
             return Err(super::operators::OWN_EQUALITY.to_owned());
         }
         let item = self.expr(item)?;
-        let items = self.expr(items)?;
+        let (item, items) = self.both(item, |lowering| lowering.expr(items), span)?;
         let dest = self.temporary(Type::Bool);
         let name = format!("{owner}.contains");
         let args = vec![items.clone(), item.clone()];
@@ -218,12 +220,20 @@ impl Lowering<'_> {
     }
 
     pub(super) fn format(&mut self, parts: &[FStrPart], span: Span) -> Lowered<Operand> {
+        let mut reads = super::order::Reads::default();
+        for part in parts {
+            if let FStrPart::Expr { expr, spec } = part {
+                let value = if spec.is_none() { self.shown(expr)? } else { self.expr(expr)? };
+                reads.add(self, value);
+            }
+        }
+        let mut values = reads.finish(self, span).into_iter();
         let mut lowered = Vec::with_capacity(parts.len());
         for part in parts {
             lowered.push(match part {
                 FStrPart::Text(text) => FormatPart::Text(text.clone()),
-                FStrPart::Expr { expr, spec } => {
-                    let value = if spec.is_none() { self.shown(expr)? } else { self.expr(expr)? };
+                FStrPart::Expr { spec, .. } => {
+                    let value = values.next().ok_or("a part of a string went missing")?;
                     FormatPart::Value { value, spec: spec.clone() }
                 }
             });

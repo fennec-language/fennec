@@ -20,9 +20,6 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 /// jobs set it, LLVM is the backend that has to work, so what's missing fails the test rather
 /// than skipping it.
 fn ready() -> bool {
-    if std::env::var_os("FENNEC_UNDER_MUTANTS").is_some() {
-        return false;
-    }
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
     if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
@@ -335,6 +332,152 @@ fn reading_a_string_that_isnt_ascii_in_order_takes_a_step_for_each_character() -
         "character_steps",
         "def main(stdout: Stdout):\n    text = \"é\" + \"a\" * 3000\n    mut found = 0\n    for at in range(text.len()):\n        if text[at] == \"a\":\n            found += 1\n    mut pieces = 0\n    for at in range(text.len() - 3):\n        pieces += text[at:at + 3].len()\n    stdout.print(found, pieces)\n",
     )
+}
+
+/// A program changing `for mut` items in every way a body can, and leaving in every way.
+const FOR_MUT_ITEMS: &str = r#"error Bad:
+    why: str
+
+struct Unit:
+    tags: list[int]
+    name: str
+    hp: int
+
+struct World:
+    units: list[Unit]
+    log: list[int]
+    turn: int
+
+enum Token:
+    Blank
+    Word(text: str)
+    Many(items: list[int])
+
+def total(units: list[Unit]) -> int:
+    sum(unit.hp for unit in units)
+
+def by_fail(mut units: list[Unit]) -> int:
+    for mut unit in units:
+        unit.tags.append(9)
+        unit.hp += 1
+        if unit.hp == 2:
+            fail Bad("stop")
+    0
+
+def by_return(mut units: list[Unit]) -> int:
+    for mut unit in units:
+        unit.tags.append(8)
+        if unit.hp == 1:
+            return unit.tags.len()
+    -1
+
+def grow(mut units: list[Unit], by: int):
+    for mut unit in units:
+        unit.tags.append(by)
+        unit.name += "!"
+
+def step(mut world: World):
+    for mut unit in world.units:
+        world.log.append(unit.hp)
+        unit.tags.append(world.turn)
+    world.turn += 1
+
+def make() -> list[Unit]:
+    [Unit([1], "first name long enough not to be inline", 0), Unit([2], "b", 1), Unit([3], "c", 5)]
+
+def main(stdout: Stdout):
+    # Copies taken before the loop keep what they had.
+    mut units = make()
+    shared = units
+    kept = copy(units)
+    item = units[0]
+    tags = units[0].tags
+    for mut unit in units:
+        unit.tags.append(unit.hp)
+    stdout.print(units, shared, kept, item, tags)
+    # Ways out.
+    mut a = make()
+    stdout.print(by_fail(mut a) else -1, a)
+    mut b = make()
+    stdout.print(by_return(mut b), b)
+    mut c = make()
+    for mut unit in c:
+        if unit.hp == 0:
+            continue
+        unit.tags.append(4)
+        if unit.hp == 1:
+            break
+        unit.hp = 100
+    stdout.print(c)
+    # The list read in the body sees what was written back so far.
+    mut d = make()
+    for mut unit in d:
+        unit.tags.append(d[0].tags.len())
+        unit.hp += d.len() + total(d)
+    stdout.print(d)
+    # A copy of the item, or of what it holds, made inside.
+    mut e = make()
+    mut seen: list[Unit] = []
+    mut held: list[list[int]] = []
+    for mut unit in e:
+        seen.append(unit)
+        held.append(unit.tags)
+        unit.hp += 1
+    stdout.print(e, seen, held)
+    # Replaced whole, and given away.
+    mut f = make()
+    for mut unit in f:
+        unit = Unit([7], "whole new value long enough not to be inline", unit.hp)
+    stdout.print(f)
+    # Through a function, and a field.
+    mut g = make()
+    grow(mut g, 6)
+    grow(mut g, 7)
+    stdout.print(g)
+    mut w = World(make(), [], 3)
+    step(mut w)
+    other = w
+    step(mut w)
+    stdout.print(w, other)
+    # Nested.
+    mut grid = [[1, 2], [3], []]
+    for mut row in grid:
+        row.append(row.len())
+        for mut cell in row:
+            cell *= 2
+    stdout.print(grid)
+    # Strings and enums as items.
+    mut words = ["a", "a string long enough not to be held inline"]
+    for mut word in words:
+        word += "!"
+    stdout.print(words)
+    mut lists = [[1], [2, 3]]
+    before = lists[1]
+    for mut one in lists:
+        one.append(9)
+    stdout.print(lists, before)
+    # Emptied in the body, then grown.
+    mut h = make()
+    for mut unit in h:
+        unit.tags = []
+        unit.tags.append(1)
+    stdout.print(h)
+"#;
+
+/// A `for mut` item is taken out for the whole of the body, so what it holds changes in place.
+/// What's shared, and a body that reads the list, see what they should.
+#[test]
+fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit("for_mut_items", FOR_MUT_ITEMS)?;
+    let counts = counts_of(
+        "for_mut_counts",
+        "struct Unit:\n    tags: list[int]\n    hp: int\n\ndef main(stdout: Stdout):\n    mut units = [Unit([1, 2, 3], 0), Unit([1, 2, 3], 1)]\n    for round in range(1000):\n        for mut unit in units:\n            unit.tags.append(round)\n            if round % 2 == 0:\n                unit.hp += 1\n    stdout.print(units[0].tags.len())\n",
+    )?;
+    assert!(counts.starts_with("copies 0 "), "{counts}");
+    Ok(())
 }
 
 #[test]
@@ -2244,6 +2387,112 @@ def main(stdout: Stdout):
         )?;
     }
     Ok(())
+}
+
+/// What a program prints through LLVM is what the interpreter prints.
+fn same_as_the_interpreter(name: &str, source: &str) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours, interpreted);
+    Ok(())
+}
+
+/// Evaluation runs left to right: an operand keeps the value it had when it was read, even if one
+/// after it changes what it names. The JIT doesn't on a plain call, so this is held to what the
+/// interpreter prints.
+#[test]
+fn an_earlier_operand_keeps_its_value_when_a_later_one_changes_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "left_to_right",
+        r#"struct Box:
+    items: list[int]
+    count: int
+
+    def grow(mut self) -> int:
+        self.items.append(9)
+        self.count = self.count + 1
+        self.count
+
+struct Pair:
+    first: list[int]
+    second: int
+
+def show(a: list[int], b: int) -> str:
+    f"{a} {b}"
+
+def take(mut a: list[int]) -> int:
+    a.pop()
+
+def pair(a: int, b: int) -> str:
+    f"{a} {b}"
+
+def bump(mut a: int) -> int:
+    a = a + 1
+    a
+
+def through(called: (list[int], int) -> str, mut items: list[int]) -> str:
+    called(items, items.pop())
+
+def main(stdout: Stdout):
+    mut xs = [1, 2, 3]
+    stdout.print(xs, xs.pop())
+    stdout.print(xs)
+    mut ys = [1, 2, 3]
+    stdout.print(show(ys, ys.pop()), ys)
+    mut zs = [1, 2, 3]
+    stdout.print(show(zs, take(mut zs)), zs)
+    mut d = {1: 2, 3: 4}
+    stdout.print(d, d.pop(1), d)
+    mut e = {1: 2, 3: 4}
+    stdout.print(e.len(), e.pop(1), e.len())
+    mut n = 1
+    stdout.print(pair(n, bump(mut n)), n)
+    stdout.print(n, bump(mut n), n)
+    mut b = Box(items=[1], count=0)
+    stdout.print(b.count, b.grow(), b.count)
+    stdout.print(b.items, b.grow(), b.items)
+    stdout.print(b, b.grow(), b)
+    mut q = [1]
+    stdout.print([q, [q.pop()]], q)
+    mut r = [1, 2]
+    stdout.print((r, r.pop()), r)
+    mut s = [1, 2]
+    stdout.print(f"{s} {s.pop()} {s}")
+    mut u = [1, 2]
+    stdout.print(show(u, show(u, u.pop()).len()), u)
+    mut v = [1, 2]
+    stdout.print(v[0], v.pop(0), v[0])
+    mut w = [1, 2, 3]
+    stdout.print(w[w.pop() - 3], w)
+    mut x = [1, 2, 3]
+    stdout.print(x[:x.pop()], x)
+    mut f = 2
+    stdout.print(f + bump(mut f), f)
+    mut i = [1]
+    stdout.print(Pair(first=i, second=i.pop()), i)
+    mut j = [1]
+    stdout.print(Pair(second=j.pop(), first=j), j)
+    mut m = [1, 2]
+    stdout.print([m.pop(), m.len(), m.pop(), m.len()], m)
+    mut o = [1, 2]
+    stdout.print(through((a, b) => show(a, b), mut o), o)
+    mut t = {1: 1, 2: 2}
+    stdout.print(t.get(t.pop(2) - 1), t.get(t.pop(1)), t)
+    mut aa = "a"
+    mut ab = [aa]
+    stdout.print(ab, ab.pop(), aa)
+"#,
+    )
 }
 
 /// `max` and `min` of lists and of values, with keys and a type's own `<`, as the first of equals

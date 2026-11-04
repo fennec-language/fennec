@@ -125,6 +125,7 @@ test "plain values write themselves":
     assert shown(1.5) == "1.5"
     assert shown(True) == "yes"
     assert shown("hi") == "'hi'"
+    assert shown(bytes([1, 2])) == "bytes"
 
 test "collections write their items":
     assert shown([1, 2]) == "( 1 2 )"
@@ -145,3 +146,4 @@ def main(stdout: Stdout):
     mut counted = Counted()
     squad.serialize(mut counted)
     stdout.print(counted.total)
+    stdout.print(shown(bytes([1, 2])))

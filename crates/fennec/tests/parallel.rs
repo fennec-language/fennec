@@ -438,39 +438,11 @@ fn matches_the_interpreter_on_workers(dir: &Path, name: &str, source: &str) -> s
 
 /// A body changing, through places, its own copy of what the caller holds: each block on the way
 /// is the caller's until it's copied, from the root down, and the caller's stays as it was.
-const CHANGED_PLACES: &str = "\
-struct Inner:
-    tags: list[int]
+const CHANGED_PLACES: &str = include_str!("fixtures/workers/places.fen");
 
-    def grow(mut self, value: int):
-        self.tags.append(value)
-
-struct Unit:
-    hp: int
-    tags: list[int]
-    inner: Inner
-
-    def grow(mut self, value: int):
-        self.tags.append(value)
-        self.hp += value
-
-def unit(hp: int) -> Unit:
-    Unit(hp, [hp], Inner([hp]))
-
-def changed(captured: list[Unit], at: int) -> int:
-    mut copy = captured
-    copy[at % 2].grow(at)
-    copy[at % 2].inner.grow(at)
-    copy[at % 2].tags.len() + copy[at % 2].inner.tags.len() + copy[at % 2].hp
-
-def main(stdout: Stdout):
-    captured = [unit(1), unit(2)]
-    xs = [n for n in range(2000)]
-    total = sum(changed(captured, x) for x in parallel(xs))
-    stdout.print(total)
-    for one in captured:
-        stdout.print(one.hp, one.tags, one.inner.tags)
-";
+/// The same with built-ins and waiting to take a place out: a lent item and a lent grid's, changed
+/// through methods, `append` reading the root, `extend`, `pop`, `insert`, and given what came from them.
+const LENT_PLACES: &str = include_str!("fixtures/workers/places_lent.fen");
 
 #[test]
 fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::Result<()> {
@@ -485,6 +457,7 @@ fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::
         ("prints", PRINTS),
         ("own_text", OWN_TEXT),
         ("places", CHANGED_PLACES),
+        ("places_lent", LENT_PLACES),
     ];
     for (name, source) in programs {
         matches_the_interpreter_on_workers(&dir, name, source)?;

@@ -4560,6 +4560,41 @@ def main(stdout: Stdout):
     )
 }
 
+/// A function whose only way to fail is one of these still says it can, so it builds.
+#[test]
+fn a_function_failing_only_in_max_min_or_remove_builds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter_in_both_builds(
+        "fails_only_in_max",
+        r#"def top(values: list[int]) -> int:
+    max(values)
+
+def smallest(values: list[int]) -> int:
+    min(values)
+
+def longest(words: list[str]) -> str:
+    max(words, key=word => word.len())
+
+def shortest(words: list[str]) -> str:
+    min(words, key=word => word.len())
+
+def gone(mut values: list[int]):
+    values.remove(9)
+
+def main(stdout: Stdout):
+    mut values = [1, 9, 2]
+    stdout.print(top(values), smallest(values))
+    stdout.print(longest(["a", "bcd"]), shortest(["a", "bcd"]))
+    gone(mut values)
+    stdout.print(values)
+    gone(mut values)
+    stdout.print("never")
+"#,
+    )
+}
+
 /// `max` of nothing, and removing what isn't there, fail as the JIT says.
 #[test]
 fn small_calls_fail_like_the_jit() -> std::io::Result<()> {

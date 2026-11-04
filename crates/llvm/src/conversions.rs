@@ -116,6 +116,10 @@ impl Emit<'_, '_, '_> {
                 self.let_go_of_generator(*generator);
                 Ok(())
             }
+            ("sorted", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| {
+                self.dict_list(dest, set, "keys")?;
+                self.sorted(dest, &Operand::Local(dest))
+            }),
             ("bytes", [], []) => dest.and_then(|dest| self.empty_bytes(dest)),
             ("bytes", [list], [Some(Kind::List(_))]) => {
                 dest.and_then(|dest| self.bytes_of_list(dest, list, span))

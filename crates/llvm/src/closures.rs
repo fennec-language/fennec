@@ -77,11 +77,6 @@ impl Emit<'_, '_, '_> {
     /// from the closure, and the rest are what it's called with.
     fn closure_code(&mut self, name: &str, captured: usize) -> Result<(String, String, Vec<Kind>), String> {
         let callee = self.module.function_named(name)?;
-        if !callee.mut_params.is_empty() {
-            return Err(format!(
-                "a closure of `{name}` takes a `mut` parameter, which this backend doesn't take yet"
-            ));
-        }
         self.module.declare_call(callee)?;
         let (code, let_go) = (format!("@\"c_{name}.{captured}\""), format!("@\"g_{name}.{captured}\""));
         let mut kinds = Vec::with_capacity(callee.params);
@@ -145,7 +140,9 @@ impl Emit<'_, '_, '_> {
             offset += kind.size(layouts);
         }
         for (at, kind) in rest.iter().enumerate() {
-            let text = if kind.in_memory() { "ptr".to_owned() } else { kind.slot(layouts) };
+            // A `mut` parameter is where the value is, whatever it is.
+            let changed = callee.mut_params.contains(&(captured + at));
+            let text = if kind.in_memory() || changed { "ptr".to_owned() } else { kind.slot(layouts) };
             params.push(format!("{text} %a{at}"));
             args.push(format!("{text} %a{at}"));
         }

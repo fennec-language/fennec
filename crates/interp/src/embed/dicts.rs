@@ -188,6 +188,38 @@ fn finish(hash: u64) -> u64 {
     (hash ^ (hash >> 29)) >> 1
 }
 
+/// Whether a plain key is hashed by what it holds rather than by its words.
+fn by_what_it_holds(element: &crate::packed::Element) -> bool {
+    use crate::packed::Element;
+    match element {
+        Element::Float => true,
+        Element::Struct { fields, .. } => fields.iter().any(|(_, field)| by_what_it_holds(field)),
+        Element::Enum { cases, .. } => {
+            cases.iter().any(|(_, fields)| fields.iter().any(|(_, field)| by_what_it_holds(field)))
+        }
+        other => super::heap::holds_blocks(other),
+    }
+}
+
+/// `dict[key]`'s entry for a plain key that's hashed by what it holds, or 0. The key's block stays
+/// the caller's.
+pub extern "C" fn find_by_value(dict: i64, key: i64) -> i64 {
+    with(|state| {
+        let Some(block) = u64::try_from(dict).ok().and_then(|at| state.heap.block(at)) else { return 0 };
+        let Some(layout) = layout(state, block) else { return 0 };
+        let word = [key.cast_unsigned()];
+        let hash = hash_key(state, layout.key, &word);
+        match find(state, block, layout, &word, hash) {
+            Probe::Found(entry) => {
+                let mask = block.get(4).and_then(|mask| usize::try_from(*mask).ok()).unwrap_or(0);
+                let at = DICT_HEADER_WORDS + mask + 1 + entry * layout.width;
+                block.get(at).map_or(0, |place| i64::try_from(std::ptr::from_ref(place).addr()).unwrap_or(0))
+            }
+            Probe::Empty(_) => 0,
+        }
+    })
+}
+
 /// A float key's bits as they compare and hash.
 fn float_key(bits: u64) -> u64 {
     crate::value::float_key(f64::from_bits(bits))
@@ -199,9 +231,12 @@ fn hash_key(state: &State, key_word: Word, key: &[u64]) -> u64 {
         return hash_int(float_key(first));
     }
     if let Word::Plain(_) = key_word {
-        return hash_words(
-            state.heap.block(first).and_then(|block| block.get(HEADER_WORDS..)).unwrap_or_default(),
-        );
+        let block = state.heap.block(first).unwrap_or_default();
+        // Blocks or floats in a key go by what they hold, not by their words.
+        if super::heap::element_of_block(state, block).is_some_and(|element| by_what_it_holds(&element)) {
+            return finish(crate::pairs::hash_of(&super::heap::read_block(state, first)));
+        }
+        return hash_words(block.get(HEADER_WORDS..).unwrap_or_default());
     }
     match key_word {
         Word::Str => hash_block_text(state, first),

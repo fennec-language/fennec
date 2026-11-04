@@ -214,6 +214,7 @@ export! {
     fennec_str_from_code(a0: i64) -> i64 => strings::from_code(a0);
     fennec_str_from_code_problem(a0: i64) -> i64 => strings::from_code_problem(a0);
     fennec_capability_items(a0: i64, a1: i64, a2: i64) -> i64 => capabilities::items(a0, a1, a2);
+    fennec_dict_find_by_value(a0: i64, a1: i64) -> i64 => dicts::find_by_value(a0, a1);
     fennec_optional_str_from_value(a0: i64, a1: i64, a2: i64) -> i64 => strings::optional_str_from_value(a0, a1, a2);
     fennec_std_method(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::std_method(a0, a1, a2, a3);
     fennec_capability_item(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::item(a0, a1, a2, a3);

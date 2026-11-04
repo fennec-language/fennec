@@ -3893,3 +3893,54 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// Keys that hold strings or floats go by what they hold, not by their words.
+#[test]
+fn keys_holding_strings_and_floats_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "keys_by_value",
+        r#"struct Named:
+    id: int
+    name: str
+
+enum Tag:
+    Plain
+    Label(text: str)
+
+def joined(a: str, b: str) -> str:
+    a + b
+
+def main(stdout: Stdout):
+    mut pairs = {(1, "one"): [1], (2, "a long string in its own block"): [2]}
+    long = joined("a long string ", "in its own block")
+    stdout.print(pairs[(1, "one")], pairs[(2, long)], (2, long) in pairs, (3, long) in pairs)
+    pairs[(2, long)] = [9]
+    pairs[(3, joined("th", "ree"))] = [3]
+    kept = pairs
+    pairs[(4, "four")] = []
+    stdout.print(pairs, pairs.len(), kept.len(), pairs.get((3, "three")), pairs.get((9, "no")))
+    stdout.print(pairs.pop((1, "one")), pairs.keys(), kept == pairs, kept == kept)
+    for key, value in pairs.items():
+        stdout.print(key, value)
+    mut people = {Named(id=1, name="ann"): 1}
+    people[Named(id=2, name=joined("b", "ob"))] = 2
+    stdout.print(people[Named(id=2, name="bob")], Named(id=1, name="ann") in people, people.len())
+    mut tags = {Tag.Plain, Tag.Label(text="x"), Tag.Label(text="x")}
+    tags.add(Tag.Label(text=joined("y", "z")))
+    tags.discard(Tag.Label(text="x"))
+    stdout.print(tags, tags.len(), Tag.Label(text="yz") in tags, Tag.Plain in tags)
+    zero = 0.0
+    mut floats = {(zero, 1): "a"}
+    floats[(-zero, 1)] = "b"
+    floats[(1.5, 2)] = "c"
+    stdout.print(floats, floats.len(), floats[(-zero, 1)])
+    mut grown: dict[(int, str), int] = {}
+    for at in range(200):
+        grown[(at % 20, f"key {at % 20}")] = at
+    stdout.print(grown.len(), grown[(7, "key 7")], grown[(19, "key 19")])
+"#,
+    )
+}

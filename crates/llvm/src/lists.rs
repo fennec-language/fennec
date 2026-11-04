@@ -890,7 +890,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether a value of this layout has a float anywhere in it, in place.
-    fn holds_a_float(&self, id: u32) -> bool {
+    pub(crate) fn holds_a_float(&self, id: u32) -> bool {
         let Some(layout) = self.module.layouts.get(id) else { return false };
         let fields = layout.fields.iter().chain(layout.cases.iter().flatten().flat_map(|case| &case.fields));
         fields.into_iter().any(|field| match Kind::from_ty(self.module.layouts, field.ty) {

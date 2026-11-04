@@ -480,6 +480,28 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `isdigit`, native on headers, says what std's says: inline and in a block, empty, digits
+/// outside ASCII, and a digit beside something that isn't.
+#[test]
+fn isdigit_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "isdigit",
+        r#"def main(stdout: Stdout):
+    long = "1234567890" * 5
+    for text in ["", "0", "9", "5", "/", ":", "a", "12", "1a", "a1", " 1", "1 ", "٣", "１", "1٣", "é", "🦊", long, long + "x", "x" + long, long[:23], long[:24]]:
+        stdout.print(text, text.isdigit())
+    mut found = 0
+    for at in range(long.len()):
+        if long[at].isdigit():
+            found += 1
+    stdout.print(found)
+"#,
+    )
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -2556,13 +2578,25 @@ fn a_failure_passed_up_fails_a_test_through_llvm() -> std::io::Result<()> {
     }
     let dir = folder("test_passed_up")?;
     let program = dir.join("up.fen");
-    std::fs::write(&program, "test \"gone\"(fs: Fs):\n    fs.read_text(\"gone\")?\n")?;
-    let path = program.to_string_lossy().into_owned();
-    let ran = fennec(&["test", "--all", &path], &dir)?;
-    let said = String::from_utf8_lossy(&ran.stderr);
-    assert!(!ran.status.success(), "{said}");
-    assert!(said.contains("the test failed with"), "{said}");
-    assert!(!said.contains("through LLVM"), "{said}");
+    for (name, body) in [
+        ("passed_up", "(fs: Fs):\n    fs.read_text(\"gone\")?\n"),
+        ("fails", ":\n    fail Oops(\"broken\")\n"),
+        ("fails_inside", ":\n    for _ in range(1):\n        if True:\n            fail Oops(\"broken\")\n"),
+        // The function it makes of this gives back a result it can't see from the statements.
+        (
+            "fails_in_a_match",
+            ":\n    match 1:\n        case 1:\n            fail Oops(\"broken\")\n        case _:\n            pass\n",
+        ),
+    ] {
+        let source = format!("error Oops:\n    reason: str\n\ntest \"{name}\"{body}");
+        std::fs::write(&program, source)?;
+        let path = program.to_string_lossy().into_owned();
+        let ran = fennec(&["test", "--all", &path], &dir)?;
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert!(!ran.status.success(), "{name}: {said}");
+        assert!(said.contains("the test failed with"), "{name}: {said}");
+        assert!(!said.contains("through LLVM"), "{name}: {said}");
+    }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

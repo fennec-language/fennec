@@ -187,6 +187,11 @@ pub fn tests_entry(
         let code = crate::emit::symbol(test);
         let function = program.functions.iter().find(|function| function.name == *test);
         let function = function.ok_or_else(|| format!("there's no test function `{test}`"))?;
+        // What it gave back would go through a pointer nothing here passes it, which can pass a
+        // test that failed.
+        if function.returns != fennec_check::Type::Unit {
+            return Err(format!("`{test}` gives back a value, which a test's function can't"));
+        }
         // A test that names capabilities gets fakes, in a world of its own.
         let takes = function.params;
         let _ = write!(cases, " i64 {number}, label %test{number}");

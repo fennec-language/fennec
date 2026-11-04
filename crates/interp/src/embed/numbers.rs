@@ -5,31 +5,31 @@
 use super::heap::{block_text, text_address};
 use super::{State, with};
 
-/// What reading a number gives: whether it was one, and an int, or a float's bits.
-#[repr(C)]
-#[derive(Default)]
-pub struct Parsed {
-    pub read: i64,
-    pub bits: i64,
-}
-
 fn text_of(state: &State, text: i64) -> String {
     state.heap.block(text.cast_unsigned()).map(block_text).unwrap_or_default()
 }
 
-/// `int(text)`, with what's around the number ignored, as the interpreter reads it.
-pub extern "C" fn parse_int(text: i64) -> Parsed {
+/// `int(text)`, with what's around the number ignored, as the interpreter reads it: whether it
+/// was one, with the number written to `bits`. A value of two words isn't given back whole, since
+/// platforms differ on how one comes back.
+pub extern "C" fn parse_int(text: i64, bits: &mut i64) -> i64 {
     with(|state| match text_of(state, text).trim().parse::<i64>() {
-        Ok(number) => Parsed { read: 1, bits: number },
-        Err(_) => Parsed { read: 0, bits: 0 },
+        Ok(number) => {
+            *bits = number;
+            1
+        }
+        Err(_) => 0,
     })
 }
 
-/// `float(text)`, as [`parse_int`] reads an int.
-pub extern "C" fn parse_float(text: i64) -> Parsed {
+/// `float(text)`, as [`parse_int`] reads an int, with the float's bits written to `bits`.
+pub extern "C" fn parse_float(text: i64, bits: &mut i64) -> i64 {
     with(|state| match text_of(state, text).trim().parse::<f64>() {
-        Ok(number) => Parsed { read: 1, bits: number.to_bits().cast_signed() },
-        Err(_) => Parsed { read: 0, bits: 0 },
+        Ok(number) => {
+            *bits = number.to_bits().cast_signed();
+            1
+        }
+        Err(_) => 0,
     })
 }
 

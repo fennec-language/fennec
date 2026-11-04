@@ -135,17 +135,17 @@ impl Emit<'_, '_, '_> {
             slot
         };
         let function = if name == "int" { "fennec_parse_int" } else { "fennec_parse_float" };
-        self.declare(&format!("declare {{ i64, i64 }} @{function}(ptr) nounwind"));
-        let (parsed, read, bits, is_number) = (self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{parsed} = call {{ i64, i64 }} @{function}(ptr {block})"));
-        self.line(&format!("{read} = extractvalue {{ i64, i64 }} {parsed}, 0"));
-        self.line(&format!("{bits} = extractvalue {{ i64, i64 }} {parsed}, 1"));
+        self.declare(&format!("declare i64 @{function}(ptr, ptr) nounwind"));
+        let bits_at = self.place_for(&Kind::Int);
+        let (read, bits, is_number) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{read} = call i64 @{function}(ptr {block}, ptr {bits_at})"));
         self.line(&format!("{is_number} = icmp ne i64 {read}, 0"));
         let (good, bad, joined) = (self.label("number"), self.label("not_number"), self.label("read"));
         self.line(&format!("br i1 {is_number}, label %{good}, label %{bad}"));
         self.start_block(&good);
         self.line(&format!("store i64 {ok_case}, ptr {base}"));
         let number_at = self.offset(&base, ok_offset);
+        self.line(&format!("{bits} = load i64, ptr {bits_at}"));
         self.line(&format!("store i64 {bits}, ptr {number_at}"));
         self.line(&format!("br label %{joined}"));
         self.start_block(&bad);

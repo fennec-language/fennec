@@ -565,12 +565,12 @@ def plain(n: int, mut held: list[str]) -> int:
     held.append(str(n))
     if n > 0:
         return plain(n - 1, mut held)
-    n
+    n ** 2
 
 def in_a_range(n: int) -> int:
     if n > 0:
         return in_a_range(n - 1)
-    n
+    n ** 2
 
 def main(stdout: Stdout):
     mut held = [\"a\"]
@@ -580,9 +580,13 @@ def main(stdout: Stdout):
         assert!(plain.contains("@fennec_stack_limit_main"), "{plain}");
         assert!(!plain.contains("@fennec_stack_limit,"), "{plain}");
         assert!(!plain.contains("call void @fen_retain"), "{plain}");
+        assert!(plain.contains("load ptr, ptr @fennec_failed_main"), "{plain}");
+        assert!(!plain.contains("load ptr, ptr @fennec_failed,"), "{plain}");
         let reached = text_of(source, "in_a_range")?;
         assert!(reached.contains("load i64, ptr @fennec_stack_limit,"), "{reached}");
         assert!(!reached.contains("@fennec_stack_limit_main"), "{reached}");
+        assert!(reached.contains("load ptr, ptr @fennec_failed,"), "{reached}");
+        assert!(!reached.contains("@fennec_failed_main"), "{reached}");
         Ok(())
     }
 

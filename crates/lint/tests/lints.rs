@@ -814,6 +814,12 @@ fn an_unused_index_needs_no_enumerate() {
 }
 
 #[test]
+fn a_loop_that_leaves_with_else_stays_a_loop() {
+    let source = "def f(texts: list[str]) -> list[int]:\n    mut found = []\n    for text in texts:\n        found.append(int(text) else continue)\n    found\n";
+    assert_eq!(rules(source), NONE);
+}
+
+#[test]
 fn a_loop_that_only_appends_is_a_comprehension() {
     let source = "def f(ps: list[P]) -> list[str]:\n    mut names = []\n    for p in ps:\n        if p.alive:\n            names.append(p.name)\n    names\n";
     assert_eq!(rules(source), ["manual-comprehension"]);

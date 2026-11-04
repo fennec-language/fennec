@@ -1,8 +1,8 @@
 //! Running a program's tests through LLVM. Each test becomes a function, and those LLVM can build
 //! go into one executable with what they reach, compiled a function at a time from the cache.
 //! Worker processes run it, each with its share of the tests, so a crash ends only the tests that
-//! worker hadn't run yet. Tests LLVM can't build yet and tests a crash left come back for the caller to run another way. So does a test that failed,
-//! since the other way says more about why, like what each side of an `assert` was. If it passes
+//! worker hadn't run yet. Tests LLVM can't build yet and tests a crash left come back for the
+//! caller to run another way. So does a test that failed, since the other way says more about why, like what each side of an `assert` was. If it passes
 //! there, the two disagree, which is reported as a failure rather than hidden.
 
 use std::collections::{HashMap, HashSet};

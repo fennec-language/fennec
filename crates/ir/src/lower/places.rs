@@ -441,7 +441,8 @@ impl Lowering<'_> {
             }
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
                 let ty = self.ty(cond)?;
-                let (left, right) = (self.expr(lhs)?, self.expr(rhs)?);
+                let left = self.expr(lhs)?;
+                let (left, right) = self.both(left, |lowering| lowering.expr(rhs), span)?;
                 let test = self.operate(*op, (left.clone(), right.clone()), &ty, span)?;
                 Ok((test, Some((left, right))))
             }

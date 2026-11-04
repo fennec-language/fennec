@@ -986,7 +986,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             }
         }
         (Element::Enum { name, cases, words: size }, Value::Instance(instance))
-            if *instance.type_name == *type_name(name) && !instance.is_error =>
+            if *instance.type_name == *type_name(name) =>
         {
             let case = instance.case.as_ref()?;
             let at = cases.iter().position(|(written, _)| written == case)?;

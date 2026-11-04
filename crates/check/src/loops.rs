@@ -270,7 +270,7 @@ impl Loops<'_> {
 }
 
 /// The blocks directly inside a statement, but not a nested function's.
-fn blocks(stmt: &Stmt) -> Vec<&[Stmt]> {
+pub(crate) fn blocks(stmt: &Stmt) -> Vec<&[Stmt]> {
     match &stmt.kind {
         StmtKind::If { branches, otherwise } => {
             branches.iter().map(|(_, block)| block.as_slice()).chain(otherwise.as_deref()).collect()
@@ -281,7 +281,7 @@ fn blocks(stmt: &Stmt) -> Vec<&[Stmt]> {
 }
 
 /// The expressions written directly in a statement.
-fn exprs(stmt: &Stmt) -> Vec<&Expr> {
+pub(crate) fn exprs(stmt: &Stmt) -> Vec<&Expr> {
     match &stmt.kind {
         StmtKind::Expr(value)
         | StmtKind::Fail(value)

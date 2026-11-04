@@ -895,6 +895,7 @@ def main(stdout: Stdout):
     stdout.print(boxes, other)
     # Outside the list's length, it fails as it should.
     units[9].tags.append(1)
+    stdout.print(units)
 ",
     )?;
     let counts = counts_of(
@@ -2111,7 +2112,7 @@ fn an_empty_buffer_fails_to_pop_like_the_jit() -> std::io::Result<()> {
     )?;
     same_message_as_the_jit(
         "buffer_insert",
-        "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.insert(0, \"fox\")\n    kept.insert(1, \"kit\")\n    stdout.print(kept[0], kept[1])\n    kept.insert(5, \"den\")\n",
+        "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.insert(0, \"fox\")\n    kept.insert(1, \"kit\")\n    stdout.print(kept[0], kept[1])\n    kept.insert(5, \"den\")\n    stdout.print(kept[0])\n",
     )
 }
 

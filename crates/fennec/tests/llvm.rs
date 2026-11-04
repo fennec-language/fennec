@@ -2562,6 +2562,70 @@ fn capabilities_without_the_interpreter_match_it() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A program built with no interpreter in its runtime prints what it should and has none of the
+/// interpreter in it, and one still needing the interpreter fails to link rather than to run.
+#[test]
+fn a_lean_runtime_leaves_the_interpreter_out() -> std::io::Result<()> {
+    if !ready() || !crate::executables::lean_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("lean-runtime")?;
+    let path = |file: &Path| file.display().to_string();
+    let lean = |source: &Path, output: &Path| {
+        crate::executables::fennec_command()
+            .args(["build", "--llvm", &path(source), "-o", &path(output)])
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_LEAN_RUNTIME", "1")
+            .output()
+    };
+    let plain = dir.join("plain.fen");
+    std::fs::write(
+        &plain,
+        "\
+struct Tag:
+    name: str
+
+    def str(self, mut out: StrWriter):
+        out.write(\"<\" + self.name + \">\")
+
+def main(stdout: Stdout, args: Args, process: Process):
+    stdout.print([Tag(name=\"a\")], {\"key\": 1}, args.len())
+    stdout.print(process.run(\"echo\", [\"hello\"]).expect(\"it runs\").stdout)
+",
+    )?;
+    let executable = dir.join("plain");
+    let built = lean(&plain, &executable)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "[<a>] {\"key\": 1} 0\nhello\n\n");
+    // A Windows executable has no symbols to look through. There, what follows is the check: what
+    // needs the interpreter doesn't link.
+    if !cfg!(windows) {
+        let symbols = Command::new("nm").arg(&executable).output()?;
+        assert!(symbols.status.success(), "{}", String::from_utf8_lossy(&symbols.stderr));
+        let symbols = String::from_utf8_lossy(&symbols.stdout);
+        assert!(symbols.contains("fennec_clock_now") || symbols.contains("fennec_print_block"), "{symbols}");
+        assert!(!symbols.contains("5Interp"), "the interpreter is still linked");
+    }
+
+    let needs = dir.join("needs.fen");
+    std::fs::write(
+        &needs,
+        "\
+from std import json
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps(1))
+",
+    )?;
+    let refused = lean(&needs, &dir.join("needs"))?;
+    assert!(!refused.status.success(), "it linked without the interpreter");
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("fennec_json"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A `Buffer` popped empty, or inserted into past its end, fails as the interpreter says, not
 /// as a list does.
 #[test]

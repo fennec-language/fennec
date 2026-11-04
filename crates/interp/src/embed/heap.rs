@@ -910,10 +910,14 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, words)));
             let value = instance(name, None, fields.collect());
             // An error's block is laid out like a struct's, so its type says which it is.
+            #[cfg(not(feature = "lean"))]
             let error = state
                 .interp
                 .type_info(type_name(name))
                 .is_some_and(|info| info.kind == crate::interp::TypeKind::Error);
+            // Nothing built without the interpreter looks at this on a value read back.
+            #[cfg(feature = "lean")]
+            let error = false;
             match value {
                 Value::Instance(mut made) if error => {
                     if let Some(made) = Rc::get_mut(&mut made) {

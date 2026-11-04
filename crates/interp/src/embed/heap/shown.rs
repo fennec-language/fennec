@@ -86,6 +86,10 @@ impl std::fmt::Write for Written {
 
 /// A value's text as printing shows it: a string as it is, and anything else as `quoted` writes
 /// it. Runs what native code has to write, so nothing of the runtime can be in use.
+#[cfg_attr(
+    feature = "lean",
+    expect(clippy::unnecessary_wraps, reason = "only the interpreter's text can fail")
+)]
 pub(in crate::embed) fn shown(address: u64) -> Result<String, Diagnostic> {
     let mut out = with(|state| {
         let mut out = Written::default();
@@ -95,6 +99,7 @@ pub(in crate::embed) fn shown(address: u64) -> Result<String, Diagnostic> {
         }
         out
     });
+    #[cfg(not(feature = "lean"))]
     if out.interpreted {
         return attempt_value(address);
     }
@@ -109,6 +114,7 @@ pub(in crate::embed) fn shown(address: u64) -> Result<String, Diagnostic> {
 }
 
 /// A value's text from the interpreter, which runs a type's `def str` itself.
+#[cfg(not(feature = "lean"))]
 fn attempt_value(address: u64) -> Result<String, Diagnostic> {
     let shown = STATE.with_borrow_mut(|state| {
         let state = state.as_mut()?;
@@ -127,8 +133,13 @@ fn own_value(
     out: &mut Written,
 ) -> bool {
     let Some(write) = own_writer(name) else {
-        out.interpreted |=
-            state.interp.type_info(type_name(name)).is_some_and(|info| info.methods.contains_key("str"));
+        #[cfg(not(feature = "lean"))]
+        {
+            out.interpreted |=
+                state.interp.type_info(type_name(name)).is_some_and(|info| info.methods.contains_key("str"));
+        }
+        #[cfg(feature = "lean")]
+        let _ = state;
         return false;
     };
     let mut mine = words.take(size);

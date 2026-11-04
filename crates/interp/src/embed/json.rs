@@ -141,7 +141,12 @@ mod tests {
         let generations = Element::List(Rc::new(Element::Int));
         let map = named(
             "IdMap[Unit]",
-            vec![("items", items), ("generations", generations), ("live", Element::Int)],
+            vec![
+                ("items", items),
+                ("generations", generations),
+                ("live", Element::Int),
+                ("free_from", Element::Int),
+            ],
         );
         let tables =
             Tables { shapes: vec![Rc::new(map), Rc::new(Element::Str)], str_shape: 1, ..Tables::default() };
@@ -161,7 +166,7 @@ mod tests {
             Slot { generation: 3, value: None },
             Slot { generation: 1, value: Some(unit("b", Value::Id(Id { slot: 0, generation: 0 }))) },
         ];
-        let original = Value::IdMap(Rc::new(IdMap { slots }));
+        let original = Value::IdMap(Rc::new(IdMap::new(slots)));
         let value = with(|state| Some(state.push(original.clone()))).unwrap();
         let block = heap::from_value(value, 0, 0, 0);
         assert_ne!(block, 0);

@@ -90,7 +90,7 @@ fn id_map(instance: &Instance) -> Option<IdMap> {
             Slot { generation: u32::try_from(*generation).ok()?, value: Some(item.clone()) }
         })
     });
-    Some(IdMap { slots: slots.collect::<Option<_>>()? })
+    Some(IdMap::new(slots.collect::<Option<_>>()?))
 }
 
 /// What `write_named` did.
@@ -186,5 +186,7 @@ fn write_id_map(
     let ints = Rc::new(Element::Int);
     words.push(u64::try_from(super::super::lists::list_of_items(state, &ints, &generations)).ok()?);
     words.push(u64::try_from(live).ok()?);
+    // Where to start looking for a free slot: from the first is always right.
+    words.push(0);
     Some(())
 }

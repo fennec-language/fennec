@@ -43,4 +43,4 @@ pub use constants::{Baked, bake_constants};
 pub use format::float as format_float;
 pub use inputs::Inputs;
 pub use interp::{Interp, run};
-pub use testing::TestOutcome;
+pub use testing::{PROPERTY_CASES, TestOutcome, property_seed};

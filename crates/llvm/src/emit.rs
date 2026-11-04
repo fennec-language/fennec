@@ -46,12 +46,14 @@ const METADATA: &str = "!0 = !{!\"branch_weights\", i32 1, i32 100000}\n\
 !2 = !{!\"fennec\"}\n\
 !3 = !{!\"header\", !2, i64 0}\n\
 !4 = !{!3, !3, i64 0}\n\
-!5 = !{!\"item\", !2, i64 0}\n\
+!5 = !{!\"item\", !11, i64 0}\n\
 !6 = !{!5, !5, i64 0}\n\
 !7 = !{i64 0, i64 281474976710657}\n\
 !8 = !{!\"branch_weights\", i32 100000, i32 1}\n\
-!9 = !{!\"field\", !2, i64 0}\n\
-!10 = !{!9, !9, i64 0}\n";
+!9 = !{!\"field\", !11, i64 0}\n\
+!10 = !{!9, !9, i64 0}\n\
+!11 = !{!\"values\", !2, i64 0}\n\
+!12 = !{!11, !11, i64 0}\n";
 
 /// Where a string block's bytes start.
 pub(crate) const TEXT_START: u32 = fennec_interp::embed::layout::TEXT.unsigned_abs();
@@ -62,6 +64,10 @@ pub(crate) const ITEM_ACCESS: &str = ", !tbaa !6";
 /// A boxed struct's or enum's fields never overlap a block's header or a list's items.
 pub(crate) const FIELD_ACCESS: &str = ", !tbaa !10";
 pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7";
+/// A struct's field wherever the struct is, which could be an item or a boxed field, but is
+/// never a block's header. So changing one, like a parser's place in its text, doesn't make a
+/// string's lengths read again.
+pub(crate) const VALUE_ACCESS: &str = ", !tbaa !12";
 
 /// Below this many instructions, a function that calls nothing is always inlined.
 const ALWAYS_INLINE: usize = 16;
@@ -568,6 +574,9 @@ impl Emit<'_, '_, '_> {
         if self.keeps_its_value() {
             self.give_back_what_it_kept();
         }
+        if function.name == "main" && self.module.threads {
+            self.work_out_constants()?;
+        }
         let kinds = self.kinds.clone();
         for (at, kind) in kinds.iter().enumerate() {
             let local = LocalId(at);
@@ -854,9 +863,15 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// Whether this function can run on one of `parallel`'s threads, so a block it's handed may
+    /// be another thread's.
+    pub(crate) fn on_workers(&self) -> bool {
+        self.module.threads && self.module.whole.on_workers.contains(self.function.name.as_str())
+    }
+
     /// One more owner for a block.
     pub(crate) fn retain(&mut self, block: &str) {
-        if self.module.threads {
+        if self.on_workers() {
             self.retain_helper();
             self.line(&format!("call void @fen_retain(ptr {block})"));
             return;
@@ -870,7 +885,7 @@ impl Emit<'_, '_, '_> {
     /// Whether a block has one owner, so changing it in place changes nobody else's. Every
     /// such question native code asks of a block comes here.
     pub(crate) fn alone(&mut self, block: &str) -> String {
-        if self.module.threads {
+        if self.on_workers() {
             self.alone_helper();
             let alone = self.temp();
             self.line(&format!("{alone} = call i1 @fen_alone(ptr {block})"));
@@ -885,7 +900,7 @@ impl Emit<'_, '_, '_> {
     /// Takes one owner off a block that has one, giving back whether that was the last. With
     /// [`Self::retain`] and [`Self::alone`], everything native code does to a block's count.
     pub(crate) fn owner_gone(&mut self, block: &str) -> String {
-        if self.module.threads {
+        if self.on_workers() {
             self.owner_gone_helper();
             let gone = self.temp();
             self.line(&format!("{gone} = call i1 @fen_owner_gone(ptr {block})"));
@@ -948,10 +963,15 @@ impl Emit<'_, '_, '_> {
     /// running and the frame stays put, so LLVM drops all but the first check on a path.
     pub(crate) fn check_stack(&mut self, span: Span) {
         self.declare("declare ptr @llvm.frameaddress.p0(i32)");
-        self.declare(crate::parallel::stack_limit_global(self.module.threads));
+        let (declared, symbol) = if self.module.threads && !self.on_workers() {
+            ("@fennec_stack_limit_main = external dso_local global i64", "@fennec_stack_limit_main")
+        } else {
+            (crate::parallel::stack_limit_global(self.module.threads), "@fennec_stack_limit")
+        };
+        self.declare(declared);
         let (here, limit, number, low) = (self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{here} = call ptr @llvm.frameaddress.p0(i32 0)"));
-        self.line(&format!("{limit} = load i64, ptr @fennec_stack_limit, !invariant.load !1"));
+        self.line(&format!("{limit} = load i64, ptr {symbol}, !invariant.load !1"));
         self.line(&format!("{number} = ptrtoint ptr {here} to i64"));
         self.line(&format!("{low} = icmp ult i64 {number}, {limit}"));
         self.fail_if(&low, TOO_DEEP, span);
@@ -1091,6 +1111,12 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether a local holds an inline struct or enum with blocks in it, and owns them.
+    /// Whether `dest = lhs + more` is a text growing, from a local that holds its only owner or
+    /// took it from a field.
+    fn grows_in_place(&self, op: BinOp, lhs: &Operand, dest: LocalId) -> bool {
+        op == BinOp::Add && *lhs == Operand::Local(dest) && (self.owns(dest) || self.known.is_taken(dest))
+    }
+
     pub(crate) fn owns_inline(&self, local: LocalId) -> bool {
         self.kinds.get(local.0).is_some_and(|kind| self.holds_inline(kind))
             && !self.is_mut_param(local)
@@ -1176,13 +1202,11 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = icmp {cc} i1 {a}, {b}"));
                 temp
             }
-            Kind::Str
-                if self.headers() && op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) =>
-            {
+            Kind::Str if self.headers() && self.grows_in_place(op, lhs, dest) => {
                 return self.header_append(dest, &a, &b);
             }
             Kind::Str if self.headers() => self.header_binary(op, (&a, &b))?,
-            Kind::Str if op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) => {
+            Kind::Str if self.grows_in_place(op, lhs, dest) => {
                 // `text += more` takes over the owner the local had, and grows in place if it can.
                 let joined = self.append_text(&a, &b);
                 let slot = self.slot(dest);
@@ -1315,6 +1339,36 @@ impl Emit<'_, '_, '_> {
         result
     }
 
+    /// Whether two floats are the same, or not, as floats have one equality everywhere: `0.0` is
+    /// the same as `-0.0`, and NaN as any other NaN. LLVM's own comparison does this with a literal
+    /// on one side, which is never NaN.
+    pub(crate) fn float_equal(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+        let plain = |value: &str| {
+            value
+                .strip_prefix("0x")
+                .and_then(|bits| u64::from_str_radix(bits, 16).ok())
+                .is_some_and(|bits| !f64::from_bits(bits).is_nan())
+        };
+        if plain(a) || plain(b) {
+            let (temp, cc) = (self.temp(), if op == BinOp::Eq { "oeq" } else { "une" });
+            self.line(&format!("{temp} = fcmp {cc} double {a}, {b}"));
+            return temp;
+        }
+        let (equal, a_nan, b_nan, both, same) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{equal} = fcmp oeq double {a}, {b}"));
+        self.line(&format!("{a_nan} = fcmp uno double {a}, {a}"));
+        self.line(&format!("{b_nan} = fcmp uno double {b}, {b}"));
+        self.line(&format!("{both} = and i1 {a_nan}, {b_nan}"));
+        self.line(&format!("{same} = or i1 {equal}, {both}"));
+        if op == BinOp::Eq {
+            return same;
+        }
+        let differ = self.temp();
+        self.line(&format!("{differ} = xor i1 {same}, true"));
+        differ
+    }
+
     fn float_binary(
         &mut self,
         op: BinOp,
@@ -1322,9 +1376,10 @@ impl Emit<'_, '_, '_> {
         rhs: &Operand,
         span: Span,
     ) -> Result<String, String> {
+        if matches!(op, BinOp::Eq | BinOp::NotEq) {
+            return Ok(self.float_equal(op, (a, b)));
+        }
         let compare = match op {
-            BinOp::Eq => Some("oeq"),
-            BinOp::NotEq => Some("une"),
             BinOp::Lt => Some("olt"),
             BinOp::LtEq => Some("ole"),
             BinOp::Gt => Some("ogt"),
@@ -1386,6 +1441,9 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
+            return self.header_isdigit(dest, text);
+        }
         let callee = *self
             .module
             .whole
@@ -1486,7 +1544,8 @@ impl Emit<'_, '_, '_> {
         }
         let first = args.first();
         match name {
-            "Stdout.print" => self.print(args.get(1..).unwrap_or_default()),
+            // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
+            "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
             "list.len" => {
                 // An `enumerate` never made is as long as its list.
                 let counted = match first {
@@ -1512,8 +1571,8 @@ impl Emit<'_, '_, '_> {
                 let from = args.first().ok_or("no argument")?;
                 self.copy(dest.ok_or("no result")?, from)
             }
-            "IdMap" | "IdMap.len" | "IdMap.get" | "IdMap.insert" | "IdMap.remove" | "IdMap.values"
-            | "IdMap.ids" | "IdMap.items" => self.id_map_builtin(dest, name, args, span),
+            "IdMap" | "IdMap.len" | "IdMap.contains" | "IdMap.get" | "IdMap.insert" | "IdMap.remove"
+            | "IdMap.values" | "IdMap.ids" | "IdMap.items" => self.id_map_builtin(dest, name, args, span),
             "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"
             | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
@@ -1870,14 +1929,27 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// Whether this function gives a constant's value, which is worked out once and then kept. On
-    /// a program's other threads a block's count can't be changed like this, so a program that
-    /// uses `parallel` still works it out at each read.
+    /// Whether this function gives a constant's value, which is worked out once and then kept. In
+    /// a program that uses `parallel`, one that can fail is worked out at each read instead, since
+    /// `main` works out the kept ones before any worker starts, whether or not they're ever read.
     fn keeps_its_value(&mut self) -> bool {
         let returns = self.returns.clone();
-        !self.module.threads
-            && self.module.whole.constants.contains(self.function.name.as_str())
+        let name = self.function.name.as_str();
+        self.module.whole.constants.contains(name)
+            && (!self.module.threads || !self.module.flagged(name))
             && self.text_of(&returns) != "void"
+    }
+
+    /// Starts `main` in a program that uses `parallel`: every constant that's kept gets kept here,
+    /// so a worker only ever reads it, and two can't race to be the first.
+    fn work_out_constants(&mut self) -> Result<(), String> {
+        let mut constants: Vec<&str> =
+            self.module.whole.constants.iter().copied().filter(|name| !self.module.flagged(name)).collect();
+        constants.sort_unstable();
+        for name in constants {
+            self.call(None, name, &[], Span::default())?;
+        }
+        Ok(())
     }
 
     /// Where a constant's value is kept, and whether it's there yet.
@@ -2081,16 +2153,28 @@ def main(stdout: Stdout):
     }
 
     #[test]
-    fn a_program_using_parallel_works_a_constant_out_at_each_read() -> Result<(), String> {
-        let source = "WORDS = [\"a\", \"b\"]\n\ndef main(stdout: Stdout):\n    mut counts = [1, 2]\n    \
-                      for mut count in parallel(counts):\n        count += WORDS.len()\n    stdout.print(counts)\n";
+    fn a_program_using_parallel_works_out_its_constants_before_any_worker_starts() -> Result<(), String> {
+        let source = "WORDS = [\"a\", \"b\"]\nFIRST = WORDS[5]\n\ndef main(stdout: Stdout):\n    mut counts = [1, 2]\n    \
+                      for mut count in parallel(counts):\n        count += WORDS.len() + FIRST.len()\n    \
+                      stdout.print(counts)\n";
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower_with(&module, &checked, fennec_ir::Options { outline_parallel: true });
         assert!(crate::parallel::uses_parallel(&program), "{:?}", program.not_lowered);
         let (units, _, _) = emit(&program)?;
-        let constant = units.iter().find(|unit| unit.function == "WORDS").ok_or("it isn't lowered")?;
-        assert!(!constant.text.contains(".kept"), "{}", constant.text);
+        let text =
+            |name: &str| units.iter().find(|unit| unit.function == name).map(|unit| unit.text.as_str());
+        let kept = text("WORDS").ok_or("`WORDS` isn't lowered")?;
+        assert!(kept.contains("@\"f_WORDS.kept\""), "{kept}");
+        // One that can fail would fail a program that never read it, so it's left until a read.
+        let failing = text("FIRST").ok_or("`FIRST` isn't lowered")?;
+        assert!(!failing.contains(".kept"), "{failing}");
+        let main = text("main").ok_or("`main` isn't lowered")?;
+        let worked_out =
+            main.find("call swiftcc ptr @\"f_WORDS\"").ok_or("`main` doesn't work out `WORDS`")?;
+        let workers = main.rfind("@fennec_parallel_for(").ok_or("`main` starts no workers")?;
+        assert!(worked_out < workers, "{main}");
+        assert!(!main.contains("@\"f_FIRST\""), "{main}");
         Ok(())
     }
 
@@ -2114,6 +2198,59 @@ def main(stdout: Stdout):
         }
         // A plain read of a field reads it.
         assert!(text_of(&source, "read")?.contains("getelementptr"));
+        Ok(())
+    }
+
+    /// `+=` grows the text where it is, in a local and in a field. A plain `+` makes a new one.
+    #[test]
+    fn a_text_grows_where_it_is_when_its_added_to() -> Result<(), String> {
+        let source = "\
+struct Note:
+    text = \"\"
+
+def in_field(mut note: Note, more: str):
+    note.text += more
+
+def in_local(more: str) -> str:
+    mut text = \"\"
+    text += more
+    text
+
+def anew(note: Note, more: str) -> str:
+    note.text + more
+
+def main(stdout: Stdout):
+    mut note = Note()
+    in_field(mut note, \"a\")
+    stdout.print(in_local(\"b\"), anew(note, \"c\"))
+";
+        for function in ["in_field", "in_local"] {
+            let text = text_of(source, function)?;
+            assert!(text.contains("@fennec_str_append("), "{function}: {text}");
+        }
+        let text = text_of(source, "anew")?;
+        assert!(!text.contains("@fennec_str_append("), "{text}");
+        Ok(())
+    }
+
+    /// A number's text goes straight into a header, with no block made and let go of.
+    #[test]
+    fn a_numbers_text_makes_no_block() -> Result<(), String> {
+        let source = "\
+def of_int(n: int) -> str:
+    str(n)
+
+def of_float(x: float) -> str:
+    str(x)
+
+def main(stdout: Stdout):
+    stdout.print(of_int(1), of_float(1.5))
+";
+        for (function, call) in [("of_int", "@fennec_int_header("), ("of_float", "@fennec_float_header(")] {
+            let text = text_of(source, function)?;
+            assert!(text.contains(call), "{function}: {text}");
+            assert!(!text.contains("_text("), "{function}: {text}");
+        }
         Ok(())
     }
 

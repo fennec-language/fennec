@@ -24,6 +24,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_dict_pop",
     "fennec_dict_pop_header",
     "fennec_stop",
+    "fennec_assert_sides",
     "fennec_list_sorted_with",
     "fennec_regex_split",
     "fennec_regex_find",
@@ -81,6 +82,8 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_str_index_text",
     "fennec_str_print",
     "fennec_str_slice",
+    "fennec_int_header",
+    "fennec_float_header",
     "fennec_str_split",
     "fennec_stream_next",
     "fennec_to_bool",
@@ -229,6 +232,7 @@ export! {
     fennec_parse_float(a0: i64, a1: &mut i64) -> i64 => numbers::parse_float(a0, a1);
     fennec_not_a_number(a0: i64, a1: i64) -> i64 => numbers::not_a_number(a0, a1);
     fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
+    fennec_str_repr(a0: i64) -> i64 => strings::str_repr(a0);
     fennec_float_text(a0: f64) -> i64 => strings::float_text(a0);
     #[cfg(not(feature = "lean"))]
     fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);
@@ -247,6 +251,7 @@ export! {
     fennec_dict_set_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64) -> i64 => dicts::set_header(a0, a1, a2, a3, a4);
     fennec_dict_pop_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64, a5: i64) -> i64 => dicts::pop_header(a0, a1, a2, a3, a4, a5);
     fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
+    fennec_assert_sides(a0: i64, a1: i64, a2: i64, a3: i64) => checks::assert_sides(a0, a1, a2, a3);
     fennec_list_sorted_with(a0: i64, a1: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_with(a0, a1);
     fennec_regex_problem(a0: i64) -> i64 => regex::problem(a0);
     fennec_regex_is_valid(a0: i64) -> i8 => regex::is_valid(a0);
@@ -318,6 +323,8 @@ export! {
     fennec_text_block(a0: u64, a1: u64, a2: u64) -> i64 => text::block(a0, a1, a2);
     fennec_text_contains(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::contains(a0, a1, a2, a3, a4, a5);
     fennec_text_of(a0: i64) -> text::Text => text::of(a0);
+    fennec_int_header(a0: i64) -> text::Text => text::int_header(a0);
+    fennec_float_header(a0: f64) -> text::Text => text::float_header(a0);
     fennec_str_char_at(a0: i64, a1: i64) -> i64 => strings::char_at(a0, a1);
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);
     fennec_dict_set(a0: i64, a1: i64, a2: i64) -> i64 => dicts::set(a0, a1, a2);
@@ -351,6 +358,7 @@ export! {
     fennec_aot_test_ran(a0: i64) => aot::test_ran(a0);
     #[cfg(not(feature = "lean"))]
     fennec_aot_test_done(a0: i64) => aot::test_done(a0);
+    fennec_aot_test_world(a0: i64) => aot::test_world(a0);
 }
 
 /// Runs a compiled executable's program: its `main` calls this.

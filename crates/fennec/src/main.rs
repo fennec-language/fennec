@@ -22,6 +22,7 @@ mod lsp;
 mod report;
 mod run;
 mod test;
+mod test_inputs;
 mod verdict;
 
 use std::process::ExitCode;

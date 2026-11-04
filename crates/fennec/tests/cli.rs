@@ -198,23 +198,22 @@ fn test_shrinks_and_replays_property_failures() {
         reported,
         [
             "it failed for n = 10; the left side is 10 and the right side is 10",
-            "it failed for x = 0.125; the left side is 0.125 and the right side is 0.0",
-            "it failed for x = 51.0; the left side is 51.0 and the right side is 2.0",
-            "it failed for word = \"znk\"; the left side is 3 and the right side is 3",
-            "it failed for items = [-656, -806]; the left side is 2 and the right side is 2",
-            "it failed for grid = [[\"ldu\", \"tdxoqz\", \"fwvlmdz\", \"guzmwk\"], [\"qpov\", \"\", \"upomgfx\", \
-             \"hrcdawk\", \"ka\", \"xer\", \"\"], []]; the left side is 3 and the right side is 3",
-            "it failed for deep = [[[[], [], [], [], []], [[], []], [[], [], [], [], [], []]], [[[], []], [[], [], [], \
-             [], [], [], []], [[], [], [], []], [[], [], [], [], [], []], [[], [], [], [], [], []], [], [[], [], [], \
-             [], [], [], []]]]; the left side is 2 and the right side is 2",
-            "it failed for deep = ((([], 777), -171), -278); the left side is 777 and the right side is 100",
-            "it failed for outer = Outer(inner=Inner(rows=[[], [], []])); the left side is 3 and the right side is 2",
-            "it failed for pair = (False, 993)",
-            "it failed for pair = (0, -106); the left side is 0 and the right side is None",
-            "it failed for box = Box(label=\"box\", size=436); the left side is 436 and the right side is 3",
-            "it failed for coin = Coin.Tails(times=533); the left side is Coin.Tails(times=533) and the right \
+            "it failed for x = 115.375; the left side is 115.375 and the right side is 115.0",
+            "it failed for x = 9.0; the left side is 9.0 and the right side is 2.0",
+            "it failed for word = \"aik\"; the left side is 3 and the right side is 3",
+            "it failed for items = [1, 320]; the left side is 2 and the right side is 2",
+            "it failed for grid = [[\"\", \"pff\", \"rm\", \"clih\", \"\", \"feoiln\"], [\"kuys\", \"eyl\"], [\"gssnvg\", \
+             \"zevmv\", \"enshyp\"]]; the left side is 3 and the right side is 3",
+            "it failed for deep = [[[[], [], []], [[], []], [[], [], []]], [[[], [], [], [], []], [[], [], []], [[], [], \
+             [], [], []]]]; the left side is 2 and the right side is 2",
+            "it failed for deep = ((([], 373), 1), -117); the left side is 373 and the right side is 100",
+            "it failed for outer = Outer(inner=Inner(rows=[[], []])); the left side is 2 and the right side is 2",
+            "it failed for pair = (False, 740)",
+            "it failed for pair = (-936, 676); the left side is -936 and the right side is None",
+            "it failed for box = Box(label=\"box\", size=725); the left side is 725 and the right side is 3",
+            "it failed for coin = Coin.Tails(times=1); the left side is Coin.Tails(times=1) and the right \
              side is Coin.Heads",
-            "it failed for n = 160",
+            "it failed for n = 942",
             "the test failed with Oops(reason=\"broken\")",
         ]
     );
@@ -962,6 +961,16 @@ fn kit_with_an_extension(name: &str, imports: &str) -> std::io::Result<PathBuf> 
         kit.join("src/parser/step.fen"),
         "from parser.core import Parser\n\nextend Parser:\n    def step(self) -> int:\n        self.at + 1\n",
     )?;
+    // Files it mustn't name: one extends `Parser` with something else, and one gives another type
+    // a `step`. They sort before the file it should name.
+    std::fs::write(
+        kit.join("src/parser/also.fen"),
+        "from parser.core import Parser\n\nextend Parser:\n    def other(self) -> int:\n        self.at\n",
+    )?;
+    std::fs::write(
+        kit.join("src/parser/rival.fen"),
+        "struct Rival:\n    at = 0\n\nextend Rival:\n    def step(self) -> int:\n        self.at\n",
+    )?;
     std::fs::write(
         kit.join("src/main.fen"),
         format!(
@@ -1024,6 +1033,24 @@ fn a_run_says_which_file_has_a_missing_methods_extension() {
     std::fs::remove_file(kit.join("src/main.fen")).unwrap();
     let checked = fennec(&["check", &kit.to_string_lossy()], "").unwrap();
     assert!(checked.status.success(), "{}", text(&checked.stderr));
+}
+
+#[test]
+fn the_interpreter_says_a_type_parameters_function_needs_native_code() {
+    let dir = scratch("type_param_interp").unwrap();
+    let program = dir.join("made.fen");
+    std::fs::write(
+        &program,
+        "interface Made:\n    def make() -> Self\n\nstruct Part:\n    x = 1\n\n    def make() -> Part:\n        Part(x=7)\n\n\
+         def build[T: Made]() -> T:\n    T.make()\n\ndef main(stdout: Stdout):\n    stdout.print(build[Part]().x)\n",
+    )
+    .unwrap();
+    let output = fennec(&["run", "--interp", &program.to_string_lossy()], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let shown = text(&output.stderr);
+    assert!(shown.contains("`T.make()` needs native code"), "{shown}");
+    assert!(shown.contains("run this without `--interp`"), "{shown}");
 }
 
 #[test]

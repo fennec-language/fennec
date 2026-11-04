@@ -1,0 +1,22 @@
+# A value that writes its own text, inside what a worker prints, and a value's text a worker makes.
+struct Tag:
+    name: str
+
+    def str(self, mut out: StrWriter):
+        out.write("<" + self.name + ">")
+
+struct Pair:
+    x = 0
+
+    def str(self, mut out: StrWriter):
+        out.write(f"{self.x}!")
+
+def shown(n: int) -> str:
+    f"{[Pair(x=n)]} {[Tag(name=str(n))]}"
+
+def main(stdout: Stdout):
+    made = sorted([shown(n) for n in parallel(range(32))])
+    stdout.print(made[0], made[31])
+    numbers = [n for n in range(16)]
+    for n in parallel(numbers):
+        stdout.print([Tag(name="line " + str(n))], [Pair(x=n)])

@@ -105,6 +105,7 @@ impl Emit<'_, '_, '_> {
                 self.set_of_list(dest, &list, &held)
             }),
             ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
+            ("assert.sides", [left, right], _) => self.assert_sides(left, right, span),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),

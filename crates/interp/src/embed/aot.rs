@@ -10,6 +10,7 @@ use fennec_syntax::Sources;
 
 use super::codec::Image;
 use super::{State, heap, with};
+use crate::fakes::{TestCapabilities, TestWorld};
 
 /// The stack an executable's program runs on. It's only reserved, not used, until calls
 /// nest deeply.
@@ -81,9 +82,20 @@ fn live_inputs() -> crate::Inputs {
     let mut arguments = std::env::args();
     crate::Inputs {
         live: true,
-        program: arguments.next().unwrap_or_default(),
+        program: program_name(arguments.next().unwrap_or_default()),
         arguments: arguments.collect(),
         stdin: Box::new(StdinLines::default()),
+    }
+}
+
+/// What `args.program` says. `fennec run` starts a program it built for the run, and where it can't
+/// set the name a process sees, it says it this way, for that one executable: what the program
+/// starts in turn gets the variable too, and goes by its own name.
+fn program_name(own: String) -> String {
+    let told = std::env::var("FENNEC_RUN_AS").ok();
+    match told.as_deref().and_then(|told| told.split_once('|')) {
+        Some((executable, program)) if executable == own => program.to_owned(),
+        _ => own,
     }
 }
 
@@ -137,9 +149,17 @@ pub fn test_ran(flag: i64) {
     RAN.with_borrow_mut(|ran| ran.push(flag));
 }
 
+/// Starts a test: one that takes capabilities gets fakes in a world of its own, with nothing left
+/// by the one before, as `run_case` gives the interpreter's.
+pub fn test_world(fakes: i64) {
+    with(|state: &mut State| {
+        state.interp.world = (fakes != 0).then(|| TestWorld::new(TestCapabilities::Fakes));
+    });
+}
+
 /// Says what the test just run did, on standard output as soon as it's done, in a line `fennec
-/// test` reads, so a crash loses only the tests not yet run. Tests here take nothing, so nothing
-/// else writes there.
+/// test` reads, so a crash loses only the tests not yet run. A test's `Stdout` is a fake, so
+/// nothing else writes there.
 #[cfg(not(feature = "lean"))]
 pub fn test_done(number: i64) {
     let ran: Vec<String> = RAN.take().iter().map(ToString::to_string).collect();

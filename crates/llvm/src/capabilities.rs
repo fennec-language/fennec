@@ -105,7 +105,9 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (receiver, rest) = args.split_first().ok_or("a method with nothing to call it on")?;
-        if self.native_capability(dest, name, rest)? {
+        // A test's capabilities are fakes, which the runtime holds: they stay on the way to those.
+        let test = self.module.shared.traced;
+        if !test && self.native_capability(dest, name, rest)? {
             return Ok(());
         }
         let method = name.rsplit('.').next().unwrap_or(name);
@@ -128,7 +130,7 @@ impl Emit<'_, '_, '_> {
         // needs it can't link without the interpreter.
         let interpreted =
             ["Net.", "Connection.", "Server.", "Stdout."].iter().any(|owner| name.starts_with(owner));
-        let runtime = if interpreted { "fennec_capability_call" } else { "fennec_native_capability" };
+        let runtime = if test || interpreted { "fennec_capability_call" } else { "fennec_native_capability" };
         self.declare(&format!("declare i64 @{runtime}(ptr, ptr, i64, i64, i64) nounwind"));
         let handle = self.temp();
         self.line(&format!(

@@ -3,7 +3,9 @@
 //! `+ -`; `* / // %`; unary `-` and `~`; `**`; then calls, attributes, indexing, `?` and `?.`.
 
 use super::Parser;
-use crate::ast::{Arg, BinOp, CompKind, Expr, ExprKind, FStrPart, UnaryOp};
+use crate::ast::{
+    Arg, BinOp, CompKind, Expr, ExprKind, FStrPart, MatchArm, Pattern, Stmt, StmtKind, UnaryOp,
+};
 use crate::diagnostic::Diagnostic;
 use crate::lexer::lex;
 use crate::span::Span;
@@ -34,7 +36,10 @@ impl Parser {
             return Ok(Expr { kind, span });
         }
         if self.eat_kw(Kw::Else) {
-            let default = self.expr()?;
+            let default = match self.peek() {
+                Tok::Kw(Kw::Continue | Kw::Return | Kw::Fail) => self.leaving()?,
+                _ => self.expr()?,
+            };
             let span = value.span.to(default.span);
             return Ok(Expr {
                 kind: ExprKind::Else { value: Box::new(value), default: Box::new(default) },
@@ -42,6 +47,29 @@ impl Parser {
             });
         }
         Ok(value)
+    }
+
+    /// `continue`, `return` or `fail` after `else`, as a `match` with one case that leaves, which
+    /// every engine and analysis already follows out of the expression.
+    fn leaving(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.span();
+        let word = self.peek().clone();
+        self.advance();
+        let kind = match word {
+            Tok::Kw(Kw::Continue) => StmtKind::Continue,
+            Tok::Kw(Kw::Fail) => StmtKind::Fail(self.expr()?),
+            _ if matches!(self.peek(), Tok::Newline | Tok::Eof | Tok::Dedent) => StmtKind::Return(None),
+            _ => StmtKind::Return(Some(self.expr()?)),
+        };
+        let span = start.to(self.prev_span());
+        let body = vec![Stmt { kind, span }];
+        let arm = MatchArm { pattern: Pattern::Wildcard, guard: None, body, span };
+        // Expressions are told apart by span, and nothing's written here, so it's empty.
+        let subject = Box::new(Expr {
+            kind: ExprKind::Bool(false),
+            span: Span { start: start.start, end: start.start },
+        });
+        Ok(Expr { kind: ExprKind::Match { subject, arms: vec![arm] }, span })
     }
 
     /// `x => body` or `(a, b) => body`.

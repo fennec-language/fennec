@@ -1625,7 +1625,9 @@ def main(stdout: Stdout):
     stdout.print(units[a].health, units.len(), units.get(b) is None)
     gone = units.remove(b)
     stdout.print(units.get(b) is None, units.len(), a == a, a == b)
+    stdout.print(a in units, b in units, a not in units, b not in units)
     c = units.insert(Unit(name="den", health=7))
+    stdout.print(b in units, c in units)
     ids: list[Id[Unit]] = units.ids()
     for id, unit in units.items():
         stdout.print(unit.name, unit.health)

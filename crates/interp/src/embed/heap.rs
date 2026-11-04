@@ -442,6 +442,11 @@ fn shape_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
     state.tables.shapes.get(shape).cloned()
 }
 
+/// What a block of a struct, enum or tuple is laid out as.
+pub(super) fn element_of_block(state: &State, block: &[u64]) -> Option<Rc<Element>> {
+    shape_of(state, block)
+}
+
 /// Whether a block is a string's.
 pub(super) fn is_text(state: &State, block: &[u64]) -> bool {
     shape_word(block) == Some(state.tables.str_shape)

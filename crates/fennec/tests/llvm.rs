@@ -4406,6 +4406,82 @@ fn tuple_slices_and_enumerated_text_match_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// Keys holding strings are hashed and compared by what they hold, since two equal strings can be
+/// two blocks.
+#[test]
+fn keys_holding_strings_are_native() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "keys_holding_strings",
+        r#"struct Person:
+    name: str
+    age: int
+
+def joined(a: str, b: str) -> str:
+    a + b
+
+def main(stdout: Stdout):
+    mut by_person: dict[Person, int] = {}
+    by_person[Person("a string long enough that it can't be held inline", 1)] = 1
+    same = Person(joined("a string long enough that it ", "can't be held inline"), 1)
+    stdout.print(by_person.len(), by_person[same], same in by_person)
+"#,
+    )
+}
+
+/// Keys that hold strings or floats go by what they hold, not by their words.
+#[test]
+fn keys_holding_strings_and_floats_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "keys_by_value",
+        r#"struct Named:
+    id: int
+    name: str
+
+enum Tag:
+    Plain
+    Label(text: str)
+
+def joined(a: str, b: str) -> str:
+    a + b
+
+def main(stdout: Stdout):
+    mut pairs = {(1, "one"): [1], (2, "a long string in its own block"): [2]}
+    long = joined("a long string ", "in its own block")
+    stdout.print(pairs[(1, "one")], pairs[(2, long)], (2, long) in pairs, (3, long) in pairs)
+    pairs[(2, long)] = [9]
+    pairs[(3, joined("th", "ree"))] = [3]
+    kept = pairs
+    pairs[(4, "four")] = []
+    stdout.print(pairs, pairs.len(), kept.len(), pairs.get((3, "three")), pairs.get((9, "no")))
+    stdout.print(pairs.pop((1, "one")), pairs.keys(), kept == pairs, kept == kept)
+    for key, value in pairs.items():
+        stdout.print(key, value)
+    mut people = {Named(id=1, name="ann"): 1}
+    people[Named(id=2, name=joined("b", "ob"))] = 2
+    stdout.print(people[Named(id=2, name="bob")], Named(id=1, name="ann") in people, people.len())
+    mut tags = {Tag.Plain, Tag.Label(text="x"), Tag.Label(text="x")}
+    tags.add(Tag.Label(text=joined("y", "z")))
+    tags.discard(Tag.Label(text="x"))
+    stdout.print(tags, tags.len(), Tag.Label(text="yz") in tags, Tag.Plain in tags)
+    zero = 0.0
+    mut floats = {(zero, 1): "a"}
+    floats[(-zero, 1)] = "b"
+    floats[(1.5, 2)] = "c"
+    stdout.print(floats, floats.len(), floats[(-zero, 1)])
+    mut grown: dict[(int, str), int] = {}
+    for at in range(200):
+        grown[(at % 20, f"key {at % 20}")] = at
+    stdout.print(grown.len(), grown[(7, "key 7")], grown[(19, "key 19")])
+"#,
+    )
+}
+
 #[test]
 fn slices_as_dict_keys_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -5420,38 +5496,6 @@ def main(stdout: Stdout):
     stdout.print(total)
 "#,
     )
-}
-
-/// Keys are hashed and compared by their words, so one holding a string can't be: two equal
-/// strings can be two blocks. Native code turns those dicts down, and the JIT takes them.
-#[test]
-fn keys_holding_strings_go_to_the_jit() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let source = r#"struct Person:
-    name: str
-    age: int
-
-def main(stdout: Stdout):
-    mut by_person: dict[Person, int] = {}
-    by_person[Person("a string long enough that it can't be held inline", 1)] = 1
-    stdout.print(by_person.len())
-"#;
-    let dir = folder("keys_holding_strings")?;
-    let program = dir.join("keys_holding_strings.fen");
-    std::fs::write(&program, source)?;
-    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("out"));
-    let built = fennec(&["build", "--llvm", &program, "-o", &output.to_string_lossy()], &dir)?;
-    assert!(!built.status.success());
-    assert!(String::from_utf8_lossy(&built.stderr).contains("Dict(Named(\"Person\"), Int)"));
-    let ran = fennec(&["run", &program], &dir)?;
-    assert!(ran.status.success());
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n");
-    let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-    assert!(said.starts_with("note: running this with the JIT, since LLVM can't build it: `main`"), "{said}");
-    std::fs::remove_dir_all(&dir)?;
-    Ok(())
 }
 
 /// A constant that isn't written out is worked out once. Reading it this often would take minutes

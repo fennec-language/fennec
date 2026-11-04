@@ -14,9 +14,6 @@ use crate::analysis::{Analysis, Whole, callees, visit, whole};
 use crate::kinds::{Kind, struct_definitions};
 use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
 
-/// Why a program with bytes written into it, as `embed("path")` gives, isn't taken yet.
-pub(crate) const BYTES: &str = "it uses a Bytes, which this backend doesn't take yet";
-
 /// The level of processor code is built for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Cpu {
@@ -800,7 +797,9 @@ impl Emit<'_, '_, '_> {
         let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
         self.retain_value(value, held);
         // A local holds an optional string as a header, all zero for `None`.
-        let missing = if *held == Kind::MaybeText {
+        let missing = if *held == Kind::Str {
+            "false".to_owned()
+        } else if *held == Kind::MaybeText {
             self.header_is_none(value)
         } else {
             let missing = self.temp();
@@ -831,8 +830,14 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn value_for(&mut self, operand: &Operand, kind: &Kind) -> Result<(String, bool), String> {
         if *operand != Operand::None {
             let (value, held) = self.operand(operand)?;
-            if matches!(held, Kind::Maybe(_) | Kind::MaybeText) && self.is_optional(kind) {
+            if matches!(held, Kind::Maybe(_) | Kind::MaybeText | Kind::Str) && self.is_optional(kind) {
                 return self.optional_as_enum(&value, &held, kind);
+            }
+            if held != *kind && self.is_error_set(kind) {
+                return self.as_error_set(&value, &held, kind);
+            }
+            if held != *kind && self.is_result(kind) && self.is_result(&held) {
+                return Ok((self.result_as(&value, &held, kind)?, true));
             }
             return Ok((value, false));
         }
@@ -1010,7 +1015,7 @@ impl Emit<'_, '_, '_> {
             Operand::Float(value) => (float_text(*value), Kind::Float),
             Operand::Bool(value) => (value.to_string(), Kind::Bool),
             Operand::Str(text) => (self.literal_value(text), Kind::Str),
-            Operand::Bytes(_) => return Err(BYTES.to_owned()),
+            Operand::Bytes(data) => (self.bytes_literal(&data.0), Kind::Bytes),
             Operand::None => ("null".to_owned(), Kind::Unit),
         })
     }
@@ -1169,6 +1174,10 @@ impl Emit<'_, '_, '_> {
                 let cc = match op {
                     BinOp::Eq => "eq",
                     BinOp::NotEq => "ne",
+                    BinOp::Lt => "ult",
+                    BinOp::LtEq => "ule",
+                    BinOp::Gt => "ugt",
+                    BinOp::GtEq => "uge",
                     other => return Err(format!("it uses {other:?} on bools")),
                 };
                 let temp = self.temp();
@@ -1194,7 +1203,17 @@ impl Emit<'_, '_, '_> {
                 _ => self.string_binary(op, (&a, &b))?,
             },
             Kind::Str => self.string_binary(op, (&a, &b))?,
-            Kind::Boxed(_) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_blocks(op, (&a, &b)),
+            Kind::Boxed(_) | Kind::Bytes | Kind::List(_) | Kind::Dict(..) | Kind::Maybe(_)
+                if matches!(op, BinOp::Eq | BinOp::NotEq) =>
+            {
+                self.same_blocks(op, (&a, &b))
+            }
+            Kind::Closure(..) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_code(op, (&a, &b)),
+            Kind::List(_) if op == BinOp::Add => self.joined_lists(&a, &b),
+            Kind::Bytes => self.bytes_binary(op, (&a, &b))?,
+            Kind::List(item) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
+                self.lists_in_order(op, item, (&a, &b), span)?
+            }
             Kind::Enum(id) if matches!(op, BinOp::Eq | BinOp::NotEq) => self.same_enums(op, id, (&a, &b))?,
             Kind::Struct(id) => self.compare_structs(op, id, (&a, &b))?,
             Kind::Boxed(id) if matches!(op, BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => {
@@ -1267,6 +1286,15 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = {word} i64 {a}, {b}"));
                 temp
             }
+            BinOp::ShiftLeft | BinOp::ShiftRight => {
+                let outside = self.temp();
+                self.line(&format!("{outside} = icmp uge i64 {b}, 64"));
+                self.fail_if(&outside, fennec_interp::embed::checks::BAD_SHIFT, span);
+                let word = if op == BinOp::ShiftLeft { "shl" } else { "ashr" };
+                let temp = self.temp();
+                self.line(&format!("{temp} = {word} i64 {a}, {b}"));
+                temp
+            }
             BinOp::Pow => {
                 self.declare("declare i64 @fennec_int_power(i64, i64, i64, i64) nounwind");
                 let (from, to) = (i64::from(span.start), i64::from(span.end));
@@ -1314,6 +1342,36 @@ impl Emit<'_, '_, '_> {
         result
     }
 
+    /// Whether two floats are the same, or not, as floats have one equality everywhere: `0.0` is
+    /// the same as `-0.0`, and NaN as any other NaN. LLVM's own comparison does this with a literal
+    /// on one side, which is never NaN.
+    pub(crate) fn float_equal(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+        let plain = |value: &str| {
+            value
+                .strip_prefix("0x")
+                .and_then(|bits| u64::from_str_radix(bits, 16).ok())
+                .is_some_and(|bits| !f64::from_bits(bits).is_nan())
+        };
+        if plain(a) || plain(b) {
+            let (temp, cc) = (self.temp(), if op == BinOp::Eq { "oeq" } else { "une" });
+            self.line(&format!("{temp} = fcmp {cc} double {a}, {b}"));
+            return temp;
+        }
+        let (equal, a_nan, b_nan, both, same) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{equal} = fcmp oeq double {a}, {b}"));
+        self.line(&format!("{a_nan} = fcmp uno double {a}, {a}"));
+        self.line(&format!("{b_nan} = fcmp uno double {b}, {b}"));
+        self.line(&format!("{both} = and i1 {a_nan}, {b_nan}"));
+        self.line(&format!("{same} = or i1 {equal}, {both}"));
+        if op == BinOp::Eq {
+            return same;
+        }
+        let differ = self.temp();
+        self.line(&format!("{differ} = xor i1 {same}, true"));
+        differ
+    }
+
     fn float_binary(
         &mut self,
         op: BinOp,
@@ -1321,9 +1379,10 @@ impl Emit<'_, '_, '_> {
         rhs: &Operand,
         span: Span,
     ) -> Result<String, String> {
+        if matches!(op, BinOp::Eq | BinOp::NotEq) {
+            return Ok(self.float_equal(op, (a, b)));
+        }
         let compare = match op {
-            BinOp::Eq => Some("oeq"),
-            BinOp::NotEq => Some("une"),
             BinOp::Lt => Some("olt"),
             BinOp::LtEq => Some("ole"),
             BinOp::Gt => Some("ogt"),
@@ -1385,6 +1444,9 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
+            return self.header_isdigit(dest, text);
+        }
         let callee = *self
             .module
             .whole
@@ -1399,6 +1461,7 @@ impl Emit<'_, '_, '_> {
         let returns = self.module.kind(&callee.returns)?;
         let mut shown = Vec::with_capacity(args.len() + 2);
         let mut lent = Vec::new();
+        let mut held_copies = Vec::new();
         let returned_at = if returns.in_memory() {
             let at = self.label("%ret");
             let text = self.text_of(&returns);
@@ -1422,6 +1485,21 @@ impl Emit<'_, '_, '_> {
             if fresh {
                 lent.push(value.clone());
             }
+            // Passed `mut` as well, it's changed during the call, and this one mustn't see that.
+            let changing = callee.mut_params.iter().any(|at| args.get(*at) == Some(arg));
+            let value = if changing && !fresh && kind.in_memory() {
+                let place = self.place_for(&kind);
+                self.store_field(&kind, &value, &place, "");
+                self.retain_inline(&kind, &place);
+                held_copies.push((place.clone(), kind.clone()));
+                place
+            } else {
+                if changing && !fresh && kind.counted() && !matches!(kind, Kind::Str | Kind::MaybeText) {
+                    self.retain_value(&value, &kind);
+                    lent.push(value.clone());
+                }
+                value
+            };
             if kind.in_memory() {
                 shown.push(format!("ptr {value}"));
             } else {
@@ -1457,6 +1535,9 @@ impl Emit<'_, '_, '_> {
         for block in lent {
             self.release(&block);
         }
+        for (place, kind) in held_copies {
+            self.release_inline(&kind, &place);
+        }
         match (dest, returned_at) {
             (Some(dest), Some(at)) => self.assign_memory_owned(dest, &at)?,
             (None, Some(at)) => self.release_inline(&returns, &at),
@@ -1477,10 +1558,10 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
-        if let Some(done) = self.loop_builtin(dest, name, args, span) {
+        if let Some(done) = self.conversion(dest, name, args, span) {
             return done;
         }
-        if let Some(done) = self.conversion(dest, name, args, span) {
+        if let Some(done) = self.loop_builtin(dest, name, args, span) {
             return done;
         }
         let first = args.first();
@@ -1501,7 +1582,9 @@ impl Emit<'_, '_, '_> {
             "list.append" => self.append(args),
             "result.expect" => self.expect(dest, args, span),
             "str.byte_len" | "str.char_at_byte" => self.text_by_bytes(dest, name, args),
-            "random.random_int" | "random.random_float" => self.random_builtin(dest, name, args, span),
+            "random.random_int" | "random.random_float" | "random_choice" | "random.random_choice" => {
+                self.random_builtin(dest, name, args, span)
+            }
             parallel if parallel.starts_with("parallel.") => self.parallel_builtin(dest, name, args, span),
             // A list of a list's items is the list, shared until one changes.
             "parallel" | "list"
@@ -1512,12 +1595,32 @@ impl Emit<'_, '_, '_> {
                 self.copy(dest.ok_or("no result")?, from)
             }
             "IdMap" | "IdMap.len" | "IdMap.get" | "IdMap.insert" | "IdMap.remove" | "IdMap.values"
-            | "IdMap.ids" | "IdMap.items" => self.id_map_builtin(dest, name, args, span),
+            | "IdMap.ids" | "IdMap.items" | "IdMap.remove_where" | "IdMap.clear" | "IdMap.modify" => {
+                self.id_map_builtin(dest, name, args, span)
+            }
             "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"
             | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
             }
-            "json.dumps" | "json.loads" => self.json_builtin(dest, name, args, span),
+            "json.dumps" | "json.loads" | "toml.dumps" | "toml.loads" => {
+                self.json_builtin(dest, name, args, span)
+            }
+            named
+                if ["json.dumps.", "json.loads.", "toml.dumps.", "toml.loads."]
+                    .iter()
+                    .any(|format| named.starts_with(format)) =>
+            {
+                self.std_call(dest, name, args, span)
+            }
+            crypto if crypto.starts_with("crypto.") => self.std_call(dest, name, args, span),
+            net if net.starts_with("Connection.") || net.starts_with("Server.") => {
+                self.std_method(dest, name, args, span)
+            }
+            "error.with_cause" => {
+                // Nothing reads what caused an error yet, so the wrapper is all there is.
+                let wrapper = first.ok_or("no argument")?;
+                self.copy(dest.ok_or("no result")?, wrapper)
+            }
             buffer if buffer.starts_with("Buffer.") => self.buffer_builtin(dest, name, args, span),
             "str.len" | "str" | "str.code" | "str.join" | "str.contains" | "str.upper" | "str.lower"
             | "str.replace" | "str.find" | "str.split" => self.text_builtin(dest, name, args, span),
@@ -1532,7 +1635,14 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest.ok_or("no result")?, &temp)
             }
             "math.sqrt" => {
-                let (value, _) = self.operand(first.ok_or("no argument")?)?;
+                let (value, kind) = self.operand(first.ok_or("no argument")?)?;
+                let value = if kind == Kind::Int {
+                    let wide = self.temp();
+                    self.line(&format!("{wide} = sitofp i64 {value} to double"));
+                    wide
+                } else {
+                    value
+                };
                 let negative = self.temp();
                 self.line(&format!("{negative} = fcmp olt double {value}, {}", float_text(0.0)));
                 self.fail_if(&negative, NEGATIVE_SQRT, span);
@@ -1579,13 +1689,24 @@ impl Emit<'_, '_, '_> {
         }
         // Between an optional and what it holds, the IR can write a plain copy.
         let wanted = self.kind_of(dest)?.clone();
+        if self.is_error_set(&wanted) || self.is_result(&wanted) {
+            let (_, held) = self.operand(value)?;
+            if held != wanted {
+                let (made, _) = self.value_for(value, &wanted)?;
+                return if wanted.in_memory() {
+                    self.assign_memory_owned(dest, &made)
+                } else {
+                    self.assign(dest, &made)
+                };
+            }
+        }
         let from = match value {
             Operand::Local(local) => self.kind_of(*local)?.clone(),
             Operand::Int(_) => Kind::Int,
             Operand::Float(_) => Kind::Float,
             Operand::Bool(_) => Kind::Bool,
             Operand::Str(_) => Kind::Str,
-            Operand::Bytes(_) => return Err(BYTES.to_owned()),
+            Operand::Bytes(_) => Kind::Bytes,
             Operand::None => wanted.clone(),
         };
         if from != wanted && self.headers() {
@@ -1676,6 +1797,11 @@ impl Emit<'_, '_, '_> {
                         self.line(&format!("{temp} = fneg double {value}"));
                         temp
                     }
+                    (UnaryOp::BitNot, Kind::Int) => {
+                        let temp = self.temp();
+                        self.line(&format!("{temp} = xor i64 {value}, -1"));
+                        temp
+                    }
                     (UnaryOp::Not, Kind::Bool) => {
                         let temp = self.temp();
                         self.line(&format!("{temp} = xor i1 {value}, true"));
@@ -1684,6 +1810,15 @@ impl Emit<'_, '_, '_> {
                     (_, other) => return Err(format!("it uses a unary operator on {other:?}")),
                 };
                 self.assign(*dest, &result)
+            }
+            // With one thread, nothing else can be holding a lock.
+            InstKind::Lock { .. }
+            | InstKind::Unlock { .. }
+            | InstKind::LockAll { .. }
+            | InstKind::UnlockAll { .. }
+                if !self.module.threads =>
+            {
+                Ok(())
             }
             InstKind::Binary { dest, op, lhs, rhs } => self.binary(*dest, *op, lhs, rhs, span),
             InstKind::Make { dest, fields, .. } => self.make(*dest, fields),
@@ -1695,6 +1830,8 @@ impl Emit<'_, '_, '_> {
             InstKind::CallClosure { dest, closure, args } => self.call_closure(*dest, closure, args, span),
             InstKind::Constant { dest, name } => self.call(Some(*dest), name, &[], span),
             InstKind::MakeCase { dest, case, fields, .. } => self.make_case(*dest, case, fields),
+            InstKind::IsError { dest, value, type_name } => self.is_error(*dest, value, type_name),
+            InstKind::AsError { dest, value } => self.as_error(*dest, value),
             InstKind::IsCase { dest, value, case } => self.is_case(*dest, value, case),
             InstKind::GetCaseField { dest, value, case, field } => {
                 self.get_case_field(*dest, value, case, field)

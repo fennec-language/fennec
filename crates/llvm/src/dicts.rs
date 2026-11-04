@@ -121,6 +121,14 @@ impl Emit<'_, '_, '_> {
 
     /// The address of a key's entry, or zero.
     fn find(&mut self, dict: &str, word: Word, key: &str) -> String {
+        if word == Word::Float {
+            return self.find_float_key(dict, key);
+        }
+        if let Word::Plain(id) = word
+            && self.key_by_value(id)
+        {
+            return self.find_by_value(dict, id, key);
+        }
         // A key held as a header is found by its bytes here, as a slice's are: its inline bytes
         // are zero after its length, as a block's text is, so they hash the same.
         if word == Word::Text {
@@ -179,6 +187,53 @@ impl Emit<'_, '_, '_> {
         entry
     }
 
+    /// Whether a plain key is hashed by what it holds, which the runtime does: strings and lists,
+    /// or floats, whose bits don't say what's equal.
+    fn key_by_value(&self, id: u32) -> bool {
+        self.module.layouts.holds_counted(id) || self.holds_a_float(id)
+    }
+
+    /// A plain key as a block of its own, with owners of what it holds.
+    fn owned_key_block(&mut self, id: u32, key: &str) -> String {
+        let block = self.key_block(id, key).unwrap_or_default();
+        let kind = Kind::from_ty(self.module.layouts, Ty::Struct(id)).unwrap_or(Kind::Struct(id));
+        let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+        self.retain_inline(&kind, &fields);
+        block
+    }
+
+    /// The entry of a plain key that's hashed by what it holds.
+    fn find_by_value(&mut self, dict: &str, id: u32, key: &str) -> String {
+        self.declare("declare ptr @fennec_dict_find_by_value(ptr, ptr) nounwind");
+        let block = self.owned_key_block(id, key);
+        let entry = self.temp();
+        self.line(&format!("{entry} = call ptr @fennec_dict_find_by_value(ptr {dict}, ptr {block})"));
+        self.release(&block);
+        entry
+    }
+
+    /// The entry of a float key, given as its bits. Floats have one equality, with `-0.0` the same
+    /// as `0.0` and every NaN the same, so they're hashed and compared as one form of each, while
+    /// the entry keeps the key as it was written.
+    fn find_float_key(&mut self, dict: &str, key: &str) -> String {
+        let nan = f64::NAN.to_bits().cast_signed();
+        self.module.add_helper(
+            "fen_float_key",
+            format!(
+                "define internal i64 @fen_float_key(i64 %bits) #0 {{\nentry:\n  %value = bitcast i64 %bits to double\n  %zero = fcmp oeq double %value, 0x0000000000000000\n  %nan = fcmp uno double %value, %value\n  %plain = select i1 %zero, i64 0, i64 %bits\n  %key = select i1 %nan, i64 {nan}, i64 %plain\n  ret i64 %key\n}}\n\n"
+            ),
+        );
+        let mut text = find_start("fen_find_float", "i64");
+        text += "  %other = load i64, ptr %other_at\n  %other_key = call i64 @fen_float_key(i64 %other)\n  %same = icmp eq i64 %other_key, %key\n  br i1 %same, label %found, label %next\n}\n\n";
+        self.module.add_helper("fen_find_float", text);
+        let wanted = self.temp();
+        self.line(&format!("{wanted} = call i64 @fen_float_key(i64 {key})"));
+        let hash = self.hash(Word::Int, &wanted);
+        let entry = self.temp();
+        self.line(&format!("{entry} = call ptr @fen_find_float(ptr {dict}, i64 {wanted}, i64 {hash})"));
+        entry
+    }
+
     /// The entry of the string key with these bytes in a dict whose keys are held as headers,
     /// or null: hashed as a block's text is, and compared by bytes, inline keys where they lie.
     fn find_text_key(&mut self, dict: &str, bytes: &str, length: &str) -> String {
@@ -209,8 +264,10 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{wide} = zext i1 {value} to i64"));
             return Ok(wide);
         }
-        if matches!(word, Word::Float) {
-            return Err("it uses a float as a key".to_owned());
+        if word == Word::Float {
+            let bits = self.temp();
+            self.line(&format!("{bits} = bitcast double {value} to i64"));
+            return Ok(bits);
         }
         Ok(value)
     }
@@ -229,11 +286,25 @@ impl Emit<'_, '_, '_> {
                 }
                 self.line(&format!("{word} = ptrtoint ptr {block} to i64"));
             }
-            Kind::Str | Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
+            Kind::Str | Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) | Kind::Bytes => {
                 if retain {
                     self.retain(value);
                 }
                 self.line(&format!("{word} = ptrtoint ptr {value} to i64"));
+            }
+            Kind::Maybe(_) => {
+                if retain {
+                    self.retain_value(value, kind);
+                }
+                self.line(&format!("{word} = ptrtoint ptr {value} to i64"));
+            }
+            // A plain struct or enum as a value: a block of its own, with owners of what it holds.
+            Kind::Struct(id) | Kind::Enum(id) => {
+                if let Ok(block) = self.key_block(*id, value) {
+                    let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+                    self.retain_inline(kind, &fields);
+                    self.line(&format!("{word} = ptrtoint ptr {block} to i64"));
+                }
             }
             Kind::Unit => return "0".to_owned(),
             _ => return value.to_owned(),
@@ -259,7 +330,11 @@ impl Emit<'_, '_, '_> {
     fn key_word(&mut self, word: Word, key: &str) -> Result<String, String> {
         Ok(match word {
             Word::Plain(id) => {
-                let block = self.key_block(id, key)?;
+                let block = if self.key_by_value(id) {
+                    self.owned_key_block(id, key)
+                } else {
+                    self.key_block(id, key)?
+                };
                 let held = self.temp();
                 self.line(&format!("{held} = ptrtoint ptr {block} to i64"));
                 held
@@ -392,11 +467,18 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        if value_kind.counted() {
+        if value_kind.in_memory() {
+            let word = self.dict_word(&value_kind, &held, true);
+            let (old, block) = (self.temp(), self.temp());
+            self.line(&format!("{old} = load ptr, ptr {value_at}"));
+            self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
+            self.line(&format!("store ptr {block}, ptr {value_at}"));
+            self.release(&old);
+        } else if value_kind.counted() {
             let held = if value_kind == Kind::TextBlock {
                 self.owned_text_block(&held)
             } else {
-                self.retain(&held);
+                self.retain_value(&held, &value_kind);
                 held.clone()
             };
             let old = self.temp();
@@ -469,7 +551,18 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
+        let value_at = self.value_place(&value_kind, &value_at);
         self.read_into(dest, &value_kind, &value_at, "")
+    }
+
+    /// Where a value is, from where a dict keeps it: a plain struct or enum is in a block.
+    fn value_place(&mut self, kind: &Kind, at: &str) -> String {
+        if !kind.in_memory() {
+            return at.to_owned();
+        }
+        let block = self.temp();
+        self.line(&format!("{block} = load ptr, ptr {at}"));
+        self.offset(&block, crate::lists::FIELDS_OFFSET)
     }
 
     /// Notes where a lookup found a key's entry, or null, for a store to the same key right
@@ -506,6 +599,8 @@ impl Emit<'_, '_, '_> {
                 "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
                 entry_value(key_word)
             ));
+            let value_at = self.value_place(&value_kind, &value_at);
+            let value_at = self.value_place(&value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
             self.line(&format!("br label %{done}"));
             self.start_block(&done);
@@ -536,13 +631,16 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        let value = self.load_field(&value_kind, &value_at, "");
+        let value = self.dict_part(&value_kind, &value_at);
         let (value_kind, value, owned) = self.as_header(&value_kind, &value);
         if value_kind.counted() && !owned {
             self.retain_value(&value, &value_kind);
         }
         let at = self.offset(&slot, offset);
         self.store_field(&value_kind, &value, &at, "");
+        if value_kind.in_memory() {
+            self.retain_inline(&value_kind, &at);
+        }
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
         Ok(())
@@ -702,6 +800,8 @@ impl Emit<'_, '_, '_> {
         self.start_block(&found);
         let optional = self.kind_of(dest)?.clone();
         if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
+            let value_at = self.value_place(&value_kind, &value_at);
+            let value_at = self.value_place(&value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
         } else {
             let (number, fields) = self.case_of(&optional, "Some")?;
@@ -717,6 +817,9 @@ impl Emit<'_, '_, '_> {
             }
             let at = self.offset(&slot, offset);
             self.store_field(&value_kind, &value, &at, "");
+            if value_kind.in_memory() {
+                self.retain_inline(&value_kind, &at);
+            }
         }
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
@@ -749,7 +852,14 @@ impl Emit<'_, '_, '_> {
         let (change, add, done) = (self.label("change"), self.label("add"), self.label("stored"));
         self.line(&format!("br i1 {quick}, label %{change}, label %{add}"));
         self.start_block(&change);
-        if value_kind.counted() {
+        if value_kind.in_memory() {
+            let word = self.dict_word(&value_kind, &held, true);
+            let (old, block) = (self.temp(), self.temp());
+            self.line(&format!("{old} = load ptr, ptr {value_at}"));
+            self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
+            self.line(&format!("store ptr {block}, ptr {value_at}"));
+            self.release(&old);
+        } else if value_kind.counted() {
             if !fresh {
                 self.retain_value(&held, &value_kind);
             }
@@ -781,6 +891,52 @@ impl Emit<'_, '_, '_> {
 
     /// `dict.pop(key)`: the runtime takes the key out, failing as the interpreter does if it
     /// isn't there, and hands back its value with its owner.
+    /// `dict.clear()` or `set.clear()`: the runtime takes over the owner and gives back an empty
+    /// one's.
+    pub(crate) fn dict_clear(&mut self, dict: LocalId) {
+        self.declare("declare ptr @fennec_set_clear(ptr) nounwind");
+        let place = self.slot(dict);
+        let (held, empty) = (self.temp(), self.temp());
+        self.line(&format!("{held} = load ptr, ptr {place}"));
+        self.line(&format!("{empty} = call ptr @fennec_set_clear(ptr {held})"));
+        self.line(&format!("store ptr {empty}, ptr {place}"));
+    }
+
+    /// `set.discard(key)`, or `set.remove(key)` when `must`, which fails on a key that isn't there.
+    pub(crate) fn set_remove(
+        &mut self,
+        set: LocalId,
+        key: &Operand,
+        must: bool,
+        span: Span,
+    ) -> Result<(), String> {
+        let Kind::Dict(key_word, _) = self.kind_of(set)?.clone() else {
+            return Err("a set's method on something else".to_owned());
+        };
+        let key = self.key_value(key, key_word)?;
+        let place = self.slot(set);
+        let (held, changed) = (self.temp(), self.temp());
+        let (from, to, must) = (i64::from(span.start), i64::from(span.end), i8::from(must));
+        self.line(&format!("{held} = load ptr, ptr {place}"));
+        if key_word == Word::Text {
+            // The key's owner stays here.
+            self.declare("declare ptr @fennec_set_remove_header(ptr, i64, i64, i64, i8, i64, i64) nounwind");
+            let [a, b, c] = [0, 1, 2].map(|at| self.header_word(&key, at));
+            self.line(&format!(
+                "{changed} = call ptr @fennec_set_remove_header(ptr {held}, i64 {a}, i64 {b}, i64 {c}, i8 {must}, i64 {from}, i64 {to})"
+            ));
+        } else {
+            let key_held = self.key_word(key_word, &key)?;
+            self.declare("declare ptr @fennec_set_remove(ptr, i64, i8, i64, i64) nounwind");
+            self.line(&format!(
+                "{changed} = call ptr @fennec_set_remove(ptr {held}, i64 {key_held}, i8 {must}, i64 {from}, i64 {to})"
+            ));
+        }
+        self.leave_if_failed();
+        self.line(&format!("store ptr {changed}, ptr {place}"));
+        Ok(())
+    }
+
     pub(crate) fn dict_pop(
         &mut self,
         dest: Option<LocalId>,
@@ -816,6 +972,16 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store ptr {changed}, ptr {place}"));
         self.leave_if_failed();
         self.line(&format!("{word} = call i64 @fennec_dict_popped()"));
+        if value_kind.in_memory() {
+            let block = self.temp();
+            self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
+            if let Some(dest) = dest {
+                let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+                self.read_into(dest, &value_kind, &fields, "")?;
+            }
+            self.release(&block);
+            return Ok(());
+        }
         // The value's word, read back as what it holds, already with its owner.
         let at = self.place_for(&Kind::Int);
         self.line(&format!("store i64 {word}, ptr {at}"));
@@ -895,6 +1061,7 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
+        let value_at = self.value_place(&value_kind, &value_at);
         self.read_into(dest, &value_kind, &value_at, "")?;
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
@@ -1024,5 +1191,6 @@ fn word_ty(word: Word) -> Ty {
         Word::Str | Word::Text => Ty::Str,
         Word::Nothing => Ty::Unit,
         Word::Plain(id) => Ty::Struct(id),
+        Word::Block(number) => Ty::Block(number),
     }
 }

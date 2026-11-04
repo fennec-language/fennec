@@ -50,20 +50,29 @@ pub enum Word {
     /// bytes in the header itself, or a block's address and length. Strings of 23 bytes or
     /// fewer are always inline, so a key's header is the same however it was made.
     Text,
+    /// As a value, the address of a block of anything held by one, like a list, by that kind's
+    /// number in `Tables::blocks`. Shapes of its own say which, so the runtime can make one.
+    Block(u32),
 }
 
 impl Word {
     /// Whether a word of this kind is the address of a block the dict owns.
     fn owned(self) -> bool {
-        matches!(self, Word::Str | Word::Plain(_))
+        matches!(self, Word::Str | Word::Plain(_) | Word::Block(_))
     }
 }
 
-const KEYS: [Word; 4] = [Word::Int, Word::Str, Word::Plain(0), Word::Text];
+const KEYS: [Word; 5] = [Word::Int, Word::Str, Word::Plain(0), Word::Text, Word::Float];
 
 /// Words an entry with a string header for its key takes: hash, the header's three, value.
 const HEADER_ENTRY_WORDS: usize = 5;
-const VALUES: [Word; 5] = [Word::Int, Word::Float, Word::Bool, Word::Str, Word::Nothing];
+const VALUES: [Word; 6] = [Word::Int, Word::Float, Word::Bool, Word::Str, Word::Nothing, Word::Plain(0)];
+
+/// The highest shape of a dict with `Word::Block` values, which count down from here, below the
+/// shapes that aren't numbered from the string shape.
+const TOP_BLOCK_DICT: u64 = super::heap::SHAPE_BITS - 16;
+/// How many kinds of block a dict's values can be.
+const BLOCK_KINDS: u64 = 1 << 20;
 
 /// How many shapes dicts take, after the string shape.
 pub const SHAPES: u64 = (KEYS.len() * VALUES.len()) as u64;
@@ -71,9 +80,13 @@ pub const SHAPES: u64 = (KEYS.len() * VALUES.len()) as u64;
 /// The shape of dicts with these keys and values, counted from the string shape, or `None`
 /// for a pair native dicts don't hold.
 pub fn shape(str_shape: u64, key: Word, value: Word) -> Option<u64> {
-    let key = if let Word::Plain(_) = key { Word::Plain(0) } else { key };
-    let key = KEYS.iter().position(|word| *word == key)?;
-    let value = VALUES.iter().position(|word| *word == value)?;
+    let plain = |word| if let Word::Plain(_) = word { Word::Plain(0) } else { word };
+    let key = KEYS.iter().position(|word| *word == plain(key))?;
+    if let Word::Block(number) = value {
+        let count = u64::try_from(KEYS.len()).ok()?;
+        return Some(TOP_BLOCK_DICT - u64::from(number) * count - u64::try_from(key).ok()?);
+    }
+    let value = VALUES.iter().position(|word| *word == plain(value))?;
     u64::try_from(key * VALUES.len() + value).ok().map(|at| str_shape + 1 + at)
 }
 
@@ -105,8 +118,15 @@ fn layout(state: &State, block: &[u64]) -> Option<Layout> {
 
 /// How a dict of this shape lays out its entries, when the shape is a dict's.
 fn shape_layout(state: &State, shape: u64) -> Option<Layout> {
-    let at = usize::try_from(shape.checked_sub(state.tables.str_shape + 1)?).ok()?;
-    let (key, value) = (*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?);
+    let count = u64::try_from(KEYS.len()).ok()?;
+    let (key, value) = if shape <= TOP_BLOCK_DICT && shape > TOP_BLOCK_DICT - BLOCK_KINDS * count {
+        let at = TOP_BLOCK_DICT - shape;
+        let key = *KEYS.get(usize::try_from(at % count).ok()?)?;
+        (key, Word::Block(u32::try_from(at / count).ok()?))
+    } else {
+        let at = usize::try_from(shape.checked_sub(state.tables.str_shape + 1)?).ok()?;
+        (*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?)
+    };
     let width = if key == Word::Text { HEADER_ENTRY_WORDS } else { ENTRY_WORDS };
     Some(Layout { key, value, width })
 }
@@ -170,12 +190,55 @@ fn finish(hash: u64) -> u64 {
     (hash ^ (hash >> 29)) >> 1
 }
 
+/// Whether a plain key is hashed by what it holds rather than by its words.
+fn by_what_it_holds(element: &crate::packed::Element) -> bool {
+    use crate::packed::Element;
+    match element {
+        Element::Float => true,
+        Element::Struct { fields, .. } => fields.iter().any(|(_, field)| by_what_it_holds(field)),
+        Element::Enum { cases, .. } => {
+            cases.iter().any(|(_, fields)| fields.iter().any(|(_, field)| by_what_it_holds(field)))
+        }
+        other => super::heap::holds_blocks(other),
+    }
+}
+
+/// `dict[key]`'s entry for a plain key that's hashed by what it holds, or 0. The key's block stays
+/// the caller's.
+pub extern "C" fn find_by_value(dict: i64, key: i64) -> i64 {
+    with(|state| {
+        let Some(block) = u64::try_from(dict).ok().and_then(|at| state.heap.block(at)) else { return 0 };
+        let Some(layout) = layout(state, block) else { return 0 };
+        let word = [key.cast_unsigned()];
+        let hash = hash_key(state, layout.key, &word);
+        match find(state, block, layout, &word, hash) {
+            Probe::Found(entry) => {
+                let mask = block.get(4).and_then(|mask| usize::try_from(*mask).ok()).unwrap_or(0);
+                let at = DICT_HEADER_WORDS + mask + 1 + entry * layout.width;
+                block.get(at).map_or(0, |place| i64::try_from(std::ptr::from_ref(place).addr()).unwrap_or(0))
+            }
+            Probe::Empty(_) => 0,
+        }
+    })
+}
+
+/// A float key's bits as they compare and hash.
+fn float_key(bits: u64) -> u64 {
+    crate::value::float_key(f64::from_bits(bits))
+}
+
 fn hash_key(state: &State, key_word: Word, key: &[u64]) -> u64 {
     let first = key.first().copied().unwrap_or(0);
+    if key_word == Word::Float {
+        return hash_int(float_key(first));
+    }
     if let Word::Plain(_) = key_word {
-        return hash_words(
-            state.heap.block(first).and_then(|block| block.get(HEADER_WORDS..)).unwrap_or_default(),
-        );
+        let block = state.heap.block(first).unwrap_or_default();
+        // Blocks or floats in a key go by what they hold, not by their words.
+        if super::heap::element_of_block(state, block).is_some_and(|element| by_what_it_holds(&element)) {
+            return finish(crate::pairs::hash_of(&super::heap::read_block(state, first)));
+        }
+        return hash_words(block.get(HEADER_WORDS..).unwrap_or_default());
     }
     match key_word {
         Word::Str => hash_block_text(state, first),
@@ -214,6 +277,7 @@ fn hash_header(state: &State, key: &[u64]) -> u64 {
 
 fn keys_equal(state: &State, key_word: Word, a: &[u64], b: &[u64]) -> bool {
     match (a, b) {
+        ([a], [b]) if key_word == Word::Float => float_key(*a) == float_key(*b),
         ([a], [b]) => a == b || (key_word.owned() && same(state, *a, *b)),
         // Equal strings have the same form, so inline headers are equal exactly when their
         // words are, and only two blocks need their bytes compared.
@@ -912,7 +976,7 @@ pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
     let mut found = Vec::new();
     for entry in entries(block, layout.width).chunks_exact(layout.width) {
         found.extend(key_block(layout.key, key_of(entry)));
-        found.extend((layout.value == Word::Str).then(|| value_of(entry)));
+        found.extend(layout.value.owned().then(|| value_of(entry)));
     }
     found
 }
@@ -991,7 +1055,7 @@ fn word_value(state: &State, word: Word, bits: u64) -> Value {
         Word::Int => Value::Int(i64::from_ne_bytes(bits.to_ne_bytes())),
         Word::Float => Value::Float(f64::from_bits(bits)),
         Word::Bool => Value::Bool(bits != 0),
-        Word::Str | Word::Plain(_) => super::heap::read_block(state, bits),
+        Word::Str | Word::Plain(_) | Word::Block(_) => super::heap::read_block(state, bits),
         Word::Nothing | Word::Text => Value::Unit,
     }
 }
@@ -1020,6 +1084,12 @@ pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64>
             (Word::Plain(_), Value::Instance(instance)) => {
                 let shape = super::heap::shape_named(state, &instance.type_name)?;
                 u64::try_from(super::heap::write_block(state, shape, value)?).ok()?
+            }
+            (Word::Block(number), value) => {
+                let element = state.tables.blocks.get(usize::try_from(number).ok()?).cloned()?;
+                let mut held = Vec::with_capacity(1);
+                super::heap::write(state, &element, value, &mut held)?;
+                *held.first()?
             }
             _ => return None,
         })
@@ -1067,11 +1137,11 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
                 Probe::Found(at) => value_place(right, layout, at)
                     .and_then(|place| right.get(place))
                     .is_some_and(|other| match layout.value {
-                        Word::Float => f64::from_bits(value).total_cmp(&f64::from_bits(*other)).is_eq(),
-                        Word::Str => same(state, value, *other),
-                        Word::Int | Word::Bool | Word::Nothing | Word::Plain(_) | Word::Text => {
-                            value == *other
+                        Word::Float => {
+                            crate::value::floats_same(f64::from_bits(value), f64::from_bits(*other))
                         }
+                        Word::Str | Word::Plain(_) | Word::Block(_) => same(state, value, *other),
+                        Word::Int | Word::Bool | Word::Nothing | Word::Text => value == *other,
                     }),
                 Probe::Empty(_) => false,
             }

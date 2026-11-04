@@ -40,6 +40,8 @@ pub(crate) struct Analysis {
     shared: HashSet<usize>,
     /// Lists changed here, by an index or an append.
     changed: HashSet<usize>,
+    /// Locals given to a call's `mut` parameter, which writes them with no write here to see.
+    given_mut: HashSet<usize>,
     /// Locals whose one read can run again without their one write running first: in a loop
     /// that the write is outside of.
     read_again: HashSet<usize>,
@@ -357,6 +359,7 @@ fn count_uses(
                     for at in changes(callee) {
                         if let Some(Operand::Local(list)) = args.get(at) {
                             grown.insert(list.0);
+                            known.given_mut.insert(list.0);
                         }
                     }
                     // Only what the callee might keep comes to have another owner.
@@ -396,6 +399,7 @@ fn analyze(
         writes: vec![0; count],
         shared: HashSet::new(),
         changed: HashSet::new(),
+        given_mut: HashSet::new(),
         read_again: HashSet::new(),
         borrowed: HashSet::new(),
         borrowed_from: HashMap::new(),
@@ -977,6 +981,10 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                 continue;
             }
             let Some((None, list, Some(index))) = defined(*item, at) else { continue };
+            // An `IdMap`'s item isn't in a place this can reach, so it's read and put back.
+            if !matches!(function.type_of(&Operand::Local(list)), Some(Type::List(_))) {
+                continue;
+            }
             // The list is a field of the root, or the root itself.
             let (root, list_path) = match defined(list, at) {
                 Some((Some(list_field), root, None)) => (root, vec![list_field]),
@@ -1424,6 +1432,11 @@ impl Analysis {
         self.shared.contains(&local.0)
     }
 
+    /// Whether a call here may change a local, through a `mut` parameter.
+    pub(crate) fn is_given_mut(&self, local: LocalId) -> bool {
+        self.given_mut.contains(&local.0)
+    }
+
     pub(crate) fn is_taken(&self, local: LocalId) -> bool {
         self.taken.contains(&local.0)
     }
@@ -1557,7 +1570,8 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 break;
             }
         }
-        if name != "enumerate" || !steady || known.writes.get(made.0) != Some(&1) {
+        let of_text = function.locals.get(list.0).is_some_and(|local| local.ty == Type::Str);
+        if name != "enumerate" || of_text || !steady || known.writes.get(made.0) != Some(&1) {
             continue;
         }
         // The result and the copies of it, each written once.
@@ -1679,7 +1693,9 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
             (Some(Type::Int), BinOp::Add | BinOp::Sub | BinOp::Mul) => !known.is_safe(*dest),
             (Some(Type::Int), BinOp::FloorDiv | BinOp::Mod | BinOp::Div) => !matches!(rhs, Operand::Int(1..)),
             (Some(Type::Float), BinOp::Div | BinOp::FloorDiv | BinOp::Mod) => !known.is_nonzero(rhs),
-            (Some(Type::Int), BinOp::Pow) => true,
+            // Items of a list may order by a type's own `<`, which can fail.
+            (Some(Type::Int), BinOp::Pow | BinOp::ShiftLeft | BinOp::ShiftRight)
+            | (Some(Type::List(_)), BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) => true,
             _ => false,
         },
         InstKind::Unary { dest, op: UnaryOp::Neg, value } => {
@@ -1693,6 +1709,11 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
         {
             true
         }
+        InstKind::Builtin { name, .. } if name.starts_with("crypto.") => true,
+        InstKind::Builtin { name, .. } if name.starts_with("Connection.") || name.starts_with("Server.") => {
+            true
+        }
+        InstKind::Builtin { name, .. } if name.starts_with("json.") || name.starts_with("toml.") => true,
         InstKind::Builtin { name, .. } => {
             matches!(
                 name.as_str(),
@@ -1711,9 +1732,13 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "list.insert"
                     | "sorted.key"
                     | "list.remove_where"
+                    | "IdMap.remove_where"
+                    | "IdMap.modify"
                     | "result.expect"
                     | "dict.pop"
                     | "random.random_int"
+                    | "random_choice"
+                    | "random.random_choice"
                     | "int"
                     | "math.floor"
                     | "math.ceil"
@@ -1724,6 +1749,9 @@ fn fails_itself(function: &Function, known: &Analysis) -> bool {
                     | "max.key"
                     | "min.key"
                     | "list.remove"
+                    | "main.result"
+                    | "bytes"
+                    | "set.remove"
                     | "Regex.replace"
                     | "Regex.split"
                     | "Regex.find_all"

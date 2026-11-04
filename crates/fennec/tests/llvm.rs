@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 79;
+const BUILDING_EXAMPLES: usize = 100;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -156,6 +156,90 @@ def main(stdout: Stdout):
 
 /// `units[at].tags.append(x)` with the list in a local: the inner list goes on growing in place,
 /// and what's shared with it, at any level, doesn't change.
+#[test]
+fn an_index_a_call_changes_is_read_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "index_given_mut",
+        r"struct Unit:
+    tags: list[int]
+
+def bump(mut at: int):
+    at += 1
+
+def bump_twice(mut at: int):
+    bump(mut at)
+    bump(mut at)
+
+def main(stdout: Stdout):
+    mut at = 0
+    mut lists = [[1], [2], [3]]
+    lists[at].append(10)
+    bump(mut at)
+    lists[at].append(20)
+    bump_twice(mut at)
+    lists[at - 1].append(30)
+    stdout.print(at, lists)
+
+    mut i = 0
+    mut numbers = [5, 6, 7]
+    numbers[i] = 50
+    bump(mut i)
+    numbers[i] = 60
+    stdout.print(i, numbers, numbers[i])
+
+    mut j = 0
+    mut units = [Unit([1]), Unit([2])]
+    units[j].tags.append(10)
+    bump(mut j)
+    units[j].tags.append(20)
+    stdout.print(j, units[0].tags, units[1].tags)
+
+    mut items = [1, 2, 3, 4]
+    for round in range(3):
+        mut k = round
+        items[k] = items[k] + 10
+        bump(mut k)
+        items[k] = items[k] + 100
+    stdout.print(items)
+
+    mut w = 0
+    while w < items.len():
+        items[w] = 0
+        bump(mut w)
+        if w < items.len():
+            items[w] = 7
+        bump(mut w)
+    stdout.print(items)
+",
+    )
+}
+
+/// The engines before this one stop on this, reading the index after the call has it, so it's
+/// checked against what it means rather than against them.
+#[test]
+fn a_place_stays_where_it_was_when_a_call_changes_its_index() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("place_index_given_mut")?;
+    let program = dir.join("place.fen");
+    std::fs::write(
+        &program,
+        "struct Unit:\n    hp: int\n\n    def stepped(mut self, mut at: int):\n        at += 1\n        self.hp += at\n\ndef moved(mut item: int, mut at: int):\n    at += 1\n    item += 10\n\ndef main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1), Unit(2), Unit(3)]\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    mut other = 0\n    mut numbers = [1, 2, 3]\n    moved(mut numbers[other], mut other)\n    stdout.print(other, numbers)\n",
+    )?;
+    let executable = dir.join("place");
+    let (program, executable_name) = (program.to_string_lossy().into_owned(), executable.to_string_lossy());
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable_name], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1 2 2 3\n2 2 4 3\n1 [11, 2, 3]\n");
+    Ok(())
+}
+
 #[test]
 fn appending_to_a_field_of_a_local_lists_item_copies_only_what_is_shared() -> std::io::Result<()> {
     if !ready() {
@@ -478,6 +562,28 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
     )?;
     assert!(counts.starts_with("copies 0 "), "{counts}");
     Ok(())
+}
+
+/// `isdigit`, native on headers, says what std's says: inline and in a block, empty, digits
+/// outside ASCII, and a digit beside something that isn't.
+#[test]
+fn isdigit_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "isdigit",
+        r#"def main(stdout: Stdout):
+    long = "1234567890" * 5
+    for text in ["", "0", "9", "5", "/", ":", "a", "12", "1a", "a1", " 1", "1 ", "٣", "１", "1٣", "é", "🦊", long, long + "x", "x" + long, long[:23], long[:24]]:
+        stdout.print(text, text.isdigit())
+    mut found = 0
+    for at in range(long.len()):
+        if long[at].isdigit():
+            found += 1
+    stdout.print(found)
+"#,
+    )
 }
 
 #[test]
@@ -917,6 +1023,112 @@ def main(stdout: Stdout):
     flags = [True, False]
     stdout.print(flags[0], flags[-1])
     stdout.print(f"{half:.3f} and {n} at {a.x}")
+"#,
+    )
+}
+
+/// What a program prints through LLVM is what the interpreter prints.
+fn same_as_the_interpreter(name: &str, source: &str) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours, interpreted);
+    Ok(())
+}
+
+/// Evaluation runs left to right: an operand keeps the value it had when it was read, even if one
+/// after it changes what it names. The JIT doesn't on a plain call, so this is held to what the
+/// interpreter prints.
+#[test]
+fn an_earlier_operand_keeps_its_value_when_a_later_one_changes_it() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "left_to_right",
+        r#"struct Box:
+    items: list[int]
+    count: int
+
+    def grow(mut self) -> int:
+        self.items.append(9)
+        self.count = self.count + 1
+        self.count
+
+struct Pair:
+    first: list[int]
+    second: int
+
+def show(a: list[int], b: int) -> str:
+    f"{a} {b}"
+
+def take(mut a: list[int]) -> int:
+    a.pop()
+
+def pair(a: int, b: int) -> str:
+    f"{a} {b}"
+
+def bump(mut a: int) -> int:
+    a = a + 1
+    a
+
+def through(called: (list[int], int) -> str, mut items: list[int]) -> str:
+    called(items, items.pop())
+
+def main(stdout: Stdout):
+    mut xs = [1, 2, 3]
+    stdout.print(xs, xs.pop())
+    stdout.print(xs)
+    mut ys = [1, 2, 3]
+    stdout.print(show(ys, ys.pop()), ys)
+    mut zs = [1, 2, 3]
+    stdout.print(show(zs, take(mut zs)), zs)
+    mut d = {1: 2, 3: 4}
+    stdout.print(d, d.pop(1), d)
+    mut e = {1: 2, 3: 4}
+    stdout.print(e.len(), e.pop(1), e.len())
+    mut n = 1
+    stdout.print(pair(n, bump(mut n)), n)
+    stdout.print(n, bump(mut n), n)
+    mut b = Box(items=[1], count=0)
+    stdout.print(b.count, b.grow(), b.count)
+    stdout.print(b.items, b.grow(), b.items)
+    stdout.print(b, b.grow(), b)
+    mut q = [1]
+    stdout.print([q, [q.pop()]], q)
+    mut r = [1, 2]
+    stdout.print((r, r.pop()), r)
+    mut s = [1, 2]
+    stdout.print(f"{s} {s.pop()} {s}")
+    mut u = [1, 2]
+    stdout.print(show(u, show(u, u.pop()).len()), u)
+    mut v = [1, 2]
+    stdout.print(v[0], v.pop(0), v[0])
+    mut w = [1, 2, 3]
+    stdout.print(w[w.pop() - 3], w)
+    mut x = [1, 2, 3]
+    stdout.print(x[:x.pop()], x)
+    mut f = 2
+    stdout.print(f + bump(mut f), f)
+    mut i = [1]
+    stdout.print(Pair(first=i, second=i.pop()), i)
+    mut j = [1]
+    stdout.print(Pair(second=j.pop(), first=j), j)
+    mut m = [1, 2]
+    stdout.print([m.pop(), m.len(), m.pop(), m.len()], m)
+    mut o = [1, 2]
+    stdout.print(through((a, b) => show(a, b), mut o), o)
+    mut t = {1: 1, 2: 2}
+    stdout.print(t.get(t.pop(2) - 1), t.get(t.pop(1)), t)
+    mut aa = "a"
+    mut ab = [aa]
+    stdout.print(ab, ab.pop(), aa)
 "#,
     )
 }
@@ -1722,7 +1934,7 @@ fn std_pieces_the_proof_program_uses_match_the_jit() -> std::io::Result<()> {
     grid.append([7, 8, 9])
     copy_of = grid
     grid[1][0] = 42
-    total = 0
+    mut total = 0
     mut sum_of = 0
     for row in grid:
         for n in row:
@@ -2444,34 +2656,56 @@ def main(stdout: Stdout):
     )
 }
 
-/// Keys are hashed and compared by their words, so one holding a string can't be: two equal
-/// strings can be two blocks. Native code turns those dicts down, and the JIT takes them.
+/// Keys holding strings are hashed and compared by what they hold, since two equal strings can be
+/// two blocks.
 #[test]
-fn keys_holding_strings_go_to_the_jit() -> std::io::Result<()> {
+fn keys_holding_strings_are_native() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let source = r#"struct Person:
+    same_as_the_interpreter(
+        "keys_holding_strings",
+        r#"struct Person:
     name: str
     age: int
+
+def joined(a: str, b: str) -> str:
+    a + b
 
 def main(stdout: Stdout):
     mut by_person: dict[Person, int] = {}
     by_person[Person("a string long enough that it can't be held inline", 1)] = 1
-    stdout.print(by_person.len())
-"#;
-    let dir = folder("keys_holding_strings")?;
-    let program = dir.join("keys_holding_strings.fen");
+    same = Person(joined("a string long enough that it ", "can't be held inline"), 1)
+    stdout.print(by_person.len(), by_person[same], same in by_person)
+"#,
+    )
+}
+
+/// A program LLVM can't build yet says so, and runs on the JIT.
+#[test]
+fn what_llvm_cannot_build_runs_on_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"def keep(change: (int) -> int) -> Iterator[int]:
+    yield change(1)
+
+def main(stdout: Stdout):
+    for n in keep((n) => n + 1):
+        stdout.print(n)
+";
+    let dir = folder("cannot_build")?;
+    let program = dir.join("cannot_build.fen");
     std::fs::write(&program, source)?;
     let (program, output) = (program.to_string_lossy().into_owned(), dir.join("out"));
     let built = fennec(&["build", "--llvm", &program, "-o", &output.to_string_lossy()], &dir)?;
     assert!(!built.status.success());
-    assert!(String::from_utf8_lossy(&built.stderr).contains("Dict(Named(\"Person\"), Int)"));
+    assert!(String::from_utf8_lossy(&built.stderr).contains("it keeps a closure in a generator"));
     let ran = fennec(&["run", &program], &dir)?;
     assert!(ran.status.success());
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "2\n");
     let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-    assert!(said.starts_with("note: running this with the JIT, since LLVM can't build it: `main`"), "{said}");
+    assert!(said.starts_with("note: running this with the JIT, since LLVM can't build it: "), "{said}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -2626,6 +2860,7 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
         ("alone_range", "range(0, 1, 0)"),
         ("alone_max", "max(empty)"),
         ("alone_min", "min(empty)"),
+        ("alone_shift", "1 << 64"),
     ] {
         same_message_as_the_jit(
             name,
@@ -2640,6 +2875,32 @@ def main(stdout: Stdout):
             ),
         )?;
     }
+    Ok(())
+}
+
+/// `T.make()` calls the function of the type each copy of a generic stands for. It's native only:
+/// the interpreter has no types at run time to find it through.
+#[test]
+fn a_type_parameter_calls_its_types_function() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "interface Made:\n    def make() -> Self\n\n\
+                  struct Part:\n    x = 1\n\n    def make() -> Self:\n        Self(x=7)\n\n\
+                  struct Other:\n    name = \"\"\n\n    def make() -> Self:\n        Self(name=\"other\")\n\n\
+                  def build[T: Made]() -> T:\n    T.make()\n\n\
+                  def twice[T: Made]() -> list[T]:\n    [build[T](), T.make()]\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(build[Part]().x, build[Other]().name)\n    \
+                  made: Part = build()\n    stdout.print(made.x, twice[Other]().len())\n";
+    let dir = folder("type_param_function")?;
+    let program = dir.join("made.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("made"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours.0, "7 other\n7 2\n");
     Ok(())
 }
 
@@ -2755,6 +3016,1360 @@ def main(stdout: Stdout):
     stdout.print(list("héllo"), list(""), set("hello").len(), "l" in set("hello"), set(""))
     stdout.print(set([3, 1, 3, 2, 1]), set(["b", "a", "b", "a key long enough for a block", "a key long enough for a block"]))
     stdout.print(set([(1, 2), (1, 2), (3, 4)]).len())
+"#,
+    )
+}
+
+/// A failed `assert` says all the JIT does, each side as the interpreter shows it.
+#[test]
+fn a_failed_assert_says_what_the_jit_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let setup = "struct Point:
+    x: int
+    label: str
+
+struct Plain:
+    x: int
+    y: float
+
+struct Shown:
+    x: int
+
+    def str(self, mut out: StrWriter):
+        out.write(\"its own text\")
+
+enum Light:
+    Red
+    Green
+
+def seen(present: bool) -> int?:
+    if present:
+        return 3
+    None
+
+def named(present: bool) -> str?:
+    if present:
+        return \"hi\"
+    None
+";
+    for (number, condition) in [
+        "1 + 1 == 3",
+        "2 > 3",
+        "2.5 <= 1.5",
+        "True != True",
+        "\"a\\nb\" == \"c\\\"d\"",
+        "[1].len() >= 2",
+        "[1, 2] == [1, 3]",
+        "[\"a\"] == [\"b\"]",
+        "{\"a\": 1} == {\"a\": 2}",
+        "\"q\" in [\"a\"]",
+        "Plain(x=1, y=2.0) == Plain(x=2, y=2.0)",
+        "Point(x=1, label=\"p\") == Point(x=2, label=\"q\")",
+        "Shown(x=1) != Shown(x=1)",
+        "Light.Red == Light.Green",
+        "seen(True) is None",
+        "seen(False) is not None",
+        "named(True) is None",
+        "named(False) is not None",
+        "seen(True) == seen(False)",
+        "3 in [1, 2]",
+        "1 not in [1, 2]",
+        "\"z\" in {\"a\": 1}",
+        "\"z\" in \"abc\"",
+        "False",
+        "1 == 1 and 1 == 2",
+        "not True",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let source =
+            format!("{setup}\ndef main(stdout: Stdout):\n    stdout.print(1)\n    assert {condition}\n");
+        let ((ours_out, ours_err, ours_code), (jit_out, jit_err, jit_code)) =
+            both(&format!("assert_{number}"), &source)?;
+        assert_eq!((&ours_out, ours_code), (&jit_out, jit_code), "{condition}");
+        assert_eq!(ours_err, jit_err, "{condition}");
+    }
+    Ok(())
+}
+
+/// Shifts, `~`, sorting a list where it is, a `match` on a bool and `random_choice`.
+#[test]
+fn bits_sorts_and_choices_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "bits_sorts_and_choices",
+        r#"from std.random import Random
+
+def name(flag: bool) -> str:
+    match flag:
+        case True:
+            "yes"
+        case False:
+            "no"
+
+struct Bag:
+    numbers: list[int]
+
+def main(stdout: Stdout):
+    for count in [0, 1, 63]:
+        stdout.print(1 << count, -8 >> count, 255 >> count, ~count)
+    mut items = [3, 1, 2]
+    shared = items
+    items.sort()
+    stdout.print(items, shared)
+    items.sort(key=n => -n)
+    stdout.print(items, shared)
+    mut words = ["pear", "fig", "a word long enough to be held in a block"]
+    words.sort(key=word => word.len())
+    stdout.print(words)
+    words.sort()
+    stdout.print(words)
+    mut bag = Bag(numbers=[2, 1])
+    bag.numbers.sort()
+    stdout.print(bag)
+    stdout.print(name(True), name(False))
+    mut random = Random(7)
+    stdout.print(random.choice([1, 2, 3, 4]), random.choice(["a", "b", "a string long enough to be a block"]), random.choice([1.5, 2.5]))
+    stdout.print(random.choice([(1, "one"), (2, "two")]))
+"#,
+    )
+}
+
+/// A shift by a count that isn't one fails as the JIT says.
+#[test]
+fn a_bad_shift_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "bad_shift",
+        "def main(stdout: Stdout):
+    for count in [1, 64]:
+        stdout.print(1 << count)
+",
+    )
+}
+
+/// `==`, `+` and ordering on lists of each kind of item, and `==` on dicts and sets.
+#[test]
+fn operators_on_collections_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "operators_on_collections",
+        r#"struct Spot:
+    x: int
+    y: str
+
+def maybe(on: bool) -> Spot?:
+    if on:
+        return Spot(x=1, y="a")
+    None
+
+def main(stdout: Stdout):
+    a = [1, 2]
+    stdout.print(a == [1, 2], a != [1, 2], a == [1], a + [3], a, [] + a, [1.5] == [1.5], [True] != [False])
+    words = ["a", "a string long enough to be held in a block"]
+    stdout.print(words == ["a", "a string long enough to be held in a block"], words + ["c"], words != words)
+    spots = [Spot(x=1, y="a")]
+    stdout.print(spots == [Spot(x=1, y="a")], spots == [Spot(x=2, y="a")], spots + spots)
+    stdout.print([[1], [2, 3]] == [[1], [2, 3]], [[1]] + [[2]], [(1, "a")] == [(1, "a")])
+    stdout.print([1] < [1, 0], [2] < [1, 0], [1, 2] <= [1, 2], [1, 2] > [1], [1.5] >= [2.5], ["a"] < ["b"], ["b", "a"] > ["b"])
+    stdout.print({1, 2} == {2, 1}, {1, 2} != {1, 3}, {"a": 1} == {"a": 1}, {"a": 1} != {"a": 1}, {1: 2} == {1: 3})
+    stdout.print(maybe(True) == maybe(True), maybe(True) == maybe(False), maybe(False) == None)
+    mut grown = a + [3]
+    grown.append(4)
+    stdout.print(grown, a)
+"#,
+    )
+}
+
+/// What std's runtime calls give back: hashes, TOML and JSON with its names respelled.
+#[test]
+fn std_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "std_calls",
+        r#"import std.crypto as crypto
+import std.json as json
+import std.toml as toml
+
+struct Tool:
+    main_weapon: str
+    uses: int
+
+error Wrapped:
+    why: str
+
+error Inner:
+    what: str
+
+def inner(n: int) -> int:
+    if n > 1: fail Inner(what="too many")
+    n
+
+def outer(n: int) -> int:
+    inner(n)? from Wrapped(why="inner failed")
+
+def main(stdout: Stdout):
+    stdout.print(crypto.sha256("abc"), crypto.blake3("abc"))
+    stdout.print(crypto.keyed_blake3("0000000000000000000000000000000000000000000000000000000000000000", "abc") else "no")
+    stdout.print(crypto.equal("a", "a"), crypto.equal("a", "b"))
+    tool = Tool(main_weapon="bow", uses=3)
+    stdout.print(json.dumps(tool, names=.camel_case), json.dumps(tool, names=.kebab_case))
+    stdout.print(toml.dumps(tool) else "no")
+    match toml.loads[Tool]("main_weapon = \"axe\"\nuses = 2\n"):
+        case Ok(read):
+            stdout.print(read)
+        case Err(error):
+            stdout.print(error.message)
+    match toml.loads[Tool]("not toml"):
+        case Ok(read):
+            stdout.print(read)
+        case Err(error):
+            stdout.print(error.message)
+    stdout.print(outer(1) else -1, outer(2) else -1)
+"#,
+    )
+}
+
+/// The same value passed `mut` and not: the one without `mut` keeps what it held.
+#[test]
+fn a_value_passed_both_ways_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "passed_both_ways",
+        r#"struct Bag:
+    label: str
+    count: int
+
+def both(items: list[int], mut others: list[int]) -> int:
+    others.append(9)
+    others[0] = 7
+    items.len() * 10 + items[0]
+
+def bags(bag: Bag, mut other: Bag) -> str:
+    other.count = 5
+    other.label = "a label long enough to be held in a block"
+    f"{bag.label} {bag.count}"
+
+def main(stdout: Stdout):
+    mut twice = [1, 2]
+    stdout.print(both(twice, mut twice), twice)
+    mut bag = Bag(label="short", count=1)
+    stdout.print(bags(bag, mut bag), bag)
+"#,
+    )
+}
+
+/// `?` in `main`, which then gives back a result: going on when it's `Ok`.
+#[test]
+fn a_main_giving_back_a_result_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "main_gives_back",
+        r#"def number(text: str) -> int:
+    int(text)?
+
+def main(stdout: Stdout):
+    stdout.print(number("12")?)
+    stdout.print("still here")
+"#,
+    )
+}
+
+/// `?` in `main` on an error fails the program, saying so at `main`.
+#[test]
+fn a_main_giving_back_an_error_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "main_gives_back_an_error",
+        r#"def number(text: str) -> int:
+    int(text)?
+
+def main(stdout: Stdout):
+    stdout.print("first")
+    stdout.print(number("twelve")?)
+    stdout.print("never")
+"#,
+    )
+}
+
+/// Slices of tuples, with what they hold kept by both, and `enumerate` of a string.
+#[test]
+fn tuple_slices_and_enumerated_text_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "tuple_slices",
+        r#"def main(stdout: Stdout):
+    numbers = (1, 2, 3)
+    stdout.print(numbers[1:], numbers[-2:-1], numbers[:2])
+    held = (1, "a string long enough to be held in a block", [1, 2], 2.5)
+    part = held[1:3]
+    stdout.print(part, held)
+    for at, letter in enumerate("héllo"):
+        stdout.print(at, letter)
+    stdout.print(enumerate("ab"))
+"#,
+    )
+}
+
+/// `bytes`, wherever it's held and whatever's done with it.
+#[test]
+fn bytes_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "bytes_all",
+        r#"struct Packet:
+    id: int
+    data: bytes
+
+enum Held:
+    Empty
+    Full(data: bytes)
+
+def first(data: bytes) -> int:
+    data[0]
+
+def maybe(present: bool) -> bytes?:
+    if present:
+        return bytes([9, 8])
+    None
+
+def main(stdout: Stdout):
+    empty = bytes()
+    data = bytes([0, 1, 127, 128, 255])
+    stdout.print(empty, empty.len(), data, data.len())
+    stdout.print(data[0], data[-1], data[3], first(data))
+    stdout.print(data[1:3], data[:2], data[3:], data[-2:], data[:-2], data[10:], data[3:1])
+    stdout.print(data + bytes([7]), empty + empty, data == bytes([0, 1, 127, 128, 255]), data != data)
+    stdout.print(data < bytes([1]), data <= data, data > bytes([0]), data >= bytes([255]))
+    stdout.print(1 in data, 2 in data, 2 not in data, 300 in data, -1 in data)
+    stdout.print(data.hex(), data.hex(" "), data.hex("--"), empty.hex())
+    mut total = 0
+    for byte in data:
+        total = total + byte
+    stdout.print(total, list(data), sum(list(data)))
+    text = "héllo wörld"
+    encoded = text.encode()
+    stdout.print(encoded, encoded.len(), text.len())
+    match encoded.decode():
+        case Ok(back):
+            stdout.print(back, back == text)
+        case Err(error):
+            stdout.print(error.message)
+    match bytes([255, 254]).decode():
+        case Ok(back):
+            stdout.print(back)
+        case Err(error):
+            stdout.print(error.message)
+    for hex in ["00ff", "00 FF", "", "abc", "zz", "a é"]:
+        match bytes.fromhex(hex):
+            case Ok(made):
+                stdout.print(made)
+            case Err(error):
+                stdout.print(error.message)
+    packet = Packet(id=1, data=data[:2])
+    copied = packet
+    stdout.print(packet, copied.data, packet.data == copied.data, packet == copied)
+    packets = [packet, Packet(id=2, data=bytes())]
+    stdout.print(packets[0].data, packets[1].data, packets)
+    mut many = [data, empty, encoded]
+    many.append(bytes([3]))
+    stdout.print(many[0], many[-1], many.len(), many)
+    for held in [Held.Empty, Held.Full(data=bytes([1]))]:
+        match held:
+            case Empty:
+                stdout.print("empty")
+            case Full(inner):
+                stdout.print(inner, inner[0], held)
+    stdout.print(maybe(True), maybe(False), maybe(True) is None, maybe(False) is None)
+    got = maybe(True) else bytes()
+    stdout.print(got, got.len())
+    pair = (data[:1], 3)
+    stdout.print(pair)
+    stdout.print(f"{data[:1]} and {empty}", str(data[:2]))
+    mut grown = bytes()
+    for at in range(300):
+        grown = grown + bytes([at % 256])
+    stdout.print(grown.len(), grown[299], grown[255], grown[:3])
+    named = {"a": 1}
+    stdout.print(named["a"], grown[:9].hex())
+"#,
+    )
+}
+
+/// What fails with `bytes` says what the JIT says.
+#[test]
+fn bytes_fail_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, call) in [
+        ("bytes_past_end", "bytes([1, 2])[2]"),
+        ("bytes_before_start", "bytes([1, 2])[-3]"),
+        ("bytes_too_big", "bytes([1, 256])"),
+        ("bytes_negative", "bytes([-1])"),
+    ] {
+        same_message_as_the_jit(
+            name,
+            &format!(
+                "def main(stdout: Stdout):
+    stdout.print(1)
+    stdout.print({call})
+"
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// `list` of a capability, `round` to places, the codes of text, and clearing and taking keys out
+/// of dicts and sets.
+#[test]
+fn more_small_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "more_small_calls",
+        r#"struct Key:
+    x: int
+    y: int
+
+def main(args: Args, stdout: Stdout):
+    stdout.print(list(args).len())
+    for arg in args:
+        stdout.print(arg.len() > 0)
+    stdout.print(round(3.14159, 2), round(2.5, 0), round(1234.5, -2), round(0.125, 2))
+    stdout.print("héllo".codes(), "".codes(), "€".code())
+    for code in [65, 233, 8364, -1, 55296, 1114112]:
+        match str.from_code(code):
+            case Ok(text):
+                stdout.print(text, text.len())
+            case Err(error):
+                stdout.print(error.message)
+    mut numbers = {1: 2, 3: 4}
+    shared = numbers
+    numbers.clear()
+    stdout.print(numbers, shared, numbers.len())
+    numbers[5] = 6
+    stdout.print(numbers)
+    mut names = {"a": "b", "a long string that is held in a block": "c"}
+    names.clear()
+    names["d"] = "e"
+    stdout.print(names)
+    mut ints = {1, 2, 3}
+    kept = ints
+    ints.discard(2)
+    ints.discard(9)
+    ints.remove(3)
+    stdout.print(ints, kept)
+    ints.clear()
+    ints.add(7)
+    stdout.print(ints, ints.len())
+    mut words = {"a", "b", "a long string that is held in a block"}
+    words.discard("a")
+    words.discard("nope")
+    words.remove("a long string that is held in a block")
+    stdout.print(words)
+    mut keys = {Key(x=1, y=2), Key(x=3, y=4)}
+    keys.discard(Key(x=1, y=2))
+    keys.discard(Key(x=9, y=9))
+    keys.remove(Key(x=3, y=4))
+    stdout.print(keys, keys.len())
+"#,
+    )
+}
+
+/// `set.remove` of a key that isn't there fails as the JIT does.
+#[test]
+fn removing_what_a_set_lacks_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, set, key) in [
+        ("remove_int", "{1, 2}", "3"),
+        ("remove_str", "{\"a\"}", "\"b\""),
+        ("remove_long", "{\"a\"}", "\"a long string that is held in a block\""),
+    ] {
+        same_message_as_the_jit(
+            name,
+            &format!(
+                "def main(stdout: Stdout):
+    mut held = {set}
+    held.remove({key})
+    stdout.print(held)
+"
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// Dicts whose values are blocks, with what's done to them.
+#[test]
+fn dicts_of_blocks_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "dict_values",
+        r#"struct Book:
+    title: str
+    pages: dict[str, list[int]]
+
+def main(stdout: Stdout):
+    mut lists = {"a": [1, 2], "b": []}
+    lists["c"] = [3]
+    copied = lists
+    lists["a"] = [9]
+    stdout.print(lists, copied, lists["a"], copied["a"][1], lists.len())
+    lists["c"].append(4)
+    stdout.print(lists["c"], copied["c"])
+    stdout.print(lists.get("c"), lists.get("nope"), "a" in lists, "z" in lists)
+    stdout.print(lists.keys(), lists.values(), lists.items())
+    for key, value in lists.items():
+        stdout.print(key, value, value.len())
+    stdout.print(lists.pop("a"), lists)
+    mut by_int = {1: ["one"], 2: ["two", "too"]}
+    by_int[3] = ["three"]
+    stdout.print(by_int, by_int[2][1], by_int == {1: ["one"]}, by_int == by_int)
+    mut nested = {"x": {"y": [1]}}
+    nested["z"] = {}
+    nested["z"]["w"] = [2]
+    stdout.print(nested, nested["x"]["y"], nested["z"]["w"][0])
+    mut sets = {"s": {1, 2}}
+    sets["t"] = {3}
+    stdout.print(sets, 1 in sets["s"])
+    mut raw = {"b": bytes([1, 2])}
+    raw["c"] = "hi".encode()
+    stdout.print(raw, raw["c"].len())
+    book = Book(title="t", pages={"one": [1], "two": [2, 2]})
+    stdout.print(book, book.pages["two"], book.pages.keys())
+    mut empty: dict[str, list[int]] = {}
+    empty.clear()
+    stdout.print(empty, empty.get("a"), empty.len())
+    mut grown: dict[int, list[int]] = {}
+    for at in range(100):
+        grown[at] = [at, at + 1]
+    stdout.print(grown[99], grown.len(), sum(sum(items) for items in grown.values()))
+"#,
+    )
+}
+
+/// Dicts whose values are plain structs and enums, or `Id`s, with what's done to them.
+#[test]
+fn dicts_of_plain_values_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "dict_plain_values",
+        r#"from std.game import IdMap
+
+struct Point:
+    x: int
+    y: float
+
+struct Named:
+    name: str
+    tags: list[str]
+
+enum Light:
+    Red
+    Green
+    Amber(seconds: int)
+
+enum Note:
+    Empty
+    Said(text: str)
+
+struct Home:
+    id: int
+
+def main(stdout: Stdout):
+    mut points = {"p": Point(x=1, y=2.0)}
+    points["q"] = Point(x=3, y=4.0)
+    points["p"] = Point(x=5, y=6.0)
+    other = points
+    points["q"] = Point(x=7, y=8.0)
+    stdout.print(points, other, points["p"].x, points == other, points.get("q"), points.get("r"))
+    stdout.print(points.values(), points.items(), points.pop("q"), points)
+    mut lights = {"go": Light.Green, "wait": Light.Amber(seconds=3)}
+    lights["stop"] = Light.Red
+    stdout.print(lights, lights["wait"], lights["go"] == Light.Green)
+    for name, light in lights.items():
+        match light:
+            case Red:
+                stdout.print(name, "red")
+            case Green:
+                stdout.print(name, "green")
+            case Amber(seconds):
+                stdout.print(name, seconds)
+    mut notes = {1: Note.Said(text="a long note that sits in its own block"), 2: Note.Empty}
+    notes[3] = Note.Said(text="short")
+    notes[1] = Note.Said(text="replaced")
+    stdout.print(notes, notes[3])
+    stdout.print(notes.pop(1), notes.get(3), notes.values())
+    mut people = {"me": Named(name="me", tags=["a"])}
+    people["you"] = Named(name="a long name that sits in its own block", tags=[])
+    kept = people["you"]
+    people["you"] = Named(name="other", tags=["b", "c"])
+    stdout.print(people, kept, people["you"].tags[1], people == people)
+    mut ids = IdMap[Home]()
+    first = ids.insert(Home(id=1))
+    second = ids.insert(Home(id=2))
+    mut links = {first: second}
+    links[second] = first
+    stdout.print(links[first] == second, links[second] == first, first in links, links.len())
+    mut homes = {"first": first}
+    homes["second"] = second
+    stdout.print(homes["second"] == second, homes.get("nope") is None, homes.len())
+"#,
+    )
+}
+
+/// A key a dict of blocks doesn't have fails as the JIT's does.
+#[test]
+fn a_missing_key_in_a_dict_of_lists_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "missing_list",
+        "def main(stdout: Stdout):
+    held = {\"a\": [1]}
+    stdout.print(held[\"b\"])
+",
+    )
+}
+
+/// `args[at]`, `reversed` of text and tuples, and `remove_where` on an `IdMap`.
+#[test]
+fn indexing_args_reversing_and_removing_from_id_maps_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "args_reversed_removed",
+        r#"from std.game import IdMap
+from std.math import sqrt
+
+struct Unit:
+    name: str
+    hp: int
+
+def main(args: Args, stdout: Stdout):
+    stdout.print(args.len() >= 0)
+    four = 16
+    stdout.print(sqrt(16), sqrt(four), sqrt(2.25))
+    stdout.print(reversed("fennec"), reversed("héllo"), reversed(""), reversed([1, 2, 3]))
+    stdout.print(reversed((1, 2)), reversed((1, 2, 3, 4)), reversed(("a", "a long string in a block")))
+    mut names = IdMap[str]()
+    first = names.insert("ash")
+    names.insert("kit")
+    third = names.insert("a long name that sits in its own block")
+    copied = names
+    names.remove_where(name => name.startswith("k"))
+    stdout.print(names.values(), names.len(), copied.values(), copied.len(), names[first], names[third])
+    fourth = names.insert("vex")
+    stdout.print(names.values(), names.len(), names[fourth])
+    names.remove_where(name => False)
+    stdout.print(names.len())
+    names.remove_where(name => True)
+    stdout.print(names.values(), names.len(), names.get(first))
+    mut units = IdMap[Unit]()
+    weak = units.insert(Unit(name="weak", hp=1))
+    strong = units.insert(Unit(name="strong", hp=9))
+    units.remove_where(unit => unit.hp < 5)
+    stdout.print(units.values(), units.get(weak), units[strong].name)
+    mut numbers = IdMap[int]()
+    numbers.insert(1)
+    numbers.insert(2)
+    numbers.remove_where(n => n % 2 == 0)
+    stdout.print(numbers.values(), numbers.len())
+    numbers.clear()
+    stdout.print(numbers.values(), numbers.len())
+    gone = numbers.insert(5)
+    stdout.print(numbers.values(), numbers.len(), numbers[gone])
+    mut cleared = copy(names)
+    cleared.insert("again")
+    cleared.clear()
+    stdout.print(cleared.len(), names.len(), cleared.values())
+    ignore(numbers.remove(gone), "it's fine if it's gone")
+    stdout.print(numbers.len())
+"#,
+    )
+}
+
+/// An `args` index that isn't there fails as the JIT's does.
+#[test]
+fn indexing_past_the_end_of_args_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "args_past_end",
+        "def main(args: Args, stdout: Stdout):
+    stdout.print(args[1000])
+",
+    )
+}
+
+/// `IdMap[str].get`, an optional string, however it's then used.
+#[test]
+fn getting_from_an_id_map_of_strings_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "id_map_of_strings",
+        r#"from std.game import Id, IdMap
+
+struct Holder:
+    names: IdMap[str]
+
+    def named(self, id: Id[str]) -> str:
+        found = self.names.get(id)
+        if found is None:
+            return "nobody"
+        found
+
+def main(stdout: Stdout):
+    mut names = IdMap[str]()
+    first = names.insert("ash")
+    second = names.insert("a long name that sits in its own block")
+    found = names.get(first)
+    stdout.print(found, found is None)
+    named = names.get(first) else "nothing"
+    stdout.print(named)
+    if found is not None:
+        stdout.print(found.len())
+    held = Holder(names=names)
+    stdout.print(held.named(second))
+    kept: list[str?] = [names.get(first), names.get(second)]
+    stdout.print(kept)
+    names.remove(first)
+    stdout.print(names.get(first), names.get(first) else "gone", names.get(first) is None)
+    for at in [first, second]:
+        got = names.get(at)
+        stdout.print(got else "absent")
+"#,
+    )
+}
+
+/// A function that can fail in more than one way, however its error is then read.
+#[test]
+fn sets_of_errors_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "error_sets",
+        r#"error NotFound:
+    name: str
+
+error TooWeak:
+    level: int
+
+error Plain:
+    code: int
+
+def weak(level: int) -> int:
+    if level < 5: fail TooWeak(level)
+    level
+
+def named(name: str) -> str:
+    if name == "": fail NotFound(name)
+    name
+
+def challenge(name: str, level: int) -> str:
+    who = named(name)?
+    power = weak(level)?
+    f"{who} at {power}"
+
+def three(name: str, level: int, code: int) -> str:
+    if code > 0: fail Plain(code)
+    challenge(name, level)?
+
+def main(stdout: Stdout):
+    for name, level in [("ash", 7), ("kit", 1), ("", 9)]:
+        result = challenge(name, level)
+        stdout.print(result)
+        match result:
+            case Ok(text):
+                stdout.print(text)
+            case TooWeak(level):
+                stdout.print("weak", level)
+            case Err(error):
+                stdout.print("other", error, f"{error}")
+    for code in [0, 3]:
+        match three("", 1, code):
+            case Ok(text):
+                stdout.print(text)
+            case Plain(code):
+                stdout.print("plain", code)
+            case NotFound(name):
+                stdout.print("not found", name.len())
+            case Err(error):
+                stdout.print("other", error)
+    match three("kit", 1, 0):
+        case Err(error):
+            stdout.print(error)
+        case Ok(text):
+            stdout.print(text)
+    stdout.print(challenge("kit", 1) == Err(TooWeak(level=1)))
+    stdout.print(challenge("kit", 1) == Err(TooWeak(level=2)))
+    stdout.print(Err(TooWeak(level=1)) == challenge("kit", 1))
+    stdout.print(challenge("kit", 1) != Err(TooWeak(level=1)))
+    stdout.print(challenge("ash", 7) == Err(TooWeak(level=1)))
+    stdout.print(challenge("", 1) == Err(NotFound(name="")))
+    found = challenge("kit", 9) else "failed"
+    missing = challenge("", 9) else "failed"
+    stdout.print(found, missing)
+"#,
+    )
+}
+
+/// An error from a set that nothing handles ends the program as the JIT's does.
+#[test]
+fn an_unhandled_error_of_a_set_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "error_set_unhandled",
+        "error NotFound:
+    name: str
+
+error TooWeak:
+    level: int
+
+def pick(level: int) -> int:
+    if level < 0: fail NotFound(\"x\")
+    if level < 5: fail TooWeak(level)
+    level
+
+def main(stdout: Stdout) -> int:
+    stdout.print(pick(9)?)
+    stdout.print(pick(1)?)
+    0
+",
+    )
+}
+
+/// Sorting by a key that's a tuple, in place or into a new list, keeping equal keys in order.
+#[test]
+fn sorting_by_tuple_keys_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "tuple_keys",
+        r#"struct Unit:
+    name: str
+    hp: int
+
+def main(stdout: Stdout):
+    words = ["bramble", "kit", "ash", "a long word that sits in a block", "kit"]
+    stdout.print(sorted(words, key=(word) => (word.len(), word)))
+    stdout.print(sorted([3, 1, 2], key=(n) => (n % 2, -n)))
+    stdout.print(sorted([1.5, -2.5], key=(x) => (x, 1)))
+    units = [Unit(name="b", hp=2), Unit(name="a", hp=2), Unit(name="c", hp=1), Unit(name="d", hp=2)]
+    stdout.print(sorted(units, key=(unit) => (unit.hp, unit.name)))
+    stdout.print(sorted(units, key=(unit) => (unit.hp, 0)))
+    mut changing = [5, 3, 9, 1]
+    kept = changing
+    changing.sort(key=(n) => (n % 3, n))
+    stdout.print(changing, kept)
+    empty: list[int] = []
+    stdout.print(sorted(empty, key=(n) => (n, n)))
+    stdout.print(words)
+"#,
+    )
+}
+
+/// Floats as keys have one equality: `-0.0` is `0.0`, and every NaN is the same, with the key
+/// kept as it was first written. The JIT's keys don't follow that yet.
+#[test]
+fn float_keys_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "float_keys",
+        r#"from std.math import sqrt
+
+def main(stdout: Stdout):
+    mut floats = {1.5, 2.5}
+    stdout.print(floats, 1.5 in floats, 3.5 in floats, floats.len(), sorted(floats), sorted({"b", "a"}))
+    floats.add(1.5)
+    floats.add(3.5)
+    floats.discard(2.5)
+    stdout.print(floats, floats.len(), list(floats), sum(x for x in floats))
+    zero = 0.0
+    mut zeros = {zero}
+    negative = -zero
+    stdout.print(negative in zeros, zero in zeros)
+    zeros.add(negative)
+    stdout.print(zeros, zeros.len())
+    mut signed = {negative}
+    signed.add(zero)
+    stdout.print(signed, signed.len(), zero in signed)
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    mut nans = {nan}
+    nans.add(nan)
+    nans.add(-nan)
+    stdout.print(nans.len(), nan in nans, -nan in nans, 1.0 in nans)
+    mut named = {1.5: "a", 2.5: "b"}
+    named[1.5] = "c"
+    named[0.0] = "z"
+    stdout.print(named, named[1.5], named[negative], named.get(9.5), named.keys(), named.values())
+    stdout.print(named.pop(2.5), named, {1.5, 2.5} == {2.5, 1.5})
+    mut counts: dict[float, int] = {}
+    for at in range(100):
+        key = float(at % 7) / 2.0
+        counts[key] = (counts.get(key) else 0) + 1
+    stdout.print(counts.len(), counts[0.0], counts[3.0])
+"#,
+    )
+}
+
+/// `None` itself inside a tuple.
+#[test]
+fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "none_in_tuple",
+        r#"def main(stdout: Stdout):
+    pair = (1, None)
+    stdout.print(pair, (None, "a"), (None, None))
+    stdout.print(pair == (1, None), [(1, None), (2, None)])
+"#,
+    )
+}
+
+/// A list that's packed in native code, as it crosses to the JSON writer.
+#[test]
+fn json_of_packed_lists_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "json_packed",
+        r#"from std import json
+
+struct Scores:
+    name: str
+    points: list[int]
+    rates: list[float]
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps(Scores(name="a", points=[1, 2], rates=[0.5])))
+    stdout.print(json.dumps([1, 2, 3]), json.dumps([[1], [2, 3], []]), json.dumps((1, [2])))
+    stdout.print(json.dumps({"6": [6], "7": []}), json.dumps({"a": {"b": [1.5]}}))
+"#,
+    )
+}
+/// A generator that fails: what asks for its next item gets the failure, by whichever error.
+#[test]
+fn generators_that_fail_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "failing_generators",
+        r#"error TooBig:
+    at: int
+
+error Named:
+    who: str
+
+def checked(limit: int) -> Iterator[int]:
+    for n in range(5):
+        if n >= limit: fail TooBig(at=n)
+        yield n
+
+def named(limit: int) -> Iterator[str]:
+    for n in range(5):
+        if n >= limit: fail Named(who=f"a long name for number {n} in a block")
+        yield str(n)
+
+def either(limit: int) -> Iterator[int]:
+    if limit == 0: fail Named(who="none")
+    for n in range(limit):
+        if n == 2: fail TooBig(at=n)
+        yield n
+
+def total(limit: int) -> int:
+    sum(n for n in checked(limit)?)
+
+def joined(limit: int) -> str:
+    mut out = ""
+    for word in named(limit)?:
+        out = out + word
+    out
+
+def looped(limit: int) -> int:
+    mut count = 0
+    for n in either(limit)?:
+        count = count + n + 1
+    count
+
+def main(stdout: Stdout):
+    stdout.print(total(9), total(2))
+    match total(2):
+        case Ok(found):
+            stdout.print(found)
+        case TooBig(at):
+            stdout.print("too big", at)
+    stdout.print(joined(3), joined(9))
+    match joined(1):
+        case Named(who):
+            stdout.print(who)
+        case Ok(text):
+            stdout.print(text)
+    for limit in [0, 1, 2, 3]:
+        stdout.print(limit, looped(limit))
+"#,
+    )
+}
+
+/// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
+/// NaN, whatever its sign. So this is held to what that decision says, on LLVM and the interpreter
+/// both. The JIT's `==` and keys don't follow it yet.
+#[test]
+fn floats_are_equal_as_decided() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Pair:
+    x: float
+    y: float
+
+enum Light:
+    Red
+    Green(seconds: float)
+
+struct Tagged:
+    x: float
+    name: str
+
+def same(a: float, b: float) -> bool:
+    a == b
+
+def different(a: float, b: float) -> bool:
+    a != b
+
+def main(stdout: Stdout):
+    zero = 0.0
+    minus = -zero
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    other = -nan
+    one = 1.0
+    stdout.print(same(zero, minus), same(nan, nan), same(nan, other), same(nan, one), same(one, one))
+    stdout.print(different(zero, minus), different(nan, other), different(nan, one), different(one, 2.0))
+    stdout.print(zero == -0.0, nan == 1.0, 1.0 == nan, nan != 1.0, 1.0 != nan, -0.0 == zero)
+    stdout.print(Pair(x=zero, y=nan) == Pair(x=minus, y=other), Pair(x=1.0, y=nan) == Pair(x=1.0, y=2.0))
+    stdout.print(Pair(x=zero, y=nan) != Pair(x=minus, y=other))
+    stdout.print((zero, nan) == (minus, other), (nan, 1.0) == (1.0, 1.0))
+    stdout.print(zero in [minus], other in [nan], 1.0 in [nan])
+    stdout.print(Light.Green(zero) == Light.Green(minus), Light.Green(nan) == Light.Green(other))
+    stdout.print(Tagged(x=zero, name="a") == Tagged(x=minus, name="a"), Tagged(x=nan, name="a") == Tagged(x=other, name="a"))
+    stdout.print(Tagged(x=1.0, name="a") == Tagged(x=2.0, name="a"), Tagged(x=1.0, name="a") == Tagged(x=1.0, name="b"))
+"#;
+    let dir = folder("floats_as_decided")?;
+    let program = dir.join("floats.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("floats"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours, interpreted);
+    assert_eq!(
+        ours.0,
+        "True True True False True
+False False True True
+True False False True True True
+True False
+False
+True False
+True True False
+True True
+True True
+False False
+"
+    );
+    Ok(())
+}
+
+/// Floats as keys hash as they compare, on the interpreter here. LLVM's float keys are held to the
+/// same answers where they're lowered.
+#[test]
+fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
+    let source = "def main(stdout: Stdout):
+    zero = 0.0
+    minus = -zero
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    mut zeros = {zero}
+    stdout.print(minus in zeros)
+    zeros.add(minus)
+    stdout.print(zeros.len(), {zero, 1.0} == {minus, 1.0})
+    mut nans = {nan}
+    nans.add(-nan)
+    stdout.print(nans.len(), -nan in nans)
+    named = {zero: 1}
+    stdout.print(named.get(minus), named[minus])
+    stdout.print([zero, nan] == [minus, -nan])
+";
+    let dir = folder("float_keys_interpreted")?;
+    let program = dir.join("keys.fen");
+    std::fs::write(&program, source)?;
+    let interpreted = outcome(&fennec(&["run", "--interp", &program.to_string_lossy()], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(interpreted.0, "True\n1 True\n1 True\n1 1\nTrue\n");
+    Ok(())
+}
+
+/// A generator made for a loop goes when the loop does, closing what it's holding right then,
+/// while one with a name lasts as long as the name. Returning out of the loop closes it before
+/// the caller goes on, where the JIT is late, so this is held to the interpreter.
+#[test]
+fn a_generator_left_partway_closes_as_the_interpreter_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "generator_left",
+        r#"struct Door:
+    out: Stdout
+    name: str
+
+    def del(self):
+        self.out.print(f"closing {self.name}")
+
+def holding(out: Stdout, name: str) -> Iterator[int]:
+    with Door(out=out, name=name) as door:
+        yield 1
+        yield 2
+
+def leaves_early(out: Stdout):
+    for n in holding(out, "made for the loop"):
+        out.print("got", n)
+        break
+    out.print("left the loop")
+
+def named(out: Stdout):
+    kept = holding(out, "with a name")
+    for n in kept:
+        out.print("got", n)
+        break
+    out.print("left the second loop")
+
+def finishes(out: Stdout):
+    for n in holding(out, "run to its end"):
+        out.print("got", n)
+    out.print("left the third loop")
+
+def returns_from_it(out: Stdout) -> int:
+    for n in holding(out, "returned from"):
+        return n
+    0
+
+def main(stdout: Stdout):
+    leaves_early(stdout)
+    stdout.print("next")
+    named(stdout)
+    stdout.print("next")
+    finishes(stdout)
+    stdout.print(returns_from_it(stdout))
+"#,
+    )
+}
+
+/// `IdMap.modify` changes an item where it is through a closure with a `mut` parameter, and items
+/// of an `IdMap` change their fields as a list's do.
+#[test]
+fn changing_what_an_id_map_holds_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "id_map_changes",
+        r#"from std.game import Id, IdMap
+
+struct Enemy:
+    name: str
+    health: int
+    tags: list[str]
+
+    def take_damage(mut self, amount: int) -> int:
+        self.health = self.health - amount
+        self.tags.append("hit")
+        self.health
+
+struct Node:
+    value: int
+    children: list[Id[Node]]
+
+struct World:
+    enemies: IdMap[Enemy]
+
+def main(stdout: Stdout):
+    mut world = World(enemies=IdMap[Enemy]())
+    near = world.enemies.insert(Enemy(name="near", health=100, tags=[]))
+    far = world.enemies.insert(Enemy(name="a long name that sits in its own block", health=50, tags=["x"]))
+    kept = world
+    stdout.print(world.enemies.modify(far, foe => foe.take_damage(25)))
+    stdout.print(world.enemies[far], kept.enemies[far])
+    world.enemies.remove(near)
+    stdout.print(world.enemies.modify(near, foe => foe.take_damage(1)), world.enemies.len())
+    mut numbers = IdMap[int]()
+    one = numbers.insert(1)
+    numbers.modify(one, n => n * 5)
+    stdout.print(numbers[one])
+    mut nodes = IdMap[Node]()
+    root = nodes.insert(Node(value=1, children=[]))
+    leaf = nodes.insert(Node(value=2, children=[]))
+    nodes[root].children.append(leaf)
+    nodes[root].value = 9
+    copied = nodes
+    nodes[root].children.append(root)
+    stdout.print(nodes[root].value, nodes[root].children.len(), copied[root].children.len())
+"#,
+    )
+}
+
+/// Keys that hold strings or floats go by what they hold, not by their words.
+#[test]
+fn keys_holding_strings_and_floats_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "keys_by_value",
+        r#"struct Named:
+    id: int
+    name: str
+
+enum Tag:
+    Plain
+    Label(text: str)
+
+def joined(a: str, b: str) -> str:
+    a + b
+
+def main(stdout: Stdout):
+    mut pairs = {(1, "one"): [1], (2, "a long string in its own block"): [2]}
+    long = joined("a long string ", "in its own block")
+    stdout.print(pairs[(1, "one")], pairs[(2, long)], (2, long) in pairs, (3, long) in pairs)
+    pairs[(2, long)] = [9]
+    pairs[(3, joined("th", "ree"))] = [3]
+    kept = pairs
+    pairs[(4, "four")] = []
+    stdout.print(pairs, pairs.len(), kept.len(), pairs.get((3, "three")), pairs.get((9, "no")))
+    stdout.print(pairs.pop((1, "one")), pairs.keys(), kept == pairs, kept == kept)
+    for key, value in pairs.items():
+        stdout.print(key, value)
+    mut people = {Named(id=1, name="ann"): 1}
+    people[Named(id=2, name=joined("b", "ob"))] = 2
+    stdout.print(people[Named(id=2, name="bob")], Named(id=1, name="ann") in people, people.len())
+    mut tags = {Tag.Plain, Tag.Label(text="x"), Tag.Label(text="x")}
+    tags.add(Tag.Label(text=joined("y", "z")))
+    tags.discard(Tag.Label(text="x"))
+    stdout.print(tags, tags.len(), Tag.Label(text="yz") in tags, Tag.Plain in tags)
+    zero = 0.0
+    mut floats = {(zero, 1): "a"}
+    floats[(-zero, 1)] = "b"
+    floats[(1.5, 2)] = "c"
+    stdout.print(floats, floats.len(), floats[(-zero, 1)])
+    mut grown: dict[(int, str), int] = {}
+    for at in range(200):
+        grown[(at % 20, f"key {at % 20}")] = at
+    stdout.print(grown.len(), grown[(7, "key 7")], grown[(19, "key 19")])
+"#,
+    )
+}
+
+/// A `shared` value is one cell every name for it reaches, wherever the names are.
+#[test]
+fn shared_values_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_interpreter(
+        "shared_cells",
+        r#"shared Account:
+    total = 0
+    log = list[str]()
+
+    def add(mut self, amount: int):
+        self.total += amount
+        self.log.append(f"added {amount}")
+
+    def balance(self) -> int:
+        self.total
+
+struct Holder:
+    account: Account
+    label: str
+
+def deposit(account: Account, amount: int):
+    account.add(amount)
+
+def transfer(source: Account, target: Account, amount: int) -> bool:
+    with source, target as mut x, mut y:
+        if x.total < amount: return False
+        x.total -= amount
+        y.add(amount)
+    True
+
+def main(stdout: Stdout):
+    first = Account(total=100)
+    second = Account()
+    same = second
+    stdout.print(transfer(first, target=second, amount=30), transfer(second, target=first, amount=50))
+    same.add(5)
+    deposit(second, 1)
+    stdout.print(first.balance(), second.balance(), same.balance(), same.log.len())
+    holder = Holder(account=second, label="held")
+    copied = holder
+    holder.account.add(7)
+    stdout.print(copied.account.total, second.total, second.log)
+    all = [first, second, same]
+    all[2].add(11)
+    stdout.print(second.total, all[1].total)
+    mut named = {"a": first}
+    named["a"].add(13)
+    stdout.print(first.total)
+    mut summary = ""
+    with first, second as seen, other:
+        summary = f"{seen.total} and {other.balance()}"
+    stdout.print(summary)
+    stdout.print(first)
 "#,
     )
 }

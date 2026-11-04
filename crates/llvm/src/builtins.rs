@@ -177,18 +177,23 @@ impl Emit<'_, '_, '_> {
             return Ok(());
         }
         let (list, _, held) = self.list_operand(list)?;
+        self.enumerated_list(dest, &list, &held)
+    }
+
+    /// A new list of each of a list's items with its place.
+    pub(crate) fn enumerated_list(&mut self, dest: LocalId, list: &str, held: &Kind) -> Result<(), String> {
         let Kind::List(item) = self.kind_of(dest)?.clone() else {
             return Err("`enumerate`, not as a list".to_owned());
         };
         let item_kind = Kind::from_ty(self.module.layouts, item.ty())
             .ok_or("a list item this backend doesn't take yet")?;
-        let length = self.list_length(&list);
+        let length = self.list_length(list);
         let result = self.new_list(item, &length);
         let memory = item_kind.memory(self.module.layouts);
         let (at, end) = self.loop_begin(&length);
-        let value = self.item_value(&list, &held, &at);
+        let value = self.item_value(list, held, &at);
         let place = self.item_address(&result, &memory, &at);
-        self.put_pair(&item_kind, &place, [(&Kind::Int, &at), (&held, &value)])?;
+        self.put_pair(&item_kind, &place, [(&Kind::Int, &at), (held, &value)])?;
         self.loop_end(&end);
         self.assign(dest, &result)
     }
@@ -225,7 +230,7 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    fn sorted(&mut self, dest: LocalId, list: &Operand) -> Result<(), String> {
+    pub(crate) fn sorted(&mut self, dest: LocalId, list: &Operand) -> Result<(), String> {
         let (list, _, held) = self.list_operand(list)?;
         if matches!(held, Kind::Struct(_) | Kind::Boxed(_)) {
             let compare = self.tuple_comparison(&held)?;
@@ -312,9 +317,25 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `sorted(list, key=f)`: the keys go in a list of their own, which the runtime goes by.
-    fn sorted_by(&mut self, dest: LocalId, list: &Operand, key: &Operand, span: Span) -> Result<(), String> {
+    pub(crate) fn sorted_by(
+        &mut self,
+        dest: LocalId,
+        list: &Operand,
+        key: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
         let (list, _, held) = self.list_operand(list)?;
         let (keys, kind) = self.keys_of(&list, &held, key, span)?;
+        if matches!(kind, Kind::Struct(_) | Kind::Boxed(_)) {
+            let compare = self.tuple_comparison(&kind)?;
+            self.declare("declare ptr @fennec_list_sorted_by_keys_with(ptr, ptr, ptr) nounwind");
+            let result = self.temp();
+            self.line(&format!(
+                "{result} = call ptr @fennec_list_sorted_by_keys_with(ptr {list}, ptr {keys}, ptr {compare})"
+            ));
+            self.release(&keys);
+            return self.assign(dest, &result);
+        }
         let how = Self::sort_kind(&kind)?;
         self.declare("declare ptr @fennec_list_sorted_by(ptr, ptr, i64) nounwind");
         let result = self.temp();
@@ -333,11 +354,15 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(String, Kind), String> {
         let (closure, kind) = self.operand(key)?;
         let Kind::Closure(_, returns) = kind else { return Err("a key that isn't a closure".to_owned()) };
-        Self::sort_kind(&returns)?;
+        if !matches!(*returns, Kind::Struct(_) | Kind::Boxed(_)) {
+            Self::sort_kind(&returns)?;
+        }
         let key_item = match *returns {
             Kind::Int => ListItem::Int,
             Kind::Bool => ListItem::Bool,
             Kind::Float => ListItem::Float,
+            Kind::Struct(id) => ListItem::Struct(id),
+            Kind::Boxed(id) => ListItem::Boxed(id),
             _ => ListItem::Str,
         };
         let length = self.list_length(list);

@@ -24,6 +24,12 @@ fn lost(start: i64, end: i64) -> Diagnostic {
 
 /// A string block owned once with a temporary's text, failing like the interpreter when
 /// it isn't a string.
+/// The string a temporary holds, or 0 for `None`.
+pub extern "C" fn optional_str_from_value(value: i64, start: i64, end: i64) -> i64 {
+    let is_none = with(|state| matches!(state.expanded(state.raw(value).clone()), Value::None));
+    if is_none { 0 } else { from_value(value, start, end) }
+}
+
 pub extern "C" fn from_value(value: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| match state.temp(value) {
         Value::Str(text) => Ok(text_address(state, &text)),
@@ -519,6 +525,46 @@ pub extern "C" fn print(address: i64) {
 /// A new string with an int's text.
 pub extern "C" fn int_text(n: i64) -> i64 {
     with(|state| text_address(state, &n.to_string()))
+}
+
+/// `reversed(text)`: a new string of its characters, last first.
+pub extern "C" fn reversed(address: i64) -> i64 {
+    with(|state| {
+        let whole = text(state, address).unwrap_or_default();
+        let turned: String = whole.chars().rev().collect();
+        text_address(state, &turned)
+    })
+}
+
+/// `text.codes()`: a new list of the code of each character.
+pub extern "C" fn codes(address: i64, element: i64) -> i64 {
+    with(|state| {
+        let whole = text(state, address).unwrap_or_default();
+        let words: Vec<u64> = whole.chars().map(|c| u64::from(u32::from(c))).collect();
+        super::lists::list_of_words(state, element, &words)
+    })
+}
+
+/// `str.from_code(code)`: a new string of the character with a code, or 0 if none has it.
+pub extern "C" fn from_code(code: i64) -> i64 {
+    match u32::try_from(code).ok().and_then(char::from_u32) {
+        Some(c) => with(|state| text_address(state, c.encode_utf8(&mut [0; 4]))),
+        None => 0,
+    }
+}
+
+/// What's wrong with a number that isn't a character's code.
+pub extern "C" fn from_code_problem(code: i64) -> i64 {
+    with(|state| text_address(state, &format!("{code} isn't the code of a character")))
+}
+
+/// A new string with a string's text as it shows inside a collection, in quotes.
+pub extern "C" fn str_repr(text: i64) -> i64 {
+    with(|state| {
+        let held =
+            u64::try_from(text).ok().and_then(|at| state.heap.block(at)).map_or_else(String::new, block_text);
+        text_address(state, &crate::format::repr(&Value::Str(held.into())))
+    })
 }
 
 /// A new string with a float's text, as it prints.

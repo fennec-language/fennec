@@ -67,6 +67,19 @@ impl Emit<'_, '_, '_> {
             }
             ("reversed", [list], [Some(Kind::List(_))]) => dest.and_then(|dest| self.reversed(dest, list)),
             ("list", [_], [Some(Kind::Cap)]) => dest.and_then(|dest| self.args_list(dest)),
+            ("reversed", [text], [Some(Kind::Str)]) => dest.and_then(|dest| {
+                let (text, _) = self.operand(text)?;
+                self.declare("declare ptr @fennec_str_reversed(ptr) nounwind");
+                let turned = self.temp();
+                self.on_blocks([&text], |emit, [block]| {
+                    emit.line(&format!("{turned} = call ptr @fennec_str_reversed(ptr {block})"));
+                });
+                let turned = self.text_value(&turned);
+                self.assign(dest, &turned)
+            }),
+            ("reversed", [tuple], [Some(Kind::Struct(_) | Kind::Boxed(_))]) => {
+                dest.and_then(|dest| self.reversed_tuple(dest, tuple))
+            }
             // A dict's keys, or a set's items, in their order.
             ("list", [dict], [Some(Kind::Dict(..))]) => {
                 dest.and_then(|dest| self.dict_list(dest, dict, "keys"))
@@ -105,6 +118,87 @@ impl Emit<'_, '_, '_> {
                 self.set_of_list(dest, &list, &held)
             }),
             ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
+            ("assert.sides", [left, right], _) => self.assert_sides(left, right, span),
+            ("generator.let_go", [Operand::Local(generator)], _) => {
+                self.let_go_of_generator(*generator);
+                Ok(())
+            }
+            ("sorted", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| {
+                self.dict_list(dest, set, "keys")?;
+                self.sorted(dest, &Operand::Local(dest))
+            }),
+            // What's ignored has been worked out already.
+            ("ignore", [_, _], _) => Ok(()),
+            ("list", [capability], [Some(Kind::Cap)]) => self.capability_items(dest.ok(), capability, span),
+            ("round", [value, places], [Some(Kind::Float), Some(Kind::Int)]) => dest.and_then(|dest| {
+                let ((value, _), (places, _)) = (self.operand(value)?, self.operand(places)?);
+                self.declare("declare double @fennec_round_places(double, i64) nounwind");
+                let rounded = self.temp();
+                self.line(&format!(
+                    "{rounded} = call double @fennec_round_places(double {value}, i64 {places})"
+                ));
+                self.assign(dest, &rounded)
+            }),
+            ("str.codes", [text], _) => dest.and_then(|dest| self.codes_of_text(dest, text)),
+            ("str.from_code", [code], _) => dest.and_then(|dest| self.text_from_code(dest, code)),
+            ("dict.clear" | "set.clear", [Operand::Local(dict)], _) => {
+                self.dict_clear(*dict);
+                Ok(())
+            }
+            ("set.discard", [Operand::Local(set), key], _) => self.set_remove(*set, key, false, span),
+            ("set.remove", [Operand::Local(set), key], _) => self.set_remove(*set, key, true, span),
+            ("bytes", [], []) => dest.and_then(|dest| self.empty_bytes(dest)),
+            ("bytes", [list], [Some(Kind::List(_))]) => {
+                dest.and_then(|dest| self.bytes_of_list(dest, list, span))
+            }
+            ("bytes.len", [bytes], _) => dest.and_then(|dest| {
+                let (bytes, _) = self.operand(bytes)?;
+                let length = self.list_length(&bytes);
+                self.assign(dest, &length)
+            }),
+            ("list", [bytes], [Some(Kind::Bytes)]) => dest.and_then(|dest| self.list_of_bytes(dest, bytes)),
+            ("bytes.contains", [bytes, byte], _) => {
+                dest.and_then(|dest| self.bytes_contains(dest, bytes, byte))
+            }
+            ("bytes.hex", [bytes, rest @ ..], _) if rest.len() <= 1 => {
+                dest.and_then(|dest| self.bytes_hex(dest, bytes, rest.first()))
+            }
+            ("bytes.decode", [bytes], _) => dest.and_then(|dest| {
+                let (bytes, _) = self.operand(bytes)?;
+                self.bytes_decode(dest, &bytes)
+            }),
+            ("bytes.fromhex", [text], _) => dest.and_then(|dest| self.bytes_from_hex(dest, text)),
+            ("str.encode", [text], _) => dest.and_then(|dest| self.text_encoded(dest, text)),
+            ("list.sort", [Operand::Local(list)], _) => self.sorted(*list, &Operand::Local(*list)),
+            ("list.sort.key", [Operand::Local(list), key], _) => {
+                self.sorted_by(*list, &Operand::Local(*list), key, span)
+            }
+            ("list.clear", [Operand::Local(list)], _) => {
+                let owned = self.unshared(*list);
+                self.declare("declare void @fennec_list_clear(ptr) nounwind");
+                self.line(&format!("call void @fennec_list_clear(ptr {owned})"));
+                Ok(())
+            }
+            ("sorted", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.sorted_chars(dest, text)),
+            ("SoaList", [], []) => dest.and_then(|dest| {
+                let Kind::List(item) = self.kind_of(dest)?.clone() else {
+                    return Err("a `SoaList` that isn't a list".to_owned());
+                };
+                let list = self.new_list(item, "0");
+                self.assign(dest, &list)
+            }),
+            ("main.result", [result], [Some(Kind::Boxed(_) | Kind::Enum(_))]) => {
+                self.main_result(result, span)
+            }
+            ("enumerate", [text], [Some(Kind::Str)]) => dest.and_then(|dest| {
+                let (text, _) = self.operand(text)?;
+                self.on_blocks([&text], |emit, [block]| {
+                    let list = emit.chars_list(&block);
+                    emit.enumerated_list(dest, &list, &Kind::Str)?;
+                    emit.release(&list);
+                    Ok(())
+                })
+            }),
             ("set", [], []) => dest.and_then(|dest| self.empty_set(dest)),
             // A set of a set's items is the set, shared until one changes.
             ("set", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| self.copy(dest, set)),
@@ -131,6 +225,7 @@ impl Emit<'_, '_, '_> {
         let base = if let Some(boxed) = &boxed {
             self.offset(boxed, crate::lists::FIELDS_OFFSET)
         } else {
+            self.release_held(dest)?;
             let (slot, text) = (self.slot(dest), self.text_of(&kind));
             self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
             slot
@@ -169,6 +264,83 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// `text.codes()`.
+    fn codes_of_text(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
+        let (text, _) = self.operand(text)?;
+        let symbol = crate::kinds::element_symbol(self.module.layouts, ListItem::Int);
+        self.module.shared.elements.insert(symbol.clone(), ListItem::Int);
+        self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
+        self.declare("declare ptr @fennec_str_codes(ptr, i64) nounwind");
+        let (element, list) = (self.temp(), self.temp());
+        self.line(&format!("{element} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
+        self.on_blocks([&text], |emit, [block]| {
+            emit.line(&format!("{list} = call ptr @fennec_str_codes(ptr {block}, i64 {element})"));
+        });
+        self.assign(dest, &list)
+    }
+
+    /// `str.from_code(code)`: `Ok` with the character, or `Err` with an `InvalidValue`.
+    fn text_from_code(&mut self, dest: LocalId, code: &Operand) -> Result<(), String> {
+        let (code, _) = self.operand(code)?;
+        self.declare("declare ptr @fennec_str_from_code(i64) nounwind");
+        self.declare("declare ptr @fennec_str_from_code_problem(i64) nounwind");
+        let made = self.temp();
+        self.line(&format!("{made} = call ptr @fennec_str_from_code(i64 {code})"));
+        self.made_or_invalid(dest, &made, &|emit| {
+            let message = emit.temp();
+            emit.line(&format!("{message} = call ptr @fennec_str_from_code_problem(i64 {code})"));
+            message
+        })
+    }
+
+    /// A `Result` of something made by a runtime call that gives back 0 when it can't, with the
+    /// message `problem` writes in an `InvalidValue`.
+    pub(crate) fn made_or_invalid(
+        &mut self,
+        dest: LocalId,
+        made: &str,
+        problem: &dyn Fn(&mut Self) -> String,
+    ) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        let (ok_case, ok_fields) = self.case_of(&kind, "Ok")?;
+        let (err_case, err_fields) = self.case_of(&kind, "Err")?;
+        let (_, ok_offset, ok_kind) = ok_fields.first().cloned().ok_or("an `Ok` holding nothing")?;
+        let ok_kind = ok_kind.ok_or("a value this backend doesn't take yet")?;
+        let (_, err_offset, err_kind) = err_fields.first().cloned().ok_or("an `Err` holding nothing")?;
+        let err_kind = err_kind.ok_or("an error this backend doesn't take yet")?;
+        let boxed = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
+        let base = if let Some(boxed) = &boxed {
+            self.offset(boxed, crate::lists::FIELDS_OFFSET)
+        } else {
+            self.release_held(dest)?;
+            let (slot, text) = (self.slot(dest), self.text_of(&kind));
+            self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
+            slot
+        };
+        let is_made = self.temp();
+        self.line(&format!("{is_made} = icmp ne ptr {made}, null"));
+        let (good, bad, joined) = (self.label("made"), self.label("not_made"), self.label("done"));
+        self.line(&format!("br i1 {is_made}, label %{good}, label %{bad}"));
+        self.start_block(&good);
+        self.line(&format!("store i64 {ok_case}, ptr {base}"));
+        let value_at = self.offset(&base, ok_offset);
+        let value = if ok_kind == Kind::Str { self.text_value(made) } else { made.to_owned() };
+        self.store_field(&ok_kind, &value, &value_at, "");
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&bad);
+        self.line(&format!("store i64 {err_case}, ptr {base}"));
+        let message = problem(self);
+        let message = self.text_value(&message);
+        let error_at = self.offset(&base, err_offset);
+        self.invalid_value(&err_kind, &message, &error_at)?;
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        if let Some(boxed) = boxed {
+            self.assign(dest, &boxed)?;
+        }
+        Ok(())
+    }
+
     /// An `InvalidValue` written at `at`, holding a message it takes over.
     fn invalid_value(&mut self, kind: &Kind, message: &str, at: &str) -> Result<(), String> {
         let (offset, field) = self.field(kind, "message")?;
@@ -183,6 +355,100 @@ impl Emit<'_, '_, '_> {
             self.store_field(&field, message, &place, "");
         }
         Ok(())
+    }
+
+    /// `tuple[start:end]` with its bounds written out: a tuple of the items they take, each with
+    /// an owner of its own. A tuple's length is known, so this is only ever copying.
+    pub(crate) fn tuple_slice(
+        &mut self,
+        dest: LocalId,
+        (object, kind): (&str, &Kind),
+        start: Option<&Operand>,
+    ) -> Result<(), String> {
+        let (Kind::Struct(whole) | Kind::Boxed(whole)) = *kind else {
+            return Err(format!("it slices a {kind:?}, which this backend doesn't take yet"));
+        };
+        let wanted = self.kind_of(dest)?.clone();
+        let (Kind::Struct(part) | Kind::Boxed(part)) = wanted else {
+            return Err("a slice of a tuple that isn't a tuple".to_owned());
+        };
+        let count = i64::try_from(self.layout_of(whole)?.fields.len()).unwrap_or(0);
+        let first = match start {
+            None => 0,
+            Some(Operand::Int(at)) if *at < 0 => count + at,
+            Some(Operand::Int(at)) => *at,
+            Some(_) => return Err("it slices a tuple from a place it can't know".to_owned()),
+        };
+        let items = self.layout_of(part)?.fields.len();
+        let from = self.fields_at(object, kind);
+        let block = if matches!(wanted, Kind::Boxed(_)) { Some(self.new_block(part)?) } else { None };
+        let to = match &block {
+            Some(block) => self.offset(block, crate::lists::FIELDS_OFFSET),
+            None => self.place_for(&wanted),
+        };
+        for at in 0..items {
+            let source = first + i64::try_from(at).unwrap_or(0);
+            let (source_at, held) = self.field(kind, &format!("_{source}"))?;
+            let (dest_at, _) = self.field(&wanted, &format!("_{at}"))?;
+            let (source_at, dest_at) = (self.offset(&from, source_at), self.offset(&to, dest_at));
+            let value = if held.in_memory() { source_at } else { self.load_field(&held, &source_at, "") };
+            if held.counted() {
+                self.retain_value(&value, &held);
+            }
+            self.store_field(&held, &value, &dest_at, "");
+            self.retain_inline(&held, &dest_at);
+        }
+        if let Some(block) = block {
+            return self.assign(dest, &block);
+        }
+        self.assign_memory_owned(dest, &to)
+    }
+
+    /// Fails the program if what `main` gave back is an error, as the runtime says it. Only then
+    /// does the result cross to the runtime.
+    fn main_result(&mut self, result: &Operand, span: Span) -> Result<(), String> {
+        let (value, kind) = self.operand(result)?;
+        let (err_case, _) = self.case_of(&kind, "Err")?;
+        let fields = self.fields_at(&value, &kind);
+        let (case, failed) = (self.temp(), self.temp());
+        self.line(&format!("{case} = load i64, ptr {fields}"));
+        self.line(&format!("{failed} = icmp eq i64 {case}, {err_case}"));
+        let (bad, fine) = (self.label("main_failed"), self.label("main_done"));
+        self.line(&format!("br i1 {failed}, label %{bad}, label %{fine}"));
+        self.start_block(&bad);
+        let block = if let Kind::Enum(id) = kind {
+            let block = self.new_block(id)?;
+            let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+            self.store_field(&kind, &value, &fields, "");
+            self.retain_inline(&kind, &fields);
+            block
+        } else {
+            value
+        };
+        self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
+        self.declare("declare void @fennec_main_result(i64, i64, i64) nounwind");
+        let handle = self.temp();
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
+        self.line(&format!("call void @fennec_main_result(i64 {handle}, i64 {from}, i64 {to})"));
+        self.leave_if_failed();
+        self.line(&format!("br label %{fine}"));
+        self.start_block(&fine);
+        Ok(())
+    }
+
+    /// `sorted(text)`: a list of its characters, in order.
+    fn sorted_chars(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
+        let (text, _) = self.operand(text)?;
+        self.on_blocks([&text], |emit, [block]| {
+            let list = emit.chars_list(&block);
+            emit.declare("declare ptr @fennec_list_sorted(ptr, i64) nounwind");
+            let sorted = emit.temp();
+            let how = fennec_interp::embed::lists::SORT_STRINGS;
+            emit.line(&format!("{sorted} = call ptr @fennec_list_sorted(ptr {list}, i64 {how})"));
+            emit.release(&list);
+            emit.assign(dest, &sorted)
+        })
     }
 
     /// `set(text)`: a set of its characters.
@@ -286,7 +552,7 @@ impl Emit<'_, '_, '_> {
 
     /// Whether `score` beats `best` for `max` or `min`, as the interpreter orders them. Values
     /// in memory come as addresses.
-    fn better(
+    pub(crate) fn better(
         &mut self,
         name: &str,
         kind: &Kind,
@@ -387,6 +653,65 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{failed} = icmp ne ptr {held}, null"));
             self.leave_if(&failed);
         }
+        Ok(result)
+    }
+
+    /// `a + b` on lists: a copy of the first, with the second's items after them.
+    pub(crate) fn joined_lists(&mut self, a: &str, b: &str) -> String {
+        self.declare("declare ptr @fennec_list_slice(ptr, i64, i64) nounwind");
+        self.declare("declare ptr @fennec_list_extend(ptr, ptr) nounwind");
+        let (copy, joined) = (self.temp(), self.temp());
+        let lowest = i64::MIN;
+        self.line(&format!("{copy} = call ptr @fennec_list_slice(ptr {a}, i64 {lowest}, i64 {lowest})"));
+        self.line(&format!("{joined} = call ptr @fennec_list_extend(ptr {copy}, ptr {b})"));
+        joined
+    }
+
+    /// `<` and the like on lists: the first items that differ decide, or else the lengths.
+    pub(crate) fn lists_in_order(
+        &mut self,
+        op: BinOp,
+        item: ListItem,
+        (a, b): (&str, &str),
+        span: Span,
+    ) -> Result<String, String> {
+        let held = self.item_kind(item)?;
+        let (a_length, b_length) = (self.list_length(a), self.list_length(b));
+        let (shorter, both) = (self.temp(), self.temp());
+        self.line(&format!("{shorter} = icmp slt i64 {a_length}, {b_length}"));
+        self.line(&format!("{both} = select i1 {shorter}, i64 {a_length}, i64 {b_length}"));
+        // Below zero if `a` comes first, above if `b` does, and zero if they've been equal so far.
+        let ordering = self.counter();
+        let (at, end) = self.loop_begin(&both);
+        let (decided, compare, next) = (self.temp(), self.label("compare"), self.label("next"));
+        let so_far = self.temp();
+        self.line(&format!("{so_far} = load i64, ptr {ordering}"));
+        self.line(&format!("{decided} = icmp ne i64 {so_far}, 0"));
+        self.line(&format!("br i1 {decided}, label %{next}, label %{compare}"));
+        self.start_block(&compare);
+        let (x, y) = (self.item_value(a, &held, &at), self.item_value(b, &held, &at));
+        let less = self.better("min", &held, (&x, &y), span)?;
+        let more = self.better("max", &held, (&x, &y), span)?;
+        let (above, order) = (self.temp(), self.temp());
+        self.line(&format!("{above} = select i1 {more}, i64 1, i64 0"));
+        self.line(&format!("{order} = select i1 {less}, i64 -1, i64 {above}"));
+        self.line(&format!("store i64 {order}, ptr {ordering}"));
+        self.line(&format!("br label %{next}"));
+        self.start_block(&next);
+        self.loop_end(&end);
+        let (so_far, by_length, equal, length_order, result) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{so_far} = load i64, ptr {ordering}"));
+        self.line(&format!("{by_length} = sub i64 {a_length}, {b_length}"));
+        self.line(&format!("{equal} = icmp eq i64 {so_far}, 0"));
+        self.line(&format!("{length_order} = select i1 {equal}, i64 {by_length}, i64 {so_far}"));
+        let cc = match op {
+            BinOp::Lt => "slt",
+            BinOp::LtEq => "sle",
+            BinOp::Gt => "sgt",
+            _ => "sge",
+        };
+        self.line(&format!("{result} = icmp {cc} i64 {length_order}, 0"));
         Ok(result)
     }
 
@@ -558,6 +883,34 @@ impl Emit<'_, '_, '_> {
         let place = self.item_address(&list, "i64", &at);
         self.line(&format!("store i64 {value}, ptr {place}{ITEM_ACCESS}"));
         self.loop_end(&end_loop);
+        self.assign(dest, &list)
+    }
+
+    /// `reversed(tuple)`: a new list of its items, last first, each with an owner of its own.
+    fn reversed_tuple(&mut self, dest: LocalId, tuple: &Operand) -> Result<(), String> {
+        let (object, kind) = self.operand(tuple)?;
+        let (Kind::Struct(id) | Kind::Boxed(id)) = kind else {
+            return Err("`reversed` of something else".to_owned());
+        };
+        let Kind::List(item) = self.kind_of(dest)?.clone() else {
+            return Err("`reversed` that isn't a list".to_owned());
+        };
+        let held = self.item_kind(item)?;
+        let memory = held.memory(self.module.layouts);
+        let count = self.layout_of(id)?.fields.len();
+        let list = self.new_list(item, &count.to_string());
+        let from = self.fields_at(&object, &kind);
+        for at in 0..count {
+            let (source_at, _) = self.field(&kind, &format!("_{}", count - 1 - at))?;
+            let source_at = self.offset(&from, source_at);
+            let value = if held.in_memory() { source_at } else { self.load_field(&held, &source_at, "") };
+            if held.counted() {
+                self.retain_value(&value, &held);
+            }
+            let place = self.item_address(&list, &memory, &at.to_string());
+            self.store_field(&held, &value, &place, ITEM_ACCESS);
+            self.retain_inline(&held, &place);
+        }
         self.assign(dest, &list)
     }
 

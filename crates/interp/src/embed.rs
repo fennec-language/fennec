@@ -17,6 +17,7 @@ use std::rc::Rc;
 use fennec_syntax::{Diagnostic, Expr, Module, Pattern, Span, Stmt};
 
 pub mod aot;
+pub mod bytes;
 pub mod capabilities;
 pub mod checks;
 pub mod codec;
@@ -109,6 +110,11 @@ pub struct Tables {
     pub elements: Vec<Rc<crate::packed::Element>>,
     /// The shapes of boxed values' blocks, by their number.
     pub shapes: Vec<Rc<crate::packed::Element>>,
+    /// The kinds of block a dict's values can be, by the number `dicts::Word::Block` has.
+    pub blocks: Vec<Rc<crate::packed::Element>>,
+    /// The shapes of `shared` types' blocks, which every name for one keeps reaching, so
+    /// changing one never copies it.
+    pub shared_shapes: Vec<u64>,
     /// The shape number strings' blocks have.
     pub str_shape: u64,
     /// Blocks that live for the whole run, like string literals, made while compiling so

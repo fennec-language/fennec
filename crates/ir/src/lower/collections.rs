@@ -4,9 +4,10 @@
 use std::collections::HashMap;
 
 use fennec_check::Type;
-use fennec_syntax::{CompKind, Expr, ExprKind, Span, Stmt, StmtKind, fuse};
+use fennec_syntax::{CompKind, Expr, ExprKind, Span, Stmt, StmtKind, UnaryOp, fuse};
 
 use super::lists::Over;
+use super::order::Reads;
 use super::{Lowered, Lowering, Tail};
 use crate::{InstKind, LocalId, Operand, Terminator};
 
@@ -39,19 +40,20 @@ pub(super) struct Fill {
 
 impl Lowering<'_> {
     /// Values for what's written out, each made to fit where it goes.
-    fn items_as(&mut self, items: &[Expr], ty: &Type) -> Lowered<Vec<Operand>> {
-        let mut values = Vec::with_capacity(items.len());
+    pub(super) fn items_as(&mut self, items: &[Expr], ty: &Type, span: Span) -> Lowered<Vec<Operand>> {
+        let mut reads = Reads::default();
         for written in items {
             let value = self.expr(written)?;
-            values.push(self.coerce(value, ty, written.span)?);
+            let value = self.coerce(value, ty, written.span)?;
+            reads.add(self, value);
         }
-        Ok(values)
+        Ok(reads.finish(self, span))
     }
 
     pub(super) fn set(&mut self, expr: &Expr, items: &[Expr]) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
         let Type::Set(item) = &ty else { return Err("a set has another type".to_owned()) };
-        let items = self.items_as(items, item)?;
+        let items = self.items_as(items, item, expr.span)?;
         let dest = self.temporary(ty);
         self.emit(InstKind::MakeSet { dest, items }, expr.span);
         Ok(Operand::Local(dest))
@@ -60,12 +62,19 @@ impl Lowering<'_> {
     pub(super) fn dict(&mut self, expr: &Expr, written: &[(Expr, Expr)]) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
         let Type::Dict(key, value) = &ty else { return Err("a dict has another type".to_owned()) };
-        let mut pairs = Vec::with_capacity(written.len());
+        let mut reads = Reads::default();
         for (at, item) in written {
             let lowered = self.expr(at)?;
             let at_key = self.coerce(lowered, key, at.span)?;
+            reads.add(self, at_key);
             let lowered = self.expr(item)?;
-            pairs.push((at_key, self.coerce(lowered, value, item.span)?));
+            let item = self.coerce(lowered, value, item.span)?;
+            reads.add(self, item);
+        }
+        let mut values = reads.finish(self, expr.span).into_iter();
+        let mut pairs = Vec::with_capacity(written.len());
+        while let (Some(at_key), Some(item)) = (values.next(), values.next()) {
+            pairs.push((at_key, item));
         }
         let dest = self.temporary(ty);
         self.emit(InstKind::MakeDict { dest, pairs }, expr.span);
@@ -75,11 +84,13 @@ impl Lowering<'_> {
     pub(super) fn tuple(&mut self, expr: &Expr, written: &[Expr]) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
         let Type::Tuple(types) = &ty else { return Err("a tuple has another type".to_owned()) };
-        let mut items = Vec::with_capacity(written.len());
+        let mut reads = Reads::default();
         for (item, wanted) in written.iter().zip(types) {
             let value = self.expr(item)?;
-            items.push(self.coerce(value, wanted, item.span)?);
+            let value = self.coerce(value, wanted, item.span)?;
+            reads.add(self, value);
         }
+        let items = reads.finish(self, expr.span);
         let dest = self.temporary(ty);
         self.emit(InstKind::MakeTuple { dest, items }, expr.span);
         Ok(Operand::Local(dest))
@@ -130,9 +141,25 @@ impl Lowering<'_> {
         (start, end): (Option<&Expr>, Option<&Expr>),
     ) -> Lowered<Operand> {
         let ty = self.ty(expr)?;
+        let mut reads = Reads::default();
         let object = self.expr(object)?;
-        let start = start.map(|bound| self.expr(bound)).transpose()?;
-        let end = end.map(|bound| self.expr(bound)).transpose()?;
+        reads.add(self, object);
+        let (has_start, has_end) = (start.is_some(), end.is_some());
+        for bound in [start, end].into_iter().flatten() {
+            // A bound counting from the back stays a number, as a tuple's has to be known.
+            let bound = match &bound.kind {
+                ExprKind::Unary { op: UnaryOp::Neg, expr } => match expr.kind {
+                    ExprKind::Int(at) => Operand::Int(-at),
+                    _ => self.expr(bound)?,
+                },
+                _ => self.expr(bound)?,
+            };
+            reads.add(self, bound);
+        }
+        let mut values = reads.finish(self, expr.span).into_iter();
+        let object = values.next().ok_or("a slice lost what it's of")?;
+        let start = if has_start { values.next() } else { None };
+        let end = if has_end { values.next() } else { None };
         let dest = self.temporary(ty);
         self.emit(InstKind::Slice { dest, object, start, end }, expr.span);
         Ok(Operand::Local(dest))

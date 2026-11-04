@@ -1370,10 +1370,7 @@ tools = { path = "../tools" }
 
 **LLVM becomes the default backend once about 90% of examples build natively.** The interpreter is then out of `fennec run` and `fennec build`, and refusing to build and building natively stay the only two outcomes. Removing Cranelift also requires a native `fennec test` harness and Windows linking. Until then, `fennec run` uses the cached LLVM build, with a one-line note and then the JIT where LLVM can't build the program, and the interpreter for what the JIT can't compile. `fennec build` and `fennec test` still use the JIT's compiler, Cranelift, and `fennec build --llvm` asks for LLVM. This replaces the rule that Cranelift is removed when LLVM wins across the benchmark suite, edits stay well under a second, and CI's rebuild comparison stays clean.
 
-**Fennec has no REPL.** Running a small file is already quick, and one can come back as a pure addition if people ask.
-*Why:* This is a compiled language written mostly by AI, and it needs to be readable, fast to build and fast to run.
-
-**The tree-walking interpreter is kept for now, simple and correct, not fast.** It runs the playground, compile-time evaluation and the sandbox, and it's the test reference. The goal is to drop it as soon as we can, and what replaces each of its jobs, a test reference included, gets decided at that point.
+**The tree-walking interpreter is kept for now, simple and correct, not fast.** It runs the REPL, the playground, compile-time evaluation and the sandbox, and it's the test reference. The goal is to drop it as soon as we can, and what replaces each of its jobs, a test reference included, gets decided at that point.
 
 **Every example that builds natively must give the same output as the interpreter.** An example that's refused goes on a tracked list, which must reach zero.
 
@@ -1551,7 +1548,7 @@ The JIT loads them when the program runs, and release builds link them. The C st
 
 **An app allows each native kit by name:** `sqlite = { version = "1.2", native = true }`. A native kit's API still takes the capabilities it uses, `sqlite.open(fs, path)`, so its signatures stay honest.
 
-**The interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox and compile-time evaluation can't run native kits; the error points to `fennec run`, which runs native code. Native kits' differential tests compare the JIT with release builds.
+**The interpreter calls only the standard library's own OS layer, never a kit's `extern` functions.** The playground, the sandbox, compile-time evaluation and the REPL can't run native kits; the error points to `fennec run`, which runs native code. Native kits' differential tests compare the JIT with release builds. A REPL that switches to the JIT when a native kit is imported can come later.
 
 ## Sandboxing
 
@@ -1561,7 +1558,7 @@ The JIT loads them when the program runs, and release builds link them. The C st
 **Capabilities are the sandbox's policy in every engine.** Sandboxed code can do only what the capabilities passed to its `main` allow, and it can't use `extern` or `unsafe`. A tool can show what a snippet asks for before running it: "this snippet wants `Net` and read access to `data/`".
 *Why:* That makes Fennec a good language for AI agents to write tool code in: typed, with every power declared up front.
 
-**The interpreter runs untrusted code for those tools, with limits.** It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
+**The interpreter runs untrusted code for those tools, with limits.** It counts fuel on every loop and call, caps memory through its allocator, and limits recursion depth and running time. It runs the playground, the REPL and AI-written snippets, where starting instantly and being easy to sandbox matter more than speed. In the browser it runs as wasm, so the browser sandboxes it again.
 
 **Untrusted code that needs native speed is compiled to WebAssembly and run in Wasmtime.** The development and release backends can both target wasm. Wasmtime already provides fuel, interruption and memory limits.
 *Why:* Wasmtime's sandbox is heavily hardened. Making our own JIT a security boundary would mean any compiler bug is an escape.

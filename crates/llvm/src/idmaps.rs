@@ -127,7 +127,7 @@ impl Emit<'_, '_, '_> {
         if !owned {
             self.retain_inline(held, at);
         }
-        if matches!(optional, Kind::Maybe(_)) {
+        if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
             return self.assign(dest, &value);
         }
         let (number, fields) = self.case_of(&optional, "Some")?;
@@ -152,6 +152,55 @@ impl Emit<'_, '_, '_> {
     fn clear_item(&mut self, held: &Kind, at: &str) {
         let memory = held.memory(self.module.layouts);
         self.line(&format!("store {memory} zeroinitializer, ptr {at}{ITEM_ACCESS}"));
+    }
+
+    /// Removes the items a test picks, or all of them with no test.
+    fn id_map_remove(&mut self, map: LocalId, parts: &Parts, test: Option<(&str, &Kind)>, span: Span) {
+        let held = parts.held.clone();
+        let memory = held.memory(self.module.layouts);
+        let place = self.slot(map);
+        let block = self.alone_at(&place, "fennec_unshare");
+        let (_, generations) = self.part(&block, parts.generations, true);
+        let (_, items) = self.part(&block, parts.items, true);
+        let length = self.list_length(&generations);
+        let (at, end) = self.loop_begin(&length);
+        let generation_at = self.item_address(&generations, "i64", &at);
+        let (generation, is_live) = (self.temp(), self.temp());
+        self.line(&format!("{generation} = load i64, ptr {generation_at}{ITEM_ACCESS}"));
+        self.line(&format!("{is_live} = icmp sge i64 {generation}, 0"));
+        let (live, take, next) = (self.label("live"), self.label("take"), self.label("next"));
+        self.line(&format!("br i1 {is_live}, label %{live}, label %{next}"));
+        self.start_block(&live);
+        let item_at = self.item_address(&items, &memory, &at);
+        let value =
+            if held.in_memory() { item_at.clone() } else { self.load_field(&held, &item_at, ITEM_ACCESS) };
+        match test {
+            Some((closure, returns)) => {
+                let text = if held.in_memory() { "ptr".to_owned() } else { self.text_of(&held) };
+                let gone = self.call_closure_with(closure, returns, &[format!("{text} {value}")], span);
+                self.line(&format!("br i1 {gone}, label %{take}, label %{next}"));
+            }
+            None => self.line(&format!("br label %{take}")),
+        }
+        self.start_block(&take);
+        if held.in_memory() {
+            self.release_inline(&held, &item_at);
+        } else if held.counted() {
+            self.release_kind(&value, &held);
+        }
+        self.clear_item(&held, &item_at);
+        let removed = self.temp();
+        self.line(&format!("{removed} = sub i64 -1, {generation}"));
+        self.line(&format!("store i64 {removed}, ptr {generation_at}{ITEM_ACCESS}"));
+        let fields = self.offset(&block, FIELDS_OFFSET);
+        let live_at = self.offset(&fields, parts.live);
+        let (count, one_fewer) = (self.temp(), self.temp());
+        self.line(&format!("{count} = load i64, ptr {live_at}"));
+        self.line(&format!("{one_fewer} = add i64 {count}, -1"));
+        self.line(&format!("store i64 {one_fewer}, ptr {live_at}"));
+        self.line(&format!("br label %{next}"));
+        self.start_block(&next);
+        self.loop_end(&end);
     }
 
     pub(crate) fn id_map_builtin(
@@ -307,6 +356,51 @@ impl Emit<'_, '_, '_> {
                 }
                 self.line(&format!("br label %{done}"));
                 self.start_block(&done);
+                Ok(())
+            }
+            "IdMap.remove_where" => {
+                let (closure, closure_kind) = self.operand(args.get(1).ok_or("no argument")?)?;
+                let Kind::Closure(_, returns) = closure_kind else {
+                    return Err("a test that isn't a closure".to_owned());
+                };
+                self.id_map_remove(*map, &parts, Some((&closure, &returns)), span);
+                Ok(())
+            }
+            "IdMap.modify" => {
+                let id = self.id_parts(args.get(1).ok_or("no argument")?)?;
+                let (closure, closure_kind) = self.operand(args.get(2).ok_or("no argument")?)?;
+                let Kind::Closure(_, returns) = closure_kind else {
+                    return Err("a change that isn't a closure".to_owned());
+                };
+                if held == Kind::Bool {
+                    return Err(
+                        "it changes a bool in an `IdMap`, which this backend doesn't take yet".to_owned()
+                    );
+                }
+                let place = self.slot(*map);
+                let block = self.alone_at(&place, "fennec_unshare");
+                let (_, generations) = self.part(&block, parts.generations, true);
+                let found = self.finds(&generations, (&id.0, &id.1));
+                let (yes, done) = (self.label("change"), self.label("changed"));
+                self.line(&format!("br i1 {found}, label %{yes}, label %{done}"));
+                self.start_block(&yes);
+                let (_, items) = self.part(&block, parts.items, true);
+                let at = self.item_address(&items, &memory, &id.0);
+                let given = self.call_closure_with(&closure, &returns, &[format!("ptr {at}")], span);
+                if returns.in_memory() {
+                    self.release_inline(&returns, &given);
+                } else if returns.counted() {
+                    self.release_kind(&given, &returns);
+                }
+                self.line(&format!("br label %{done}"));
+                self.start_block(&done);
+                match dest {
+                    Some(dest) => self.assign(dest, &found),
+                    None => Ok(()),
+                }
+            }
+            "IdMap.clear" => {
+                self.id_map_remove(*map, &parts, None, span);
                 Ok(())
             }
             "IdMap.values" | "IdMap.ids" | "IdMap.items" => {

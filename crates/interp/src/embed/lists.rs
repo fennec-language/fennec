@@ -405,6 +405,26 @@ fn copied_for_sorting(state: &mut State, list: i64) -> Option<(u64, usize, usize
     Some((copy, start, stride, words.len() / stride))
 }
 
+/// A new list owned once of a list's items in the order of their keys, a list as long as it, by
+/// a function comparing two keys by their addresses, as when keys are tuples.
+pub extern "C" fn sorted_by_keys_with(list: i64, keys: i64, compare: extern "C" fn(i64, i64) -> i64) -> i64 {
+    let Some((copy, base, stride, count)) = with(|state| copied_for_sorting(state, keys)) else {
+        return 0;
+    };
+    let address = |place: usize| i64::try_from(base + place * stride * 8).unwrap_or(0);
+    let mut places: Vec<usize> = (0..count).collect();
+    places.sort_by(|a, b| {
+        if super::FAILED.get() != 0 {
+            return std::cmp::Ordering::Equal;
+        }
+        compare(address(*a), address(*b)).cmp(&0)
+    });
+    with(|state| {
+        release(state, copy);
+        in_places(state, u64::try_from(list).unwrap_or(0), &places).unwrap_or(0)
+    })
+}
+
 /// A new list owned once of a list's items in the order of their keys, a list as long as it.
 /// Items with the same key stay in the order they were in.
 pub extern "C" fn sorted_by(list: i64, keys: i64, kind: i64) -> i64 {
@@ -596,7 +616,7 @@ fn insert_into(kind: &str, list: i64, at: i64, (start, end): (i64, i64)) -> i64 
 /// Whether an item of a word equals a word, as the interpreter compares them.
 fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
     match element {
-        Element::Float => f64::from_bits(item).total_cmp(&f64::from_bits(word)).is_eq(),
+        Element::Float => crate::value::floats_same(f64::from_bits(item), f64::from_bits(word)),
         Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_) => {
             super::heap::same(state, item, word)
         }

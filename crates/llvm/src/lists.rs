@@ -438,13 +438,170 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// Whether this is one of a set of errors, which is an enum with a case for each.
+    pub(crate) fn is_error_set(&self, kind: &Kind) -> bool {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return false };
+        self.module.layouts.get(*id).is_some_and(|layout| fennec_interp::packed::names_errors(&layout.name))
+    }
+
+    /// An error, or one of a smaller set, as one of this set, with an owner of its own.
+    pub(crate) fn as_error_set(
+        &mut self,
+        value: &str,
+        held: &Kind,
+        kind: &Kind,
+    ) -> Result<(String, bool), String> {
+        let (place, fields_at) = if let Kind::Boxed(id) = kind {
+            let block = self.new_block(*id)?;
+            let fields_at = self.offset(&block, FIELDS_OFFSET);
+            (block, fields_at)
+        } else {
+            let place = self.place_for(kind);
+            let text = self.text_of(kind);
+            self.line(&format!("store {text} zeroinitializer, ptr {place}"));
+            (place.clone(), place)
+        };
+        if self.is_error_set(held) {
+            // The same error is in the same place in each: only which case it is differs.
+            let (Kind::Enum(from) | Kind::Boxed(from)) = held else {
+                return Err("an error set of something else".to_owned());
+            };
+            let layout = self.layout_of(*from)?;
+            let names: Vec<String> = layout.cases.iter().flatten().map(|case| case.name.clone()).collect();
+            let size = layout.size;
+            let source = self.fields_at(value, held);
+            self.retain_inline(held, &source);
+            let tag = self.temp();
+            self.line(&format!("{tag} = load i64, ptr {source}"));
+            self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+            self.line(&format!(
+                "call void @llvm.memcpy.p0.p0.i64(ptr {fields_at}, ptr {source}, i64 {size}, i1 false)"
+            ));
+            let mut picked = "0".to_owned();
+            for (number, name) in names.iter().enumerate() {
+                let (wanted, _) = self.case_of(kind, name)?;
+                let (same, next) = (self.temp(), self.temp());
+                self.line(&format!("{same} = icmp eq i64 {tag}, {number}"));
+                self.line(&format!("{next} = select i1 {same}, i64 {wanted}, i64 {picked}"));
+                picked = next;
+            }
+            self.line(&format!("store i64 {picked}, ptr {fields_at}"));
+            return Ok((place, true));
+        }
+        let (Kind::Struct(id) | Kind::Boxed(id) | Kind::Enum(id)) = held else {
+            return Err(format!("it makes an error of a {held:?}, which this backend doesn't take yet"));
+        };
+        let name = self.layout_of(*id)?.name.clone();
+        let (number, fields) = self.case_of(kind, &name)?;
+        let (_, offset, field) = fields.first().cloned().ok_or("an error's case holding nothing")?;
+        let field = field.ok_or("an error this backend doesn't take yet")?;
+        self.line(&format!("store i64 {number}, ptr {fields_at}"));
+        let at = self.offset(&fields_at, offset);
+        self.store_field(&field, value, &at, "");
+        if field.in_memory() {
+            self.retain_inline(&field, &at);
+        } else if field.counted() {
+            self.retain_value(value, &field);
+        }
+        Ok((place, true))
+    }
+
+    pub(crate) fn is_result(&self, kind: &Kind) -> bool {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return false };
+        self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Result["))
+    }
+
+    /// A result as one that can fail in more ways, with owners of what it holds.
+    pub(crate) fn result_as(&mut self, value: &str, held: &Kind, kind: &Kind) -> Result<String, String> {
+        let (place, fields_at) = if let Kind::Boxed(id) = kind {
+            let block = self.new_block(*id)?;
+            let fields_at = self.offset(&block, FIELDS_OFFSET);
+            (block, fields_at)
+        } else {
+            let place = self.place_for(kind);
+            let text = self.text_of(kind);
+            self.line(&format!("store {text} zeroinitializer, ptr {place}"));
+            (place.clone(), place)
+        };
+        let source = self.fields_at(value, held);
+        let (err_case, err_from) = self.case_of(held, "Err")?;
+        let (_, err_to) = self.case_of(kind, "Err")?;
+        let (_, ok_from) = self.case_of(held, "Ok")?;
+        let (_, ok_to) = self.case_of(kind, "Ok")?;
+        let (tag, failed) = (self.temp(), self.temp());
+        self.line(&format!("{tag} = load i64, ptr {source}"));
+        self.line(&format!("store i64 {tag}, ptr {fields_at}"));
+        self.line(&format!("{failed} = icmp eq i64 {tag}, {err_case}"));
+        let (bad, good, done) = (self.label("err"), self.label("ok"), self.label("as_wider"));
+        self.line(&format!("br i1 {failed}, label %{bad}, label %{good}"));
+        self.start_block(&bad);
+        let (_, from_at, from_kind) = err_from.first().cloned().ok_or("an `Err` holding nothing")?;
+        let (_, to_at, to_kind) = err_to.first().cloned().ok_or("an `Err` holding nothing")?;
+        let (from_kind, to_kind) = (
+            from_kind.ok_or("an error this backend doesn't take yet")?,
+            to_kind.ok_or("an error this backend doesn't take yet")?,
+        );
+        let at = self.offset(&source, from_at);
+        let error = if from_kind.in_memory() { at } else { self.load_field(&from_kind, &at, "") };
+        let (made, _) = self.as_error_set(&error, &from_kind, &to_kind)?;
+        let into = self.offset(&fields_at, to_at);
+        self.store_field(&to_kind, &made, &into, "");
+        self.line(&format!("br label %{done}"));
+        self.start_block(&good);
+        if let (Some((_, from_at, Some(field))), Some((_, to_at, _))) = (ok_from.first(), ok_to.first()) {
+            let at = self.offset(&source, *from_at);
+            let ok = if field.in_memory() { at } else { self.load_field(field, &at, "") };
+            let into = self.offset(&fields_at, *to_at);
+            self.store_field(field, &ok, &into, "");
+            if field.in_memory() {
+                self.retain_inline(field, &into);
+            } else if field.counted() {
+                self.retain_value(&ok, field);
+            }
+        }
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(place)
+    }
+
+    /// Whether an error of a set is of this type, which is a case by that name.
+    pub(crate) fn is_error(&mut self, dest: LocalId, value: &Operand, name: &str) -> Result<(), String> {
+        let (_, held) = self.operand(value)?;
+        if self.is_error_set(&held) {
+            return self.is_case(dest, value, name);
+        }
+        let (Kind::Struct(id) | Kind::Boxed(id) | Kind::Enum(id)) = held else {
+            return Err("it asks which error something else is".to_owned());
+        };
+        let same = self.layout_of(id)?.name == name;
+        self.assign(dest, if same { "true" } else { "false" })
+    }
+
+    /// An error of a set, known to be of the type `dest` holds.
+    pub(crate) fn as_error(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+        let (_, held) = self.operand(value)?;
+        if !self.is_error_set(&held) {
+            return self.copy(dest, value);
+        }
+        let (Kind::Struct(id) | Kind::Boxed(id) | Kind::Enum(id)) = self.kind_of(dest)?.clone() else {
+            return Err("it takes an error out as something else".to_owned());
+        };
+        let name = self.layout_of(id)?.name.clone();
+        self.get_case_field(dest, value, &name, "value")
+    }
+
     /// An enum's case, by name: its number, and its fields with where they go.
     pub(crate) fn case_of(&self, kind: &Kind, name: &str) -> Result<(i64, Vec<CaseField>), String> {
         let (Kind::Enum(id) | Kind::Boxed(id)) = kind else {
             return Err(format!("it reads a case of a {kind:?}, which this backend doesn't take yet"));
         };
         let cases = self.layout_of(*id)?.cases.as_ref().ok_or("a case of a struct")?;
-        let number = cases.iter().position(|case| case.name == name).ok_or("no such case")?;
+        let number = cases.iter().position(|case| case.name == name).ok_or_else(|| {
+            format!(
+                "no such case as `{name}` of `{}`",
+                self.layout_of(*id).map_or("?", |layout| layout.name.as_str())
+            )
+        })?;
         let case = cases.get(number).ok_or("no such case")?;
         let fields = case
             .fields
@@ -456,6 +613,18 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn make_case(&mut self, dest: LocalId, case: &str, fields: &[Operand]) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
+        // An optional string is a header, all zero for `None`.
+        if kind == Kind::MaybeText {
+            return match (case, fields) {
+                ("None", _) => self.assign(dest, "zeroinitializer"),
+                (_, [value]) => {
+                    let (value, _) = self.operand(value)?;
+                    self.retain_text(&value);
+                    self.assign(dest, &value)
+                }
+                _ => Err("an optional string with no string".to_owned()),
+            };
+        }
         let (number, written) = self.case_of(&kind, case)?;
         let block = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
         // Holding blocks, it's made beside what the local holds, which may be read for it.
@@ -516,6 +685,12 @@ impl Emit<'_, '_, '_> {
         case: &str,
         field: &str,
     ) -> Result<(), String> {
+        // What's in an optional string that isn't `None` is its header.
+        if matches!(value, Operand::Local(local) if *self.kind_of(*local)? == Kind::MaybeText) {
+            let (held, _) = self.operand(value)?;
+            self.retain_text(&held);
+            return self.assign(dest, &held);
+        }
         let (base, kind) = self.operand(value)?;
         let (_, written) = self.case_of(&kind, case)?;
         let (_, offset, held) =
@@ -597,11 +772,7 @@ impl Emit<'_, '_, '_> {
                             self.line(&format!("{equal} = icmp eq {text} {x}, {y}"));
                             equal
                         }
-                        Kind::Float => {
-                            let equal = self.temp();
-                            self.line(&format!("{equal} = fcmp oeq double {x}, {y}"));
-                            equal
-                        }
+                        Kind::Float => self.float_equal(BinOp::Eq, (&x, &y)),
                         Kind::Str if self.headers() => self.same_headers(&x, &y),
                         Kind::Str => self.string_binary(BinOp::Eq, (&x, &y))?,
                         Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
@@ -692,7 +863,9 @@ impl Emit<'_, '_, '_> {
     /// `==` on two enums in place: their words, one by one, or their cases' fields if they hold
     /// blocks, whose words can differ when what they hold doesn't.
     pub(crate) fn same_enums(&mut self, op: BinOp, id: u32, (a, b): (&str, &str)) -> Result<String, String> {
-        let same = if self.case_parts(id).is_empty() {
+        // A float doesn't compare by its bits, as `0.0` is the same as `-0.0`.
+        let plain = self.case_parts(id).is_empty() && !self.holds_a_float(id);
+        let same = if plain {
             let words = self.module.layouts.get(id).map_or(0, |layout| layout.size / 8);
             let mut same = "true".to_owned();
             for word in 0..words {
@@ -714,6 +887,17 @@ impl Emit<'_, '_, '_> {
             return Ok(flipped);
         }
         Ok(same)
+    }
+
+    /// Whether a value of this layout has a float anywhere in it, in place.
+    pub(crate) fn holds_a_float(&self, id: u32) -> bool {
+        let Some(layout) = self.module.layouts.get(id) else { return false };
+        let fields = layout.fields.iter().chain(layout.cases.iter().flatten().flat_map(|case| &case.fields));
+        fields.into_iter().any(|field| match Kind::from_ty(self.module.layouts, field.ty) {
+            Some(Kind::Float) => true,
+            Some(Kind::Struct(inner) | Kind::Enum(inner)) => self.holds_a_float(inner),
+            _ => false,
+        })
     }
 
     /// Whether two enums at these addresses are in the same case with the same fields.
@@ -900,6 +1084,13 @@ impl Emit<'_, '_, '_> {
                 return self.header_index(dest, &list, index, span);
             }
             return self.on_blocks([&list], |emit, [block]| emit.string_index(dest, &block, index, span));
+        }
+        if kind == Kind::Bytes {
+            return self.bytes_index(dest, &list, index, span);
+        }
+        if kind == Kind::Cap {
+            let (at, _) = self.operand(index)?;
+            return self.capability_item(dest, &list, &at, span);
         }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
@@ -1200,12 +1391,22 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (object, kind) = self.operand(object)?;
+        if matches!(kind, Kind::Struct(_) | Kind::Boxed(_)) {
+            return self.tuple_slice(dest, (&object, &kind), start);
+        }
         let lowest = i64::MIN.to_string();
         let start =
             start.map(|start| self.operand(start)).transpose()?.map_or_else(|| lowest.clone(), |held| held.0);
         let end = end.map(|end| self.operand(end)).transpose()?.map_or(lowest, |held| held.0);
         let part = self.temp();
         match kind {
+            Kind::Bytes => {
+                self.declare("declare ptr @fennec_bytes_slice(ptr, i64, i64) nounwind");
+                self.line(&format!(
+                    "{part} = call ptr @fennec_bytes_slice(ptr {object}, i64 {start}, i64 {end})"
+                ));
+                return self.assign(dest, &part);
+            }
             Kind::Str if self.headers() => {
                 let part = self.header_slice(&object, (&start, &end), span);
                 return self.assign(dest, &part);

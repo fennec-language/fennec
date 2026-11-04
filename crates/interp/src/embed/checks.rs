@@ -24,6 +24,21 @@ pub extern "C" fn stop(message: i64, start: i64, end: i64) {
     super::fail_with(Diagnostic::new(text, span));
 }
 
+/// Fails a comparison in an `assert`, saying what each side was, given as strings.
+pub extern "C" fn assert_sides(left: i64, right: i64, start: i64, end: i64) {
+    let span = Span { start: u32::try_from(start).unwrap_or(0), end: u32::try_from(end).unwrap_or(0) };
+    let text_of = |at: i64| {
+        super::with(|state| {
+            u64::try_from(at)
+                .ok()
+                .and_then(|at| state.heap.block(at))
+                .map_or_else(String::new, super::heap::block_text)
+        })
+    };
+    let help = format!("the left side is {} and the right side is {}", text_of(left), text_of(right));
+    super::fail_with(Diagnostic::new("this assertion failed", span).with_help(help));
+}
+
 /// Called by native code when one of its own checks fails.
 pub extern "C" fn fail(code: i64, start: i64, end: i64) {
     let span = Span { start: u32::try_from(start).unwrap_or(0), end: u32::try_from(end).unwrap_or(0) };
@@ -39,6 +54,12 @@ pub extern "C" fn fail(code: i64, start: i64, end: i64) {
         }
         _ => Diagnostic::new("`range` can't step by 0", span),
     });
+}
+
+/// `round(x, places)`.
+pub extern "C" fn round_places(x: f64, places: i64) -> f64 {
+    let scale = 10_f64.powi(i32::try_from(places).unwrap_or(0));
+    (x * scale).round_ties_even() / scale
 }
 
 pub extern "C" fn sin(x: f64) -> f64 {

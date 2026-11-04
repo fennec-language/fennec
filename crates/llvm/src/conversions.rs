@@ -66,6 +66,7 @@ impl Emit<'_, '_, '_> {
                 dest.and_then(|dest| self.range_list(dest, args, span))
             }
             ("reversed", [list], [Some(Kind::List(_))]) => dest.and_then(|dest| self.reversed(dest, list)),
+            ("list", [_], [Some(Kind::Cap)]) => dest.and_then(|dest| self.args_list(dest)),
             // A dict's keys, or a set's items, in their order.
             ("list", [dict], [Some(Kind::Dict(..))]) => {
                 dest.and_then(|dest| self.dict_list(dest, dict, "keys"))

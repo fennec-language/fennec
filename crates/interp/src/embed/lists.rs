@@ -13,6 +13,7 @@ use fennec_syntax::Diagnostic;
 
 use crate::buffer::{MIN_ROOM, grown_room};
 
+use super::heap::shown::Written;
 use super::heap::{TEXT_HEADER_WORDS, read_block, release, shape_word, text_address, write};
 use super::{State, attempt, span, with};
 use crate::packed::{Element, Packed};
@@ -434,10 +435,47 @@ pub(super) fn read(state: &State, block: &[u64]) -> Value {
     if owns_items(&element) {
         return Value::list(words.iter().map(|word| read_block(state, *word)).collect());
     }
-    if !super::heap::packable(&element) {
-        return super::heap::read_items(state, &element, &words);
+    // An item with no fields takes no words, so it's the list's length that counts them.
+    if !super::heap::packable(&element) || element.words() == 0 {
+        let count = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+        return super::heap::read_items(state, &element, &words, count);
     }
     Value::Packed(Rc::new(Packed::new(element, words)))
+}
+
+/// Writes a list as it shows.
+pub(super) fn shown(state: &State, block: &[u64], out: &mut Written) {
+    out.push('[');
+    if let Some(element) = element_of(state, block) {
+        let words = items(block, element.words());
+        // An item with no fields takes no words, so it's the list's length that counts them.
+        let count = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
+        super::heap::shown::items(state, &element, &mut words.iter(), count, out);
+    }
+    out.push(']');
+}
+
+/// Writes the items of an `IdMap` whose slots are still in use: those whose generation in the
+/// list `generations` isn't negative.
+pub(super) fn shown_where_used(state: &State, held: u64, generations: u64, out: &mut Written) {
+    let (Some(block), Some(numbers)) = (state.heap.block(held), state.heap.block(generations)) else {
+        return;
+    };
+    let Some(element) = element_of(state, block) else { return };
+    let mut words = items(block, element.words()).iter();
+    let mut first = true;
+    for generation in items(numbers, 1) {
+        let in_use = i64::from_ne_bytes(generation.to_ne_bytes()) >= 0;
+        if in_use && !first {
+            out.push_str(", ");
+        }
+        if in_use {
+            super::heap::shown::item(state, &element, &mut words, out);
+            first = false;
+        } else {
+            (&mut words).take(element.words()).for_each(drop);
+        }
+    }
 }
 
 /// A new list owned once with a temporary's items, failing like the interpreter when the

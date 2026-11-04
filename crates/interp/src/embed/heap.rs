@@ -22,11 +22,13 @@ use crate::value::{Instance, Lent, Value};
 
 mod freeing;
 mod named;
+pub(super) mod shown;
 #[cfg(test)]
 pub(super) use freeing::measure_part;
 pub use freeing::{free, free_text, set_abandon};
 pub(super) use freeing::{release, run_abandons};
 pub(super) use named::packable;
+pub use shown::{own_text, own_text_written};
 
 /// Words before a block's fields: its owner count and its shape.
 pub const HEADER_WORDS: usize = 2;
@@ -870,9 +872,8 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     read(state, &shape, &mut words)
 }
 
-/// A list's items, laid out as `words`, as the interpreter holds them, one by one.
-pub(super) fn read_items(state: &State, element: &Element, words: &[u64]) -> Value {
-    let count = words.len() / element.words().max(1);
+/// A list's `count` items, laid out as `words`, as the interpreter holds them, one by one.
+pub(super) fn read_items(state: &State, element: &Element, words: &[u64], count: usize) -> Value {
     let mut words = words.iter();
     Value::list((0..count).map(|_| read(state, element, &mut words)).collect())
 }

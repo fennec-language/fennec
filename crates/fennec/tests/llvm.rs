@@ -108,6 +108,49 @@ fn str_of_text_matches_the_jit() -> std::io::Result<()> {
     )
 }
 
+/// A text growing in a field: short then long, from each kind of text, and with a copy held
+/// elsewhere that has to keep what it had.
+#[test]
+fn a_text_growing_in_a_field_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "text_in_a_field",
+        r#"struct Log:
+    text = ""
+    hp = 0
+
+    def add(mut self, more: str):
+        self.text += more
+
+struct World:
+    log = Log()
+
+def main(stdout: Stdout):
+    mut log = Log()
+    log.add("short")
+    stdout.print(log.text, log.text.len())
+    held = log.text
+    log.add(" and a good deal longer than a header can hold")
+    stdout.print(held, log.text)
+    kept = log.text
+    log.text += " été"
+    log.text += log.text
+    stdout.print(kept, log.text, log.text.len())
+    mut world = World()
+    for at in range(100):
+        world.log.text += str(at)
+    world.log.hp += 1
+    stdout.print(world.log.text, world.log.hp)
+    copy = world
+    world.log.text += "!"
+    stdout.print(copy.log.text.len(), world.log.text.len())
+    stdout.print(str(-12), str(0), str(9007199254740993), str(1.5), str(2.0), str(-0.0), str(1e300), str(-1.7976931348623157e308))
+"#,
+    )
+}
+
 /// `fail` and `?` leave a `for mut` loop as `return` does: the item it's on is written back first.
 #[test]
 fn failing_out_of_a_for_mut_loop_writes_the_item_back() -> std::io::Result<()> {

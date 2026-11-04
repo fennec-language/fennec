@@ -1093,6 +1093,12 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether a local holds an inline struct or enum with blocks in it, and owns them.
+    /// Whether `dest = lhs + more` is a text growing, from a local that holds its only owner or
+    /// took it from a field.
+    fn grows_in_place(&self, op: BinOp, lhs: &Operand, dest: LocalId) -> bool {
+        op == BinOp::Add && *lhs == Operand::Local(dest) && (self.owns(dest) || self.known.is_taken(dest))
+    }
+
     pub(crate) fn owns_inline(&self, local: LocalId) -> bool {
         self.kinds.get(local.0).is_some_and(|kind| self.holds_inline(kind))
             && !self.is_mut_param(local)
@@ -1178,13 +1184,11 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{temp} = icmp {cc} i1 {a}, {b}"));
                 temp
             }
-            Kind::Str
-                if self.headers() && op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) =>
-            {
+            Kind::Str if self.headers() && self.grows_in_place(op, lhs, dest) => {
                 return self.header_append(dest, &a, &b);
             }
             Kind::Str if self.headers() => self.header_binary(op, (&a, &b))?,
-            Kind::Str if op == BinOp::Add && *lhs == Operand::Local(dest) && self.owns(dest) => {
+            Kind::Str if self.grows_in_place(op, lhs, dest) => {
                 // `text += more` takes over the owner the local had, and grows in place if it can.
                 let joined = self.append_text(&a, &b);
                 let slot = self.slot(dest);
@@ -2118,6 +2122,59 @@ def main(stdout: Stdout):
         }
         // A plain read of a field reads it.
         assert!(text_of(&source, "read")?.contains("getelementptr"));
+        Ok(())
+    }
+
+    /// `+=` grows the text where it is, in a local and in a field. A plain `+` makes a new one.
+    #[test]
+    fn a_text_grows_where_it_is_when_its_added_to() -> Result<(), String> {
+        let source = "\
+struct Note:
+    text = \"\"
+
+def in_field(mut note: Note, more: str):
+    note.text += more
+
+def in_local(more: str) -> str:
+    mut text = \"\"
+    text += more
+    text
+
+def anew(note: Note, more: str) -> str:
+    note.text + more
+
+def main(stdout: Stdout):
+    mut note = Note()
+    in_field(mut note, \"a\")
+    stdout.print(in_local(\"b\"), anew(note, \"c\"))
+";
+        for function in ["in_field", "in_local"] {
+            let text = text_of(source, function)?;
+            assert!(text.contains("@fennec_str_append("), "{function}: {text}");
+        }
+        let text = text_of(source, "anew")?;
+        assert!(!text.contains("@fennec_str_append("), "{text}");
+        Ok(())
+    }
+
+    /// A number's text goes straight into a header, with no block made and let go of.
+    #[test]
+    fn a_numbers_text_makes_no_block() -> Result<(), String> {
+        let source = "\
+def of_int(n: int) -> str:
+    str(n)
+
+def of_float(x: float) -> str:
+    str(x)
+
+def main(stdout: Stdout):
+    stdout.print(of_int(1), of_float(1.5))
+";
+        for (function, call) in [("of_int", "@fennec_int_header("), ("of_float", "@fennec_float_header(")] {
+            let text = text_of(source, function)?;
+            assert!(text.contains(call), "{function}: {text}");
+            assert!(!text.contains("_text("), "{function}: {text}");
+        }
         Ok(())
     }
 

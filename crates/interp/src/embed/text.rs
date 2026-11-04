@@ -165,6 +165,44 @@ pub extern "C" fn of(address: i64) -> Text {
     })
 }
 
+/// `fennec_int_header(n)`: an int's text as a header, which its digits always fit inline, with
+/// no block.
+pub extern "C" fn int_header(n: i64) -> Text {
+    let mut digits = [0_u8; 20];
+    let mut at = digits.len();
+    let mut rest = n.unsigned_abs();
+    loop {
+        at -= 1;
+        if let (Some(digit), Ok(low)) = (digits.get_mut(at), u8::try_from(rest % 10)) {
+            *digit = b'0' + low;
+        }
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    if n < 0 {
+        at -= 1;
+        if let Some(sign) = digits.get_mut(at) {
+            *sign = b'-';
+        }
+    }
+    Text { words: inline(digits.get(at..).unwrap_or_default()) }
+}
+
+/// `fennec_float_header(x)`: a float's text as it prints, as a header, inline unless it's the
+/// longest there is.
+pub extern "C" fn float_header(x: f64) -> Text {
+    let text = crate::format::display(&crate::value::Value::Float(x));
+    if text.len() <= INLINE_BYTES {
+        return Text { words: inline(text.as_bytes()) };
+    }
+    with(|state| {
+        let address = text_from_bytes(state, text.as_bytes(), text.len()).cast_unsigned();
+        Text { words: [address, u64::try_from(text.len()).unwrap_or(0), 0] }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
@@ -196,6 +234,33 @@ mod tests {
 
     fn live() -> usize {
         with(|state| state.heap.live())
+    }
+
+    /// Numbers come back as headers. All of them but the longest floats make no block.
+    #[test]
+    fn a_numbers_text_needs_no_block_unless_its_too_long_for_a_header() {
+        begin();
+        let before = live();
+        for (n, shown) in [
+            (0, "0"),
+            (7, "7"),
+            (-7, "-7"),
+            (1200, "1200"),
+            (i64::MAX, "9223372036854775807"),
+            (i64::MIN, "-9223372036854775808"),
+        ] {
+            assert_eq!(super::int_header(n).words, super::inline(shown.as_bytes()));
+        }
+        assert_eq!(super::float_header(1.5).words, super::inline(b"1.5"));
+        assert_eq!(super::float_header(3.0).words, super::inline(b"3.0"));
+        assert_eq!(live(), before);
+        let longest = "-1.7976931348623157e+308";
+        let words = super::float_header(f64::MIN).words;
+        assert_eq!(text_of(words), longest);
+        assert_eq!(words[1], 24);
+        heap::free(i64::try_from(words[0]).unwrap());
+        assert_eq!(live(), before);
+        finish();
     }
 
     #[test]

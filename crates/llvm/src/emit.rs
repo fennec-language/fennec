@@ -1155,11 +1155,7 @@ impl Emit<'_, '_, '_> {
             return self.assign(dest, &found);
         }
         let (a, kind) = self.operand(lhs)?;
-        let (b, other) = self.operand(rhs)?;
-        if kind != other && self.is_result(&kind) && self.is_result(&other) {
-            let same = self.results_compared(op, (&a, &kind), (&b, &other))?;
-            return self.assign(dest, &same);
-        }
+        let (b, _) = self.operand(rhs)?;
         let value = match kind {
             Kind::Int => self.int_binary(dest, op, (&a, &b), rhs, span)?,
             Kind::Float => self.float_binary(op, (&a, &b), rhs, span)?,

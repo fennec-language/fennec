@@ -511,42 +511,6 @@ impl Emit<'_, '_, '_> {
         self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Result["))
     }
 
-    /// Whether two results with different errors are equal, as when one is written out, like
-    /// `Err(TooWeak(level=1))`, and the other can fail in more ways: the first is made one of the
-    /// second for the comparison.
-    pub(crate) fn results_compared(
-        &mut self,
-        op: BinOp,
-        (a, a_kind): (&str, &Kind),
-        (b, b_kind): (&str, &Kind),
-    ) -> Result<String, String> {
-        if !matches!(op, BinOp::Eq | BinOp::NotEq) {
-            return Err("it orders results with different errors".to_owned());
-        }
-        let error_of = |emit: &Self, kind: &Kind| -> Result<Kind, String> {
-            let (_, fields) = emit.case_of(kind, "Err")?;
-            let (_, _, error) = fields.first().cloned().ok_or("an `Err` holding nothing")?;
-            error.ok_or_else(|| "an error this backend doesn't take yet".to_owned())
-        };
-        let widen_a = !self.is_error_set(&error_of(self, a_kind)?);
-        let (narrow, narrow_kind, wide, wide_kind) =
-            if widen_a { (a, a_kind, b, b_kind) } else { (b, b_kind, a, a_kind) };
-        if self.is_error_set(&error_of(self, narrow_kind)?) {
-            return Err("it compares results with different sets of errors".to_owned());
-        }
-        let made = self.result_as(narrow, narrow_kind, wide_kind)?;
-        let same = match wide_kind {
-            Kind::Enum(id) => self.same_enums(op, *id, (wide, &made))?,
-            _ => self.same_blocks(op, (wide, &made)),
-        };
-        if matches!(wide_kind, Kind::Boxed(_)) {
-            self.release(&made);
-        } else {
-            self.release_inline(wide_kind, &made);
-        }
-        Ok(same)
-    }
-
     /// A result as one that can fail in more ways, with owners of what it holds.
     pub(crate) fn result_as(&mut self, value: &str, held: &Kind, kind: &Kind) -> Result<String, String> {
         let (place, fields_at) = if let Kind::Boxed(id) = kind {

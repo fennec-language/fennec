@@ -538,6 +538,29 @@ def main(stdout: Stdout):
     )
 }
 
+/// The engines before this one stop on this, reading the index after the call has it, so it's
+/// checked against what it means rather than against them.
+#[test]
+fn a_place_stays_where_it_was_when_a_call_changes_its_index() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("place_index_given_mut")?;
+    let program = dir.join("place.fen");
+    std::fs::write(
+        &program,
+        "struct Unit:\n    hp: int\n\n    def stepped(mut self, mut at: int):\n        at += 1\n        self.hp += at\n\ndef moved(mut item: int, mut at: int):\n    at += 1\n    item += 10\n\ndef main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1), Unit(2), Unit(3)]\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    mut other = 0\n    mut numbers = [1, 2, 3]\n    moved(mut numbers[other], mut other)\n    stdout.print(other, numbers)\n",
+    )?;
+    let executable = dir.join("place");
+    let (program, executable_name) = (program.to_string_lossy().into_owned(), executable.to_string_lossy());
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable_name], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1 2 2 3\n2 2 4 3\n1 [11, 2, 3]\n");
+    Ok(())
+}
+
 #[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {

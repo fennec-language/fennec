@@ -361,6 +361,7 @@ pub fn finish() -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
         Some(mut state) => {
             state.temps.clear();
             state.let_go();
+            aot::report_sites(&state.heap.sites);
             let leftovers = Leftovers {
                 temps: state.temps.len(),
                 frames: state.callers.len(),

@@ -39,9 +39,12 @@ fn count(counts: &HashMap<String, usize>, name: &str) -> usize {
 }
 
 /// The source of an expression, if it can be moved whole. Spans leave out the brackets around a
-/// leading or trailing operand, and moving text cut there would break it.
+/// leading or trailing operand, and moving text cut there would break it. One that leaves with
+/// `else` stays in its loop, since a comprehension can't leave.
 fn moved(sources: &Sources, expr: &Expr) -> Option<String> {
-    replaceable(sources, expr).then(|| written(sources, expr.span)).flatten()
+    let mut leaves = false;
+    fennec_syntax::visit::in_expr(&mut expr.clone(), &mut |inner| leaves |= inner.leaves());
+    (!leaves && replaceable(sources, expr)).then(|| written(sources, expr.span)).flatten()
 }
 
 /// Where a statement really ends: its span can run on to the end of its last line.

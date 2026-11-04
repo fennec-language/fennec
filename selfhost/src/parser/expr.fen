@@ -28,9 +28,32 @@ extend Parser:
             otherwise = self.expr()?
             return Expr(kind=.Cond(value, cond, otherwise), span=value.span.to(otherwise.span))
         if self.eat_keyword("else"):
-            default = self.expr()?
+            default = self.leaving()? if self.at_leaving() else self.expr()?
             return Expr(kind=.Else(value, default), span=value.span.to(default.span))
         value
+
+    def at_leaving(self) -> bool:
+        self.peek() in [.Keyword("continue"), .Keyword("return"), .Keyword("fail")]
+
+    ## `continue`, `return` or `fail` after `else`, as a `match` with one case that leaves, which
+    ## every engine and analysis already follows out of the expression.
+    def leaving(mut self) -> Expr:
+        start = self.span()
+        word = self.peek()
+        self.advance()
+        kind: StmtKind = match word:
+            case .Keyword("continue"): .Continue
+            case .Keyword("fail"): .Fail(self.expr()?)
+            case _:
+                if self.at(.Newline) or self.at(.Eof) or self.at(.Dedent):
+                    .Return(None)
+                else:
+                    .Return(self.expr()?)
+        span = start.to(self.prev_span())
+        arm = MatchArm(pattern=.Wildcard, guard=None, body=[Stmt(kind=kind, span=span)], span=span)
+        # Expressions are told apart by span, and nothing's written here, so it's empty.
+        subject = Expr(kind=.Bool(False), span=Span(start=start.start, end=start.start))
+        Expr(kind=.Match(subject, [arm]), span=span)
 
     ## `x => body` or `(a, b) => body`.
     def lambda(mut self) -> Expr?:

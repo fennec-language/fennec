@@ -163,7 +163,7 @@ fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i6
     let address = if shared || wanted > room {
         let kept = items(block, stride).to_vec();
         if shared {
-            state.heap.counts.copied(kept.len());
+            state.heap.copied(kept.len());
             retain_items(state, &element, &kept);
         }
         let grown = build(state, at, stride, &kept, wanted);
@@ -558,7 +558,7 @@ fn insert_into(kind: &str, list: i64, at: i64, (start, end): (i64, i64)) -> i64 
 /// Whether an item of a word equals a word, as the interpreter compares them.
 fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
     match element {
-        Element::Float => f64::from_bits(item).total_cmp(&f64::from_bits(word)).is_eq(),
+        Element::Float => crate::value::floats_same(f64::from_bits(item), f64::from_bits(word)),
         Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_) => {
             super::heap::same(state, item, word)
         }

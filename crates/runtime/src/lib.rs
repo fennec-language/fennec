@@ -83,6 +83,8 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_str_index_text",
     "fennec_str_print",
     "fennec_str_slice",
+    "fennec_int_header",
+    "fennec_float_header",
     "fennec_str_split",
     "fennec_stream_next",
     "fennec_to_bool",
@@ -279,6 +281,8 @@ export! {
     fennec_text_block(a0: u64, a1: u64, a2: u64) -> i64 => text::block(a0, a1, a2);
     fennec_text_contains(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::contains(a0, a1, a2, a3, a4, a5);
     fennec_text_of(a0: i64) -> text::Text => text::of(a0);
+    fennec_int_header(a0: i64) -> text::Text => text::int_header(a0);
+    fennec_float_header(a0: f64) -> text::Text => text::float_header(a0);
     fennec_str_char_at(a0: i64, a1: i64) -> i64 => strings::char_at(a0, a1);
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);
     fennec_dict_set(a0: i64, a1: i64, a2: i64) -> i64 => dicts::set(a0, a1, a2);
@@ -306,6 +310,8 @@ export! {
     fennec_aot_next_test() -> i64 => aot::next_test_number();
     fennec_aot_test_ran(a0: i64) => aot::test_ran(a0);
     fennec_aot_test_done(a0: i64) => aot::test_done(a0);
+    fennec_trace_at(a0: i64) => aot::trace_at(a0);
+    fennec_trace_allocated(a0: i64) => aot::trace_allocated(a0);
     fennec_aot_test_world(a0: i64) => aot::test_world(a0);
 }
 

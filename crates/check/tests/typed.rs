@@ -318,7 +318,7 @@ fn names_are_typed_where_they_are_declared() {
             mut target = None
             target = 3
             for i, word in enumerate(['a']):
-                stdout.print(i, word)
+                stdout.print(i, word, target)
         ",
     );
     let (_, checked) = checked(&source).unwrap();

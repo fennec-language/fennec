@@ -81,6 +81,7 @@ fn start_of(
     let _ = writeln!(out, "@fennec_failed = dso_local {local}global ptr null");
     if crate::parallel::uses_parallel(program) {
         out += "@fennec_thread = dso_local thread_local(initialexec) global i64 0\n";
+        out += crate::parallel::MAIN_THREAD_GLOBALS;
     }
     out += "@fennec_ascii = dso_local global ptr null\n";
     for (symbol, start) in &shared.starts {
@@ -103,7 +104,14 @@ fn start_of(
 /// `fennec_entry` up to where it runs the program, setting what functions read. Gives back what
 /// it needs defined after it: what closes a generator let go partway.
 fn setup(out: &mut String, program: &Program, shared: &Shared, image: &Image) -> String {
+    let main_thread = crate::parallel::uses_parallel(program).then_some(
+        "  store i64 %limit, ptr @fennec_stack_limit_main\n  %main_flag = call i64 @fennec_aot_failed_flag()\n  %main_flag_at = inttoptr i64 %main_flag to ptr\n  store ptr %main_flag_at, ptr @fennec_failed_main\n",
+    );
     *out += "define void @fennec_entry(i64 %limit) {\n  store i64 %limit, ptr @fennec_stack_limit\n  %flag = call i64 @fennec_aot_failed_flag()\n  %flag_at = inttoptr i64 %flag to ptr\n  store ptr %flag_at, ptr @fennec_failed\n  %ascii = call i64 @fennec_aot_ascii()\n  %ascii_at = inttoptr i64 %ascii to ptr\n  store ptr %ascii_at, ptr @fennec_ascii\n";
+    if let Some(main_thread) = main_thread {
+        // Filled in as soon as it's all set, before anything reads them.
+        *out += main_thread;
+    }
     for (number, symbol) in shared.literals.keys().enumerate() {
         let _ = writeln!(
             out,

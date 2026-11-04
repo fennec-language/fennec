@@ -412,6 +412,34 @@ fn match_cases_bind_typed_values() {
 }
 
 #[test]
+fn what_a_mut_parameter_can_make_none_is_checked_again() {
+    let program = "
+        def cleared(mut value: int?):
+            value = None
+
+        def f(n: int?) -> int:
+            mut held = n
+            if held is not None:
+                cleared(mut held)
+                return held + 1
+            0
+    ";
+    assert_eq!(problems(program), ["this might be None @ held"]);
+    let keeps_what_it_knows = "
+        def bumped(mut value: int):
+            value += 1
+
+        def f(n: int?) -> int:
+            mut held = n
+            if held is not None:
+                bumped(mut held)
+                return held + 1
+            0
+    ";
+    assert_eq!(problems(keeps_what_it_knows), Vec::<String>::new());
+}
+
+#[test]
 fn a_loop_sees_what_its_body_changes() {
     let cases = [
         ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    x = None\n", "x"),
@@ -451,7 +479,7 @@ fn a_loop_sees_what_its_body_changes() {
 fn a_loop_keeps_what_its_body_leaves_alone() {
     let cases = [
         "x: int? = 5\nif x is None:\n    return\nfor n in names:\n    use(x + 1)\n",
-        "mut x: int? = 5\nif x is None:\n    return\nfor n in names:\n    use(x + 1)\nx = None\n",
+        "mut x: int? = 5\nif x is None:\n    return\nfor n in names:\n    use(x + 1)\nx = None\nuse(x else 0)\n",
         "mut x: int? = None\nfor n in names:\n    x = 1\n    use(x + 1)\n",
         "mut x: int? = None\nfor n in names:\n    if x is not None:\n        use(x + 1)\n    x = 1\n",
         "h = Held(x=1)\nif h.x is not None:\n    for n in names:\n        use(h.x + 1)\n        h.show()\n",

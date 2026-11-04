@@ -303,6 +303,13 @@ impl Lowering<'_> {
         let mut value = self.expr(value)?;
         if let Some(op) = op {
             let read = self.read_steps(place.local, &place.steps, span)?;
+            // A text growing in a field is one local read, added to and put back, as a local's
+            // `+=` is, so a backend can grow it where it is.
+            if let (BinOp::Add, Type::Str, Operand::Local(dest)) = (op, &held, &read) {
+                let dest = *dest;
+                self.emit(InstKind::Binary { dest, op, lhs: read, rhs: value }, span);
+                return self.store(place.local, &place.steps, Operand::Local(dest), span);
+            }
             value = self.operate(op, (read, value), &held, span)?;
         }
         let value = self.coerce(value, &held, span)?;

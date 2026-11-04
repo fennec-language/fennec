@@ -1,0 +1,46 @@
+name: Dead merge groups
+
+# Stops the runs of merge groups that have left the queue, so that they don't hold runners or wait
+# for them ahead of live work. Workflows run for a merge group can't hear that it's gone, and a
+# group ahead leaving takes every group behind it along, sometimes long after their runs started.
+# Those groups come back as new ones, which is the event this hears. A group with none behind it
+# brings no event, so `./.github/actions/live-merge-group` and each job's time limit are what stop
+# its run. Run it by hand from the Actions tab, or with `gh workflow run merge-groups.yml`.
+on:
+  merge_group:
+  workflow_dispatch:
+
+permissions: {}
+
+# One at a time, with the newest waiting: each looks at every run, so any others waiting add nothing.
+concurrency:
+  group: dead-merge-groups
+
+jobs:
+  stop:
+    name: Stop the runs of groups that have left
+    # GitHub's ARM runners have been the first free when the queue is backed up, and this is most
+    # use then.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    # Checks out nothing, so no code from the group runs with this.
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for status in queued in_progress; do
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs?event=merge_group&status=$status&per_page=100" \
+              --jq '.workflow_runs[] | [.id, .head_branch] | @tsv'
+          done | sort -u | while IFS=$'\t' read -r run branch; do
+            # Only "not found" says a group has gone: anything else says nothing, and it stays. If
+            # this were ever wrong, the group would leave the queue rather than merge unchecked.
+            if ! said="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$branch" --silent 2>&1)" \
+              && [[ "$said" == *"HTTP 404"* ]]; then
+              echo "$branch has left the merge queue, so stopping run $run"
+              gh run cancel "$run" --repo "$GITHUB_REPOSITORY" || true
+            fi
+          done

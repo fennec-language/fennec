@@ -599,6 +599,17 @@ fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut
 }
 
 /// Whether values of a kind, laid out in place, hold blocks.
+pub(super) fn holds_floats(element: &Element) -> bool {
+    match element {
+        Element::Float => true,
+        Element::Struct { fields, .. } => fields.iter().any(|(_, field)| holds_floats(field)),
+        Element::Enum { cases, .. } => {
+            cases.iter().any(|(_, fields)| fields.iter().any(|(_, field)| holds_floats(field)))
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn holds_blocks(element: &Element) -> bool {
     match element {
         Element::Boxed(_)
@@ -975,7 +986,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             }
         }
         (Element::Enum { name, cases, words: size }, Value::Instance(instance))
-            if *instance.type_name == *type_name(name) && !instance.is_error =>
+            if *instance.type_name == *type_name(name) =>
         {
             let case = instance.case.as_ref()?;
             let at = cases.iter().position(|(written, _)| written == case)?;
@@ -1018,13 +1029,13 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
         return super::dicts::equal(state, left, right);
     }
     if let Some(element) = super::lists::element_of(state, left) {
-        // Items compare bit by bit, as the interpreter compares numbers and plain structs.
+        // Items compare bit by bit, unless they hold floats or blocks.
         let stride = element.words();
         let (mine, theirs) = (super::lists::items(left, stride), super::lists::items(right, stride));
         if super::lists::owns_items(&element) {
             return mine.len() == theirs.len() && mine.iter().zip(theirs).all(|(x, y)| same(state, *x, *y));
         }
-        if holds_blocks(&element) {
+        if holds_blocks(&element) || holds_floats(&element) {
             let stride = stride.max(1);
             return mine.len() == theirs.len()
                 && mine
@@ -1046,6 +1057,10 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
 /// Whether two values of a kind, laid out as words, are equal: the same plain words, and
 /// equal blocks where they hold blocks.
 pub(super) fn same_words(state: &State, element: &Element, left: &[u64], right: &[u64]) -> bool {
+    // A float's bits don't say what's equal, so one with floats in it compares by its values.
+    if holds_floats(element) {
+        return read(state, element, &mut left.iter()) == read(state, element, &mut right.iter());
+    }
     let mut boxed = Vec::new();
     boxed_words(element, left, &mut 0, &mut boxed);
     // The case decides where the boxed fields are, so compare the plain words first.

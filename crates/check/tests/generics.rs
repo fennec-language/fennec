@@ -644,6 +644,19 @@ fn a_type_has_to_fail_as_its_interfaces_method_says() {
 }
 
 #[test]
+fn self_reaches_an_extension_and_a_matchs_arms() {
+    let text = "struct Point:\n    x = 1\n\nextend Point:\n    def again(self) -> Self:\n        Self(x=self.x)\n\n\
+                enum Shape:\n    Dot\n    Line(length: int)\n\n    def same(self) -> Self:\n        match self:\n            \
+                case .Line(length):\n                made: Self = Self.Line(length=length)\n                made\n            \
+                case .Dot:\n                Self.Dot\n\n\
+                def main(stdout: Stdout):\n    stdout.print(Point().again().x, Shape.Dot.same())\n";
+    assert_eq!(problems(text), Vec::<String>::new());
+    // An extension's `Self` is its type, so it doesn't fit what's another.
+    let text = "struct Point:\n    x = 1\n\nextend Point:\n    def again(self) -> Self:\n        1\n";
+    assert_eq!(problems(text).len(), 1, "{:?}", problems(text));
+}
+
+#[test]
 fn self_in_a_types_own_method_is_that_type() {
     let text = "struct Point:\n    x = 1\n\n    def make() -> Self:\n        Self(x=7)\n\n    def same(self, other: Self) -> list[Self]:\n        \
                 held: Self = other\n        [held, self]\n\n\
@@ -655,4 +668,59 @@ fn self_in_a_types_own_method_is_that_type() {
     // Outside a method, nothing is `Self`.
     let text = "def same(x: Self) -> int:\n    1\n";
     assert_eq!(problems(text), ["`Self` isn't a type @ Self"]);
+}
+
+const MADE: &str = "interface Made:\n    def make() -> Self\n\nstruct Part:\n    x = 1\n\n    def make() -> Part:\n        Part(x=7)\n\n";
+
+#[test]
+fn a_type_parameter_has_its_interfaces_functions() {
+    let text = format!(
+        "{MADE}def build[T: Made]() -> T:\n    T.make()\n\ndef main(stdout: Stdout):\n    stdout.print(build[Part]().x)\n"
+    );
+    assert_eq!(problems(&text), Vec::<String>::new());
+    let text = format!("{MADE}def build[T: Made]() -> T:\n    T.other()\n");
+    assert_eq!(problems(&text), ["`T` has nothing called `other` @ T.other()"]);
+    let text = format!("{MADE}def build[T]() -> T:\n    T.make()\n");
+    assert_eq!(problems(&text), ["`T` has nothing called `make` @ T.make()"]);
+    let text = format!("{MADE}def build[T: Made]() -> int:\n    T.make()\n");
+    assert_eq!(problems(&text).len(), 1, "{:?}", problems(&text));
+    let text = "interface Sized:\n    def size(self) -> int\n\ndef build[T: Sized]() -> int:\n    T.size()\n";
+    assert_eq!(problems(text), ["`size` needs a `T` to call it on @ T.size()"]);
+    let text = "def build() -> int:\n    T.make()\n";
+    assert_eq!(problems(text).len(), 1, "{:?}", problems(text));
+}
+
+/// A function with no `self` on a generic type asks of the type's own parameters, which the type
+/// fitting the interface says: a `Pile[Part]` fits, and a `Pile[Rock]` doesn't.
+#[test]
+fn a_generic_types_function_fits_an_interface_by_what_its_parameters_are() {
+    let source = "
+interface Made:
+    def make() -> Self
+
+struct Part:
+    x = 1
+
+    def make() -> Self:
+        Self(x=7)
+
+struct Rock:
+    weight = 1
+
+struct Pile[T: Made]:
+    items: list[T]
+
+    def make() -> Self:
+        Pile[T](items=[T.make()])
+
+def build[T: Made]() -> T:
+    T.make()
+";
+    let fits =
+        format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(build[Pile[Part]]().items.len())\n");
+    assert_eq!(problems(&fits), Vec::<String>::new());
+    let misfits =
+        format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(build[Pile[Rock]]().items.len())\n");
+    let found = problems(&misfits);
+    assert!(found.iter().any(|problem| problem.contains("isn't a `Made`")), "{found:?}");
 }

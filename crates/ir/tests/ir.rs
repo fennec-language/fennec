@@ -1814,6 +1814,31 @@ def f(n: int) -> int:
 }
 
 #[test]
+fn an_argument_is_copied_only_when_a_later_one_changes_it() {
+    let lowered = lowered(
+        "def show(a: list[int], b: int) -> int:
+    b
+
+def kept(mut xs: list[int], ys: list[int]) -> int:
+    show(xs, ys.len()) + show(ys, xs.len())
+
+def changed(mut xs: list[int]) -> int:
+    show(xs, xs.pop())
+",
+    )
+    .unwrap();
+    let copies = |name: &str| {
+        let function = lowered.functions.iter().find(|function| function.name == name);
+        function.map_or(0, |function| {
+            let insts = function.blocks.iter().flat_map(|block| &block.insts);
+            insts.filter(|inst| matches!(inst.kind, InstKind::Copy { .. })).count()
+        })
+    };
+    assert_eq!(copies("kept"), 0);
+    assert_eq!(copies("changed"), 1);
+}
+
+#[test]
 fn an_assert_stops_the_program() {
     let source = "def f(n: int):\n    assert n > 0\n";
     assert_eq!(
@@ -1827,7 +1852,8 @@ fn an_assert_stops_the_program() {
   bb1:
     return
   bb2:
-    stop \"assertion failed\"
+    builtin assert.sides(_0, 0)
+    stop \"this assertion failed\"
 "
     );
 }

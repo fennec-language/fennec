@@ -4,12 +4,13 @@
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
-use std::io::Write;
+use std::io::{BufRead, Read, Write};
 
 use fennec_syntax::Sources;
 
 use super::codec::Image;
 use super::{State, heap, with};
+use crate::fakes::{TestCapabilities, TestWorld};
 
 /// The stack an executable's program runs on. It's only reserved, not used, until calls
 /// nest deeply.
@@ -69,10 +70,53 @@ fn program_handed_over(length: i64, stop: fn(i32)) -> Vec<u8> {
     super::parallel::set_worker_setup(Box::new(move || {
         if let Some(Image { module, tables, .. }) = Image::from_bytes(&program) {
             // What it prints goes straight out: `parallel`'s output follows real call order.
-            let _ = super::start(&module, tables, crate::Inputs { live: true, ..crate::Inputs::default() });
+            let _ = super::start(&module, tables, live_inputs());
         }
     }));
     bytes
+}
+
+/// What the process was handed from outside, for a thread of it to run with: every thread sees
+/// the same arguments and reads the same standard input.
+fn live_inputs() -> crate::Inputs {
+    let mut arguments = std::env::args();
+    crate::Inputs {
+        live: true,
+        program: arguments.next().unwrap_or_default(),
+        arguments: arguments.collect(),
+        stdin: Box::new(StdinLines::default()),
+    }
+}
+
+/// The process's standard input for one thread. It takes a line at a time, so a thread never holds
+/// more than the line it's reading, and no line is lost to the threads reading after it.
+#[derive(Default)]
+struct StdinLines {
+    line: Vec<u8>,
+    read: usize,
+}
+
+impl Read for StdinLines {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.fill_buf()?.read(bytes)?;
+        self.consume(count);
+        Ok(count)
+    }
+}
+
+impl BufRead for StdinLines {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.read >= self.line.len() {
+            self.line.clear();
+            self.read = 0;
+            std::io::stdin().lock().read_until(b'\n', &mut self.line)?;
+        }
+        Ok(self.line.get(self.read..).unwrap_or_default())
+    }
+
+    fn consume(&mut self, count: usize) {
+        self.read += count;
+    }
 }
 
 /// Starts running a test executable's tests: those whose numbers are its arguments, in turn. A
@@ -94,9 +138,17 @@ pub fn test_ran(flag: i64) {
     RAN.with_borrow_mut(|ran| ran.push(flag));
 }
 
+/// Starts a test: one that takes capabilities gets fakes in a world of its own, with nothing left
+/// by the one before, as `run_case` gives the interpreter's.
+pub fn test_world(fakes: i64) {
+    with(|state: &mut State| {
+        state.interp.world = (fakes != 0).then(|| TestWorld::new(TestCapabilities::Fakes));
+    });
+}
+
 /// Says what the test just run did, on standard output as soon as it's done, in a line `fennec
-/// test` reads, so a crash loses only the tests not yet run. Tests here take nothing, so nothing
-/// else writes there.
+/// test` reads, so a crash loses only the tests not yet run. A test's `Stdout` is a fake, so
+/// nothing else writes there.
 pub fn test_done(number: i64) {
     let ran: Vec<String> = RAN.take().iter().map(ToString::to_string).collect();
     let line = test_line(number, super::next_test().as_ref(), &ran);
@@ -133,14 +185,7 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     let Some(Image { module, sources, tables, literals }) = Image::from_bytes(bytes) else {
         return (Vec::new(), "error: this executable's program is damaged\n".to_owned());
     };
-    let mut arguments = std::env::args();
-    let inputs = crate::Inputs {
-        live: true,
-        program: arguments.next().unwrap_or_default(),
-        arguments: arguments.collect(),
-        stdin: Box::new(std::io::BufReader::new(std::io::stdin())),
-    };
-    if let Err(failure) = super::start(&module, tables, inputs) {
+    if let Err(failure) = super::start(&module, tables, live_inputs()) {
         return (Vec::new(), sources.render(&failure));
     }
     LITERALS.set(literals);

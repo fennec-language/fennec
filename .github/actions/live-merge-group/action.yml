@@ -1,0 +1,23 @@
+name: Live merge group
+description: >-
+  Fails a merge group's run if the group has left the queue, so that its other jobs don't wait for
+  runners that live work needs. Workflows run for a merge group can't hear that it's gone, and each
+  one is in a concurrency group of its own, as a shared one would cancel the others in the queue.
+
+runs:
+  using: composite
+  steps:
+    # A group's branch goes when it leaves the queue. Failing is the safe way round: if this were
+    # ever wrong about a group that's still there, it would come out of the queue rather than merge
+    # without its checks. Anything but "not found" says nothing, so the run carries on.
+    - if: github.event_name == 'merge_group'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        BRANCH: ${{ github.event.merge_group.head_ref }}
+      run: |
+        if ! said="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/${BRANCH#refs/}" --silent 2>&1)" \
+          && [[ "$said" == *"HTTP 404"* ]]; then
+          echo "::notice::$BRANCH has left the merge queue, so this run stops here"
+          exit 1
+        fi

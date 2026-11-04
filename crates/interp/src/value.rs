@@ -163,9 +163,18 @@ pub(crate) struct Lambda {
 }
 
 /// Slots that hand out generational IDs, so a stale ID never finds the wrong thing.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct IdMap {
     pub(crate) slots: Vec<Slot>,
+    /// No slot below this one is free, so finding the first free slot needn't look at them.
+    free_from: usize,
+}
+
+/// Maps are the same when their slots are: where one's looking for a free slot is no part of it.
+impl PartialEq for IdMap {
+    fn eq(&self, other: &IdMap) -> bool {
+        self.slots == other.slots
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -181,6 +190,10 @@ pub(crate) struct Id {
 }
 
 impl IdMap {
+    pub(crate) fn new(slots: Vec<Slot>) -> IdMap {
+        IdMap { slots, free_from: 0 }
+    }
+
     pub(crate) fn get(&self, id: Id) -> Option<&Value> {
         self.slots
             .get(id.slot)
@@ -195,21 +208,30 @@ impl IdMap {
             .and_then(|slot| slot.value.as_mut())
     }
 
+    /// Puts a value in the first free slot, or a new one.
     pub(crate) fn insert(&mut self, value: Value) -> Id {
-        if let Some((at, slot)) = self.slots.iter_mut().enumerate().find(|(_, slot)| slot.value.is_none()) {
+        let free = self.slots.iter().enumerate().skip(self.free_from).find(|(_, slot)| slot.value.is_none());
+        let at = free.map(|(at, _)| at);
+        self.free_from = at.unwrap_or(self.slots.len()) + 1;
+        if let Some(slot) = at.and_then(|at| self.slots.get_mut(at)) {
             slot.generation += 1;
             slot.value = Some(value);
-            return Id { slot: at, generation: slot.generation };
+            return Id { slot: self.free_from - 1, generation: slot.generation };
         }
         self.slots.push(Slot { generation: 0, value: Some(value) });
         Id { slot: self.slots.len() - 1, generation: 0 }
     }
 
     pub(crate) fn remove(&mut self, id: Id) -> Option<Value> {
-        self.slots
+        let removed = self
+            .slots
             .get_mut(id.slot)
             .filter(|slot| slot.generation == id.generation)
-            .and_then(|slot| slot.value.take())
+            .and_then(|slot| slot.value.take());
+        if removed.is_some() {
+            self.free_from = self.free_from.min(id.slot);
+        }
+        removed
     }
 
     /// Live entries, in slot order.
@@ -217,6 +239,23 @@ impl IdMap {
         self.slots.iter().enumerate().filter_map(|(at, slot)| {
             slot.value.as_ref().map(|value| (Id { slot: at, generation: slot.generation }, value))
         })
+    }
+}
+
+/// Whether two floats are the same: equal as numbers, with `0.0` the same as `-0.0`, or both NaN.
+#[expect(clippy::float_cmp, reason = "this is what equal means for a float in Fennec")]
+pub(crate) fn floats_same(a: f64, b: f64) -> bool {
+    a == b || (a.is_nan() && b.is_nan())
+}
+
+/// A float's bits as they hash: the one form of each float that's equal to others.
+pub(crate) fn float_key(x: f64) -> u64 {
+    if x == 0.0 {
+        0
+    } else if x.is_nan() {
+        f64::NAN.to_bits()
+    } else {
+        x.to_bits()
     }
 }
 
@@ -290,7 +329,7 @@ impl PartialEq for Value {
             (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a.total_cmp(b).is_eq(),
+            (Value::Float(a), Value::Float(b)) => floats_same(*a, *b),
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::List(a), Value::List(b)) | (Value::Tuple(a), Value::Tuple(b)) => a == b,

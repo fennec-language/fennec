@@ -11,11 +11,12 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same pull request cancels its older run. Anything else, like a push to
-# main or a merge group, gets a group of its own: a group keeps only its newest waiting run, so
-# sharing one would drop some.
+# A newer push to the same pull request cancels its older run. Pushes to main share a group, which
+# keeps one running and only the newest waiting: each run covers every commit before it, and the
+# one running finishes, as it's what saves the caches pull requests start from. Anything else,
+# like a merge group, gets a group of its own, since sharing one would drop some that are needed.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'push' && 'main' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -23,6 +24,7 @@ jobs:
   changes:
     name: What changed
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
@@ -32,14 +34,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # actionlint and the runner take only `./` for an action in this repository.
+      - uses: ./.github/actions/live-merge-group # zizmor: ignore[self-repository]
       - id: changes
-        # actionlint and the runner take only `./` for an action in this repository.
         uses: ./.github/actions/docs-only # zizmor: ignore[self-repository]
 
   analyze:
     name: Analyze (${{ matrix.language }})
     needs: changes
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: read

@@ -169,6 +169,23 @@ def hurt(unit: Unit, by: int) -> Unit:
 def renamed(unit: Unit) -> Unit:
     Unit(unit.name + "!", unit.hp, [unit.hp, unit.tags.len()])
 
+struct Crowd:
+    numbers: list[int]
+    by: int
+    units: list[Unit]
+
+    def size(self) -> int:
+        self.numbers.len()
+
+    def step(mut self):
+        self.numbers = [number - self.by for number in self.numbers]
+
+struct Outer:
+    crowd: Crowd
+
+struct Ruled:
+    numbers: list[int] where numbers.len() > 0
+
 def doubled(mut numbers: list[int]):
     numbers = [number * 2 for number in numbers]
 
@@ -215,6 +232,26 @@ def main(stdout: Stdout):
     mut reading = [1, 2]
     reading = [number + reader[0] for number in reading]
     stdout.print(reading)
+
+    # A field's list, reading the struct's other fields, and not this one.
+    mut crowd = Crowd([1, 2, 3], 10, [Unit("a", 1, [1])])
+    before = crowd.numbers
+    crowd.numbers = [number * crowd.by for number in crowd.numbers]
+    stdout.print(crowd.numbers, before)
+    crowd.numbers = [number + crowd.numbers[0] for number in crowd.numbers]
+    stdout.print(crowd.numbers)
+    crowd.numbers = [number + crowd.size() for number in crowd.numbers]
+    stdout.print(crowd.numbers)
+    crowd.step()
+    stdout.print(crowd.numbers)
+    crowd.units = [hurt(unit, crowd.by) for unit in crowd.units]
+    stdout.print(crowd.units[0].hp)
+    mut outer = Outer(crowd)
+    outer.crowd.numbers = [number + 1 for number in outer.crowd.numbers]
+    stdout.print(outer.crowd.numbers, crowd.numbers)
+    mut ruled = Ruled([3, 1, 2]).expect("a list with something in it")
+    ruled.numbers = [number + 10 for number in ruled.numbers]
+    stdout.print(ruled.numbers)
 
     # Not the same size, or another type: a new list.
     mut some = [1, 2, 3, 4]

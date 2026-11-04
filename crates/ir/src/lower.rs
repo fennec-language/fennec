@@ -618,12 +618,12 @@ impl<'a> Lowering<'a> {
         if let ExprKind::Tuple(targets) = &target.kind {
             return self.assign_unpacking(targets, value, span);
         }
+        if op.is_none() && !declares && self.replaces_its_source(target, value, span)? {
+            return Ok(());
+        }
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_place(target, op, value, span);
         };
-        if op.is_none() && !declares && self.replaces_its_source(name, value, span)? {
-            return Ok(());
-        }
         // A name made while fusing a stage is new, and holds what it's first given.
         let binds_item = declares && target.span == value.span && op.is_none();
         if binds_item || (name.starts_with('\0') && self.lookup(name).is_none()) {

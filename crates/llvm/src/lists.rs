@@ -112,7 +112,7 @@ impl Emit<'_, '_, '_> {
         dest: LocalId,
         kind: &Kind,
         at: &str,
-        access: &str,
+        access: &'static str,
     ) -> Result<(), String> {
         let wanted = self.kind_of(dest)?.clone();
         // A list's items hold an optional as an enum, where a local holds it as one word: what a
@@ -308,7 +308,11 @@ impl Emit<'_, '_, '_> {
         let (offset, held) = self.field(&kind, field)?;
         let fields = self.fields_at(&base, &kind);
         let at = self.offset(&fields, offset);
-        let access = if matches!(kind, Kind::Boxed(_)) { FIELD_ACCESS } else { "" };
+        let access = match object {
+            _ if matches!(kind, Kind::Boxed(_)) => FIELD_ACCESS,
+            Operand::Local(local) => self.read_in_place.get(&local.0).map_or("", |(_, access)| *access),
+            _ => "",
+        };
         self.read_into(dest, &held, &at, access)
     }
 

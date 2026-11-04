@@ -48,6 +48,9 @@ pub(crate) struct Analysis {
     borrowed: HashSet<usize>,
     /// What each borrowing local borrows from, to let go once the borrow's done with.
     borrowed_from: HashMap<usize, LocalId>,
+    /// Borrowing locals every read of which comes after their one write, on every way there:
+    /// what's held in memory is read where it is, so a local's address is known at each read.
+    reads_in_place: HashSet<usize>,
     /// Locals taking a field's value out to change it and put it back: it never has two owners.
     taken: HashSet<usize>,
     /// Locals taking an item out of a list to change it and put it back: the local or field
@@ -399,6 +402,7 @@ fn analyze(
         read_again: HashSet::new(),
         borrowed: HashSet::new(),
         borrowed_from: HashMap::new(),
+        reads_in_place: HashSet::new(),
         taken: HashSet::new(),
         items_taken: HashMap::new(),
         path_taken: HashMap::new(),
@@ -421,6 +425,7 @@ fn analyze(
     find_aliases(function, &mut known);
     find_loop_takes(function, &mut known);
     find_last_copies(function, &mut known);
+    find_reads_in_place(function, &mut known);
     // A copy shares its source, unless the source is never read again, and a block put inside
     // something else is shared by that.
     let placed =
@@ -821,6 +826,65 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
                 )
         }
         _ => false,
+    }
+}
+
+/// Which borrowing locals are only read after their one write, however the function gets there:
+/// no way from the start reaches a read without passing the write first.
+fn find_reads_in_place(function: &Function, known: &mut Analysis) {
+    let mut reads: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+    for (at, block) in function.blocks.iter().enumerate() {
+        for (index, inst) in block.insts.iter().enumerate() {
+            visit(
+                &inst.kind,
+                |operand| {
+                    if let Operand::Local(local) = operand {
+                        reads.entry(local.0).or_default().push((at, index));
+                    }
+                },
+                |_| {},
+            );
+        }
+        if let Terminator::Return(Some(Operand::Local(local)))
+        | Terminator::Branch { cond: Operand::Local(local), .. }
+        | Terminator::NoMatch { value: Operand::Local(local), .. } = &block.end
+        {
+            reads.entry(local.0).or_default().push((at, usize::MAX));
+        }
+    }
+    for (at, block) in function.blocks.iter().enumerate() {
+        for (index, inst) in block.insts.iter().enumerate() {
+            let dest = match &inst.kind {
+                InstKind::GetField { dest, .. }
+                | InstKind::GetIndex { dest, .. }
+                | InstKind::GetCaseField { dest, .. } => dest,
+                // A name for what a borrowing local reads, written after it, in order.
+                InstKind::Copy { dest, value: Operand::Local(from) }
+                    if known.reads_in_place.contains(&from.0) =>
+                {
+                    dest
+                }
+                _ => continue,
+            };
+            if !known.borrowed.contains(&dest.0) || known.writes.get(dest.0) != Some(&1) {
+                continue;
+            }
+            let held = reads.get(&dest.0).map_or(&[][..], Vec::as_slice);
+            let mut around = HashSet::new();
+            let mut waiting = if at == 0 { Vec::new() } else { vec![0_usize] };
+            while let Some(next) = waiting.pop() {
+                if next != at && around.insert(next) {
+                    waiting.extend(function.blocks.get(next).map_or_else(Vec::new, |block| {
+                        block.end.targets().iter().map(|target| target.0).collect()
+                    }));
+                }
+            }
+            if held.iter().all(|(block, read)| {
+                !around.contains(block) && (*block != at || *read > index)
+            }) {
+                known.reads_in_place.insert(dest.0);
+            }
+        }
     }
 }
 
@@ -1414,6 +1478,11 @@ impl Analysis {
     }
 
     /// Whether a local looks at a value without owning it.
+    /// Whether what's in memory for a local can be read where it is, not copied to the local.
+    pub(crate) fn reads_in_place(&self, local: LocalId) -> bool {
+        self.reads_in_place.contains(&local.0)
+    }
+
     pub(crate) fn is_borrowed(&self, local: LocalId) -> bool {
         self.borrowed.contains(&local.0)
     }

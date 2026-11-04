@@ -396,6 +396,7 @@ impl<'p> Module<'_, 'p> {
             alone_slots: HashSet::new(),
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
+            read_in_place: HashMap::new(),
             at: (usize::MAX, usize::MAX),
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
@@ -462,6 +463,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Items taken out of a list to change: the list's local and field path, and the step to
     /// the item.
     pub(crate) taken_items: HashMap<usize, (LocalId, Vec<String>, String)>,
+    /// Where what a borrowing local holds in memory is, and how that memory is marked for LLVM.
+    pub(crate) read_in_place: HashMap<usize, (String, &'static str)>,
     /// The instruction being written: its block, and its place in it.
     at: (usize, usize),
     /// Items of lists, by field path and index, known to be inside their lists here.
@@ -534,6 +537,9 @@ impl Emit<'_, '_, '_> {
     /// Where a local is held.
     pub(crate) fn slot(&self, local: LocalId) -> String {
         let local = self.known.alias(local).unwrap_or(local);
+        if let Some((at, _)) = self.read_in_place.get(&local.0) {
+            return at.clone();
+        }
         let in_memory = self.kinds.get(local.0).is_some_and(Kind::in_memory);
         if self.is_mut_param(local) || (self.is_lent(local) && in_memory) {
             format!("%p{}", local.0)
@@ -1025,7 +1031,12 @@ impl Emit<'_, '_, '_> {
 
     /// Copies what's in memory at `from` into a local: an inline struct's blocks get another
     /// owner, and let go of what the local held, if the local owns what it holds.
-    pub(crate) fn assign_memory(&mut self, dest: LocalId, from: &str, access: &str) -> Result<(), String> {
+    pub(crate) fn assign_memory(&mut self, dest: LocalId, from: &str, access: &'static str) -> Result<(), String> {
+        // Nothing can change it for as long as this local reads it, so it's read where it is.
+        if self.known.reads_in_place(dest) {
+            self.read_in_place.insert(dest.0, (from.to_owned(), access));
+            return Ok(());
+        }
         let kind = self.kind_of(dest)?.clone();
         let text = self.text_of(&kind);
         let (held, slot) = (self.temp(), self.slot(dest));
@@ -1559,6 +1570,13 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn copy(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
         // The local is the list, so there's nothing to copy, or it's an `enumerate` never made.
         if self.known.alias(dest).is_some() || self.known.enumerated.contains_key(&dest.0) {
+            return Ok(());
+        }
+        if let Operand::Local(from) = value
+            && self.known.reads_in_place(dest)
+            && let Some(held) = self.read_in_place.get(&from.0).cloned()
+        {
+            self.read_in_place.insert(dest.0, held);
             return Ok(());
         }
         if *value == Operand::None {

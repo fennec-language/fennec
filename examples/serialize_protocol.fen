@@ -39,14 +39,25 @@ struct Shown:
             self.parts.append("=")
             value.serialize(mut self)
 
-    def record(mut self, name: str, fields: list[(str, bool)]):
-        self.parts.append(f"{name}/{fields.len()}")
+    def record(mut self, name: str, count: int):
+        self.parts.append(f"{name}/{count}")
 
-    def field[T: Serializable](mut self, x: T):
+    def field[T: Serializable](mut self, name: str, x: T):
+        self.parts.append(f"{name}:")
         x.serialize(mut self)
+
+    def renamed[T: Serializable](mut self, name: str, x: T):
+        self.parts.append(f"as {name}:")
+        x.serialize(mut self)
+
+    def end(mut self):
+        self.parts.append(".")
 
     def case(mut self, name: str, case: str):
         self.parts.append(f"{name}.{case}")
+
+    def case_record(mut self, name: str, case: str, count: int):
+        self.parts.append(f"{name}.{case}/{count}")
 
     def shown(self) -> str:
         " ".join(self.parts)
@@ -84,13 +95,22 @@ struct Counted:
         for key, value in pairs:
             value.serialize(mut self)
 
-    def record(mut self, name: str, fields: list[(str, bool)]):
+    def record(mut self, name: str, count: int):
         pass
 
-    def field[T: Serializable](mut self, x: T):
+    def field[T: Serializable](mut self, name: str, x: T):
         x.serialize(mut self)
 
+    def renamed[T: Serializable](mut self, name: str, x: T):
+        x.serialize(mut self)
+
+    def end(mut self):
+        pass
+
     def case(mut self, name: str, case: str):
+        self.total += 1
+
+    def case_record(mut self, name: str, case: str, count: int):
         self.total += 1
 
 struct Spot:
@@ -98,22 +118,40 @@ struct Spot:
     label: str
 
     def serialize(self, mut out: Serializer):
-        out.record("Spot", [("x", False), ("label", False)])
-        out.field(self.x)
-        out.field(self.label)
+        out.record("Spot", 2)
+        out.field("x", self.x)
+        out.field("label", self.label)
+        out.end()
+
+enum Order:
+    Hold
+    Move(x: int)
+
+    def serialize(self, mut out: Serializer):
+        match self:
+            case .Hold:
+                out.case("Order", "Hold")
+            case .Move(x):
+                out.case_record("Order", "Move", 1)
+                out.field("x", x)
+                out.end()
+                out.end()
 
 struct Squad:
     spots: list[Spot]
     scores: dict[str, int]
     ready: bool
     pace: float
+    order: Order
 
     def serialize(self, mut out: Serializer):
-        out.record("Squad", [("spots", False), ("scores", True), ("ready", False), ("pace", False)])
-        out.field(self.spots)
-        out.field(self.scores)
-        out.field(self.ready)
-        out.field(self.pace)
+        out.record("Squad", 5)
+        out.field("spots", self.spots)
+        out.renamed("points", self.scores)
+        out.field("ready", self.ready)
+        out.field("pace", self.pace)
+        out.field("order", self.order)
+        out.end()
 
 def shown[T: Serializable](x: T) -> str:
     mut out = Shown()
@@ -133,7 +171,11 @@ test "collections write their items":
     assert shown({2}) == "( 2 )"
 
 test "a struct writes its fields in order":
-    assert shown(Spot(x=1, label="a")) == "Spot/2 1 'a'"
+    assert shown(Spot(x=1, label="a")) == "Spot/2 x: 1 label: 'a' ."
+
+test "an enum writes its case, with its data if it has any":
+    assert shown(Order.Hold) == "Order.Hold"
+    assert shown(Order.Move(x=4)) == "Order.Move/1 x: 4 . ."
 
 def main(stdout: Stdout):
     squad = Squad(
@@ -141,6 +183,7 @@ def main(stdout: Stdout):
         scores={"ash": 3},
         ready=True,
         pace=0.5,
+        order=Order.Move(x=4),
     )
     stdout.print(shown(squad))
     mut counted = Counted()

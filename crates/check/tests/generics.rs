@@ -676,3 +676,38 @@ fn a_type_parameter_has_its_interfaces_functions() {
     let text = "def build() -> int:\n    T.make()\n";
     assert_eq!(problems(text).len(), 1, "{:?}", problems(text));
 }
+
+/// A function with no `self` on a generic type asks of the type's own parameters, which the type
+/// fitting the interface says: a `Pile[Part]` fits, and a `Pile[Rock]` doesn't.
+#[test]
+fn a_generic_types_function_fits_an_interface_by_what_its_parameters_are() {
+    let source = "
+interface Made:
+    def make() -> Self
+
+struct Part:
+    x = 1
+
+    def make() -> Self:
+        Self(x=7)
+
+struct Rock:
+    weight = 1
+
+struct Pile[T: Made]:
+    items: list[T]
+
+    def make() -> Self:
+        Pile[T](items=[T.make()])
+
+def build[T: Made]() -> T:
+    T.make()
+";
+    let fits =
+        format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(build[Pile[Part]]().items.len())\n");
+    assert_eq!(problems(&fits), Vec::<String>::new());
+    let misfits =
+        format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(build[Pile[Rock]]().items.len())\n");
+    let found = problems(&misfits);
+    assert!(found.iter().any(|problem| problem.contains("isn't a `Made`")), "{found:?}");
+}

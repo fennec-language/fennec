@@ -27,6 +27,9 @@ env:
   CARGO_TERM_COLOR: always
   # Tests check this to sample their slowest corpora: every mutant runs every test.
   FENNEC_UNDER_MUTANTS: "1"
+  # LLVM is the main backend, so a mutant in it has to meet its tests: a missing tool or runtime
+  # library fails them instead of skipping them.
+  FENNEC_EXPECT_LLVM: "1"
 
 jobs:
   changed-code:
@@ -41,6 +44,7 @@ jobs:
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-mutants@27.1.0
+      - run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Diff against the base branch
         env:
@@ -80,6 +84,7 @@ jobs:
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-mutants@27.1.0
+      - run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Mutate
         env:

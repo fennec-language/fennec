@@ -158,14 +158,16 @@ impl Lowering<'_> {
             return Err("it calls something other than a function".to_owned());
         };
         let closure = self.expr(callee)?;
-        let mut values = Vec::with_capacity(args.len());
+        let mut reads = super::order::Reads::default();
         for (arg, param) in args.iter().zip(params) {
             if arg.name.is_some() || arg.is_mut {
                 return Err("its call to a closure has a named or `mut` argument".to_owned());
             }
             let value = self.expr(&arg.value)?;
-            values.push(self.coerce(value, param, arg.value.span)?);
+            let value = self.coerce(value, param, arg.value.span)?;
+            reads.add(self, value);
         }
+        let values = reads.finish(self, span);
         let dest = keep.filter(|ty| *ty != Type::Unit).map(|ty| self.temporary(ty));
         self.emit(InstKind::CallClosure { dest, closure, args: values }, span);
         Ok(dest)

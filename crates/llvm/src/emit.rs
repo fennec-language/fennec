@@ -2146,6 +2146,29 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A field of a local list's item, changed by `append`, is taken out for the change rather
+    /// than given a second owner, whether the list is the local itself or a field of it.
+    #[test]
+    fn appending_to_a_field_of_an_item_takes_it_out_and_lets_go_of_nothing() -> Result<(), String> {
+        let types =
+            "struct Unit:\n    tags: list[int]\n    hp: int\n\nstruct World:\n    units: list[Unit]\n\n";
+        let main = "def main(stdout: Stdout):\n    mut units = [Unit([1], 0)]\n    grow(mut units, 0, 1)\n    mut world = World(units)\n    grow_field(mut world, 0, 1)\n    stdout.print(units[0].hp, read(world, 0))\n";
+        let source = format!(
+            "{types}def grow(mut units: list[Unit], at: int, v: int):\n    units[at].tags.append(v)\n\ndef grow_field(mut world: World, at: int, v: int):\n    world.units[at].tags.append(v)\n\ndef read(world: World, at: int) -> int:\n    world.units[at].hp\n\n{main}"
+        );
+        for function in ["grow", "grow_field"] {
+            let text = text_of(&source, function)?;
+            // Where the item is in the list, as `take_from_item` works it out.
+            assert!(text.contains("getelementptr inbounds %\"s.Unit\""), "{function}: {text}");
+            assert!(text.contains("fennec_list_grow"), "{function}: {text}");
+            // Nothing here has an owner to let go of, as a field read with one would.
+            assert!(!text.contains("call void @fennec_free"), "{function}: {text}");
+        }
+        // A plain read of a field reads it.
+        assert!(text_of(&source, "read")?.contains("getelementptr"));
+        Ok(())
+    }
+
     #[test]
     fn a_function_that_cant_fail_has_no_flag() -> Result<(), String> {
         let source = "def half(a: float) -> float:\n    a * 0.5\n\ndef main(stdout: Stdout):\n    stdout.print(half(1.0))\n";

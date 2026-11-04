@@ -417,12 +417,11 @@ fn a_doc_example_in_a_kit_sees_what_its_file_sees_and_a_run_does_not_need_it() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Whether `fennec test --llvm` can build through LLVM here: it needs the tools and the runtime
+/// Whether `fennec test` can build through LLVM here: it needs the tools and the runtime
 /// library, and a run under coverage has `fennec` somewhere without one. CI's Linux and Windows jobs
 /// set `FENNEC_EXPECT_LLVM`, so these tests can't quietly stop running there.
 fn llvm_here() -> bool {
-    let ready = std::env::var_os("FENNEC_UNDER_MUTANTS").is_none()
-        && fennec_llvm::Tools::find().is_ok()
+    let ready = fennec_llvm::Tools::find().is_ok()
         && crate::executables::runtime_built()
         && crate::executables::runtime_beside_fennec();
     let expected = std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty());
@@ -449,12 +448,12 @@ fn tests_through_llvm_pass_and_fail_as_they_do_on_the_jit() {
         )
     };
     std::fs::write(&game, source("4")).unwrap();
-    let passing = run_tests(&dir, &["--all", "--llvm"]).unwrap();
+    let passing = run_tests(&dir, &["--all"]).unwrap();
     assert_eq!(stdout(&passing), "6 passed, 0 failed\n", "{}", String::from_utf8_lossy(&passing.stderr));
 
     std::fs::write(&game, source("5")).unwrap();
-    let jit = run_tests(&dir, &["--all"]).unwrap();
-    let llvm = run_tests(&dir, &["--all", "--llvm"]).unwrap();
+    let jit = run_tests(&dir, &["--all", "--jit"]).unwrap();
+    let llvm = run_tests(&dir, &["--all"]).unwrap();
     assert_eq!(stdout(&llvm), stdout(&jit));
     assert_eq!(String::from_utf8_lossy(&llvm.stderr), String::from_utf8_lossy(&jit.stderr));
     assert!(!llvm.status.success());
@@ -472,12 +471,12 @@ fn a_test_llvm_cannot_build_runs_another_way() {
     let text = "def lengths() -> dict[str, list[int]]:\n    {\"a\": [1, 2]}\n\ntest \"plain\":\n    assert 1 + 1 == 2\n\n\
                 test \"a dict of lists\":\n    assert lengths()[\"a\"].len() == 2\n";
     std::fs::write(&game, text).unwrap();
-    let ran = run_tests(&dir, &["--all", "--llvm"]).unwrap();
+    let ran = run_tests(&dir, &["--all"]).unwrap();
     assert_eq!(stdout(&ran), "2 passed, 0 failed\n", "{}", String::from_utf8_lossy(&ran.stderr));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// What `fennec test` says about a program, without the note about tests LLVM couldn't build.
+/// What `fennec test` says about a program.
 fn tested(program: &Path, args: &[&str], home: &Path) -> std::io::Result<(String, String)> {
     let output = crate::executables::fennec_command()
         .arg("test")
@@ -486,9 +485,10 @@ fn tested(program: &Path, args: &[&str], home: &Path) -> std::io::Result<(String
         .env("FENNEC_HOME", home)
         .env_remove("CI")
         .output()?;
-    let said = String::from_utf8_lossy(&output.stderr);
-    let kept: Vec<&str> = said.lines().filter(|line| !line.starts_with("note: ")).collect();
-    Ok((String::from_utf8_lossy(&output.stdout).into_owned(), kept.join("\n")))
+    Ok((
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
 }
 
 /// The functions each test ran, as `fennec test` kept them for a program.
@@ -522,9 +522,9 @@ fn every_example_tested_through_llvm_says_and_traces_what_it_does_on_the_jit() {
             continue;
         }
         programs += 1;
-        let on_the_jit = tested(&path, &["--all"], &home).unwrap();
+        let on_the_jit = tested(&path, &["--all", "--jit"], &home).unwrap();
         let jit = kept_ran(&home, &path).unwrap();
-        let through_llvm = tested(&path, &["--all", "--llvm"], &home).unwrap();
+        let through_llvm = tested(&path, &["--all"], &home).unwrap();
         let llvm = kept_ran(&home, &path).unwrap();
         assert_eq!(through_llvm, on_the_jit, "{} says something else through LLVM", path.display());
         for (test, ran) in &jit {
@@ -562,14 +562,14 @@ fn only_what_a_test_ran_through_llvm_can_make_it_run_again() {
         )
     };
     std::fs::write(&game, source("1", "1")).unwrap();
-    assert_eq!(stdout(&run_tests(&dir, &["--llvm"]).unwrap()), "1 passed, 0 failed\n");
+    assert_eq!(stdout(&run_tests(&dir, &[]).unwrap()), "1 passed, 0 failed\n");
     std::fs::write(&game, source("2", "1")).unwrap();
     assert_eq!(
-        stdout(&run_tests(&dir, &["--llvm"]).unwrap()),
+        stdout(&run_tests(&dir, &[]).unwrap()),
         "1 passed, 0 failed (0 run, 1 unchanged)\n",
         "it never ran `untaken`"
     );
     std::fs::write(&game, source("2", "2")).unwrap();
-    assert_eq!(stdout(&run_tests(&dir, &["--llvm"]).unwrap()), "1 passed, 0 failed\n", "it ran `taken`");
+    assert_eq!(stdout(&run_tests(&dir, &[]).unwrap()), "1 passed, 0 failed\n", "it ran `taken`");
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -818,26 +818,89 @@ def main(stdout: Stdout):
     )
 }
 
-/// The engines before this one stop on this, reading the index after the call has it, so it's
-/// checked against what it means rather than against them.
+/// Natively, a place's index can be known from the line before, so a call that changes the index
+/// has to forget it. A call that changes the index of a place it's also given doesn't compile.
 #[test]
-fn a_place_stays_where_it_was_when_a_call_changes_its_index() -> std::io::Result<()> {
+fn a_place_is_found_again_after_a_call_changes_its_index() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
     let dir = folder("place_index_given_mut")?;
     let program = dir.join("place.fen");
+    let parts = "struct Unit:\n    hp: int\n\n    def stepped(mut self, mut at: int):\n        at += 1\n        self.hp += at\n\n\
+                 def step(mut at: int):\n    at += 1\n\n";
     std::fs::write(
         &program,
-        "struct Unit:\n    hp: int\n\n    def stepped(mut self, mut at: int):\n        at += 1\n        self.hp += at\n\ndef moved(mut item: int, mut at: int):\n    at += 1\n    item += 10\n\ndef main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1), Unit(2), Unit(3)]\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    units[at].stepped(mut at)\n    stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n    mut other = 0\n    mut numbers = [1, 2, 3]\n    moved(mut numbers[other], mut other)\n    stdout.print(other, numbers)\n",
+        format!(
+            "{parts}def main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1), Unit(2), Unit(3)]\n    \
+             units[at].hp += 10\n    step(mut at)\n    units[at].hp += 10\n    held = at\n    units[held].stepped(mut at)\n    \
+             stdout.print(at, units[0].hp, units[1].hp, units[2].hp)\n"
+        ),
+    )?;
+    let refused = dir.join("refused.fen");
+    std::fs::write(
+        &refused,
+        format!(
+            "{parts}def main(stdout: Stdout):\n    mut at = 0\n    mut units = [Unit(1)]\n    units[at].stepped(mut at)\n    \
+             stdout.print(at, units[0].hp)\n"
+        ),
     )?;
     let executable = dir.join("place");
     let (program, executable_name) = (program.to_string_lossy().into_owned(), executable.to_string_lossy());
     let built = fennec(&["build", "--llvm", &program, "-o", &executable_name], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&executable).output()?;
+    let stopped = fennec(
+        &["build", "--llvm", &refused.to_string_lossy(), "-o", &dir.join("refused").to_string_lossy()],
+        &dir,
+    )?;
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1 2 2 3\n2 2 4 3\n1 [11, 2, 3]\n");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "2 11 14 3\n");
+    assert!(!stopped.status.success());
+    let said = String::from_utf8_lossy(&stopped.stderr);
+    assert!(said.contains("`mut at` changes what picks `units[at]`"), "{said}");
+    Ok(())
+}
+
+/// Two `mut` arguments that go to different fields are two places, and a built program changes
+/// both. The same place given twice doesn't build.
+#[test]
+fn mut_arguments_to_different_fields_both_change_and_overlapping_ones_dont_build() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let parts = "struct Spot:\n    x = 0\n\nstruct Unit:\n    position = Spot()\n    home = Spot()\n\n\
+                 def bump(mut first: Spot, mut second: Spot):\n    first.x += 1\n    second.x += 10\n\n";
+    let dir = folder("overlapping_mut")?;
+    let (apart, together) = (dir.join("apart.fen"), dir.join("together.fen"));
+    std::fs::write(
+        &apart,
+        format!(
+            "{parts}def main(stdout: Stdout):\n    mut unit = Unit()\n    bump(mut unit.position, mut unit.home)\n    \
+             stdout.print(unit.position.x, unit.home.x)\n"
+        ),
+    )?;
+    std::fs::write(
+        &together,
+        format!(
+            "{parts}def main(stdout: Stdout):\n    mut unit = Unit()\n    bump(mut unit.position, mut unit.position)\n    \
+             stdout.print(unit.position.x)\n"
+        ),
+    )?;
+    let executable = dir.join("apart");
+    let built =
+        fennec(&["build", "--llvm", &apart.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let refused = fennec(
+        &["build", "--llvm", &together.to_string_lossy(), "-o", &dir.join("together").to_string_lossy()],
+        &dir,
+    )?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours.0, "1 10\n");
+    assert!(!refused.status.success());
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("`mut unit.position` and `mut unit.position` overlap"), "{said}");
     Ok(())
 }
 

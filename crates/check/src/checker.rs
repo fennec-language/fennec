@@ -332,8 +332,12 @@ impl Checker {
             let (found, named) = crate::alias::check_function(self, &entry.def, self.typed.get(key));
             problems.extend(found);
             problems.extend(crate::loops::check_function(self, key, &entry.def));
+            problems.extend(crate::loops::check_arguments(&entry.def.body));
             wanted.push((key.clone(), named.clone()));
             places.extend(named.into_iter().map(|span| (span.start, span.end)));
+        }
+        for test in &self.program.tests {
+            problems.extend(crate::loops::check_arguments(&test.body));
         }
         // A change that's lost matters only once what's written is otherwise right.
         let clean = problems.is_empty();

@@ -186,6 +186,12 @@ pub extern "C" fn std_method(name: i64, count: i64, start: i64, end: i64) -> i64
                 at,
             ));
         };
+        if matches!(&*instance.type_name, "Connection" | "Server") && !state.interp.faked_net() {
+            let values: Vec<Value> = args.into_iter().map(|arg| arg.value.unpacked()).collect();
+            let plain: Vec<&str> = written.split('.').skip(2).collect();
+            let result = crate::stdlib::net::native_method(instance, &method, &values, &plain, at)?;
+            return Ok(state.push(result));
+        }
         let call = crate::stdlib::methods_of(&instance.type_name)
             .ok_or_else(|| Diagnostic::new(format!("no method `{written}` in std"), at))?;
         let result = call(&mut state.interp, instance, &method, args, at)?;
@@ -306,7 +312,7 @@ mod tests {
 
 /// `fennec_native_capability(word, method, count, start, end)`: a method of a capability for
 /// compiled code, as `call` is for the JIT. Only what's still written for the interpreter alone,
-/// the network's methods, goes to it.
+/// `Stdout`'s rarer methods, goes to it.
 pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
         let at = span(start, end);
@@ -321,9 +327,9 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
         let given = state.inputs.split_off(state.inputs.len() - count);
         let given: Vec<Value> = given.into_iter().map(Value::unpacked).collect();
         let native = match &receiver {
-            Value::Capability(Capability::Net | Capability::Stdout) => None,
+            Value::Capability(Capability::Stdout) => None,
             Value::Capability(capability) => Some(native_method(*capability, &name, &given, at)),
-            Value::Limited(limited) if limited.capability != Capability::Net => {
+            Value::Limited(limited) => {
                 Some(narrowed(limited, &name, &given, &mut |capability, method, args| {
                     native_method(capability, method, args, at)
                 }))
@@ -382,6 +388,7 @@ fn native_method(
             };
             Ok(Value::Bytes(Rc::from(crate::entropy::os_random(count, at)?)))
         }
+        (Capability::Net, _, _) => crate::stdlib::net::native_net(method, args, at),
         (Capability::Entropy, "seed", []) => {
             let drawn = crate::entropy::os_random(8, at)?;
             let word: [u8; 8] = drawn

@@ -255,6 +255,13 @@ impl Value {
         Value::Instance(Rc::new(Instance::of(type_name, fields, false)))
     }
 
+    /// A case of an error of the standard library, with its fields in the order they're declared.
+    pub(crate) fn made_error_case(type_name: &str, case: &str, fields: Vec<(&str, Value)>) -> Value {
+        let mut made = Instance::of(type_name, fields, true);
+        made.case = Some(Rc::from(case));
+        Value::Instance(Rc::new(made))
+    }
+
     /// An error of the standard library, with its fields in the order they're declared.
     pub(crate) fn made_error(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
         Value::Instance(Rc::new(Instance::of(type_name, fields, true)))

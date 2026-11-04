@@ -83,7 +83,7 @@ jobs:
           echo "--- size"; ls -l "$RUNNER_TEMP/one.exe"
           exit 0
       - name: The test suite on this target
-        run: cargo test --locked -p fennec --test fennec llvm::
+        run: cargo test --locked -p fennec --test fennec "llvm::"
         continue-on-error: true
         env:
           FENNEC_EXPECT_LLVM: "1"

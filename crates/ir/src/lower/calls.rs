@@ -150,7 +150,8 @@ impl Lowering<'_> {
             {
                 return Err(super::operators::OWN_EQUALITY.to_owned());
             }
-            let values = self.builtin_args((&mut name, object, changes), args, &mut write_backs, span)?;
+            let mut values = self.builtin_args((&mut name, object, changes), args, &mut write_backs, span)?;
+            self.fit_list_item(&name, &mut values, span)?;
             dest = keep.map(|ty| self.temporary(ty));
             self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);
         } else {
@@ -189,6 +190,20 @@ impl Lowering<'_> {
                 self.places.push(ChangedPlace { root: place.local, steps, value: held, read, back });
             }
             self.check_rules(place.local, &place.steps, span)?;
+        }
+        Ok(())
+    }
+
+    /// Makes what goes in a list fit, like an int in a `list[int?]`, by how the list is held.
+    fn fit_list_item(&mut self, name: &str, values: &mut [Operand], span: Span) -> Lowered<()> {
+        if let (Some(place), Some(Type::List(held))) =
+            (item_argument(name), values.first().and_then(|list| type_in(&self.locals, list)))
+            && let Some(given) = values.get(place).cloned()
+        {
+            let fitted = self.coerce(given, &held, span)?;
+            if let Some(slot) = values.get_mut(place) {
+                *slot = fitted;
+            }
         }
         Ok(())
     }
@@ -501,5 +516,14 @@ impl Lowering<'_> {
             ty = self.step_type(&ty, step).ok()?;
         }
         (!matches!(ty, Type::Optional(_))).then_some(steps)
+    }
+}
+
+/// Where a list's method is given an item to hold, counting the list itself.
+fn item_argument(name: &str) -> Option<usize> {
+    match name {
+        "list.append" => Some(1),
+        "list.insert" => Some(2),
+        _ => None,
     }
 }

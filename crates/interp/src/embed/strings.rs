@@ -537,10 +537,8 @@ pub extern "C" fn value_text(value: i64) -> i64 {
 
 /// A new string with the text of the value in a block, read from the block.
 pub extern "C" fn shown_text(address: i64) -> i64 {
-    attempt(|state: &mut State| {
-        let shown = super::heap::shown::shown(state, u64::try_from(address).unwrap_or(0))?;
-        Ok(text_address(state, &shown))
-    })
+    let shown = super::heap::shown::shown(u64::try_from(address).unwrap_or(0));
+    attempt(|state: &mut State| Ok(text_address(state, &shown?)))
 }
 
 /// A new string with a temporary's text, formatted by a spec, failing like the interpreter

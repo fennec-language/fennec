@@ -1,22 +1,70 @@
 //! The text of a value, read straight from its block by its shape: what printing a list or a
 //! struct shows, as `format` writes it for the interpreter, with nothing made along the way.
 
+use std::cell::RefCell;
 use std::fmt::Write as _;
+use std::sync::Mutex;
+
+use fennec_syntax::rename::shown_type_name;
+use fennec_syntax::{Diagnostic, Span};
 
 use super::named::{is_id_map, is_option, is_result};
 use super::{
     CAPABILITY_SHAPE, HEADER_WORDS, State, block_text, cell_value, is_text, shape_of, shape_word, type_name,
+    with,
 };
+use crate::embed::STATE;
 use crate::packed::{Element, Fields};
-use fennec_syntax::Diagnostic;
-use fennec_syntax::Span;
-use fennec_syntax::rename::shown_type_name;
 
-/// Text being written, and whether a value in it has a type that writes its own.
+/// How native code writes a value of a type that writes its own text: given where the value's
+/// fields are, it hands the text to `own_text_written`.
+type WriteOwn = extern "C" fn(i64);
+
+/// The types that write their own text, by the names of their layouts, for every thread.
+static OWN_TEXTS: Mutex<Vec<(String, WriteOwn)>> = Mutex::new(Vec::new());
+
+thread_local! {
+    /// The text native code just handed over.
+    static HANDED_OVER: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// `fennec_own_text(name, write)`: says how to write a type, by its layout's name, a string's
+/// block.
+pub extern "C" fn own_text(name: i64, write: WriteOwn) {
+    let name = with(|state| {
+        u64::try_from(name).ok().and_then(|at| state.heap.block(at)).map(block_text).unwrap_or_default()
+    });
+    OWN_TEXTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((name, write));
+}
+
+/// `fennec_own_text_written(header)`: the text a value wrote, which is owned once.
+pub extern "C" fn own_text_written(t0: u64, t1: u64, t2: u64) {
+    let words = [t0, t1, t2];
+    let text = with(|state| {
+        let text = crate::embed::text::text_of(state, &words);
+        if let Some(block) = crate::embed::text::block_of(&words) {
+            super::release(state, block);
+        }
+        text
+    });
+    HANDED_OVER.set(text);
+}
+
+/// How a layout's type writes its own text, if it does.
+fn own_writer(name: &str) -> Option<WriteOwn> {
+    let known = OWN_TEXTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    known.iter().find(|(own, _)| own == name).map(|(_, write)| *write)
+}
+
+/// Text being written. Native code writes a value whose type has its own text, which can't be
+/// done while the runtime's state is in use, so those are noted here, each with the text before
+/// it, and done by `finished`.
 #[derive(Default)]
 pub(in crate::embed) struct Written {
+    done: Vec<(String, WriteOwn, i64)>,
     text: String,
-    own_text: bool,
+    /// Whether a value in it has its own text and native code can't write it.
+    interpreted: bool,
 }
 
 impl Written {
@@ -37,24 +85,57 @@ impl std::fmt::Write for Written {
 }
 
 /// A value's text as printing shows it: a string as it is, and anything else as `quoted` writes
-/// it. A value holding one whose type writes its own text with `def str` is for the interpreter
-/// to show, as that runs the method.
-pub(in crate::embed) fn shown(state: &mut State, address: u64) -> Result<String, Diagnostic> {
-    let mut out = Written::default();
-    match state.heap.block(address) {
-        Some(block) if is_text(state, block) => out.push_str(&block_text(block)),
-        _ => quoted(state, address, &mut out),
+/// it. Runs what native code has to write, so nothing of the runtime can be in use.
+pub(in crate::embed) fn shown(address: u64) -> Result<String, Diagnostic> {
+    let mut out = with(|state| {
+        let mut out = Written::default();
+        match state.heap.block(address) {
+            Some(block) if is_text(state, block) => out.push_str(&block_text(block)),
+            _ => quoted(state, address, &mut out),
+        }
+        out
+    });
+    if out.interpreted {
+        return attempt_value(address);
     }
-    if !out.own_text {
-        return Ok(out.text);
+    let mut text = String::new();
+    for (before, write, at) in out.done.drain(..) {
+        text.push_str(&before);
+        write(at);
+        text.push_str(&HANDED_OVER.take());
     }
-    let value = super::read_block(state, address);
-    state.interp.shown(&value, Span::default())
+    text.push_str(&out.text);
+    Ok(text)
 }
 
-/// Whether a layout's type writes its own text.
-fn writes_own_text(state: &State, name: &str) -> bool {
-    state.interp.type_info(type_name(name)).is_some_and(|info| info.methods.contains_key("str"))
+/// A value's text from the interpreter, which runs a type's `def str` itself.
+fn attempt_value(address: u64) -> Result<String, Diagnostic> {
+    let shown = STATE.with_borrow_mut(|state| {
+        let state = state.as_mut()?;
+        let value = super::read_block(state, address);
+        Some(state.interp.shown(&value, Span::default()))
+    });
+    shown.unwrap_or_else(|| Ok(String::new()))
+}
+
+/// Notes a value of a type that writes its own text, if this is one, with the words it takes
+/// from `words`. Says whether it was.
+fn own_value(
+    state: &State,
+    (name, size): (&str, usize),
+    words: &mut dyn Iterator<Item = &u64>,
+    out: &mut Written,
+) -> bool {
+    let Some(write) = own_writer(name) else {
+        out.interpreted |=
+            state.interp.type_info(type_name(name)).is_some_and(|info| info.methods.contains_key("str"));
+        return false;
+    };
+    let mut mine = words.take(size);
+    let at = mine.next().map_or(0, |first| std::ptr::from_ref(first).addr());
+    mine.for_each(drop);
+    out.done.push((std::mem::take(&mut out.text), write, i64::try_from(at).unwrap_or(0)));
+    true
 }
 
 /// Writes the value at a block's address as it shows inside a collection: strings are quoted.
@@ -138,11 +219,13 @@ pub(in crate::embed) fn item(
         }
         Element::Struct { name, fields } if name.as_ref() == "Id" => id(fields, words, out),
         Element::Struct { name, fields } if is_id_map(name) => id_map(state, fields, words, out),
+        Element::Struct { name, .. } if own_value(state, (name, element.words()), words, out) => {}
         Element::Struct { name, fields } => {
-            out.own_text |= writes_own_text(state, name);
             out.push_str(shown_type_name(type_name(name)));
             named_fields(state, fields, words, out);
         }
+        Element::Enum { name, words: size, .. }
+            if !is_option(name) && !is_result(name) && own_value(state, (name, *size), words, out) => {}
         Element::Enum { name, cases, words: size } => {
             let mut mine = (&mut *words).take(*size);
             let at = usize::try_from(word(&mut mine)).unwrap_or(0);
@@ -176,7 +259,6 @@ fn enum_case(
         }
         out.push(')');
     } else {
-        out.own_text |= writes_own_text(state, name);
         let _ = write!(out, "{}.{case}", shown_type_name(type_name(name)));
         if !fields.is_empty() {
             named_fields(state, fields, words, out);

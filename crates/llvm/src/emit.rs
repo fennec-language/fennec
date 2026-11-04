@@ -121,6 +121,17 @@ fn emit_with(program: &Program, cpu: Cpu, traced: bool) -> Result<(Vec<Unit>, Sh
     if !refused.is_empty() {
         return Err(refused.join("\n"));
     }
+    for own in &program.own_texts {
+        let (id, boxed) = match Kind::of(&layouts, &own.ty)? {
+            Kind::Struct(id) | Kind::Enum(id) => (id, false),
+            Kind::Boxed(id) => (id, true),
+            other => return Err(format!("`{}` writes its own text, as a {other:?}", own.ty)),
+        };
+        let name = layouts.get(id).ok_or("no such layout")?.name.clone();
+        let symbol = format!("l_{}", fennec_blake3::hash(name.as_bytes()).to_hex());
+        shared.literals.insert(symbol.clone(), name);
+        shared.own_texts.push((symbol, own.function.clone(), boxed));
+    }
     Ok((units, shared, layouts))
 }
 

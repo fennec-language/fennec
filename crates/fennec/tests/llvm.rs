@@ -573,6 +573,65 @@ def main(stdout: Stdout):
     stdout.print([first])
 ";
 
+/// Values whose types write their own text, printed inside others, in every place they can be.
+const OWN_TEXT_INSIDE: &str = "\
+struct Tag:
+    name: str
+
+    def str(self, mut out: StrWriter):
+        out.write(\"<\" + self.name + \">\")
+
+struct Pair:
+    x = 0
+    y = 0
+
+    def str(self, mut out: StrWriter):
+        out.write(f\"{self.x}/{self.y}\")
+
+enum Light:
+    Red
+    Green(level: int)
+
+    def str(self, mut out: StrWriter):
+        out.write(\"light\")
+
+struct Holder:
+    tag: Tag
+    pair: Pair
+    count = 1
+
+def main(stdout: Stdout):
+    stdout.print([Tag(name=\"a\"), Tag(name=\"b\" * 40)])
+    stdout.print([Pair(x=1), Pair(y=2)])
+    stdout.print([Light.Red, Light.Green(level=2)])
+    stdout.print([(Tag(name=\"t\"), 1)])
+    maybe: list[Pair?] = [Pair(), None]
+    stdout.print(maybe)
+    stdout.print([Holder(tag=Tag(name=\"h\"), pair=Pair(x=9))])
+    stdout.print(f\"before {[Pair(x=5)]} after\")
+    stdout.print(Tag(name=\"top\"), Pair(y=3))
+    stdout.print([[Pair(x=7)], []])
+";
+
+#[test]
+fn own_text_inside_other_values_is_written_by_native_code() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("own-text-inside")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, OWN_TEXT_INSIDE)?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program)], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
 #[test]
 fn values_read_from_their_blocks_show_as_they_do_in_the_interpreter() -> std::io::Result<()> {
     if !ready() {

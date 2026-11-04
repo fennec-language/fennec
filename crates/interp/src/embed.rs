@@ -1033,10 +1033,8 @@ pub mod io {
 
     /// Prints the value in a block, read from the block.
     pub extern "C" fn print_block(address: i64) {
-        attempt(|state: &mut State| {
-            let shown = super::heap::shown::shown(state, u64::try_from(address).unwrap_or(0))?;
-            write(state, &shown)
-        });
+        let shown = super::heap::shown::shown(u64::try_from(address).unwrap_or(0));
+        attempt(|state: &mut State| write(state, &shown?));
     }
 
     /// Prints a value with an f-string format spec, like `.1f` or `,`.

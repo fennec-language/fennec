@@ -195,7 +195,7 @@ fn a_list_of_items_with_no_fields_reads_back_with_every_item() {
     start(&fennec_syntax::Module { items: Vec::new() }, tables, crate::Inputs::default()).unwrap();
     let list = u64::try_from(super::new(0, 2)).unwrap();
     let read = with(|state| Some(heap::read_block(state, list))).unwrap();
-    let shown = with(|state| Some(heap::shown::shown(state, list))).unwrap();
+    let shown = heap::shown::shown(list);
     finish();
     let Value::List(items) = read.unpacked() else { panic!("a list") };
     assert_eq!(items.len(), 2);

@@ -72,6 +72,9 @@ pub struct Shared {
     pub strings: BTreeMap<String, String>,
     /// Each literal's symbol for its block's address, and its text.
     pub literals: BTreeMap<String, String>,
+    /// Each type that writes its own text: its layout name's literal, the function giving the
+    /// text, and whether a value of it is a block rather than in place.
+    pub own_texts: Vec<(String, String, bool)>,
     /// Each kind of list item's symbol for its number, and the kind.
     pub elements: BTreeMap<String, ListItem>,
     /// Each boxed type's symbol for its shape's number, and its layout's number.

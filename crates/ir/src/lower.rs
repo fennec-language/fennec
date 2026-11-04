@@ -97,6 +97,7 @@ fn lower_from(
         generic_types: generic_types(&modules),
         instances: generics::Instances::default(),
         generator_defs: std::cell::RefCell::default(),
+        own_texts: std::cell::RefCell::default(),
         // A library's yield methods too, which a loop over one can copy in.
         generators: those_where(&every, |def| fuse::has_yield(&def.body)),
         mut_forms: those_where(&every, |def| def.name == "[]mut"),
@@ -134,6 +135,7 @@ fn lower_from(
     let (mut defs, mut enums) = (defs.clone(), enums.iter().map(|def| (*def).clone()).collect::<Vec<_>>());
     structs::add_copies(&context, &mut defs, &mut enums);
     program.generators = context.generator_defs.take();
+    program.own_texts = context.own_texts.take();
     program.structs = defs;
     program.enums = enums;
     program.errors = errors;
@@ -267,6 +269,8 @@ struct Context<'a> {
     mut_forms: HashMap<String, &'a FnDef>,
     /// The generators lowered so far.
     generator_defs: std::cell::RefCell<Vec<crate::GeneratorDef>>,
+    /// The types whose own text is asked for by printing something that holds them.
+    own_texts: std::cell::RefCell<Vec<crate::OwnText>>,
     /// The standard library's `@intrinsic` functions, which have no body: a call to one is an
     /// [`InstKind::Builtin`] of its key, which each engine provides.
     intrinsics: HashSet<String>,

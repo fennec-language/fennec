@@ -28,6 +28,7 @@ pub(super) use freeing::measure_part;
 pub use freeing::{free, free_text, set_abandon};
 pub(super) use freeing::{release, run_abandons};
 pub(super) use named::packable;
+pub use shown::{own_text, own_text_written};
 
 /// Words before a block's fields: its owner count and its shape.
 pub const HEADER_WORDS: usize = 2;

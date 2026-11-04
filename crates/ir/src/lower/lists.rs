@@ -7,6 +7,7 @@ use fennec_check::Type;
 use fennec_syntax::{BinOp, Expr, ExprKind, FStrPart, Span, Stmt, UnaryOp};
 
 use super::calls::owner_name;
+use super::generics::FunctionInstance;
 use super::places::{Leaving, Place};
 use super::{Loop, Lowered, Lowering, Tail};
 use crate::{FormatPart, InstKind, LocalId, Operand, Terminator};
@@ -164,17 +165,82 @@ impl Lowering<'_> {
             if self.holds_own_str(&held, &mut Vec::new()) {
                 return Err(format!("it prints a {held}, which holds a value with its own `def str`"));
             }
+            self.own_texts_within(&held, &mut Vec::new(), expr.span)?;
             return self.expr(expr);
         };
         let value = self.expr(expr)?;
-        let out = self.make("StrWriter", &[], expr.span)?;
-        self.emit(InstKind::Call { dest: None, function, args: vec![value, out.clone()] }, expr.span);
+        self.own_text_of(value, function, (writer, expr.span))
+    }
+
+    /// The text a value's own `def str` writes.
+    fn own_text_of(
+        &mut self,
+        value: Operand,
+        function: String,
+        (writer, span): (Type, Span),
+    ) -> Lowered<Operand> {
+        let out = self.make("StrWriter", &[], span)?;
+        self.emit(InstKind::Call { dest: None, function, args: vec![value, out.clone()] }, span);
         let (text, _) = self
             .resolve("StrWriter.text", &[Some(writer)], None)
             .ok_or("it prints a value with its own `def str`, but `StrWriter.text` isn't there")?;
         let dest = self.temporary(Type::Str);
-        self.emit(InstKind::Call { dest: Some(dest), function: text, args: vec![out] }, expr.span);
+        self.emit(InstKind::Call { dest: Some(dest), function: text, args: vec![out] }, span);
         Ok(Operand::Local(dest))
+    }
+
+    /// Has a function made for each type that writes its own text within a value of type `held`,
+    /// for the runtime to call as it writes the value. `seen` are the types looked at already.
+    fn own_texts_within(&mut self, held: &Type, seen: &mut Vec<Type>, span: Span) -> Lowered<()> {
+        match held {
+            Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::IdMap(item) => {
+                return self.own_texts_within(item, seen, span);
+            }
+            Type::Dict(first, second) | Type::Result(first, second) => {
+                self.own_texts_within(first, seen, span)?;
+                return self.own_texts_within(second, seen, span);
+            }
+            Type::Tuple(items) => {
+                return items.iter().try_for_each(|item| self.own_texts_within(item, seen, span));
+            }
+            Type::Named(_) | Type::Generic(..) => {}
+            _ => return Ok(()),
+        }
+        if seen.contains(held) {
+            return Ok(());
+        }
+        seen.push(held.clone());
+        if let Some(function) = self.own_str(held) {
+            return self.own_text_function(held, function, span);
+        }
+        let name = held.to_string();
+        let mut within: Vec<Type> = self
+            .struct_fields(&name)
+            .map(|fields| fields.into_iter().map(|(_, ty)| ty).collect())
+            .unwrap_or_default();
+        if let Some(found) = self.context.enums.get(name.as_str()) {
+            within.extend(found.cases.iter().flat_map(|case| case.fields.iter().map(|(_, ty)| ty.clone())));
+        }
+        within.iter().try_for_each(|ty| self.own_texts_within(ty, seen, span))
+    }
+
+    /// Makes the function giving the text a value of type `held` writes, if it isn't made yet.
+    fn own_text_function(&mut self, held: &Type, function: String, span: Span) -> Lowered<()> {
+        let key = format!("{held}.own_text");
+        if self.context.own_texts.borrow().iter().any(|made| made.function == key) {
+            return Ok(());
+        }
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let mut made = Lowering::new(&instance, self.context, self.body, Type::Str);
+        let value = made.declare("value", held.clone());
+        made.scopes.push(HashMap::new());
+        let writer = Type::Named("StrWriter".to_owned());
+        let text = made.own_text_of(Operand::Local(value), function, (writer, span))?;
+        made.finish(Terminator::Return(Some(text)));
+        self.lifted.extend(made.finished(1, Vec::new()));
+        self.context.own_texts.borrow_mut().push(crate::OwnText { ty: held.clone(), function: key });
+        Ok(())
     }
 
     /// The `def str` a type writes its own text with, if it has one.

@@ -66,6 +66,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_path_get",
     "fennec_pop_empty",
     "fennec_print_spec",
+    "fennec_print_block",
     "fennec_print_value",
     "fennec_put",
     "fennec_put_item",
@@ -203,6 +204,8 @@ export! {
     fennec_float_text(a0: f64) -> i64 => strings::float_text(a0);
     fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);
     fennec_block_text(a0: i64) -> i64 => strings::shown_text(a0);
+    fennec_own_text(a0: i64, a1: extern "C" fn(i64)) => heap::own_text(a0, a1);
+    fennec_own_text_written(a0: u64, a1: u64, a2: u64) => heap::own_text_written(a0, a1, a2);
     fennec_spec_text(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::spec_text(a0, a1, a2, a3);
     fennec_str_code(a0: i64, a1: i64, a2: i64) -> i64 => strings::code(a0, a1, a2);
     fennec_dict_find_slice(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => dicts::find_slice(a0, a1, a2, a3);

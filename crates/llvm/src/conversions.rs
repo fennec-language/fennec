@@ -73,6 +73,19 @@ impl Emit<'_, '_, '_> {
             }
             ("reversed", [list], [Some(Kind::List(_))]) => dest.and_then(|dest| self.reversed(dest, list)),
             ("list", [_], [Some(Kind::Cap)]) => dest.and_then(|dest| self.args_list(dest)),
+            ("reversed", [text], [Some(Kind::Str)]) => dest.and_then(|dest| {
+                let (text, _) = self.operand(text)?;
+                self.declare("declare ptr @fennec_str_reversed(ptr) nounwind");
+                let turned = self.temp();
+                self.on_blocks([&text], |emit, [block]| {
+                    emit.line(&format!("{turned} = call ptr @fennec_str_reversed(ptr {block})"));
+                });
+                let turned = self.text_value(&turned);
+                self.assign(dest, &turned)
+            }),
+            ("reversed", [tuple], [Some(Kind::Struct(_) | Kind::Boxed(_))]) => {
+                dest.and_then(|dest| self.reversed_tuple(dest, tuple))
+            }
             // A dict's keys, or a set's items, in their order.
             ("list", [dict], [Some(Kind::Dict(..))]) => {
                 dest.and_then(|dest| self.dict_list(dest, dict, "keys"))
@@ -112,6 +125,8 @@ impl Emit<'_, '_, '_> {
             }),
             ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
             ("assert.sides", [left, right], _) => self.assert_sides(left, right, span),
+            // What's ignored has been worked out already.
+            ("ignore", [_, _], _) => Ok(()),
             ("sorted", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| {
                 self.dict_list(dest, set, "keys")?;
                 self.sorted(dest, &Operand::Local(dest))
@@ -874,6 +889,34 @@ impl Emit<'_, '_, '_> {
         let place = self.item_address(&list, "i64", &at);
         self.line(&format!("store i64 {value}, ptr {place}{ITEM_ACCESS}"));
         self.loop_end(&end_loop);
+        self.assign(dest, &list)
+    }
+
+    /// `reversed(tuple)`: a new list of its items, last first, each with an owner of its own.
+    fn reversed_tuple(&mut self, dest: LocalId, tuple: &Operand) -> Result<(), String> {
+        let (object, kind) = self.operand(tuple)?;
+        let (Kind::Struct(id) | Kind::Boxed(id)) = kind else {
+            return Err("`reversed` of something else".to_owned());
+        };
+        let Kind::List(item) = self.kind_of(dest)?.clone() else {
+            return Err("`reversed` that isn't a list".to_owned());
+        };
+        let held = self.item_kind(item)?;
+        let memory = held.memory(self.module.layouts);
+        let count = self.layout_of(id)?.fields.len();
+        let list = self.new_list(item, &count.to_string());
+        let from = self.fields_at(&object, &kind);
+        for at in 0..count {
+            let (source_at, _) = self.field(&kind, &format!("_{}", count - 1 - at))?;
+            let source_at = self.offset(&from, source_at);
+            let value = if held.in_memory() { source_at } else { self.load_field(&held, &source_at, "") };
+            if held.counted() {
+                self.retain_value(&value, &held);
+            }
+            let place = self.item_address(&list, &memory, &at.to_string());
+            self.store_field(&held, &value, &place, ITEM_ACCESS);
+            self.retain_inline(&held, &place);
+        }
         self.assign(dest, &list)
     }
 

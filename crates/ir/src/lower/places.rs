@@ -249,7 +249,13 @@ impl Lowering<'_> {
     }
 
     /// Changes a place, however deeply it's nested.
-    pub(super) fn write_place(&mut self, local: LocalId, steps: &[Step], value: Operand, span: Span) -> Lowered<()> {
+    pub(super) fn write_place(
+        &mut self,
+        local: LocalId,
+        steps: &[Step],
+        value: Operand,
+        span: Span,
+    ) -> Lowered<()> {
         let first_index = steps.iter().position(|step| matches!(step, Step::Index(_)));
         let Some(at) = first_index else {
             if steps.is_empty() {

@@ -506,6 +506,42 @@ fn matches_the_interpreter_on_workers(dir: &Path, name: &str, source: &str) -> s
     Ok(())
 }
 
+/// A body changing, through places, its own copy of what the caller holds: each block on the way
+/// is the caller's until it's copied, from the root down, and the caller's stays as it was.
+const CHANGED_PLACES: &str = "\
+struct Inner:
+    tags: list[int]
+
+    def grow(mut self, value: int):
+        self.tags.append(value)
+
+struct Unit:
+    hp: int
+    tags: list[int]
+    inner: Inner
+
+    def grow(mut self, value: int):
+        self.tags.append(value)
+        self.hp += value
+
+def unit(hp: int) -> Unit:
+    Unit(hp, [hp], Inner([hp]))
+
+def changed(captured: list[Unit], at: int) -> int:
+    mut copy = captured
+    copy[at % 2].grow(at)
+    copy[at % 2].inner.grow(at)
+    copy[at % 2].tags.len() + copy[at % 2].inner.tags.len() + copy[at % 2].hp
+
+def main(stdout: Stdout):
+    captured = [unit(1), unit(2)]
+    xs = [n for n in range(2000)]
+    total = sum(changed(captured, x) for x in parallel(xs))
+    stdout.print(total)
+    for one in captured:
+        stdout.print(one.hp, one.tags, one.inner.tags)
+";
+
 #[test]
 fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
@@ -513,7 +549,9 @@ fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::
     }
     let dir = std::env::temp_dir().join(format!("fennec-parallel-stress-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
-    for (name, source) in [("non_ascii", NON_ASCII), ("lent", LENT_BLOCKS), ("prints", PRINTS)] {
+    let programs =
+        [("non_ascii", NON_ASCII), ("lent", LENT_BLOCKS), ("prints", PRINTS), ("places", CHANGED_PLACES)];
+    for (name, source) in programs {
         matches_the_interpreter_on_workers(&dir, name, source)?;
     }
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");

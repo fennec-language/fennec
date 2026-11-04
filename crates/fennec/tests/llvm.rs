@@ -767,10 +767,22 @@ fn changing_through_a_place_copies_nothing_when_nothing_else_holds_it() -> std::
     }
     let types = "struct Inner:\n    tags: list[int]\n\n    def grow(mut self, value: int):\n        self.tags.append(value)\n\nstruct Unit:\n    hp: int\n    tags: list[int]\n    inner: Inner\n\n    def grow(mut self, value: int):\n        self.tags.append(value)\n\nstruct Band:\n    units: list[Unit]\n\n    def grow(mut self, at: int, value: int):\n        self.units[at].grow(value)\n        self.units[at].inner.grow(value)\n\ndef unit() -> Unit:\n    Unit(0, [], Inner([]))\n\ndef main(stdout: Stdout):\n";
     for (name, body) in [
-        ("item", "    mut xs = [unit(), unit()]\n    for n in range(2000):\n        xs[n % 2].grow(n)\n    stdout.print(xs[0].tags.len())\n"),
-        ("deep", "    mut xs = [unit(), unit()]\n    for n in range(2000):\n        xs[n % 2].inner.grow(n)\n    stdout.print(xs[0].inner.tags.len())\n"),
-        ("grid", "    mut grid = [[unit()], [unit()]]\n    for n in range(2000):\n        grid[n % 2][0].grow(n)\n        grid[n % 2][-1].inner.grow(n)\n    stdout.print(grid[0][0].tags.len())\n"),
-        ("method", "    mut band = Band([unit(), unit()])\n    for n in range(2000):\n        band.grow(n % 2, n)\n    stdout.print(band.units[0].tags.len())\n"),
+        (
+            "item",
+            "    mut xs = [unit(), unit()]\n    for n in range(2000):\n        xs[n % 2].grow(n)\n    stdout.print(xs[0].tags.len())\n",
+        ),
+        (
+            "deep",
+            "    mut xs = [unit(), unit()]\n    for n in range(2000):\n        xs[n % 2].inner.grow(n)\n    stdout.print(xs[0].inner.tags.len())\n",
+        ),
+        (
+            "grid",
+            "    mut grid = [[unit()], [unit()]]\n    for n in range(2000):\n        grid[n % 2][0].grow(n)\n        grid[n % 2][-1].inner.grow(n)\n    stdout.print(grid[0][0].tags.len())\n",
+        ),
+        (
+            "method",
+            "    mut band = Band([unit(), unit()])\n    for n in range(2000):\n        band.grow(n % 2, n)\n    stdout.print(band.units[0].tags.len())\n",
+        ),
     ] {
         let counts = counts_of(&format!("place_{name}"), &format!("{types}{body}"))?;
         assert!(counts.starts_with("copies 0 "), "{name}: {counts}");

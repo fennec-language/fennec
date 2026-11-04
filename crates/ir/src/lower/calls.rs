@@ -148,6 +148,12 @@ impl Lowering<'_> {
                 self.emit(InstKind::Unlock { handle }, span);
             }
         }
+        self.write_back(write_backs, span)?;
+        Ok(dest)
+    }
+
+    /// Writes back what a call changed, saying which of those places can be taken out for it.
+    fn write_back(&mut self, write_backs: Vec<WriteBack>, span: Span) -> Lowered<()> {
         for (place, held, read) in write_backs {
             let ty = self.steps_type(&place)?;
             let value = self.coerce(Operand::Local(held), &ty, span)?;
@@ -163,7 +169,7 @@ impl Lowering<'_> {
             }
             self.check_rules(place.local, &place.steps, span)?;
         }
-        Ok(dest)
+        Ok(())
     }
 
     /// The name of the type an expression names, as in `Point.origin()` or `Deque[int].of(xs)`.

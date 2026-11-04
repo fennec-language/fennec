@@ -7,7 +7,8 @@ use std::collections::{HashMap, HashSet};
 use fennec_check::Type;
 use fennec_ir::facts::{Facts, Range};
 use fennec_ir::{
-    Block, ChangedPlace, Function, GeneratorDef, Inst, InstKind, LocalId, Operand, PlaceStep, Program, Terminator,
+    Block, ChangedPlace, Function, GeneratorDef, Inst, InstKind, LocalId, Operand, PlaceStep, Program,
+    Terminator,
 };
 use fennec_syntax::{BinOp, UnaryOp};
 
@@ -994,9 +995,7 @@ fn place_between<'f>(function: &'f Function, place: &ChangedPlace) -> Option<&'f
         }
         _ => false,
     };
-    let reads_it = |inst: &Inst| {
-        matches!(&inst.kind, InstKind::GetField { dest, .. } | InstKind::GetIndex { dest, .. } if *dest == place.value)
-    };
+    let reads_it = |inst: &Inst| matches!(&inst.kind, InstKind::GetField { dest, .. } | InstKind::GetIndex { dest, .. } if *dest == place.value);
     let block = function.blocks.iter().find(|block| block.insts.iter().any(reads_it))?;
     let read_at = block.insts.iter().position(reads_it)?;
     let rest = block.insts.get(read_at + 1..)?;
@@ -1023,7 +1022,9 @@ fn place_stays_apart(
     let Some(between) = place_between(function, place) else { return false };
     let held = Operand::Local(place.value);
     let parts: Vec<LocalId> = place.read.iter().chain(&place.back).copied().collect();
-    if parts.iter().any(|part| known.writes.get(part.0) != Some(&1)) || known.reads.get(place.value.0) != Some(&2) {
+    if parts.iter().any(|part| known.writes.get(part.0) != Some(&1))
+        || known.reads.get(place.value.0) != Some(&2)
+    {
         return false;
     }
     let indexes: Vec<LocalId> = place
@@ -1038,17 +1039,21 @@ fn place_stays_apart(
     for inst in between {
         let (mut read, mut written) = (Vec::new(), Vec::new());
         visit(&inst.kind, |operand| read.push(operand.clone()), |local| written.push(local));
-        let touches = |local: LocalId| local == place.root || (local != place.value && parts.contains(&local));
+        let touches =
+            |local: LocalId| local == place.root || (local != place.value && parts.contains(&local));
         if read.iter().any(|operand| matches!(operand, Operand::Local(local) if touches(*local)))
-            || written.iter().any(|local| *local == place.root || parts.contains(local) || indexes.contains(local))
+            || written
+                .iter()
+                .any(|local| *local == place.root || parts.contains(local) || indexes.contains(local))
         {
             return false;
         }
         if let InstKind::Call { function: callee, args, .. } = &inst.kind {
             let changed_here = changes(callee);
-            if changed_here.iter().any(|at| {
-                matches!(args.get(*at), Some(Operand::Local(local)) if indexes.contains(local))
-            }) {
+            if changed_here
+                .iter()
+                .any(|at| matches!(args.get(*at), Some(Operand::Local(local)) if indexes.contains(local)))
+            {
                 return false;
             }
             if read.contains(&held) {

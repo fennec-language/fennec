@@ -3255,6 +3255,44 @@ test \"a failure comes back as its case\"(net: Net):
     Ok(())
 }
 
+/// A property test runs through LLVM with each input, and one that fails there runs again in the
+/// interpreter, on the same inputs, which shrinks what it failed for.
+#[test]
+fn property_tests_run_through_llvm() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("test_properties")?;
+    let program = dir.join("properties.fen");
+    std::fs::write(
+        &program,
+        "\
+struct Point:
+    x: int
+    y: float
+
+test \"ints stay small\" for value: int:
+    assert value >= -1000 and value <= 1000
+
+test \"points too\" for point: Point, count: int:
+    assert point.x <= 1000 and count <= 1000
+
+test \"this one goes too far\" for value: int:
+    assert value < 500
+",
+    )?;
+    let path = program.to_string_lossy().into_owned();
+    let ran = fennec(&["test", "--all", "--verbose", &path], &dir)?;
+    let (out, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+    assert!(!ran.status.success(), "{said}");
+    assert!(said.contains("2 of 3 tests passed through LLVM"), "{said}");
+    assert!(out.contains("ints stay small (100 inputs)"), "{out}");
+    assert!(said.contains("it failed for value = 500"), "{said}");
+    assert!(!said.contains("through LLVM and passes"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A failure a test's body passes up with `?` fails the test through LLVM, and running it again
 /// says what the failure was.
 #[test]

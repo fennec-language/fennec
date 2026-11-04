@@ -962,6 +962,16 @@ fn kit_with_an_extension(name: &str, imports: &str) -> std::io::Result<PathBuf> 
         kit.join("src/parser/step.fen"),
         "from parser.core import Parser\n\nextend Parser:\n    def step(self) -> int:\n        self.at + 1\n",
     )?;
+    // Files it mustn't name: one extends `Parser` with something else, and one gives another type
+    // a `step`. They sort before the file it should name.
+    std::fs::write(
+        kit.join("src/parser/also.fen"),
+        "from parser.core import Parser\n\nextend Parser:\n    def other(self) -> int:\n        self.at\n",
+    )?;
+    std::fs::write(
+        kit.join("src/parser/rival.fen"),
+        "struct Rival:\n    at = 0\n\nextend Rival:\n    def step(self) -> int:\n        self.at\n",
+    )?;
     std::fs::write(
         kit.join("src/main.fen"),
         format!(

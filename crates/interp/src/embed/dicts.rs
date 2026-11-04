@@ -191,8 +191,7 @@ fn finish(hash: u64) -> u64 {
 }
 
 /// Whether a plain key is hashed by what it holds rather than by its words.
-fn by_what_it_holds(element: &crate::packed::Element) -> bool {
-    use crate::packed::Element;
+fn by_what_it_holds(element: &Element) -> bool {
     match element {
         Element::Float => true,
         Element::Struct { fields, .. } => fields.iter().any(|(_, field)| by_what_it_holds(field)),
@@ -1028,7 +1027,7 @@ fn word_shown(state: &State, word: Word, words: &[u64], out: &mut Written) {
         Word::Float => Element::Float,
         Word::Bool => Element::Bool,
         Word::Text => Element::Text,
-        Word::Str | Word::Plain(_) | Word::Nothing => Element::Str,
+        Word::Str | Word::Plain(_) | Word::Nothing | Word::Block(_) => Element::Str,
     };
     super::heap::shown::item(state, &element, &mut words.iter(), out);
 }

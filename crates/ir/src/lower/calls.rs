@@ -62,6 +62,60 @@ pub(super) fn owner_name(ty: &Type) -> Option<&str> {
 }
 
 impl Lowering<'_> {
+    /// What a builtin is given, in order, with the receiver first and named arguments last. The
+    /// call's name gets the names of those, since it says which they are.
+    fn builtin_args(
+        &mut self,
+        (name, object, changes): (&mut String, Option<&Expr>, bool),
+        args: &[Arg],
+        write_backs: &mut Vec<WriteBack>,
+        span: Span,
+    ) -> Lowered<Vec<Operand>> {
+        let mut reads = super::order::Reads::default();
+        if let Some(object) = object {
+            if changes {
+                let place = self.place(object, (false, false), write_backs, span)?;
+                reads.add_place(place);
+            } else {
+                let value = self.expr(object)?;
+                reads.add(self, value);
+            }
+        }
+        let mut written = Vec::with_capacity(args.len());
+        for arg in args {
+            if arg.is_mut {
+                return Err(format!("its call to `{name}` has a `mut` argument"));
+            }
+            let value = match &arg.value.kind {
+                ExprKind::Lambda { params, body } if name == "IdMap.modify" => {
+                    self.arrow(&arg.value, params, body, true)?
+                }
+                // What's printed, or made text, through a type's own `def str`.
+                _ if matches!(name.as_str(), "Stdout.print" | "Stdout.write" | "str") => {
+                    self.shown(&arg.value)?
+                }
+                _ => self.expr(&arg.value)?,
+            };
+            reads.add(self, value);
+            written.push(arg.name.clone());
+        }
+        let mut read = reads.finish(self, span).into_iter();
+        let mut values: Vec<Operand> = object.iter().filter_map(|_| read.next()).collect();
+        let mut named = Vec::new();
+        for (argument, value) in written.into_iter().zip(read) {
+            match argument {
+                Some(argument) => named.push((argument, value)),
+                None => values.push(value),
+            }
+        }
+        named.sort_by(|first, second| first.0.cmp(&second.0));
+        for (argument, value) in named {
+            *name = format!("{name}.{argument}");
+            values.push(value);
+        }
+        Ok(values)
+    }
+
     /// Lowers a call. When it's given the type of what the call gives back, that's kept in a
     /// new temporary.
     pub(super) fn call(
@@ -95,40 +149,7 @@ impl Lowering<'_> {
             {
                 return Err(super::operators::OWN_EQUALITY.to_owned());
             }
-            let mut values = Vec::with_capacity(args.len() + 1);
-            if let Some(object) = object {
-                values.push(if changes {
-                    self.place(object, (false, false), &mut write_backs, span)?
-                } else {
-                    self.expr(object)?
-                });
-            }
-            // Named arguments go last, and the call's name says which they are.
-            let mut named = Vec::new();
-            for arg in args {
-                if arg.is_mut {
-                    return Err(format!("its call to `{name}` has a `mut` argument"));
-                }
-                let value = match &arg.value.kind {
-                    ExprKind::Lambda { params, body } if name == "IdMap.modify" => {
-                        self.arrow(&arg.value, params, body, true)?
-                    }
-                    // What's printed, or made text, through a type's own `def str`.
-                    _ if matches!(name.as_str(), "Stdout.print" | "Stdout.write" | "str") => {
-                        self.shown(&arg.value)?
-                    }
-                    _ => self.expr(&arg.value)?,
-                };
-                match &arg.name {
-                    Some(argument) => named.push((argument.clone(), value)),
-                    None => values.push(value),
-                }
-            }
-            named.sort_by(|first, second| first.0.cmp(&second.0));
-            for (argument, value) in named {
-                name = format!("{name}.{argument}");
-                values.push(value);
-            }
+            let values = self.builtin_args((&mut name, object, changes), args, &mut write_backs, span)?;
             dest = keep.map(|ty| self.temporary(ty));
             self.emit(InstKind::Builtin { dest, name, args: values, changes }, span);
         } else {
@@ -351,27 +372,49 @@ impl Lowering<'_> {
                 *slot = Some(value);
             }
         }
+        self.direct_args((&key, own, first), &signature.params, args, (&mut values, write_backs), span)?;
+        let values: Option<Vec<Operand>> = values.into_iter().collect();
+        Ok((function, values.ok_or("a parameter has no argument")?, lock))
+    }
+
+    /// A plain call's arguments, in the order they're written, each put where its parameter is.
+    fn direct_args(
+        &mut self,
+        (key, own, first): (&str, bool, usize),
+        params: &[fennec_check::ParamType],
+        args: &[Arg],
+        (values, write_backs): (&mut [Option<Operand>], &mut Vec<WriteBack>),
+        span: Span,
+    ) -> Lowered<()> {
+        // An index may be one of the arguments changed, and the place stays where it was.
+        let index_changes = args.iter().any(|arg| arg.is_mut);
         // Arguments run in the order they're written, and each lands in its parameter.
+        let mut reads = super::order::Reads::default();
+        let mut slots = Vec::with_capacity(args.len());
         for (position, arg) in args.iter().enumerate() {
             let at = match &arg.name {
-                Some(name) => signature.params.iter().position(|param| param.name == *name),
+                Some(name) => params.iter().position(|param| param.name == *name),
                 None => Some(position + first),
             };
-            let param = at.and_then(|at| signature.params.get(at));
+            let param = at.and_then(|at| params.get(at));
             let param = param.ok_or_else(|| format!("an argument to `{key}` matches no parameter"))?;
-            let value = if param.is_mut && !self.context.is_handle(&param.ty) {
+            if param.is_mut && !self.context.is_handle(&param.ty) {
                 let takes_optional = matches!(param.ty, Type::Optional(_));
-                self.place(&arg.value, (index_changes, takes_optional), write_backs, span)?
+                let place = self.place(&arg.value, (index_changes, takes_optional), write_backs, span)?;
+                reads.add_place(place);
             } else {
                 let lowered = self.expr(&arg.value)?;
-                if own { self.coerce(lowered, &param.ty, arg.value.span)? } else { lowered }
-            };
+                let value = if own { self.coerce(lowered, &param.ty, arg.value.span)? } else { lowered };
+                reads.add(self, value);
+            }
+            slots.push(at);
+        }
+        for (at, value) in slots.into_iter().zip(reads.finish(self, span)) {
             if let Some(slot) = at.and_then(|at| values.get_mut(at)) {
                 *slot = Some(value);
             }
         }
-        let values: Option<Vec<Operand>> = values.into_iter().collect();
-        Ok((function, values.ok_or("a parameter has no argument")?, lock))
+        Ok(())
     }
 
     /// Something a call changes: a local itself, or a temporary holding a field or item
@@ -386,6 +429,7 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<Operand> {
         let place = if index_changes { self.held_place(expr, span)? } else { self.place_of(expr)? };
+        self.note_changed_place(place.local);
         let held = self.steps_type(&place)?;
         let narrowed = !takes_optional
             && matches!(held, Type::Optional(_))

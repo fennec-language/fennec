@@ -1,5 +1,3 @@
-# decision: `def serialize(self, mut out: Serializer)` and `def deserialize(mut src: Deserializer) -> Self` are the serialization protocol,
-
 # A format is a type with a `Serializer`'s methods. Each call is compiled for the format it's
 # given, so nothing is looked up as it runs, and one `def serialize` serves every format.
 

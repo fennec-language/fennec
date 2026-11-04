@@ -424,11 +424,17 @@ fn link_objects(
     })?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
-    if linked.status.success() {
-        Ok(took)
-    } else {
-        Err(format!("linking failed:\n{}", String::from_utf8_lossy(&linked.stderr)))
-    }
+    if linked.status.success() { Ok(took) } else { Err(link_failure(&linked)) }
+}
+
+/// What a linker said when it failed: Visual Studio's says it on standard output, others on
+/// standard error.
+fn link_failure(linked: &std::process::Output) -> String {
+    format!(
+        "linking failed:\n{}{}",
+        String::from_utf8_lossy(&linked.stderr),
+        String::from_utf8_lossy(&linked.stdout)
+    )
 }
 
 /// The system's linker, set to link objects with a runtime library into an executable.
@@ -488,11 +494,7 @@ fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
     })?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
-    if linked.status.success() {
-        Ok(took)
-    } else {
-        Err(format!("linking failed:\n{}", String::from_utf8_lossy(&linked.stderr)))
-    }
+    if linked.status.success() { Ok(took) } else { Err(link_failure(&linked)) }
 }
 
 /// The runtime's bitcode, next to the `fennec` command, if it was built: see

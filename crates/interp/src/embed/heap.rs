@@ -887,7 +887,12 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             let (case, fields) = cases.get(at).or_else(|| cases.first()).cloned().unwrap_or_default();
             let fields =
                 fields.iter().map(|(field, element)| (Rc::clone(field), read(state, element, &mut mine)));
-            let value = named::interpreted(name, instance(name, Some(case), fields.collect()));
+            let read: Vec<_> = fields.collect();
+            // One of a set of errors is, to the interpreter, simply that error.
+            let value = match read.first() {
+                Some((_, error)) if crate::packed::names_errors(name) => error.clone(),
+                _ => named::interpreted(name, instance(name, Some(case), read)),
+            };
             mine.for_each(drop);
             value
         }
@@ -950,6 +955,19 @@ pub(super) fn write_block(state: &mut State, shape: usize, value: &Value) -> Opt
 }
 
 pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: &mut Vec<u64>) -> Option<()> {
+    // One of a set of errors holds the error in the case of its type.
+    if let (Element::Enum { name, cases, words: size }, Value::Instance(error)) = (element, value)
+        && crate::packed::names_errors(name)
+    {
+        let at = cases.iter().position(|(case, _)| case.as_ref() == error.type_name.as_ref())?;
+        let (_, fields) = cases.get(at)?;
+        let (_, held) = fields.first()?;
+        let start = words.len();
+        words.push(u64::try_from(at).ok()?);
+        write(state, held, value, words)?;
+        words.resize(start + *size, 0);
+        return Some(());
+    }
     match named::write_named(state, element, value, words) {
         named::Written::Done => return Some(()),
         named::Written::Failed => return None,

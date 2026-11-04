@@ -12,6 +12,13 @@ use crate::value::{Instance, Value};
 /// A struct's or case's fields, in the order they're written.
 pub type Fields = Vec<(Rc<str>, Element)>;
 
+/// Whether a native enum's name is that of one of a set of errors, like `NotFound | TooWeak`,
+/// rather than a type that mentions one, like `Result[str, NotFound | TooWeak]`.
+#[must_use]
+pub fn names_errors(name: &str) -> bool {
+    name.contains(" | ") && !name.contains(['[', '('])
+}
+
 /// What a packed list's items are.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Element {

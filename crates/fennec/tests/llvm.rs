@@ -3118,3 +3118,103 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// A function that can fail in more than one way, however its error is then read.
+#[test]
+fn sets_of_errors_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "error_sets",
+        r#"error NotFound:
+    name: str
+
+error TooWeak:
+    level: int
+
+error Plain:
+    code: int
+
+def weak(level: int) -> int:
+    if level < 5: fail TooWeak(level)
+    level
+
+def named(name: str) -> str:
+    if name == "": fail NotFound(name)
+    name
+
+def challenge(name: str, level: int) -> str:
+    who = named(name)?
+    power = weak(level)?
+    f"{who} at {power}"
+
+def three(name: str, level: int, code: int) -> str:
+    if code > 0: fail Plain(code)
+    challenge(name, level)?
+
+def main(stdout: Stdout):
+    for name, level in [("ash", 7), ("kit", 1), ("", 9)]:
+        result = challenge(name, level)
+        stdout.print(result)
+        match result:
+            case Ok(text):
+                stdout.print(text)
+            case TooWeak(level):
+                stdout.print("weak", level)
+            case Err(error):
+                stdout.print("other", error, f"{error}")
+    for code in [0, 3]:
+        match three("", 1, code):
+            case Ok(text):
+                stdout.print(text)
+            case Plain(code):
+                stdout.print("plain", code)
+            case NotFound(name):
+                stdout.print("not found", name.len())
+            case Err(error):
+                stdout.print("other", error)
+    match three("kit", 1, 0):
+        case Err(error):
+            stdout.print(error)
+        case Ok(text):
+            stdout.print(text)
+    stdout.print(challenge("kit", 1) == Err(TooWeak(level=1)))
+    stdout.print(challenge("kit", 1) == Err(TooWeak(level=2)))
+    stdout.print(Err(TooWeak(level=1)) == challenge("kit", 1))
+    stdout.print(challenge("kit", 1) != Err(TooWeak(level=1)))
+    stdout.print(challenge("ash", 7) == Err(TooWeak(level=1)))
+    stdout.print(challenge("", 1) == Err(NotFound(name="")))
+    found = challenge("kit", 9) else "failed"
+    missing = challenge("", 9) else "failed"
+    stdout.print(found, missing)
+"#,
+    )
+}
+
+/// An error from a set that nothing handles ends the program as the JIT's does.
+#[test]
+fn an_unhandled_error_of_a_set_fails_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "error_set_unhandled",
+        "error NotFound:
+    name: str
+
+error TooWeak:
+    level: int
+
+def pick(level: int) -> int:
+    if level < 0: fail NotFound(\"x\")
+    if level < 5: fail TooWeak(level)
+    level
+
+def main(stdout: Stdout) -> int:
+    stdout.print(pick(9)?)
+    stdout.print(pick(1)?)
+    0
+",
+    )
+}

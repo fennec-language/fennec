@@ -822,6 +822,12 @@ impl Emit<'_, '_, '_> {
             if matches!(held, Kind::Maybe(_) | Kind::MaybeText | Kind::Str) && self.is_optional(kind) {
                 return self.optional_as_enum(&value, &held, kind);
             }
+            if held != *kind && self.is_error_set(kind) {
+                return self.as_error_set(&value, &held, kind);
+            }
+            if held != *kind && self.is_result(kind) && self.is_result(&held) {
+                return Ok((self.result_as(&value, &held, kind)?, true));
+            }
             return Ok((value, false));
         }
         match kind {
@@ -1149,7 +1155,11 @@ impl Emit<'_, '_, '_> {
             return self.assign(dest, &found);
         }
         let (a, kind) = self.operand(lhs)?;
-        let (b, _) = self.operand(rhs)?;
+        let (b, other) = self.operand(rhs)?;
+        if kind != other && self.is_result(&kind) && self.is_result(&other) {
+            let same = self.results_compared(op, (&a, &kind), (&b, &other))?;
+            return self.assign(dest, &same);
+        }
         let value = match kind {
             Kind::Int => self.int_binary(dest, op, (&a, &b), rhs, span)?,
             Kind::Float => self.float_binary(op, (&a, &b), rhs, span)?,
@@ -1635,6 +1645,17 @@ impl Emit<'_, '_, '_> {
         }
         // Between an optional and what it holds, the IR can write a plain copy.
         let wanted = self.kind_of(dest)?.clone();
+        if self.is_error_set(&wanted) || self.is_result(&wanted) {
+            let (_, held) = self.operand(value)?;
+            if held != wanted {
+                let (made, _) = self.value_for(value, &wanted)?;
+                return if wanted.in_memory() {
+                    self.assign_memory_owned(dest, &made)
+                } else {
+                    self.assign(dest, &made)
+                };
+            }
+        }
         let from = match value {
             Operand::Local(local) => self.kind_of(*local)?.clone(),
             Operand::Int(_) => Kind::Int,
@@ -1756,6 +1777,8 @@ impl Emit<'_, '_, '_> {
             InstKind::CallClosure { dest, closure, args } => self.call_closure(*dest, closure, args, span),
             InstKind::Constant { dest, name } => self.call(Some(*dest), name, &[], span),
             InstKind::MakeCase { dest, case, fields, .. } => self.make_case(*dest, case, fields),
+            InstKind::IsError { dest, value, type_name } => self.is_error(*dest, value, type_name),
+            InstKind::AsError { dest, value } => self.as_error(*dest, value),
             InstKind::IsCase { dest, value, case } => self.is_case(*dest, value, case),
             InstKind::GetCaseField { dest, value, case, field } => {
                 self.get_case_field(*dest, value, case, field)

@@ -13,7 +13,7 @@ const WORD: u32 = 8;
 /// that where one fits in memory, and what it holds on to, works as for any other type.
 pub(crate) fn canon(ty: &Type) -> Type {
     match ty {
-        Type::Tuple(_) | Type::Generic(..) => Type::Named(ty.to_string()),
+        Type::Tuple(_) | Type::Generic(..) | Type::Errors(_) => Type::Named(ty.to_string()),
         Type::Optional(inner) => Type::Named(format!("Option[{inner}]")),
         Type::Result(value, error) => Type::Named(format!("Result[{value}, {error}]")),
         // Every `Id` looks the same whatever it's of.
@@ -62,6 +62,14 @@ pub(crate) fn define_named(ty: &Type, layouts: Option<&Layouts>, out: &mut BTree
             let ok = if **value == Type::Unit { Vec::new() } else { vec![field("value", value)] };
             let cases = vec![("Ok".to_owned(), ok), ("Err".to_owned(), vec![field("error", error)])];
             out.insert(format!("Result[{value}, {error}]"), Written::Enum(cases));
+        }
+        // One of a set of errors: a case for each, holding it.
+        Type::Errors(names) => {
+            let cases = names
+                .iter()
+                .map(|name| (name.clone(), vec![field("value", &Type::Named(name.clone()))]))
+                .collect();
+            out.insert(ty.to_string(), Written::Enum(cases));
         }
         Type::Id(_) => {
             out.insert(

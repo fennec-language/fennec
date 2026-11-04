@@ -438,13 +438,206 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// Whether this is one of a set of errors, which is an enum with a case for each.
+    pub(crate) fn is_error_set(&self, kind: &Kind) -> bool {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return false };
+        self.module.layouts.get(*id).is_some_and(|layout| fennec_interp::packed::names_errors(&layout.name))
+    }
+
+    /// An error, or one of a smaller set, as one of this set, with an owner of its own.
+    pub(crate) fn as_error_set(
+        &mut self,
+        value: &str,
+        held: &Kind,
+        kind: &Kind,
+    ) -> Result<(String, bool), String> {
+        let (place, fields_at) = if let Kind::Boxed(id) = kind {
+            let block = self.new_block(*id)?;
+            let fields_at = self.offset(&block, FIELDS_OFFSET);
+            (block, fields_at)
+        } else {
+            let place = self.place_for(kind);
+            let text = self.text_of(kind);
+            self.line(&format!("store {text} zeroinitializer, ptr {place}"));
+            (place.clone(), place)
+        };
+        if self.is_error_set(held) {
+            // The same error is in the same place in each: only which case it is differs.
+            let (Kind::Enum(from) | Kind::Boxed(from)) = held else {
+                return Err("an error set of something else".to_owned());
+            };
+            let layout = self.layout_of(*from)?;
+            let names: Vec<String> = layout.cases.iter().flatten().map(|case| case.name.clone()).collect();
+            let size = layout.size;
+            let source = self.fields_at(value, held);
+            self.retain_inline(held, &source);
+            let tag = self.temp();
+            self.line(&format!("{tag} = load i64, ptr {source}"));
+            self.declare("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)");
+            self.line(&format!(
+                "call void @llvm.memcpy.p0.p0.i64(ptr {fields_at}, ptr {source}, i64 {size}, i1 false)"
+            ));
+            let mut picked = "0".to_owned();
+            for (number, name) in names.iter().enumerate() {
+                let (wanted, _) = self.case_of(kind, name)?;
+                let (same, next) = (self.temp(), self.temp());
+                self.line(&format!("{same} = icmp eq i64 {tag}, {number}"));
+                self.line(&format!("{next} = select i1 {same}, i64 {wanted}, i64 {picked}"));
+                picked = next;
+            }
+            self.line(&format!("store i64 {picked}, ptr {fields_at}"));
+            return Ok((place, true));
+        }
+        let (Kind::Struct(id) | Kind::Boxed(id) | Kind::Enum(id)) = held else {
+            return Err(format!("it makes an error of a {held:?}, which this backend doesn't take yet"));
+        };
+        let name = self.layout_of(*id)?.name.clone();
+        let (number, fields) = self.case_of(kind, &name)?;
+        let (_, offset, field) = fields.first().cloned().ok_or("an error's case holding nothing")?;
+        let field = field.ok_or("an error this backend doesn't take yet")?;
+        self.line(&format!("store i64 {number}, ptr {fields_at}"));
+        let at = self.offset(&fields_at, offset);
+        self.store_field(&field, value, &at, "");
+        if field.in_memory() {
+            self.retain_inline(&field, &at);
+        } else if field.counted() {
+            self.retain_value(value, &field);
+        }
+        Ok((place, true))
+    }
+
+    pub(crate) fn is_result(&self, kind: &Kind) -> bool {
+        let (Kind::Enum(id) | Kind::Boxed(id)) = kind else { return false };
+        self.module.layouts.get(*id).is_some_and(|layout| layout.name.starts_with("Result["))
+    }
+
+    /// Whether two results with different errors are equal, as when one is written out, like
+    /// `Err(TooWeak(level=1))`, and the other can fail in more ways: the first is made one of the
+    /// second for the comparison.
+    pub(crate) fn results_compared(
+        &mut self,
+        op: BinOp,
+        (a, a_kind): (&str, &Kind),
+        (b, b_kind): (&str, &Kind),
+    ) -> Result<String, String> {
+        if !matches!(op, BinOp::Eq | BinOp::NotEq) {
+            return Err("it orders results with different errors".to_owned());
+        }
+        let error_of = |emit: &Self, kind: &Kind| -> Result<Kind, String> {
+            let (_, fields) = emit.case_of(kind, "Err")?;
+            let (_, _, error) = fields.first().cloned().ok_or("an `Err` holding nothing")?;
+            error.ok_or_else(|| "an error this backend doesn't take yet".to_owned())
+        };
+        let widen_a = !self.is_error_set(&error_of(self, a_kind)?);
+        let (narrow, narrow_kind, wide, wide_kind) =
+            if widen_a { (a, a_kind, b, b_kind) } else { (b, b_kind, a, a_kind) };
+        if self.is_error_set(&error_of(self, narrow_kind)?) {
+            return Err("it compares results with different sets of errors".to_owned());
+        }
+        let made = self.result_as(narrow, narrow_kind, wide_kind)?;
+        let same = match wide_kind {
+            Kind::Enum(id) => self.same_enums(op, *id, (wide, &made))?,
+            _ => self.same_blocks(op, (wide, &made)),
+        };
+        if matches!(wide_kind, Kind::Boxed(_)) {
+            self.release(&made);
+        } else {
+            self.release_inline(wide_kind, &made);
+        }
+        Ok(same)
+    }
+
+    /// A result as one that can fail in more ways, with owners of what it holds.
+    pub(crate) fn result_as(&mut self, value: &str, held: &Kind, kind: &Kind) -> Result<String, String> {
+        let (place, fields_at) = if let Kind::Boxed(id) = kind {
+            let block = self.new_block(*id)?;
+            let fields_at = self.offset(&block, FIELDS_OFFSET);
+            (block, fields_at)
+        } else {
+            let place = self.place_for(kind);
+            let text = self.text_of(kind);
+            self.line(&format!("store {text} zeroinitializer, ptr {place}"));
+            (place.clone(), place)
+        };
+        let source = self.fields_at(value, held);
+        let (err_case, err_from) = self.case_of(held, "Err")?;
+        let (_, err_to) = self.case_of(kind, "Err")?;
+        let (_, ok_from) = self.case_of(held, "Ok")?;
+        let (_, ok_to) = self.case_of(kind, "Ok")?;
+        let (tag, failed) = (self.temp(), self.temp());
+        self.line(&format!("{tag} = load i64, ptr {source}"));
+        self.line(&format!("store i64 {tag}, ptr {fields_at}"));
+        self.line(&format!("{failed} = icmp eq i64 {tag}, {err_case}"));
+        let (bad, good, done) = (self.label("err"), self.label("ok"), self.label("as_wider"));
+        self.line(&format!("br i1 {failed}, label %{bad}, label %{good}"));
+        self.start_block(&bad);
+        let (_, from_at, from_kind) = err_from.first().cloned().ok_or("an `Err` holding nothing")?;
+        let (_, to_at, to_kind) = err_to.first().cloned().ok_or("an `Err` holding nothing")?;
+        let (from_kind, to_kind) = (
+            from_kind.ok_or("an error this backend doesn't take yet")?,
+            to_kind.ok_or("an error this backend doesn't take yet")?,
+        );
+        let at = self.offset(&source, from_at);
+        let error = if from_kind.in_memory() { at } else { self.load_field(&from_kind, &at, "") };
+        let (made, _) = self.as_error_set(&error, &from_kind, &to_kind)?;
+        let into = self.offset(&fields_at, to_at);
+        self.store_field(&to_kind, &made, &into, "");
+        self.line(&format!("br label %{done}"));
+        self.start_block(&good);
+        if let (Some((_, from_at, Some(field))), Some((_, to_at, _))) = (ok_from.first(), ok_to.first()) {
+            let at = self.offset(&source, *from_at);
+            let ok = if field.in_memory() { at } else { self.load_field(field, &at, "") };
+            let into = self.offset(&fields_at, *to_at);
+            self.store_field(field, &ok, &into, "");
+            if field.in_memory() {
+                self.retain_inline(field, &into);
+            } else if field.counted() {
+                self.retain_value(&ok, field);
+            }
+        }
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(place)
+    }
+
+    /// Whether an error of a set is of this type, which is a case by that name.
+    pub(crate) fn is_error(&mut self, dest: LocalId, value: &Operand, name: &str) -> Result<(), String> {
+        let (_, held) = self.operand(value)?;
+        if self.is_error_set(&held) {
+            return self.is_case(dest, value, name);
+        }
+        let (Kind::Struct(id) | Kind::Boxed(id) | Kind::Enum(id)) = held else {
+            return Err("it asks which error something else is".to_owned());
+        };
+        let same = self.layout_of(id)?.name == name;
+        self.assign(dest, if same { "true" } else { "false" })
+    }
+
+    /// An error of a set, known to be of the type `dest` holds.
+    pub(crate) fn as_error(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+        let (_, held) = self.operand(value)?;
+        if !self.is_error_set(&held) {
+            return self.copy(dest, value);
+        }
+        let (Kind::Struct(id) | Kind::Boxed(id) | Kind::Enum(id)) = self.kind_of(dest)?.clone() else {
+            return Err("it takes an error out as something else".to_owned());
+        };
+        let name = self.layout_of(id)?.name.clone();
+        self.get_case_field(dest, value, &name, "value")
+    }
+
     /// An enum's case, by name: its number, and its fields with where they go.
     pub(crate) fn case_of(&self, kind: &Kind, name: &str) -> Result<(i64, Vec<CaseField>), String> {
         let (Kind::Enum(id) | Kind::Boxed(id)) = kind else {
             return Err(format!("it reads a case of a {kind:?}, which this backend doesn't take yet"));
         };
         let cases = self.layout_of(*id)?.cases.as_ref().ok_or("a case of a struct")?;
-        let number = cases.iter().position(|case| case.name == name).ok_or("no such case")?;
+        let number = cases.iter().position(|case| case.name == name).ok_or_else(|| {
+            format!(
+                "no such case as `{name}` of `{}`",
+                self.layout_of(*id).map_or("?", |layout| layout.name.as_str())
+            )
+        })?;
         let case = cases.get(number).ok_or("no such case")?;
         let fields = case
             .fields

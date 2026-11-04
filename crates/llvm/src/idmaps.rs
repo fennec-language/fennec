@@ -336,6 +336,12 @@ impl Emit<'_, '_, '_> {
                 self.start_block(&done);
                 Ok(())
             }
+            // Only gone through in order, it's never made: the loop walks the slots.
+            "IdMap.values" | "IdMap.items"
+                if dest.is_some_and(|dest| self.known.map_walks.contains_key(&dest.0)) =>
+            {
+                Ok(())
+            }
             "IdMap.values" | "IdMap.ids" | "IdMap.items" => {
                 self.id_map_list(dest.ok_or("no result")?, *map, &parts, name)
             }
@@ -360,6 +366,94 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store ptr {list}, ptr {at}"));
         }
         self.assign(dest, &block)
+    }
+
+    /// How many items a map being walked has, which is how many times its loop goes round.
+    pub(crate) fn walked_live(&mut self, map: LocalId) -> Result<String, String> {
+        let kind = self.kind_of(map)?.clone();
+        let parts = self.parts(&kind)?;
+        let (block, _) = self.operand(&Operand::Local(map))?;
+        let fields = self.offset(&block, FIELDS_OFFSET);
+        let live_at = self.offset(&fields, parts.live);
+        let live = self.temp();
+        self.line(&format!("{live} = load i64, ptr {live_at}"));
+        Ok(live)
+    }
+
+    /// Goes on to the next slot with an item in it. The loop counts the items, and nothing here
+    /// changes the map, so there's always one. A count of 0 starts again, in case what was never
+    /// made is gone through more than once.
+    pub(crate) fn walk_to_next(
+        &mut self,
+        dest: LocalId,
+        map: LocalId,
+        index: &Operand,
+    ) -> Result<(), String> {
+        let kind = self.kind_of(map)?.clone();
+        let parts = self.parts(&kind)?;
+        let (block, _) = self.operand(&Operand::Local(map))?;
+        let (_, generations) = self.part(&block, parts.generations, false);
+        let (next_place, slot_place, generation_place) =
+            (self.place_for(&Kind::Int), self.place_for(&Kind::Int), self.place_for(&Kind::Int));
+        let (count, _) = self.operand(index)?;
+        let (saved, first, start) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{saved} = load i64, ptr {next_place}"));
+        self.line(&format!("{first} = icmp eq i64 {count}, 0"));
+        self.line(&format!("{start} = select i1 {first}, i64 0, i64 {saved}"));
+        let before = self.current.clone();
+        let (head, found) = (self.label("walk"), self.label("walked"));
+        let (at, step) = (self.temp(), self.temp());
+        self.line(&format!("br label %{head}"));
+        self.start_block(&head);
+        self.line(&format!("{at} = phi i64 [ {start}, %{before} ], [ {step}, %{head} ]"));
+        let generation_at = self.item_address(&generations, "i64", &at);
+        let (generation, alive) = (self.temp(), self.temp());
+        self.line(&format!("{generation} = load i64, ptr {generation_at}{ITEM_ACCESS}"));
+        self.line(&format!("{alive} = icmp sge i64 {generation}, 0"));
+        self.line(&format!("{step} = add i64 {at}, 1"));
+        self.line(&format!("br i1 {alive}, label %{found}, label %{head}"));
+        self.start_block(&found);
+        self.line(&format!("store i64 {step}, ptr {next_place}"));
+        self.line(&format!("store i64 {at}, ptr {slot_place}"));
+        self.line(&format!("store i64 {generation}, ptr {generation_place}"));
+        self.walks.insert(dest.0, (slot_place, generation_place));
+        if self.known.walk_items.get(&dest.0).is_some_and(|(_, pair)| *pair) {
+            // Holding nothing, letting go of it lets go of nothing.
+            let (held, text) = (self.slot(dest), self.text_of(&self.kind_of(dest)?.clone()));
+            let dest_kind = self.kind_of(dest)?.clone();
+            if dest_kind.in_memory() || dest_kind.counted() {
+                self.line(&format!("store {text} zeroinitializer, ptr {held}"));
+            }
+            return Ok(());
+        }
+        let (_, items) = self.part(&block, parts.items, false);
+        let memory = parts.held.memory(self.module.layouts);
+        let place = self.item_address(&items, &memory, &at);
+        self.read_into(dest, &parts.held, &place, ITEM_ACCESS)
+    }
+
+    /// A part of the pair a walk is on: its `Id`, or its item.
+    pub(crate) fn walked_part(&mut self, dest: LocalId, pair: LocalId, part: usize) -> Result<(), String> {
+        let (map, _) = self.known.walk_items.get(&pair.0).copied().ok_or("a walk with no map")?;
+        let (slot_place, generation_place) =
+            self.walks.get(&pair.0).cloned().ok_or("a pair read before it's made")?;
+        let (at, generation) = (self.temp(), self.temp());
+        self.line(&format!("{at} = load i64, ptr {slot_place}"));
+        self.line(&format!("{generation} = load i64, ptr {generation_place}"));
+        if part == 0 {
+            let base = self.slot(dest);
+            let second = self.offset(&base, 8);
+            self.line(&format!("store i64 {at}, ptr {base}"));
+            self.line(&format!("store i64 {generation}, ptr {second}"));
+            return Ok(());
+        }
+        let kind = self.kind_of(map)?.clone();
+        let parts = self.parts(&kind)?;
+        let (block, _) = self.operand(&Operand::Local(map))?;
+        let (_, items) = self.part(&block, parts.items, false);
+        let memory = parts.held.memory(self.module.layouts);
+        let place = self.item_address(&items, &memory, &at);
+        self.read_into(dest, &parts.held, &place, ITEM_ACCESS)
     }
 
     /// The live items, `Id`s, or both as pairs, in slot order.

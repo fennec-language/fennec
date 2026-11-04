@@ -874,6 +874,9 @@ impl Emit<'_, '_, '_> {
         index: &Operand,
         span: Span,
     ) -> Result<(), String> {
+        if let Some((map, _)) = self.known.walk_items.get(&dest.0).copied() {
+            return self.walk_to_next(dest, map, index);
+        }
         // A pair from an `enumerate` never made isn't made either: where it points in the list
         // is checked, and kept for its parts.
         if let Some((list, _)) = self.known.pairs.get(&dest.0).cloned() {

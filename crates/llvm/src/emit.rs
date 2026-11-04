@@ -447,6 +447,7 @@ impl<'p> Module<'_, 'p> {
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
             pair_slots: HashMap::new(),
+            walks: HashMap::new(),
         };
         emit.body()?;
         let (allocas, out, cold, failed, needs_prop) =
@@ -517,6 +518,8 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) inside_slots: HashMap<FieldPath, String>,
     /// Where each pair from an `enumerate` never made points in its list, kept for its parts.
     pub(crate) pair_slots: HashMap<usize, String>,
+    /// Where each map's walk has got to, and where the slot a walk is on and its generation are.
+    pub(crate) walks: HashMap<usize, (String, String)>,
 }
 
 pub(crate) fn float_text(value: f64) -> String {
@@ -1576,6 +1579,12 @@ impl Emit<'_, '_, '_> {
             // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
             "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
             "list.len" => {
+                if let Some(Operand::Local(local)) = first
+                    && let Some(map) = self.known.map_walks.get(&local.0).copied()
+                {
+                    let live = self.walked_live(map)?;
+                    return self.assign(dest.ok_or("no result")?, &live);
+                }
                 // An `enumerate` never made is as long as its list.
                 let counted = match first {
                     Some(Operand::Local(local)) => {
@@ -1655,7 +1664,10 @@ impl Emit<'_, '_, '_> {
     /// `dest = value`: a block gets another owner, unless nothing else ever reads `value`.
     pub(crate) fn copy(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
         // The local is the list, so there's nothing to copy, or it's an `enumerate` never made.
-        if self.known.alias(dest).is_some() || self.known.enumerated.contains_key(&dest.0) {
+        if self.known.alias(dest).is_some()
+            || self.known.enumerated.contains_key(&dest.0)
+            || self.known.map_walks.contains_key(&dest.0)
+        {
             return Ok(());
         }
         if *value == Operand::None {
@@ -1810,6 +1822,11 @@ impl Emit<'_, '_, '_> {
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make(*dest, items),
+            InstKind::GetTupleItem { dest, value: Operand::Local(pair), at }
+                if self.known.walk_items.contains_key(&pair.0) =>
+            {
+                self.walked_part(*dest, *pair, *at)
+            }
             // A pair never made: its count is the index, and its item is the list's there.
             InstKind::GetTupleItem { dest, value: Operand::Local(pair), at }
                 if self.known.pairs.contains_key(&pair.0) =>
@@ -1910,7 +1927,7 @@ impl Emit<'_, '_, '_> {
         }
         // Nor does an `enumerate` never made, whose list its pairs read in its place.
         if let InstKind::Builtin { dest: Some(dest), .. } | InstKind::Copy { dest, .. } = inst
-            && self.known.enumerated.contains_key(&dest.0)
+            && (self.known.enumerated.contains_key(&dest.0) || self.known.map_walks.contains_key(&dest.0))
         {
             return;
         }

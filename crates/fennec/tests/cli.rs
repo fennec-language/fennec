@@ -1027,6 +1027,24 @@ fn a_run_says_which_file_has_a_missing_methods_extension() {
 }
 
 #[test]
+fn the_interpreter_says_a_type_parameters_function_needs_native_code() {
+    let dir = scratch("type_param_interp").unwrap();
+    let program = dir.join("made.fen");
+    std::fs::write(
+        &program,
+        "interface Made:\n    def make() -> Self\n\nstruct Part:\n    x = 1\n\n    def make() -> Part:\n        Part(x=7)\n\n\
+         def build[T: Made]() -> T:\n    T.make()\n\ndef main(stdout: Stdout):\n    stdout.print(build[Part]().x)\n",
+    )
+    .unwrap();
+    let output = fennec(&["run", "--interp", &program.to_string_lossy()], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let shown = text(&output.stderr);
+    assert!(shown.contains("`T.make()` needs native code"), "{shown}");
+    assert!(shown.contains("run this without `--interp`"), "{shown}");
+}
+
+#[test]
 fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     let dir = scratch("lint").unwrap();
     let program = dir.join("game.fen");

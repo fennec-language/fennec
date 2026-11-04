@@ -220,6 +220,28 @@ impl IdMap {
     }
 }
 
+/// How two floats order: as numbers, with `0.0` the same as `-0.0`, and NaN after everything and
+/// the same as any other NaN, so its sign can't change a result.
+pub(crate) fn float_order(a: f64, b: f64) -> std::cmp::Ordering {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal),
+    }
+}
+
+/// A float's bits as they hash and sort: the one form of each float that's equal to others.
+pub(crate) fn float_key(x: f64) -> u64 {
+    if x == 0.0 {
+        0
+    } else if x.is_nan() {
+        f64::NAN.to_bits()
+    } else {
+        x.to_bits()
+    }
+}
+
 impl Value {
     pub(crate) fn str(text: &str) -> Value {
         Value::Str(Rc::from(text))
@@ -290,7 +312,7 @@ impl PartialEq for Value {
             (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a.total_cmp(b).is_eq(),
+            (Value::Float(a), Value::Float(b)) => float_order(*a, *b).is_eq(),
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::List(a), Value::List(b)) | (Value::Tuple(a), Value::Tuple(b)) => a == b,

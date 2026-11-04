@@ -1331,6 +1331,88 @@ impl Emit<'_, '_, '_> {
         result
     }
 
+    /// A comparison of two floats, which have one equality and order everywhere: `0.0` is the same
+    /// as `-0.0`, and NaN comes after everything and is the same as any other NaN. LLVM's own
+    /// comparisons do this with a literal on one side, which is never NaN, and take a second look
+    /// otherwise.
+    pub(crate) fn float_compare(&mut self, op: BinOp, (a, b): (&str, &str)) -> String {
+        let plain = |value: &str| {
+            value
+                .strip_prefix("0x")
+                .and_then(|bits| u64::from_str_radix(bits, 16).ok())
+                .is_some_and(|bits| !f64::from_bits(bits).is_nan())
+        };
+        let single = if plain(b) {
+            Some(match op {
+                BinOp::Eq => "oeq",
+                BinOp::NotEq => "une",
+                BinOp::Lt => "olt",
+                BinOp::LtEq => "ole",
+                BinOp::Gt => "ugt",
+                _ => "uge",
+            })
+        } else if plain(a) {
+            Some(match op {
+                BinOp::Eq => "oeq",
+                BinOp::NotEq => "une",
+                BinOp::Lt => "ult",
+                BinOp::LtEq => "ule",
+                BinOp::Gt => "ogt",
+                _ => "oge",
+            })
+        } else {
+            None
+        };
+        if let Some(cc) = single {
+            let temp = self.temp();
+            self.line(&format!("{temp} = fcmp {cc} double {a}, {b}"));
+            return temp;
+        }
+        let not = |emit: &mut Self, value: String| {
+            let flipped = emit.temp();
+            emit.line(&format!("{flipped} = xor i1 {value}, true"));
+            flipped
+        };
+        match op {
+            BinOp::Eq => self.floats_same(a, b),
+            BinOp::NotEq => {
+                let same = self.floats_same(a, b);
+                not(self, same)
+            }
+            BinOp::Lt => self.float_less(a, b),
+            BinOp::Gt => self.float_less(b, a),
+            BinOp::LtEq => {
+                let more = self.float_less(b, a);
+                not(self, more)
+            }
+            _ => {
+                let less = self.float_less(a, b);
+                not(self, less)
+            }
+        }
+    }
+
+    /// Whether two floats are the same: equal as numbers, or both NaN.
+    fn floats_same(&mut self, a: &str, b: &str) -> String {
+        let (equal, a_nan, b_nan, both, same) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{equal} = fcmp oeq double {a}, {b}"));
+        self.line(&format!("{a_nan} = fcmp uno double {a}, {a}"));
+        self.line(&format!("{b_nan} = fcmp uno double {b}, {b}"));
+        self.line(&format!("{both} = and i1 {a_nan}, {b_nan}"));
+        self.line(&format!("{same} = or i1 {equal}, {both}"));
+        same
+    }
+
+    /// Whether a float comes before another: less as a number, or before a NaN and not one itself.
+    fn float_less(&mut self, a: &str, b: &str) -> String {
+        let (less, a_number, both) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{less} = fcmp ult double {a}, {b}"));
+        self.line(&format!("{a_number} = fcmp ord double {a}, {a}"));
+        self.line(&format!("{both} = and i1 {less}, {a_number}"));
+        both
+    }
+
     fn float_binary(
         &mut self,
         op: BinOp,
@@ -1338,19 +1420,8 @@ impl Emit<'_, '_, '_> {
         rhs: &Operand,
         span: Span,
     ) -> Result<String, String> {
-        let compare = match op {
-            BinOp::Eq => Some("oeq"),
-            BinOp::NotEq => Some("une"),
-            BinOp::Lt => Some("olt"),
-            BinOp::LtEq => Some("ole"),
-            BinOp::Gt => Some("ogt"),
-            BinOp::GtEq => Some("oge"),
-            _ => None,
-        };
-        if let Some(cc) = compare {
-            let temp = self.temp();
-            self.line(&format!("{temp} = fcmp {cc} double {a}, {b}"));
-            return Ok(temp);
+        if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
+            return Ok(self.float_compare(op, (a, b)));
         }
         let word = match op {
             BinOp::Add => "fadd",

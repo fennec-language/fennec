@@ -188,17 +188,9 @@ fn finish(hash: u64) -> u64 {
     (hash ^ (hash >> 29)) >> 1
 }
 
-/// A float key's bits as they compare and hash: floats have one equality, with `-0.0` the same as
-/// `0.0` and every NaN the same.
+/// A float key's bits as they compare and hash.
 fn float_key(bits: u64) -> u64 {
-    let value = f64::from_bits(bits);
-    if value == 0.0 {
-        0
-    } else if value.is_nan() {
-        f64::NAN.to_bits()
-    } else {
-        bits
-    }
+    crate::value::float_key(f64::from_bits(bits))
 }
 
 fn hash_key(state: &State, key_word: Word, key: &[u64]) -> u64 {
@@ -1071,7 +1063,9 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
                 Probe::Found(at) => value_place(right, layout, at)
                     .and_then(|place| right.get(place))
                     .is_some_and(|other| match layout.value {
-                        Word::Float => f64::from_bits(value).total_cmp(&f64::from_bits(*other)).is_eq(),
+                        Word::Float => {
+                            crate::value::float_order(f64::from_bits(value), f64::from_bits(*other)).is_eq()
+                        }
                         Word::Str | Word::Plain(_) | Word::Block(_) => same(state, value, *other),
                         Word::Int | Word::Bool | Word::Nothing | Word::Text => value == *other,
                     }),

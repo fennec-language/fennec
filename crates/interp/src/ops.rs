@@ -146,7 +146,7 @@ fn overflow(span: Span) -> Diagnostic {
 pub(crate) fn compare(lhs: &Value, rhs: &Value, span: Span) -> Result<Ordering, Diagnostic> {
     match (lhs, rhs) {
         (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
-        (Value::Float(a), Value::Float(b)) => Ok(a.total_cmp(b)),
+        (Value::Float(a), Value::Float(b)) => Ok(crate::value::float_order(*a, *b)),
         (Value::Str(a), Value::Str(b)) => Ok(a.cmp(b)),
         (Value::Bytes(a), Value::Bytes(b)) => Ok(a.cmp(b)),
         (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),

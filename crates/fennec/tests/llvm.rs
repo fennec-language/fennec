@@ -3500,13 +3500,13 @@ def main(stdout: Stdout):
 }
 
 /// Floats as keys have one equality: `-0.0` is `0.0`, and every NaN is the same, with the key
-/// kept as it was first written.
+/// kept as it was first written. The JIT's keys don't follow that yet.
 #[test]
-fn float_keys_match_the_jit() -> std::io::Result<()> {
+fn float_keys_match_the_interpreter() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    same_as_the_jit(
+    same_as_the_interpreter(
         "float_keys",
         r#"from std.math import sqrt
 
@@ -3582,4 +3582,114 @@ def main(stdout: Stdout):
     stdout.print(json.dumps({"6": [6], "7": []}), json.dumps({"a": {"b": [1.5]}}))
 "#,
     )
+}
+
+/// Floats have one equality, order and hash everywhere: `0.0` is `-0.0`, and NaN comes after
+/// everything and is the same as any other NaN, whatever its sign. So this is held to what that
+/// decision says, on LLVM and the interpreter both. The JIT's `==` and keys don't follow it yet.
+#[test]
+fn floats_compare_and_hash_as_decided() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"struct Pair:
+    x: float
+    y: float
+
+def same(a: float, b: float) -> bool:
+    a == b
+
+def different(a: float, b: float) -> bool:
+    a != b
+
+def less(a: float, b: float) -> bool:
+    a < b
+
+def most(a: float, b: float) -> bool:
+    a <= b
+
+def more(a: float, b: float) -> bool:
+    a > b
+
+def least(a: float, b: float) -> bool:
+    a >= b
+
+def main(stdout: Stdout):
+    zero = 0.0
+    minus = -zero
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    other = -nan
+    one = 1.0
+    stdout.print(same(zero, minus), same(nan, nan), same(nan, other), same(nan, one), same(one, one))
+    stdout.print(different(zero, minus), different(nan, other), different(nan, one))
+    stdout.print(less(minus, zero), less(zero, minus), less(one, nan), less(nan, one), less(nan, other))
+    stdout.print(most(minus, zero), most(nan, other), most(nan, one), most(one, nan))
+    stdout.print(more(nan, one), more(one, nan), more(nan, other), more(zero, minus))
+    stdout.print(least(nan, one), least(one, nan), least(nan, other), least(minus, zero))
+    stdout.print(zero == -0.0, nan == 1.0, 1.0 == nan, nan != 1.0, 1.0 != nan)
+    stdout.print(nan < 1.0, 1.0 < nan, nan <= 1.0, 1.0 <= nan, nan > 1.0, 1.0 > nan, nan >= 1.0, 1.0 >= nan)
+    stdout.print(Pair(x=zero, y=nan) == Pair(x=minus, y=other), Pair(x=1.0, y=nan) == Pair(x=1.0, y=2.0))
+    stdout.print((zero, 1.0) < (minus, 2.0), (zero, 2.0) < (minus, 1.0))
+    stdout.print((zero, nan) == (minus, other), (nan, 1.0) > (1.0, 1.0))
+    stdout.print([zero, nan] == [minus, other], zero in [minus], other in [nan])
+    stdout.print(max([1.0, nan, 2.0]) == nan, min([other, 1.0, nan]), max(other, 1.0) == nan, min(zero, 1.0))
+    stdout.print(sorted([nan, 2.0, other, 1.0])[:2], sorted([(nan, 1), (1.0, 2)])[0])
+";
+    let dir = folder("floats_as_decided")?;
+    let program = dir.join("floats.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("floats"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    let interpreted = outcome(&fennec(&["run", "--interp", &program], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours, interpreted);
+    assert_eq!(
+        ours.0,
+        "True True True False True
+False False True
+False False True False False
+True True False True
+True False False False
+True False True True
+True False False True True
+False True False True True False True False
+True False
+True False
+True True
+True True True
+True 1.0 True 0.0
+[1.0, 2.0] (1.0, 2)
+"
+    );
+    Ok(())
+}
+
+/// Floats as keys hash as they compare, on the interpreter here. LLVM's float keys are held to the
+/// same answers where they're lowered.
+#[test]
+fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
+    let source = "def main(stdout: Stdout):
+    zero = 0.0
+    minus = -zero
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    mut zeros = {zero}
+    stdout.print(minus in zeros)
+    zeros.add(minus)
+    stdout.print(zeros.len(), {zero, 1.0} == {minus, 1.0})
+    mut nans = {nan}
+    nans.add(-nan)
+    stdout.print(nans.len(), -nan in nans)
+    named = {zero: 1}
+    stdout.print(named.get(minus), named[minus])
+    stdout.print([zero, nan] == [minus, -nan])
+";
+    let dir = folder("float_keys_interpreted")?;
+    let program = dir.join("keys.fen");
+    std::fs::write(&program, source)?;
+    let interpreted = outcome(&fennec(&["run", "--interp", &program.to_string_lossy()], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(interpreted.0, "True\n1 True\n1 True\n1 1\nTrue\n");
+    Ok(())
 }

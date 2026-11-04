@@ -32,13 +32,11 @@ const WINDOWS_LIBRARIES: &[&str] = &[
     "-lbcrypt",
     "-ladvapi32",
     "-lsynchronization",
-    "-lgcc_eh",
-    "-l:libpthread.a",
-    "-lmsvcrt",
-    "-lmingwex",
+    "-lunwind",
     "-lmingw32",
-    "-lgcc",
-    "-lmsvcrt",
+    "-lmingwex",
+    "-lucrt",
+    "-lclang_rt.builtins-x86_64",
     "-lmingwex",
     "-luser32",
     "-lkernel32",
@@ -407,6 +405,7 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
         .args(objects)
         .arg(runtime)
         .args(WINDOWS_LIBRARIES)
+        .args(std::env::var("FENNEC_PROBE_LINK").ok())
         .arg("-o")
         .arg(output);
     command

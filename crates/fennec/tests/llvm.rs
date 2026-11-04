@@ -2659,7 +2659,6 @@ def main(stdout: Stdout):
     )
 }
 
-<<<<<<< HEAD
 /// A failed `assert` says all the JIT does, each side as the interpreter shows it.
 #[test]
 fn a_failed_assert_says_what_the_jit_does() -> std::io::Result<()> {
@@ -3694,7 +3693,8 @@ def main(stdout: Stdout):
         stdout.print(limit, looped(limit))
 "#,
     )
-=======
+}
+
 /// Floats have one equality and hash everywhere: `0.0` is `-0.0`, and NaN is the same as any other
 /// NaN, whatever its sign. So this is held to what that decision says, on LLVM and the interpreter
 /// both. The JIT's `==` and keys don't follow it yet.
@@ -3777,5 +3777,4 @@ fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(interpreted.0, "True\n1 True\n1 True\n1 1\nTrue\n");
     Ok(())
->>>>>>> claude/float-equals
 }

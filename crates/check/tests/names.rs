@@ -309,3 +309,12 @@ fn a_type_another_std_module_imports_still_needs_its_own_import() {
     let imported = "from std.time import Duration\n\ndef wait(pause: Duration) -> int:\n    pause.nanos\n";
     assert_eq!(problems(imported), Vec::<String>::new());
 }
+
+#[test]
+fn each_underscore_throws_away_what_its_given_whatever_its_type() {
+    let empty: [&str; 0] = [];
+    let body = "mut numbers = [1]\nmut words = [\"a\"]\n_ = numbers.pop()\n_ = words.pop()\n_, one = (1, \"x\")\n_, two = (\"y\", 2)\nstdout.print(numbers, words, one, two)\n";
+    assert_eq!(in_main(body), empty);
+    let read = in_main("_ = 1\nstdout.print(_)\n");
+    assert_eq!(read, ["`_` throws away what it's given, so it can't be read @ _"]);
+}

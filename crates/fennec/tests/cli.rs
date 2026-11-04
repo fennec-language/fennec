@@ -674,7 +674,7 @@ fn bench_without_blocks_says_so() {
 fn dev_copies_lists_what_may_cost_hot_code_first() {
     let source = "def unused() -> list[int]:\n    [1]\n\n\
         def main(stdout: Stdout):\n    mut xs = [1]\n    snapshot = xs\n    xs.append(2)\n    \
-        for at in range(2):\n        stdout.print(f\"{at}\")\n    stdout.print(snapshot.len())\n";
+        for at in range(2):\n        stdout.print(f\"{at}\")\n    stdout.print(snapshot.len(), xs.len())\n";
     let dir = scratch("copies").unwrap();
     let program = dir.join("game.fen");
     std::fs::write(&program, source).unwrap();
@@ -809,7 +809,7 @@ fn check_and_lint_say_the_same_in_json() {
     std::fs::write(
         &program,
         "def one() -> int:\n    return 1\n\ndef main(stdout: Stdout):\n    mut items = [1]\n    \
-         held = items\n    items.append(2)\n    stdout.print(held.len(), one())\n",
+         held = items\n    items.append(2)\n    stdout.print(held.len(), items.len(), one())\n",
     )
     .unwrap();
     let (code, report) = json(&["lint", "--json", &path]);
@@ -1059,7 +1059,7 @@ fn lint_reports_and_fix_fixes_and_hints_dont_fail() {
     let program = dir.join("game.fen");
     let path = program.to_string_lossy().into_owned();
     let hinted = "def main(stdout: Stdout):\n    mut items = [1]\n    held = items\n    items.append(2)\n    \
-                  stdout.print(held.len())\n";
+                  stdout.print(held.len(), items.len())\n";
     std::fs::write(&program, hinted).unwrap();
     let clean = fennec(&["lint", &path], "").unwrap();
     assert!(clean.status.success(), "{}", text(&clean.stderr));

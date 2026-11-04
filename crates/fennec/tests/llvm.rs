@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 62;
+const BUILDING_EXAMPLES: usize = 79;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -20,9 +20,6 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 /// jobs set it, LLVM is the backend that has to work, so what's missing fails the test rather
 /// than skipping it.
 fn ready() -> bool {
-    if std::env::var_os("FENNEC_UNDER_MUTANTS").is_some() {
-        return false;
-    }
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
     if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
@@ -2372,6 +2369,8 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
         ("alone_ceil", "ceil(1e300 * 1e300)"),
         ("alone_round", "round(1e300 * 1e300)"),
         ("alone_range", "range(0, 1, 0)"),
+        ("alone_max", "max(empty)"),
+        ("alone_min", "min(empty)"),
     ] {
         same_message_as_the_jit(
             name,
@@ -2379,6 +2378,8 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
                 "from std.math import ceil, floor
 
 def main(stdout: Stdout):
+    empty: list[int] = []
+    stdout.print(empty.len())
     stdout.print({call})
 "
             ),
@@ -2411,4 +2412,120 @@ fn a_type_parameter_calls_its_types_function() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(ours.0, "7 other\n7 2\n");
     Ok(())
+}
+
+/// `max` and `min` of lists and of values, with keys and a type's own `<`, as the first of equals
+/// wins; `in` and `remove` on lists of each kind of item; `sin`, `cos` and `str` of what isn't text.
+#[test]
+fn small_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "small_calls",
+        r#"from std.math import cos, sin
+
+struct Money:
+    cents: int
+
+    def <(self, other: Money) -> bool:
+        self.cents > other.cents
+
+struct Spot:
+    x: int
+    y: int
+
+def main(stdout: Stdout):
+    stdout.print(max(1, 3, 2), min(1, 3, 2), max(1.5, -0.5), min(-0.0, 0.0), max("a", "b long enough for a block"))
+    stdout.print(max([3, 1, 3]), min([3, 1, 1]), max([0.5, 2.5]), min(["pear", "apple"]), max([False, True]))
+    stdout.print(max([(1, "b"), (2, "a"), (2, "b")]), min([(1, 2.5), (1, 1.5)]))
+    stdout.print(max(["aa", "bbb", "ccc"], key=word => word.len()), min(["aa", "bbb", "c"], key=word => word.len()))
+    stdout.print(max([1, 2, 3], key=n => -n), min([1.5, -2.5], key=n => n * n), max([1, 2], key=n => str(n)))
+    wallet = [Money(cents=5), Money(cents=2), Money(cents=9)]
+    stdout.print(max(wallet), min(wallet), max(wallet[0], wallet[1]), min(wallet[0], wallet[1]))
+    stdout.print(2 in [1, 2], 3 in [1, 2], 2.5 in [2.5], True in [False], "b" in ["a", "b"], "long enough for a block of its own" in ["no"])
+    stdout.print((1, 2) in [(1, 2)], Spot(x=1, y=2) in [Spot(x=1, y=2)], Spot(x=2, y=2) in [Spot(x=1, y=2)], (1, "a") in [(1, "a")], [1] in [[1], [2]])
+    mut numbers = [1, 2, 3, 2]
+    shared = numbers
+    numbers.remove(2)
+    stdout.print(numbers, shared)
+    mut words = ["a", "a string long enough to be a block of its own", "c"]
+    words.remove("a string long enough to be a block of its own")
+    stdout.print(words)
+    mut spots = [Spot(x=1, y=2), Spot(x=3, y=4)]
+    spots.remove(Spot(x=1, y=2))
+    stdout.print(spots)
+    mut pairs = [(1, "a"), (2, "b")]
+    pairs.remove((2, "b"))
+    stdout.print(pairs)
+    stdout.print(sin(0.5), cos(0.5), sin(1), cos(0))
+    stdout.print(int(5), float(2.5), str(True), str(False), str([1, 2]), str(Spot(x=1, y=2)), str((1, "a")))
+"#,
+    )
+}
+
+/// `max` of nothing, and removing what isn't there, fail as the JIT says.
+#[test]
+fn small_calls_fail_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "max_of_nothing",
+        "def main(stdout: Stdout):
+    mut none = [1]
+    none.pop()
+    stdout.print(max(none))
+",
+    )?;
+    same_message_as_the_jit(
+        "remove_missing",
+        "def main(stdout: Stdout):
+    mut some = [1]
+    some.remove(2)
+    stdout.print(some)
+",
+    )
+}
+
+/// Numbers read from text, with what fails being a value the program holds; and lists and sets of
+/// a string's characters and a list's items.
+#[test]
+fn numbers_and_sets_from_text_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "numbers_from_text",
+        r#"from std.re import Regex
+
+def add(a: str, b: str) -> int:
+    int(a)? + int(b)?
+
+def main(stdout: Stdout):
+    for text in ["42", " -7 ", "4x2", "", "99999999999999999999"]:
+        match int(text):
+            case Ok(n):
+                stdout.print(n)
+            case Err(error):
+                stdout.print(error.message)
+    for text in ["2.5", " 1e3 ", "nope", "a \"quoted\" value long enough for a block"]:
+        match float(text):
+            case Ok(x):
+                stdout.print(x)
+            case Err(error):
+                stdout.print(error.message)
+    stdout.print(int("12") else 0, int("x") else -1, float("0.5") else 0.0, float("y") else -1.5)
+    stdout.print(add("1", "2") else -1, add("1", "two") else -1)
+    for pattern in ["[0-9]+", "[0-9+"]:
+        match Regex(pattern):
+            case Ok(regex):
+                stdout.print(regex.pattern)
+            case Err(error):
+                stdout.print(error.message)
+    stdout.print(list("héllo"), list(""), set("hello").len(), "l" in set("hello"), set(""))
+    stdout.print(set([3, 1, 3, 2, 1]), set(["b", "a", "b", "a key long enough for a block", "a key long enough for a block"]))
+    stdout.print(set([(1, 2), (1, 2), (3, 4)]).len())
+"#,
+    )
 }

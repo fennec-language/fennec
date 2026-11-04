@@ -187,9 +187,21 @@ impl Lowering<'_> {
         self.finish(Terminator::Branch { cond, then, otherwise: broken });
         self.current = broken;
         if let Some(dest) = dest {
-            let message = format!("{type_name}.{field} breaks its `where` rule");
+            let message = match (type_name, field, &rule.kind) {
+                // std's `Regex` says what's wrong with its pattern.
+                ("Regex", "pattern", ExprKind::Call { args, .. }) => {
+                    let pattern = args.first().ok_or("a `where` rule with no pattern")?;
+                    let pattern = self.expr(&pattern.value)?;
+                    let problem = self.temporary(Type::Str);
+                    let name = "re.pattern_problem".to_owned();
+                    let args = vec![pattern];
+                    self.emit(InstKind::Builtin { dest: Some(problem), name, args, changes: false }, span);
+                    Operand::Local(problem)
+                }
+                _ => Operand::Str(format!("{type_name}.{field} breaks its `where` rule")),
+            };
             let error = self.temporary(Type::Named("InvalidValue".to_owned()));
-            let fields = vec![Operand::Str(message)];
+            let fields = vec![message];
             self.emit(InstKind::Make { dest: error, type_name: "InvalidValue".to_owned(), fields }, span);
             self.emit(InstKind::MakeErr { dest, error: Operand::Local(error) }, span);
             self.finish(Terminator::Jump(join));

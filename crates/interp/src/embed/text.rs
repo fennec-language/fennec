@@ -37,7 +37,7 @@ fn tag(words: &[u64; 3]) -> u8 {
 }
 
 /// The block a header points at, when it's in one.
-pub(super) fn block_of(words: &[u64; 3]) -> Option<u64> {
+pub(in crate::embed) fn block_of(words: &[u64; 3]) -> Option<u64> {
     let [first, ..] = *words;
     (tag(words) & INLINE == 0).then_some(first)
 }

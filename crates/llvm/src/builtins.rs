@@ -280,7 +280,11 @@ impl Emit<'_, '_, '_> {
                     text += &format!(
                         "  %xv{at} = load double, ptr %xa{at}\n  %yv{at} = load double, ptr %ya{at}\n"
                     );
-                    (format!("fcmp olt double %xv{at}, %yv{at}"), format!("fcmp ogt double %xv{at}, %yv{at}"))
+                    // Floats order with NaN last, whatever its sign.
+                    text += &format!(
+                        "  %xu{at} = fcmp ult double %xv{at}, %yv{at}\n  %xo{at} = fcmp ord double %xv{at}, %xv{at}\n  %yu{at} = fcmp ult double %yv{at}, %xv{at}\n  %yo{at} = fcmp ord double %yv{at}, %yv{at}\n"
+                    );
+                    (format!("and i1 %xu{at}, %xo{at}"), format!("and i1 %yu{at}, %yo{at}"))
                 }
                 Kind::Str if self.headers() => {
                     self.header_order_helper();

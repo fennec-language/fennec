@@ -28,7 +28,9 @@ pub(crate) fn run(name: &str, args: &[Value], span: Span) -> Result<Value, Diagn
         ("int_not", [a]) => ops::unary(UnaryOp::BitNot, a.clone(), span),
         ("int_eq" | "float_eq", [a, b]) => Ok(Value::Bool(a == b)),
         ("int_lt", [Value::Int(a), Value::Int(b)]) => Ok(Value::Bool(a < b)),
-        ("float_lt", [Value::Float(a), Value::Float(b)]) => Ok(Value::Bool(a.total_cmp(b).is_lt())),
+        ("float_lt", [Value::Float(a), Value::Float(b)]) => {
+            Ok(Value::Bool(crate::value::float_order(*a, *b).is_lt()))
+        }
         ("int_wrapping_add", [Value::Int(a), Value::Int(b)]) => Ok(Value::Int(a.wrapping_add(*b))),
         ("int_wrapping_sub", [Value::Int(a), Value::Int(b)]) => Ok(Value::Int(a.wrapping_sub(*b))),
         ("int_wrapping_mul", [Value::Int(a), Value::Int(b)]) => Ok(Value::Int(a.wrapping_mul(*b))),
@@ -94,7 +96,10 @@ mod tests {
         };
         assert_eq!(float("float_div", &[1.0, 4.0]), Ok(Value::Float(0.25)));
         assert_eq!(float("float_eq", &[f64::NAN, f64::NAN]), Ok(Value::Bool(true)));
-        assert_eq!(float("float_lt", &[-0.0, 0.0]), Ok(Value::Bool(true)));
+        assert_eq!(float("float_eq", &[-0.0, 0.0]), Ok(Value::Bool(true)));
+        assert_eq!(float("float_lt", &[-0.0, 0.0]), Ok(Value::Bool(false)));
+        assert_eq!(float("float_lt", &[1.0, f64::NAN]), Ok(Value::Bool(true)));
+        assert_eq!(float("float_lt", &[-f64::NAN, 1.0]), Ok(Value::Bool(false)));
         assert_eq!(float("float_to_int", &[-2.7]), Ok(Value::Int(-2)));
         assert!(float("float_to_int", &[f64::NAN]).is_err());
         assert_eq!(float("float_bits", &[1.0]), Ok(Value::Int(1.0_f64.to_bits().cast_signed())));

@@ -185,11 +185,14 @@ fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i6
     i64::try_from(address).ok()
 }
 
-/// A number word as an int that orders the same way: floats in the order `total_cmp` gives
-/// them, which is how the interpreter sorts them, and ints and bools as they are.
+/// A number word as an int that orders the same way: floats in the order floats have, with those
+/// that are equal as one, and ints and bools as they are.
 fn sort_word(word: u64, kind: i64) -> i64 {
-    let int = word.cast_signed();
-    if kind == SORT_FLOATS { (word ^ ((int >> 63).cast_unsigned() >> 1)).cast_signed() } else { int }
+    if kind != SORT_FLOATS {
+        return word.cast_signed();
+    }
+    let key = crate::value::float_key(f64::from_bits(word));
+    (key ^ ((key.cast_signed() >> 63).cast_unsigned() >> 1)).cast_signed()
 }
 
 /// The places of `keys` in sorted order. Each key's place breaks ties, which keeps the sort
@@ -558,7 +561,7 @@ fn insert_into(kind: &str, list: i64, at: i64, (start, end): (i64, i64)) -> i64 
 /// Whether an item of a word equals a word, as the interpreter compares them.
 fn same_item(state: &State, element: &Element, item: u64, word: u64) -> bool {
     match element {
-        Element::Float => f64::from_bits(item).total_cmp(&f64::from_bits(word)).is_eq(),
+        Element::Float => crate::value::float_order(f64::from_bits(item), f64::from_bits(word)).is_eq(),
         Element::Str | Element::Boxed(_) | Element::Maybe(_) | Element::List(_) => {
             super::heap::same(state, item, word)
         }

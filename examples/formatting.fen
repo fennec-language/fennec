@@ -5,7 +5,7 @@ def main(stdout: Stdout):
     stdout.print(big, -big, big - big)
     stdout.print(1e15, 1e16, -1.5e17, 1e-7, 0.0001, 0.1 + 0.2, -0.0)
 
-    # Collections show their items as the REPL would echo them.
+    # Collections show their items with strings quoted.
     no_numbers: set[int] = set()
     stdout.print((1,), (1, "two"), (), no_numbers, {1}, [None, True, False])
 

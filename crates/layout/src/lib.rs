@@ -249,6 +249,9 @@ pub fn describe(layouts: &Layouts, ty: Ty) -> Option<Element> {
         Ty::Maybe(Block::Str) => Element::Maybe(Rc::new(Element::Str)),
         Ty::Maybe(block) => Element::Maybe(Rc::new(describe(layouts, block.ty())?)),
         Ty::Block(id) => describe(layouts, layouts.block(id)?)?,
+        Ty::List(ListItem::Struct(id)) if layouts.through_lists(id).is_some() => {
+            Element::ListOf(layouts.through_lists(id)?)
+        }
         Ty::List(item) => Element::List(Rc::new(describe(layouts, item.ty())?)),
         Ty::Dict(key, value) => {
             let str_shape = u64::try_from(layouts.len()).ok()?;
@@ -286,13 +289,20 @@ pub struct Registry<'l> {
 impl<'l> Registry<'l> {
     #[must_use]
     pub fn new(layouts: &'l Layouts) -> Self {
-        let tables = Tables {
+        let mut tables = Tables {
             shapes: shapes(layouts),
             str_shape: u64::try_from(layouts.len()).unwrap_or(0),
             text_headers: layouts.text_headers(),
             ..Tables::default()
         };
-        Self { layouts, tables, elements: HashMap::new(), strings: HashMap::new() }
+        // The numbers a type holding itself through a list refers to in its own description.
+        let mut elements = HashMap::new();
+        for (number, id) in layouts.all_through_lists().iter().enumerate() {
+            let described = describe(layouts, Ty::Struct(*id)).unwrap_or(Element::Int);
+            tables.elements.push(Rc::new(described));
+            elements.insert(Ty::Struct(*id), i64::try_from(number).unwrap_or(0));
+        }
+        Self { layouts, tables, elements, strings: HashMap::new() }
     }
 
     /// The number of the kind of item a list of these holds, which `fennec_list_new` takes.

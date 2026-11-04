@@ -527,7 +527,12 @@ fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec
     match element {
         // An optional string's header: all zero, `None`, holds nothing, as an inline one doesn't.
         element if element.is_optional_text() => boxed_words(&Element::Text, words, at, found),
-        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
+        Element::Boxed(_)
+        | Element::Str
+        | Element::List(_)
+        | Element::ListOf(_)
+        | Element::Object
+        | Element::Maybe(_) => {
             found.push(*at);
             *at += 1;
         }
@@ -602,7 +607,12 @@ pub extern "C" fn cell_read(address: i64) -> i64 {
 fn boxed_addresses(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<u64>) {
     match element {
         element if element.is_optional_text() => boxed_addresses(&Element::Text, words, at, found),
-        Element::Boxed(_) | Element::Str | Element::List(_) | Element::Object | Element::Maybe(_) => {
+        Element::Boxed(_)
+        | Element::Str
+        | Element::List(_)
+        | Element::ListOf(_)
+        | Element::Object
+        | Element::Maybe(_) => {
             found.extend(words.get(*at).copied().filter(|address| *address != 0));
             *at += 1;
         }
@@ -647,6 +657,7 @@ pub(super) fn holds_blocks(element: &Element) -> bool {
         | Element::Str
         | Element::Text
         | Element::List(_)
+        | Element::ListOf(_)
         | Element::Object
         | Element::Maybe(_) => true,
         Element::Struct { fields, .. } => fields.iter().any(|(_, field)| holds_blocks(field)),
@@ -808,7 +819,7 @@ pub(super) fn lent_field(state: &mut State, value: &Value, name: i64) -> Option<
     Some(match element {
         Element::Int | Element::Float | Element::Bool | Element::Str => read_word(state, element, word),
         Element::Object => cell_value(state, state.heap.block(word)?)?,
-        Element::Boxed(_) | Element::List(_) => {
+        Element::Boxed(_) | Element::List(_) | Element::ListOf(_) => {
             retain(state, word);
             Value::Lent(Rc::new(Lent { address: word }))
         }
@@ -881,7 +892,7 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             Value::str(&super::text::text_of(state, &header))
         }
         // Only the top of a value the interpreter is handed may be a packed list.
-        Element::List(_) => read_block(state, word(words)).unpacked(),
+        Element::List(_) | Element::ListOf(_) => read_block(state, word(words)).unpacked(),
         element if element.is_optional_text() => match [word(words), word(words), word(words)] {
             [0, 0, 0] => Value::None,
             header => Value::str(&super::text::text_of(state, &header)),
@@ -999,6 +1010,10 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
         (Element::Maybe(inner), value) => write(state, inner, value, words)?,
         (Element::List(item), value) => {
             words.push(u64::try_from(super::lists::write_list(state, item, value)?).ok()?);
+        }
+        (Element::ListOf(number), value) => {
+            let item = Rc::clone(state.tables.elements.get(*number)?);
+            words.push(u64::try_from(super::lists::write_list(state, &item, value)?).ok()?);
         }
         (Element::Struct { name, fields }, Value::Tuple(items))
             if name.starts_with('(') && items.len() == fields.len() =>

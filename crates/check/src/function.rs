@@ -5,14 +5,15 @@
 //! afterwards. Where paths through the code meet again, after an `if` or a loop, a name holds
 //! whatever it held on any path that gets there.
 
-use fennec_syntax::{Diagnostic, Expr, Field, FnDef, Generic, Span, StmtKind, TestDef};
+use fennec_syntax::{Diagnostic, Expr, ExprKind, Field, FnDef, Generic, Span, Stmt, StmtKind, TestDef};
 
 use crate::ParamType;
 use crate::checker::Checker;
 use crate::effects;
 use crate::infer::{Hole, unsettled};
+use crate::loops::blocks;
 use crate::messages::not_mut;
-use crate::stmt::not_none;
+use crate::stmt::{not_none, path};
 use crate::types::Type;
 
 #[derive(Clone, Debug)]
@@ -387,10 +388,10 @@ impl<'c> FnCx<'c> {
             None if crate::program::literal_type(default, &self.checker.program).is_none() => {
                 let message = format!("can't tell the type of `{}` from its default", param.name);
                 let help = match &default.kind {
-                    fennec_syntax::ExprKind::List(_) => {
+                    ExprKind::List(_) => {
                         format!("say it, like `{} = list[int]()`", param.name)
                     }
-                    fennec_syntax::ExprKind::Dict(_) => {
+                    ExprKind::Dict(_) => {
                         format!("say it, like `{} = dict[str, int]()`", param.name)
                     }
                     _ => format!("write its type, like `{}: Enemy? = None`", param.name),
@@ -711,6 +712,28 @@ impl<'c> FnCx<'c> {
         for path in paths {
             let ty = self.path_type(&path);
             self.set_type(&path, ty);
+        }
+    }
+
+    /// At the top of a loop: the body may have run already, so what it gives a value to could
+    /// hold anything it was declared to, not just what it holds before the loop.
+    pub(crate) fn forget_changed_in(&mut self, body: &[Stmt]) {
+        for stmt in body {
+            if let StmtKind::Assign { target, .. } = &stmt.kind {
+                let targets = match &target.kind {
+                    ExprKind::Tuple(items) => items.iter().collect(),
+                    _ => vec![target],
+                };
+                for name in targets.into_iter().filter_map(path) {
+                    if let Some(binding) = self.binding_mut(&name) {
+                        binding.ty = binding.declared.clone();
+                        self.forget_fields(&name);
+                    }
+                }
+            }
+            for block in blocks(stmt) {
+                self.forget_changed_in(block);
+            }
         }
     }
 

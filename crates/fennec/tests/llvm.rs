@@ -2710,3 +2710,65 @@ fn a_failure_passed_up_fails_a_test_through_llvm() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+#[test]
+fn a_loop_tests_what_its_body_gave_a_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Box:
+    v: int
+
+def main(stdout: Stdout):
+    mut x: int? = None
+    for n in range(3):
+        if x is None:
+            stdout.print("none", n)
+            x = n
+        else:
+            stdout.print("some", n)
+    stdout.print(x)
+    mut inferred = None
+    for n in range(3):
+        if inferred is None:
+            stdout.print("no box", n)
+            inferred = Box(v=n)
+        else:
+            stdout.print("box", n)
+    stdout.print(inferred)
+    mut text = None
+    mut i = 0
+    while text is None:
+        stdout.print("no text", i)
+        text = "a"
+        i += 1
+    stdout.print(text)
+    mut nested: int? = None
+    for a in range(2):
+        for b in range(2):
+            stdout.print(nested is None, a, b)
+            nested = b
+    stdout.print(nested)
+"#;
+    same_as_the_jit("a_loop_tests_what_its_body_gave_a_name", source)
+}
+
+/// Not against the JIT, which stops when `gone` is given None: #572.
+#[test]
+fn a_loop_tests_a_name_its_body_gave_none() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r"def main(stdout: Stdout):
+    mut gone: int? = 5
+    for n in range(3):
+        stdout.print(gone is None, n)
+        if n == 1:
+            break
+        gone = None
+    stdout.print(gone)
+";
+    let ((out, err, code), _) = both("a_loop_tests_a_name_its_body_gave_none", source)?;
+    assert_eq!((out.as_str(), err.as_str(), code), ("False 0\nTrue 1\nNone\n", "", Some(0)));
+    Ok(())
+}

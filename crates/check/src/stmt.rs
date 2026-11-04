@@ -209,6 +209,7 @@ impl FnCx<'_> {
     }
 
     fn while_stmt(&mut self, cond: &Expr, body: &[Stmt]) -> Flow {
+        self.forget_changed_in(body);
         self.condition(cond, "while");
         self.track(cond);
         let before = self.snapshot();
@@ -290,6 +291,7 @@ impl FnCx<'_> {
             let iter_ty = self.expr(iter);
             self.item_type(&iter_ty, iter.span)
         };
+        self.forget_changed_in(body);
         let before = self.snapshot();
         self.push(false);
         self.bind_names(names, &item, is_mut, (iter.span, span));

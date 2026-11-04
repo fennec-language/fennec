@@ -521,6 +521,15 @@ pub extern "C" fn int_text(n: i64) -> i64 {
     with(|state| text_address(state, &n.to_string()))
 }
 
+/// A new string with a string's text as it shows inside a collection, in quotes.
+pub extern "C" fn str_repr(text: i64) -> i64 {
+    with(|state| {
+        let held =
+            u64::try_from(text).ok().and_then(|at| state.heap.block(at)).map_or_else(String::new, block_text);
+        text_address(state, &crate::format::repr(&Value::Str(held.into())))
+    })
+}
+
 /// A new string with a float's text, as it prints.
 pub extern "C" fn float_text(x: f64) -> i64 {
     with(|state| text_address(state, &crate::format::display(&Value::Float(x))))

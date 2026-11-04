@@ -12,8 +12,8 @@
 //!
 //! Tests run through LLVM's cached dev build, in worker processes on every core (see
 //! `llvm_tests`). A test LLVM can't build yet, or that failed, since the JIT says more about why,
-//! runs on the JIT, and property tests in the interpreter. `--jit`
-//! leaves LLVM out.
+//! runs on the JIT, and a property test in the interpreter, which shrinks what it failed for.
+//! `--jit` leaves LLVM out.
 
 use std::collections::HashMap;
 use std::process::ExitCode;

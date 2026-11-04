@@ -303,6 +303,13 @@ impl Lowering<'_> {
         let mut value = self.expr(value)?;
         if let Some(op) = op {
             let read = self.read_steps(place.local, &place.steps, span)?;
+            // A text growing in a field is one local read, added to and put back, as a local's
+            // `+=` is, so a backend can grow it where it is.
+            if let (BinOp::Add, Type::Str, Operand::Local(dest)) = (op, &held, &read) {
+                let dest = *dest;
+                self.emit(InstKind::Binary { dest, op, lhs: read, rhs: value }, span);
+                return self.store(place.local, &place.steps, Operand::Local(dest), span);
+            }
             value = self.operate(op, (read, value), &held, span)?;
         }
         let value = self.coerce(value, &held, span)?;
@@ -410,15 +417,44 @@ impl Lowering<'_> {
         Ok(())
     }
 
-    /// `assert cond`.
-    pub(super) fn assert(&mut self, cond: &Expr, span: Span) -> Lowered<()> {
-        let cond = self.expr(cond)?;
+    /// `assert cond`. One that compares two values says what they were when it fails.
+    pub(super) fn assert(&mut self, cond: &Expr) -> Lowered<()> {
+        let span = cond.span;
+        let (test, sides) = self.asserted(cond)?;
         let (then, failed) = (self.new_block(), self.new_block());
-        self.finish(Terminator::Branch { cond, then, otherwise: failed });
+        self.finish(Terminator::Branch { cond: test, then, otherwise: failed });
         self.current = failed;
-        self.finish(Terminator::Stop { message: "assertion failed".to_owned(), span });
+        if let Some((left, right)) = sides {
+            let name = "assert.sides".to_owned();
+            self.emit(InstKind::Builtin { dest: None, name, args: vec![left, right], changes: false }, span);
+        }
+        self.finish(Terminator::Stop { message: "this assertion failed".to_owned(), span });
         self.current = then;
         Ok(())
+    }
+
+    /// What an `assert` tests, and the two sides of a comparison.
+    fn asserted(&mut self, cond: &Expr) -> Lowered<(Operand, Option<(Operand, Operand)>)> {
+        let span = cond.span;
+        let ExprKind::Binary { op, lhs, rhs } = &cond.kind else { return Ok((self.expr(cond)?, None)) };
+        match op {
+            BinOp::Is | BinOp::IsNot => {
+                let (test, value) = self.is_none_of(*op, lhs, rhs, span)?;
+                Ok((test, Some((value, Operand::None))))
+            }
+            BinOp::In | BinOp::NotIn => {
+                let (test, item, items) = self.contains_of(*op, lhs, rhs, span)?;
+                Ok((test, Some((item, items))))
+            }
+            BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
+                let ty = self.ty(cond)?;
+                let left = self.expr(lhs)?;
+                let (left, right) = self.both(left, |lowering| lowering.expr(rhs), span)?;
+                let test = self.operate(*op, (left.clone(), right.clone()), &ty, span)?;
+                Ok((test, Some((left, right))))
+            }
+            _ => Ok((self.expr(cond)?, None)),
+        }
     }
 
     /// Returns from the function. Every `for mut` loop being left writes its item back

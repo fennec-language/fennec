@@ -12,28 +12,42 @@ const KIND: &str = "llvm";
 const MOST_THREADS: usize = 4;
 const PIPELINE: &str = "default<O3>";
 
-/// Whether `FENNEC_SANITIZE=address` asks for `AddressSanitizer`, to test that built programs
-/// touch only memory they own. Every function with attributes is instrumented, after the rest
-/// of the pipeline, as Clang does it, and the link takes `-fsanitize=address`.
+/// The sanitizer `FENNEC_SANITIZE` asks for, to test built programs: `address`, that they touch
+/// only memory they own, or `thread`, that their threads don't race. Every function with
+/// attributes is instrumented, after the rest of the pipeline, as Clang does it, and the link
+/// takes what [`sanitize_flag`] gives.
+fn sanitizer() -> Option<&'static str> {
+    match std::env::var("FENNEC_SANITIZE").as_deref() {
+        Ok("address") => Some("address"),
+        Ok("thread") => Some("thread"),
+        _ => None,
+    }
+}
+
+/// What the link takes for the sanitizer asked for, which brings in its runtime.
 #[must_use]
-pub fn sanitizing() -> bool {
-    std::env::var_os("FENNEC_SANITIZE").is_some_and(|asked| asked == "address")
+pub fn sanitize_flag() -> Option<String> {
+    sanitizer().map(|name| format!("-fsanitize={name}"))
 }
 
 /// The passes `opt` runs.
 fn pipeline() -> String {
-    if sanitizing() { format!("{PIPELINE},asan") } else { PIPELINE.to_owned() }
+    match sanitizer() {
+        Some("address") => format!("{PIPELINE},asan"),
+        Some(_) => format!("{PIPELINE},tsan-module,function(tsan)"),
+        None => PIPELINE.to_owned(),
+    }
 }
 
-/// A module's text, marked for `AddressSanitizer` to instrument when it's asked for: it only
-/// instruments functions that say `sanitize_address`, and they all take one of its attribute sets.
+/// A module's text, marked for the sanitizer asked for: it only instruments functions that say
+/// so, and they all take one of its attribute sets.
 fn marked(text: &str) -> std::borrow::Cow<'_, str> {
-    if !sanitizing() {
+    let Some(name) = sanitizer() else {
         return text.into();
-    }
+    };
     let lines = text.lines().map(|line| {
         if line.starts_with("attributes #") {
-            line.replacen(" = { ", " = { sanitize_address ", 1)
+            line.replacen(" = { ", &format!(" = {{ sanitize_{name} "), 1)
         } else {
             line.to_owned()
         }

@@ -22,9 +22,11 @@
 //! in place: into the list `fennec_parallel_map` made, or back into a `for mut` loop's list,
 //! which `parallel.own` made the loop's own first.
 
+use std::collections::{HashMap, HashSet};
+
 use std::fmt::Write as _;
 
-use fennec_ir::{InstKind, LocalId, Operand, Program};
+use fennec_ir::{Function, InstKind, LocalId, Operand, Program};
 use fennec_syntax::Span;
 
 use crate::closures::CODE;
@@ -42,6 +44,47 @@ pub fn uses_parallel(program: &Program) -> bool {
             .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if name.starts_with("parallel.")))
     })
 }
+
+/// The functions that can run on a thread `parallel` uses. A range is a closure, and anything
+/// running on one can call any other closure, resume any generator, or let go of one, so all of
+/// those start this, and it takes in all they call. Every
+/// other function only ever runs on the program's own thread, between ranges, and needs nothing
+/// a thread of its own would need. Starting from them keeps a program's plain code as fast as it
+/// would be without `parallel`.
+pub(crate) fn run_on_workers(program: &Program) -> HashSet<&str> {
+    let mut found = HashSet::new();
+    if !uses_parallel(program) {
+        return found;
+    }
+    let every = || program.functions.iter().chain(&program.constants);
+    let functions: HashMap<&str, &Function> =
+        every().map(|function| (function.name.as_str(), function)).collect();
+    let closures =
+        every().flat_map(|function| &function.blocks).flat_map(|block| &block.insts).filter_map(|inst| {
+            match &inst.kind {
+                InstKind::MakeClosure { function, .. } => Some(function.as_str()),
+                _ => None,
+            }
+        });
+    let generators = program
+        .generators
+        .iter()
+        .flat_map(|def| std::iter::once(def.resume.as_str()).chain(def.abandon.as_deref()));
+    let mut waiting: Vec<&str> = closures.chain(generators).collect();
+    while let Some(name) = waiting.pop() {
+        if found.insert(name)
+            && let Some(function) = functions.get(name)
+        {
+            waiting.extend(crate::analysis::callees(function));
+        }
+    }
+    found
+}
+
+/// In a program that uses `parallel`, the program's own thread's stack limit and failure flag,
+/// for what only ever runs on it to read without asking which thread this is.
+pub(crate) const MAIN_THREAD_GLOBALS: &str =
+    "@fennec_stack_limit_main = dso_local global i64 0\n@fennec_failed_main = dso_local global ptr null\n";
 
 /// How a module declares the lowest address the stack may grow to, for this thread when there
 /// are threads. Initial-exec, since `fennec_entry`'s module, in the executable, defines it.
@@ -499,6 +542,51 @@ def main(stdout: Stdout):
                 "call swiftcc void %code(ptr %closure, i64 %from, i64 %to, ptr swifterror %failed)"
             )
         );
+        Ok(())
+    }
+
+    /// One function's text, lowered with `parallel` lifted.
+    fn text_of(source: &str, name: &str) -> Result<String, String> {
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let options = fennec_ir::Options { outline_parallel: true };
+        let (units, _, _) = crate::emit::emit(&fennec_ir::lower_with(&module, &checked, options))?;
+        units
+            .into_iter()
+            .find(|unit| unit.function == name)
+            .map(|unit| unit.text)
+            .ok_or("no such function".to_owned())
+    }
+
+    #[test]
+    fn only_what_a_range_can_reach_pays_for_threads() -> Result<(), String> {
+        let source = "\
+def plain(n: int, mut held: list[str]) -> int:
+    held.append(str(n))
+    if n > 0:
+        return plain(n - 1, mut held)
+    n ** 2
+
+def in_a_range(n: int) -> int:
+    if n > 0:
+        return in_a_range(n - 1)
+    n ** 2
+
+def main(stdout: Stdout):
+    mut held = [\"a\"]
+    stdout.print(plain(3, mut held), sum(in_a_range(n) for n in parallel([1, 2])))
+";
+        let plain = text_of(source, "plain")?;
+        assert!(plain.contains("@fennec_stack_limit_main"), "{plain}");
+        assert!(!plain.contains("@fennec_stack_limit,"), "{plain}");
+        assert!(!plain.contains("call void @fen_retain"), "{plain}");
+        assert!(plain.contains("load ptr, ptr @fennec_failed_main"), "{plain}");
+        assert!(!plain.contains("load ptr, ptr @fennec_failed,"), "{plain}");
+        let reached = text_of(source, "in_a_range")?;
+        assert!(reached.contains("load i64, ptr @fennec_stack_limit,"), "{reached}");
+        assert!(!reached.contains("@fennec_stack_limit_main"), "{reached}");
+        assert!(reached.contains("load ptr, ptr @fennec_failed,"), "{reached}");
+        assert!(!reached.contains("@fennec_failed_main"), "{reached}");
         Ok(())
     }
 

@@ -1,0 +1,35 @@
+def accented(chars: int) -> str:
+    "é" * chars
+
+def wide(chars: int) -> str:
+    "日" * chars
+
+def mixed(chars: int) -> str:
+    mut parts = []
+    for i in range(chars // 3):
+        parts.append("aé日")
+    "".join(parts)
+
+def count(text: str, wanted: str, xs: list[int]) -> int:
+    sum(1 if text[x] == wanted else 0 for x in parallel(xs))
+
+def main(stdout: Stdout):
+    size = 120000
+    xs = [n for n in range(size // 3)]
+    mut total = 0
+    # Blocks of about the same size, let go of between calls, with characters in different
+    # places, so a worker trusting where it got to in the last one reads the wrong thing.
+    for round in range(12):
+        kind = round % 3
+        mut found = 0
+        if kind == 0:
+            text = accented(size // 2)
+            found = count(text, "é", xs)
+        elif kind == 1:
+            text = wide(size // 3)
+            found = count(text, "日", xs)
+        else:
+            text = mixed(size // 2)
+            found = count(text, "é", xs)
+        total += found
+    stdout.print(total)

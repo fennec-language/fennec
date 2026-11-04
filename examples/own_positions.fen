@@ -1,5 +1,3 @@
-# decision: `for mut` over a user type writes back through positions.
-
 # A type gets `for mut` by defining `def len` and the `mut` form of `def []`, which returns
 # the item as a place. Positions that can be empty are skipped by `def is_live`, and a form
 # that touches only its own item can run in parallel. The loop changes each item where it is.

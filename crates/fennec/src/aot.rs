@@ -415,8 +415,8 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
         .args(objects)
         .arg(runtime)
         .args(SYSTEM_LIBRARIES)
-        // `FENNEC_SANITIZE=address` links in AddressSanitizer's runtime.
-        .args(fennec_llvm::sanitizing().then_some("-fsanitize=address"))
+        // `FENNEC_SANITIZE` links in its sanitizer's runtime.
+        .args(fennec_llvm::sanitize_flag())
         .arg("-o")
         .arg(output);
     command

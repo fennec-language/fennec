@@ -1713,7 +1713,9 @@ impl Emit<'_, '_, '_> {
                 self.copy(dest.ok_or("no result")?, from)
             }
             "Table" | "Table.len" | "Table.contains" | "Table.get" | "Table.add" | "Table.remove"
-            | "Table.values" | "Table.ids" | "Table.items" => self.id_map_builtin(dest, name, args, span),
+            | "Table.values" | "Table.ids" | "Table.items" | "Table.remove_where" | "Table.clear" => {
+                self.id_map_builtin(dest, name, args, span)
+            }
             "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"
             | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
@@ -1748,7 +1750,14 @@ impl Emit<'_, '_, '_> {
                 self.assign(dest.ok_or("no result")?, &temp)
             }
             "math.sqrt" => {
-                let (value, _) = self.operand(first.ok_or("no argument")?)?;
+                let (value, kind) = self.operand(first.ok_or("no argument")?)?;
+                let value = if kind == Kind::Int {
+                    let wide = self.temp();
+                    self.line(&format!("{wide} = sitofp i64 {value} to double"));
+                    wide
+                } else {
+                    value
+                };
                 let negative = self.temp();
                 self.line(&format!("{negative} = fcmp olt double {value}, {}", float_text(0.0)));
                 self.fail_if(&negative, NEGATIVE_SQRT, span);

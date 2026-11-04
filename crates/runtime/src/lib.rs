@@ -278,6 +278,7 @@ export! {
     fennec_str_codes(a0: i64, a1: i64) -> i64 => strings::codes(a0, a1);
     fennec_str_from_code(a0: i64) -> i64 => strings::from_code(a0);
     fennec_str_from_code_problem(a0: i64) -> i64 => strings::from_code_problem(a0);
+    fennec_str_reversed(a0: i64) -> i64 => strings::reversed(a0);
     fennec_round_places(a0: f64, a1: i64) -> f64 => checks::round_places(a0, a1);
     fennec_float_text(a0: f64) -> i64 => strings::float_text(a0);
     #[cfg(not(feature = "lean"))]

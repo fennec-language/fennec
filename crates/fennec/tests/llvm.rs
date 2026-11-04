@@ -5432,6 +5432,64 @@ def main(stdout: Stdout):
     )
 }
 
+/// `reversed` of text and tuples, and `remove_where` and `clear` on a `Table`. An item added
+/// after either goes in the first slot it left free.
+#[test]
+fn reversing_and_removing_from_tables_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "reversed_removed",
+        r#"from std.collections import Table
+from std.math import sqrt
+
+struct Unit:
+    name: str
+    hp: int
+
+def main(stdout: Stdout):
+    four = 16
+    stdout.print(sqrt(16), sqrt(four), sqrt(2.25))
+    stdout.print(reversed("fennec"), reversed("héllo"), reversed(""), reversed([1, 2, 3]))
+    stdout.print(reversed((1, 2)), reversed((1, 2, 3, 4)), reversed(("a", "a long string in a block")))
+    mut names = Table[str]()
+    first = names.add("ash")
+    names.add("kit")
+    third = names.add("a long name that sits in its own block")
+    copied = names
+    names.remove_where(name => name.startswith("k"))
+    stdout.print(names.values(), names.len(), copied.values(), copied.len(), names[first], names[third])
+    fourth = names.add("vex")
+    stdout.print(names.values(), names.len(), names[fourth])
+    names.remove_where(name => False)
+    stdout.print(names.len())
+    names.remove_where(name => True)
+    stdout.print(names.values(), names.len(), names.get(first))
+    mut units = Table[Unit]()
+    weak = units.add(Unit(name="weak", hp=1))
+    strong = units.add(Unit(name="strong", hp=9))
+    units.remove_where(unit => unit.hp < 5)
+    stdout.print(units.values(), units.get(weak), units[strong].name)
+    mut numbers = Table[int]()
+    numbers.add(1)
+    numbers.add(2)
+    numbers.remove_where(n => n % 2 == 0)
+    stdout.print(numbers.values(), numbers.len())
+    numbers.clear()
+    stdout.print(numbers.values(), numbers.len())
+    gone = numbers.add(5)
+    stdout.print(numbers.values(), numbers.len(), numbers[gone])
+    mut cleared = copy(names)
+    cleared.add("again")
+    cleared.clear()
+    stdout.print(cleared.len(), names.len(), cleared.values())
+    ignore(numbers.remove(gone), "it's fine if it's gone")
+    stdout.print(numbers.len())
+"#,
+    )
+}
+
 /// `items()` and `values()` gone through in order, with slots empty, at the start and the end,
 /// and everything an item can be, which the loop walks with no list made.
 const WALKING_A_MAP: &str = r#"from std.collections import Table

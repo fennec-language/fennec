@@ -168,13 +168,17 @@ fn write_id_map(
     map: &IdMap,
     words: &mut Vec<u64>,
 ) -> Option<()> {
-    let Some((_, Element::List(item))) = fields.first() else { return None };
+    let item = match fields.first() {
+        Some((_, Element::List(item))) => Rc::clone(item),
+        Some((_, Element::ListOf(number))) => Rc::clone(state.tables.elements.get(*number)?),
+        _ => return None,
+    };
     let mut items = Vec::new();
     let mut generations = Vec::new();
     for slot in &map.slots {
         let generation = i64::from(slot.generation);
         if let Some(value) = &slot.value {
-            write(state, item, value, &mut items)?;
+            write(state, &item, value, &mut items)?;
             generations.push(generation.cast_unsigned());
         } else {
             items.resize(items.len() + item.words(), 0);
@@ -182,7 +186,7 @@ fn write_id_map(
         }
     }
     let live = map.slots.iter().filter(|slot| slot.value.is_some()).count();
-    words.push(u64::try_from(super::super::lists::list_of_items(state, item, &items)).ok()?);
+    words.push(u64::try_from(super::super::lists::list_of_items(state, &item, &items)).ok()?);
     let ints = Rc::new(Element::Int);
     words.push(u64::try_from(super::super::lists::list_of_items(state, &ints, &generations)).ok()?);
     words.push(u64::try_from(live).ok()?);

@@ -1993,6 +1993,24 @@ mod tests {
     }
 
     #[test]
+    fn arguments_and_the_clock_need_no_interpreter() -> Result<(), String> {
+        let source = "\
+from std.time import Clock, Duration
+
+def main(stdout: Stdout, args: Args, clock: Clock):
+    started = clock.now()
+    clock.sleep(Duration.millis(1))
+    stdout.print(args.len(), args.program, started.nanos)
+    for arg in args:
+        stdout.print(arg, args[0])
+";
+        let text = text_of(source, "main")?;
+        assert!(text.contains("@fennec_args_list("), "{text}");
+        assert!(!text.contains("fennec_capability_call"), "{text}");
+        Ok(())
+    }
+
+    #[test]
     fn looking_for_a_part_of_a_text_makes_no_block_for_either() -> Result<(), String> {
         let source = "\
 def has_x(text: str) -> bool:

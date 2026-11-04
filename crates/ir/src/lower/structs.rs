@@ -278,6 +278,15 @@ impl Lowering<'_> {
             self.emit(InstKind::Call { dest: Some(dest), function, args: Vec::new() }, expr.span);
             return Ok(Operand::Local(dest));
         }
+        if field == "program"
+            && matches!(self.type_at(object.span), Some(Type::Named(owner)) if owner == "Args")
+        {
+            let args = vec![self.expr(object)?];
+            let dest = self.temporary(self.ty(expr)?);
+            let name = "Args.program".to_owned();
+            self.emit(InstKind::Builtin { dest: Some(dest), name, args, changes: false }, expr.span);
+            return Ok(Operand::Local(dest));
+        }
         let owner = self.struct_of(object).ok_or_else(|| format!("it reads `.{field}` of something else"))?;
         let fields = self.struct_fields(&owner)?;
         let declared = fields.iter().find(|(name, _)| name == field);

@@ -286,6 +286,12 @@ export! {
     fennec_str_print(a0: i64) => strings::print(a0);
     fennec_capability(a0: i64) -> i64 => temps::capability(a0);
     fennec_capability_block(a0: i64) -> i64 => capabilities::block(a0);
+    fennec_clock_now() -> i64 => capabilities::clock_now();
+    fennec_clock_sleep(a0: i64) => capabilities::clock_sleep(a0);
+    fennec_args_len() -> i64 => capabilities::args_len();
+    fennec_args_program() -> i64 => capabilities::args_program();
+    fennec_args_item(a0: i64, a1: i64, a2: i64) -> i64 => capabilities::args_item(a0, a1, a2);
+    fennec_args_list(a0: i64) -> i64 => capabilities::args_list(a0);
     fennec_capability_from_value(a0: i64, a1: i64, a2: i64) -> i64 => capabilities::from_value(a0, a1, a2);
     fennec_capability_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::call(a0, a1, a2, a3, a4);
     fennec_aot_image(a0: i64) => aot::image(a0);

@@ -481,6 +481,41 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
 }
 
 #[test]
+fn arguments_and_the_clock_match_the_interpreter() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("args-and-clock")?;
+    let program = dir.join("program.fen");
+    std::fs::write(
+        &program,
+        "\
+from std.time import Clock, Duration
+
+def main(stdout: Stdout, args: Args, clock: Clock):
+    stdout.print(args.len(), args.program != \"\")
+    for arg in args:
+        stdout.print(arg)
+    stdout.print(args[0], args[-1])
+    started = clock.now()
+    clock.sleep(Duration.millis(2))
+    stdout.print((clock.now() - started).nanos >= 2000000)
+    stdout.print(args[5])
+",
+    )?;
+    let executable = dir.join("program");
+    let path = |file: &Path| file.display().to_string();
+    let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).args(["one", "two"]).output()?;
+    let interpreted = fennec(&["run", "--interp", &path(&program), "one", "two"], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "2 True\none\ntwo\none two\nTrue\n");
+    assert_eq!(outcome(&ran), outcome(&interpreted));
+    Ok(())
+}
+
+#[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {
         return Ok(());

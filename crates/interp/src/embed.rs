@@ -272,6 +272,10 @@ struct State {
     heap: heap::Heap,
     /// The block of each plain capability, by its kind, once it's been asked for.
     capabilities: Vec<i64>,
+    /// The program's name, as `args.program`.
+    program: String,
+    /// What it was given on its command line, as `args`.
+    arguments: Vec<String>,
     failure: Option<Diagnostic>,
 }
 
@@ -314,6 +318,7 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
     let output = Output(Rc::default(), inputs.live);
     OUTPUT.set(Some(output.clone()));
     let mut interp = Interp::with_output(Box::new(output.clone()))?;
+    let (program, arguments) = (inputs.program.clone(), inputs.arguments.clone());
     interp.give(inputs);
     interp.load(module)?;
     let name_ids = tables.names.iter().zip(0_i64..).map(|(name, id)| (name.clone(), id)).collect();
@@ -332,6 +337,8 @@ pub fn start(module: &Module, mut tables: Tables, inputs: crate::Inputs) -> Resu
         shared_names: Vec::new(),
         heap: heap::Heap::new(std::mem::take(&mut tables.statics)).planned(&tables.shapes),
         capabilities: Vec::new(),
+        program,
+        arguments,
         tables,
         failure: None,
     }));

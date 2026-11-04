@@ -3,12 +3,100 @@
 //! with the arguments as temporaries, and what it gives back is made native here.
 
 use fennec_ir::{LocalId, Operand};
+use fennec_layout::ListItem;
 use fennec_syntax::Span;
 
-use crate::emit::Emit;
+use crate::emit::{Emit, FIELD_ACCESS};
 use crate::kinds::Kind;
+use crate::lists::FIELDS_OFFSET;
 
 impl Emit<'_, '_, '_> {
+    /// A method of `Clock` or `Args`, which the runtime does without the interpreter. Says
+    /// whether `name` is one.
+    fn native_capability(
+        &mut self,
+        dest: Option<LocalId>,
+        name: &str,
+        args: &[Operand],
+    ) -> Result<bool, String> {
+        match (name, args) {
+            ("Clock.now", []) => {
+                self.declare("declare i64 @fennec_clock_now() nounwind");
+                let nanos = self.temp();
+                self.line(&format!("{nanos} = call i64 @fennec_clock_now()"));
+                self.instant_into(dest.ok_or("no result")?, &nanos)?;
+            }
+            ("Clock.sleep", [duration]) => {
+                let (base, kind) = self.operand(duration)?;
+                let (offset, held) = self.field(&kind, "nanos")?;
+                let fields = self.fields_at(&base, &kind);
+                let at = self.offset(&fields, offset);
+                let access = if matches!(kind, Kind::Boxed(_)) { FIELD_ACCESS } else { "" };
+                let nanos = self.load_field(&held, &at, access);
+                self.declare("declare void @fennec_clock_sleep(i64) nounwind");
+                self.line(&format!("call void @fennec_clock_sleep(i64 {nanos})"));
+            }
+            ("Args.len", []) => {
+                self.declare("declare i64 @fennec_args_len() nounwind");
+                let count = self.temp();
+                self.line(&format!("{count} = call i64 @fennec_args_len()"));
+                self.assign(dest.ok_or("no result")?, &count)?;
+            }
+            ("Args.program", []) => {
+                self.declare("declare ptr @fennec_args_program() nounwind");
+                let block = self.temp();
+                self.line(&format!("{block} = call ptr @fennec_args_program()"));
+                let text = self.text_value(&block);
+                self.assign(dest.ok_or("no result")?, &text)?;
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// Makes `dest`, an `Instant`, holding `nanos`.
+    fn instant_into(&mut self, dest: LocalId, nanos: &str) -> Result<(), String> {
+        let kind = self.kind_of(dest)?.clone();
+        let (offset, held) = self.field(&kind, "nanos")?;
+        match kind {
+            Kind::Struct(_) => {
+                let at = self.slot(dest);
+                let at = self.offset(&at, offset);
+                self.store_field(&held, nanos, &at, "");
+                Ok(())
+            }
+            Kind::Boxed(id) => {
+                let block = self.new_block(id)?;
+                let fields = self.offset(&block, FIELDS_OFFSET);
+                let at = self.offset(&fields, offset);
+                self.store_field(&held, nanos, &at, FIELD_ACCESS);
+                self.assign(dest, &block)
+            }
+            other => Err(format!("`clock.now()` gives a {other:?}")),
+        }
+    }
+
+    /// `args[index]`, as a new string, which leaves the function if it's out of range.
+    pub(crate) fn args_item(&mut self, dest: LocalId, index: &Operand, span: Span) -> Result<(), String> {
+        let (index, _) = self.operand(index)?;
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        self.declare("declare ptr @fennec_args_item(i64, i64, i64) nounwind");
+        let block = self.temp();
+        self.line(&format!("{block} = call ptr @fennec_args_item(i64 {index}, i64 {from}, i64 {to})"));
+        self.leave_if_failed();
+        let text = self.text_value(&block);
+        self.assign(dest, &text)
+    }
+
+    /// A new list of the arguments, for `for arg in args`.
+    pub(crate) fn args_list(&mut self, dest: LocalId) -> Result<(), String> {
+        let strings = self.element_number(ListItem::Str);
+        self.declare("declare ptr @fennec_args_list(i64) nounwind");
+        let list = self.temp();
+        self.line(&format!("{list} = call ptr @fennec_args_list(i64 {strings})"));
+        self.assign(dest, &list)
+    }
+
     pub(crate) fn capability_call(
         &mut self,
         dest: Option<LocalId>,
@@ -17,6 +105,9 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (receiver, rest) = args.split_first().ok_or("a method with nothing to call it on")?;
+        if self.native_capability(dest, name, rest)? {
+            return Ok(());
+        }
         let method = name.rsplit('.').next().unwrap_or(name);
         let (from, to) = (i64::from(span.start), i64::from(span.end));
         self.declare("declare i64 @fennec_mark() nounwind");

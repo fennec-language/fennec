@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use fennec_syntax::Diagnostic;
 
-use super::heap::{CAPABILITY_SHAPE, IMMORTAL, read_block};
+use super::heap::{CAPABILITY_SHAPE, IMMORTAL, read_block, text_address};
 use super::{State, attempt, span, with};
 use crate::limits::Limited;
 use crate::packed::Element;
@@ -134,6 +134,49 @@ pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64)
         let args = given.into_iter().map(|value| crate::call::CallArg::plain(value, at)).collect();
         let result = state.interp.read_method(&receiver, &name, args, at)?;
         Ok(state.push(result))
+    })
+}
+
+/// `clock.now()`, as the nanoseconds of an `Instant`.
+pub extern "C" fn clock_now() -> i64 {
+    crate::collections::monotonic_nanos()
+}
+
+/// `clock.sleep(duration)`, by the nanoseconds of a `Duration`. What's been printed comes out
+/// first, as it does before anything else that waits.
+pub extern "C" fn clock_sleep(nanos: i64) {
+    super::write_kept_output();
+    std::thread::sleep(std::time::Duration::from_nanos(u64::try_from(nanos).unwrap_or(0)));
+}
+
+/// `args.len()`.
+pub extern "C" fn args_len() -> i64 {
+    with(|state| i64::try_from(state.arguments.len()).unwrap_or(i64::MAX))
+}
+
+/// `args.program`, as a new string.
+pub extern "C" fn args_program() -> i64 {
+    with(|state| {
+        let program = state.program.clone();
+        text_address(state, &program)
+    })
+}
+
+/// `args[index]`, as a new string.
+pub extern "C" fn args_item(index: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let at = crate::ops::position(index, state.arguments.len(), span(start, end))?;
+        let argument = state.arguments.get(at).cloned().unwrap_or_default();
+        Ok(text_address(state, &argument))
+    })
+}
+
+/// A new list of the arguments, for `for arg in args`.
+pub extern "C" fn args_list(element: i64) -> i64 {
+    with(|state| {
+        let arguments = state.arguments.clone();
+        let strings: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        super::lists::list_of_strings(state, element, &strings)
     })
 }
 

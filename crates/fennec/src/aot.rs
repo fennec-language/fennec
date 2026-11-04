@@ -10,7 +10,18 @@ use std::time::Instant;
 /// The libraries Rust's standard library needs from the system, which the runtime
 /// library uses, and the flag that drops the parts of the runtime a program never calls.
 #[cfg(target_os = "macos")]
-const SYSTEM_LIBRARIES: &[&str] = &["-lSystem", "-lc", "-lm", "-Wl,-dead_strip"];
+const SYSTEM_LIBRARIES: &[&str] = &[
+    "-lSystem",
+    "-lc",
+    "-lm",
+    // What TLS checks certificates with, in `std.net`. Dead-stripped with what uses it.
+    "-framework",
+    "Security",
+    "-framework",
+    "CoreFoundation",
+    "-Wl,-dead_strip",
+    "-Wl,-dead_strip_dylibs",
+];
 #[cfg(all(not(target_os = "macos"), not(windows)))]
 const SYSTEM_LIBRARIES: &[&str] =
     &["-lgcc_s", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl", "-lc", "-Wl,--gc-sections"];
@@ -21,6 +32,8 @@ const WINDOWS_LIBRARIES: &[&str] = &[
     "kernel32.lib",
     "ntdll.lib",
     "userenv.lib",
+    "crypt32.lib",
+    "ncrypt.lib",
     "ws2_32.lib",
     "dbghelp.lib",
     "advapi32.lib",

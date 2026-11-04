@@ -828,6 +828,7 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
 /// that only looks inside it, before anything could change what it came from; and a field
 /// taken out, changed and put back, with nothing able to see it in between.
 fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known: &mut Analysis) {
+    find_text_growing_in_a_field(function, known);
     for inst in function.blocks.iter().flat_map(|block| &block.insts) {
         // A character's block lasts the whole run.
         if let InstKind::Builtin { dest: Some(dest), name, .. } = &inst.kind
@@ -943,6 +944,29 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                     other if is_quiet(other) => {}
                     _ => break,
                 }
+            }
+        }
+    }
+}
+
+/// `object.field += text`, which the IR writes as a local read from the field, added to and put
+/// straight back: the text is taken out, not given another owner, so it grows where it is.
+fn find_text_growing_in_a_field(function: &Function, known: &mut Analysis) {
+    for block in &function.blocks {
+        for insts in block.insts.windows(3) {
+            let [read, grow, put] = insts else { continue };
+            let InstKind::GetField { dest, object: Operand::Local(from), field } = &read.kind else {
+                continue;
+            };
+            let InstKind::Binary { dest: grown, op: BinOp::Add, lhs, .. } = &grow.kind else { continue };
+            let InstKind::SetField { object, path, value: Operand::Local(put_back) } = &put.kind else {
+                continue;
+            };
+            let is_text = matches!(function.locals.get(dest.0).map(|local| &local.ty), Some(Type::Str));
+            let same_local = (grown, lhs, put_back) == (dest, &Operand::Local(*dest), dest);
+            let same_place = (object, path.as_slice()) == (from, std::slice::from_ref(field));
+            if is_text && same_local && same_place {
+                known.taken.insert(dest.0);
             }
         }
     }
@@ -1916,6 +1940,30 @@ mod tests {
         ] {
             assert!(taken(body)?, "not taken: {body}");
         }
+        Ok(())
+    }
+
+    /// How many locals of a function called `go` are taken out of where they came from.
+    fn taken_locals(body: &str) -> Result<usize, String> {
+        let source = format!("struct Note:\n    text: str\n    hp: int\n\n{body}");
+        let module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false);
+        Ok((0..function.locals.len()).filter(|at| known.is_taken(LocalId(*at))).count())
+    }
+
+    /// Only `+=` on a text in a field takes it out: added to in any other way, or for a number,
+    /// what's in the field has to last until the new value is put there.
+    #[test]
+    fn a_text_growing_in_a_field_is_taken_out_of_it() -> Result<(), String> {
+        let grows = "def go(mut note: Note, more: str):\n    note.text += more\n";
+        assert_eq!(taken_locals(grows)?, 1);
+        let makes = "def go(mut note: Note, more: str):\n    note.text = note.text + more\n";
+        assert_eq!(taken_locals(makes)?, 0);
+        let number = "def go(mut note: Note):\n    note.hp += 1\n";
+        assert_eq!(taken_locals(number)?, 0);
         Ok(())
     }
 

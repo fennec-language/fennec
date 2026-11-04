@@ -49,6 +49,7 @@ impl Emit<'_, '_, '_> {
         for arg in args {
             values.push(match arg {
                 Operand::Str(text) => (text.clone(), None),
+                Operand::None => ("None".to_owned(), None),
                 // A generator shows the type it's of.
                 Operand::Local(local) if *self.kind_of(*local)? == Kind::Gen => {
                     let ty = self.function.locals.get(local.0).map(|held| held.ty.to_string());
@@ -423,7 +424,32 @@ impl Emit<'_, '_, '_> {
     }
 
     /// A new string holding a value, by a spec if it has one.
+    /// An optional string in an f-string: its text, or `None`, as a block of its own.
+    fn maybe_text_piece(&mut self, value: &str) -> String {
+        let none = self.literal("None");
+        let (missing, shown) = (self.header_is_none(value), self.temp_slot(&none));
+        let (holds, absent, joined) = (self.label("holds"), self.label("none"), self.label("shown"));
+        self.line(&format!("br i1 {missing}, label %{absent}, label %{holds}"));
+        self.start_block(&holds);
+        let text = self.owned_text_block(value);
+        self.line(&format!("store ptr {text}, ptr {shown}"));
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&absent);
+        self.retain(&none);
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let text = self.temp();
+        self.line(&format!("{text} = load ptr, ptr {shown}"));
+        text
+    }
+
     fn piece(&mut self, value: &Operand, spec: Option<&str>, span: Span) -> Result<String, String> {
+        // A name known to hold `None` here is read as `None` itself.
+        if matches!(value, Operand::None) && spec.is_none() {
+            let none = self.literal("None");
+            self.retain(&none);
+            return Ok(none);
+        }
         let (value, kind) = self.operand(value)?;
         let temp = self.temp();
         let Some(spec) = spec else {
@@ -441,6 +467,7 @@ impl Emit<'_, '_, '_> {
                     self.retain(&value);
                     return Ok(value);
                 }
+                Kind::MaybeText => return Ok(self.maybe_text_piece(&value)),
                 Kind::Bool | Kind::Struct(_) | Kind::Enum(_) => return self.plain_text(&value, &kind),
                 Kind::List(_) | Kind::Boxed(_) | Kind::Bytes | Kind::Dict(..) => {
                     self.declare("declare ptr @fennec_block_text(ptr) nounwind");

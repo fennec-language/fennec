@@ -66,7 +66,6 @@ impl Emit<'_, '_, '_> {
                 dest.and_then(|dest| self.range_list(dest, args, span))
             }
             ("reversed", [list], [Some(Kind::List(_))]) => dest.and_then(|dest| self.reversed(dest, list)),
-            ("list", [_], [Some(Kind::Cap)]) => dest.and_then(|dest| self.args_list(dest)),
             ("reversed", [text], [Some(Kind::Str)]) => dest.and_then(|dest| {
                 let (text, _) = self.operand(text)?;
                 self.declare("declare ptr @fennec_str_reversed(ptr) nounwind");

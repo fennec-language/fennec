@@ -1566,7 +1566,8 @@ impl Emit<'_, '_, '_> {
         }
         let first = args.first();
         match name {
-            "Stdout.print" => self.print(args.get(1..).unwrap_or_default()),
+            // A test's `Stdout` is a fake that keeps what's printed, which the runtime holds.
+            "Stdout.print" if !self.module.shared.traced => self.print(args.get(1..).unwrap_or_default()),
             "list.len" => {
                 // An `enumerate` never made is as long as its list.
                 let counted = match first {
@@ -2264,7 +2265,7 @@ def main(stdout: Stdout):
 
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
-        let source = "def f(mut items: list[int]):\n    items.sort()\n\ndef main(stdout: Stdout):\n    mut items = [2]\n    f(mut items)\n    stdout.print(items.len())\n";
+        let source = "def f(step: (int) -> int) -> Iterator[int]:\n    yield step(1)\n\ndef main(stdout: Stdout):\n    for n in f((a) => a + 1):\n        stdout.print(n)\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())

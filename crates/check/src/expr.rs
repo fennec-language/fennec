@@ -80,23 +80,7 @@ impl FnCx<'_> {
                 self.restore(&before);
                 self.join_or_report(&[then, otherwise], span, "the two sides of this `if` give")
             }
-            ExprKind::Else { value, default } => {
-                let mut steps = Vec::new();
-                else_steps(value, &mut steps);
-                self.else_chain.extend(steps.iter().copied());
-                let value = self.expr(value);
-                for step in &steps {
-                    self.else_chain.remove(step);
-                }
-                let default = self.expr(default);
-                match value {
-                    Type::Optional(inner) | Type::Result(inner, _) => {
-                        self.join_or_report(&[*inner, default], span, "the two sides of this `else` give")
-                    }
-                    Type::None => default,
-                    other => other,
-                }
-            }
+            ExprKind::Else { value, default } => self.else_value(value, default, span),
             ExprKind::Try { value, context } => self.try_value(value, context.as_deref(), span),
             ExprKind::Call { callee, args } => self.call(callee, args, span),
             ExprKind::Attr { object, name, optional } => self.read_attr(object, name, *optional, span),
@@ -748,6 +732,7 @@ impl FnCx<'_> {
         let item = self.item_type(&iter_ty, iter.span);
         let before = self.snapshot();
         self.push(false);
+        self.value_functions += 1;
         self.bind_names(names, &item, false, (iter.span, span));
         if let Some(cond) = cond {
             self.condition(cond, "if");
@@ -756,9 +741,39 @@ impl FnCx<'_> {
         }
         let elem = self.expr(elem);
         let value = value.map_or(Type::Unit, |value| self.expr(value));
+        self.value_functions -= 1;
         self.pop();
         self.restore(&before);
         (elem, value)
+    }
+
+    /// `value else default`: what's inside the value, or the default, or nothing more if the default
+    /// leaves.
+    fn else_value(&mut self, value: &Expr, default: &Expr, span: Span) -> Type {
+        let mut steps = Vec::new();
+        else_steps(value, &mut steps);
+        self.else_chain.extend(steps.iter().copied());
+        let value = self.expr(value);
+        for step in &steps {
+            self.else_chain.remove(step);
+        }
+        let leaves = default.leaves();
+        if leaves && self.value_functions > 0 {
+            let message = "an arrow function or comprehension can't leave with `else`";
+            self.error(
+                Diagnostic::new(message, default.span)
+                    .with_help("write a loop, or give a value after `else`"),
+            );
+        }
+        let default = self.expr(default);
+        match value {
+            Type::Optional(inner) | Type::Result(inner, _) if leaves => *inner,
+            Type::Optional(inner) | Type::Result(inner, _) => {
+                self.join_or_report(&[*inner, default], span, "the two sides of this `else` give")
+            }
+            Type::None => default,
+            other => other,
+        }
     }
 
     /// An arrow function. Its parameters' types come from where it's passed, so it has to
@@ -780,7 +795,9 @@ impl FnCx<'_> {
             self.declare(param, ty.clone(), true, span);
             known.push(ty);
         }
+        self.value_functions += 1;
         let returns = self.expr(body);
+        self.value_functions -= 1;
         self.pop();
         let ty = Type::Arrow(known, Box::new(returns));
         self.record(span, &ty);

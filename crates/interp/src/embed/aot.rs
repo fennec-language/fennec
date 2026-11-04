@@ -9,6 +9,7 @@ use std::io::Write;
 use fennec_syntax::Sources;
 
 use super::codec::Image;
+use crate::fakes::{TestCapabilities, TestWorld};
 use super::{State, heap, with};
 
 /// The stack an executable's program runs on. It's only reserved, not used, until calls
@@ -94,9 +95,17 @@ pub fn test_ran(flag: i64) {
     RAN.with_borrow_mut(|ran| ran.push(flag));
 }
 
+/// Starts a test: one that takes capabilities gets fakes in a world of its own, with nothing left
+/// by the one before, as `run_case` gives the interpreter's.
+pub fn test_world(fakes: i64) {
+    with(|state: &mut State| {
+        state.interp.world = (fakes != 0).then(|| TestWorld::new(TestCapabilities::Fakes));
+    });
+}
+
 /// Says what the test just run did, on standard output as soon as it's done, in a line `fennec
-/// test` reads, so a crash loses only the tests not yet run. Tests here take nothing, so nothing
-/// else writes there.
+/// test` reads, so a crash loses only the tests not yet run. A test's `Stdout` is a fake, so
+/// nothing else writes there.
 pub fn test_done(number: i64) {
     let ran: Vec<String> = RAN.take().iter().map(ToString::to_string).collect();
     let line = test_line(number, super::next_test().as_ref(), &ran);

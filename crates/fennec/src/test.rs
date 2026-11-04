@@ -12,7 +12,7 @@
 //!
 //! Tests run through LLVM's cached dev build, in worker processes on every core (see
 //! `llvm_tests`). A test LLVM can't build yet, or that failed, since the JIT says more about why,
-//! runs on the JIT, and property tests and tests that take capabilities in the interpreter. `--jit`
+//! runs on the JIT, and property tests in the interpreter. `--jit`
 //! leaves LLVM out.
 
 use std::collections::HashMap;
@@ -193,6 +193,9 @@ fn run_plan(
             && let Some(why) = through_llvm.refused.as_deref().and_then(|why| why.lines().next())
         {
             eprintln!("note: some tests run another way, since LLVM can't build what they reach: {why}");
+        }
+        if options.verbose {
+            eprintln!("note: {} of {} tests passed through LLVM", through_llvm.outcomes.len(), wanted.len());
         }
         outcomes = through_llvm.outcomes;
         wanted = through_llvm.left;

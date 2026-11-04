@@ -2,6 +2,7 @@
 //! runtime's parallel calls, as `FENNEC_COUNTS` shows, and print what the interpreter prints.
 //! Skipped where LLVM's tools aren't installed, as `llvm.rs` is.
 
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -445,6 +446,48 @@ fn a_character_first_read_on_a_worker_is_found_by_every_range() -> std::io::Resu
     std::fs::remove_dir_all(&dir)?;
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "6000 6000\n6000 6000\n");
+    Ok(())
+}
+
+/// `parallel` bodies that read the program's arguments and its standard input.
+const INPUTS: &str = "\
+def main(stdout: Stdout, args: Args, stdin: Stdin):
+    mut counts = [0, 0, 0, 0, 0, 0, 0, 0]
+    for mut count in parallel(counts):
+        count = args.len()
+    stdout.print(counts)
+    mut lines = [0, 0, 0, 0]
+    for mut count in parallel(lines):
+        count = stdin.lines().len()
+    stdout.print(sum(lines))
+";
+
+#[test]
+fn every_worker_sees_the_arguments_and_reads_the_one_standard_input() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("fennec-parallel-inputs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let inputs = build_on_threads(&dir, INPUTS, "inputs")?;
+    let mut running = Command::new(&inputs)
+        .args(["one", "two"])
+        .env("FENNEC_PARALLEL_STRESS", "1")
+        .env("FENNEC_THREADS", "4")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let given = "a line\n".repeat(1000);
+    running
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("no standard input"))?
+        .write_all(given.as_bytes())?;
+    let ran = running.wait_with_output()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "[2, 2, 2, 2, 2, 2, 2, 2]\n1000\n");
     Ok(())
 }
 

@@ -11,7 +11,7 @@ use crate::ParamType;
 use crate::checker::Checker;
 use crate::effects;
 use crate::infer::{Hole, unsettled};
-use crate::loops::blocks;
+use crate::loops::{blocks, exprs};
 use crate::messages::not_mut;
 use crate::stmt::{not_none, path};
 use crate::types::Type;
@@ -707,34 +707,72 @@ impl<'c> FnCx<'c> {
     /// its field's type again.
     pub(crate) fn forget_fields(&mut self, root: &str) {
         let prefix = format!("{root}.");
-        let paths: Vec<String> =
-            self.visible().into_iter().map(|b| b.name).filter(|name| name.starts_with(&prefix)).collect();
+        let paths: Vec<String> = self
+            .scopes
+            .iter()
+            .flat_map(|scope| &scope.bindings)
+            .filter(|binding| binding.name.starts_with(&prefix))
+            .map(|binding| binding.name.clone())
+            .collect();
         for path in paths {
             let ty = self.path_type(&path);
             self.set_type(&path, ty);
         }
     }
 
-    /// At the top of a loop: the body may have run already, so what it gives a value to could
-    /// hold anything it was declared to, not just what it holds before the loop.
+    /// At the top of a loop: the body may have run already, so what it changes could hold
+    /// anything it was declared to, not just what it held before the loop.
     pub(crate) fn forget_changed_in(&mut self, body: &[Stmt]) {
         for stmt in body {
             if let StmtKind::Assign { target, .. } = &stmt.kind {
-                let targets = match &target.kind {
-                    ExprKind::Tuple(items) => items.iter().collect(),
-                    _ => vec![target],
-                };
-                for name in targets.into_iter().filter_map(path) {
-                    if let Some(binding) = self.binding_mut(&name) {
-                        binding.ty = binding.declared.clone();
-                        self.forget_fields(&name);
-                    }
+                match &target.kind {
+                    ExprKind::Tuple(items) => items.iter().for_each(|item| self.forget_changing(item)),
+                    _ => self.forget_changing(target),
                 }
+            }
+            for expr in exprs(stmt) {
+                self.forget_changed_by(expr);
             }
             for block in blocks(stmt) {
                 self.forget_changed_in(block);
             }
         }
+    }
+
+    /// The same for an expression: what it passes with `mut`, the fields of what it calls a
+    /// method on, which may be `mut self`, and the arms of a `match`.
+    pub(crate) fn forget_changed_by(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Match { arms, .. } => {
+                for arm in arms {
+                    self.forget_changed_in(&arm.body);
+                }
+            }
+            ExprKind::Call { callee, args } => {
+                for arg in args.iter().filter(|arg| arg.is_mut) {
+                    self.forget_changing(&arg.value);
+                }
+                if let ExprKind::Attr { object, .. } = &callee.kind
+                    && let Some(name) = path(object)
+                    && let Some(root) = name.split('.').next()
+                    && self.lookup(root).is_some_and(|(_, is_mut)| is_mut)
+                {
+                    self.forget_fields(&name);
+                }
+            }
+            _ => {}
+        }
+        for child in effects::children(expr) {
+            self.forget_changed_by(child);
+        }
+    }
+
+    fn forget_changing(&mut self, target: &Expr) {
+        let Some(name) = path(target) else { return };
+        if let Some(binding) = self.binding_mut(&name) {
+            binding.ty = binding.declared.clone();
+        }
+        self.forget_fields(&name);
     }
 
     /// Records that these names aren't None.

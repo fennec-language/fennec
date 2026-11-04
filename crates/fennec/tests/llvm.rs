@@ -52,6 +52,16 @@ fn same_message_as_the_jit(name: &str, source: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the program printed, its errors and its exit code on the interpreter.
+fn interpreted(name: &str, source: &str) -> std::io::Result<Outcome> {
+    let dir = folder(&format!("{name}_interpreted"))?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::write(&program, source)?;
+    let done = outcome(&fennec(&["run", "--interp", &program.to_string_lossy()], &dir)?);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(done)
+}
+
 /// What the program printed, its errors and its exit code, built with LLVM and run by the JIT.
 fn both(name: &str, source: &str) -> std::io::Result<(Outcome, Outcome)> {
     both_built(name, source, &["--llvm"])
@@ -2567,6 +2577,199 @@ fn a_float_too_big_for_an_int_fails_like_the_jit() -> std::io::Result<()> {
 }
 
 /// Optional strings going into a list, whose items hold an optional as an enum.
+/// A loop sees what its body gave a name, on every engine: the checker used to say what the name
+/// held before the loop, and LLVM folded `is None` on that.
+#[test]
+fn a_loop_tests_what_its_body_gave_a_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Box:
+    v: int
+
+def main(stdout: Stdout):
+    mut x: int? = None
+    for n in range(3):
+        if x is None:
+            stdout.print("none", n)
+            x = n
+        else:
+            stdout.print("some", n)
+    stdout.print(x)
+    mut inferred = None
+    for n in range(3):
+        if inferred is None:
+            stdout.print("no box", n)
+            inferred = Box(v=n)
+        else:
+            stdout.print("box", n)
+    stdout.print(inferred)
+    mut text = None
+    mut i = 0
+    while text is None:
+        stdout.print("no text", i)
+        i += 1
+        if i == 3:
+            text = "a"
+    stdout.print(text)
+    mut nested: int? = None
+    for a in range(2):
+        for b in range(2):
+            stdout.print(nested is None, a, b)
+        nested = a
+    stdout.print(nested)
+"#;
+    let (ours, jit) = both("a_loop_tests_what_its_body_gave_a_name", source)?;
+    let held = interpreted("a_loop_tests_what_its_body_gave_a_name", source)?;
+    assert_eq!(ours, held);
+    assert_eq!(jit, held);
+    Ok(())
+}
+
+/// The same when the body gives it a value only some of the time, or leaves early.
+#[test]
+fn a_loop_tests_what_a_path_through_its_body_gave_a_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"def fill(mut slot: int?):
+    slot = 7
+
+def main(stdout: Stdout):
+    mut inner: int? = None
+    for a in range(2):
+        stdout.print(inner is None, a)
+        for b in range(2):
+            inner = b
+    mut branch: int? = None
+    for at in range(3):
+        if branch is not None:
+            stdout.print(branch + 1, at)
+        if at == 0:
+            branch = 5
+    mut left: int? = None
+    for at in range(4):
+        if left is not None:
+            stdout.print("left", left, at)
+            break
+        if at == 1:
+            left = at
+    mut skipped: int? = None
+    for at in range(4):
+        if skipped is None:
+            if at == 1:
+                skipped = at
+            continue
+        stdout.print("skipped", skipped, at)
+    mut matched: int? = None
+    for at in range(3):
+        match at:
+            case 0:
+                stdout.print(matched is None)
+            case _:
+                stdout.print(matched is None)
+                matched = at
+    mut passed: int? = None
+    for at in range(2):
+        stdout.print(passed is None, at)
+        fill(mut passed)
+    mut shown: int? = None
+    for at in range(2):
+        def show(stdout: Stdout):
+            stdout.print("in", at)
+        show(stdout)
+        stdout.print(shown is None)
+        shown = at
+"#;
+    let (ours, jit) = both("a_loop_tests_what_a_path_through_its_body_gave_a_name", source)?;
+    let held = interpreted("a_loop_tests_what_a_path_through_its_body_gave_a_name", source)?;
+    assert_eq!(ours, held);
+    assert_eq!(jit, held);
+    Ok(())
+}
+
+/// The other way round, a name that starts with a value and is given None. Not against the JIT,
+/// which stops when it's given None: #572.
+#[test]
+fn a_loop_tests_a_name_its_body_gave_none() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = r#"struct Held:
+    x: int?
+
+    def clear(mut self):
+        self.x = None
+
+def clear(mut slot: int?):
+    slot = None
+
+def main(stdout: Stdout):
+    mut direct: int? = 1
+    for at in range(3):
+        stdout.print(direct is None, at)
+        direct = None
+    stdout.print(direct)
+    mut changed: int? = 1
+    mut count = 0
+    while count < 3:
+        if changed is None:
+            stdout.print("none", count)
+        else:
+            stdout.print("some", count)
+        changed = None
+        count += 1
+    mut outer: int? = 1
+    for a in range(2):
+        for b in range(2):
+            stdout.print(outer is None, a, b)
+        outer = None
+    mut branch: int? = 1
+    for at in range(3):
+        stdout.print(branch is None, at)
+        if at == 1:
+            branch = None
+    mut left: int? = 1
+    for at in range(3):
+        stdout.print(left is None, at)
+        left = None
+        if at == 1:
+            break
+        left = 2
+    stdout.print(left)
+    mut skipped: int? = 1
+    for at in range(3):
+        stdout.print(skipped is None, at)
+        skipped = None
+        if at == 0:
+            continue
+        skipped = 2
+    mut matched: int? = 1
+    for at in range(3):
+        match at:
+            case 0:
+                stdout.print(matched is None)
+            case _:
+                stdout.print(matched is None)
+                matched = None
+    mut passed: int? = 1
+    for at in range(2):
+        stdout.print(passed is None, at)
+        clear(mut passed)
+    mut field = Held(x=1)
+    for at in range(2):
+        stdout.print(field.x is None, at)
+        field.x = None
+    mut method = Held(x=1)
+    for at in range(2):
+        stdout.print(method.x is None, at)
+        method.clear()
+"#;
+    let (ours, _) = both("a_loop_tests_a_name_its_body_gave_none", source)?;
+    assert_eq!(ours, interpreted("a_loop_tests_a_name_its_body_gave_none", source)?);
+    Ok(())
+}
+
 #[test]
 fn optional_strings_in_lists_match_the_jit() -> std::io::Result<()> {
     if !ready() {
@@ -4191,68 +4394,6 @@ fn a_failure_passed_up_fails_a_test_through_llvm() -> std::io::Result<()> {
         assert!(!said.contains("through LLVM"), "{name}: {said}");
     }
     std::fs::remove_dir_all(&dir)?;
-    Ok(())
-}
-
-#[test]
-fn a_loop_tests_what_its_body_gave_a_name() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let source = r#"struct Box:
-    v: int
-
-def main(stdout: Stdout):
-    mut x: int? = None
-    for n in range(3):
-        if x is None:
-            stdout.print("none", n)
-            x = n
-        else:
-            stdout.print("some", n)
-    stdout.print(x)
-    mut inferred = None
-    for n in range(3):
-        if inferred is None:
-            stdout.print("no box", n)
-            inferred = Box(v=n)
-        else:
-            stdout.print("box", n)
-    stdout.print(inferred)
-    mut text = None
-    mut i = 0
-    while text is None:
-        stdout.print("no text", i)
-        text = "a"
-        i += 1
-    stdout.print(text)
-    mut nested: int? = None
-    for a in range(2):
-        for b in range(2):
-            stdout.print(nested is None, a, b)
-            nested = b
-    stdout.print(nested)
-"#;
-    same_as_the_jit("a_loop_tests_what_its_body_gave_a_name", source)
-}
-
-/// Not against the JIT, which stops when `gone` is given None: #572.
-#[test]
-fn a_loop_tests_a_name_its_body_gave_none() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    let source = r"def main(stdout: Stdout):
-    mut gone: int? = 5
-    for n in range(3):
-        stdout.print(gone is None, n)
-        if n == 1:
-            break
-        gone = None
-    stdout.print(gone)
-";
-    let ((out, err, code), _) = both("a_loop_tests_a_name_its_body_gave_none", source)?;
-    assert_eq!((out.as_str(), err.as_str(), code), ("False 0\nTrue 1\nNone\n", "", Some(0)));
     Ok(())
 }
 

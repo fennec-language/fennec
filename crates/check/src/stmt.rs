@@ -210,6 +210,7 @@ impl FnCx<'_> {
 
     fn while_stmt(&mut self, cond: &Expr, body: &[Stmt]) -> Flow {
         self.forget_changed_in(body);
+        self.forget_changed_by(cond);
         self.condition(cond, "while");
         self.track(cond);
         let before = self.snapshot();

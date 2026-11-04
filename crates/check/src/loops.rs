@@ -281,7 +281,7 @@ pub(crate) fn blocks(stmt: &Stmt) -> Vec<&[Stmt]> {
 }
 
 /// The expressions written directly in a statement.
-fn exprs(stmt: &Stmt) -> Vec<&Expr> {
+pub(crate) fn exprs(stmt: &Stmt) -> Vec<&Expr> {
     match &stmt.kind {
         StmtKind::Expr(value)
         | StmtKind::Fail(value)

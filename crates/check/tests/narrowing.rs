@@ -412,45 +412,75 @@ fn match_cases_bind_typed_values() {
 }
 
 #[test]
-fn a_loop_sees_what_its_body_gave_a_name() {
-    let program = "
-        def a(names: list[str]):
-            mut given: int? = 5
-            for name in names:
-                stdout_less = given + 1
-                given = None
-            mut left: int? = 5
-            while left + 1 > 0:
-                left = None
-            mut field = Player(name='a', weapon=Weapon(damage=1))
-            if field.weapon is not None:
-                for name in names:
-                    stdout_less = field.weapon.damage
-                    field.weapon = None
-    ";
-    assert_eq!(
-        problems(&format!("{FIND}\n{}", crate::dedent(program))),
-        [
-            "this might be None @ given",
-            "this might be None @ left",
-            "this might be None @ field.weapon.damage",
-        ]
-    );
+fn a_loop_sees_what_its_body_changes() {
+    let cases = [
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    x = None\n", "x"),
+        ("mut x: int? = 5\nmut more = True\nwhile x + 1 > 0 and more:\n    x = None\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    for m in names:\n        use(x + 1)\n    x = None\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    for m in names:\n        x = None\n    use(x + 1)\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    if n == 'a':\n        x = None\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    x = None\n    continue\n", "x"),
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    x = None\n    break\n", "x"),
+        (
+            "mut x: int? = 5\nfor n in names:\n    x = None\n    if n == 'a':\n        break\n    x = 1\nuse(x + 1)\n",
+            "x",
+        ),
+        (
+            "mut x: int? = 5\nfor n in names:\n    match n:\n        case 'a':\n            use(x + 1)\n        case _:\n            x = None\n",
+            "x",
+        ),
+        ("mut x: int? = 5\nfor n in names:\n    use(x + 1)\n    clear(mut x)\n", "x"),
+        // It never holds None, but the loop's first look at it doesn't know that.
+        ("mut x: int? = 5\nfor n in names:\n    x = x + 1\n", "x"),
+        (
+            "mut h = Held(x=1)\nif h.x is not None:\n    for n in names:\n        use(h.x + 1)\n        h.x = None\n",
+            "h.x",
+        ),
+        (
+            "mut h = Held(x=1)\nif h.x is not None:\n    for n in names:\n        use(h.x + 1)\n        h.clear()\n",
+            "h.x",
+        ),
+    ];
+    for (body, read) in cases {
+        let found = problems(&in_a_loop_function(body));
+        assert_eq!(found, [format!("this might be None @ {read}")], "{body}");
+    }
 }
 
 #[test]
-fn a_loop_that_leaves_a_name_alone_keeps_what_is_known() {
-    let program = "
-        def a(names: list[str]):
-            player = find('a')
-            if player is None:
-                return
-            for name in names:
-                stdout_less = player.name
-            mut after: int? = None
-            for name in names:
-                after = 1
-                stdout_less = after + 1
-    ";
-    assert_eq!(problems(&format!("{FIND}\n{}", crate::dedent(program))), Vec::<String>::new());
+fn a_loop_keeps_what_its_body_leaves_alone() {
+    let cases = [
+        "x: int? = 5\nif x is None:\n    return\nfor n in names:\n    use(x + 1)\n",
+        "mut x: int? = 5\nif x is None:\n    return\nfor n in names:\n    use(x + 1)\nx = None\n",
+        "mut x: int? = None\nfor n in names:\n    x = 1\n    use(x + 1)\n",
+        "mut x: int? = None\nfor n in names:\n    if x is not None:\n        use(x + 1)\n    x = 1\n",
+        "h = Held(x=1)\nif h.x is not None:\n    for n in names:\n        use(h.x + 1)\n        h.show()\n",
+    ];
+    for body in cases {
+        assert_eq!(problems(&in_a_loop_function(body)), Vec::<String>::new(), "{body}");
+    }
+}
+
+fn in_a_loop_function(body: &str) -> String {
+    let body = format!("    {}", body.trim_end().replace('\n', "\n    "));
+    format!(
+        "struct Held:
+    x: int?
+
+    def clear(mut self):
+        self.x = None
+
+    def show(self) -> int:
+        1
+
+def use(n: int):
+    pass
+
+def clear(mut slot: int?):
+    slot = None
+
+def run(names: list[str]):
+{body}
+"
+    )
 }

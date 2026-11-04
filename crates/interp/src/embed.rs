@@ -25,6 +25,7 @@ pub mod heap;
 pub mod json;
 pub mod layout;
 pub mod lists;
+pub mod numbers;
 pub mod objects;
 pub mod parallel;
 mod plans;

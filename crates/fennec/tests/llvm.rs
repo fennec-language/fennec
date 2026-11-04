@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 use crate::executables::runtime_built;
 
 /// How many examples this backend takes, at least.
-const BUILDING_EXAMPLES: usize = 62;
+const BUILDING_EXAMPLES: usize = 79;
 
 fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
     crate::executables::fennec_command().args(args).env("FENNEC_HOME", home).output()
@@ -20,9 +20,6 @@ fn fennec(args: &[&str], home: &Path) -> std::io::Result<Output> {
 /// jobs set it, LLVM is the backend that has to work, so what's missing fails the test rather
 /// than skipping it.
 fn ready() -> bool {
-    if std::env::var_os("FENNEC_UNDER_MUTANTS").is_some() {
-        return false;
-    }
     let tools = fennec_llvm::Tools::find();
     let runtime = runtime_built();
     if std::env::var_os("FENNEC_EXPECT_LLVM").is_some_and(|expected| !expected.is_empty()) {
@@ -483,47 +480,24 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
     Ok(())
 }
 
-/// An `IdMap` uses its first free slot first, whatever order slots came free in, and where it
-/// looks from never changes which that is: the `Id`s it gives are the interpreter's.
+/// `isdigit`, native on headers, says what std's says: inline and in a block, empty, digits
+/// outside ASCII, and a digit beside something that isn't.
 #[test]
-fn an_id_maps_new_items_go_in_its_first_free_slot() -> std::io::Result<()> {
+fn isdigit_matches_the_jit() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
     same_as_the_jit(
-        "id_map_free_slots",
-        r#"from std.game import Id, IdMap
-
-struct Named:
-    name: str
-
-def main(stdout: Stdout):
-    mut names = IdMap[Named]()
-    mut ids: list[Id[Named]] = []
-    for at in range(8):
-        ids.append(names.insert(Named(f"name {at} long enough not to be held inline")))
-    stdout.print(ids)
-    # Free from high to low, low to high, and in between.
-    names.remove(ids[6])
-    names.remove(ids[2])
-    names.remove(ids[4])
-    first = names.insert(Named("a"))
-    second = names.insert(Named("b"))
-    names.remove(ids[0])
-    third = names.insert(Named("c"))
-    fourth = names.insert(Named("d"))
-    fifth = names.insert(Named("e"))
-    stdout.print(first, second, third, fourth, fifth, names.len())
-    stdout.print(names.get(ids[2]) is None, names[first], names[fifth])
-    # A stale `Id` frees nothing, so it can't move where to look.
-    names.remove(ids[2])
-    sixth = names.insert(Named("f"))
-    stdout.print(sixth, names.values())
-    # A copy keeps looking from where it was, apart from the original.
-    mut copied = copy(names)
-    copied.remove(ids[1])
-    names.remove(ids[3])
-    stdout.print(copied.insert(Named("g")), names.insert(Named("h")), copied.values(), names.values())
+        "isdigit",
+        r#"def main(stdout: Stdout):
+    long = "1234567890" * 5
+    for text in ["", "0", "9", "5", "/", ":", "a", "12", "1a", "a1", " 1", "1 ", "٣", "１", "1٣", "é", "🦊", long, long + "x", "x" + long, long[:23], long[:24]]:
+        stdout.print(text, text.isdigit())
+    mut found = 0
+    for at in range(long.len()):
+        if long[at].isdigit():
+            found += 1
+    stdout.print(found)
 "#,
     )
 }
@@ -1426,6 +1400,51 @@ def main(stdout: Stdout):
             best = item
     first, second = best
     stdout.print(first, second)
+"#,
+    )
+}
+
+/// An `IdMap` uses its first free slot first, whatever order slots came free in, and where it
+/// looks from never changes which that is: the `Id`s it gives are the interpreter's.
+#[test]
+fn an_id_maps_new_items_go_in_its_first_free_slot() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "id_map_free_slots",
+        r#"from std.game import Id, IdMap
+
+struct Named:
+    name: str
+
+def main(stdout: Stdout):
+    mut names = IdMap[Named]()
+    mut ids: list[Id[Named]] = []
+    for at in range(8):
+        ids.append(names.insert(Named(f"name {at} long enough not to be held inline")))
+    stdout.print(ids)
+    # Free from high to low, low to high, and in between.
+    names.remove(ids[6])
+    names.remove(ids[2])
+    names.remove(ids[4])
+    first = names.insert(Named("a"))
+    second = names.insert(Named("b"))
+    names.remove(ids[0])
+    third = names.insert(Named("c"))
+    fourth = names.insert(Named("d"))
+    fifth = names.insert(Named("e"))
+    stdout.print(first, second, third, fourth, fifth, names.len())
+    stdout.print(names.get(ids[2]) is None, names[first], names[fifth])
+    # A stale `Id` frees nothing, so it can't move where to look.
+    names.remove(ids[2])
+    sixth = names.insert(Named("f"))
+    stdout.print(sixth, names.values())
+    # A copy keeps looking from where it was, apart from the original.
+    mut copied = copy(names)
+    copied.remove(ids[1])
+    names.remove(ids[3])
+    stdout.print(copied.insert(Named("g")), names.insert(Named("h")), copied.values(), names.values())
 "#,
     )
 }
@@ -2417,6 +2436,8 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
         ("alone_ceil", "ceil(1e300 * 1e300)"),
         ("alone_round", "round(1e300 * 1e300)"),
         ("alone_range", "range(0, 1, 0)"),
+        ("alone_max", "max(empty)"),
+        ("alone_min", "min(empty)"),
     ] {
         same_message_as_the_jit(
             name,
@@ -2424,10 +2445,154 @@ fn failing_calls_alone_in_a_function_fail_like_the_jit() -> std::io::Result<()> 
                 "from std.math import ceil, floor
 
 def main(stdout: Stdout):
+    empty: list[int] = []
+    stdout.print(empty.len())
     stdout.print({call})
 "
             ),
         )?;
     }
     Ok(())
+}
+
+/// `T.make()` calls the function of the type each copy of a generic stands for. It's native only:
+/// the interpreter has no types at run time to find it through.
+#[test]
+fn a_type_parameter_calls_its_types_function() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "interface Made:\n    def make() -> Self\n\n\
+                  struct Part:\n    x = 1\n\n    def make() -> Self:\n        Self(x=7)\n\n\
+                  struct Other:\n    name = \"\"\n\n    def make() -> Self:\n        Self(name=\"other\")\n\n\
+                  def build[T: Made]() -> T:\n    T.make()\n\n\
+                  def twice[T: Made]() -> list[T]:\n    [build[T](), T.make()]\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(build[Part]().x, build[Other]().name)\n    \
+                  made: Part = build()\n    stdout.print(made.x, twice[Other]().len())\n";
+    let dir = folder("type_param_function")?;
+    let program = dir.join("made.fen");
+    std::fs::write(&program, source)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("made"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ours = outcome(&Command::new(&executable).output()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(ours.0, "7 other\n7 2\n");
+    Ok(())
+}
+
+/// `max` and `min` of lists and of values, with keys and a type's own `<`, as the first of equals
+/// wins; `in` and `remove` on lists of each kind of item; `sin`, `cos` and `str` of what isn't text.
+#[test]
+fn small_calls_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "small_calls",
+        r#"from std.math import cos, sin
+
+struct Money:
+    cents: int
+
+    def <(self, other: Money) -> bool:
+        self.cents > other.cents
+
+struct Spot:
+    x: int
+    y: int
+
+def main(stdout: Stdout):
+    stdout.print(max(1, 3, 2), min(1, 3, 2), max(1.5, -0.5), min(-0.0, 0.0), max("a", "b long enough for a block"))
+    stdout.print(max([3, 1, 3]), min([3, 1, 1]), max([0.5, 2.5]), min(["pear", "apple"]), max([False, True]))
+    stdout.print(max([(1, "b"), (2, "a"), (2, "b")]), min([(1, 2.5), (1, 1.5)]))
+    stdout.print(max(["aa", "bbb", "ccc"], key=word => word.len()), min(["aa", "bbb", "c"], key=word => word.len()))
+    stdout.print(max([1, 2, 3], key=n => -n), min([1.5, -2.5], key=n => n * n), max([1, 2], key=n => str(n)))
+    wallet = [Money(cents=5), Money(cents=2), Money(cents=9)]
+    stdout.print(max(wallet), min(wallet), max(wallet[0], wallet[1]), min(wallet[0], wallet[1]))
+    stdout.print(2 in [1, 2], 3 in [1, 2], 2.5 in [2.5], True in [False], "b" in ["a", "b"], "long enough for a block of its own" in ["no"])
+    stdout.print((1, 2) in [(1, 2)], Spot(x=1, y=2) in [Spot(x=1, y=2)], Spot(x=2, y=2) in [Spot(x=1, y=2)], (1, "a") in [(1, "a")], [1] in [[1], [2]])
+    mut numbers = [1, 2, 3, 2]
+    shared = numbers
+    numbers.remove(2)
+    stdout.print(numbers, shared)
+    mut words = ["a", "a string long enough to be a block of its own", "c"]
+    words.remove("a string long enough to be a block of its own")
+    stdout.print(words)
+    mut spots = [Spot(x=1, y=2), Spot(x=3, y=4)]
+    spots.remove(Spot(x=1, y=2))
+    stdout.print(spots)
+    mut pairs = [(1, "a"), (2, "b")]
+    pairs.remove((2, "b"))
+    stdout.print(pairs)
+    stdout.print(sin(0.5), cos(0.5), sin(1), cos(0))
+    stdout.print(int(5), float(2.5), str(True), str(False), str([1, 2]), str(Spot(x=1, y=2)), str((1, "a")))
+"#,
+    )
+}
+
+/// `max` of nothing, and removing what isn't there, fail as the JIT says.
+#[test]
+fn small_calls_fail_like_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_message_as_the_jit(
+        "max_of_nothing",
+        "def main(stdout: Stdout):
+    mut none = [1]
+    none.pop()
+    stdout.print(max(none))
+",
+    )?;
+    same_message_as_the_jit(
+        "remove_missing",
+        "def main(stdout: Stdout):
+    mut some = [1]
+    some.remove(2)
+    stdout.print(some)
+",
+    )
+}
+
+/// Numbers read from text, with what fails being a value the program holds; and lists and sets of
+/// a string's characters and a list's items.
+#[test]
+fn numbers_and_sets_from_text_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "numbers_from_text",
+        r#"from std.re import Regex
+
+def add(a: str, b: str) -> int:
+    int(a)? + int(b)?
+
+def main(stdout: Stdout):
+    for text in ["42", " -7 ", "4x2", "", "99999999999999999999"]:
+        match int(text):
+            case Ok(n):
+                stdout.print(n)
+            case Err(error):
+                stdout.print(error.message)
+    for text in ["2.5", " 1e3 ", "nope", "a \"quoted\" value long enough for a block"]:
+        match float(text):
+            case Ok(x):
+                stdout.print(x)
+            case Err(error):
+                stdout.print(error.message)
+    stdout.print(int("12") else 0, int("x") else -1, float("0.5") else 0.0, float("y") else -1.5)
+    stdout.print(add("1", "2") else -1, add("1", "two") else -1)
+    for pattern in ["[0-9]+", "[0-9+"]:
+        match Regex(pattern):
+            case Ok(regex):
+                stdout.print(regex.pattern)
+            case Err(error):
+                stdout.print(error.message)
+    stdout.print(list("héllo"), list(""), set("hello").len(), "l" in set("hello"), set(""))
+    stdout.print(set([3, 1, 3, 2, 1]), set(["b", "a", "b", "a key long enough for a block", "a key long enough for a block"]))
+    stdout.print(set([(1, 2), (1, 2), (3, 4)]).len())
+"#,
+    )
 }

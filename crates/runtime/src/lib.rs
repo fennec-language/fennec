@@ -11,8 +11,8 @@
 )]
 
 use fennec_interp::embed::{
-    aot, capabilities, checks, dicts, eval, heap, io, json, lists, names, objects, parallel, regex, serve,
-    strings, temps, text, threads,
+    aot, capabilities, checks, dicts, eval, heap, io, json, lists, names, numbers, objects, parallel, regex,
+    serve, strings, temps, text, threads,
 };
 
 /// The exported functions that can fail, setting the flag `fennec_aot_failed_flag` gives the
@@ -76,6 +76,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_str_code",
     "fennec_str_from_value",
     "fennec_str_index",
+    "fennec_str_index_text",
     "fennec_str_print",
     "fennec_str_slice",
     "fennec_str_split",
@@ -194,6 +195,9 @@ export! {
     fennec_list_contains(a0: i64, a1: i64) -> i8 => lists::contains(a0, a1);
     fennec_pop_empty(a0: i64, a1: i64) => lists::pop_empty(a0, a1);
     fennec_buffer_pop_empty(a0: i64, a1: i64) => lists::pop_empty_buffer(a0, a1);
+    fennec_parse_int(a0: i64, a1: &mut i64) -> i64 => numbers::parse_int(a0, a1);
+    fennec_parse_float(a0: i64, a1: &mut i64) -> i64 => numbers::parse_float(a0, a1);
+    fennec_not_a_number(a0: i64, a1: i64) -> i64 => numbers::not_a_number(a0, a1);
     fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
     fennec_float_text(a0: f64) -> i64 => strings::float_text(a0);
     fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);
@@ -209,6 +213,7 @@ export! {
     fennec_dict_pop_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64, a5: i64) -> i64 => dicts::pop_header(a0, a1, a2, a3, a4, a5);
     fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
     fennec_list_sorted_with(a0: i64, a1: extern "C" fn(i64, i64) -> i64) -> i64 => lists::sorted_with(a0, a1);
+    fennec_regex_problem(a0: i64) -> i64 => regex::problem(a0);
     fennec_regex_is_valid(a0: i64) -> i8 => regex::is_valid(a0);
     fennec_regex_groups(a0: i64) -> i64 => regex::groups(a0);
     fennec_regex_replace(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => regex::replace(a0, a1, a2, a3, a4);
@@ -274,6 +279,7 @@ export! {
     fennec_dict_missing(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) => dicts::missing(a0, a1, a2, a3, a4);
     fennec_dict_missing_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i8, a5: i64, a6: i64) => dicts::missing_header(a0, a1, a2, a3, a4, a5, a6);
     fennec_str_index(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::index(a0, a1, a2, a3);
+    fennec_str_index_text(a0: i64, a1: i64, a2: i64, a3: i64) -> text::Text => strings::index_text(a0, a1, a2, a3);
     fennec_str_slice(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => strings::slice(a0, a1, a2, a3, a4);
     fennec_str_compare(a0: i64, a1: i64) -> i64 => strings::compare(a0, a1);
     fennec_str_contains(a0: i64, a1: i64) -> i8 => strings::contains(a0, a1);

@@ -156,14 +156,14 @@ struct Definition<'d> {
 
 /// What one module holds so far.
 pub(crate) struct Module<'w, 'p> {
-    whole: &'w Whole<'p>,
+    pub(crate) whole: &'w Whole<'p>,
     pub(crate) layouts: &'w Layouts,
     pub(crate) shared: &'w mut Shared,
     /// Whether the program runs `parallel`'s ranges on other threads, which keep their own stack
     /// limit and failure flag.
     pub(crate) threads: bool,
     declares: BTreeSet<String>,
-    defined: HashSet<&'p str>,
+    pub(crate) defined: HashSet<&'p str>,
     bodies: String,
     /// Functions a module only needs once, however many things use them.
     helpers: BTreeMap<String, String>,
@@ -307,7 +307,7 @@ impl<'p> Module<'_, 'p> {
     }
 
     /// A function's parameters, with their names and attributes or just their types.
-    fn params(&self, function: &Function, named: bool) -> Result<String, String> {
+    pub(crate) fn params(&self, function: &Function, named: bool) -> Result<String, String> {
         let mut params = Vec::with_capacity(function.params + 2);
         let returns = self.kind(&function.returns)?;
         if returns.in_memory() {
@@ -1374,6 +1374,9 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
+        if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
+            return self.header_isdigit(dest, text);
+        }
         let callee = *self
             .module
             .whole
@@ -1502,8 +1505,8 @@ impl Emit<'_, '_, '_> {
             }
             "IdMap" | "IdMap.len" | "IdMap.get" | "IdMap.insert" | "IdMap.remove" | "IdMap.values"
             | "IdMap.ids" | "IdMap.items" => self.id_map_builtin(dest, name, args, span),
-            "is_regex" | "re.is_regex" | "Regex.replace" | "Regex.split" | "Regex.find_all"
-            | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
+            "is_regex" | "re.is_regex" | "re.pattern_problem" | "Regex.replace" | "Regex.split"
+            | "Regex.find_all" | "Regex.search" | "Regex.match" | "Regex.fullmatch" => {
                 self.regex_builtin(dest, name, args, span)
             }
             "json.dumps" | "json.loads" => self.json_builtin(dest, name, args, span),
@@ -1528,20 +1531,6 @@ impl Emit<'_, '_, '_> {
                 self.declare("declare double @llvm.sqrt.f64(double)");
                 let temp = self.temp();
                 self.line(&format!("{temp} = call double @llvm.sqrt.f64(double {value})"));
-                self.assign(dest.ok_or("no result")?, &temp)
-            }
-            "max" | "min" if args.len() == 2 => {
-                let (a, kind) = self.operand(first.ok_or("no argument")?)?;
-                let (b, _) = self.operand(args.get(1).ok_or("no argument")?)?;
-                if kind != Kind::Int {
-                    return Err(format!(
-                        "it calls `{name}` on a {kind:?}, which this backend doesn't take yet"
-                    ));
-                }
-                let cc = if name == "max" { "sgt" } else { "slt" };
-                let (first_wins, temp) = (self.temp(), self.temp());
-                self.line(&format!("{first_wins} = icmp {cc} i64 {a}, {b}"));
-                self.line(&format!("{temp} = select i1 {first_wins}, i64 {a}, i64 {b}"));
                 self.assign(dest.ok_or("no result")?, &temp)
             }
             "int.abs" => {

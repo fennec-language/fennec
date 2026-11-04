@@ -690,7 +690,19 @@ impl Emit<'_, '_, '_> {
         let inline_end = self.current.clone();
         self.line(&format!("br label %{done}"));
         self.start_block(&slow);
-        self.on_blocks([text], |emit, [block]| emit.string_index(dest, &block, index, span))?;
+        self.on_blocks([text], |emit, [block]| {
+            emit.declare(&format!(
+                "declare void @fennec_str_index_text(ptr sret({HEADER}) align 8, ptr, i64, i64, i64) nounwind"
+            ));
+            let (place, from, to) = (emit.place_for_text(), i64::from(span.start), i64::from(span.end));
+            emit.line(&format!(
+                "call void @fennec_str_index_text(ptr sret({HEADER}) align 8 {place}, ptr {block}, i64 {at}, i64 {from}, i64 {to})"
+            ));
+            emit.leave_if_failed();
+            let one = emit.temp();
+            emit.line(&format!("{one} = load {HEADER}, ptr {place}"));
+            emit.assign(dest, &one)
+        })?;
         let after = self.label("index_after");
         self.line(&format!("br label %{after}"));
         self.start_block(&done);
@@ -850,6 +862,44 @@ impl Emit<'_, '_, '_> {
         let code = self.temp();
         self.line(&format!("{code} = phi i64 [ {first}, %{fast} ], [ {counted}, %{slow_end} ]"));
         self.assign(dest, &code)
+    }
+
+    /// `text.isdigit()` on a header, as std's says it: one or more of the digits 0 to 9. Looking
+    /// at bytes gives the same answer as looking at characters, as every byte of a character
+    /// that isn't ASCII is above `9`. Of one character it comes down to a byte's range.
+    pub(crate) fn header_isdigit(
+        &mut self,
+        dest: fennec_ir::LocalId,
+        text: &fennec_ir::Operand,
+    ) -> Result<(), String> {
+        self.module.add_helper(
+            "fen_digits",
+            "define internal i1 @fen_digits(ptr %bytes, i64 %length) #0 {\nentry:\n  %any = icmp ne i64 %length, 0\n  br i1 %any, label %next, label %no\nnext:\n  %at = phi i64 [ 0, %entry ], [ %after, %digit ]\n  %place = getelementptr inbounds i8, ptr %bytes, i64 %at\n  %byte = load i8, ptr %place\n  %off = add i8 %byte, -48\n  %is = icmp ult i8 %off, 10\n  br i1 %is, label %digit, label %no\ndigit:\n  %after = add i64 %at, 1\n  %more = icmp ult i64 %after, %length\n  br i1 %more, label %next, label %yes\nyes:\n  ret i1 true\nno:\n  ret i1 false\n}\n\n".to_owned(),
+        );
+        let (text, _) = self.operand(text)?;
+        let in_block = self.header_in_block(&text);
+        let (block_path, inline_path, join) =
+            (self.label("digits_block"), self.label("digits_inline"), self.label("digits_join"));
+        self.line(&format!("br i1 {in_block}, label %{block_path}, label %{inline_path}"));
+        self.start_block(&block_path);
+        let (first, block_length) = (self.header_word(&text, 0), self.header_word(&text, 1));
+        let block = self.temp();
+        self.line(&format!("{block} = inttoptr i64 {first} to ptr"));
+        let start = self.offset(&block, crate::emit::TEXT_START);
+        self.line(&format!("br label %{join}"));
+        self.start_block(&inline_path);
+        let place = self.place_for_text();
+        self.line(&format!("store {HEADER} {text}, ptr {place}"));
+        let inline_length = self.inline_length(&text);
+        self.line(&format!("br label %{join}"));
+        self.start_block(&join);
+        let (bytes, length, digits) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{bytes} = phi ptr [ {start}, %{block_path} ], [ {place}, %{inline_path} ]"));
+        self.line(&format!(
+            "{length} = phi i64 [ {block_length}, %{block_path} ], [ {inline_length}, %{inline_path} ]"
+        ));
+        self.line(&format!("{digits} = call i1 @fen_digits(ptr {bytes}, i64 {length})"));
+        self.assign(dest, &digits)
     }
 
     /// A word of a header's block at `offset`, read only when it's in a block, and 0 otherwise.

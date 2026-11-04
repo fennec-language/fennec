@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 
 use super::{CELL_SHAPE, FINISHED, GENERATOR_PC, HEADER_WORDS, Heap, children_into, is_text, shape_word};
+use crate::embed::plans::{Holds, Plan};
 use crate::embed::{State, with};
 use crate::value::Value;
 
@@ -204,21 +205,55 @@ fn release_planned(heap: &mut Heap, block: &[u64], pending: &mut Vec<u64>) -> bo
     let Heap { plans, blocks, lent, lent_owners, .. } = heap;
     let shape = shape_word(block).and_then(|shape| usize::try_from(shape).ok());
     let fields = block.get(HEADER_WORDS..).unwrap_or_default();
-    let Some(holds) = shape.and_then(|shape| plans.get(shape)).and_then(|plan| plan.holds(fields)) else {
-        return false;
+    let words = match shape.and_then(|shape| plans.get(shape)) {
+        Some(Plan::Fixed(words)) => words,
+        Some(Plan::Cases(cases)) => {
+            let case = fields.first().and_then(|case| usize::try_from(*case).ok());
+            match case.and_then(|case| cases.get(case)) {
+                Some(words) => words,
+                None => return false,
+            }
+        }
+        Some(Plan::FixedWithTexts(holds)) => {
+            release_planned_holds(holds, fields, blocks, lent.as_ref(), lent_owners, pending);
+            return true;
+        }
+        Some(Plan::CasesWithTexts(cases)) => {
+            let case = fields.first().and_then(|case| usize::try_from(*case).ok());
+            let Some(holds) = case.and_then(|case| cases.get(case)) else { return false };
+            release_planned_holds(holds, fields, blocks, lent.as_ref(), lent_owners, pending);
+            return true;
+        }
+        _ => return false,
     };
-    for child in holds.blocks_in(fields).filter(|child| *child != 0) {
-        release_planned_child(blocks, lent.as_ref(), lent_owners, pending, child);
-    }
-    for child in holds.texts_in(fields).filter(|child| *child != 0) {
+    for child in words.iter().filter_map(|at| fields.get(*at).copied()).filter(|child| *child != 0) {
         release_planned_child(blocks, lent.as_ref(), lent_owners, pending, child);
     }
     true
 }
 
+/// Gives up the owner a block holds of what's in its words and of the strings' blocks in its
+/// headers.
+fn release_planned_holds(
+    holds: &Holds,
+    fields: &[u64],
+    blocks: &mut crate::embed::table::Table,
+    lent: Option<&std::sync::Arc<crate::embed::table::Table>>,
+    lent_owners: &mut HashMap<u64, i64, BuildHasherDefault<super::AddressHasher>>,
+    pending: &mut Vec<u64>,
+) {
+    for child in holds.blocks_in(fields).filter(|child| *child != 0) {
+        release_planned_child(blocks, lent, lent_owners, pending, child);
+    }
+    for child in holds.texts_in(fields).filter(|child| *child != 0) {
+        release_planned_child(blocks, lent, lent_owners, pending, child);
+    }
+}
+
 /// Gives up one owner of a block a struct or enum held, adding it to `pending` if that was the
 /// last.
-#[inline]
+#[expect(clippy::inline_always, reason = "every block's free goes through this, and a call here costs 2%")]
+#[inline(always)]
 fn release_planned_child(
     blocks: &mut crate::embed::table::Table,
     lent: Option<&std::sync::Arc<crate::embed::table::Table>>,

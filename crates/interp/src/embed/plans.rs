@@ -24,38 +24,30 @@ impl Holds {
             super::text::block_of(header)
         })
     }
-
-    fn is_empty(&self) -> bool {
-        self.blocks.is_empty() && self.texts.is_empty()
-    }
 }
 
-/// Which words of a value hold blocks.
+/// Which words of a value hold blocks. What holds no strings, which is most of what's freed,
+/// pays nothing for the strings something else might hold.
 pub(super) enum Plan {
     /// The same words in every value of the kind.
-    Fixed(Holds),
+    Fixed(Box<[usize]>),
     /// An enum's: the words for each case, by the case's number in the first word.
-    Cases(Box<[Holds]>),
+    Cases(Box<[Box<[usize]>]>),
+    /// A struct with strings in it.
+    FixedWithTexts(Box<Holds>),
+    /// An enum with strings in it, by the case's number in the first word.
+    CasesWithTexts(Box<[Holds]>),
     /// Anything else, which is walked as before.
     Walk,
 }
 
 impl Plan {
-    /// What this value holds, if the plan says without walking it.
-    pub(super) fn holds(&self, words: &[u64]) -> Option<&Holds> {
-        match self {
-            Plan::Fixed(holds) => Some(holds),
-            Plan::Cases(cases) => cases.get(usize::try_from(*words.first()?).ok()?),
-            Plan::Walk => None,
-        }
-    }
-
     /// Whether no value of the kind holds a block.
     pub(super) fn holds_nothing(&self) -> bool {
         match self {
-            Plan::Fixed(holds) => holds.is_empty(),
-            Plan::Cases(cases) => cases.iter().all(Holds::is_empty),
-            Plan::Walk => false,
+            Plan::Fixed(words) => words.is_empty(),
+            Plan::Cases(cases) => cases.iter().all(|words| words.is_empty()),
+            Plan::FixedWithTexts(_) | Plan::CasesWithTexts(_) | Plan::Walk => false,
         }
     }
 }
@@ -106,9 +98,17 @@ pub(super) fn plan(element: &Element) -> Plan {
     if let Element::Enum { cases, .. } = element {
         let cases: Option<Vec<Holds>> =
             cases.iter().map(|(_, fields)| holds_of(fields.iter().map(|(_, field)| field), 1)).collect();
-        return cases.map_or(Plan::Walk, |cases| Plan::Cases(cases.into_boxed_slice()));
+        let Some(cases) = cases else { return Plan::Walk };
+        if cases.iter().any(|holds| !holds.texts.is_empty()) {
+            return Plan::CasesWithTexts(cases.into_boxed_slice());
+        }
+        return Plan::Cases(cases.into_iter().map(|holds| holds.blocks).collect());
     }
-    holds_of(std::iter::once(element), 0).map_or(Plan::Walk, Plan::Fixed)
+    match holds_of(std::iter::once(element), 0) {
+        Some(holds) if holds.texts.is_empty() => Plan::Fixed(holds.blocks),
+        Some(holds) => Plan::FixedWithTexts(Box::new(holds)),
+        None => Plan::Walk,
+    }
 }
 
 /// How to find the blocks an in-place item of a list holds: how many words an item takes, worked
@@ -123,13 +123,35 @@ pub(super) fn item_plan(element: &Element) -> ItemPlan {
     ItemPlan { stride: element.words().max(1), plan: plan(element) }
 }
 
+/// The case a value's first word says.
+fn case_of<T>(cases: &[T], fields: &[u64]) -> Option<usize> {
+    let case = usize::try_from(*fields.first()?).ok()?;
+    (case < cases.len()).then_some(case)
+}
+
 /// The non-zero addresses in a block's fields, if the plan says where they are without
 /// walking. `None` means walk it.
 pub(super) fn addresses(plan: &Plan, fields: &[u64], found: &mut Vec<u64>) -> Option<()> {
-    let holds = plan.holds(fields)?;
+    let words = match plan {
+        Plan::Fixed(words) => words,
+        Plan::Cases(cases) => cases.get(case_of(cases, fields)?)?,
+        Plan::FixedWithTexts(holds) => {
+            holds_addresses(holds, fields, found);
+            return Some(());
+        }
+        Plan::CasesWithTexts(cases) => {
+            holds_addresses(cases.get(case_of(cases, fields)?)?, fields, found);
+            return Some(());
+        }
+        Plan::Walk => return None,
+    };
+    found.extend(words.iter().filter_map(|at| fields.get(*at).copied()).filter(|address| *address != 0));
+    Some(())
+}
+
+fn holds_addresses(holds: &Holds, fields: &[u64], found: &mut Vec<u64>) {
     found.extend(holds.blocks_in(fields).filter(|address| *address != 0));
     found.extend(holds.texts_in(fields).filter(|address| *address != 0));
-    Some(())
 }
 
 #[cfg(test)]
@@ -199,7 +221,7 @@ mod tests {
             ],
         };
         let plan = plan(&unit);
-        assert!(matches!(plan, Plan::Fixed(_)));
+        assert!(matches!(plan, Plan::FixedWithTexts(_)));
         let mut fields = Vec::new();
         fields.extend(in_block(40));
         fields.push(7);

@@ -137,6 +137,15 @@ pub extern "C" fn call(word: i64, method: i64, count: i64, start: i64, end: i64)
     })
 }
 
+/// `list(capability)`: what looping over one gives, as a temporary holding a list.
+pub extern "C" fn items(word: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let receiver = value_of(state, word);
+        let items = state.interp.iterate(receiver, span(start, end))?;
+        Ok(state.push(Value::list(items)))
+    })
+}
+
 /// Runs one of std's functions written in the runtime, with the last `count` temporaries handed
 /// in as its arguments. `name` is a string block with its full name, with any named arguments
 /// on the end as a call writes them, like `json.dumps.names`, which come last. `ty` is a string

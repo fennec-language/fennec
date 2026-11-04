@@ -32,6 +32,23 @@ impl Emit<'_, '_, '_> {
         self.take_what_crossed(dest, &handle, (&mark, crossed), span)
     }
 
+    /// `list(capability)`: what looping over it gives.
+    pub(crate) fn capability_items(
+        &mut self,
+        dest: Option<LocalId>,
+        capability: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (mark, crossed) = self.cross_arguments(&[])?;
+        let (word, _) = self.operand(capability)?;
+        self.declare("declare i64 @fennec_capability_items(ptr, i64, i64) nounwind");
+        let handle = self.temp();
+        self.line(&format!("{handle} = call i64 @fennec_capability_items(ptr {word}, i64 {from}, i64 {to})"));
+        self.leave_if_failed();
+        self.take_what_crossed(dest, &handle, (&mark, crossed), span)
+    }
+
     /// One of std's functions the runtime has, called as a capability's method is.
     pub(crate) fn std_call(
         &mut self,

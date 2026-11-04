@@ -333,6 +333,28 @@ pub extern "C" fn int_text(n: i64) -> i64 {
     with(|state| text_address(state, &n.to_string()))
 }
 
+/// `text.codes()`: a new list of the code of each character.
+pub extern "C" fn codes(address: i64, element: i64) -> i64 {
+    with(|state| {
+        let whole = text(state, address).unwrap_or_default();
+        let words: Vec<u64> = whole.chars().map(|c| u64::from(u32::from(c))).collect();
+        super::lists::list_of_words(state, element, &words)
+    })
+}
+
+/// `str.from_code(code)`: a new string of the character with a code, or 0 if none has it.
+pub extern "C" fn from_code(code: i64) -> i64 {
+    match u32::try_from(code).ok().and_then(char::from_u32) {
+        Some(c) => with(|state| text_address(state, c.encode_utf8(&mut [0; 4]))),
+        None => 0,
+    }
+}
+
+/// What's wrong with a number that isn't a character's code.
+pub extern "C" fn from_code_problem(code: i64) -> i64 {
+    with(|state| text_address(state, &format!("{code} isn't the code of a character")))
+}
+
 /// A new string with a string's text as it shows inside a collection, in quotes.
 pub extern "C" fn str_repr(text: i64) -> i64 {
     with(|state| {

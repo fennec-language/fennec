@@ -24,6 +24,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_dict_pop",
     "fennec_dict_pop_header",
     "fennec_stop",
+    "fennec_capability_items",
     "fennec_bytes_of_list",
     "fennec_assert_sides",
     "fennec_list_sorted_with",
@@ -204,6 +205,11 @@ export! {
     fennec_not_a_number(a0: i64, a1: i64) -> i64 => numbers::not_a_number(a0, a1);
     fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
     fennec_str_repr(a0: i64) -> i64 => strings::str_repr(a0);
+    fennec_str_codes(a0: i64, a1: i64) -> i64 => strings::codes(a0, a1);
+    fennec_str_from_code(a0: i64) -> i64 => strings::from_code(a0);
+    fennec_str_from_code_problem(a0: i64) -> i64 => strings::from_code_problem(a0);
+    fennec_capability_items(a0: i64, a1: i64, a2: i64) -> i64 => capabilities::items(a0, a1, a2);
+    fennec_round_places(a0: f64, a1: i64) -> f64 => checks::round_places(a0, a1);
     fennec_float_text(a0: f64) -> i64 => strings::float_text(a0);
     fennec_value_text(a0: i64) -> i64 => strings::value_text(a0);
     fennec_spec_text(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::spec_text(a0, a1, a2, a3);

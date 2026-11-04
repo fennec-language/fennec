@@ -6,10 +6,13 @@ use std::collections::{HashMap, HashSet};
 
 use fennec_check::Type;
 use fennec_ir::facts::{Facts, Range};
-use fennec_ir::{Block, Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
+use fennec_ir::{
+    Block, ChangedPlace, Function, GeneratorDef, Inst, InstKind, LocalId, Operand, PlaceStep, Program,
+    Terminator,
+};
 use fennec_syntax::{BinOp, UnaryOp};
 
-use crate::uniqueness::{FieldPath, Summaries, Tracked, needed, summarized};
+use crate::uniqueness::{ANY_ITEM, FieldPath, Summaries, Tracked, needed, summarized};
 
 const FULL: Range = (i64::MIN, i64::MAX);
 /// The most items anything in memory can have.
@@ -60,6 +63,15 @@ pub(crate) struct Analysis {
     path_taken: HashMap<usize, (LocalId, Vec<String>, Operand)>,
     /// `for mut` items taken out for the whole of the loop's body.
     loop_taken: HashSet<usize>,
+    /// Locals holding a place a call changes, which is taken out for it: each place in order
+    /// in the function's table.
+    places_taken: HashMap<usize, usize>,
+    /// The locals read on the way to such a place and back, which are never read at all, with
+    /// the one holding the place. Each with the path to it from the root, for what's known.
+    place_parts: HashMap<usize, LocalId>,
+    place_paths: HashMap<usize, FieldPath>,
+    /// Such locals taken out just before what changes them, as other arguments come first.
+    places_waiting: HashSet<usize>,
     /// Locals written once, from a field of another: which, and the field.
     field_of: HashMap<usize, (LocalId, String)>,
     /// A slice of a string used only as a dict's key: the string and where it starts and ends.
@@ -409,6 +421,10 @@ fn analyze(
         items_taken: HashMap::new(),
         path_taken: HashMap::new(),
         loop_taken: HashSet::new(),
+        places_taken: HashMap::new(),
+        place_parts: HashMap::new(),
+        place_paths: HashMap::new(),
+        places_waiting: HashSet::new(),
         field_of: HashMap::new(),
         slice_keys: HashMap::new(),
         unmade: HashSet::new(),
@@ -421,10 +437,12 @@ fn analyze(
     };
     let grown = count_uses(function, (changes, keeps), &mut known);
     find_reads_again(function, &mut known);
+    find_place_takes(function, changes, &mut known);
     find_borrows(function, changes, &mut known);
     find_live_borrows(function, changes, &mut known);
     find_path_takes(function, &mut known);
     find_aliases(function, &mut known);
+    settle_place_takes(function, &mut known);
     find_loop_takes(function, &mut known);
     find_last_copies(function, &mut known);
     // A copy shares its source, unless the source is never read again, and a block put inside
@@ -978,6 +996,185 @@ fn find_text_growing_in_a_field(function: &Function, known: &mut Analysis) {
     }
 }
 
+/// The places calls change that can be taken out, from what the lowering says of them: nothing
+/// reads the place between its being read and being written back but the call changing it.
+/// Anything else keeps its own owner, and the call's change makes a copy, which is right.
+fn find_place_takes(function: &Function, changes: Changes<'_>, known: &mut Analysis) {
+    for (number, place) in function.places.iter().enumerate() {
+        if !place_stays_apart(function, place, changes, known) {
+            continue;
+        }
+        known.places_taken.insert(place.value.0, number);
+        known.taken.insert(place.value.0);
+        for part in place.read.iter().chain(&place.back).filter(|part| **part != place.value) {
+            known.place_parts.insert(part.0, place.value);
+            known.taken.insert(part.0);
+        }
+        note_place_paths(function, place, known);
+    }
+}
+
+/// The instructions between reading a changed place and starting to write it back, when it's
+/// all in one block as the lowering writes it.
+fn place_between<'f>(function: &'f Function, place: &ChangedPlace) -> Option<&'f [Inst]> {
+    let puts_back = |inst: &InstKind| match inst {
+        InstKind::GetField { dest, .. } | InstKind::GetIndex { dest, .. } => place.back.contains(dest),
+        InstKind::SetField { object, value, .. } | InstKind::SetIndex { object, value, .. } => {
+            *object == place.root && *value == Operand::Local(place.value)
+        }
+        _ => false,
+    };
+    let reads_it = |inst: &Inst| matches!(&inst.kind, InstKind::GetField { dest, .. } | InstKind::GetIndex { dest, .. } if *dest == place.value);
+    let block = function.blocks.iter().find(|block| block.insts.iter().any(reads_it))?;
+    let read_at = block.insts.iter().position(reads_it)?;
+    let rest = block.insts.get(read_at + 1..)?;
+    let back_at = rest.iter().position(|inst| puts_back(&inst.kind))?;
+    // The way back ends with the root written.
+    let ends = rest.get(back_at..)?.iter().any(|inst| match &inst.kind {
+        InstKind::SetField { object, value: Operand::Local(put), .. }
+        | InstKind::SetIndex { object, value: Operand::Local(put), .. } => {
+            *object == place.root && (*put == place.value || place.back.contains(put))
+        }
+        _ => false,
+    });
+    ends.then(|| rest.get(..back_at)).flatten()
+}
+
+/// Whether a call or a built-in changes a place, given it once. What's worked out for the call's
+/// other arguments can read the root, but not change it, and owns what it reads, so it can leave
+/// taking the place out until just before the call. After the call, nothing reads the root or
+/// writes what the place is reached by.
+fn place_stays_apart(
+    function: &Function,
+    place: &ChangedPlace,
+    changes: Changes<'_>,
+    known: &Analysis,
+) -> bool {
+    let Some(between) = place_between(function, place) else { return false };
+    let held = Operand::Local(place.value);
+    let parts: Vec<LocalId> = place.read.iter().chain(&place.back).copied().collect();
+    if parts.iter().any(|part| known.writes.get(part.0) != Some(&1))
+        || known.reads.get(place.value.0) != Some(&2)
+    {
+        return false;
+    }
+    let indexes: Vec<LocalId> = place
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            PlaceStep::Item(Operand::Local(index)) => Some(*index),
+            _ => None,
+        })
+        .collect();
+    let mut changed = false;
+    for inst in between {
+        let (mut read, mut written) = (Vec::new(), Vec::new());
+        visit(&inst.kind, |operand| read.push(operand.clone()), |local| written.push(local));
+        let reads_local = |local: LocalId| read.contains(&Operand::Local(local));
+        let reads_part = parts.iter().any(|part| *part != place.value && reads_local(*part));
+        if reads_part
+            || written
+                .iter()
+                .any(|local| *local == place.root || parts.contains(local) || indexes.contains(local))
+            || may_change(&inst.kind, &indexes, changes)
+            || may_change(&inst.kind, std::slice::from_ref(&place.root), changes)
+            || (changed && (reads_local(place.root) || read.contains(&held)))
+        {
+            return false;
+        }
+        if read.contains(&held) {
+            let as_changed = match &inst.kind {
+                InstKind::Call { function: callee, args, .. } => {
+                    args.iter().filter(|arg| **arg == held).count() == 1
+                        && !args.contains(&Operand::Local(place.root))
+                        && changes(callee).iter().any(|at| args.get(*at) == Some(&held))
+                }
+                InstKind::Builtin { args, changes: true, .. } => {
+                    args.first() == Some(&held)
+                        && !args.iter().skip(1).any(|arg| *arg == held || *arg == Operand::Local(place.root))
+                }
+                _ => false,
+            };
+            if !as_changed {
+                return false;
+            }
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// The path from its root to each local read on the way to a place and back.
+fn note_place_paths(function: &Function, place: &ChangedPlace, known: &mut Analysis) {
+    let mut paths: HashMap<usize, Vec<String>> = HashMap::from([(place.root.0, Vec::new())]);
+    let parts = |local: LocalId| place.read.contains(&local) || place.back.contains(&local);
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        let (dest, from, step) = match &inst.kind {
+            InstKind::GetField { dest, object: Operand::Local(from), field } if parts(*dest) => {
+                (*dest, *from, field.clone())
+            }
+            InstKind::GetIndex { dest, object: Operand::Local(from), .. } if parts(*dest) => {
+                (*dest, *from, ANY_ITEM.to_owned())
+            }
+            _ => continue,
+        };
+        if let Some(mut path) = paths.get(&from.0).cloned() {
+            path.push(step);
+            known.place_paths.insert(dest.0, (place.root, path.clone()));
+            paths.insert(dest.0, path);
+        }
+    }
+}
+
+/// Lets a place go back to being copied if what changes it, or anything after that, reads a local
+/// leaning on what holds it: what a call is given mustn't change under it. And says which are
+/// taken out only when they're needed, as other arguments are worked out first.
+fn settle_place_takes(function: &Function, known: &mut Analysis) {
+    for place in &function.places {
+        if !known.places_taken.contains_key(&place.value.0) {
+            continue;
+        }
+        let Some(between) = place_between(function, place) else { continue };
+        let held = Operand::Local(place.value);
+        let leans_on_root = |mut local: LocalId| {
+            for _ in 0..8 {
+                match known.lender(local).or_else(|| known.alias(local)) {
+                    Some(from) if from == place.root => return true,
+                    Some(from) => local = from,
+                    None => break,
+                }
+            }
+            known.alias(place.root) == Some(local)
+        };
+        let mut leaning = false;
+        let mut reached = false;
+        let mut first_things = false;
+        for inst in between {
+            let mut read = Vec::new();
+            visit(&inst.kind, |operand| read.push(operand.clone()), |_| {});
+            reached |= read.contains(&held);
+            first_things |= !reached;
+            if reached {
+                leaning |= read.iter().any(|operand| {
+                    matches!(operand, Operand::Local(local) if *local != place.value && leans_on_root(*local))
+                });
+            }
+        }
+        if leaning {
+            known.places_taken.remove(&place.value.0);
+            known.taken.remove(&place.value.0);
+            known.place_paths.remove(&place.value.0);
+            for part in place.read.iter().chain(&place.back) {
+                known.place_parts.remove(&part.0);
+                known.place_paths.remove(&part.0);
+                known.taken.remove(&part.0);
+            }
+        } else if first_things {
+            known.places_waiting.insert(place.value.0);
+        }
+    }
+}
+
 /// `root.list[index].field.append(x)` or `list[index].field.append(x)`, which the IR writes as
 /// reading the field out, changing it, then reading the item again to put it back: the field is
 /// taken, not copied, when nothing else touches the root meanwhile and the index stays the same.
@@ -1452,6 +1649,34 @@ impl Analysis {
     /// Whether anything here could give a local's value another owner.
     pub(crate) fn is_shared(&self, local: LocalId) -> bool {
         self.shared.contains(&local.0)
+    }
+
+    /// The place a local holds while a call changes it, taken out.
+    pub(crate) fn place_taken<'f>(&self, function: &'f Function, local: LocalId) -> Option<&'f ChangedPlace> {
+        function.places.get(*self.places_taken.get(&local.0)?)
+    }
+
+    /// The local holding a place, if this one's read on the way to it or back, or is it.
+    pub(crate) fn place_holder(&self, local: LocalId) -> Option<LocalId> {
+        if self.places_taken.contains_key(&local.0) {
+            return Some(local);
+        }
+        self.place_parts.get(&local.0).copied()
+    }
+
+    /// Whether a place is taken out just before what changes it.
+    pub(crate) fn place_waits(&self, local: LocalId) -> bool {
+        self.places_waiting.contains(&local.0)
+    }
+
+    /// Whether a local is read on the way to a place or back, so it's never read at all.
+    pub(crate) fn is_place_part(&self, local: LocalId) -> bool {
+        self.place_parts.contains_key(&local.0)
+    }
+
+    /// The path from its root to a place's local, for what's known of what's under it.
+    pub(crate) fn place_path(&self, local: LocalId) -> Option<&FieldPath> {
+        self.place_paths.get(&local.0)
     }
 
     /// Whether a call here may change a local, through a `mut` parameter.

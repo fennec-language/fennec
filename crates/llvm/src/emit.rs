@@ -443,6 +443,7 @@ impl<'p> Module<'_, 'p> {
             alone_slots: HashSet::new(),
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
+            place_homes: HashMap::new(),
             at: (usize::MAX, usize::MAX),
             inside_items: Vec::new(),
             inside_slots: HashMap::new(),
@@ -509,6 +510,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Items taken out of a list to change: the list's local and field path, and the step to
     /// the item.
     pub(crate) taken_items: HashMap<usize, (LocalId, Vec<String>, String)>,
+    /// Where a place taken out for a call goes back to: the address, what's held there, and how
+    /// it's marked for LLVM.
+    pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// The instruction being written: its block, and its place in it.
     at: (usize, usize),
     /// Items of lists, by field path and index, known to be inside their lists here.
@@ -727,6 +731,7 @@ impl Emit<'_, '_, '_> {
             for (index, inst) in block.insts.iter().enumerate() {
                 self.at = (at, index);
                 self.forget_entries(&inst.kind);
+                self.take_waiting_places(&inst.kind, inst.span)?;
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
                     for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
                         if let Some(Operand::Local(given)) = args.get(param.0) {
@@ -1753,6 +1758,9 @@ impl Emit<'_, '_, '_> {
 
     fn inst(&mut self, inst: &InstKind, span: Span, block: usize) -> Result<(), String> {
         self.trace_site(inst, span);
+        if let Some(done) = self.place_inst(inst, span) {
+            return done;
+        }
         match inst {
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }

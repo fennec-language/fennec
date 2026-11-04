@@ -436,67 +436,19 @@ fn matches_the_interpreter_on_workers(dir: &Path, name: &str, source: &str) -> s
     Ok(())
 }
 
+/// A body changing, through places, its own copy of what the caller holds: each block on the way
+/// is the caller's until it's copied, from the root down, and the caller's stays as it was.
+const CHANGED_PLACES: &str = include_str!("fixtures/workers/places.fen");
+
+/// The same with built-ins and waiting to take a place out: a lent item and a lent grid's, changed
+/// through methods, `append` reading the root, `extend`, `pop`, `insert`, and given what came from them.
+const LENT_PLACES: &str = include_str!("fixtures/workers/places_lent.fen");
+
 /// Enums and structs in place holding lists, read by workers from what the caller holds, which
 /// retains those lists through the checks for who owns them: a tree holding itself through a list
 /// with a long string inside, a copy of its list appended to, a struct in a list holding a tree,
 /// and a struct's list changed by a `for mut` body.
-const THROUGH_LISTS: &str = r#"enum Tree:
-    Leaf(value: int)
-    Named(name: str, value: int)
-    Many(items: list[Tree])
-
-struct Box:
-    tree: Tree
-    tag: str
-
-struct Points:
-    xs: list[int]
-    label: str
-
-def total(tree: Tree) -> int:
-    match tree:
-        case .Leaf(value):
-            value
-        case .Named(name, value):
-            value + name.len()
-        case .Many(items):
-            mut sum = 0
-            for item in items:
-                sum += total(item)
-            sum
-
-def total_of(trees: list[Tree]) -> int:
-    mut sum = 0
-    for tree in trees:
-        sum += total(tree)
-    sum
-
-def grown(tree: Tree, n: int) -> Tree:
-    match tree:
-        case .Many(items):
-            mut mine = items
-            mine.append(Tree.Leaf(value=n))
-            Tree.Many(items=mine)
-        case _:
-            tree
-
-def main(stdout: Stdout):
-    long = "a name long enough to be held in a block of its own, not in place"
-    shared_tree = Tree.Many(items=[Tree.Leaf(value=1), Tree.Named(name=long, value=2), Tree.Many(items=[Tree.Named(name="short", value=3)])])
-    trees = [shared_tree, Tree.Leaf(value=4), shared_tree]
-    totals = sorted([total_of(trees) + n for n in parallel(range(32))])
-    stdout.print(totals[0], totals[31], totals.len())
-    made = [grown(shared_tree, n) for n in parallel(range(32))]
-    stdout.print(sum(total(tree) for tree in made), total(shared_tree))
-    boxes = [Box(tree=shared_tree, tag=long), Box(tree=Tree.Leaf(value=9), tag="t")]
-    seen = sorted([total(boxes[n % 2].tree) + boxes[n % 2].tag.len() for n in parallel(range(32))])
-    stdout.print(seen[0], seen[31])
-    mut owned = [Points(xs=[1, 2], label=long), Points(xs=[3], label="p")]
-    for mut held in parallel(owned):
-        held.xs.append(held.label.len())
-    stdout.print(owned)
-    stdout.print(trees)
-"#;
+const THROUGH_LISTS: &str = include_str!("fixtures/workers/through_lists.fen");
 
 #[test]
 fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::Result<()> {
@@ -510,6 +462,8 @@ fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::
         ("lent", LENT_BLOCKS),
         ("prints", PRINTS),
         ("own_text", OWN_TEXT),
+        ("places", CHANGED_PLACES),
+        ("places_lent", LENT_PLACES),
         ("through_lists", THROUGH_LISTS),
     ];
     for (name, source) in programs {

@@ -5,15 +5,16 @@
 use fennec_check::Type;
 use fennec_syntax::{Arg, Expr, ExprKind, Span};
 
-use super::places::Place;
+use super::places::{Place, Step};
 use super::{Lowered, Lowering};
-use crate::{InstKind, LocalId, Operand, Program, Terminator, type_in};
+use crate::{BlockId, ChangedPlace, InstKind, LocalId, Operand, PlaceStep, Program, Terminator, type_in};
 
 /// The local holding what `?.` calls a method on, which no name in a program can be.
 const OPTIONAL_OBJECT: &str = "?.";
 
-/// A place to write back after a call, and what holds its value for the call.
-type WriteBack = (Place, LocalId);
+/// A place a call changes, the local holding it, and what's known of how it was read: the
+/// locals on the way, if it can be taken out, and the block they're in.
+type WriteBack = (Place, LocalId, Option<(Vec<LocalId>, BlockId)>);
 
 /// A `shared` handle whose lock a call takes, and whether it takes it to write.
 type Lock = (Operand, bool);
@@ -168,12 +169,28 @@ impl Lowering<'_> {
                 self.emit(InstKind::Unlock { handle }, span);
             }
         }
-        for (place, held) in write_backs {
+        self.write_back(write_backs, span)?;
+        Ok(dest)
+    }
+
+    /// Writes back what a call changed, saying which of those places can be taken out for it.
+    fn write_back(&mut self, write_backs: Vec<WriteBack>, span: Span) -> Lowered<()> {
+        for (place, held, read) in write_backs {
             let ty = self.steps_type(&place)?;
             let value = self.coerce(Operand::Local(held), &ty, span)?;
-            self.store(place.local, &place.steps, value, span)?;
+            let plain = value == Operand::Local(held);
+            let first = self.next_inst();
+            self.write_place(place.local, &place.steps, value, span)?;
+            if let (true, Some((read, block))) = (plain, read)
+                && block == self.current
+                && let Some(steps) = self.plain_steps(&place)
+                && let Some(back) = self.read_since(first)
+            {
+                self.places.push(ChangedPlace { root: place.local, steps, value: held, read, back });
+            }
+            self.check_rules(place.local, &place.steps, span)?;
         }
-        Ok(dest)
+        Ok(())
     }
 
     /// The name of the type an expression names, as in `Point.origin()` or `Deque[int].of(xs)`.
@@ -437,12 +454,52 @@ impl Lowering<'_> {
         if place.steps.is_empty() && !narrowed {
             return Ok(Operand::Local(place.local));
         }
+        let first = self.next_inst();
         let read = self.read_steps(place.local, &place.steps, span)?;
+        let chain = if narrowed { None } else { self.read_since(first).map(|chain| (chain, self.current)) };
         let read = if narrowed { self.narrowed(read, expr)? } else { read };
         let Operand::Local(held) = read else {
             return Err("it changes something other than a field or item".to_owned());
         };
-        write_backs.push((place, held));
+        write_backs.push((place, held, chain));
         Ok(Operand::Local(held))
+    }
+
+    /// Where the next instruction goes in the block being lowered.
+    fn next_inst(&self) -> usize {
+        self.blocks.get(self.current.0).map_or(0, |block| block.insts.len())
+    }
+
+    /// The locals read since an instruction in the block being lowered, if it's only reads of
+    /// fields and items and writes of them.
+    fn read_since(&self, first: usize) -> Option<Vec<LocalId>> {
+        let insts = self.blocks.get(self.current.0)?.insts.get(first..)?;
+        let mut read = Vec::new();
+        for inst in insts {
+            match &inst.kind {
+                InstKind::GetField { dest, .. } | InstKind::GetIndex { dest, .. } => read.push(*dest),
+                InstKind::SetField { .. } | InstKind::SetIndex { .. } => {}
+                _ => return None,
+            }
+        }
+        Some(read)
+    }
+
+    /// A place's steps, if each goes through a list or a plain struct. An optional isn't held
+    /// the same way in a place as in a local, so one can't be taken out as it is.
+    fn plain_steps(&self, place: &Place) -> Option<Vec<PlaceStep>> {
+        let mut ty = self.local_type(place.local);
+        let mut steps = Vec::with_capacity(place.steps.len());
+        for step in &place.steps {
+            steps.push(match (step, &ty) {
+                (Step::Field(field), Type::Named(_)) if !self.context.is_handle(&ty) => {
+                    PlaceStep::Field(field.clone())
+                }
+                (Step::Index(index), Type::List(_)) => PlaceStep::Item(index.clone()),
+                _ => return None,
+            });
+            ty = self.step_type(&ty, step).ok()?;
+        }
+        (!matches!(ty, Type::Optional(_))).then_some(steps)
     }
 }

@@ -325,7 +325,8 @@ impl FnCx<'_> {
             Some(error) => Type::result(value, resolve(self, error)),
             None => value,
         };
-        Signature { params, returns, can_fail: method.fails.is_some(), generator: false }
+        let generics = method.generics.iter().map(|generic| generic.name.clone()).collect();
+        Signature { params, returns, can_fail: method.fails.is_some(), generator: false, generics }
     }
 
     /// The method an interface among a type parameter's bounds gives it.

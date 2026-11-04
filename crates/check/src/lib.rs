@@ -522,6 +522,9 @@ pub struct Signature {
     pub can_fail: bool,
     /// Whether it's a generator: it contains `yield`.
     pub generator: bool,
+    /// Its own type parameters, in order, which its parameters and what it gives back may not
+    /// mention: only what's in brackets at a call can say what those stand for.
+    pub generics: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

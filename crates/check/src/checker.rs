@@ -254,6 +254,7 @@ impl Checker {
             returns: Type::Unit,
             can_fail: effects.fails,
             generator: effects.yields,
+            generics: Vec::new(),
         };
         self.states.insert(key, State::Done(signature));
     }
@@ -320,6 +321,7 @@ impl Checker {
             returns,
             can_fail: effects.fails || entry.def.fails.is_some(),
             generator: effects.yields,
+            generics: entry.def.generics.iter().map(|generic| generic.name.clone()).collect(),
         })
     }
 

@@ -611,3 +611,17 @@ fn a_type_has_to_fail_as_its_interfaces_method_says() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found.iter().all(|problem| problem.contains("`next(mut self) -> int fails Bad`")), "{found:?}");
 }
+
+#[test]
+fn self_in_a_types_own_method_is_that_type() {
+    let text = "struct Point:\n    x = 1\n\n    def make() -> Self:\n        Self(x=7)\n\n    def same(self, other: Self) -> list[Self]:\n        \
+                held: Self = other\n        [held, self]\n\n\
+                struct Box[T]:\n    item: T\n\n    def again(self) -> Self:\n        Box(item=self.item)\n\n\
+                def main(stdout: Stdout):\n    stdout.print(Point.make().x, Box(item=1).again().item)\n";
+    assert_eq!(problems(text), Vec::<String>::new());
+    let text = "struct Point:\n    x = 1\n\n    def make() -> Self:\n        1\n";
+    assert_eq!(problems(text).len(), 1, "{:?}", problems(text));
+    // Outside a method, nothing is `Self`.
+    let text = "def same(x: Self) -> int:\n    1\n";
+    assert_eq!(problems(text), ["`Self` isn't a type @ Self"]);
+}

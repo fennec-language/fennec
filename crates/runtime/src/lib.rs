@@ -77,6 +77,7 @@ pub const CAN_FAIL: &[&str] = &[
     "fennec_str_code",
     "fennec_str_from_value",
     "fennec_str_index",
+    "fennec_str_index_text",
     "fennec_str_print",
     "fennec_str_slice",
     "fennec_str_split",
@@ -281,6 +282,7 @@ export! {
     fennec_dict_missing(a0: i64, a1: i64, a2: i8, a3: i64, a4: i64) => dicts::missing(a0, a1, a2, a3, a4);
     fennec_dict_missing_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i8, a5: i64, a6: i64) => dicts::missing_header(a0, a1, a2, a3, a4, a5, a6);
     fennec_str_index(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => strings::index(a0, a1, a2, a3);
+    fennec_str_index_text(a0: i64, a1: i64, a2: i64, a3: i64) -> text::Text => strings::index_text(a0, a1, a2, a3);
     fennec_str_slice(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => strings::slice(a0, a1, a2, a3, a4);
     fennec_str_compare(a0: i64, a1: i64) -> i64 => strings::compare(a0, a1);
     fennec_str_contains(a0: i64, a1: i64) -> i8 => strings::contains(a0, a1);

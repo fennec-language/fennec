@@ -32,6 +32,7 @@ jobs:
       pull-requests: read
     outputs:
       docs_only: ${{ steps.changes.outputs.docs-only }}
+      parked_changed: ${{ steps.changes.outputs.parked-changed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -170,10 +171,12 @@ jobs:
           path: ${{ runner.temp }}/fennec-home
           key: fennec-tests-${{ github.event.pull_request.number || 'shared' }}-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
 
+  # Only a report, of tests `test` runs too, so a merge group leaves it out. The pull request
+  # and the push to main each have it.
   coverage:
     name: Coverage
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -264,7 +267,10 @@ jobs:
         run: cargo build --release --locked -p fennec -p fennec-bench
       # The previous commit is the base of a pull request or merge group, or the commit before
       # a push to main. Both versions run on this machine, so their times compare fairly.
+      # A merge group leaves it out: slowdowns against it are only warnings, which the pull request
+      # and the push to main show. Wrong output and the enforced floors still fail it.
       - name: Build the previous commit's fennec
+        if: github.event_name != 'merge_group'
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: |
@@ -382,10 +388,14 @@ jobs:
   # Parked tasks switch stacks, the one place our own code follows a pointer `unsafe`ly, so
   # their stress tests run under AddressSanitizer, told of each switch, with leaks checked,
   # and under ThreadSanitizer.
+  # A merge group runs these only if it changes what they test, which is one crate that uses
+  # nothing else in the workspace: nothing another pull request does can break them.
   parked-sanitizers:
     name: Parked tasks under ${{ matrix.name }}
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true'
+    if: >-
+      needs.changes.outputs.docs_only != 'true'
+      && (github.event_name != 'merge_group' || needs.changes.outputs.parked_changed == 'true')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -436,8 +446,8 @@ jobs:
             -Zbuild-std="$STD" --target x86_64-unknown-linux-gnu -p fennec-parked $FEATURES
 
   # One status for branch protection to require, so adding jobs never means changing settings.
-  # A job skipped because the change is only documentation counts as passed; any other skip,
-  # failure or cancellation doesn't.
+  # A job skipped because the change is only documentation counts as passed, and so do the two a
+  # merge group can leave out; any other skip, failure or cancellation doesn't.
   ok:
     name: CI passed
     if: always()
@@ -450,6 +460,7 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          PARKED_CHANGED: ${{ needs.changes.outputs.parked_changed }}
           EVENT: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
@@ -459,6 +470,10 @@ jobs:
           while read -r job result; do
             [ "$result" = success ] && continue
             [ "$result" = skipped ] && [ "$DOCS_ONLY" = true ] && continue
+            if [ "$result" = skipped ] && [ "$EVENT" = merge_group ]; then
+              [ "$job" = coverage ] && continue
+              [ "$job" = parked-sanitizers ] && [ "$PARKED_CHANGED" != true ] && continue
+            fi
             if [ "$job" = test ] && [ "$result" != skipped ]; then
               # `test` has one result for its whole matrix, so each OS's job is looked at.
               # The one exception, on pull requests only: GitHub's macOS runners are short, and

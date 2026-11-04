@@ -481,6 +481,64 @@ fn for_mut_changes_what_an_item_holds_in_place() -> std::io::Result<()> {
 }
 
 #[test]
+fn an_index_a_call_changes_is_read_again() -> std::io::Result<()> {
+    same_as_the_jit(
+        "index_given_mut",
+        r"struct Unit:
+    tags: list[int]
+
+def bump(mut at: int):
+    at += 1
+
+def bump_twice(mut at: int):
+    bump(mut at)
+    bump(mut at)
+
+def main(stdout: Stdout):
+    mut at = 0
+    mut lists = [[1], [2], [3]]
+    lists[at].append(10)
+    bump(mut at)
+    lists[at].append(20)
+    bump_twice(mut at)
+    lists[at - 1].append(30)
+    stdout.print(at, lists)
+
+    mut i = 0
+    mut numbers = [5, 6, 7]
+    numbers[i] = 50
+    bump(mut i)
+    numbers[i] = 60
+    stdout.print(i, numbers, numbers[i])
+
+    mut j = 0
+    mut units = [Unit([1]), Unit([2])]
+    units[j].tags.append(10)
+    bump(mut j)
+    units[j].tags.append(20)
+    stdout.print(j, units[0].tags, units[1].tags)
+
+    mut items = [1, 2, 3, 4]
+    for round in range(3):
+        mut k = round
+        items[k] = items[k] + 10
+        bump(mut k)
+        items[k] = items[k] + 100
+    stdout.print(items)
+
+    mut w = 0
+    while w < items.len():
+        items[w] = 0
+        bump(mut w)
+        if w < items.len():
+            items[w] = 7
+        bump(mut w)
+    stdout.print(items)
+",
+    )
+}
+
+#[test]
 fn numbers_calls_and_printing_match_the_jit() -> std::io::Result<()> {
     if !ready() {
         return Ok(());

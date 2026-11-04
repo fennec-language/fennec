@@ -350,6 +350,8 @@ struct Lowering<'a> {
     fills: Vec<collections::Fill>,
     /// The types of the yield functions whose copies are being lowered, innermost last.
     copied: Vec<(String, &'a Body, Option<generics::Subst>)>,
+    /// The types written in brackets at the call being lowered.
+    written_types: Vec<Type>,
 }
 
 impl<'a> Lowering<'a> {
@@ -378,6 +380,7 @@ impl<'a> Lowering<'a> {
             counts: Vec::new(),
             fills: Vec::new(),
             copied: Vec::new(),
+            written_types: Vec::new(),
         }
     }
 

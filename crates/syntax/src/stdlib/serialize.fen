@@ -1,0 +1,67 @@
+## Where a type's `def serialize(self, mut out: Serializer)` writes what it saves. Each format
+## has its own, and one `def serialize` serves them all.
+interface Serializer:
+    def int(mut self, value: int)
+    def float(mut self, value: float)
+    def bool(mut self, value: bool)
+    def text(mut self, value: str)
+    def bytes(mut self, value: bytes)
+
+    ## A missing value.
+    def none(mut self)
+
+    ## Any value, through its own `def serialize`.
+    def value[T: Serializable](mut self, x: T)
+
+    ## An array of `items`.
+    def sequence[T: Serializable](mut self, items: list[T])
+
+    ## An object of `pairs`, or an array of `[key, value]` pairs when a format can't use its keys
+    ## as an object's.
+    def map[K: Serializable, V: Serializable](mut self, pairs: list[(K, V)])
+
+    ## Starts a struct. `fields` has each field's saved name and whether that name is exact, so
+    ## a format doesn't spell it another way. Each field's value follows, through `field`.
+    def record(mut self, name: str, fields: list[(str, bool)])
+
+    ## The next field's value, in the order `record` named them.
+    def field[T: Serializable](mut self, x: T)
+
+    ## An enum's case by name. One with data follows it with `record` and `field`.
+    def case(mut self, name: str, case: str)
+
+## What can be saved.
+interface Serializable:
+    def serialize(self, mut out: Serializer)
+
+extend int:
+    def serialize(self, mut out: Serializer):
+        out.int(self)
+
+extend float:
+    def serialize(self, mut out: Serializer):
+        out.float(self)
+
+extend bool:
+    def serialize(self, mut out: Serializer):
+        out.bool(self)
+
+extend str:
+    def serialize(self, mut out: Serializer):
+        out.text(self)
+
+extend bytes:
+    def serialize(self, mut out: Serializer):
+        out.bytes(self)
+
+extend list[T: Serializable]:
+    def serialize(self, mut out: Serializer):
+        out.sequence(self)
+
+extend dict[K: Hashable & Serializable, V: Serializable]:
+    def serialize(self, mut out: Serializer):
+        out.map(self.items())
+
+extend set[T: Hashable & Serializable]:
+    def serialize(self, mut out: Serializer):
+        out.sequence([item for item in self])

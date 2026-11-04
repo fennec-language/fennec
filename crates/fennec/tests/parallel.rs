@@ -108,24 +108,7 @@ fn a_range_that_fails_stops_the_program_natively_as_the_interpreter_does() -> st
 /// A `for mut` over structs holding strings long enough to be blocks, and one over such strings,
 /// changing some items and putting the rest back as they were. A struct's string is put back
 /// held by nothing but the list, so letting go of the old item first freed it.
-const PUT_BACK: &str = "\
-struct Tag:
-    name: str
-    n: int
-
-def main(stdout: Stdout):
-    mut tags = [Tag(f\"a name long enough to be held in a block of its own, {n}\", n) for n in range(5_000)]
-    for mut tag in parallel(tags):
-        if tag.n % 2 == 0:
-            tag.n += 1
-    stdout.print(tags[0].name, tags[1].name, tags[4_999].name, tags[2].n)
-    mut words = [f\"a word long enough to be held in a block of its own, {n}\" for n in range(5_000)]
-    for mut word in parallel(words):
-        if word.len() % 2 == 0:
-            word = word + \"!\"
-    stdout.print(words[0], words[1], words[4_999])
-    stdout.print(sum(word.len() for word in parallel(words)))
-";
+const PUT_BACK: &str = include_str!("fixtures/workers/put_back.fen");
 
 #[test]
 fn items_put_back_unchanged_stay_whole_with_text_inline_or_not() -> std::io::Result<()> {
@@ -157,19 +140,7 @@ fn items_put_back_unchanged_stay_whole_with_text_inline_or_not() -> std::io::Res
 }
 
 /// Enough units to be split among workers: a `for mut` and a sum over them.
-const ON_WORKERS: &str = "\
-struct Unit:
-    x: float
-    health: float
-
-def main(stdout: Stdout):
-    mut units = [Unit(float(n % 100), 10.0) for n in range(50_000)]
-    for mut unit in parallel(units):
-        unit.x += 2.0
-        if unit.x > 50.0:
-            unit.health -= 1.0
-    stdout.print(sum(unit.health for unit in parallel(units)))
-";
+const ON_WORKERS: &str = include_str!("fixtures/workers/on_workers.fen");
 
 /// A range on a worker that recurses deeper than the worker's stack allows.
 const TOO_DEEP: &str = "\
@@ -258,49 +229,7 @@ fn a_parallel_program_built_after_a_plain_one_shares_no_cached_module_that_disag
 /// can use them: strings and dicts passed to the runtime, things kept past the call, a closure
 /// made outside, a lent list copied before it's changed, `for mut` replacing strings, and
 /// `parallel` inside `parallel`.
-const LENT_BLOCKS: &str = "\
-struct Tag:
-    name: str
-    n: int
-
-def shout(word: str) -> str:
-    word + \"!\"
-
-def over(f: (str) -> str, words: list[str]) -> list[str]:
-    [f(word) for word in parallel(words)]
-
-def grown(base: list[int], n: int) -> int:
-    mut copy = base
-    copy.append(n)
-    copy.len()
-
-def main(stdout: Stdout):
-    words = [f\"a word long enough to be held in a block of its own, {n}\" for n in range(20_000)]
-    longer = [word + \"!\" for word in parallel(words)]
-    stdout.print(longer[0], longer[19_999], words[7])
-    called = [shout(word) for word in parallel(words)]
-    stdout.print(called[1], sum(word.len() for word in parallel(called)))
-    same = [word for word in parallel(words)]
-    stdout.print(same[3], same[19_998])
-    counts = {word: n for n, word in enumerate(words)}
-    stdout.print(sum(counts[word] for word in parallel(words)))
-    suffix = \"? and long enough to be a block of its own\"
-    asked = over(word => word + suffix, words)
-    stdout.print(asked[11])
-    pairs = [[word, word] for word in parallel(words)]
-    stdout.print(pairs[5][1], pairs.len())
-    base = [1, 2, 3]
-    numbers = [n for n in range(20_000)]
-    stdout.print(sum(grown(base, n) for n in parallel(numbers)), base.len())
-    mut tags = [Tag(f\"a name long enough to be held in a block of its own, {n}\", n) for n in range(20_000)]
-    for mut tag in parallel(tags):
-        if tag.n % 2 == 0:
-            tag.name = tag.name + \"*\"
-        tag.n += 1
-    stdout.print(tags[0].name, tags[1].name, tags[19_999].n)
-    grids = [[n * m for m in range(100)] for n in range(2_000)]
-    stdout.print(sum(sum(cell for cell in parallel(row)) for row in parallel(grids)))
-";
+const LENT_BLOCKS: &str = include_str!("fixtures/workers/lent_blocks.fen");
 
 #[test]
 fn bodies_on_workers_use_the_calling_thread_s_blocks_as_the_interpreter_does() -> std::io::Result<()> {
@@ -327,15 +256,7 @@ fn bodies_on_workers_use_the_calling_thread_s_blocks_as_the_interpreter_does() -
 
 /// A body that prints twice, each print in pieces, on enough items to run on workers, with text
 /// long enough that workers write many times during the loop.
-const PRINTS: &str = "\
-def main(stdout: Stdout):
-    words = [f\"text long enough to be held in a block of its own, {n}\" for n in range(50_000)]
-    stdout.print(\"before\")
-    for word in parallel(words):
-        stdout.print(\"first\", word, word.len())
-        stdout.print(\"second\", word, word.len())
-    stdout.print(\"after\")
-";
+const PRINTS: &str = include_str!("fixtures/workers/prints.fen");
 
 #[test]
 fn what_bodies_print_on_workers_all_comes_out_whole_and_in_order_within_each_body() -> std::io::Result<()> {
@@ -421,17 +342,7 @@ fn what_was_printed_before_a_failure_comes_out() -> std::io::Result<()> {
 
 /// Each character read from a string has a block for the whole run, made by the first thread to
 /// read it. A worker's first read of one, and every later read in that call, has to find it.
-const FIRST_READS: &str = "\
-def count(text: str, wanted: str, xs: list[int]) -> int:
-    sum(1 if text[x] == wanted else 0 for x in parallel(xs))
-
-def main(stdout: Stdout):
-    xs = [n for n in range(6_000)]
-    accented = \"é\" * 6_000
-    wide = \"日\" * 6_000
-    stdout.print(count(accented, \"é\", xs), count(accented, \"é\", xs))
-    stdout.print(count(wide, \"日\", xs), count(wide, \"日\", xs))
-";
+const FIRST_READS: &str = include_str!("fixtures/workers/first_reads.fen");
 
 #[test]
 fn a_character_first_read_on_a_worker_is_found_by_every_range() -> std::io::Result<()> {
@@ -449,34 +360,7 @@ fn a_character_first_read_on_a_worker_is_found_by_every_range() -> std::io::Resu
 }
 
 /// A body on workers over text that isn't ASCII, in the ways a program reads text.
-const NON_ASCII: &str = "\
-struct City:
-    name: str
-    size: int
-
-def first(text: str) -> str:
-    text[0]
-
-def main(stdout: Stdout):
-    names = [\"Zürich\", \"São Paulo\", \"東京\", \"Kraków\", \"Århus\", \"plain\"]
-    cities = [City(names[n % 6] + f\" {n}\", n) for n in range(600)]
-    firsts = [first(city.name) for city in parallel(cities)]
-    stdout.print(firsts[0], firsts[1], firsts[2], firsts[3], firsts[4], firsts[5])
-    stdout.print(sum(city.name.len() for city in parallel(cities)))
-    stdout.print(sum(1 if \"ü\" in city.name else 0 for city in parallel(cities)))
-    upper = [city.name.upper() + \"!\" for city in parallel(cities)]
-    stdout.print(upper[0], upper[1], upper[2], upper[599])
-    pieces = [city.name[1:3] for city in parallel(cities)]
-    stdout.print(pieces[0], pieces[1], pieces[2], pieces[3])
-    counts = {name: 0 for name in names}
-    stdout.print(sum(1 if names[city.size % 6] in counts else 0 for city in parallel(cities)))
-    mut changing = [City(city.name, city.size) for city in cities]
-    for mut city in parallel(changing):
-        city.name = city.name + \"é\"
-    stdout.print(changing[0].name, changing[2].name, changing[599].name)
-    for city in parallel(cities):
-        stdout.print(city.name)
-";
+const NON_ASCII: &str = include_str!("fixtures/workers/non_ascii.fen");
 
 /// What a program printed, its lines sorted: bodies run and print in any order.
 fn sorted_lines(text: &[u8]) -> Vec<String> {
@@ -536,42 +420,7 @@ fn every_parallel_program_matches_the_interpreter_on_real_threads() -> std::io::
 /// Strings of one size with their characters in different places, let go of between calls, so a
 /// later one can have the address of an earlier one. A worker reading the caller's string keeps
 /// where it got to, and has to forget that when the range ends.
-const CHARACTER_PLACES: &str = r#"def accented(chars: int) -> str:
-    "é" * chars
-
-def wide(chars: int) -> str:
-    "日" * chars
-
-def mixed(chars: int) -> str:
-    mut parts = []
-    for i in range(chars // 3):
-        parts.append("aé日")
-    "".join(parts)
-
-def count(text: str, wanted: str, xs: list[int]) -> int:
-    sum(1 if text[x] == wanted else 0 for x in parallel(xs))
-
-def main(stdout: Stdout):
-    size = 120000
-    xs = [n for n in range(size // 3)]
-    mut total = 0
-    # Blocks of about the same size, let go of between calls, with characters in different
-    # places, so a worker trusting where it got to in the last one reads the wrong thing.
-    for round in range(12):
-        kind = round % 3
-        mut found = 0
-        if kind == 0:
-            text = accented(size // 2)
-            found = count(text, "é", xs)
-        elif kind == 1:
-            text = wide(size // 3)
-            found = count(text, "日", xs)
-        else:
-            text = mixed(size // 2)
-            found = count(text, "é", xs)
-        total += found
-    stdout.print(total)
-"#;
+const CHARACTER_PLACES: &str = include_str!("fixtures/workers/character_places.fen");
 
 #[test]
 fn a_worker_forgets_where_it_got_to_in_a_string_when_its_range_ends() -> std::io::Result<()> {

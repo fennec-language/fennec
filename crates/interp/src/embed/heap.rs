@@ -105,6 +105,9 @@ pub(crate) struct Heap {
     pub(super) lent_owners: HashMap<u64, i64, BuildHasherDefault<AddressHasher>>,
     /// Words copied out of one block on the way to another, kept to save making them anew.
     pub(super) scratch: Vec<u64>,
+    /// The words of the block being freed, out of its chunk.
+    #[cfg(feature = "chunks")]
+    pub(super) freeing: Vec<u64>,
 }
 
 /// What a run of native code allocated and copied. Blocks that live for the whole run, and what
@@ -215,7 +218,7 @@ impl Heap {
         let owner_bits = u64::from(super::threads::index()) << OWNER_SHIFT;
         let mut heap = Heap { statics: statics.len(), owner_bits, ..Heap::default() };
         for block in statics {
-            heap.insert(block);
+            heap.insert_where_it_is(block);
         }
         heap.counts = Counts::default();
         heap
@@ -227,7 +230,7 @@ impl Heap {
         self.statics += statics.len();
         let (counts, made) = (self.counts, self.made.len());
         for block in statics.drain(..) {
-            self.insert(block);
+            self.insert_where_it_is(block);
         }
         self.counts = counts;
         // They stay this thread's for the whole run, so a range never hands them over.
@@ -308,7 +311,33 @@ impl Heap {
         }
     }
 
+    /// Adds a block at the address it has, which something already knows.
+    fn insert_where_it_is(&mut self, block: Box<[u64]>) {
+        #[cfg(feature = "chunks")]
+        {
+            self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
+            self.blocks.insert(block);
+        }
+        #[cfg(not(feature = "chunks"))]
+        self.insert(block);
+    }
+
     pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
+        #[cfg(feature = "chunks")]
+        if block.len() <= super::chunks::LARGEST_WORDS {
+            let words = block.len();
+            let made = self.blocks.chunks.make_unset(words).map(|(address, held)| {
+                if !super::chunks::copy_small(&block, held) {
+                    held.copy_from_slice(&block);
+                }
+                address
+            });
+            if let Some(address) = made {
+                self.allocated(u64::try_from(words).unwrap_or(0) * 8);
+                self.recycle(block);
+                return i64::try_from(address).unwrap_or(0);
+            }
+        }
         self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
         let address = block.as_ptr().addr();
         if super::threads::ON && self.owner_bits != 0 {
@@ -352,6 +381,10 @@ impl Heap {
     /// for a block whose contents moved to a new one.
     pub(super) fn discard(&mut self, address: u64) {
         self.forget_place(address);
+        #[cfg(feature = "chunks")]
+        if usize::try_from(address).is_ok_and(|at| self.blocks.chunks.remove(at)) {
+            return;
+        }
         if let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at)) {
             self.recycle(block);
         }
@@ -717,6 +750,15 @@ pub extern "C" fn alloc(shape: i64) -> i64 {
         }) else {
             return 0;
         };
+        #[cfg(feature = "chunks")]
+        if let Some((address, block)) = state.heap.blocks.chunks.make(words) {
+            if let [count, kind, ..] = block {
+                *count = 1;
+                *kind = u64::try_from(shape).unwrap_or(0);
+            }
+            state.heap.allocated(u64::try_from(words).unwrap_or(0) * 8);
+            return i64::try_from(address).unwrap_or(0);
+        }
         let mut block = state.heap.fresh(words);
         if let [count, kind, ..] = &mut *block {
             *count = 1;

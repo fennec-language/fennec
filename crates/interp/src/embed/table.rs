@@ -28,6 +28,9 @@ pub(super) struct Table {
     /// Blocks too short to have a place of their own.
     short: HashMap<usize, Box<[u64]>, BuildHasherDefault<AddressHasher>>,
     len: usize,
+    /// Small blocks, which aren't in the pages.
+    #[cfg(feature = "chunks")]
+    pub(super) chunks: super::chunks::Chunks,
     /// The block the heap's kept a place in. A block can't leave while the heap still has one,
     /// as its address could come back as another string, and a wrong place gives no failure.
     place_in: usize,
@@ -54,6 +57,9 @@ fn slot_mut(regions: &mut [(usize, Box<[Option<Page>]>)], address: usize) -> Opt
 
 impl Table {
     pub(super) fn len(&self) -> usize {
+        #[cfg(feature = "chunks")]
+        return self.len + self.chunks.len();
+        #[cfg(not(feature = "chunks"))]
         self.len
     }
 
@@ -64,6 +70,10 @@ impl Table {
     }
 
     pub(super) fn get(&self, address: usize) -> Option<&[u64]> {
+        #[cfg(feature = "chunks")]
+        if let Some(chunk) = self.chunks.chunk(address) {
+            return chunk.block(address);
+        }
         match self.slot(address) {
             Some(block) => Some(block),
             None if self.short.is_empty() => None,
@@ -72,6 +82,10 @@ impl Table {
     }
 
     pub(super) fn get_mut(&mut self, address: usize) -> Option<&mut [u64]> {
+        #[cfg(feature = "chunks")]
+        if let Some(chunk) = self.chunks.chunk_mut(address) {
+            return chunk.block_mut(address);
+        }
         match slot_mut(&mut self.regions, address).and_then(|slot| slot.as_deref_mut()) {
             Some(block) => Some(block),
             None if self.short.is_empty() => None,

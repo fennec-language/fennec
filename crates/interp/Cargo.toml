@@ -24,6 +24,8 @@ getrandom.workspace = true
 workspace = true
 
 [features]
+# A prototype, for measuring: small blocks in chunks (see `embed/chunks`).
+chunks = []
 # The checks native code running on several threads needs: blocks counted across threads,
 # and each thread's queue of blocks to free. Programs with no tasks link a runtime without
 # them, so they pay nothing (decisions.md: "Programs with no tasks compile the check away").

@@ -43,6 +43,19 @@ pub extern "C" fn free_text(address: i64) {
     let freed = with(|state| {
         let at = usize::try_from(address).ok()?;
         state.heap.forget_place(u64::try_from(at).unwrap_or(0));
+        #[cfg(feature = "chunks")]
+        if state.heap.blocks.chunks.chunk(at).is_some() {
+            let text = state.tables.str_shape;
+            let gone = state.heap.blocks.chunks.remove_unless(at, |block| shape_word(block) != Some(text));
+            if !gone {
+                return None;
+            }
+            let texts = state.heap.texts.get_mut();
+            if !texts.is_empty() {
+                texts.remove(&at);
+            }
+            return Some(());
+        }
         let block = state.heap.blocks.remove(at)?;
         if !is_text(state, &block) {
             state.heap.blocks.insert(block);
@@ -106,9 +119,40 @@ fn is_abandoned(state: &State, block: &[u64]) -> bool {
 fn free_block(state: &mut State, address: u64) {
     let mut pending = std::mem::take(&mut state.heap.pending);
     pending.push(address);
+    #[cfg(feature = "chunks")]
+    let mut small = [0; crate::embed::chunks::SMALL_WORDS];
     while let Some(address) = pending.pop() {
         if crate::embed::threads::held_elsewhere(address) {
             continue;
+        }
+        // A generator being kept has to stay where it is.
+        #[cfg(feature = "chunks")]
+        if !state.tables.abandons.is_empty()
+            && let Some(block) = state.heap.block(address)
+            && is_abandoned(state, block)
+        {
+            if let Some(count) = state.heap.block_mut(address).and_then(|block| block.first_mut()) {
+                *count = 1;
+            }
+            state.heap.abandoning.push(address);
+            continue;
+        }
+        #[cfg(feature = "chunks")]
+        {
+            let mut long = std::mem::take(&mut state.heap.freeing);
+            let taken = usize::try_from(address)
+                .ok()
+                .and_then(|at| state.heap.blocks.chunks.take(at, &mut small, &mut long));
+            if let Some(words) = taken {
+                let held = if words <= small.len() { small.get(..words) } else { long.get(..words) };
+                let held = held.unwrap_or_default();
+                let shape = shape_word(held).unwrap_or(u64::MAX);
+                free_what_it_holds(state, address, shape, held, &mut pending);
+            }
+            state.heap.freeing = long;
+            if taken.is_some() {
+                continue;
+            }
         }
         // Only a string has a place kept in it, and that's forgotten below, once it's known to be one.
         let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.blocks.remove_any(at))
@@ -125,17 +169,23 @@ fn free_block(state: &mut State, address: u64) {
             keep_abandoned(state, address, block);
             continue;
         }
-        if shape == state.tables.str_shape {
-            state.heap.forget_place(address);
-            if !state.heap.texts.get_mut().is_empty() {
-                forget_text(state, address);
-            }
-        } else if shape >= state.tables.str_shape || !release_planned(&mut state.heap, &block, &mut pending) {
-            free_unplanned(state, &block, &mut pending);
-        }
+        free_what_it_holds(state, address, shape, &block, &mut pending);
         state.heap.recycle(block);
     }
     state.heap.pending = pending;
+}
+
+/// Forgets a freed string's place and text, or releases what any other freed block holds.
+#[inline]
+fn free_what_it_holds(state: &mut State, address: u64, shape: u64, block: &[u64], pending: &mut Vec<u64>) {
+    if shape == state.tables.str_shape {
+        state.heap.forget_place(address);
+        if !state.heap.texts.get_mut().is_empty() {
+            forget_text(state, address);
+        }
+    } else if shape >= state.tables.str_shape || !release_planned(&mut state.heap, block, pending) {
+        free_unplanned(state, block, pending);
+    }
 }
 
 /// Keeps a generator let go partway until what closes it has run, which holds it as its one

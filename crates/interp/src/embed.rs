@@ -80,6 +80,8 @@ pub mod serve {
     pub extern "C" fn conn_close(_conn: i64) {}
 }
 pub mod strings;
+#[cfg(feature = "chunks")]
+mod chunks;
 mod table;
 mod tests;
 pub mod text;

@@ -195,8 +195,8 @@ export! {
     fennec_list_contains(a0: i64, a1: i64) -> i8 => lists::contains(a0, a1);
     fennec_pop_empty(a0: i64, a1: i64) => lists::pop_empty(a0, a1);
     fennec_buffer_pop_empty(a0: i64, a1: i64) => lists::pop_empty_buffer(a0, a1);
-    fennec_parse_int(a0: i64) -> numbers::Parsed => numbers::parse_int(a0);
-    fennec_parse_float(a0: i64) -> numbers::Parsed => numbers::parse_float(a0);
+    fennec_parse_int(a0: i64, a1: &mut i64) -> i64 => numbers::parse_int(a0, a1);
+    fennec_parse_float(a0: i64, a1: &mut i64) -> i64 => numbers::parse_float(a0, a1);
     fennec_not_a_number(a0: i64, a1: i64) -> i64 => numbers::not_a_number(a0, a1);
     fennec_int_text(a0: i64) -> i64 => strings::int_text(a0);
     fennec_str_repr(a0: i64) -> i64 => strings::str_repr(a0);
@@ -273,6 +273,7 @@ export! {
     fennec_json_loads(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => json::loads(a0, a1, a2, a3);
     fennec_str_with_room(a0: i64) -> i64 => strings::with_room(a0);
     fennec_text_block(a0: u64, a1: u64, a2: u64) -> i64 => text::block(a0, a1, a2);
+    fennec_text_contains(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::contains(a0, a1, a2, a3, a4, a5);
     fennec_text_of(a0: i64) -> text::Text => text::of(a0);
     fennec_str_char_at(a0: i64, a1: i64) -> i64 => strings::char_at(a0, a1);
     fennec_dict_new(a0: i64, a1: i64) -> i64 => dicts::new(a0, a1);

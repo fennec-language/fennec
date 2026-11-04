@@ -87,6 +87,14 @@ pub(crate) fn no_method(ty: &Type, method: &str, span: Span) -> Diagnostic {
     }
 }
 
+/// What a problem `no_method` made says is missing: who it's missing from, as it says it, and the
+/// method. For telling a caller that can see more of a program than the checker does.
+#[must_use]
+pub fn missing_method(diagnostic: &Diagnostic) -> Option<(&str, &str)> {
+    let (who, method) = diagnostic.message.split_once(" has no method `")?;
+    Some((who, method.strip_suffix('`')?))
+}
+
 pub(crate) fn wrong_args(function: &str, span: Span) -> Diagnostic {
     Diagnostic::new(format!("`{function}` was called with the wrong arguments"), span)
 }

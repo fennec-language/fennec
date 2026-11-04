@@ -1,6 +1,7 @@
 //! `fennec build`: compiles a program ahead of time to a standalone executable. The JIT's
-//! compiler writes an object file, and the system's C compiler links it with Fennec's
-//! runtime library, which sits next to the `fennec` command.
+//! compiler or LLVM writes object files, and the system's linker links them with Fennec's
+//! runtime library, which sits next to the `fennec` command. On Windows, that's Visual Studio's
+//! linker, and for now only LLVM's objects.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -10,9 +11,26 @@ use std::time::Instant;
 /// library uses, and the flag that drops the parts of the runtime a program never calls.
 #[cfg(target_os = "macos")]
 const SYSTEM_LIBRARIES: &[&str] = &["-lSystem", "-lc", "-lm", "-Wl,-dead_strip"];
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(windows)))]
 const SYSTEM_LIBRARIES: &[&str] =
     &["-lgcc_s", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl", "-lc", "-Wl,--gc-sections"];
+
+/// What Rust's standard library needs from Windows, which the runtime library uses.
+#[cfg(windows)]
+const WINDOWS_LIBRARIES: &[&str] = &[
+    "kernel32.lib",
+    "ntdll.lib",
+    "userenv.lib",
+    "ws2_32.lib",
+    "dbghelp.lib",
+    "advapi32.lib",
+    "bcrypt.lib",
+    "synchronization.lib",
+    "msvcrt.lib",
+    "vcruntime.lib",
+    "ucrt.lib",
+    "legacy_stdio_definitions.lib",
+];
 
 /// Which runtime library a program links against, next to the `fennec` command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +46,9 @@ impl Runtime {
     /// The library's file name.
     fn library(self) -> &'static str {
         match self {
+            // Cargo names a static library this way on Windows.
+            Self::Plain if cfg!(windows) => "fennec_runtime.lib",
+            Self::Threads if cfg!(windows) => "fennec_runtime_threads.lib",
             Self::Plain => "libfennec_runtime.a",
             Self::Threads => "libfennec_runtime_threads.a",
         }
@@ -109,10 +130,6 @@ pub(crate) static BASELINE: std::sync::atomic::AtomicBool = std::sync::atomic::A
 /// `fennec build --llvm`: the same through LLVM, which says what it can't take yet rather than
 /// falling back to anything.
 pub(crate) fn build_llvm(path: &str, output: Option<&str>, release: bool) -> ExitCode {
-    if cfg!(windows) {
-        eprintln!("error: `fennec build` can't link executables on Windows yet; use `fennec run`");
-        return ExitCode::FAILURE;
-    }
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
     if !crate::run::check(&mut program) {
         return ExitCode::FAILURE;
@@ -178,10 +195,22 @@ pub(crate) struct Built {
     linked: std::time::Duration,
 }
 
+/// Whether there's a linker to find. Windows doesn't come with one: Visual Studio's Build Tools do.
+fn linker_here() -> bool {
+    #[cfg(windows)]
+    {
+        cc::windows_registry::find_tool("x86_64-pc-windows-msvc", "link.exe").is_some()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 /// Whether this machine can build through LLVM at all: its tools are there, and the runtime
 /// library is beside `fennec`. Without them, nothing about the program is the reason.
 pub(crate) fn llvm_ready() -> bool {
-    !cfg!(windows) && fennec_llvm::Tools::find().is_ok() && runtime_library(Runtime::Plain).is_ok()
+    linker_here() && fennec_llvm::Tools::find().is_ok() && runtime_library(Runtime::Plain).is_ok()
 }
 
 /// Builds a checked program through LLVM to `output`, or says why LLVM can't: a function it
@@ -328,16 +357,10 @@ fn link_objects(
     }
     let started = Instant::now();
     let runtime = if runtime_in { c_parts(&runtime, &work)? } else { runtime };
-    let linked = Command::new("cc")
-        .args(&paths)
-        .arg(&runtime)
-        .args(SYSTEM_LIBRARIES)
-        // `FENNEC_SANITIZE=address` links in AddressSanitizer's runtime.
-        .args(fennec_llvm::sanitizing().then_some("-fsanitize=address"))
-        .arg("-o")
-        .arg(output)
-        .output()
-        .map_err(|err| format!("couldn't run the system's C compiler, `cc`, to link: {err}"))?;
+    let linked = linker(&paths, &runtime, output).output().map_err(|err| {
+        let help = if cfg!(windows) { "; install Visual Studio's Build Tools" } else { "" };
+        format!("couldn't run the linker: {err}{help}")
+    })?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
     if linked.status.success() {
@@ -345,6 +368,37 @@ fn link_objects(
     } else {
         Err(format!("linking failed:\n{}", String::from_utf8_lossy(&linked.stderr)))
     }
+}
+
+/// The system's linker, set to link objects with a runtime library into an executable.
+#[cfg(not(windows))]
+fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
+    let mut command = Command::new("cc");
+    command
+        .args(objects)
+        .arg(runtime)
+        .args(SYSTEM_LIBRARIES)
+        // `FENNEC_SANITIZE=address` links in AddressSanitizer's runtime.
+        .args(fennec_llvm::sanitizing().then_some("-fsanitize=address"))
+        .arg("-o")
+        .arg(output);
+    command
+}
+
+/// The system's linker, set to link objects with a runtime library into an executable.
+#[cfg(windows)]
+fn linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
+    // Where Visual Studio's linker is, with what it needs to find the system's libraries, or
+    // else one a developer prompt has set up.
+    let found = cc::windows_registry::find_tool("x86_64-pc-windows-msvc", "link.exe");
+    let mut command = found.map_or_else(|| Command::new("link.exe"), |tool| tool.to_command());
+    command
+        .args(["/NOLOGO", "/SUBSYSTEM:CONSOLE", "/OPT:REF", "/NODEFAULTLIB:libcmt"])
+        .arg(format!("/OUT:{}", output.display()))
+        .args(objects)
+        .arg(runtime)
+        .args(WINDOWS_LIBRARIES);
+    command
 }
 
 /// Where an executable goes when no `-o` says: named after the kit, or the file, in the
@@ -367,14 +421,10 @@ fn link(object: &[u8], output: &Path) -> Result<std::time::Duration, String> {
     let object_path = work.join("program.o");
     std::fs::write(&object_path, object).map_err(|err| format!("couldn't write the object file: {err}"))?;
     let started = Instant::now();
-    let linked = Command::new("cc")
-        .arg(&object_path)
-        .arg(&runtime)
-        .args(SYSTEM_LIBRARIES)
-        .arg("-o")
-        .arg(output)
-        .output()
-        .map_err(|err| format!("couldn't run the system's C compiler, `cc`, to link: {err}"))?;
+    let linked = linker(std::slice::from_ref(&object_path), &runtime, output).output().map_err(|err| {
+        let help = if cfg!(windows) { "; install Visual Studio's Build Tools" } else { "" };
+        format!("couldn't run the linker: {err}{help}")
+    })?;
     let took = started.elapsed();
     let _ = std::fs::remove_dir_all(&work);
     if linked.status.success() {

@@ -289,6 +289,7 @@ impl Resolver<'_> {
             self.optional_ty(param.ty.as_mut());
         }
         self.optional_ty(def.ret.as_mut());
+        self.optional_ty(def.fails.as_mut());
         self.stmts(&mut def.body);
     }
 

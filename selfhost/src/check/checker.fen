@@ -56,6 +56,7 @@ struct Checker:
                 for param in method.params:
                     self.check_param(param.ty, own)
                 self.check_written(method.ret, own)
+                self.check_written(method.fails, own)
         for name, info in self.program.types.items():
             if not info.prelude:
                 self.check_bounds(info.type_def.generics)

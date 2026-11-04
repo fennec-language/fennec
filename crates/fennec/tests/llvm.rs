@@ -3249,3 +3249,88 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// Floats as keys have one equality: `-0.0` is `0.0`, and every NaN is the same, with the key
+/// kept as it was first written.
+#[test]
+fn float_keys_match_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "float_keys",
+        r#"from std.math import sqrt
+
+def main(stdout: Stdout):
+    mut floats = {1.5, 2.5}
+    stdout.print(floats, 1.5 in floats, 3.5 in floats, floats.len(), sorted(floats), sorted({"b", "a"}))
+    floats.add(1.5)
+    floats.add(3.5)
+    floats.discard(2.5)
+    stdout.print(floats, floats.len(), list(floats), sum(x for x in floats))
+    zero = 0.0
+    mut zeros = {zero}
+    negative = -zero
+    stdout.print(negative in zeros, zero in zeros)
+    zeros.add(negative)
+    stdout.print(zeros, zeros.len())
+    mut signed = {negative}
+    signed.add(zero)
+    stdout.print(signed, signed.len(), zero in signed)
+    nan = 1e300 * 1e300 - 1e300 * 1e300
+    mut nans = {nan}
+    nans.add(nan)
+    nans.add(-nan)
+    stdout.print(nans.len(), nan in nans, -nan in nans, 1.0 in nans)
+    mut named = {1.5: "a", 2.5: "b"}
+    named[1.5] = "c"
+    named[0.0] = "z"
+    stdout.print(named, named[1.5], named[negative], named.get(9.5), named.keys(), named.values())
+    stdout.print(named.pop(2.5), named, {1.5, 2.5} == {2.5, 1.5})
+    mut counts: dict[float, int] = {}
+    for at in range(100):
+        key = float(at % 7) / 2.0
+        counts[key] = (counts.get(key) else 0) + 1
+    stdout.print(counts.len(), counts[0.0], counts[3.0])
+"#,
+    )
+}
+
+/// `None` itself inside a tuple.
+#[test]
+fn none_in_a_tuple_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "none_in_tuple",
+        r#"def main(stdout: Stdout):
+    pair = (1, None)
+    stdout.print(pair, (None, "a"), (None, None))
+    stdout.print(pair == (1, None), [(1, None), (2, None)])
+"#,
+    )
+}
+
+/// A list that's packed in native code, as it crosses to the JSON writer.
+#[test]
+fn json_of_packed_lists_matches_the_jit() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "json_packed",
+        r#"from std import json
+
+struct Scores:
+    name: str
+    points: list[int]
+    rates: list[float]
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps(Scores(name="a", points=[1, 2], rates=[0.5])))
+    stdout.print(json.dumps([1, 2, 3]), json.dumps([[1], [2, 3], []]), json.dumps((1, [2])))
+    stdout.print(json.dumps({"6": [6], "7": []}), json.dumps({"a": {"b": [1.5]}}))
+"#,
+    )
+}

@@ -483,6 +483,7 @@ impl Layouts {
                 Block::of(self.ty(inner)).map_or(Ty::Obj, Ty::Maybe)
             }
             Type::Bytes if self.native_buffers => Ty::Bytes,
+            Type::Iterator(_) if self.native_buffers => Ty::Gen,
             // `None` itself, as a tuple can hold: an optional that's never anything else.
             Type::None if self.native_buffers => Ty::Maybe(Block::Bytes),
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
@@ -521,6 +522,7 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
         Type::Bool => Ty::Bool,
         Type::Str => Ty::Str,
         Type::Bytes if layouts.native_buffers => Ty::Bytes,
+        Type::Iterator(_) if layouts.native_buffers => Ty::Gen,
         Type::None if layouts.native_buffers => Ty::Maybe(Block::Bytes),
         Type::Named(name) if layouts.native_buffers && Cap::named(name).is_some() => {
             Cap::named(name).map_or(Ty::Obj, Ty::Cap)

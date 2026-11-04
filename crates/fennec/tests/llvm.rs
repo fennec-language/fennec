@@ -3778,3 +3778,58 @@ fn float_keys_hash_as_decided_on_the_interpreter() -> std::io::Result<()> {
     assert_eq!(interpreted.0, "True\n1 True\n1 True\n1 1\nTrue\n");
     Ok(())
 }
+
+/// A generator made for a loop goes when the loop does, closing what it's holding right then,
+/// while one with a name lasts as long as the name.
+#[test]
+fn a_generator_left_partway_closes_as_the_jit_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_the_jit(
+        "generator_left",
+        r#"struct Door:
+    out: Stdout
+    name: str
+
+    def del(self):
+        self.out.print(f"closing {self.name}")
+
+def holding(out: Stdout, name: str) -> Iterator[int]:
+    with Door(out=out, name=name) as door:
+        yield 1
+        yield 2
+
+def leaves_early(out: Stdout):
+    for n in holding(out, "made for the loop"):
+        out.print("got", n)
+        break
+    out.print("left the loop")
+
+def named(out: Stdout):
+    kept = holding(out, "with a name")
+    for n in kept:
+        out.print("got", n)
+        break
+    out.print("left the second loop")
+
+def finishes(out: Stdout):
+    for n in holding(out, "run to its end"):
+        out.print("got", n)
+    out.print("left the third loop")
+
+def returns_from_it(out: Stdout) -> int:
+    for n in holding(out, "returned from"):
+        return n
+    0
+
+def main(stdout: Stdout):
+    leaves_early(stdout)
+    stdout.print("next")
+    named(stdout)
+    stdout.print("next")
+    finishes(stdout)
+    stdout.print(returns_from_it(stdout))
+"#,
+    )
+}

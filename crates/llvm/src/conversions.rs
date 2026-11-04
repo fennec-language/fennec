@@ -118,6 +118,10 @@ impl Emit<'_, '_, '_> {
             }),
             ("set", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.set_of_chars(dest, text)),
             ("assert.sides", [left, right], _) => self.assert_sides(left, right, span),
+            ("generator.let_go", [Operand::Local(generator)], _) => {
+                self.let_go_of_generator(*generator);
+                Ok(())
+            }
             ("sorted", [set], [Some(Kind::Dict(..))]) => dest.and_then(|dest| {
                 self.dict_list(dest, set, "keys")?;
                 self.sorted(dest, &Operand::Local(dest))

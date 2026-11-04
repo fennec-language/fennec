@@ -543,6 +543,17 @@ impl<'a> Lowering<'a> {
         self.current = done;
         self.pass_up_failure(&generator, exit, span)?;
         self.current = exit;
+        // One made for this loop goes when the loop does, closing what it's still holding, then
+        // and not when the function ends.
+        if let Operand::Local(local) = &generator
+            && self.locals.get(local.0).is_some_and(|held| held.name.is_none())
+        {
+            let name = "generator.let_go".to_owned();
+            self.emit(
+                InstKind::Builtin { dest: None, name, args: vec![generator.clone()], changes: true },
+                span,
+            );
+        }
         Ok(())
     }
 

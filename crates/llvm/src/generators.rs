@@ -105,6 +105,15 @@ impl<'p> Emit<'_, '_, 'p> {
         self.read_into(dest, &kind, &at, "")
     }
 
+    /// Lets go of a generator made for a loop as the loop ends, which closes what it's holding if
+    /// it stopped partway.
+    pub(crate) fn let_go_of_generator(&mut self, generator: LocalId) {
+        let (slot, held) = (self.slot(generator), self.temp());
+        self.line(&format!("{held} = load ptr, ptr {slot}"));
+        self.line(&format!("store ptr null, ptr {slot}"));
+        self.release(&held);
+    }
+
     /// What a generator failed with, from the block its slot holds the address of.
     fn read_failure(&mut self, dest: LocalId, at: &str) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();

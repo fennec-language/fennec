@@ -215,6 +215,25 @@ impl Emit<'_, '_, '_> {
                     return Ok(());
                 }
             }
+            // An optional string is a header, all zero for `None`.
+            Kind::MaybeText => {
+                self.declare("declare ptr @fennec_optional_str_from_value(i64, i64, i64) nounwind");
+                self.line(&format!(
+                    "{value} = call ptr @fennec_optional_str_from_value(i64 {handle}, i64 {from}, i64 {to})"
+                ));
+                self.leave_if_failed();
+                let (missing, some, done) = (self.temp(), self.label("some_text"), self.label("read_text"));
+                self.line(&format!("{missing} = icmp eq ptr {value}, null"));
+                let memory = kind.memory(self.module.layouts);
+                self.line(&format!("store {memory} zeroinitializer, ptr {at}"));
+                self.line(&format!("br i1 {missing}, label %{done}, label %{some}"));
+                self.start_block(&some);
+                let header = self.text_from_block(&value);
+                self.store_field(&Kind::Str, &header, at, "");
+                self.line(&format!("br label %{done}"));
+                self.start_block(&done);
+                return Ok(());
+            }
             Kind::List(item) => {
                 let symbol = element_symbol(self.module.layouts, *item);
                 self.module.shared.elements.insert(symbol.clone(), *item);

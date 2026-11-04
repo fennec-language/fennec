@@ -891,7 +891,23 @@ fn read<'w>(state: &State, element: &Element, words: &mut dyn Iterator<Item = &'
             // One of a set of errors is, to the interpreter, simply that error.
             let value = match read.first() {
                 Some((_, error)) if crate::packed::names_errors(name) => error.clone(),
-                _ => named::interpreted(name, instance(name, Some(case), read)),
+                _ => {
+                    let value = instance(name, Some(case), read);
+                    // An error with cases says so by its type too.
+                    let error = state
+                        .interp
+                        .type_info(type_name(name))
+                        .is_some_and(|info| info.kind == crate::interp::TypeKind::Error);
+                    match value {
+                        Value::Instance(mut made) if error => {
+                            if let Some(made) = Rc::get_mut(&mut made) {
+                                made.is_error = true;
+                            }
+                            Value::Instance(made)
+                        }
+                        other => named::interpreted(name, other),
+                    }
+                }
             };
             mine.for_each(drop);
             value
@@ -1005,7 +1021,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             }
         }
         (Element::Enum { name, cases, words: size }, Value::Instance(instance))
-            if *instance.type_name == *type_name(name) && !instance.is_error =>
+            if *instance.type_name == *type_name(name) =>
         {
             let case = instance.case.as_ref()?;
             let at = cases.iter().position(|(written, _)| written == case)?;

@@ -24,6 +24,12 @@ fn lost(start: i64, end: i64) -> Diagnostic {
 
 /// A string block owned once with a temporary's text, failing like the interpreter when
 /// it isn't a string.
+/// The string a temporary holds, or 0 for `None`.
+pub extern "C" fn optional_str_from_value(value: i64, start: i64, end: i64) -> i64 {
+    let is_none = with(|state| matches!(state.expanded(state.raw(value).clone()), Value::None));
+    if is_none { 0 } else { from_value(value, start, end) }
+}
+
 pub extern "C" fn from_value(value: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| match state.temp(value) {
         Value::Str(text) => Ok(text_address(state, &text)),

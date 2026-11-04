@@ -155,6 +155,43 @@ pub extern "C" fn item(word: i64, at: i64, start: i64, end: i64) -> i64 {
     })
 }
 
+/// Runs a method of one of std's types that's written in the runtime, like `Connection.write`,
+/// with the last `count` temporaries handed in, the value first. `name` has any named arguments on
+/// the end as a call writes them, like `Connection.read_line.timeout`, which come last.
+pub extern "C" fn std_method(name: i64, count: i64, start: i64, end: i64) -> i64 {
+    attempt(|state: &mut State| {
+        let at = span(start, end);
+        let written = u64::try_from(name)
+            .ok()
+            .and_then(|address| state.heap.block(address))
+            .filter(|block| super::heap::is_text(state, block))
+            .map(super::heap::block_text)
+            .ok_or_else(|| Diagnostic::new("the native code lost a method's name", at))?;
+        let mut parts = written.split('.').skip(1);
+        let method = parts.next().unwrap_or_default().to_owned();
+        let named: Vec<&str> = parts.collect();
+        let count = usize::try_from(count).unwrap_or(0).min(state.inputs.len());
+        let mut given = state.inputs.split_off(state.inputs.len() - count).into_iter();
+        let receiver =
+            given.next().ok_or_else(|| Diagnostic::new("a method with nothing to call it on", at))?;
+        let mut args: Vec<_> = given.map(|value| crate::call::CallArg::plain(value, at)).collect();
+        let first_named = args.len().saturating_sub(named.len());
+        for (arg, name) in args.iter_mut().skip(first_named).zip(named) {
+            arg.name = Some(name.to_owned());
+        }
+        let Value::Instance(instance) = &receiver else {
+            return Err(Diagnostic::new(
+                format!("`{method}` on something other than `{written}`'s type"),
+                at,
+            ));
+        };
+        let call = crate::stdlib::methods_of(&instance.type_name)
+            .ok_or_else(|| Diagnostic::new(format!("no method `{written}` in std"), at))?;
+        let result = call(&mut state.interp, instance, &method, args, at)?;
+        Ok(state.push(result))
+    })
+}
+
 /// Runs one of std's functions written in the runtime, with the last `count` temporaries handed
 /// in as its arguments. `name` is a string block with its full name, with any named arguments
 /// on the end as a call writes them, like `json.dumps.names`, which come last. `ty` is a string

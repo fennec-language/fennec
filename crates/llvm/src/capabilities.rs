@@ -68,6 +68,27 @@ impl Emit<'_, '_, '_> {
         self.take_what_crossed(Some(dest), &handle, (&mark, crossed), span)
     }
 
+    /// A method of one of std's types that the runtime has, like `Connection.write`.
+    pub(crate) fn std_method(
+        &mut self,
+        dest: Option<LocalId>,
+        name: &str,
+        args: &[Operand],
+        span: Span,
+    ) -> Result<(), String> {
+        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (mark, crossed) = self.cross_arguments(args)?;
+        let named = self.literal(name);
+        self.declare("declare i64 @fennec_std_method(ptr, i64, i64, i64) nounwind");
+        let handle = self.temp();
+        self.line(&format!(
+            "{handle} = call i64 @fennec_std_method(ptr {named}, i64 {}, i64 {from}, i64 {to})",
+            args.len()
+        ));
+        self.leave_if_failed();
+        self.take_what_crossed(dest, &handle, (&mark, crossed), span)
+    }
+
     /// One of std's functions the runtime has, called as a capability's method is.
     pub(crate) fn std_call(
         &mut self,

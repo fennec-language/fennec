@@ -7,7 +7,9 @@ permissions:
 jobs:
   probe:
     runs-on: windows-latest
-    timeout-minutes: 50
+    timeout-minutes: 70
+    env:
+      RUSTFLAGS: "-C target-feature=+crt-static"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,9 +65,12 @@ jobs:
           export FENNEC_PROBE_LINK="-Map=$RUNNER_TEMP/map.txt"
           "$fennec" build --llvm examples/hello.fen -o "$RUNNER_TEMP/one.exe" 2>&1 | head -30
           "$RUNNER_TEMP/one.exe"
+          "$FENNEC_LLVM_BIN/llvm-ar.exe" --version | head -1
           echo "--- objects from libraries"; grep -E '\.o:\(\.text' "$RUNNER_TEMP/map.txt" | grep -v rcgu | awk '{print $NF}' | sed 's/:.*//' | sort -u | cut -c1-90 | head -80
           unset FENNEC_PROBE_LINK
-          echo "--- dlls"; "$FENNEC_LLVM_BIN/../bin/llvm-ar.exe" --version | head -1
+          echo "--- all objects"; grep -E '\.o:\(\.text' "$RUNNER_TEMP/map.txt" | grep -v 'rcgu\|fennec-link' | awk '{print $NF}' | sed 's/:.*//' | sort -u | cut -c1-70 | wc -l
+          grep -iE 'libunwind|Unwind|emutls|pthread|builtins|chkstk' "$RUNNER_TEMP/map.txt" | awk '{print $NF}' | sed 's/:.*//' | sort -u | cut -c1-70 | head -30
+          echo "--- dlls"; "$(rustc --print sysroot)/lib/rustlib/x86_64-pc-windows-gnullvm/bin/llvm-readobj.exe" --coff-imports "$RUNNER_TEMP/one.exe" | grep 'Name: .*dll' | sort -u; "$(rustc --print sysroot)/lib/rustlib/x86_64-pc-windows-gnullvm/bin/llvm-readobj.exe" --coff-imports target/debug/fennec.exe | grep 'Name: .*dll' | sort -u
           built=0; right=0; total=0
           for program in examples/*.fen; do
             want="${program%.fen}.out"; [ -f "$want" ] || continue
@@ -82,8 +87,11 @@ jobs:
           echo "--- threads"; FENNEC_THREADS_RUNTIME=1 "$fennec" build --llvm examples/parallel_loops.fen -o "$RUNNER_TEMP/threads.exe" 2>&1 | tail -2; "$RUNNER_TEMP/threads.exe" | diff --strip-trailing-cr - examples/parallel_loops.out && echo same
           echo "--- size"; ls -l "$RUNNER_TEMP/one.exe"
           exit 0
+      - name: The runtime with threads for the suite
+        shell: bash
+        run: ls -l target/debug/libfennec_runtime_threads.a
       - name: The test suite on this target
-        run: cargo test --locked -p fennec --test fennec "llvm::"
+        run: cargo test --locked
         continue-on-error: true
         env:
           FENNEC_EXPECT_LLVM: "1"

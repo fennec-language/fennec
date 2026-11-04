@@ -85,6 +85,14 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{bit} = icmp ne i8 {valid}, 0"));
             return self.assign(dest, &bit);
         }
+        if name == "re.pattern_problem" {
+            let pattern = self.regex_text(arg(0)?, made)?;
+            self.declare("declare ptr @fennec_regex_problem(ptr) nounwind");
+            let problem = self.temp();
+            self.line(&format!("{problem} = call ptr @fennec_regex_problem(ptr {pattern})"));
+            let problem = self.text_value(&problem);
+            return self.assign(dest, &problem);
+        }
         let pattern = self.pattern(arg(0)?, made)?;
         let whole = self.regex_text(arg(1)?, made)?;
         match name {
